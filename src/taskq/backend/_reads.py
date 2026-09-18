@@ -23,6 +23,9 @@ from taskq.backend._records import (
     jsonb_to_dict,
 )
 from taskq.backend._sql_templates import SqlTemplates
+from taskq.connections import (
+    _bounded_checkout,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the bounded pool checkout (release carries _POOL_RELEASE_RESET_TIMEOUT_SECS and never raises) — a local copy would drift from the discipline it documents (issue #280).
+)
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_RECLAIM_POLL_LIMIT,
@@ -46,7 +49,7 @@ __all__ = [
 
 
 async def _get(pool: "asyncpg.Pool", sql: SqlTemplates, job_id: JobId) -> JobRow | None:
-    async with pool.acquire() as conn:
+    async with _bounded_checkout(pool, "get") as conn:
         rec = await conn.fetchrow(sql.get_job, job_id)
     if rec is None:
         return None
@@ -98,7 +101,7 @@ async def _list_jobs(
         f"LIMIT ${limit_idx}"
     )
 
-    async with pool.acquire() as conn:
+    async with _bounded_checkout(pool, "list_jobs") as conn:
         records = await conn.fetch(sql_text, *params)
 
     return [_job_row_from_record(r) for r in records]
@@ -111,7 +114,7 @@ async def _count_pending_jobs(
 ) -> dict[str, int]:
     if not actors:
         return {}
-    async with pool.acquire() as conn:
+    async with _bounded_checkout(pool, "count_pending_jobs") as conn:
         records = await conn.fetch(sql.count_pending_jobs, actors)
     return {str(rec["actor"]): int(rec["cnt"]) for rec in records}
 
@@ -123,7 +126,7 @@ async def _count_active_jobs(
 ) -> int:
     if not queues:
         return 0
-    async with pool.acquire() as conn:
+    async with _bounded_checkout(pool, "count_active_jobs") as conn:
         return int(await conn.fetchval(sql.count_active_jobs, queues))
 
 
@@ -137,7 +140,7 @@ async def _get_actor_max_pending(
     actors without a row are simply absent. Consumed through the
     client-side TTL cache, never per enqueue.
     """
-    async with pool.acquire() as conn:
+    async with _bounded_checkout(pool, "get_actor_max_pending") as conn:
         records = await conn.fetch(sql.list_actor_max_pending)
     return {str(rec["actor"]): rec["max_pending"] for rec in records}
 
@@ -147,7 +150,7 @@ async def _get_attempts(
     sql: SqlTemplates,
     job_id: JobId,
 ) -> list[AttemptRow]:
-    async with pool.acquire() as conn:
+    async with _bounded_checkout(pool, "get_attempts") as conn:
         records = await conn.fetch(sql.get_attempts, job_id)
     return [
         AttemptRow(
@@ -172,7 +175,7 @@ async def _get_events(
     sql: SqlTemplates,
     job_id: JobId,
 ) -> list[EventRow]:
-    async with pool.acquire() as conn:
+    async with _bounded_checkout(pool, "get_events") as conn:
         records = await conn.fetch(sql.get_events, job_id)
     return [
         EventRow(
@@ -195,7 +198,7 @@ async def _poll_reclaim_events(
     visibility_delay: timedelta | None = None,
 ) -> list[EventRow]:
     delay = visibility_delay if visibility_delay is not None else RECLAIM_EVENT_VISIBILITY_DELAY
-    async with pool.acquire() as conn:
+    async with _bounded_checkout(pool, "poll_reclaim_events") as conn:
         records = await conn.fetch(sql.poll_reclaim_events, after_id, limit, delay)
     return [
         EventRow(
@@ -230,7 +233,7 @@ async def _check_reclaim_visibility_risk(
     hot path.
     """
     delay = visibility_delay if visibility_delay is not None else RECLAIM_EVENT_VISIBILITY_DELAY
-    async with pool.acquire() as conn:
+    async with _bounded_checkout(pool, "check_reclaim_visibility_risk") as conn:
         records = await conn.fetch(sql.check_reclaim_visibility_risk, delay)
     return [
         LongRunningJobEventsWriter(

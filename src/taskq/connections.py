@@ -257,8 +257,7 @@ class _RetryGuard:
         """
         self.wrote = True
 
-    @asynccontextmanager
-    async def checkout(self) -> AsyncGenerator[asyncpg.pool.PoolConnectionProxy, None]:
+    def checkout(self) -> AbstractAsyncContextManager[asyncpg.pool.PoolConnectionProxy]:
         """``async with guard.checkout() as conn:``: acquire, run, bounded
         release.
 
@@ -266,50 +265,85 @@ class _RetryGuard:
         whatever the body raised or returned is what escapes the context
         manager.
         """
-        acquired = self._pool.acquire()
-        if isinstance(acquired, Awaitable):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the stubs type asyncpg's acquire() as always-awaitable (PoolAcquireContext), so a real pool only ever takes this arm; the else arm exists because test doubles model only the context-manager half of acquire()'s documented dual surface (see below).
-            # asyncpg's acquire() is documented as BOTH awaitable and an
-            # async context manager; the await form is the one that lets
-            # the release below carry its own timeout: the context
-            # manager's __aexit__ releases with no timeout, so the holder
-            # falls back to the (unbounded) acquire timeout instead.
-            conn = await acquired
-            try:
-                yield conn
-            finally:
-                try:
-                    await self._pool.release(conn, timeout=_POOL_RELEASE_RESET_TIMEOUT_SECS)
-                except Exception as exc:
-                    # Why swallow: the holder's own release path terminates
-                    # the connection on any reset failure (asyncpg pool.py),
-                    # so the pool is already consistent: raising would
-                    # either mask the op's real outcome with pool hygiene
-                    # (on the error path) or hand the caller a failure for
-                    # work that committed (on the success path), which is
-                    # precisely the duplicate-invitation #236 exists to
-                    # remove.
-                    from taskq.obs import get_logger
+        return _bounded_checkout(self._pool, self._operation)
 
-                    get_logger(__name__).warning(
-                        "pool-release-failed",
-                        kind="pool_release_failed",
-                        operation=self._operation,
-                        error=repr(exc),
-                    )
-        else:
-            # A stand-in pool that models only the context-manager half of
-            # acquire()'s documented surface (an ``@asynccontextmanager``
-            # acquire, the common test-double shape): no network exists to
-            # hang a release on, so the context's own release is used
-            # verbatim and no timeout is imposed. Unreachable for a real
-            # asyncpg pool (the stubs' always-awaitable view), which is
-            # what makes the cast safe.
-            cm = cast(
-                "AbstractAsyncContextManager[asyncpg.pool.PoolConnectionProxy]",
-                acquired,
-            )
-            async with cm as conn:
-                yield conn
+
+@asynccontextmanager
+async def _bounded_checkout(
+    pool: asyncpg.Pool,
+    operation: str,
+    *,
+    acquire_timeout: float | None = None,
+) -> AsyncGenerator[asyncpg.pool.PoolConnectionProxy, None]:
+    """The bounded acquire/release one attempt's statements run inside:
+    :meth:`_RetryGuard.checkout`'s implementation, shared with the read,
+    schedule, and batch paths that run no retry wrapper and so have no
+    guard of their own (issue #280's sweep).
+
+    Replaces a bare ``async with pool.acquire()``: the acquire is
+    unchanged unless *acquire_timeout* is given (a site that already
+    bounded its acquire — the notify-pool sweeps' dispatcher command
+    timeout — keeps that bound verbatim), but the RELEASE carries
+    :data:`_POOL_RELEASE_RESET_TIMEOUT_SECS` and never raises: a reset
+    that fails or times out is pool hygiene, not part of the op's
+    semantics. asyncpg's release path already terminates the connection
+    on any reset failure, so swallowing costs nothing but a log line, and
+    it buys two #236 fixes at once: an op whose work committed but whose
+    release hit a parked/dead connection returns its RESULT instead of an
+    error that invites a duplicate-on-retry, and a reset sent into a
+    silently-dead server times out instead of parking the caller (and
+    ``pool.close()``) forever.
+
+    *operation* names the call site in the ``pool-release-failed``
+    WARNING — the operator's one observable trace of the swallowed
+    failure.
+    """
+    acquired = (
+        pool.acquire(timeout=acquire_timeout) if acquire_timeout is not None else pool.acquire()
+    )
+    if isinstance(acquired, Awaitable):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the stubs type asyncpg's acquire() as always-awaitable (PoolAcquireContext), so a real pool only ever takes this arm; the else arm exists because test doubles model only the context-manager half of acquire()'s documented dual surface (see below).
+        # asyncpg's acquire() is documented as BOTH awaitable and an
+        # async context manager; the await form is the one that lets
+        # the release below carry its own timeout: the context
+        # manager's __aexit__ releases with no timeout, so the holder
+        # falls back to the (unbounded) acquire timeout instead.
+        conn = await acquired
+        try:
+            yield conn
+        finally:
+            try:
+                await pool.release(conn, timeout=_POOL_RELEASE_RESET_TIMEOUT_SECS)
+            except Exception as exc:
+                # Why swallow: the holder's own release path terminates
+                # the connection on any reset failure (asyncpg pool.py),
+                # so the pool is already consistent: raising would
+                # either mask the op's real outcome with pool hygiene
+                # (on the error path) or hand the caller a failure for
+                # work that committed (on the success path), which is
+                # precisely the duplicate-invitation #236 exists to
+                # remove.
+                from taskq.obs import get_logger
+
+                get_logger(__name__).warning(
+                    "pool-release-failed",
+                    kind="pool_release_failed",
+                    operation=operation,
+                    error=repr(exc),
+                )
+    else:
+        # A stand-in pool that models only the context-manager half of
+        # acquire()'s documented surface (an ``@asynccontextmanager``
+        # acquire, the common test-double shape): no network exists to
+        # hang a release on, so the context's own release is used
+        # verbatim and no timeout is imposed. Unreachable for a real
+        # asyncpg pool (the stubs' always-awaitable view), which is
+        # what makes the cast safe.
+        cm = cast(
+            "AbstractAsyncContextManager[asyncpg.pool.PoolConnectionProxy]",
+            acquired,
+        )
+        async with cm as conn:
+            yield conn
 
 
 async def _with_fresh_connection_retry[T](  # pyright: ignore[reportUnusedFunction]  # Why: the shared dead-on-acquire guard — its callers are the enqueue and bulk-cancel modules; private usage is declared at each import site.

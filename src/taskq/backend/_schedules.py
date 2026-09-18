@@ -18,6 +18,9 @@ from taskq.backend._protocol import (
     ScheduleUpdateArgs,
 )
 from taskq.backend._records import jsonb_param
+from taskq.connections import (
+    _bounded_checkout,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the bounded pool checkout (release carries _POOL_RELEASE_RESET_TIMEOUT_SECS and never raises) — a local copy would drift from the discipline it documents (issue #280).
+)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -114,7 +117,7 @@ async def create_schedule(
 
     sid = new_uuid()
     metadata_json = jsonb_param(args.metadata) or "{}"
-    async with pool.acquire() as conn:
+    async with _bounded_checkout(pool, "create_schedule") as conn:
         row = await conn.fetchrow(
             sql.create,
             sid,
@@ -141,7 +144,7 @@ async def list_schedules(
     enabled: bool | None = None,
 ) -> list[ScheduleRecord]:
     """Query ``cron_schedules`` with optional WHERE predicates."""
-    async with pool.acquire() as conn:
+    async with _bounded_checkout(pool, "list_schedules") as conn:
         if actor is not None and enabled is not None:
             rows = await conn.fetch(sql.list_where_actor_enabled, actor, enabled)
         elif actor is not None:
@@ -206,14 +209,14 @@ async def update_schedule(
 
     if not sets:
         # No fields to update — return current row.
-        async with pool.acquire() as conn:
+        async with _bounded_checkout(pool, "update_schedule") as conn:
             row = await conn.fetchrow(sql.select_by_id, schedule_id)
         if row is None:
             raise KeyError(f"schedule {schedule_id} not found")
         return schedule_record_from_record(row)
 
     final_sql = f"{sql.update} {', '.join(sets)} WHERE id = $1 RETURNING *"
-    async with pool.acquire() as conn:
+    async with _bounded_checkout(pool, "update_schedule") as conn:
         row = await conn.fetchrow(final_sql, schedule_id, *params)
     if row is None:
         raise KeyError(f"schedule {schedule_id} not found")
@@ -222,5 +225,5 @@ async def update_schedule(
 
 async def delete_schedule(pool: "asyncpg.Pool", sql: ScheduleSql, schedule_id: UUID) -> None:
     """Delete a cron schedule.  Idempotent — no error if row missing."""
-    async with pool.acquire() as conn:
+    async with _bounded_checkout(pool, "delete_schedule") as conn:
         await conn.execute(sql.delete, schedule_id)
