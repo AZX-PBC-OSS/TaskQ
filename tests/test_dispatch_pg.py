@@ -24,6 +24,10 @@ from taskq._close import close_pool_bounded
 from taskq._ids import new_base62, new_uuid
 from taskq.actor_config import ActorConfig
 from taskq.actor_config_ops import set_actor_config_capacity
+from taskq.backend._dispatch_sql import (
+    DISPATCH_ROUND_ROBIN_SQL,
+    DISPATCH_STRICT_FIFO_SQL,
+)
 from taskq.backend._protocol import JobRow
 from taskq.backend.postgres import PostgresBackend
 from taskq.obs import setup_logging
@@ -705,12 +709,51 @@ async def statement_timeout_dispatcher_pool(
     dispatch path. It stands in for every way the dispatch query can
     fail against a loaded or degraded database: a statement timeout on a
     slow plan, a lock timeout, a connection reset mid-query.
+
+    Two asyncpg pool mechanics shape how the 1ms budget is applied:
+
+    - A connection's FIRST execution makes the driver run its own
+      prepare and type-introspection round trips before the statement
+      itself. A 1ms cancel landing in THOSE wedges the protocol
+      mid-operation (an InternalClientError that is neither the
+      intended QueryCanceledError nor recoverable), shorting the pool
+      instead of failing rounds. So each connection first runs both
+      production dispatch statements unbudgeted. The jobs table is
+      empty at fixture time, so the warm-up mutates nothing.
+    - The default release reset runs ``RESET ALL``, which restores every
+      session setting to its startup value and would wipe a budget
+      applied by ``SET``. So this pool's reset skips that tail: its
+      sessions run only the dispatch statements, which take no advisory
+      locks, cursors or LISTEN registrations, and the internal release
+      reset still rolls back any stray transaction.
+
+    The tests using this pool register their seeded actor so the claim
+    matches rows: dispatch's candidates walk ``actor_config``, so an
+    unregistered actor's pending rows are invisible to every round, and
+    an empty-handed round can complete inside the budget instead of
+    aborting. With rows to claim, the statement's lock, update and
+    RETURNING work always exceeds 1ms: every round aborts.
     """
+    schema = module_pg_schema.schema_name
+    warm_sqls = [
+        DISPATCH_STRICT_FIFO_SQL.format(schema=schema),
+        DISPATCH_ROUND_ROBIN_SQL.format(schema=schema),
+    ]
+
+    async def _warm_and_degrade(conn: _asyncpg.Connection) -> None:
+        for warm in warm_sqls:
+            await conn.fetch(warm, ["default"], 1, new_uuid(), timedelta(seconds=30), 2)
+        await conn.execute("SET statement_timeout = '1ms'")
+
+    async def _keep_session_budget(conn: _asyncpg.Connection) -> None:
+        return None
+
     pool = await _asyncpg.create_pool(
         module_pg_schema.pg_dsn,
         min_size=1,
         max_size=2,
-        server_settings={"statement_timeout": "1ms"},
+        init=_warm_and_degrade,
+        reset=_keep_session_budget,
     )
     assert pool is not None
     try:
@@ -751,6 +794,17 @@ async def test_dispatch_duration_is_recorded_when_the_dispatch_query_fails(
     async with deps.worker_pool.acquire() as conn:
         await create_worker(conn, schema, worker_id)
     await backend.enqueue(make_enqueue_args(actor="telemetry_actor"))
+
+    # Register the seeded actor so the claim matches its row: the same
+    # shape the metric test below pins. An unregistered actor's rows are
+    # invisible to dispatch's candidates, so a warm statement's
+    # empty-handed round could complete inside the 1ms budget instead of
+    # aborting, and the round the histogram must sample never fails.
+    configs = [
+        ActorConfig(actor="telemetry_actor", max_concurrent=1, queue="default", metadata={})
+    ]
+    async with deps.worker_pool.acquire() as conn:
+        await sync_actor_config(conn, configs, force=False, schema=schema)
 
     setup_tracer(monkeypatch)
     reader = setup_meter(monkeypatch)
@@ -809,6 +863,19 @@ async def test_dispatch_failure_is_visible_in_a_metric_not_only_a_log_line(
     for _ in range(5):
         await backend.enqueue(make_enqueue_args(actor="telemetry_actor"))
 
+    # The claim matches rows only for a REGISTERED actor: dispatch's
+    # candidates walk actor_config, so an unregistered actor's pending
+    # rows are invisible to every round and the rounds return
+    # empty-handed instead of failing. Registering the actor puts the
+    # claim UPDATE on the 5 seeded rows, whose lock, update and
+    # RETURNING work always exceeds the 1ms budget, so every round
+    # aborts in the statement's own execution.
+    configs = [
+        ActorConfig(actor="telemetry_actor", max_concurrent=5, queue="default", metadata={})
+    ]
+    async with deps.worker_pool.acquire() as conn:
+        await sync_actor_config(conn, configs, force=False, schema=schema)
+
     setup_tracer(monkeypatch)
     reader = setup_meter(monkeypatch)
     monkeypatch.setattr(deps, "dispatcher_pool", statement_timeout_dispatcher_pool)
@@ -836,15 +903,23 @@ async def test_dispatch_failure_is_visible_in_a_metric_not_only_a_log_line(
         )
     )
     try:
-        with caplog.at_level(logging.ERROR):
+        with caplog.at_level(logging.WARNING):
             # The failed rounds are the observable; waiting on a count of
             # them is what makes this deterministic rather than timed.
+            # Which classification a failed round logs is not what is
+            # under test: the statement-timeout failure this scenario
+            # manufactures is in TRANSIENT_PG_ERRORS (SQLSTATE 57014), so
+            # the producer deliberately degrades it to the WARNING
+            # "dispatch-batch-transient" record, while a failure outside
+            # the transient set keeps the loud ERROR "dispatch-batch-error"
+            # record. Both name a failed round, so both count here.
             await wait_for_condition(
                 lambda: (
                     sum(
                         1
                         for record in caplog.records
                         if "dispatch-batch-error" in record.getMessage()
+                        or "dispatch-batch-transient" in record.getMessage()
                     )
                     >= 3
                 ),
