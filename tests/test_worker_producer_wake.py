@@ -34,7 +34,9 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock
 
+import asyncpg
 import pytest
+import structlog.testing
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import Backend, JobId, JobRow
@@ -79,7 +81,9 @@ class _NoopPool:
         return self._Conn()
 
 
-def _producer_deps(*, poll_interval: float = 5.0, maxsize: int = 1) -> SimpleNamespace:
+def _producer_deps(
+    *, poll_interval: float = 5.0, maxsize: int = 1, pooled: bool = False
+) -> SimpleNamespace:
     settings = SimpleNamespace(
         queues=["default"],
         lock_lease=30.0,
@@ -88,6 +92,7 @@ def _producer_deps(*, poll_interval: float = 5.0, maxsize: int = 1) -> SimpleNam
         notify_poll_interval=poll_interval,
         max_concurrency=maxsize,
         schema_name="taskq",
+        pg_is_pooled=pooled,
     )
     liveness = SimpleNamespace(tick=lambda *args, **kwargs: None, forget=lambda *a, **k: None)
     return SimpleNamespace(
@@ -118,6 +123,26 @@ class _RecordingBackend:
         if self.jobs and limit > 0:
             return [self.jobs.pop(0)]
         return []
+
+
+class _RaisingBackend:
+    """dispatch_batch that raises a fixed exception every round and
+    counts the rounds - the pooler-remap storm's stand-in."""
+
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+        self.rounds = 0
+
+    async def dispatch_batch(
+        self,
+        *,
+        worker_id: object,
+        queues: object,
+        limit: int,
+        lock_lease: object,
+    ) -> list[JobRow]:
+        self.rounds += 1
+        raise self.exc
 
 
 # ── Slot refill: the producer wakes on the consumer's release ───────────
@@ -443,4 +468,94 @@ async def test_producer_loop_poll_waits_are_jittered_not_fixed(
     assert len(set(sleeps)) > 1, (
         f"every poll wait was the same value {sleeps[0]} — the fallback poll "
         "lost its jitter and an idle fleet ticks in lockstep"
+    )
+
+
+# ── Pooler-remap dispatch errors: the pooled gate at the dispatch round ──
+
+
+async def _run_producer_over_raising_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    pooled: bool,
+) -> list[Any]:
+    """Drive producer_loop until a raising backend has failed 3 rounds.
+
+    Returns every captured log record. The real poll sleep is replaced by
+    a recorder that raises the stop flag once the round count is met, so
+    the test terminates deterministically without timing sleeps.
+    """
+    backend = _RaisingBackend(
+        asyncpg.InvalidSQLStatementNameError("unnamed prepared statement does not exist")
+    )
+    deps = _producer_deps(poll_interval=0.05, maxsize=1, pooled=pooled)
+    local_queue: asyncio.Queue[JobRow] = asyncio.Queue(maxsize=1)
+    shutdown_event = asyncio.Event()
+    stop_event = asyncio.Event()
+
+    real_sleep = asyncio.sleep
+
+    async def _round_counting_sleep(delay: float, result: object = None) -> object:
+        if backend.rounds >= 3:
+            stop_event.set()
+        await real_sleep(0)
+        return result
+
+    monkeypatch.setattr(run_mod.asyncio, "sleep", _round_counting_sleep)
+
+    with structlog.testing.capture_logs() as captured:
+        await producer_loop(
+            deps,  # type: ignore[arg-type]  # Why: SimpleNamespace stand-in for WorkerDeps, the established producer-loop unit pattern.
+            local_queue,
+            shutdown_event,
+            stop_event,
+            backend=cast(Backend, backend),
+            worker_id=new_uuid(),
+        )
+    return captured
+
+
+async def test_pooler_remap_error_degrades_quietly_under_pooled_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SQLSTATE 26000 from a transaction-mode pooler is a warning plus a
+    retry next tick, not a loud dispatch-batch-error per round.
+
+    With the pooled topology declared (TASKQ_PG_IS_POOLED), a pooler remap
+    that split a prepared statement's Parse from its Bind degrades the
+    round quietly: every round stays on the record as
+    dispatch-batch-transient and the loud exception-level record never
+    fires.
+    """
+    captured = await _run_producer_over_raising_backend(monkeypatch, pooled=True)
+
+    transient = [e for e in captured if e.get("event") == "dispatch-batch-transient"]
+    assert len(transient) >= 3, f"every failed round is on the record: {captured}"
+    assert all(e["log_level"] == "warning" for e in transient), (
+        f"the degradation must be quiet, not exception-level: {transient}"
+    )
+    assert all(e.get("error_class") == "InvalidSQLStatementNameError" for e in transient), (
+        f"the record names the shape that failed: {transient}"
+    )
+    assert not [e for e in captured if e.get("event") == "dispatch-batch-error"], (
+        f"no loud record under the pooled gate: {captured}"
+    )
+
+
+async def test_remap_error_stays_loud_when_the_pooled_gate_is_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without the pooled declaration the same error keeps the loud record.
+
+    On a direct connection 26000 cannot be a pooling artifact: only an
+    asyncpg bug produces it, and a bug must stay visible, so the default
+    (pooled=False) must never launder the round into a quiet retry.
+    """
+    captured = await _run_producer_over_raising_backend(monkeypatch, pooled=False)
+
+    loud = [e for e in captured if e.get("event") == "dispatch-batch-error"]
+    assert len(loud) >= 3, f"every failed round is loud on a direct DSN: {captured}"
+    assert all(e["log_level"] == "error" for e in loud), f"loud means exception-level: {loud}"
+    assert not [e for e in captured if e.get("event") == "dispatch-batch-transient"], (
+        f"no quiet degradation with the gate closed: {captured}"
     )

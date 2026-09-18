@@ -340,6 +340,41 @@ async def test_slot_pool_supplies_concurrency_plus_one_concurrent_acquires(
         await pool.close()
 
 
+@pytest.mark.integration
+async def test_pooled_knob_builds_a_real_pool_with_the_statement_cache_disabled(
+    module_pg_schema: Any,
+) -> None:
+    """Layer 2 against a real pool object: TASKQ_PG_IS_POOLED=true → cache 0/0.
+
+    The spied create_pool pins (tests/test_connections.py) prove TaskQ
+    forwards the override; this pin proves the kwargs survive into a real
+    asyncpg pool object. asyncpg keeps the resolved connect kwargs on the
+    pool's private ``_connect_kwargs`` (no public accessor exists), and a
+    real pool answers with a live server connection underneath, so the
+    assertion covers the exact construction path a pooled deployment
+    runs.
+    """
+    settings = WorkerSettings.load_from_dict(
+        {
+            "TASKQ_PG_DSN": module_pg_schema.pg_dsn,
+            "TASKQ_PG_DSN_DIRECT": module_pg_schema.pg_dsn,
+            "TASKQ_PG_IS_POOLED": "true",
+            "TASKQ_STATEMENT_CACHE_SIZE": "512",
+            "TASKQ_MAX_CACHED_STATEMENT_LIFETIME": "3600",
+        }
+    )
+    pool = await _slot_pool_factory(settings, None)()
+    try:
+        # Why private access: asyncpg seals the resolved kwargs on
+        # _connect_kwargs with no public read; this is the only place the
+        # forwarded statement-cache pair is inspectable after construction.
+        connect_kwargs: dict[str, Any] = pool._connect_kwargs  # type: ignore[union-attr,reportAttributeAccessIssue]
+        assert connect_kwargs["statement_cache_size"] == 0
+        assert connect_kwargs["max_cached_statement_lifetime"] == 0
+    finally:
+        await pool.close()
+
+
 # ── Single-flight readiness probe ────────────────────────────────────────
 
 
