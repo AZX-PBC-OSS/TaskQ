@@ -809,21 +809,36 @@ TASKQ_PG_DSN_POOLED=postgresql://user:pass@pgbouncer:5432/mydb
 
 When neither is set, both fall back to `TASKQ_PG_DSN`. When both DSNs are the same (no PgBouncer), the worker operates identically.
 
-!!! note "The dispatcher pool carries `jit = off` — leave it there"
-    Every pool TaskQ builds for the dispatcher role is opened with
-    `server_settings={"jit": "off"}`. Everything that pool runs — the dispatch
-    claim statement, the leader sweeps, the admission lock acquires — is a
-    short bounded OLTP round trip that LLVM compilation cannot help, and the
-    dispatch statement's estimated cost at deep backlogs crosses Postgres's
-    `jit_above_cost`, which would make Postgres compile the plan (~1 s of
-    Optimization+Emission measured at a 30k-row due backlog, where the bounded
-    scan itself takes ~2 ms) on top of the work itself. This is an operational
-    guard: the statement's own estimate is fixed at the source, and the guard
-    keeps any *future* estimate surprise from ever paying compile time on a
-    hot dispatch loop. If you supply your own dispatcher pool
-    (`WorkerConnections.dispatcher_pool_factory`), do not enable JIT on it for
-    "more speed" — if a dispatch-path statement ever genuinely benefits from
-    compilation, that is a measured statement-level change, not a pool knob.
+!!! note "TaskQ sends no per-pool GUCs in the startup packet — keep it that way"
+
+    Every pool TaskQ builds for the worker opens with **no**
+    `server_settings=`: asyncpg rides each entry in the Postgres **startup
+    packet**, and a pooler that rejects unknown startup parameters
+    (PgBouncer: `unsupported startup parameter: jit`) refuses the connect
+    before authentication — with a single `TASKQ_PG_DSN` pointed at the
+    pooler, the eagerly-opened boot pools (`min_size=1`) never come up and
+    the boot error names neither the parameter nor the pool. The dispatcher
+    pool previously carried `server_settings={"jit": "off"}` as a JIT
+    guard; the guard's measured win had already moved into the dispatch
+    statement itself (the estimate cascade is fixed at the source —
+    `perf-evidence-dispatch.md`; the depth oracle
+    (`tests/test_dispatch_backlog_depth_bound.py`) passes with JIT
+    *enabled* on a plain connection), so the startup parameter was pure
+    pooler hazard. A per-claim `SET LOCAL jit = off` is not a replacement:
+    the claim runs in autocommit (one atomic `UPDATE … RETURNING`), so
+    there is no transaction for a `SET LOCAL` to scope to. If you want the
+    guard, set it server-side where no startup packet is involved —
+    `ALTER ROLE taskq SET jit = off`, or `?options=-c%20jit%3Doff` on the
+    DSN (see [ops.md](ops.md#database-performance-knobs)). The one
+    deliberate exception is the per-slot transaction pool's inherited
+    `search_path`/`role` (built only when a LOOP-scope connection is
+    registered): those are session state the registration declared that
+    must survive the pool's release-time `RESET ALL` — which
+    startup-packet values do and a post-connect `SET` does not — and the
+    slot pool always rides the direct DSN. If your **direct** DSN itself
+    routes through a pooler and you register a LOOP-scope connection, add
+    `ignore_startup_parameters=search_path,role` (or whichever parameters
+    you actually inherit) to the pooler's config.
 
 If a LOOP-scope `asyncpg.Connection` provider is registered but the two DSNs differ, the worker emits a `loop_scope_conn_dsn_mismatch` warning at startup. PgBouncer in transaction mode breaks session semantics required by LOOP-scope connection providers. Either set both DSNs to the same direct endpoint for workers that use LOOP-scope connections, or omit the LOOP-scope connection provider and use the autonomous commit path.
 

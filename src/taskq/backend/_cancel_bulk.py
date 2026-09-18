@@ -86,6 +86,7 @@ from taskq.backend._sweeps import (
     _validate_positive,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical pre-SQL bound validation, shared with the sweeps and deregistration.
 )
 from taskq.connections import (
+    _RetryGuard,  # pyright: ignore[reportPrivateUsage]  # Why: the per-attempt pool discipline the dead-on-acquire retry hands to this drain's batch op: the annotation seam for _one_batch below; a local copy would drift from the discipline it documents.
     _with_fresh_connection_retry,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the dead-on-acquire retry, shared with the enqueue paths — a local copy would drift from the discipline it documents.
 )
 from taskq.constants import (
@@ -248,14 +249,20 @@ async def _drain_cancel_batches(
     raw driver state error.
     """
 
-    async def _one_batch(batch_cursor: UUID) -> asyncpg.Record | None:
+    async def _one_batch(guard: _RetryGuard, batch_cursor: UUID) -> asyncpg.Record | None:
         """One committed batch of the drain on a pooled connection.
 
         Defined once, taking the keyset cursor explicitly: binding it
         per-iteration inside the ``while`` body would capture a variable
-        the loop reassigns.
+        the loop reassigns. The retry guard's flag is marked only after
+        the transaction's COMMIT is acknowledged: a parked/dead
+        connection failing any statement INSIDE the transaction rolled
+        the whole batch back server-side (the drain re-runs it: EPQ
+        predicates skip whatever earlier batches committed, the cursor
+        is unchanged, nothing is cancelled or counted twice), while past
+        the COMMIT the flag refuses the wrapper's retry (#236).
         """
-        async with pool.acquire() as conn:
+        async with guard.checkout() as conn:
             async with conn.transaction():
                 prev_timeout = await _apply_batch_statement_timeout(conn, statement_timeout_ms)
                 prev_plan_mode = await _apply_batch_plan_mode(conn)
@@ -267,7 +274,8 @@ async def _drain_cancel_batches(
                 # rollback has already discarded the SET LOCALs.
                 await _restore_plan_mode(conn, prev_plan_mode)
                 await _restore_statement_timeout(conn, prev_timeout)
-                return batch_row
+        guard.mark_wrote()
+        return batch_row
 
     # The keyset cursor: the greatest id this drain has WINDOWED so far.
     # Starts below every UUID so the first pass is unbounded on the low
@@ -278,11 +286,10 @@ async def _drain_cancel_batches(
         row: asyncpg.Record | None = None
         for attempt in range(3):
             try:
-                # Retry-safety, same as the enqueue sites': the poisoned
-                # protocol rejects the batch transaction's BEGIN itself,
-                # so the failure precedes this batch's first write.
                 row = await _with_fresh_connection_retry(
-                    partial(_one_batch, cursor), operation="cancel_where"
+                    pool,
+                    partial(_one_batch, batch_cursor=cursor),
+                    operation="cancel_where",
                 )
                 break
             except asyncpg.DeadlockDetectedError:

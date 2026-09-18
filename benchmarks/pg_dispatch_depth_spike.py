@@ -683,9 +683,12 @@ async def _go(args: argparse.Namespace) -> list[dict[str, object]]:
         # default now measures the statement's own planner behavior —
         # JIT included — so an estimate-cascade regression shows up in
         # these numbers the way tests/test_dispatch_backlog_depth_bound.py's
-        # JIT oracle pins it. Production dispatcher-pool connections carry
-        # jit = off via server_settings (worker/deps.py) as an operational
-        # guard; --jit-off reproduces that guarded shape to isolate scan
+        # JIT oracle pins it. Production no longer sets jit client-side
+        # (the dispatcher pool's server_settings entry rode the startup
+        # packet and broke boot behind poolers, #247); the server-side
+        # channels (ALTER ROLE ... SET jit = off, DSN ?options=) are
+        # documented in docs/guides/ops.md §"Database performance knobs",
+        # and --jit-off reproduces that guarded shape to isolate scan
         # time from compile time.
         await conn.execute("SET jit = off")
     results: list[dict[str, object]] = []
@@ -729,8 +732,10 @@ def main() -> int:
     ap.add_argument(
         "--jit-off",
         action="store_true",
-        help="SET jit = off on the bench connection — the shape the guarded "
-        "production dispatcher pool runs (worker/deps.py server_settings). "
+        help="SET jit = off on the bench connection: the guarded shape an "
+        "operator configures server-side (ALTER ROLE ... SET jit = off or DSN "
+        "?options=-c jit=off; docs/guides/ops.md, whose TaskQ-built pools set "
+        "nothing client-side, #247). "
         "Default leaves the server default (jit on): the bench measures the "
         "statement's own estimate health, and a default jit=off here is what "
         "hid the JIT-compile-per-round defect at depth from the design "

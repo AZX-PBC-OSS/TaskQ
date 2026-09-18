@@ -595,6 +595,284 @@ def test_taskq_pg_provider_pool_factory_derives_the_bound_from_a_widened_budget(
     )
 
 
+# ── The lock-budget overlay / schema default vs the .env cascade (#251) ──
+#
+# The worker resolves TASKQ_* through dotenvmodel's cascade (process
+# environment, then the .env files, per DOTENV_OVERRIDE); the client's
+# overlay and its schema default must resolve through the SAME layers with
+# the SAME precedence: a .env-only widening previously reached the
+# worker's server-side budgets but not the client pool's derived
+# command_timeout, and the constructor's full TaskQSettings.load() made
+# any malformed UNRELATED TASKQ_* var raise in an embedder's constructor.
+#
+# Every .env here lives in a per-test DOTENV_DIR (the session's
+# _no_developer_dotfiles fixture points DOTENV_DIR at an empty dir; a
+# function-scoped monkeypatch.setenv overrides it for the test and
+# restores the hermetic value after).
+
+
+def _dotenv_dir(tmp_path: Any, monkeypatch: pytest.MonkeyPatch, *files: str) -> None:
+    """Point DOTENV_DIR at a fresh dir containing one ``.env`` per *files*
+    entry of ``KEY=VALUE`` lines."""
+    env_dir = tmp_path / "dotenv"
+    env_dir.mkdir()
+    for index, body in enumerate(files):
+        (env_dir / f".env{'' if index == 0 else f'.{index}'}").write_text(body)
+    monkeypatch.setenv("DOTENV_DIR", str(env_dir))
+
+
+async def test_taskq_open_delivers_a_dotenv_only_widened_budget_end_to_end(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A budget widened ONLY in .env (no process env) reaches the client
+    pool's derived bound and the backend's budgets: the .env cascade the
+    worker always read, delivered on the client path too (#251)."""
+    import asyncpg as asyncpg_mod
+
+    _dotenv_dir(
+        tmp_path,
+        monkeypatch,
+        "TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS=30000\n",
+    )
+    for name in (
+        "TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS",
+        "TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS",
+        "TASKQ_UNIQUE_FOR_LOCK_TIMEOUT_MS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    captured_kwargs: dict[str, Any] = {}
+
+    def _recording_create_pool(*a: Any, **kw: Any) -> _FakePool:
+        captured_kwargs.update(kw)
+        return _FakePool("dsn")
+
+    monkeypatch.setattr(asyncpg_mod, "create_pool", _recording_create_pool)
+    tq = TaskQ(dsn="postgresql://x:x@localhost/x", schema="taskq")
+    async with asyncio.timeout(_TEST_BUDGET_SECS):
+        await tq.open()
+        budgets = _deps_budgets(tq)
+    async with asyncio.timeout(_TEST_BUDGET_SECS):
+        await tq.close()
+
+    assert captured_kwargs.get("command_timeout") == 37.5, (
+        "a 30000 ms budget set only in .env needs a 37.5 s pool bound to "
+        f"keep its 80% share; got {captured_kwargs.get('command_timeout')!r}: "
+        "the client's overlay is not reading the .env cascade (#251)"
+    )
+    assert budgets == (5000.0, 5000.0, 30000.0)
+
+
+async def test_taskq_open_lock_budget_process_env_beats_dotenv_by_default(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default precedence is dotenvmodel's own: the process environment
+    wins over .env files (override=False). The overlay must not invent a
+    different precedence: the worker's load() settles ties this way, so
+    the client's derived bound must settle them the same way."""
+    import asyncpg as asyncpg_mod
+
+    _dotenv_dir(
+        tmp_path,
+        monkeypatch,
+        "TASKQ_UNIQUE_FOR_LOCK_TIMEOUT_MS=30000\n",
+    )
+    monkeypatch.setenv("TASKQ_UNIQUE_FOR_LOCK_TIMEOUT_MS", "20000")
+
+    captured_kwargs: dict[str, Any] = {}
+
+    def _recording_create_pool(*a: Any, **kw: Any) -> _FakePool:
+        captured_kwargs.update(kw)
+        return _FakePool("dsn")
+
+    monkeypatch.setattr(asyncpg_mod, "create_pool", _recording_create_pool)
+    tq = TaskQ(dsn="postgresql://x:x@localhost/x", schema="taskq")
+    async with asyncio.timeout(_TEST_BUDGET_SECS):
+        await tq.open()
+        budgets = _deps_budgets(tq)
+    async with asyncio.timeout(_TEST_BUDGET_SECS):
+        await tq.close()
+
+    # 20000 ms (process env) wins over 30000 ms (.env): 20000/0.8 = 25.0.
+    assert captured_kwargs.get("command_timeout") == 25.0
+    assert budgets[1] == 20000.0
+
+
+async def test_taskq_open_lock_budget_dotenv_beats_env_when_override_set(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``DOTENV_OVERRIDE=true`` flips the tie the same way it flips the
+    worker's load(): the .env cascade wins over the process environment."""
+    import asyncpg as asyncpg_mod
+
+    _dotenv_dir(
+        tmp_path,
+        monkeypatch,
+        "TASKQ_UNIQUE_FOR_LOCK_TIMEOUT_MS=30000\n",
+    )
+    monkeypatch.setenv("TASKQ_UNIQUE_FOR_LOCK_TIMEOUT_MS", "20000")
+    monkeypatch.setenv("DOTENV_OVERRIDE", "true")
+
+    captured_kwargs: dict[str, Any] = {}
+
+    def _recording_create_pool(*a: Any, **kw: Any) -> _FakePool:
+        captured_kwargs.update(kw)
+        return _FakePool("dsn")
+
+    monkeypatch.setattr(asyncpg_mod, "create_pool", _recording_create_pool)
+    tq = TaskQ(dsn="postgresql://x:x@localhost/x", schema="taskq")
+    async with asyncio.timeout(_TEST_BUDGET_SECS):
+        await tq.open()
+        budgets = _deps_budgets(tq)
+    async with asyncio.timeout(_TEST_BUDGET_SECS):
+        await tq.close()
+
+    # 30000 ms (.env) wins over 20000 ms (process env): 30000/0.8 = 37.5.
+    assert captured_kwargs.get("command_timeout") == 37.5
+    assert budgets[1] == 30000.0
+
+
+async def test_taskq_open_lock_budget_dotenv_excluded_when_read_dotfiles_off(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``DOTENV_READ_DOTFILES=false`` disables the file layer for load();
+    the overlay honors the same knob: the .env widening disappears and
+    the shipped defaults apply."""
+    import asyncpg as asyncpg_mod
+
+    _dotenv_dir(
+        tmp_path,
+        monkeypatch,
+        "TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS=30000\n",
+    )
+    monkeypatch.setenv("DOTENV_READ_DOTFILES", "false")
+    monkeypatch.delenv("TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS", raising=False)
+
+    captured_kwargs: dict[str, Any] = {}
+
+    def _recording_create_pool(*a: Any, **kw: Any) -> _FakePool:
+        captured_kwargs.update(kw)
+        return _FakePool("dsn")
+
+    monkeypatch.setattr(asyncpg_mod, "create_pool", _recording_create_pool)
+    tq = TaskQ(dsn="postgresql://x:x@localhost/x", schema="taskq")
+    async with asyncio.timeout(_TEST_BUDGET_SECS):
+        await tq.open()
+        budgets = _deps_budgets(tq)
+    async with asyncio.timeout(_TEST_BUDGET_SECS):
+        await tq.close()
+
+    assert captured_kwargs.get("command_timeout") == 10.0
+    assert budgets == (5000.0, 5000.0, 5000.0)
+
+
+async def test_taskq_open_lock_budget_dotenv_only_when_read_environ_off(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``DOTENV_READ_ENVIRON=false`` excludes the process environment as a
+    value source the same way it does for the worker's load(): only the
+    .env cascade feeds the overlay."""
+    import asyncpg as asyncpg_mod
+
+    _dotenv_dir(
+        tmp_path,
+        monkeypatch,
+        "TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS=30000\n",
+    )
+    monkeypatch.setenv("TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS", "8000")
+    monkeypatch.setenv("DOTENV_READ_ENVIRON", "false")
+
+    captured_kwargs: dict[str, Any] = {}
+
+    def _recording_create_pool(*a: Any, **kw: Any) -> _FakePool:
+        captured_kwargs.update(kw)
+        return _FakePool("dsn")
+
+    monkeypatch.setattr(asyncpg_mod, "create_pool", _recording_create_pool)
+    tq = TaskQ(dsn="postgresql://x:x@localhost/x", schema="taskq")
+    async with asyncio.timeout(_TEST_BUDGET_SECS):
+        await tq.open()
+        budgets = _deps_budgets(tq)
+    async with asyncio.timeout(_TEST_BUDGET_SECS):
+        await tq.close()
+
+    # .env's 30000 wins because the process env is excluded entirely.
+    assert captured_kwargs.get("command_timeout") == 37.5
+    assert budgets[2] == 30000.0
+
+
+def test_taskq_constructor_ignores_a_malformed_unrelated_setting(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A malformed setting the client never reads must not break its
+    constructor: in the process env OR in .env (#251: the constructor's
+    full validating TaskQSettings.load() raised on TASKQ_ADMIN_PORT)."""
+    _dotenv_dir(
+        tmp_path,
+        monkeypatch,
+        "TASKQ_ADMIN_PORT=not-a-port\n",
+    )
+    monkeypatch.setenv("TASKQ_ADMIN_PORT", "also-not-a-port")
+
+    tq = TaskQ(dsn="postgresql://x:x@localhost/x")
+
+    assert tq._schema == "taskq"  # pyright: ignore[reportPrivateUsage]  # Why: the constructor's default resolution is the unit under test; no public accessor exposes it pre-open.
+
+
+def test_taskq_constructor_honors_schema_name_from_the_dotenv_cascade(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A LEGITIMATE TASKQ_SCHEMA_NAME override in .env still wins the
+    default resolution: the fix must not swing from env-only to
+    .env-blind the other way."""
+    _dotenv_dir(
+        tmp_path,
+        monkeypatch,
+        "TASKQ_SCHEMA_NAME=custom_schema\n",
+    )
+    monkeypatch.delenv("TASKQ_SCHEMA_NAME", raising=False)
+
+    tq = TaskQ(dsn="postgresql://x:x@localhost/x")
+
+    assert tq._schema == "custom_schema"  # pyright: ignore[reportPrivateUsage]  # Why: the constructor's default resolution is the unit under test; no public accessor exposes it pre-open.
+
+
+def test_taskq_constructor_schema_env_beats_dotenv_and_explicit_wins_all(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Precedence for the schema default matches load()'s (process env
+    beats .env), and an explicit ``schema=`` argument beats every layer:
+    the cennan/TAStack shape (they pass their loaded schema explicitly)
+    is untouched."""
+    _dotenv_dir(
+        tmp_path,
+        monkeypatch,
+        "TASKQ_SCHEMA_NAME=from_dotenv\n",
+    )
+    monkeypatch.setenv("TASKQ_SCHEMA_NAME", "from_env")
+
+    from_env = TaskQ(dsn="postgresql://x:x@localhost/x")
+    explicit = TaskQ(dsn="postgresql://x:x@localhost/x", schema="explicit")
+
+    assert from_env._schema == "from_env"  # pyright: ignore[reportPrivateUsage]  # Why: the constructor's default resolution is the unit under test.
+    assert explicit._schema == "explicit"
+
+
+def test_taskq_constructor_still_raises_on_a_malformed_schema_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one setting whose malformation the constructor MUST surface:
+    schema_name is the client's own field (it reaches raw SQL), and the
+    worker's load fails the same value: failing soft here would silently
+    enqueue into a schema no worker reads."""
+    monkeypatch.setenv("TASKQ_SCHEMA_NAME", "bad schema!")
+
+    with pytest.raises(
+        Exception, match="schema"
+    ):  # Why: dotenvmodel's ValidationError family is the contract, not one exact class; the match pins the field.
+        TaskQ(dsn="postgresql://x:x@localhost/x")
+
+
 # ── taskq ui serve: startup factory calls and eager redis are bounded ──
 
 

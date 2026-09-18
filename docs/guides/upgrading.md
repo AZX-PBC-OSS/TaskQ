@@ -1939,3 +1939,126 @@ due work rather than stranding residue, and the value returns to zero
 once no schedule is failing. `cron_schedules.consecutive_failures` and
 the logs remain the authoritative per-schedule record; alert on
 `taskq.cron.disabled_schedules > 0` for the auto-disabled condition.
+### The dead-connection retry no longer re-runs committed writes
+
+> **Unreleased.** Silent unless your database kills connections mid-flight;
+> when it does, the behavior you get is the one you already wanted.
+
+The retry guard behind the enqueue paths and the bulk-cancel drain
+(`_with_fresh_connection_retry`) covered the whole
+acquire-run-release cycle. A pooled connection whose server died between
+the op's last acknowledged statement and the pool's release-time reset
+raised asyncpg's `InternalClientError` from the RELEASE — the old wrapper
+read that as dead-on-acquire and re-ran the op with the same arguments
+(issue #236). Because the enqueue table's `id` is the primary key and the
+op carries its id, that re-run could not land a second row: it raised
+`UniqueViolationError` for an enqueue that had already committed and
+would run (observed live under an old-contract emulation: 11
+UniqueViolations across 400 jittered kills). The harm was that error
+returned for work that SUCCEEDED — and the invitation it created: a
+caller that retried on the error issued a fresh-id enqueue, and THAT row
+landed, which is the route that actually runs the job twice. Two
+mechanisms now split the concern:
+
+- The guard's checkout bounds the release (`pool.release(conn,
+  timeout=...)`, 5 s) and never raises a release failure — an op whose
+  work committed gets its result back (one `pool-release-failed` WARNING
+  is logged instead). The bound also un-wedges the hang the old path
+  could hit: against a silently dead server (no FATAL, no FIN — a frozen
+  or partitioned endpoint) the unbounded reset parked the caller's task
+  AND `pool.close()` forever; it now times out after 5 s, asyncpg
+  terminates the connection, and the pool reopens one on the next
+  acquire.
+- The retry is refused once the op marked a write durable (the INSERT's
+  acknowledgement on the autocommit arms, the transaction COMMIT's on the
+  batch/COPY/cancel arms). A connection that dies between the write and
+  a LATER statement of the same attempt surfaces its error instead of
+  re-issuing the write — the ambiguous outcome is handed to the caller
+  rather than papered over with a re-run that conflicts with the
+  committed row. A connection poisoned BEFORE the first statement still
+  costs exactly one transparent retry — nothing was sent, so the retry
+  cannot conflict with anything.
+
+For context, the peer doctrine: procrastinate scopes its own
+dead-connection retry to the LISTEN connection only
+(`psycopg_connector.py:313-353`) and never auto-retries query paths.
+Pre-fix TaskQ sat at the opposite pole — any `InternalClientError`,
+including one raised after an acknowledged write, was retried. Post-fix
+TaskQ retries only the provably-nothing-sent case and surfaces ambiguous
+outcomes instead of re-running them: closer to the peer's conservatism
+than base, deliberately not as absolute, because the first-statement
+local failure it still absorbs is provably duplicate-free (nothing
+reached the server).
+
+A mid-QUERY kill is unchanged: it raises
+`ConnectionDoesNotExistError` (a Postgres error, not retried by this
+wrapper) and whether the statement committed before the server died is
+unknowable from the client — idempotency keys remain the dedup channel
+for the retry YOU choose to issue in that case.
+
+### Worker pools send no per-connection GUCs in the startup packet
+
+> **Unreleased.** Breaking only in the sense that a worker that failed to
+> boot behind a strict pooler now boots, and a client-side `jit = off`
+> that silently rode every dispatcher connection is gone — set it
+> server-side if you want it.
+
+Every pool the worker builds opens with no `server_settings=`. asyncpg
+rides each entry in the Postgres startup packet, and a pooler that
+rejects unknown startup parameters (PgBouncer: `unsupported startup
+parameter: jit`) refuses the connect before authentication — with a
+single `TASKQ_PG_DSN` pointing at the pooler, the eagerly-opened boot
+pools never came up and the error named neither the parameter nor the
+pool (issue #247). The dispatcher pool's `jit = off` entry was a guard
+whose measured win had already moved into the dispatch statement itself
+(the depth oracle passes with JIT enabled on a plain connection); a
+per-claim `SET LOCAL jit = off` is not a replacement — the claim runs in
+autocommit, so there is no transaction to scope it to. Operators who
+want the guard should set it where no startup packet is involved:
+
+```sql
+ALTER ROLE taskq SET jit = off;
+```
+
+or append `?options=-c%20jit%3Doff` to the DSN — see
+[ops.md](ops.md#database-performance-knobs). The per-slot transaction
+pool's inherited `search_path`/`role` remain startup parameters by
+design: they are session state a LOOP-scope connection declared, they
+must survive the pool's release-time `RESET ALL` (startup-packet values
+do; a post-connect `SET` does not), and the slot pool always rides the
+direct DSN. If your direct DSN itself routes through a pooler and you
+register a LOOP-scope connection, add
+`ignore_startup_parameters=search_path,role` (or whichever parameters
+you actually inherit) to the pooler's config.
+
+### The TaskQ client reads the `.env` cascade for its lock budgets and schema default
+
+> **Unreleased.** Silent widening; a constructor failure class is gone.
+
+The `TaskQ` client's lock-budget probe (`TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS`
+and its two siblings) previously read the process environment only, so a
+widening set in `.env` reached the worker's server-side budgets but not
+the client pool's derived `command_timeout` — the two sides silently
+disagreed (issue #251). The probe now resolves through the same layers
+the worker's `TaskQSettings.load()` reads (process environment, then the
+`.env` cascade, honoring `DOTENV_OVERRIDE` / `DOTENV_READ_DOTFILES` /
+`DOTENV_READ_ENVIRON`), never writing into `os.environ`.
+
+`TaskQ(...)`'s default schema resolution also changed twice, once when
+this release's connection stack landed and once now:
+
+- **Previously (≤ v0.2.2):** the default was the literal `"taskq"`; no
+  environment or `.env` value was read at all.
+- **At this release's first connection-stack landings:** the constructor
+  ran a full validating `TaskQSettings.load()` — so `TASKQ_SCHEMA_NAME`
+  was honored (process env and `.env`), but any OTHER malformed
+  `TASKQ_*` value (e.g. `TASKQ_ADMIN_PORT=not-a-port`, a setting the
+  client never reads) raised in an embedder's constructor.
+- **Now:** the value resolves through the same cascade, then validates
+  ALONE — a malformed `TASKQ_SCHEMA_NAME` still raises (it is the
+  client's own field, reaching raw SQL; the worker's load fails the same
+  value), and an unrelated malformed setting cannot break `TaskQ()`
+  construction.
+
+An explicit `schema=` argument keeps winning over every layer, so
+embedders that pass their loaded schema explicitly are unaffected.

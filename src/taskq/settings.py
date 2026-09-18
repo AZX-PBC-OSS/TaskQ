@@ -13,6 +13,7 @@ and pass that subclass instead.
 
 import logging
 import math
+import os
 import re
 from datetime import timedelta
 from pathlib import Path
@@ -684,6 +685,60 @@ class TaskQSettings(DotEnvConfig):
             )
         finally:
             dotenv_logger.removeFilter(no_env_files)
+
+    @classmethod
+    def resolve_cascade_value(cls, env_var_name: str) -> str | None:
+        """One variable's value through :meth:`load`'s own layer resolution,
+        without loading (or validating) the model.
+
+        Resolution is EXACTLY ``load()``'s, per dotenvmodel's own tier and
+        precedence rules: every behavior knob resolves through
+        ``resolve_load_params`` (explicit ``DOTENV_*`` env var > default),
+        the dotfile cascade is read with ``read_env_files`` (never written
+        into ``os.environ``), ``read_dotfiles=False`` skips the file layer
+        entirely, ``read_environ=False`` excludes the process environment
+        as a value source, and the winner is process-env-vs-dotfile per
+        the resolved ``override`` (default: the process environment wins).
+        The per-field winner selection replicates dotenvmodel's private
+        ``config._resolve_raw_value``: the function is not exported, so
+        its six-line policy is restated here and pinned by
+        ``tests/test_client_cli_first_use_bounded.py``'s precedence tests
+        in both directions.
+
+        Why this exists: ``load()`` validates EVERY field, so a caller
+        that needs one value (the client's schema default, its lock-budget
+        overlay) would fail on a malformed setting it never uses (#251).
+        This method resolves the value; validation stays the caller's,
+        scoped to the fields it actually consumes.
+
+        The "No .env files found" warning is filtered for the duration of
+        the cascade read, exactly as :meth:`load` filters it.
+        """
+        from dotenvmodel.loading import read_env_files, resolve_load_params
+
+        params = resolve_load_params()
+        dotenv_logger = logging.getLogger("dotenvmodel")
+        no_env_files = _NoEnvFilesWarningFilter()
+        dotenv_logger.addFilter(no_env_files)
+        try:
+            layer = (
+                read_env_files(
+                    env=params.env,
+                    env_dir=params.env_dir,
+                    load_local=params.load_local,
+                    read_environ=params.read_environ,
+                )
+                if params.read_dotfiles
+                else None
+            )
+        finally:
+            dotenv_logger.removeFilter(no_env_files)
+
+        os_value = os.environ.get(env_var_name) if params.read_environ else None
+        file_value = layer.values.get(env_var_name) if layer is not None else None
+        if params.override:
+            return file_value if file_value is not None else os_value
+        return os_value if os_value is not None else file_value
 
     @property
     def oidc(self) -> OIDCSettings:

@@ -35,14 +35,14 @@ attempt finishing is the implementation's business. Where a job ends up is not.
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse, urlunparse
 
 import asyncpg
 import pytest
 
-from taskq._ids import new_base62
-from taskq.backend._protocol import JobFilter, JobId
+from taskq._ids import new_base62, new_uuid
+from taskq.backend._protocol import EnqueueArgs, JobFilter, JobId
 from taskq.context import JobContext
 from taskq.testing.assertions import wait_for_condition
 from tests._fleet import Fleet, FleetPayload, fleet_actor_config, open_fleet
@@ -79,6 +79,20 @@ def _interrupt_scoped_dsn(pg_dsn: str, schema: str) -> str:
         else f"{parsed.query}&application_name={schema}"
     )
     return urlunparse(parsed._replace(query=query))
+
+
+def _enqueue_args(job_id: JobId, round_index: int, index: int) -> EnqueueArgs:
+    """One plain (un-keyed, un-capped) enqueue: the autocommit INSERT arm
+    whose retry-duplication risk #236 describes."""
+    return EnqueueArgs(
+        id=job_id,
+        actor=_ACTOR,
+        queue=_QUEUE,
+        payload={"marker": f"{_ACTOR}-{round_index}-{index}"},
+        max_attempts=3,
+        retry_kind="transient",
+        scheduled_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
 
 
 async def _interrupt_database(dsn: str) -> int:
@@ -436,3 +450,133 @@ async def test_bulk_cancel_recovers_typed_after_the_database_drops_its_connectio
                 "_with_fresh_connection_retry exists to absorb, not recovered "
                 "on this path"
             ) from exc
+
+
+async def test_enqueue_racing_the_interruption_never_duplicates_committed_work(
+    pg_dsn: str,
+) -> None:
+    """#236's refusal and durability sides, against a real interrupted
+    Postgres.
+
+    An enqueue is one autocommit INSERT under the dead-on-acquire retry
+    guard. When the server's FATAL parks a pooled connection between the
+    INSERT's acknowledgement and the pool's release-time reset, the
+    unguarded wrapper read the release's ``InternalClientError`` as
+    dead-on-acquire and re-ran the enqueue with the same ``args.id`` --
+    against the jobs table's ``uuid PRIMARY KEY`` that re-run raised
+    ``UniqueViolationError`` for an enqueue that had committed and would
+    run (observed live under old-contract emulation: 11
+    UniqueViolations in 400 jittered kills), and that error-for-committed-
+    work is what invites the caller's fresh-id retry that runs the job
+    twice. The guard now marks the write at its acknowledgement (refusing
+    any retry past that point) and its bounded checkout never lets a
+    release failure masquerade as an op failure.
+
+    This pin's teeth are the live POST-conditions of that contract: no
+    enqueue surfaces a wrapper-induced ``UniqueViolationError`` for its
+    own committed row (a refused-path regression would raise exactly that
+    on the next enqueue of the same id -- and the per-enqueue exception
+    filter below lets it FAIL the test rather than be tolerated), every
+    enqueue that returned a row is durable, and nothing lands that no
+    enqueue issued. The same-id-twice row assertion is kept as a cheap
+    table invariant but is NOT this pin's duplication coverage: the
+    primary key makes it unfailable from a wrapper regression alone. The
+    deterministic refusal coverage lives in the unit pins
+    (tests/test_enqueue_coverage.py, tests/test_connections.py). A
+    mid-QUERY kill is deliberately tolerated per enqueue (the statement
+    dies with the backend; whether the server committed before processing
+    the terminate is unknowable from the client) -- the per-enqueue
+    outcome accounting below holds the ambiguity honest.
+    """
+    schema = f"fleet_pgfail_enq_{new_base62()}".lower()
+    dsn = _interrupt_scoped_dsn(pg_dsn, schema)
+    async with open_fleet(
+        dsn,
+        schema=schema,
+        pods=("pod-1",),
+        actors=((_ACTOR, _QUEUE),),
+    ) as fleet:
+        attempted: list[JobId] = []
+        acknowledged: list[JobId] = []
+        ambiguous = 0
+        interruptions = 0
+        for round_index in range(6):
+            for index in range(2):
+                job_id = JobId(new_uuid())
+                attempted.append(job_id)
+                try:
+                    await fleet.pod("pod-1").backend.enqueue(
+                        _enqueue_args(job_id, round_index, index)
+                    )
+                    acknowledged.append(job_id)
+                except asyncpg.UniqueViolationError as exc:
+                    # The one exception class that a refused-path wrapper
+                    # regression produces on THIS path: the op's own
+                    # INSERT was acknowledged, then a later statement (or
+                    # the release) failed with InternalClientError, and an
+                    # unguarded re-run re-issued the same id against the
+                    # jobs primary key. Nothing in this harness's per-
+                    # enqueue input can otherwise violate a unique
+                    # constraint (fresh ids, no keys, no caps), so this
+                    # MUST fail the test rather than be tolerated.
+                    raise AssertionError(
+                        f"enqueue of {job_id} raised UniqueViolationError "
+                        f"({exc}) across the interruption: the op re-issued "
+                        "its own committed INSERT -- the retry guard "
+                        "re-ran an acknowledged write (#236)"
+                    ) from exc
+                except (
+                    asyncpg.InternalClientError,
+                    asyncpg.InterfaceError,
+                    asyncpg.PostgresError,
+                    OSError,
+                ):
+                    # A mid-query kill (ConnectionDoesNotExistError et al.),
+                    # or the guard's own refusal arm surfacing an
+                    # InternalClientError for a write that was acknowledged
+                    # and may have committed (InternalClientError is a bare
+                    # Exception subclass -- outside both asyncpg error
+                    # bases, so it is named explicitly): the statement died
+                    # with the backend and whether it committed first is
+                    # unknowable from the client; the row-level assertions
+                    # below police what actually landed.
+                    ambiguous += 1
+            # Interrupt between rounds so the next enqueues race whatever
+            # parked/dead connections the kill left in the pod's pool --
+            # the dead-on-acquire window the retry guard covers.
+            interruptions += await _interrupt_database(dsn)
+        assert interruptions > 0, (
+            "the scenario requires the database to have actually dropped the "
+            "pod's connections; no sessions were terminated"
+        )
+
+        # Verify over a FRESH untagged connection: the fleet harness's own
+        # fetch rides the pod's (just-killed) pool and can hit the very
+        # parked window under test.
+        verify = await asyncpg.connect(pg_dsn)
+        try:
+            rows = await verify.fetch(
+                f'SELECT id FROM "{schema}".jobs WHERE actor = $1',  # noqa: S608  # Why: schema is this test's own generated identifier (new_base62); every user-supplied value is $-bound.
+                _ACTOR,
+            )
+        finally:
+            await verify.close()
+        landed = [row["id"] for row in rows]
+
+        # Cheap table invariant (the primary key makes a wrapper-regression
+        # double-insert of one id impossible on its own; the deterministic
+        # refusal coverage lives in the unit pins -- see the docstring).
+        assert len(set(landed)) == len(landed), (
+            f"job ids landed twice: {len(landed) - len(set(landed))} duplicate "
+            "rows across the interruption -- ids are primary-keyed, so this "
+            "means rows landed that no single enqueue issued"
+        )
+        assert set(landed) <= set(attempted), "rows appeared that no enqueue issued"
+        assert set(acknowledged) <= set(landed), (
+            "an enqueue that returned a row is not in the table: acknowledged "
+            "work vanished across the interruption"
+        )
+        assert len(landed) >= len(acknowledged), (
+            f"only {len(landed)} of {len(acknowledged)} acknowledged enqueues "
+            "landed -- acknowledged autocommit writes must be durable"
+        )
