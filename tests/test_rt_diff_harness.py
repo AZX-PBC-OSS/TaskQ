@@ -18,7 +18,9 @@ Clock-domain normalization
 
 The two sides' clocks are independent (FakeClock is frozen until advanced;
 PG advances in wall time).  Scenarios therefore express time as OFFSETS from
-a per-side anchor captured at calibration (``side.ts(offset_seconds)``), and
+a per-side anchor captured at calibration (``side.ts(offset_seconds)``) —
+for the PG side re-captured at its own scenario's start, so its offsets,
+like the memory side's, measure from where its scenario begins — and
 the snapshot normalizes every timestamp to a domain-relative bucket. At
 snapshot the memory clock is first advanced by exactly the wall time the PG
 side consumed running the scenario, so both sides' action-written
@@ -989,6 +991,24 @@ async def run_differential(
     pg = await _pg_side(pg_dsn, schema=schema, actors=actors)
     try:
         await scenario(mem)
+        # Re-anchor the PG side to its OWN scenario's start. The anchor
+        # captured at side construction (the calibrate() call) predates the
+        # MEMORY scenario, whose wall time is time the PG side's
+        # action-written timestamps never spanned — the memory side writes
+        # its action timestamps at the frozen FakeClock instant no matter
+        # how long its own scenario runs. Measuring the co-drive elapsed
+        # from the stale anchor advanced the memory clock by the memory
+        # scenario's own duration, so once a loaded runner stretched that
+        # scenario past the 0.5 s bucket fence every memory action
+        # timestamp read one bucket further into the past than its PG
+        # counterpart ('now' -> 'past', a 10 s backoff reading 9) — the
+        # mirror diverged on pure runner latency, not backend behavior
+        # (the CI failure on test_diff_mark_failed_or_retry_arms). The
+        # re-anchor also makes the sides' offset domains symmetric:
+        # scenario time offsets (side.ts) now start where each side's own
+        # scenario starts, exactly as the memory side's offsets start at
+        # its frozen anchor.
+        pg._t0 = await pg.now()
         await scenario(pg)
         # Co-drive the memory clock to the PG side's elapsed time. The
         # scenario's action-written timestamps (claims, cancels) anchor to
@@ -1000,7 +1020,8 @@ async def run_differential(
         # advanced one, and a lease reads one second lower. This is the
         # harness's own drive-both-to-the-same-logical-time rule, applied
         # at snapshot: the memory clock advances by exactly the elapsed
-        # the PG side experienced, so action-written fields bucket
+        # the PG side experienced (measured from the re-anchored t0 —
+        # its own scenario's start), so action-written fields bucket
         # identically and the rounding absorbs only sub-second residual.
         assert pg._t0 is not None  # pyright: ignore[reportPrivateUsage]  # Why: harness-owned anchor; the established same-module pattern.
         elapsed = await pg.now() - pg._t0
