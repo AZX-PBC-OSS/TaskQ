@@ -777,9 +777,12 @@ def make_dedicated_conn_factory(
     so a credential-provider deployment does not silently drop the bound
     that keeps a wedged query from stalling leader election.
 
-    *setup* is forwarded to ``asyncpg.connect`` and runs once after the
-    connection is established (e.g. registering type codecs, setting
-    session GUCs). For a dedicated connection this is equivalent to
+    *setup* runs once inside the factory, immediately after
+    ``asyncpg.connect`` establishes the connection (e.g. registering type
+    codecs, setting session GUCs) - ``asyncpg.connect`` takes no ``setup``
+    parameter, so the factory applies the hook itself, and a hook failure
+    terminates the connection rather than returning one half-configured.
+    For a dedicated connection this is equivalent to
     *init* on a pool - there is no acquire/reuse cycle. The hook is also
     declared on the returned factory (see
     :func:`taskq.connections.with_connection_init`), so when this factory
@@ -827,13 +830,25 @@ def make_dedicated_conn_factory(
             kwargs["user"] = credential.username
         if command_timeout is not None:
             kwargs["command_timeout"] = command_timeout
-        if setup is not None:
-            kwargs["setup"] = setup
         if server_settings is not None:
             kwargs["server_settings"] = server_settings
         if connection_class is not None:
             kwargs["connection_class"] = connection_class
-        return await asyncpg.connect(**kwargs)
+        conn = await asyncpg.connect(**kwargs)
+        if setup is not None:
+            # Why here, not forwarded: asyncpg.connect has no setup
+            # parameter (0.31.0), so forwarding it raises TypeError on
+            # every open. The hook runs once per (re)open, with the fresh
+            # connection, the same lifecycle position as a pool's init.
+            # A failed hook means no usable connection: terminate rather
+            # than leak a half-configured connection (with_connection_init
+            # applies the same rule to the LOOP-scope one).
+            try:
+                await setup(conn)
+            except BaseException:
+                conn.terminate()
+                raise
+        return conn
 
     if setup is not None:
         # A dedicated connection's setup runs once per (re)open - the same

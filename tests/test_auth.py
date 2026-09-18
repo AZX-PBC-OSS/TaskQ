@@ -813,20 +813,31 @@ async def test_make_dedicated_conn_factory_forwards_connection_class() -> None:
     assert call_kwargs["connection_class"] is CustomConnection
 
 
-async def test_make_dedicated_conn_factory_forwards_setup() -> None:
-    """setup reaches asyncpg.connect kwargs verbatim - runs once after connect."""
+async def test_make_dedicated_conn_factory_applies_setup_inside_the_factory() -> None:
+    """setup is applied by the factory itself to the fresh connection -
+    asyncpg.connect has no setup parameter (0.31.0), so forwarding it
+    there raises TypeError on every open. The hook still runs once per
+    (re)open, with the connection asyncpg.connect returned."""
     provider = _FakePgProvider(password="tok")
 
+    applied: list[Any] = []
+
     async def setup(conn: Any) -> None:
+        applied.append(conn)
         await conn.execute("SET search_path TO app")
 
     factory = make_dedicated_conn_factory("postgresql://user@host:5432/db", provider, setup=setup)
 
-    with patch("asyncpg.connect", new=AsyncMock(return_value=MagicMock())) as mock_connect:
-        await factory()
+    fake_conn = MagicMock()
+    fake_conn.execute = AsyncMock()
+    with patch("asyncpg.connect", new=AsyncMock(return_value=fake_conn)) as mock_connect:
+        conn = await factory()
 
     call_kwargs = mock_connect.call_args.kwargs
-    assert call_kwargs["setup"] is setup
+    assert "setup" not in call_kwargs
+    assert applied == [fake_conn]
+    assert conn is fake_conn
+    fake_conn.execute.assert_any_call("SET search_path TO app")
 
 
 async def test_make_dedicated_conn_factory_omits_new_params_when_not_provided() -> None:
