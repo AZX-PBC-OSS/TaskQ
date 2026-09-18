@@ -25,7 +25,7 @@ __all__ = [
 
 
 async def redis_time_seconds(redis_client: "redis_async.Redis") -> float:
-    """Read the store's clock via ``TIME`` — the domain the Lua scripts stamp.
+    """Read the store's clock via ``TIME``, the domain the Lua scripts stamp.
 
     Used by the non-script peek paths so their elapsed/refill estimates run
     in the same clock domain as the admission state they read.

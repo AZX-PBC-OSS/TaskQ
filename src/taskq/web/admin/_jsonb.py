@@ -12,7 +12,7 @@ def decode_jsonb(value: Any) -> Any:
     (custom codec).  This helper normalises both paths so Jinja2 template
     tests like ``is mapping`` and attribute access work correctly.
 
-    Parsing goes through :mod:`taskq._json` — the project never imports
+    Parsing goes through :mod:`taskq._json`, the project never imports
     stdlib ``json`` directly. orjson's ``JSONDecodeError`` subclasses
     ``ValueError``, so the malformed-text fallback contract is unchanged.
     """

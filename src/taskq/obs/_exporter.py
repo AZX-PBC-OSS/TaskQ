@@ -4,7 +4,7 @@ TaskQ instruments itself through the OpenTelemetry **API** only: every
 span and metric goes to the process-global providers, which stay the
 API's no-op proxies until something installs SDK providers. The
 standard environment variables (``OTEL_EXPORTER_OTLP_ENDPOINT``,
-``OTEL_TRACES_EXPORTER``, ...) configure nothing by themselves — they
+``OTEL_TRACES_EXPORTER``, ...) configure nothing by themselves, they
 are read by the SDK's configurator, which ``opentelemetry-instrument``
 runs at interpreter start and which nothing ran inside a stock worker.
 A container with those variables set therefore exported nothing, health
@@ -16,9 +16,9 @@ exporter, it runs the SDK's own configurator
 (``opentelemetry.sdk._configuration``, the machinery behind
 ``opentelemetry-instrument``) so the same variables mean the same thing
 under ``taskq worker`` as under ``opentelemetry-instrument taskq
-worker``. It never replaces a provider that is already set — an
+worker``. It never replaces a provider that is already set, an
 embedding application, a vendor distro, or ``opentelemetry-instrument``
-itself owns the process then — and it reports what it wired on one
+itself owns the process then, and it reports what it wired on one
 startup line so an operator can verify the pipeline from the log alone.
 """
 
@@ -46,7 +46,7 @@ __all__ = [
 _log: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.obs._exporter")
 
 #: Spec'd variable names the SDK package exports from
-#: ``opentelemetry.sdk.environment_variables`` — spelled out here because
+#: ``opentelemetry.sdk.environment_variables``, spelled out here because
 #: the SDK is an optional extra and the trigger check must work (and warn)
 #: without it.
 _OTLP_ENDPOINT_ENV: str = "OTEL_EXPORTER_OTLP_ENDPOINT"
@@ -58,7 +58,7 @@ _SIGNAL_ENVS: tuple[str, ...] = (OTEL_TRACES_EXPORTER, OTEL_METRICS_EXPORTER, OT
 
 #: The exporter the specification selects for traces and metrics when the
 #: signal's variable is unset. The Python SDK's configurator applies no
-#: default of its own — ``opentelemetry-distro`` supplies it — so a bare
+#: default of its own, ``opentelemetry-distro`` supplies it, so a bare
 #: endpoint with no exporter variable would otherwise install providers
 #: with nothing attached and export silence.
 _SPEC_DEFAULT_EXPORTER: str = "otlp"
@@ -80,9 +80,9 @@ type ExporterWiring = Literal[
 
 - ``configured``: SDK providers were installed from the environment (and
   ``metrics_port``); ``otel-exporter-configured`` names the exporters.
-- ``preconfigured``: a real provider was already set — an embedding
+- ``preconfigured``: a real provider was already set, an embedding
   application, a vendor distro or ``opentelemetry-instrument`` owns the
-  process — so nothing was touched.
+  process, so nothing was touched.
 - ``none``: nothing asked for an exporter; the API's no-op proxies stay.
 - ``disabled``: ``TASKQ_OTEL_AUTOCONFIGURE=false``.
 - ``sdk_disabled``: ``OTEL_SDK_DISABLED=true``.
@@ -94,9 +94,9 @@ type ExporterWiring = Literal[
 class OtelExporterConfigurationError(RuntimeError):
     """The operator asked for an exporter the SDK could not build.
 
-    Raised at worker startup — the earliest stage that can catch a
+    Raised at worker startup, the earliest stage that can catch a
     misspelled exporter name or a protocol the installed exporters do not
-    speak — so the worker refuses to start rather than run with a
+    speak, so the worker refuses to start rather than run with a
     telemetry pipeline that looks configured and exports nothing.
     """
 
@@ -127,7 +127,7 @@ class _ExporterPlan:
 
     ``sources`` names what asked for them (``env``, ``prometheus``);
     ``*_extra`` are the names the configurator must be handed on top of its
-    own environment parse — it appends that parse itself, so an
+    own environment parse, it appends that parse itself, so an
     environment-selected name listed as an extra would be built twice.
     """
 
@@ -153,7 +153,7 @@ class _ExporterPlan:
 
 
 def _env_names(var: str) -> tuple[str, ...]:
-    """The exporter names an ``OTEL_*_EXPORTER`` variable lists — the
+    """The exporter names an ``OTEL_*_EXPORTER`` variable lists, the
     SDK's own parsing (comma-separated; ``none`` selects nothing)."""
     raw = os.environ.get(var, "").strip()
     if not raw or raw.lower() == "none":
@@ -162,7 +162,7 @@ def _env_names(var: str) -> tuple[str, ...]:
 
 
 def _installed(module: str) -> bool:
-    """Whether *module* imports — the real import, so a package whose
+    """Whether *module* imports, the real import, so a package whose
     parent is missing (``opentelemetry.sdk`` without the extra) answers
     False instead of raising out of a spec lookup."""
     try:
@@ -177,7 +177,7 @@ def _plan(settings: _ExporterSettings, *, prometheus_available: bool) -> _Export
 
     The defaults are the spec's: ``otlp`` for traces and metrics when an
     OTLP endpoint is set and the signal's own variable is not. Logs keep
-    no default — TaskQ logs through structlog, and the OTel log bridge is
+    no default, TaskQ logs through structlog, and the OTel log bridge is
     an explicit choice. ``metrics_port`` adds the Prometheus pull reader
     when its package is installed; when it is not, the port is reported as
     unavailable and the rest of the plan stands.
@@ -214,7 +214,7 @@ def _provider_already_set() -> bool:
 
     ``get_tracer_provider`` / ``get_meter_provider`` also honour the
     ``OTEL_PYTHON_*_PROVIDER`` entry-point variables on first call, so a
-    provider selected that way is loaded here and counts as set — which is
+    provider selected that way is loaded here and counts as set, which is
     the right answer: the operator chose it, and the set-once guard would
     refuse ours anyway.
     """
@@ -236,7 +236,7 @@ def configure_exporters(settings: _ExporterSettings) -> ExporterWiring:
     the worker records anything: measurements a proxy instrument takes
     before a provider exists are dropped, not replayed. Embedding
     applications that host a worker without the CLI call this themselves
-    at process start, or configure the SDK directly — a provider that is
+    at process start, or configure the SDK directly, a provider that is
     already set is never replaced.
 
     Raises :class:`OtelExporterConfigurationError` when the environment

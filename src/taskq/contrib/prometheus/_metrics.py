@@ -2,7 +2,7 @@
 
 Requires taskq[prometheus] and taskq[fastapi] optional extras.
 
-Provider wiring — who feeds the scrape
+Provider wiring, who feeds the scrape
 --------------------------------------
 
 Every ``taskq_*`` / ``messaging_*`` series this endpoint can serve is an
@@ -13,7 +13,7 @@ not replay), so the provider must be wired at process start, never at
 first scrape.
 
 :func:`create_metrics_router` therefore wires one itself at router
-creation — which is process start on the shipped serve path (``taskq ui
+creation, which is process start on the shipped serve path (``taskq ui
 serve`` builds its routers inside the FastAPI lifespan, before uvicorn
 accepts a connection). The wiring composes with, and never replaces, an
 operator-configured provider:
@@ -32,7 +32,7 @@ operator-configured provider:
   untouched and ``prometheus-metrics-reader-missing`` is logged at
   WARNING at startup. Without it the mounted endpoint answers 200 with
   zero ``taskq_*`` series while the shipped ``rules.yaml`` alert set
-  references exactly those series — a failure that looks like a success;
+  references exactly those series, a failure that looks like a success;
   the warning names the missing piece.
 - **OTel emission is disabled** (``TASKQ_OTEL_ENABLED=false``, flipped by
   worker startup; only reachable when the router is mounted into a
@@ -99,7 +99,7 @@ def _registry_has_otel_bridge(registry: CollectorRegistry) -> bool:
     the registry's two private collector slots defensively. A registry
     shape this cannot see (a renamed internals slot) is treated as "no
     bridge": a second reader then registers without error and the scrape
-    carries each OTel family twice — malformed exposition a Prometheus
+    carries each OTel family twice, malformed exposition a Prometheus
     server rejects loudly at ingestion. The failure this helper exists to
     remove is the opposite shape: a 200 scrape that is silently empty of
     taskq_* series.
@@ -123,7 +123,7 @@ def ensure_prometheus_meter_provider(
 
     Called by :func:`create_metrics_router` at router creation; embedding
     applications that serve their own scrape endpoint (no router) can call
-    it directly at process start — BEFORE the worker records anything,
+    it directly at process start, BEFORE the worker records anything,
     because pre-provider proxy measurements are dropped.
 
     Never replaces an operator-configured provider: a registry with an
@@ -144,7 +144,7 @@ def ensure_prometheus_meter_provider(
                 "the metrics route is mounted while OTel emission is disabled "
                 "(TASKQ_OTEL_ENABLED=false): no provider was installed, so the "
                 "scrape serves only collectors registered directly on the "
-                "registry — every taskq_* series is suppressed by configuration"
+                "registry, every taskq_* series is suppressed by configuration"
             ),
         )
         return "otel_disabled"
@@ -162,8 +162,8 @@ def ensure_prometheus_meter_provider(
                 "a MeterProvider is already configured but no "
                 "PrometheusMetricReader bridges it into the registry this "
                 "endpoint scrapes: the route will answer 200 with zero "
-                "taskq_* series, and the shipped rules.yaml alert set — "
-                "which references those series — can never fire. Add "
+                "taskq_* series, and the shipped rules.yaml alert set, "
+                "which references those series, can never fire. Add "
                 "PrometheusMetricReader(registry=...) to your MeterProvider "
                 "at process start, or remove your own provider and let this "
                 "router wire one."
@@ -221,7 +221,7 @@ def create_metrics_router(
     CollectorRegistry in tests or when using an isolated registry.
 
     Creating the router also ensures the scrape can actually serve the
-    ``taskq_*`` series — see :func:`ensure_prometheus_meter_provider` for
+    ``taskq_*`` series, see :func:`ensure_prometheus_meter_provider` for
     the wiring contract (auto-wire when nothing is configured, never
     replace an operator's provider, WARN at startup when a configured
     provider cannot feed this registry).

@@ -6,7 +6,7 @@ concrete backends.  This keeps ``import taskq.testing`` lean.
 
 The names below are also imported under ``TYPE_CHECKING`` so static tools
 (pyright, mkdocstrings) can resolve them without triggering the runtime
-imports the lazy ``__getattr__`` is designed to avoid — at type-check
+imports the lazy ``__getattr__`` is designed to avoid, at type-check
 time nothing is actually executed, so this costs nothing at runtime.
 """
 
@@ -59,7 +59,7 @@ def _imp(module_name: str, attr: str) -> object:
     return getattr(importlib.import_module(module_name), attr)
 
 
-__all__ = [  # pyright: ignore[reportUnsupportedDunderAll]  # Why: __getattr__ lazily provides all names — avoids pulling asyncpg at import time
+__all__ = [  # pyright: ignore[reportUnsupportedDunderAll]  # Why: __getattr__ lazily provides all names, avoids pulling asyncpg at import time
     "ActiveJobRegistry",
     "CancelController",
     "ConnectionBudget",

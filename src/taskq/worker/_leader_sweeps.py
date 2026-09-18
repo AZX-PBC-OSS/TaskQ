@@ -5,7 +5,7 @@ The sweep loop functions (``_sweep_loop``, ``_prune_loop``,
 ``_reservation_slots_loop``, ``_stranded_jobs_loop``,
 ``_backlog_detection_loop``) live here as
 module-level functions taking a :class:`~taskq.worker._leader_shared.SweepContext`
-as the first parameter — the subset of ``MaintenanceLeader`` state the
+as the first parameter, the subset of ``MaintenanceLeader`` state the
 sweeps need, so this module has no dependency on ``leader.py``.
 """
 
@@ -47,7 +47,7 @@ from taskq.obs import (
     update_stranded_jobs_cache,
 )
 from taskq.ratelimit.registry import (
-    _KEYED_IDLE_THRESHOLD,  # pyright: ignore[reportPrivateUsage]  # Why: shared constant — centralised in registry.py so the sweep and the opportunistic eviction path never drift.
+    _KEYED_IDLE_THRESHOLD,  # pyright: ignore[reportPrivateUsage]  # Why: shared constant, centralised in registry.py so the sweep and the opportunistic eviction path never drift.
 )
 from taskq.ratelimit.registry import (
     registry as rl_registry,
@@ -100,19 +100,19 @@ _STRANDED_REWARN_SECS: float = 3600.0
 #: dispatcher-pool connections, whose command_timeout fires as an opaque
 #: client ``TimeoutError``; keeping the server-side bound below it means
 #: an overloaded database aborts the batch server-side
-#: (``QueryCanceledError`` — the transient family the SweepBatchSizer
+#: (``QueryCanceledError``, the transient family the SweepBatchSizer
 #: breaker counts) and the next attempt runs at the latched reduced tier,
 #: instead of the client cancelling with no degradation signal. 80% leaves
 #: a full round-trip margin at the default 5 s pool timeout (4 s server
 #: bound). Pairing a per-query timeout with a reduced-batch circuit breaker
 #: ensures the server-side bound is the tighter ceiling this family lives
-#: under, so the reduced tier — not a longer timeout — is what makes a
+#: under, so the reduced tier, not a longer timeout, is what makes a
 #: loaded database drainable.
 _PRUNE_TIMEOUT_FRACTION: Final[float] = 0.8
 
 #: Intra-day retry backoff for a FAILED prune/archive-expiry attempt: 60 s
 #: doubling, capped at 30 min. The once-per-SUCCESSFUL-attempt-per-day
-#: guard is deliberate policy and stays — the retry fills only the
+#: guard is deliberate policy and stays, the retry fills only the
 #: failure half, so a prune that keeps failing under load retries within
 #: the day instead of waiting for tomorrow's cron fire, while a day that
 #: succeeded is never pruned twice. 60 s is fast enough to drain behind a
@@ -135,7 +135,7 @@ def _prune_statement_timeout_ms(command_timeout_secs: float) -> int:
 
 def _next_retry_backoff(current: float | None) -> float:
     """The backoff after one more failed attempt: the initial delay, then
-    doubling, capped — the ladder the prune loops retry on."""
+    doubling, capped, the ladder the prune loops retry on."""
     if current is None:
         return _PRUNE_RETRY_BACKOFF_INITIAL_SECS
     return min(current * 2.0, _PRUNE_RETRY_BACKOFF_CAP_SECS)
@@ -146,8 +146,8 @@ async def _sleep_until_next_attempt(
     next_fire: datetime,
     retry_backoff: float | None,
 ) -> bool:
-    """Sleep until the next scheduled cron fire, or — after a failed
-    attempt — the next backoff retry, whichever is earlier; interruptible
+    """Sleep until the next scheduled cron fire, or, after a failed
+    attempt, the next backoff retry, whichever is earlier; interruptible
     by shutdown.
 
     Returns True when the wake was a backoff retry (the failure sequence
@@ -173,7 +173,7 @@ def _batch_drain_gate(
     shutdown is set (the drain stops; committed batches stay committed),
     a detector-2 liveness tick otherwise.
 
-    The prune loops are cron-driven — up to a day between attempts — so an
+    The prune loops are cron-driven, up to a day between attempts, so an
     always-registered liveness entry with the cron cadence would give
     detector 2 a multi-day staleness budget and detect nothing. Instead
     the drain registers on its first tick and the loop forgets the entry
@@ -196,7 +196,7 @@ async def _sleep_interruptible(shutdown: asyncio.Event, seconds: float) -> None:
 
     ``MaintenanceLeader.run``'s TaskGroup waits for its children on exit,
     so a bare ``asyncio.sleep(interval)`` keeps the worker hanging for the
-    full in-flight sleep after SIGTERM — with an operator-configured
+    full in-flight sleep after SIGTERM, with an operator-configured
     interval (e.g. ``TASKQ_STRANDED_JOBS_INTERVAL=3600``) that is an
     hour-long shutdown hang. Same pattern as the cron waits in
     ``_prune_loop`` / ``_archive_expiry_loop``; callers re-check
@@ -210,7 +210,7 @@ def _is_deadline_family(exc: BaseException) -> bool:
     """Whether *exc* is the deadline family (client deadline or server cancel).
 
     Why ``type(exc) is``, not ``isinstance``: ``TimeoutError`` is an
-    ``OSError`` subclass — ``isinstance`` would also match a raw ``OSError``
+    ``OSError`` subclass, ``isinstance`` would also match a raw ``OSError``
     (socket death), which is a different failure family with different
     remediation.
     """
@@ -224,7 +224,7 @@ def _sampler_read_failed(
 
     A sampler failure is the one failure in this module that leaves no trace
     an alert rule can read: the gauge it feeds keeps serving its last value,
-    so depth stops rising and age stops growing — the same flat picture a
+    so depth stops rising and age stops growing, the same flat picture a
     drained queue paints. No job fails and nothing is retried, so the warning
     below is the only other signal, and warnings are not alertable. Every
     failure is counted, not just the deadline family a completed-but-aborted
@@ -254,7 +254,7 @@ async def _drain_bounded(
     Every batch commits, so a stopped drain is a pause, not a rollback: the
     next tick resumes where this one stopped. Up to
     ``sweep_drain_batches - 1`` further calls (the initial call already
-    ran), each its own committed batch — the backend applies the batch size
+    ran), each its own committed batch, the backend applies the batch size
     internally, so the same callable is re-invoked with no extra arguments.
 
     Returns False when a transient PG error ended the drain early; the
@@ -302,7 +302,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     Unexpected (non-transient) errors are backstopped by
     :class:`UnexpectedLoopErrorGuard` exactly like the election, watchdog,
     cron, and scheduled-wake loops: tolerated and logged loudly for a few
-    consecutive iterations, then deliberately fatal — never an instant
+    consecutive iterations, then deliberately fatal, never an instant
     silent leader teardown (which leaves the cluster with no sweeper and
     orphans 'running' forever), never an infinite silent retry. Only a
     fully successful work iteration resets the streak; a transiently
@@ -356,7 +356,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
 
     # Sweep 4 and the stale-batch completion sweep: each drain call
     # acquires its own dispatcher connection so every committed batch is
-    # independent — the same per-call acquire the sweeps above use.
+    # independent, the same per-call acquire the sweeps above use.
     async def leaked_slots_call() -> int:
         async with ctx.deps.dispatcher_pool.acquire(
             timeout=ctx.deps.settings.dispatcher_command_timeout
@@ -401,7 +401,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     # Why: PG loss is transient here, exactly as for the
                     # already-guarded sweeps below. Unguarded, it escapes into
                     # MaintenanceLeader.run's TaskGroup and on into the worker's,
-                    # cancelling every sibling WITHOUT setting shutdown_event —
+                    # cancelling every sibling WITHOUT setting shutdown_event ,
                     # the heartbeat dies before it can reach isolate_self, so no
                     # job is re-pended and the worker cannot exit cleanly.
                     iteration_clean = False
@@ -505,7 +505,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         # rows_4 is bound only by the awaited call above;
                         # the deadline that aborts it also aborts the
                         # binding, so the failure path records duration
-                        # WITHOUT a row sample — same discipline as sweeps
+                        # WITHOUT a row sample, same discipline as sweeps
                         # 1/2: a 0-row sample would be indistinguishable
                         # from a healthy empty sweep, and success-path-only
                         # instrumentation is the original invisibility.
@@ -520,7 +520,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                                 start,
                             )
                     # Every batch commits, so a stopped drain is a pause,
-                    # not a rollback — the same drain-to-zero-within-a-tick
+                    # not a rollback, the same drain-to-zero-within-a-tick
                     # wiring as sweeps 1/2/rt.
                     if rows_4 and not await _drain_bounded(
                         ctx,
@@ -532,7 +532,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     ):
                         iteration_clean = False
                     # Result TTL expiry: one bounded batch per call, drained
-                    # like sweeps 1/2 — every batch commits, so a stopped
+                    # like sweeps 1/2, every batch commits, so a stopped
                     # drain is a pause, not a rollback.
                     start = time.monotonic()
                     rows_rt: int | None = None
@@ -578,7 +578,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     # deletions/s against the measured ~200 events/s
                     # steady insert rate, so a 6.5 M-row backlog (a
                     # retention reduction from 30 d to 7 d) drains in ~5.4 h
-                    # idle / ~13.6 h loaded — every batch committed, every
+                    # idle / ~13.6 h loaded, every batch committed, every
                     # tick short, and the tick's cost stays independent of
                     # the backlog it is recovering from. hasattr gate like
                     # the stale-batches block below: only PostgresBackend
@@ -635,7 +635,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                                 )
                     # Fleet-wide keyed-row reclaim: ONE bounded, committed
                     # batch per table per tick, deliberately NOT a
-                    # _drain_bounded drain — the same slow-and-constant
+                    # _drain_bounded drain, the same slow-and-constant
                     # discipline the event-retention block above settled.
                     # This is the fleet half of keyed reclamation: the
                     # per-worker eviction+drain below only ever names rows
@@ -643,10 +643,10 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     # reservation_slots / rate_limit_buckets rows orphan
                     # when the worker that created them dies (the
                     # residual the keyed-row lifecycle exists to close).
-                    # The rows carry their own staleness — the
+                    # The rows carry their own staleness, the
                     # keyed mark plus last_used_at, refreshed by the
                     # acquire/release/upsert statements that already touch
-                    # them — and sweep_idle_keyed_rows deletes marked rows
+                    # them, and sweep_idle_keyed_rows deletes marked rows
                     # unused past the horizon, bounded per tick (static
                     # buckets and redis-backend keyed rows are never
                     # marked, never deleted). hasattr gate like the
@@ -660,7 +660,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     # this code against a schema whose keyed/last_used_at
                     # columns have not landed yet, which is a per-tick warn
                     # until migration 01.00.10_02 (keyed_row_fleet_reclaim)
-                    # applies — not the
+                    # applies, not the
                     # deliberately-fatal unexpected-error streak.
                     if hasattr(
                         ctx.backend, "sweep_idle_keyed_rows"
@@ -754,14 +754,14 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 # docs/architecture.md "``complete_stale_batches`` leader sweep"):
                 # batches whose completion hook was lost (consumer crash between
                 # the terminal write and complete_batch/abort_batch) stay `active`
-                # forever without it — wait_for_batch can snooze indefinitely and
+                # forever without it, wait_for_batch can snooze indefinitely and
                 # prune_old_batches only deletes completed rows. Deliberately NOT
                 # nested under the keyed-registry conditions below: those are
                 # process-local and, in the default deployment, empty.
                 # hasattr guard: complete_stale_batches needs a real PG connection
                 # (dispatcher_pool). InMemoryBackend does not implement
                 # sweep_leaked_reservation_slots, so this gate keeps the sweep off
-                # the in-memory backend — same pattern as the block above.
+                # the in-memory backend, same pattern as the block above.
                 if hasattr(ctx.backend, "sweep_leaked_reservation_slots"):
                     start = time.monotonic()
                     stale_rows: int | None = None
@@ -775,7 +775,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         # draining at one batch per sweep_interval, while
                         # every sibling sweep drains to zero per tick.
                         # UndefinedTableError rides the outer except below
-                        # (pre-migration tolerance) — _drain_bounded's own
+                        # (pre-migration tolerance), _drain_bounded's own
                         # transient set deliberately does not carry it.
                         if stale_rows and not await _drain_bounded(
                             ctx,
@@ -794,7 +794,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         # local UndefinedTableError tolerance for
                         # pre-migration deployments): the hand-rolled tuple
                         # here predated the shared set and missed
-                        # QueryCanceledError — a server-side cancel of the
+                        # QueryCanceledError, a server-side cancel of the
                         # (now batched) completion statement escaped to the
                         # unexpected-error backstop as though it were a
                         # bug, counting toward the deliberately-fatal
@@ -816,7 +816,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     guard.ok()
             except Exception as exc:
                 # Backstop (see _transient.py): a non-transient error here is
-                # a bug, not a PG moment — loud, counted, tolerated briefly,
+                # a bug, not a PG moment, loud, counted, tolerated briefly,
                 # then deliberately fatal. Pre-fix it escaped straight into
                 # MaintenanceLeader.run's TaskGroup and tore down the whole
                 # worker on the first hit.
@@ -825,7 +825,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         # leader-gated: every worker sweeps its OWN registry each tick (a
         # non-leader's registry would otherwise receive no periodic
         # eviction). Always safe to call; with the singleton default this
-        # is a no-op behavior change — N workers idempotently evict the
+        # is a no-op behavior change, N workers idempotently evict the
         # same shared registry (in a multi-process fleet each process has
         # its OWN singleton copy, so non-leader processes previously got
         # NO periodic eviction and now sweep their own copy).
@@ -835,7 +835,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         if rl.has_keyed_reservations:
             try:
                 # Why max_pending_reclaims: the pending-reclaim set's cap
-                # tracks the operator's keyed-reservation ceiling — the
+                # tracks the operator's keyed-reservation ceiling, the
                 # constant fallback (10 000) would let pending grow far
                 # past a deliberately small setting while the tracked
                 # entries themselves are capped at it.
@@ -860,7 +860,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             try:
                 # Why max_pending_reclaims: the same settings-derived bound
                 # the reservation eviction above applies and the rate-limit
-                # opportunistic eviction already applies — the pending set
+                # opportunistic eviction already applies, the pending set
                 # mirrors the tracked entries, so the constant fallback
                 # (10 000) would let pending grow far past a deliberately
                 # small max_keyed_rate_limits while the tracked entries
@@ -892,7 +892,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         # The drain records its own failure/duration/rows metrics and
         # raises on failure; this guard (same shape as the eviction
         # blocks above) keeps a transient PG blip from tearing down the
-        # sweep loop — the next tick retries with the pending set intact.
+        # sweep loop, the next tick retries with the pending set intact.
         if rl.has_pending_reservation_reclaims:
             try:
                 drained = await rl.drain_pending_reservation_reclaims(
@@ -916,13 +916,13 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
 
 
 #: The session-level advisory lock unlock for the cron-driven maintenance
-#: loops (prune / archive-expiry) — the hashtextextended key convention
+#: loops (prune / archive-expiry), the hashtextextended key convention
 #: their ``pg_try_advisory_lock`` acquires use.
 _ADVISORY_UNLOCK_SQL = "SELECT pg_advisory_unlock(hashtextextended($1, 0))"
 
 #: The connection-gone family of the transient set. An unlock failing this
 #: way resolved itself: the session died and took its session-scoped locks
-#: with it, so nothing is stranded — unlike a cancel or client-side
+#: with it, so nothing is stranded, unlike a cancel or client-side
 #: timeout, which leaves the session alive and still holding the lock.
 _SESSION_GONE_ERRORS: Final[tuple[type[BaseException], ...]] = (
     asyncpg.PostgresConnectionError,
@@ -936,24 +936,24 @@ async def _release_session_lock(conn: ConnLike, lock_name: str, *, kind: str) ->
 
     A session advisory lock outlives transactions and dies only with its
     session, so an unlock failure on a connection that returns to the pool
-    strands the fleet's lock until that session is recycled — every later
+    strands the fleet's lock until that session is recycled, every later
     attempt on any pod reads as lock-held for the whole retention horizon.
     The release is therefore never a silent suppress: the plain unlock
     statement runs first (one round trip, the pre-existing happy path),
-    and a transient failure of it — a server-side cancel or a client-side
-    command timeout landing mid-unlock — is warned about and recovered by
+    and a transient failure of it, a server-side cancel or a client-side
+    command timeout landing mid-unlock, is warned about and recovered by
     re-issuing the unlock while READING ``pg_advisory_unlock``'s boolean
     verdict. The verdict is what makes the retry a recovery rather than a
     second guess: after a canceled or timed-out statement the attempt's
     effect is unknown (a client-side timeout can race the statement's
     completion server-side), and only the verdict settles whether the lock
-    is still held — True, the retry released it; False, this session no
+    is still held, True, the retry released it; False, this session no
     longer holds it because the raced attempt already had. A retry failing
     with the connection-gone family resolved itself (the session died with
     its locks); any other retry failure leaves the release unconfirmed on
     a live session and is logged as an error naming the strand, an
     operator-visible condition instead of a silent one. Errors outside the
-    transient set propagate unchanged — the loops' loud-crash doctrine for
+    transient set propagate unchanged, the loops' loud-crash doctrine for
     non-transient surprises.
     """
     try:
@@ -1008,7 +1008,7 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     deliberate policy: a day that pruned is done. The failure half
     retries with backoff (60 s doubling, capped) until success or the
     next scheduled fire, so a prune that keeps failing under load does
-    not wait for tomorrow — see ``_PRUNE_RETRY_BACKOFF_INITIAL_SECS``.
+    not wait for tomorrow, see ``_PRUNE_RETRY_BACKOFF_INITIAL_SECS``.
     Every batch is a committed, server-side-bounded statement
     (:func:`~taskq.worker._leader_shared.prune_terminal_jobs`), and the
     drain stops between batches on shutdown.
@@ -1018,7 +1018,7 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     lock_name = schema_lock_name("prune", ctx.deps.settings.schema_name)
     # Loop-invariant policy, built once for the process lifetime: the
     # breaker's latch state must outlive any single attempt (a database
-    # that needed smaller bites yesterday needs them today — the one-way
+    # that needed smaller bites yesterday needs them today, the one-way
     # latch is the point), and the batch bound derives from the pool the
     # batches run on (see _PRUNE_TIMEOUT_FRACTION).
     prune_sizer = SweepBatchSizer(
@@ -1058,7 +1058,7 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             # expression, and for a daily cron that is tomorrow, so a
             # seconds-scale leadership flap spanning the fire second would
             # silently defer retention work by 24 hours. The failure half's
-            # backoff ladder covers the missed half too — each leaderless
+            # backoff ladder covers the missed half too, each leaderless
             # wake advances the rung, so the retry cadence during a
             # sustained flap is bounded, and the first wake with leadership
             # back lands the attempt within the day.
@@ -1163,7 +1163,7 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     )
                 finally:
                     # The drain's detector-2 registration is attempt-scoped
-                    # (the gated-loop pattern — see _batch_drain_gate):
+                    # (the gated-loop pattern, see _batch_drain_gate):
                     # forget it whether the attempt succeeded, failed, or
                     # stopped on shutdown, so the once-a-day loop cannot
                     # read as a stale sibling between attempts.
@@ -1176,7 +1176,7 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     # session until pool recycle.
                     await _release_session_lock(conn, lock_name, kind="prune")
         except TRANSIENT_PG_ERRORS as exc:
-            # The lock attempt itself failed — same failure half, same
+            # The lock attempt itself failed, same failure half, same
             # ladder (a PG blip at 03:00 must not defer the prune to
             # tomorrow).
             retry_backoff = _next_retry_backoff(retry_backoff)
@@ -1190,7 +1190,7 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
 
 
 async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
-    """Daily archive expiry with intra-day retry on failure — the same
+    """Daily archive expiry with intra-day retry on failure, the same
     policy shape as :func:`_prune_loop` (once per successful attempt per
     day; failures retry on the shared backoff ladder).
     """
@@ -1245,7 +1245,7 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
             continue
         today_utc = datetime.now(UTC).date()
         if last_expiry_date == today_utc:
-            # The day's expiry is done — same ladder-clearing rule as
+            # The day's expiry is done, same ladder-clearing rule as
             # _prune_loop's date gate.
             retry_backoff = None
             continue
@@ -1309,7 +1309,7 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
                     # _prune_loop's forget.
                     ctx.deps.liveness.forget("leader.archive_expiry")
                     # Same session-scoped-lock discipline as _prune_loop's
-                    # finally: loud, self-recovering release — a suppressed
+                    # finally: loud, self-recovering release, a suppressed
                     # failure would strand the fleet's archive-expiry lock
                     # on the pooled session until pool recycle.
                     await _release_session_lock(conn, lock_name, kind="archive_expiry")
@@ -1350,7 +1350,7 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     if not _IDENT_RE.match(schema):
         # Why error, not warning: this returns, permanently muting the
         # sampler for the process lifetime while the worker keeps running
-        # normally — a silent loss of a safety net, not a skipped tick
+        # normally, a silent loss of a safety net, not a skipped tick
         # (same rationale as the stranded-jobs detector).
         log.error(
             "queue-depth-sampler-disabled",
@@ -1382,13 +1382,13 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
 
 
 #: Jobs-by-status sample for the backlog detectors: one row per LIVE status
-#: (``ACTIVE_STATUSES`` — pending/scheduled/running, the statemachine's
+#: (``ACTIVE_STATUSES``, pending/scheduled/running, the statemachine's
 #: single source of truth for the live set), counted EXACTLY, and no
 #: terminal statuses at all.
 #:
 #: Why exact for the live set: the series feeds
 #: ``TaskQScheduledBacklogGrowing``, whose stalled-plateau arm is
-#: ``changes(taskq_jobs_scheduled_count[5m]) == 0`` — a capped or sampled
+#: ``changes(taskq_jobs_scheduled_count[5m]) == 0``, a capped or sampled
 #: count reads a constant once the backlog crosses the cap, so a bounded
 #: estimate would fire the "stalled" alert continuously on a deep but
 #: healthy backlog and stop tracking growth exactly when growth matters.
@@ -1399,8 +1399,8 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
 #: carries a terminal row.
 #:
 #: Why terminal statuses left the sample: the pre-bound shape was a
-#: full-table ``GROUP BY status``, so every unpruned terminal row — the
-#: one dimension that grows without bound between retention sweeps — was
+#: full-table ``GROUP BY status``, so every unpruned terminal row, the
+#: one dimension that grows without bound between retention sweeps, was
 #: re-counted by every worker every ``queue_depth_interval`` (this loop
 #: is deliberately not leader-gated). And a terminal count from this
 #: series was never a history truth anyway: pruned rows vanish from it,
@@ -1410,16 +1410,16 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
 #: tests/test_jobs_by_status_sampler_history_bound.py pins both halves
 #: (history-independent row work, exact live counts).
 _QUERY_JOBS_BY_STATUS_SQL_TEMPLATE = " UNION ALL ".join(
-    f"SELECT '{status}' AS status, count(*) AS count FROM \"{{schema}}\".jobs "  # noqa: S608  # Why: the only interpolations are {schema} (an identifier validated at WorkerSettings load and re-checked against _IDENT_RE in the loop before use) and the status literals from ACTIVE_STATUSES — the statemachine's fixed JobStatus vocabulary, never caller input.
+    f"SELECT '{status}' AS status, count(*) AS count FROM \"{{schema}}\".jobs "  # noqa: S608  # Why: the only interpolations are {schema} (an identifier validated at WorkerSettings load and re-checked against _IDENT_RE in the loop before use) and the status literals from ACTIVE_STATUSES, the statemachine's fixed JobStatus vocabulary, never caller input.
     f"WHERE status = '{status}' HAVING count(*) > 0"
     for status in sorted(ACTIVE_STATUSES)
 )
-# statement_timestamp() (STABLE) — not clock_timestamp() (VOLATILE) — for
+# statement_timestamp() (STABLE), not clock_timestamp() (VOLATILE), for
 # the due bound, the same two-clock split as every sibling sampler: a
 # volatile comparison cannot be a btree index condition, so the bound
 # would degrade jobs_scheduled_wake_idx (partial on status='scheduled',
 # keyed on scheduled_at) from an Index Cond that terminates at the
-# boundary to a post-scan Filter walking the whole scheduled population —
+# boundary to a post-scan Filter walking the whole scheduled population ,
 # per worker, per interval, during the exact promotion-stall incident
 # this gauge exists to expose. The EXTRACT(...) age it feeds is a
 # measured value and stays clock_timestamp().
@@ -1428,13 +1428,13 @@ _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE = (
     'FROM "{schema}".jobs '
     "WHERE status = 'scheduled' AND scheduled_at <= statement_timestamp()"
 )
-# statement_timestamp() (STABLE) — not clock_timestamp() (VOLATILE) — for the
+# statement_timestamp() (STABLE), not clock_timestamp() (VOLATILE), for the
 # expiry bound, the same two-clock rule as the oldest-due bound above and the
 # reclaim sweep's own predicate (backend/_sweeps.py): a volatile comparison
 # cannot be a btree index condition, so the bound would degrade
 # jobs_running_lock_expires_idx (partial on status='running', keyed on
 # lock_expires_at) from an Index Cond that terminates at the boundary to a
-# post-scan Filter walking the whole running population — per worker, per
+# post-scan Filter walking the whole running population, per worker, per
 # interval. The zombie count is the zombie-running detector: running
 # rows with a past lease are invisible in jobs.by_status (a healthy running
 # count) and in the miss counters (a dead worker emits nothing), and this one
@@ -1483,8 +1483,8 @@ _QUERY_RUNNING_BY_ACTOR_SQL_TEMPLATE = (
 )
 #: Per-pair sample cap for the actor-backlog sampler (rows read per
 #: (actor, queue) pair per tick). The sampler runs on EVERY worker every
-#: ``queue_depth_interval`` — deliberately not leader-gated (see
-#: :func:`_backlog_detection_loop`) — so its cost must be independent of
+#: ``queue_depth_interval``, deliberately not leader-gated (see
+#: :func:`_backlog_detection_loop`), so its cost must be independent of
 #: the adopter's pending depth: an exact GROUP BY count is O(depth) with
 #: no possible LIMIT (measured 10k→~1.6 ms/300 buffers, 100k→~13.5 ms/
 #: 2668 buffers per worker per tick), which is the unbounded cost centre
@@ -1492,7 +1492,7 @@ _QUERY_RUNNING_BY_ACTOR_SQL_TEMPLATE = (
 #: far above the per-pair depth any alert threshold keys on (the bundled
 #: depth alert fires on oldest-pending AGE, which the head sample carries
 #: exactly), and bounds one tick at (#pairs with pending work) x 1000 row
-#: visits — deployment-shaped, never depth-shaped.
+#: visits, deployment-shaped, never depth-shaped.
 _ACTOR_BACKLOG_SAMPLE_CAP: Final[int] = 1000
 
 # Depth and oldest-pending age per (actor, queue), from ONE grouped
@@ -1504,8 +1504,8 @@ _ACTOR_BACKLOG_SAMPLE_CAP: Final[int] = 1000
 #
 # * ``backlog_pairs`` enumerates the DISTINCT pending (actor, queue)
 #   pairs with a recursive loose index scan over jobs_actor_dispatch_idx
-#   — (actor, queue, priority DESC, scheduled_at, id) partial on
-#   status='pending' — one bounded seek per pair (the same geometry as
+#  , (actor, queue, priority DESC, scheduled_at, id) partial on
+#   status='pending', one bounded seek per pair (the same geometry as
 #   the dispatch CTE's keys walks), so enumeration costs one visit per
 #   pair, never one per row, and no pair's depth is ever walked. Every
 #   pair appears, however small: an unconsumed actor whose backlog is
@@ -1513,18 +1513,18 @@ _ACTOR_BACKLOG_SAMPLE_CAP: Final[int] = 1000
 #   trade away small backlogs for the bound).
 # * ``sampled`` reads each pair's first _ACTOR_BACKLOG_SAMPLE_CAP
 #   pending rows in the index's own (priority DESC, scheduled_at, id)
-#   order — an ordered index probe that stops at the cap, with no sort
+#   order, an ordered index probe that stops at the cap, with no sort
 #   and no heap access (scheduled_at rides the index). The probe order
 #   is dispatch-head order: the rows a consumer would take first.
 # * the outer GROUP BY aggregates the bounded sample, so one tick's row
-#   work is Σ min(depth_pair, cap) + #pairs — flat at fixed pair counts
+#   work is Σ min(depth_pair, cap) + #pairs, flat at fixed pair counts
 #   as the backlog grows (the depth-bound pin's oracle).
 #
 # Series semantics under the cap, which the gauge descriptions in
 # docs/guides/ops.md state for operators: ``depth`` is exact below the
 # cap and reads the cap at or above it (a lower bound, never an
 # under-count); ``oldest_age`` is the age of the oldest row in the
-# pair's dispatch-head sample — exactly the oldest pending row whenever
+# pair's dispatch-head sample, exactly the oldest pending row whenever
 # the pair is below the cap or priorities are uniform, and in every case
 # the head-of-line age an unconsumed actor grows without bound, which is
 # the condition TaskQQueueDepthHigh fires on. scheduled_at, not
@@ -1577,17 +1577,17 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
 
     Why NOT leader-gated, unlike every sibling sampler here: a detector
     hosted behind the leadership gate emits nothing under the very failure
-    it exists to expose — another schema's worker holding the old-style
+    it exists to expose, another schema's worker holding the old-style
     lock, or any election loss, mutes every leader-gated sampler at once.
     Every worker samples instead, accepting N times the query cost, and the
     per-target series are deduplicated by the scrape target.
 
     The N-times cost is why every read in the tick must not grow with the
     wrong dimension. The by-status read counts only the LIVE statuses,
-    exactly — the alert operands forbid a capped estimate, since a capped
+    exactly, the alert operands forbid a capped estimate, since a capped
     count reads a constant past its cap and false-fires the stalled-plateau
     arm of ``TaskQScheduledBacklogGrowing`` (see
-    ``_QUERY_JOBS_BY_STATUS_SQL_TEMPLATE``) — through per-status partial
+    ``_QUERY_JOBS_BY_STATUS_SQL_TEMPLATE``), through per-status partial
     indexes, so its cost tracks the live backlog and never touches the
     terminal history that made the pre-bound full-table GROUP BY grow
     without bound between retention sweeps. The per-actor read enumerates
@@ -1599,7 +1599,7 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
     schema = ctx.deps.settings.schema_name
     if not _IDENT_RE.match(schema):
         # Why error, not warning: same permanently-muted-sampler rationale
-        # as _queue_depth_loop above — a silent loss of a safety net, not a
+        # as _queue_depth_loop above, a silent loss of a safety net, not a
         # skipped tick.
         log.error(
             "backlog-detection-sampler-disabled",
@@ -1650,9 +1650,9 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
                 # the widest-shaped statement in the tick and the first
                 # to hit the statement timeout under the incident it
                 # exists to expose (the pairs walk and the per-pair caps
-                # bound its row visits — not its latency, when the engine
+                # bound its row visits, not its latency, when the engine
                 # itself is stalling), and its failure must not cost the
-                # tick the samples below — frozen scheduled-count /
+                # tick the samples below, frozen scheduled-count /
                 # oldest-due-age operands make the backlog-growing
                 # comparison silently false while the loop stays alive.
                 # The empty fallback clears the per-actor caches below
@@ -1674,11 +1674,11 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
                     actor_rows = []
             status_counts = {str(row["status"]): int(row["count"]) for row in status_rows}
             update_jobs_by_status_cache(status_counts)
-            # Label-less twin of the "scheduled" row above — see
+            # Label-less twin of the "scheduled" row above, see
             # update_scheduled_count_cache's docstring for why it exists
             # separately from the by-status gauge.
             update_scheduled_count_cache(status_counts.get("scheduled", 0))
-            # MIN(scheduled_at) over an empty set is NULL — nothing is due,
+            # MIN(scheduled_at) over an empty set is NULL, nothing is due,
             # which the gauge expresses as 0.0, not as a missing sample.
             update_oldest_due_age_cache(oldest_due if oldest_due is not None else 0.0)
             # count(*) never returns NULL; the None arm only tolerates a
@@ -1791,7 +1791,7 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
       while its actor_config row exists and no deadline can fail it.
       The queue tested is the one dispatch would actually route on, which
       for a re-pended row (``pending`` with ``started_at`` set) is its
-      actor's stored assignment rather than the label the row carries —
+      actor's stored assignment rather than the label the row carries ,
       that label survives only as an audit trail of where the row was
       first placed. Testing the label instead reports healthy for exactly
       the strand a queue move leaves behind when the target queue's
@@ -1806,14 +1806,14 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
     every subscriber has gone quiet reads unserved immediately instead of
     hiding behind a dead row until the stale-worker sweep prunes it.
 
-    Off the hot dispatch path — runs every 60 s when this worker is leader.
+    Off the hot dispatch path, runs every 60 s when this worker is leader.
     """
     # One scan over the pending/scheduled set, each row's strand
     # conditions computed once in the inner SELECTs and the outer WHERE
     # admitting exactly the stranded rows. The per-condition FILTER
     # counts (and the queue names on the unserved condition) exist so
     # each warning event can say WHICH condition held and, for the
-    # unserved shape, on which queues — an operator who sees a
+    # unserved shape, on which queues, an operator who sees a
     # no-actor-config event and finds the actor_config row present
     # concludes the detector lies, which is the exact failure a
     # per-shape event prevents.
@@ -1823,15 +1823,15 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
     # such a row's label against `workers` asks the detector's question
     # about the wrong queue: the label can name a queue the fleet serves
     # while the row is only claimable by the assignment queue nobody
-    # runs. routing_queue IS dispatch's own discriminator — the
-    # assignment for a re-pended row, the row's own label otherwise — so
+    # runs. routing_queue IS dispatch's own discriminator, the
+    # assignment for a re-pended row, the row's own label otherwise, so
     # the queue the unserved arm TESTS and the queue the event NAMES are
     # one expression, never two that can drift.
     # The two shapes are mutually exclusive: with no config row there is
     # no assignment to route by (the CASE yields NULL, and NULL = ANY(...)
     # would report the row unserved no matter what the fleet serves), so
     # the unserved arm is evaluated only when the config row exists. A
-    # config-missing row counts once, in the config category — naming a
+    # config-missing row counts once, in the config category, naming a
     # queue for it would point the operator at a label dispatch never
     # reads. "Serves" means a LIVE worker subscribes to the queue: a
     # dead-but-unswept worker row would otherwise hide an unserved queue
@@ -1865,7 +1865,7 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
             SELECT j.actor,
                    -- The queue dispatch routes on: the actor's stored
                    -- assignment for a re-pended row, the row's own label
-                   -- otherwise — the assignment_routed marker is the
+                   -- otherwise, the assignment_routed marker is the
                    -- single discriminator (the routing contract in
                    -- taskq/backend/_dispatch_sql.py).
                    CASE WHEN j.assignment_routed THEN ac.queue ELSE j.queue END
@@ -1919,7 +1919,7 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
             # error_class/error_message (not the shared helper's error=repr(exc))
             # and the stranded-jobs-query-failed name are a documented log
             # contract (docs/guides/upgrading.md, "Sub-enqueue failure events
-            # carry error_class/error_message") — preserved here even though
+            # carry error_class/error_message"), preserved here even though
             # the read-failed-detector shape is otherwise shared.
             record_sweep_timeout("stranded_jobs")
             log.warning(
@@ -1932,7 +1932,7 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
             continue
         current: dict[str, int] = {}
         # actor -> (no-actor-config rows, unserved-queue rows, unserved
-        # queue names) — the per-shape facts the warning events report.
+        # queue names), the per-shape facts the warning events report.
         shapes: dict[str, tuple[int, int, list[str]]] = {}
         # (actor, reason) -> rows: the gauge's own shape, so a series says
         # which condition held.
@@ -1976,8 +1976,8 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
                     )
                 if unserved_cnt:
                     # Why its own event (not the no-actor-config one): the
-                    # remediation is different — subscribe a worker to the
-                    # queue or re-route the enqueue — and the queue names are
+                    # remediation is different, subscribe a worker to the
+                    # queue or re-route the enqueue, and the queue names are
                     # the actionable payload for it.
                     log.warning(
                         "stranded-jobs-unserved-queue",

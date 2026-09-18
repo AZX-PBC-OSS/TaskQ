@@ -1,7 +1,7 @@
 """Cross-cutting constants shared across the TaskQ library.
 
 Centralises values that are referenced from multiple modules so that
-producer and consumer always agree — e.g. the ``pg_notify`` channel name
+producer and consumer always agree, e.g. the ``pg_notify`` channel name
 used by the worker LISTEN consumer and the future
 PostgresBackend enqueue path.
 """
@@ -76,7 +76,7 @@ come from separate volatile calls which Postgres does not evaluate
 atomically with respect to concurrent transactions, so in principle one
 transaction can evaluate both of its own between another transaction's
 ``nextval`` and ``clock_timestamp()``, stamping a lower ``id`` with a
-later ``occurred_at`` — the exact inversion the watermark exists to
+later ``occurred_at``, the exact inversion the watermark exists to
 prevent. The window is nanosecond-scale and no occurrence is known, but
 "by construction" is too strong a claim. A plain ``SELECT`` can never see
 an uncommitted sibling row at all (it is invisible under MVCC, not just
@@ -84,7 +84,7 @@ filtered out), so no snapshot- or transaction-id-based predicate computed
 only over *visible* rows can detect one. Instead, ``poll_reclaim_events``
 only returns rows whose ``occurred_at`` is older than this margin: by the
 time a row clears it, any transaction that could have inserted a
-still-lower ``id`` has had at least as long to commit —
+still-lower ``id`` has had at least as long to commit ,
 so it must have either committed already (and is returned, correctly
 ordered, in this or an earlier poll) or aborted (permanently gone, safe
 to skip).
@@ -95,7 +95,7 @@ and (b) that no ``job_events`` writer takes longer than this margin
 between its INSERT and its COMMIT. Sweep and terminal-write transactions
 are a handful of single-round-trip statements with no external I/O, so
 this is a generous
-bound under normal operation — but it is an assumption enforced by
+bound under normal operation, but it is an assumption enforced by
 nothing in the SQL itself, not a property the query guarantees on its
 own. Known ways it can be violated: lock contention delaying commit
 after the ``FOR UPDATE SKIP LOCKED`` scan, a slow or overloaded database
@@ -104,13 +104,13 @@ transaction open, or an abnormally large batch inserted in one
 transaction. If a writer transaction does exceed the margin, the
 consequence is a **silently missed event**: a lower-``id`` row can commit
 after the cursor has already advanced past its position, with no error
-raised anywhere — the same failure mode this feature exists to prevent,
+raised anywhere, the same failure mode this feature exists to prevent,
 just pushed to a rarer trigger.
 
 ``PostgresBackend.check_reclaim_visibility_delay_risk`` turns this from a
 silent failure into an operator-visible one: it reports any transaction
 that has held ``job_events`` open longer than the margin (see
-:class:`~taskq.backend._protocol.LongRunningJobEventsWriter`) — a proxy
+:class:`~taskq.backend._protocol.LongRunningJobEventsWriter`), a proxy
 warning, not proof of an actual miss.  Every ``TaskQ.watch_reclaims``
 consumer runs it automatically on a slow cadence (60s, see
 ``taskq.client._taskq._VISIBILITY_RISK_CHECK_INTERVAL``) and logs
@@ -121,7 +121,7 @@ crash-reclaim section for what it does and does not detect).
 Configurable via
 ``WorkerSettings.reclaim_event_visibility_delay`` /
 ``TASKQ_RECLAIM_EVENT_VISIBILITY_DELAY`` and per-call via
-``poll_reclaim_events(..., visibility_delay=...)`` — raise it if sweeps
+``poll_reclaim_events(..., visibility_delay=...)``, raise it if sweeps
 run under heavy contention or against large batches; lower it if lower
 latency matters more and writes are known to be fast.
 """
@@ -141,8 +141,8 @@ A denial for a full bucket reports the earliest held lease's expiry as
 its ``retry_after`` (computed against the same server clock that stamps
 the leases), so the denied job re-attempts when capacity can actually
 free rather than on a fixed cadence. The margin covers the distance
-between the hint's read and the re-attempt's arrival — the denial write,
-the scheduled-to-pending promotion and the next dispatch round — which
+between the hint's read and the re-attempt's arrival, the denial write,
+the scheduled-to-pending promotion and the next dispatch round, which
 is milliseconds of scheduling latency, not holder processing: a live
 holder's heartbeat extends its lease before expiry, so waiting past the
 expiry instant never guarantees the slot is free anyway. Sub-second
@@ -155,7 +155,7 @@ CANCEL_ORIGIN_COOPERATIVE: Final[str] = "CancelledCooperatively"
 """``error_class`` a phase-1 cancel's terminal write stamps.
 
 The actor was running, observed the cancel request while it was still
-being asked (``cancel_phase = 1``) and stopped — the worker's terminal
+being asked (``cancel_phase = 1``) and stopped, the worker's terminal
 write (``mark_cancelled``) is the one that moved the row.
 """
 
@@ -163,7 +163,7 @@ CANCEL_ORIGIN_FORCED: Final[str] = "CancelledForced"
 """``error_class`` a phase-2 cancel's terminal write stamps.
 
 The actor did not yield to the request, the heartbeat loop escalated
-(``cancel_phase = 2``) and ``task.cancel()`` interrupted it — the actor
+(``cancel_phase = 2``) and ``task.cancel()`` interrupted it, the actor
 had to be stopped, which is operationally distinct from a cooperative
 yield: this actor ignored a cancellation request and needs looking at.
 """
@@ -181,7 +181,7 @@ CANCEL_ORIGIN_PENDING: Final[str] = "CancelledBeforeStart"
 
 The job never reached a worker, so no attempt exists to explain and no
 actor-level hook can have run for it. Covers the single-job request
-(``write_cancel_request``) and the bulk filter (``cancel_where``) alike —
+(``write_cancel_request``) and the bulk filter (``cancel_where``) alike ,
 the same outcome must read the same way whichever path produced it.
 
 Why ``error_class`` rather than a new column or a ``job_status`` value:
@@ -201,7 +201,7 @@ MIN_DEFERRAL_INTERVAL: Final[timedelta] = timedelta(seconds=1)
 A ``Snooze``, a ``RetryAfter(consume_budget=False)``, and an admission
 denial's ``retry_after`` all hand their delay to ``mark_snoozed``'s
 snooze arm, which maps it onto ``scheduled_at``.  Without a floor, a
-zero delay parks the job ``pending`` at ``clock_timestamp()`` — first
+zero delay parks the job ``pending`` at ``clock_timestamp()``, first
 in every dispatch round (``ORDER BY scheduled_at``) and instantly
 re-claimable, so one job monopolises a worker slot in a claim/refund
 round trip per cycle.  Both non-consuming arms therefore apply
@@ -238,7 +238,7 @@ Two structures carry the ceiling: the registry's in-process tracking
 dict (the entry cap, enforced on the acquisition path) and the
 pending-reclaim set of evicted keyed buckets awaiting their
 ``reservation_slots`` row deletion (its record cap, passed by both
-eviction call sites — the per-worker sweep and the opportunistic
+eviction call sites, the per-worker sweep and the opportunistic
 eviction on the acquisition path). The pending set is NOT bounded by
 the tracked-entry count: entries are evicted and re-materialised in
 waves, so pending accumulates across waves up to its own cap, at which
@@ -271,7 +271,7 @@ the enforcement, the batch size merely keeps a healthy database off it.
 
 Why 100: the measured cost of a two-statement reclaim batch is ~0.85 ms per
 row, so 100 rows is ~85 ms on loopback and ~300 ms at a 3 ms managed-Postgres
-round trip — a 6x margin under the 2 s watermark at the RTT the derivation
+round trip, a 6x margin under the 2 s watermark at the RTT the derivation
 targets. Loopback extrapolation, not a managed-instance measurement; the
 effective value is operator-tunable via ``WorkerSettings.event_writer_batch_size``
 and the ``statement_timeout`` remains the guard if the constant is wrong for
@@ -279,9 +279,9 @@ a given deployment.
 
 Deliberately NOT :data:`DEFAULT_PRUNE_BATCH_SIZE` (10,000): prune writes no
 ``job_events`` rows and iterates aggregate rows, so it is a different risk
-class. Anything that writes one ``job_events`` row per input row — the
+class. Anything that writes one ``job_events`` row per input row, the
 expired-lock, deadline and scheduled-to-pending sweeps, bulk cancel, actor
-deregistration — uses this constant (or the setting that defaults to it).
+deregistration, uses this constant (or the setting that defaults to it).
 
 The reduced degradation tier is a quarter of the effective size
 (``max(1, size // 4)``), computed where the tier is selected: it exists so a
@@ -293,7 +293,7 @@ DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS: Final[int] = 1750
 """Server-side ``statement_timeout`` for one event-writer batch transaction.
 
 7/8 of the 2 s :data:`RECLAIM_EVENT_VISIBILITY_DELAY` default: the batch must
-fit inside the visibility margin, and the server aborts it if it does not —
+fit inside the visibility margin, and the server aborts it if it does not ,
 arriving as ``QueryCanceledError`` (SQLSTATE 57014), which the sweep loops
 treat as transient. Applied with ``SET LOCAL`` inside the batch transaction
 only: a session-level ``SET`` would outlive the pooled connection's checkout
@@ -306,17 +306,17 @@ DEFAULT_PRUNE_STATEMENT_TIMEOUT_MS: Final[int] = 4000
 
 80% of the default ``dispatcher_command_timeout`` (5.0 s): the prune
 family runs its batches on dispatcher-pool connections, and the pool's
-client-side ``command_timeout`` fires as an opaque ``TimeoutError`` — so
+client-side ``command_timeout`` fires as an opaque ``TimeoutError``, so
 the server-side bound is deliberately the *smaller* of the two. An
 overloaded database then aborts the batch server-side
-(``QueryCanceledError``, SQLSTATE 57014 — the transient family the
+(``QueryCanceledError``, SQLSTATE 57014, the transient family the
 :class:`~taskq.backend._sweeps.SweepBatchSizer` breaker counts), and the
 breaker latches a reduced batch size for the next attempt, instead of the
 client cancelling with no degradation signal. A maintenance loop pairs a
 per-query timeout with a reduced-batch circuit breaker so an overloaded
 database can drain under controlled batch sizes; the dispatcher pool's
 shared command timeout is the tighter ceiling this family must live under,
-so the reduced tier — not a longer timeout — is what makes a loaded
+so the reduced tier, not a longer timeout, is what makes a loaded
 database drainable. The effective value is derived from the configured
 ``dispatcher_command_timeout`` by the prune loops
 (:mod:`taskq.worker._leader_sweeps`); this constant is the signature
@@ -344,9 +344,9 @@ setting's default. The crash-reclaim outbox slice
 ``RECLAIM_OUTBOX_RETENTION_MULTIPLIER`` times this window before the same
 sweep deletes it (see that constant for the derivation).
 
-Why 7 days: events are narration — the durable forensic record for a job
+Why 7 days: events are narration, the durable forensic record for a job
 is jobs/jobs_archive plus job_attempts/job_attempts_archive, kept for the
-30-90 day prune windows and the 365-day archive window — so the event
+30-90 day prune windows and the 365-day archive window, so the event
 window only has to bound event volume, not match job retention. At the
 measured ~2 events/job and 100 jobs/s, 7 days is ~26 GB steady state
 against ~110 GB at 30 days, while staying at or under the shortest
@@ -364,7 +364,7 @@ bound keeps one sweep call's DELETE a constant-size statement against any
 backlog size. 10_000 matches the prune family's batch rather than the
 100-row event-writer bound: the retention sweep writes no ``job_events``
 rows, so the ``RECLAIM_EVENT_VISIBILITY_DELAY`` INSERT-to-COMMIT margin
-that caps event *writers* does not bind it — the general
+that caps event *writers* does not bind it, the general
 bounded-per-transaction rule does.
 """
 
@@ -377,7 +377,7 @@ The effective value is ``WorkerSettings.keyed_row_reclaim_period``
 (``timedelta(0)`` there disables the sweep entirely); this constant is the
 setting's default. Why 1 hour: it is the SAME threshold the in-process
 registry eviction uses (``taskq.ratelimit.registry._KEYED_IDLE_THRESHOLD``)
-— a keyed entry the registry would already have evicted for idleness is
+, a keyed entry the registry would already have evicted for idleness is
 exactly the entry whose rows the fleet sweep may reclaim, so the two
 reclamation tiers converge instead of the fleet sweep racing ahead of the
 registry's own idleness definition and churning rows under still-tracked
@@ -390,11 +390,11 @@ DEFAULT_KEYED_ROW_RECLAIM_BATCH_SIZE: Final[int] = 256
 
 The effective value is ``WorkerSettings.keyed_row_reclaim_batch_size``. The
 unit is BUCKETS for ``reservation_slots`` (each bucket's full slot row set
-deletes together — a partial delete would shrink configured capacity) and
+deletes together, a partial delete would shrink configured capacity) and
 ROWS for ``rate_limit_buckets`` (one row per bucket). Why 256: it matches
 the in-process pending-reclaim drain's per-statement slice
 (``_DEFAULT_RECLAIM_BATCH_NAMES`` in ``taskq.ratelimit.registry``), so both
-reclamation tiers move keyed rows at the same constant-size rate — at the
+reclamation tiers move keyed rows at the same constant-size rate, at the
 default 30 s sweep interval that is ~512 buckets/min against a backlog
 bounded by the per-worker keyed caps, and one tick's write set stays
 independent of that backlog.
@@ -409,19 +409,19 @@ The outbox cannot be exempt at every age: a fleet with NO
 ``TaskQ.watch_reclaims`` consumer would then retain every ``lock_expired``
 event forever (unbounded growth), and an event committed below a watermark
 cursor that already passed it is unreachable to ``poll_reclaim_events``
-(``id > $1`` cannot go back) — without an age cap such a row is BOTH
+(``id > $1`` cannot go back), without an age cap such a row is BOTH
 undeliverable and undeletable, permanently lost signal AND permanent
 storage. But it also cannot be deleted at the ordinary retention age: the
 carve-out exists so a consumer whose cursor has not reached a row yet
 still sees it. The multiplier composes the two: an unconsumed outbox row
 outlives ordinary events by this factor of the configured retention, then
-is deleted — bounded, but far beyond any healthy consumer's lag.
+is deleted, bounded, but far beyond any healthy consumer's lag.
 
 Why 100 exactly: it must clear BOTH pinned ages with headroom on either
-side. Upward — a 400-day-old outbox row must survive a sweep call at
+side. Upward, a 400-day-old outbox row must survive a sweep call at
 30-day retention (``test_lock_expired_reclaim_outbox_is_exempt_from_
 retention``, the guard rail the original carve-out pinned): 100 x 30 d ≈
-3000 d, 7.5x headroom. Downward — a 1-hour-old unconsumed row must be
+3000 d, 7.5x headroom. Downward, a 1-hour-old unconsumed row must be
 deleted by a 1-second-retention drain (``test_rt_orphans_outbox_immortal_
 events``, the no-consumer bound): 100 x 1 s = 100 s, 36x headroom. Any
 value in (~13.4, 3600) satisfies both pins; 100 sits logarithmically
@@ -443,7 +443,7 @@ DEFAULT_RECLAIM_POLL_LIMIT: Final[int] = 100
 
 Why shared: this default is declared on the Backend protocol and repeated
 by every implementation. If they drift, a caller relying on the protocol
-default silently gets a different batch size per backend — the same class
+default silently gets a different batch size per backend, the same class
 of divergence that made the in-memory and Postgres backends disagree
 before. The value itself is a poll batch, not a tuning knob: callers that
 care pass ``limit=`` explicitly.
@@ -524,8 +524,8 @@ MAX_ENQUEUABLE_MAX_ATTEMPTS: Final[int] = MAX_ATTEMPTS_SMALLINT_CEILING - 1
 One below the column ceiling, retained as a defensive margin: a row
 parked at exactly the ceiling has no headroom for any statement that
 needs to add one to a max_attempts-derived value. Rows can still legally
-REACH the ceiling — a snooze arm's saturating increment parks a snoozed
-job there — which is why the retry layer clamps row-stored values back
+REACH the ceiling, a snooze arm's saturating increment parks a snoozed
+job there, which is why the retry layer clamps row-stored values back
 into this bound before reconstructing a policy.
 """
 
@@ -534,7 +534,7 @@ def _check_is_int(value: object, what: str) -> None:
     """Refuse a non-integer before any range comparison runs.
 
     The range guards below are reached from ``EnqueueArgs``, a plain
-    dataclass with no runtime type enforcement — unlike ``RetryPolicy``,
+    dataclass with no runtime type enforcement, unlike ``RetryPolicy``,
     where pydantic coerces first. Without this, ``None`` raises a bare
     ``TypeError`` from the ``<`` comparison naming neither the field nor
     the expected type, and a float passes every range check and is stored
@@ -569,8 +569,8 @@ def check_priority_domain(value: int, *, what: str = "priority") -> None:
 def check_max_attempts_domain(value: int, *, what: str = "max_attempts") -> None:
     """Refuse a ``max_attempts`` outside the enqueuable range.
 
-    Below one the job is dispatchable but can never complete — the first
-    failure finds no budget left — so the value is refused rather than
+    Below one the job is dispatchable but can never complete, the first
+    failure finds no budget left, so the value is refused rather than
     stored. Above :data:`MAX_ENQUEUABLE_MAX_ATTEMPTS` the column has no
     headroom left to raise the ceiling on a reclaim.
     """
@@ -587,7 +587,7 @@ def check_max_attempts_domain(value: int, *, what: str = "max_attempts") -> None
 BTREE_MAX_ITEM_BYTES: Final[int] = 2704
 """Postgres btree v4 maximum index-entry size, in bytes.
 
-``nbtree``'s ``BTMaxItemSize`` — roughly a third of an 8 KiB page. An INSERT
+``nbtree``'s ``BTMaxItemSize``, roughly a third of an 8 KiB page. An INSERT
 whose index entry exceeds it fails with ``index row size N exceeds btree
 version 4 maximum 2704 for index ...``. This is the only real bound on
 ``idempotency_key``/``idempotency_scope``: the column is plain ``text`` with
@@ -605,8 +605,8 @@ composite business keys and vendor continuation cursors.
 
 Arithmetic, measured against a real Postgres (see
 ``tests/test_idempotency_key_bounds.py``): the index tuple carries 16 bytes
-of its own — 1352 + 1352 incompressible bytes report ``index row size
-2720`` — so the largest safe symmetric pair is (2704 - 16) / 2 = 1344
+of its own, 1352 + 1352 incompressible bytes report ``index row size
+2720``, so the largest safe symmetric pair is (2704 - 16) / 2 = 1344
 bytes. The 1024 default leaves scope + key at 2064 bytes, well clear.
 
 The check is on the *uncompressed* length deliberately: index tuples are
@@ -635,7 +635,7 @@ def schema_lock_name(purpose: str, schema: str) -> str:
     """Schema-qualified advisory-lock name: ``taskq:{purpose}:{schema}``.
 
     Advisory locks live in a per-database namespace, so a bare
-    ``taskq:{purpose}`` is shared by every schema in the database — two
+    ``taskq:{purpose}`` is shared by every schema in the database, two
     schemas in one database then serialize, or worse: the loser of a
     leader election never runs its sweeps while dispatch (not leader-gated)
     keeps flowing, so the fleet reports healthy while scheduled work stops
@@ -645,7 +645,7 @@ def schema_lock_name(purpose: str, schema: str) -> str:
     keys built in the enqueue path.
 
     Upgrade discipline: the qualified names replace the unqualified ones
-    outright — a mixed old/new fleet holds different names and can both act
+    outright, a mixed old/new fleet holds different names and can both act
     as leader of the same schema (sweeps stay row-safe under
     ``FOR UPDATE SKIP LOCKED``; cron gains a double-fire window because its
     lock is what serialises ticks). Adopt by restarting the fleet onto the
@@ -660,7 +660,7 @@ PG_MAX_IDENTIFIER_BYTES: Final[int] = 63
 
 ``LISTEN`` takes its channel as an identifier and silently truncates a
 longer one (a NOTICE, not an error), while ``pg_notify`` takes text and
-raises ``22023 channel name too long`` — so an over-long channel name
+raises ``22023 channel name too long``, so an over-long channel name
 splits the two halves of one conversation: the listener subscribes to a
 truncated name and the notifier either errors or addresses the full one.
 """
@@ -668,8 +668,8 @@ truncated name and the notifier either errors or addresses the full one.
 SCHEMA_CHANNEL_TAG_HEX_LEN: Final[int] = 10
 """Hex digits of ``sha224(schema)`` that identify the schema inside every
 NOTIFY channel name (:func:`schema_channel_tag`). Ten digits (40 bits) keep
-the widest channel — the per-worker one, which also carries a 36-char uuid
-— under :data:`PG_MAX_IDENTIFIER_BYTES` with room to spare, while a chance
+the widest channel, the per-worker one, which also carries a 36-char uuid
+, under :data:`PG_MAX_IDENTIFIER_BYTES` with room to spare, while a chance
 collision between two schemas of one database needs on the order of a
 million schemas. The SQL twin in the wake trigger (migration
 ``01.00.14_01``) takes the same prefix of the same digest, and the two are
@@ -734,7 +734,7 @@ _KEYED_KEY_RE = re.compile(r"\A[A-Za-z0-9_\-:.]+\Z")
 """Character set for keyed-ref name components (``base_name`` and ``key``).
 
 Both segments of the concrete name ``f"{base_name}:{key}"`` flow into Redis
-key names and PG text columns — this regex prevents control characters,
+key names and PG text columns, this regex prevents control characters,
 spaces, slashes, and other metacharacters from reaching storage.  Mirrors
 the ``_IDENT_RE`` approach for schema identifiers, including the
 ``\\A``/``\\Z`` anchoring: ``$`` also matches immediately before a trailing
@@ -744,7 +744,7 @@ newline, so ``"key\\n"`` satisfied ``^...$``.
 _MAX_KEYED_KEY_LEN = 255
 """Maximum length (chars) for keyed-ref name components (``base_name`` and ``key``).
 
-Bounds storage growth from attacker-controlled keys and base names — the
+Bounds storage growth from attacker-controlled keys and base names, the
 same rationale as the character regex above.
 """
 
@@ -756,12 +756,12 @@ queue-cap bootstrap path and must be registered via
 ``RateLimitRegistry.register_queue_cap_reservation``, not via the public
 ``RateLimitRegistry.register`` (which rejects prefixed names to prevent
 accidental or malicious shadowing of an internal queue cap). Keyed refs
-must never derive concrete names into this namespace either — see the
+must never derive concrete names into this namespace either, see the
 ``base_name`` validators in ``taskq.ratelimit.refs``.
 
 Lives here (rather than in ``ratelimit.registry``) because
 ``ratelimit.refs`` must reference it in its validators, and ``refs`` is
-imported BY ``registry`` — defining it in ``registry`` would be circular.
+imported BY ``registry``, defining it in ``registry`` would be circular.
 """
 
 
@@ -772,7 +772,7 @@ def base_name_collides_with_reserved_prefix(base_name: str) -> bool:
     The concrete name is ``f"{base_name}:{key}"``; every such name starts
     with ``QUEUE_CONCURRENCY_PREFIX`` exactly when ``base_name`` itself
     starts with the prefix (e.g. ``"taskq:global:queue:x"``) or equals it
-    minus the trailing colon (``"taskq:global:queue"`` — the ``":"``
+    minus the trailing colon (``"taskq:global:queue"``, the ``":"``
     separator then completes the prefix for ANY key). Both are rejected at
     ref-construction time so the collision surfaces at startup instead of
     as a per-job ``ValueError`` from the ``register()`` prefix guard.
@@ -781,7 +781,7 @@ def base_name_collides_with_reserved_prefix(base_name: str) -> bool:
     ``"taskq:global"``) only collides when the *key* completes the
     remaining segments (key ``"queue:x"`` → concrete
     ``"taskq:global:queue:x"``); keys are per-job dynamic values, so they
-    cannot be rejected at construction — that case remains covered, loudly,
+    cannot be rejected at construction, that case remains covered, loudly,
     by the ``register()`` prefix guard at materialization time.
     """
     return base_name.startswith(QUEUE_CONCURRENCY_PREFIX) or (
@@ -808,7 +808,7 @@ def schema_channel_tag(schema: str) -> str:
     schema name alone may be that long; a fixed-width tag makes every
     channel's length independent of the schema, so there is no schema
     length at which one channel silently stops matching its listener.
-    The tag is computed over the exact text of the name — quoted schema
+    The tag is computed over the exact text of the name, quoted schema
     identifiers are case-sensitive, so ``Taskq`` and ``taskq`` are distinct
     schemas with distinct tags. The wake trigger derives the same tag in
     SQL from ``TG_TABLE_SCHEMA`` (``left(encode(sha224(...), 'hex'), 10)``).
@@ -917,7 +917,7 @@ def cron_commit_gate_channel(schema: str) -> str:
     )
 
 
-#: The widest ``str(uuid.UUID)`` (36 chars) — the probe id
+#: The widest ``str(uuid.UUID)`` (36 chars), the probe id
 #: :func:`check_channels_fit` interpolates where a channel carries one.
 _WIDEST_UUID_TEXT: Final[str] = "ffffffff-ffff-ffff-ffff-ffffffffffff"
 

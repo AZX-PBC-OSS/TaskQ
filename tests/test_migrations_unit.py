@@ -278,7 +278,7 @@ def test_discover_accepts_directive_whitespace_variants(
 def test_discover_ignores_directive_after_first_sql_statement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The directive only counts in the leading comment block — a stray
+    """The directive only counts in the leading comment block, a stray
     ``-- taskq:no-transaction`` later in the file must not flip semantics."""
     m = _discover_with_content(
         monkeypatch,
@@ -313,7 +313,7 @@ def test_discover_accepts_directive_with_trailing_note(
 ) -> None:
     """Real-world directives carry a reason after the token
     (``-- taskq:no-transaction  needed for CIC``); silently ignoring that
-    form defeats the opt-out — the migration runs transactional anyway."""
+    form defeats the opt-out, the migration runs transactional anyway."""
     m = _discover_with_content(
         monkeypatch,
         "-- taskq:no-transaction  needed for CIC\nSELECT 1;\n",
@@ -335,7 +335,7 @@ def test_discover_rejects_directive_lookalike_and_warns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``-- taskq:no-transactional`` must NOT match (the token boundary stops
-    prefix drift), but it looks like a directive attempt — warn so the author
+    prefix drift), but it looks like a directive attempt, warn so the author
     notices instead of silently running transactional."""
     with structlog.testing.capture_logs() as captured:
         m = _discover_with_content(
@@ -375,7 +375,7 @@ def test_discover_exact_directive_logs_no_unrecognized_warning(
 
 def test_directive_changes_checksum(monkeypatch: pytest.MonkeyPatch) -> None:
     """The directive lives inside the SQL template, so toggling it changes
-    the checksum — drift detection catches an edited-in-place directive."""
+    the checksum, drift detection catches an edited-in-place directive."""
     sql = "-- taskq:no-transaction\nSELECT 1;\n"
     with_directive = Migration(
         version="90.00.00_01",
@@ -522,7 +522,7 @@ def test_split_statements_e_string_right_after_statement_boundary() -> None:
 
 def test_split_statements_dollar_sign_inside_identifier() -> None:
     """``a$b$c`` is a legal Postgres identifier; ``$b$`` must not be read as
-    a dollar-quote opener here — a tag cannot immediately follow an
+    a dollar-quote opener here, a tag cannot immediately follow an
     identifier character (same rule as the E'...' detection)."""
     assert migrate.split_statements("SELECT a$b$c; SELECT 2;") == [
         "SELECT a$b$c",
@@ -630,7 +630,7 @@ def test_reject_transaction_control_message_names_set_local_keyword() -> None:
 
 
 def test_reject_transaction_control_accepts_session_set_and_checkpoint() -> None:
-    # Deliberate allowlist: plain SET / SET SESSION is session-scoped — it
+    # Deliberate allowlist: plain SET / SET SESSION is session-scoped, it
     # behaves identically inside and outside a transaction, so opting out
     # changes nothing about it and it is not deceptive. CHECKPOINT is a
     # cluster-level maintenance statement with no transaction semantics at
@@ -653,7 +653,7 @@ def test_reject_transaction_control_accepts_session_set_and_checkpoint() -> None
 )
 def test_reject_transaction_control_rejects_comment_trivia_bypasses(statement: str) -> None:
     """Comments are valid trivia here because Postgres treats them as
-    whitespace between keywords — ``SET /* x */ LOCAL`` is the same statement
+    whitespace between keywords, ``SET /* x */ LOCAL`` is the same statement
     to the server as ``SET LOCAL`` (and /* */ comments NEST), so the guard
     must skip them too or these forms slip past as silent no-ops."""
     with pytest.raises(ValueError, match="transaction-control"):
@@ -662,7 +662,7 @@ def test_reject_transaction_control_rejects_comment_trivia_bypasses(statement: s
 
 def test_reject_transaction_control_rejects_begin_after_nested_comment() -> None:
     """A nested /* ... /* ... */ ... */ block comment before BEGIN must not
-    hide it — Postgres sees straight through to the keyword."""
+    hide it, Postgres sees straight through to the keyword."""
     with pytest.raises(ValueError, match="transaction-control"):
         _reject_transaction_control(_nt_migration(), ["/* a /* b */ c */ BEGIN"])
 
@@ -687,7 +687,7 @@ def test_reject_transaction_control_allows_session_set_through_comments() -> Non
 # The startup action line differs from the CLI's: a worker/startup apply
 # failure is retried by restarting the process, not by re-running the CLI.
 _STARTUP_ACTION_LINE = (
-    "Action: restart is safe — migrations are idempotent and self-heal on retry; "
+    "Action: restart is safe, migrations are idempotent and self-heal on retry; "
     "if the failure repeats, run `taskq migrate up` and report the output."
 )
 
@@ -725,7 +725,7 @@ def _generic_diagnosis() -> migrate.ApplyFailureDiagnosis:
 def _guard_rejection_diagnosis() -> migrate.ApplyFailureDiagnosis:
     return migrate.ApplyFailureDiagnosis(
         headline="migration '01.00.02_01_post_txctl.sql' is marked no-transaction "
-        "but contains transaction-control statement 'BEGIN'; remove it — "
+        "but contains transaction-control statement 'BEGIN'; remove it, "
         "the runner manages transactions",
         failed_filename="01.00.02_01_post_txctl.sql",
         use_transaction=False,
@@ -747,24 +747,24 @@ _NT_DEFAULT_LINES = [
     "It ran WITHOUT a transaction (-- taskq:no-transaction): statements "
     "before the failure remain applied, and the migration was NOT recorded "
     "in the ledger.",
-    'INVALID index(es) in schema "taskq": jobs_queue_idx — an interrupted '
+    'INVALID index(es) in schema "taskq": jobs_queue_idx, an interrupted '
     "CREATE INDEX CONCURRENTLY left them behind.",
-    "Action: re-run `taskq migrate up` — the migration is idempotent and "
+    "Action: re-run `taskq migrate up`, the migration is idempotent and "
     "drops/rebuilds the debris itself.",
 ]
 _GENERIC_DEFAULT_LINES = [
     "migration failed: boom",
-    "Action: fix the error and re-run `taskq migrate up` — already-applied migrations are skipped.",
+    "Action: fix the error and re-run `taskq migrate up`, already-applied migrations are skipped.",
 ]
 # A guard rejection executed nothing and does not heal on re-run, so the
-# report must say so instead of the (false) generic no-transaction wording —
+# report must say so instead of the (false) generic no-transaction wording ,
 # and the startup restart-safe action line is equally false, so the guard
 # variant renders identically for both surfaces.
 _GUARD_REJECTION_LINES = [
     "migration 01.00.02_01_post_txctl.sql failed: migration '01.00.02_01_post_txctl.sql' "
     "is marked no-transaction but contains transaction-control statement 'BEGIN'; "
-    "remove it — the runner manages transactions",
-    "Nothing was executed — the file was rejected before any "
+    "remove it, the runner manages transactions",
+    "Nothing was executed, the file was rejected before any "
     "statement ran (transaction-control statements are forbidden "
     "in a -- taskq:no-transaction migration).",
     "Action: remove the transaction-control statement and re-run `taskq migrate up`.",
@@ -862,8 +862,8 @@ def test_apply_failure_diagnosis_rejects_filename_without_use_transaction() -> N
 def _phase_scenario_migrations() -> tuple[Migration, Migration]:
     """discover() order for the --phase misattribution scenario: an
     earlier-version pending :post sorts BEFORE a later-version :pre (the
-    sort key is version first), so under ``migrate up --phase pre`` — where
-    only the :pre applies and fails — the first-unrecorded heuristic would
+    sort key is version first), so under ``migrate up --phase pre``, where
+    only the :pre applies and fails, the first-unrecorded heuristic would
     blame the wrong file."""
     earlier_pending_post = Migration(
         version="01.00.00_01",
@@ -905,7 +905,7 @@ async def test_diagnose_apply_failure_untagged_falls_back_to_first_unrecorded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An untagged exception (raised outside apply_pending's per-migration
-    loop — e.g. the ledger ensure) keeps the original heuristic: first
+    loop, e.g. the ledger ensure) keeps the original heuristic: first
     unrecorded in discover() order."""
     earlier_pending_post, later_failing_pre = _phase_scenario_migrations()
     monkeypatch.setattr(migrate, "discover", lambda: [earlier_pending_post, later_failing_pre])
@@ -921,7 +921,7 @@ async def test_diagnose_apply_failure_tagged_no_transaction_gathers_invalid_inde
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The tagged path must still gather INVALID-index debris when the
-    tagged migration opted out of the transaction wrapper — an interrupted
+    tagged migration opted out of the transaction wrapper, an interrupted
     CREATE INDEX CONCURRENTLY is exactly the failure the tag exists for."""
     tagged = Migration(
         version="01.00.02_01",
@@ -944,7 +944,7 @@ async def test_diagnose_apply_failure_tagged_no_transaction_gathers_invalid_inde
 
 async def test_diagnose_apply_failure_headline_falls_back_to_type_name() -> None:
     """An exception whose first str() line is empty/whitespace must not
-    render ``migration failed: `` with an empty headline — use the
+    render ``migration failed: `` with an empty headline, use the
     exception's type name instead."""
     d = await migrate.diagnose_apply_failure(  # type: ignore[arg-type]  # Why: the generic path suppresses every read, so a conn stand-in is fine.
         object(), "taskq", RuntimeError("   \nDETAIL: something")

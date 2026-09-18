@@ -4,28 +4,28 @@ Complements :func:`taskq.worker.startup.sync_actor_config`: that function
 only ever *seeds* a row's capacity fields (``max_concurrent``,
 ``max_pending``, ``result_ttl``) on first registration and otherwise
 leaves them untouched. This module is how an operator changes them
-afterwards — on a live deployment, without a code change or a worker
+afterwards, on a live deployment, without a code change or a worker
 restart. All three are re-read by the engine without a restart:
 
-* ``max_concurrent`` — the dispatch query joins ``actor_config`` fresh
+* ``max_concurrent``, the dispatch query joins ``actor_config`` fresh
   on every dispatch cycle (``taskq/backend/_dispatch_sql.py``); a change
   is effective immediately.
-* ``result_ttl`` — the terminal-write UPDATE recomputes
+* ``result_ttl``, the terminal-write UPDATE recomputes
   ``result_expires_at`` from the stored value for every completing job
   (``taskq/backend/_sql_templates.py::mark_succeeded``); a change is
   effective for jobs completing after the write.
-* ``max_pending`` — enqueue-side processes hold a TTL-bounded cache of
+* ``max_pending``, enqueue-side processes hold a TTL-bounded cache of
   this table (``taskq/client/_capacity.py``, default 5s staleness); a
   change is effective fleet-wide within seconds, with no redeploy.
 
 Clearing semantics differ by field on purpose. ``--clear-max-concurrent``
-writes NULL, which the dispatch SQL reads as *unlimited* — the SQL
+writes NULL, which the dispatch SQL reads as *unlimited*, the SQL
 cannot see the code literal once the row exists. ``--clear-max-pending``
 and ``--clear-result-ttl`` write NULL, which their enforcement paths
-read as *fall back to the ``@actor(...)`` literal* — clearing reverts an
+read as *fall back to the ``@actor(...)`` literal*, clearing reverts an
 override to the code default.
 
-This module also provides :func:`deregister_actor` — the transactional
+This module also provides :func:`deregister_actor`, the transactional
 removal of an ``actor_config`` row with safety checks for active jobs
 and enabled schedules, optional forced cancellation of pending/scheduled
 jobs, optional disabling of cron schedules, and optional purging of
@@ -35,7 +35,7 @@ Finally, :func:`move_actor_queue` is the one-step queue move: the
 actor's pending/scheduled backlog is rewritten onto the target queue as
 bounded committed batches, then one final transaction locks and flips the
 stored assignment and carries the source queue's ``queues`` row to the
-target when the target has none — so old-queue strays drain through the
+target when the target has none, so old-queue strays drain through the
 target's consumers and worker boot stays consistent at every intermediate
 state of the rolling deploy. The actor's left-behind running rows are
 untouched; each finishes on the worker that claimed it, and any re-pend
@@ -128,7 +128,7 @@ class ActorConfigRow:
 class DeregisterResult:
     """Outcome of a ``deregister_actor`` call.
 
-    ``actor_config_deleted`` is always ``True`` — if the row is not found,
+    ``actor_config_deleted`` is always ``True``, if the row is not found,
     ``deregister_actor`` raises :class:`ActorNotFoundError` instead of
     returning a result with ``False``. The field is retained for API
     contract clarity and consumer assertions.
@@ -229,7 +229,7 @@ async def get_actor_config(
 
 def _validate_int_field(name: str, value: int | Unset | None) -> None:
     """Reject the two shapes that slip past ``isinstance(x, int) and x < 0``:
-    ``bool`` (an ``int`` subclass — ``False`` would be written as 0, flooring
+    ``bool`` (an ``int`` subclass, ``False`` would be written as 0, flooring
     the dispatch residual ``GREATEST(cap - in_flight, 0)`` and silently
     pausing the actor) and negative values."""
     if isinstance(value, bool):
@@ -242,7 +242,7 @@ def _validate_result_ttl(value: float | Unset | None) -> None:
     """Reject bool, negative, and non-finite ``result_ttl``.
 
     NaN sails through ``value < 0`` (NaN compares False) and then breaks
-    every completion for the actor — ``clock_timestamp() + NaN * interval
+    every completion for the actor, ``clock_timestamp() + NaN * interval
     '1 second'`` raises ``interval out of range`` in the terminal-write
     UPDATE. ±inf is rejected on the same grounds (``interval out of range``
     / meaningless expiry)."""
@@ -269,26 +269,26 @@ async def set_actor_config_capacity(
     """Update capacity fields on an existing `{schema}.actor_config` row.
 
     Only fields passed as something other than :data:`UNSET` are
-    changed. Pass ``None`` explicitly to clear a field — precisely what
+    changed. Pass ``None`` explicitly to clear a field, precisely what
     that means depends on the field's enforcement path: clearing
     ``max_concurrent`` makes the actor *unlimited* (the dispatch SQL
     reads a stored NULL as no cap), while clearing ``max_pending`` or
     ``result_ttl`` reverts enforcement to the ``@actor(...)`` literal
     (those paths can still see the code default). Returns ``None`` if
-    *actor* has no stored row — a row is only created by
+    *actor* has no stored row, a row is only created by
     :func:`taskq.worker.startup.sync_actor_config` at worker startup, so
     an actor must have been registered by at least one worker before its
     capacity can be tuned here.
 
     Raises :class:`ValueError` if ``max_concurrent`` or ``max_pending``
-    is a negative integer or a ``bool`` — the same guard ``@actor(...)``
+    is a negative integer or a ``bool``, the same guard ``@actor(...)``
     applies at decoration time (``taskq/actor.py``), plus the bool case
     (``False`` is an ``int`` and would be written as 0). Without these,
     an operator typo here (e.g. ``--max-concurrent -5``) would write
     silently into the dispatch CTE's ``GREATEST(ac.max_concurrent -
     in_flight, 0)`` residual calculation, floor to zero, and pause the
     actor indefinitely with no error anywhere in the path. ``result_ttl``
-    is likewise rejected when negative, non-finite, or ``bool`` — a
+    is likewise rejected when negative, non-finite, or ``bool``, a
     negative TTL would set ``result_expires_at`` to a past timestamp in
     the terminal-write UPDATE (silently expiring every result the moment
     it is written), and NaN/±inf raise ``interval out of range`` in that
@@ -323,7 +323,7 @@ SELECT queue FROM "{schema}".actor_config WHERE actor = $1
 """.strip()
 
 # The assignment lock is taken in the FINAL transaction, after the backlog
-# drain, and before the flip — so a concurrent move/deregister/boot-upsert
+# drain, and before the flip, so a concurrent move/deregister/boot-upsert
 # for the same actor serializes there instead of interleaving with the
 # write. Keyed single row by the table's primary key.
 _MOVE_LOCK_ASSIGNMENT_SQL = """
@@ -331,11 +331,11 @@ SELECT queue FROM "{schema}".actor_config WHERE actor = $1 FOR UPDATE
 """.strip()
 
 # Fill-in, never overwrite: the INSERT .. SELECT carries the source queue's
-# row (mode + max_concurrent — the round_robin/cap config a naive move
+# row (mode + max_concurrent, the round_robin/cap config a naive move
 # silently loses when the target has no row) but only when the target has
 # no row of its own; ON CONFLICT DO NOTHING keeps a configured target
 # standing. A source queue with no row inserts nothing, leaving the target
-# on the defaults — the correct carry of "unconfigured" too.
+# on the defaults, the correct carry of "unconfigured" too.
 _MOVE_CARRY_QUEUE_ROW_SQL = """
 INSERT INTO "{schema}".queues (name, mode, max_concurrent)
 SELECT $2, q.mode, q.max_concurrent
@@ -346,7 +346,7 @@ ON CONFLICT (name) DO NOTHING
 
 # The backlog rewrite: bounded committed batches, the deregister force-drain
 # doctrine verbatim (this module's own precedent for an actor-scoped
-# backlog rewrite). MATERIALIZED is load-bearing — without it the planner
+# backlog rewrite). MATERIALIZED is essential, without it the planner
 # may inline the LIMIT-ed matching CTE into the UPDATE as a nested loop and
 # update more rows than the LIMIT admits. The repeated queue/status
 # predicate on the UPDATE re-evaluates rows concurrently modified since the
@@ -355,7 +355,7 @@ ON CONFLICT (name) DO NOTHING
 # the drain terminates on the WINDOW count (matched_count), never the
 # affected count, so an EPQ drop cannot end it early with matching rows
 # beyond the window. No job_events row is written: a queue re-label is a
-# routing change, not a state change — the row stays pending/scheduled and
+# routing change, not a state change, the row stays pending/scheduled and
 # the event kinds that are written (state_change | cancel_request |
 # progress) have no member for it.
 _MOVE_BACKLOG_BATCH_SQL = """
@@ -417,7 +417,7 @@ class ActorQueueMoveResult:
     the target queue by THIS call (the backlog that now drains through the
     target's consumers; a re-run after an aborted move counts only the
     remainder it moved itself). ``running_jobs_left`` counts the actor's
-    running rows, which are deliberately untouched — each finishes on the
+    running rows, which are deliberately untouched, each finishes on the
     worker that claimed it, and a row that instead re-pends (a failure
     retry, a lease/heartbeat reclaim, an operator retry) keeps its
     original queue label as an audit trail but is ROUTED, at dispatch, by
@@ -428,7 +428,7 @@ class ActorQueueMoveResult:
     a configured target stands unchanged.
 
     ``pending_jobs_on_old_queue`` counts the actor's pending rows still
-    carrying the SOURCE queue label after the flip — the irreducible
+    carrying the SOURCE queue label after the flip, the irreducible
     producer-side residual. The move deliberately does not chase these:
     a producer still running the old literal keeps placing rows there,
     and producer placement governs a never-claimed row's routing, so
@@ -468,8 +468,8 @@ async def move_actor_queue(
       capture/restore discipline, termination on the WINDOW count so an
       EPQ drop cannot end it early). Each batch rewrites up to
       ``batch_size`` of the actor's OWN pending/scheduled rows onto the
-      target queue — the actor predicate keeps a neighbor's rows on the
-      source queue — so they drain through the target's consumers. Running
+      target queue, the actor predicate keeps a neighbor's rows on the
+      source queue, so they drain through the target's consumers. Running
       rows are untouched: each finishes on the worker that claimed it, and
       a row that instead re-pends keeps its original queue label as an
       audit trail but is routed at dispatch by the actor's CURRENT
@@ -479,14 +479,14 @@ async def move_actor_queue(
       crash mid-drain leaves the batches already committed as partial
       progress; a re-run continues where it stopped (the drain's queue
       predicate skips rows earlier batches moved), and the abort itself
-      is observable — the ``actor-queue-move-aborted`` event carries the
+      is observable, the ``actor-queue-move-aborted`` event carries the
       committed-so-far count.
     * **The flip** then lands in ONE final transaction: the assignment row
       is locked (``FOR UPDATE``), the target queue's row inherits the
       source queue's ``mode`` and ``max_concurrent`` when (and only when)
-      the target has no row — otherwise a round_robin queue's move
+      the target has no row, otherwise a round_robin queue's move
       silently degraded the actor to strict_fifo and dropped its cap; a
-      configured target is never overwritten — the actor's running count
+      configured target is never overwritten, the actor's running count
       is read, and the stored assignment is rewritten. Capacity fields,
       ``max_attempts``/``retry_kind``, and metadata are untouched, and the
       source queue's row is never touched (other actors may still live
@@ -497,8 +497,8 @@ async def move_actor_queue(
     re-runnable state (the stored assignment still names the source queue,
     so a re-run re-drains and re-flips); a crash after the flip means the
     move was already complete. Any failure after the first committed
-    batch — the drain's own aborts (a per-batch ``statement_timeout``, a
-    lost connection) and the flip's races alike — is re-raised AFTER the
+    batch, the drain's own aborts (a per-batch ``statement_timeout``, a
+    lost connection) and the flip's races alike, is re-raised AFTER the
     ``actor-queue-move-aborted`` event logs the durable state: *actor*,
     *from_queue*, *to_queue*, *jobs_moved* (this call's committed count),
     and *error_class*. The committed rows are real partial progress no
@@ -507,13 +507,13 @@ async def move_actor_queue(
     refusals (unknown actor, same-queue no-op, invalid queue name) raise
     before any write and log nothing. Jobs a stale producer enqueues to
     the source queue after the flip are served by source-queue consumers
-    (see the rolling-deploy note below) — never stranded, and never
+    (see the rolling-deploy note below), never stranded, and never
     served by the target's: producer placement governs a never-claimed
     row's routing, which is exactly what keeps the stray contract
     distinguishable from the re-pended tail's.
 
     Rolling deploys: run this before, during, or after deploying the
-    matching ``@actor(queue=...)`` literal — in any order. At every
+    matching ``@actor(queue=...)`` literal, in any order. At every
     intermediate state the stored row names one queue and a differing
     literal only logs ``actor-config-queue-override`` at boot, so workers
     on either side of the window boot, and the startup UPSERT preserves
@@ -522,7 +522,7 @@ async def move_actor_queue(
     literal, then drop it.
 
     Raises :class:`ActorNotFoundError` when the actor has no stored row
-    (nothing to move — a row only exists after a worker has synced it),
+    (nothing to move, a row only exists after a worker has synced it),
     :class:`ValueError` when *new_queue* equals the current assignment (a
     move onto itself is a no-op the operator should be told about, not
     silently executed), when *new_queue* is not a valid queue name (the
@@ -539,7 +539,7 @@ async def move_actor_queue(
     _validate_positive("batch_size", batch_size)
     _validate_positive("statement_timeout_ms", statement_timeout_ms)
 
-    # Preflight, no lock: error precedence before any work — an unknown
+    # Preflight, no lock: error precedence before any work, an unknown
     # actor must not drain zero rows and then fail confusingly at the flip.
     from_queue = await conn.fetchval(
         _MOVE_GET_ASSIGNMENT_SQL.format(schema=schema),
@@ -556,13 +556,13 @@ async def move_actor_queue(
     # Phases 1 and 2 run under one abort reporter: every failure after
     # the first committed batch leaves durable partial progress (the
     # drain commits per batch; a flip failure rolls back only the flip),
-    # and a raised exception carries no count — the structured event is
+    # and a raised exception carries no count, the structured event is
     # the operator's only evidence that a re-run continues rather than
     # restarts. The preflight refusals above raised before any write, so
     # they correctly never reach this handler.
     jobs_moved = 0
     try:
-        # Phase 1 — the bounded backlog drain.
+        # Phase 1, the bounded backlog drain.
         while True:
             async with conn.transaction():
                 prev_timeout = await _apply_batch_statement_timeout(conn, statement_timeout_ms)
@@ -578,12 +578,12 @@ async def move_actor_queue(
                 # discarded the SET LOCAL.
                 await _restore_statement_timeout(conn, prev_timeout)
             matched = int(row["matched_count"]) if row is not None else 0
-            # Affected rows only — an EPQ-dropped row is never reported as moved.
+            # Affected rows only, an EPQ-dropped row is never reported as moved.
             jobs_moved += int(row["moved_count"]) if row is not None else 0
             if matched < batch_size:
                 break
 
-        # Phase 2 — the flip, in one transaction.
+        # Phase 2, the flip, in one transaction.
         async with conn.transaction():
             locked_from: str | None = await conn.fetchval(
                 _MOVE_LOCK_ASSIGNMENT_SQL.format(schema=schema),
@@ -591,7 +591,7 @@ async def move_actor_queue(
             )
             if locked_from is None:
                 # The concurrent-delete race (a deregister won between the
-                # preflight and this lock) — same handling as deregister's
+                # preflight and this lock), same handling as deregister's
                 # DELETE-zero-rows case.
                 raise ActorNotFoundError(actor)
             if locked_from != from_queue:
@@ -676,14 +676,14 @@ SELECT id::text FROM "{schema}".cron_schedules
 """.strip()
 
 # The FROM-CTE snapshot pattern (same as backend/_cancel_bulk.py): the CTE
-# captures each row's pre-cancel status — UPDATE ... RETURNING can only see
-# the new value — and the repeated status predicate on the target
+# captures each row's pre-cancel status, UPDATE ... RETURNING can only see
+# the new value, and the repeated status predicate on the target
 # re-evaluates rows concurrently modified since the snapshot (EPQ-safe).
-# MATERIALIZED is load-bearing: without it the planner may inline the
+# MATERIALIZED is essential: without it the planner may inline the
 # LIMIT-ed matching CTE into the UPDATE as a nested loop and update more
 # rows than the LIMIT admits. The final SELECT aggregates from both CTEs
 # so the same statement returns the WINDOW count (``matched_count``) as
-# well as the affected rows — the drain terminates on the window count,
+# well as the affected rows, the drain terminates on the window count,
 # never the affected count, which an EPQ drop shorts while matching rows
 # remain beyond the window.
 _DEREGISTER_CANCEL_PENDING_SQL = """
@@ -725,7 +725,7 @@ RETURNING queue
 """.strip()
 
 # The jobs guard exists because jobs.actor/jobs.queue are plain text with no
-# FK: jobs enqueued to unregistered actors (an expected state — the CLI warns
+# FK: jobs enqueued to unregistered actors (an expected state, the CLI warns
 # about them) are invisible to the actor_config-only guard, yet still depend
 # on the queue row's max_concurrent cap and dispatch mode. A missing row
 # means uncapped + strict_fifo, so purging under them silently changes both.
@@ -760,7 +760,7 @@ async def _finalize_deregister(
 
     Runs inside the caller's transaction: the DELETE with its
     ``ActorNotFoundError``-on-zero-rows race handling, the terminal-history
-    count, and the optional queue purge — each an individually bounded
+    count, and the optional queue purge, each an individually bounded
     statement, so the whole tail fits one small transaction however large
     the actor's backlog was.
     """
@@ -808,19 +808,19 @@ async def deregister_actor(
 
     **Default (force=False):**
       1. Refuse if any non-terminal jobs (pending/scheduled/running) reference
-         the actor — raises :class:`ActorHasActiveJobsError`.
-      2. Refuse if any enabled cron schedules reference the actor — raises
+         the actor, raises :class:`ActorHasActiveJobsError`.
+      2. Refuse if any enabled cron schedules reference the actor, raises
          :class:`ActorHasEnabledSchedulesError`.
       3. Delete the ``actor_config`` row.
       4. Optionally purge the orphaned queue (if ``purge_queue=True``, no
           other ``actor_config`` row references the same queue, and no
-          non-terminal job in the ``jobs`` table still references it —
+          non-terminal job in the ``jobs`` table still references it ,
           ``jobs.actor``/``jobs.queue`` are plain text with no FK, so jobs
           enqueued to unregistered actors are invisible to the
           actor_config-only guard).
 
     **force=True:**
-      1. Refuse if any running jobs reference the actor — raises
+      1. Refuse if any running jobs reference the actor, raises
           :class:`ActorHasActiveJobsError`.
       2. Cancel pending/scheduled jobs for this actor.
       3. Disable enabled cron schedules for this actor.
@@ -831,10 +831,10 @@ async def deregister_actor(
     the whole operation runs inside a single ``conn.transaction()`` block;
     with ``force=True`` the cancel drains as bounded committed batches
     (``batch_size`` driving rows per transaction, each carrying a
-    server-side ``statement_timeout`` bound with ``SET LOCAL`` semantics —
+    server-side ``statement_timeout`` bound with ``SET LOCAL`` semantics ,
     the same capture/restore discipline the maintenance sweeps use)
     followed by one final transaction for the schedule disable, the
-    delete, the terminal count, and the optional purge — so a mid-drain
+    delete, the terminal count, and the optional purge, so a mid-drain
     failure leaves the batches already committed as partial progress, and
     a re-run continues where it stopped (the cancel's EPQ predicates skip
     the rows earlier batches already cancelled). The drain terminates on
@@ -851,8 +851,8 @@ async def deregister_actor(
     .. warning::
        **Concurrent enqueue / dispatch race (TOCTOU).** The transaction
        uses READ COMMITTED isolation. Callers must quiesce the actor first
-       — stop enqueuing, disable cron schedules, and wait for running jobs
-       to reach a terminal state — before calling deregister.
+      , stop enqueuing, disable cron schedules, and wait for running jobs
+       to reach a terminal state, before calling deregister.
 
        **Concurrent worker startup (sync_actor_config)** can re-create the
        ``actor_config`` row after this function returns, with capacity fields
@@ -863,14 +863,14 @@ async def deregister_actor(
         (force=True) will be left running with no ``actor_config`` row.
         When its lock expires, the leader sweep's retry branch returns it
         to **pending** with a short backoff (only jobs with no attempts
-        remaining — or a cancel request still in flight — transition to a
+        remaining, or a cancel request still in flight, transition to a
         terminal crashed/cancelled state). Because dispatch candidates
         are drawn from ``actor_config``, that pending job is then
         stranded: it is never dispatched while the actor stays
         unregistered, and the leader's stranded-jobs detector warns about
         it on its interval. If the actor name is ever re-registered
         (e.g. a redeploy reintroduces it), the stranded job silently
-        dispatches against the new code — cancel or retry it manually if
+        dispatches against the new code, cancel or retry it manually if
         that is not wanted.
 
        A cron schedule that fires between the disable UPDATE and the
@@ -891,7 +891,7 @@ async def deregister_actor(
     _validate_positive("statement_timeout_ms", statement_timeout_ms)
 
     # Actor-exists check first, as its own statement on the caller's
-    # connection — ActorNotFoundError takes precedence over all other
+    # connection, ActorNotFoundError takes precedence over all other
     # checks so callers don't get misleading errors for actors that are
     # already deregistered but have stranded jobs.
     exists = await conn.fetchval(
@@ -902,7 +902,7 @@ async def deregister_actor(
         raise ActorNotFoundError(actor)
 
     if not force:
-        # Every statement in this branch is small and bounded — one
+        # Every statement in this branch is small and bounded, one
         # transaction keeps the refusal checks and the delete atomic.
         async with conn.transaction():
             active_rows = await conn.fetch(
@@ -951,7 +951,7 @@ async def deregister_actor(
         # is enforced, not merely hoped, inside the
         # RECLAIM_EVENT_VISIBILITY_DELAY margin. Termination keys on the
         # WINDOW count the statement returns from its own MATERIALIZED
-        # matching CTE — never the UPDATE's affected-row count, which an
+        # matching CTE, never the UPDATE's affected-row count, which an
         # EPQ drop (a dispatcher claiming a windowed row mid-statement)
         # shorts while matching rows remain beyond the window. The
         # affected count drives only jobs_cancelled, so an EPQ-dropped
@@ -979,7 +979,7 @@ async def deregister_actor(
                             jsonb_param(
                                 {
                                     # The row's real prior status, not a
-                                    # 'pending_or_scheduled' placeholder —
+                                    # 'pending_or_scheduled' placeholder ,
                                     # same contract as _cancel_bulk.py.
                                     "from_state": prev_statuses[jid],
                                     "to_state": "cancelled",

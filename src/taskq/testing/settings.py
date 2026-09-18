@@ -3,7 +3,7 @@
 The default schema name is deliberately PER-CALL unique
 (``tq_<random base62>``, lowercased): a fixed per-xdist-worker name
 (``tq_<worker>``) is shared by every caller in the process, which silently
-clobbers across test modules for any consumer on a shared-database model —
+clobbers across test modules for any consumer on a shared-database model ,
 and every ``*_infra`` helper that consumes these settings is DROP-first, so
 two modules sharing one name would drop each other's schema mid-run. Pass an
 explicit ``schema_name=`` override when a deterministic name is required.
@@ -30,7 +30,7 @@ _DEFAULTS: dict[str, str] = {
     # interval: a stalled loop dies before its 2s lease expires, without
     # the detector tripping on its own sampling cadence. The warn budget
     # rides along at 0.5s because tier 1 must be able to fire before the
-    # 1.2s terminal tier — a warn budget at or above the terminal budget
+    # 1.2s terminal tier, a warn budget at or above the terminal budget
     # silently disables tier 1 and fails settings validation.
     "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "1.2",
     "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",

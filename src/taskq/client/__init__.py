@@ -1,4 +1,4 @@
-"""TaskQ client — the public surface for enqueuing, querying, and
+"""TaskQ client, the public surface for enqueuing, querying, and
 cancelling jobs, plus actor management (listing, capacity tuning,
 deregistration).
 

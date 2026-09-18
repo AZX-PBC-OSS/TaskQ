@@ -670,7 +670,7 @@ def make_pg_pool_factory(
 
     *statement_cache_size* / *max_cached_statement_lifetime* are forwarded
     to ``asyncpg.create_pool`` and default to TaskQ's tuning (the
-    ``taskq.connections`` module constants — 512 entries, 1 h lifetime —
+    ``taskq.connections`` module constants, 512 entries, 1 h lifetime ,
     which are also the ``TaskQSettings`` field defaults). asyncpg's own
     defaults (100 / 300 s) thrash on TaskQ's read paths, so a
     provider-backed pool must get the same cache treatment as the
@@ -1000,7 +1000,7 @@ def build_worker_connections(
         pooled = pg_dsn_pooled or pg_dsn or str(settings.resolved_pg_dsn_pooled)
         lifetime = settings.pool_max_inactive_lifetime
         # Same statement-cache treatment as open_worker_deps' DSN-built
-        # pools — switching authentication must not switch cache behaviour.
+        # pools, switching authentication must not switch cache behaviour.
         # The kwargs are forwarded explicitly (not splatted) so pyright
         # traces types through make_pg_pool_factory's typed parameters.
         stmt_kwargs = statement_cache_kwargs(settings)

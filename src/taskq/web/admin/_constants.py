@@ -48,11 +48,11 @@ def parse_text_filter(raw: str | None, what: str) -> str | None:
 
     Every admin list filter is bound as a ``text`` parameter, and
     PostgreSQL rejects a NUL in a ``text`` value with
-    ``CharacterNotInRepertoireError`` (SQLSTATE 22021) — an opaque 500
+    ``CharacterNotInRepertoireError`` (SQLSTATE 22021), an opaque 500
     from deep inside the driver. This is the admin-route counterpart of
     the client path's ``JobFilter``/``EnqueueArgs`` NUL guards
     (:func:`taskq._json.check_no_nul_str`): reject at parse time with a
-    clean 400 instead. *raw* is returned unchanged (``None`` included) —
+    clean 400 instead. *raw* is returned unchanged (``None`` included) ,
     blank-normalization stays each route's own concern.
     """
     if raw is None:
@@ -67,20 +67,20 @@ def parse_text_filter(raw: str | None, what: str) -> str | None:
 def parse_time_filter(raw: str | None, what: str) -> datetime | None:
     """Parse an absolute ISO-8601 timestamp filter; raises HTTPException on garbage.
 
-    The admin jobs list binds ``time_from``/``time_to`` against
-    ``$n::timestamptz`` parameters, and asyncpg's timestamptz encoder
-    accepts only ``datetime`` instances — handing it the raw query
-    STRING is rejected client-side with a DataError that surfaces as an
-    opaque 500. The family's own convention for caller-supplied
-    timestamps (history.py's ``cursor_at``) parses with
-    ``datetime.fromisoformat`` and 400s on garbage; the absolute time
-    filters take the same path: a well-formed window binds as
-    datetimes, a malformed one is a clean 400 input error. An empty
-    value means no filter (the family's blank-normalization convention
-    — a submitted-but-empty form field is not garbage). A timestamp
-    without an offset is read as UTC: asyncpg binds a naive datetime in
-    the client process's local zone, so an implicit-local read would
-    shift the window by whatever machine happens to serve the page.
+     The admin jobs list binds ``time_from``/``time_to`` against
+     ``$n::timestamptz`` parameters, and asyncpg's timestamptz encoder
+     accepts only ``datetime`` instances, handing it the raw query
+     STRING is rejected client-side with a DataError that surfaces as an
+     opaque 500. The family's own convention for caller-supplied
+     timestamps (history.py's ``cursor_at``) parses with
+     ``datetime.fromisoformat`` and 400s on garbage; the absolute time
+     filters take the same path: a well-formed window binds as
+     datetimes, a malformed one is a clean 400 input error. An empty
+     value means no filter (the family's blank-normalization convention
+    , a submitted-but-empty form field is not garbage). A timestamp
+     without an offset is read as UTC: asyncpg binds a naive datetime in
+     the client process's local zone, so an implicit-local read would
+     shift the window by whatever machine happens to serve the page.
     """
     if raw is None or not raw.strip():
         return None
@@ -101,13 +101,13 @@ def parse_job_tags(raw: str | None) -> list[str] | None:
 
     Returns ``None`` when *raw* is empty/absent (no filter). Items are
     stripped and deduplicated (first-occurrence order) and each item is
-    capped at the enqueue-side ``_MAX_TAG_LENGTH`` — the stored tags can
+    capped at the enqueue-side ``_MAX_TAG_LENGTH``, the stored tags can
     never exceed it, so a longer filter term can never match anything.
     There is deliberately no cap on the item *count*: the parse is O(n)
     over a query string the URL length already bounds and the ``text[]``
     bind is flat, so a cap would only make a legitimate wide overlap
     query unexpressible. A NUL in an item is rejected here because the
-    list is bound as ``text[]`` — the same SQLSTATE-22021 class
+    list is bound as ``text[]``, the same SQLSTATE-22021 class
     :func:`parse_text_filter` guards for scalar filters.
     """
     if not raw:

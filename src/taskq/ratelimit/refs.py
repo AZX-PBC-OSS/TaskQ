@@ -8,7 +8,7 @@ time, not at decoration time.
 ``KeyedReservationRef`` is the dynamic counterpart: instead of a single
 fixed name, it carries a ``key_fn`` that derives a concrete reservation
 name per job from the validated payload. This is for session/tenant-scoped
-concurrency caps layered on top of a static global cap — e.g. an actor
+concurrency caps layered on top of a static global cap, e.g. an actor
 declares ``reservations=["geocode-global", KeyedReservationRef.typed(MyPayload, base_name="geocode-session", key_fn=lambda p: p.session_id, slots=3, lease=timedelta(minutes=5))]``
 to cap total concurrent geocode calls globally *and* per import session,
 with each session's cap materializing as its own
@@ -16,7 +16,7 @@ with each session's cap materializing as its own
 
 ``KeyedRateLimitRef`` mirrors ``KeyedReservationRef`` for token buckets:
 instead of a single fixed rate-limit name, it derives a per-key
-:class:`~taskq.ratelimit.token_bucket.TokenBucket` from the payload — e.g.
+:class:`~taskq.ratelimit.token_bucket.TokenBucket` from the payload, e.g.
 an actor declares ``rate_limits=[KeyedRateLimitRef.typed(MyPayload, base_name="api-per-tenant", key_fn=lambda p: p.tenant_id, capacity=10, refill_per_second=1.0)]``
 to give each tenant its own independent token budget, with each tenant's
 bucket materializing on first use.
@@ -42,17 +42,17 @@ def _validate_keyed_base_name(v: str) -> str:
 
     The two keyed paths resolve concrete names identically
     (``f"{base_name}:{key}"``) and are deliberately kept on the same
-    validation strictness — keep any change to one in the other by
+    validation strictness, keep any change to one in the other by
     changing it HERE, once.
 
     Beyond charset/length, rejects a ``base_name`` whose derived concrete
     names would land inside the reserved queue-cap namespace
     (:data:`~taskq.constants.QUEUE_CONCURRENCY_PREFIX`): the character
     allowlist includes ``":"``, so such a ``base_name`` would pass the
-    charset check, sail through DI validation (which skips keyed refs —
+    charset check, sail through DI validation (which skips keyed refs ,
     their concrete names only exist at acquire time), and then make EVERY
     job on the actor die with ``ValueError`` from the ``register()``
-    prefix guard — forever, since registration never succeeds and the
+    prefix guard, forever, since registration never succeeds and the
     failing path is retried per job. Failing here instead surfaces the
     misconfiguration at ref construction (startup/import time), like
     every other invalid ref.
@@ -70,7 +70,7 @@ def _validate_keyed_base_name(v: str) -> str:
     if base_name_collides_with_reserved_prefix(v):
         raise ValueError(
             f"base_name {v!r} would derive concrete names inside the reserved "
-            f"queue-cap namespace 'taskq:global:queue:' — choose a base_name "
+            f"queue-cap namespace 'taskq:global:queue:', choose a base_name "
             f"outside that prefix"
         )
     return v
@@ -79,7 +79,7 @@ def _validate_keyed_base_name(v: str) -> str:
 def _validate_concrete_payload_type(v: type[BaseModel]) -> type[BaseModel]:
     """Shared ``payload_type`` validation for both keyed ref types.
 
-    Rejects ``BaseModel`` itself — only concrete subclasses carry the
+    Rejects ``BaseModel`` itself, only concrete subclasses carry the
     fields ``key_fn`` needs to derive a key. Passing ``BaseModel`` would
     pass the type checker but always fail at runtime (``key_fn`` has no
     fields to read).
@@ -109,8 +109,8 @@ class KeyedReservationRef(BaseModel):
     registered for a given key is ``f"{base_name}:{key}"``) so distinct
     ``KeyedReservationRef`` declarations never collide. ``key_fn`` receives
     the actor's validated payload (as a :class:`~pydantic.BaseModel`
-    instance — validated from the job row's raw JSON payload) and
-    must return a non-empty string — typically a tenant, session, or
+    instance, validated from the job row's raw JSON payload) and
+    must return a non-empty string, typically a tenant, session, or
     account identifier already present on the payload.
 
     ``payload_type`` is the :class:`~pydantic.BaseModel` subclass that the
@@ -125,17 +125,17 @@ class KeyedReservationRef(BaseModel):
     need different caps.
 
     Concrete per-key reservations are registered lazily on first
-    acquisition and are not automatically removed — see
+    acquisition and are not automatically removed, see
     :meth:`~taskq.ratelimit.registry.RateLimitRegistry.evict_idle_keyed_reservations`
     for bounding registry growth under high key cardinality.
 
     .. note::
         The declared type ``Callable[[BaseModel], str]`` is deliberately
-        unsound at the field level — :meth:`typed` stores a
+        unsound at the field level, :meth:`typed` stores a
         ``Callable[[P], str]`` (contravariance prevents direct assignment).
         Runtime safety is enforced by the registry's ``isinstance`` check
         against ``payload_type`` before calling ``key_fn``. Direct
-        invocation of ``ref.key_fn(model)`` is unchecked — prefer
+        invocation of ``ref.key_fn(model)`` is unchecked, prefer
         :meth:`typed` for compile-time safety.
     """
 
@@ -160,14 +160,14 @@ class KeyedReservationRef(BaseModel):
         """Type-safe constructor that binds ``key_fn`` to ``payload_type``.
 
         The ``key_fn`` parameter is typed as ``Callable[[P], str]`` where
-        ``P`` is the provided ``payload_type`` — at static-analysis time
+        ``P`` is the provided ``payload_type``, at static-analysis time
         the caller's lambda or function is checked against the concrete
         model's attributes (e.g. ``lambda p: p.session_id`` is verified
         against ``payload_type.session_id``).
 
         At runtime the registry passes the validated payload model to
         ``key_fn``, so the callable always receives an instance of
-        ``payload_type`` (verified by ``isinstance`` in the registry —
+        ``payload_type`` (verified by ``isinstance`` in the registry ,
         same-type payloads pass through directly; different-type or dict
         payloads are re-validated via ``model_validate``).
         """
@@ -239,7 +239,7 @@ class KeyedRateLimitRef(BaseModel):
     :class:`~taskq.ratelimit.token_bucket.TokenBucket` uses, identical to
     the ``backend`` constructor parameter on a static ``TokenBucket``. In a
     deployment without Redis configured, set ``backend="postgres"`` or
-    ``backend="memory"`` to avoid the Redis-required failure mode — a
+    ``backend="memory"`` to avoid the Redis-required failure mode, a
     keyed bucket with ``backend="redis"`` but no ``redis_client`` raises
     ``RuntimeError`` on acquire (not caught by ``with_pg_fallback``, which
     only handles ``ConnectionError``/``TimeoutError``).
@@ -249,7 +249,7 @@ class KeyedRateLimitRef(BaseModel):
     ``backend`` from this ref, default ``"redis"``) and calls its normal ``.acquire()``.
     The existing ``with_pg_fallback`` path in
     ``token_bucket._acquire_redis_wrapped`` is therefore inherited
-    automatically — on Redis ``ConnectionError``/``TimeoutError``, the
+    automatically, on Redis ``ConnectionError``/``TimeoutError``, the
     acquire falls back to the PG ``rate_limit_buckets`` table governed by
     ``settings.rate_limit_pg_fallback_enabled``. No second fallback
     mechanism is built or needed.
@@ -260,22 +260,22 @@ class KeyedRateLimitRef(BaseModel):
     Python-process-local dict/registry growth is bounded separately by
     :meth:`~taskq.ratelimit.registry.RateLimitRegistry.evict_idle_keyed_rate_limits`,
     which evicts idle entries from the in-memory registry. These are two
-    independent bounds — Redis TTL bounds Redis memory; registry eviction
+    independent bounds, Redis TTL bounds Redis memory; registry eviction
     bounds Python memory.
 
     Concrete per-key :class:`~taskq.ratelimit.token_bucket.TokenBucket`
     instances are registered lazily on first acquisition and are not
-    automatically removed — see
+    automatically removed, see
     :meth:`~taskq.ratelimit.registry.RateLimitRegistry.evict_idle_keyed_rate_limits`
     for bounding registry growth under high key cardinality.
 
     .. note::
         The declared type ``Callable[[BaseModel], str]`` is deliberately
-        unsound at the field level — :meth:`typed` stores a
+        unsound at the field level, :meth:`typed` stores a
         ``Callable[[P], str]`` (contravariance prevents direct assignment).
         Runtime safety is enforced by the registry's ``isinstance`` check
         against ``payload_type`` before calling ``key_fn``. Direct
-        invocation of ``ref.key_fn(model)`` is unchecked — prefer
+        invocation of ``ref.key_fn(model)`` is unchecked, prefer
         :meth:`typed` for compile-time safety.
     """
 
@@ -302,14 +302,14 @@ class KeyedRateLimitRef(BaseModel):
         """Type-safe constructor that binds ``key_fn`` to ``payload_type``.
 
         The ``key_fn`` parameter is typed as ``Callable[[P], str]`` where
-        ``P`` is the provided ``payload_type`` — at static-analysis time
+        ``P`` is the provided ``payload_type``, at static-analysis time
         the caller's lambda or function is checked against the concrete
         model's attributes (e.g. ``lambda p: p.tenant_id`` is verified
         against ``payload_type.tenant_id``).
 
         At runtime the registry passes the validated payload model to
         ``key_fn``, so the callable always receives an instance of
-        ``payload_type`` (verified by ``isinstance`` in the registry —
+        ``payload_type`` (verified by ``isinstance`` in the registry ,
         same-type payloads pass through directly; different-type or dict
         payloads are re-validated via ``model_validate``).
         """

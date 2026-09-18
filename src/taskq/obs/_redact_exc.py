@@ -116,7 +116,7 @@ _PG_DETAIL_RE = re.compile(r"^[ \t|+]*DETAIL:.*$", re.MULTILINE)
 #: Companion to :data:`_PG_DETAIL_RE` for ``repr()``-flattened text.
 #: ``repr(exc)`` renders the newline before DETAIL as the two
 #: literal characters ``\n``, which the line-anchored pattern above cannot
-#: see — and ``error=repr(exc)`` is a majority log idiom. Consumes from the
+#: see, and ``error=repr(exc)`` is a majority log idiom. Consumes from the
 #: escaped newline up to (not including) the next escaped newline, or up to
 #: the repr tail: a quote followed by the run of ``)``/``]`` closers a
 #: ``repr()`` ends with (``')`` for a plain exception, ``')])`` once the
@@ -157,9 +157,9 @@ _PG_DETAIL_ESCAPED_RE = re.compile(
 
 #: userinfo in a URI. Group 1 is the scheme+user, group 2 the password.
 #:
-#: The username class is ``*``, not ``+``: an EMPTY username is a real shape —
+#: The username class is ``*``, not ``+``: an EMPTY username is a real shape ,
 #: ``postgresql://:SECRET@host/db`` is what a DSN renders when only a
-#: password is set — and ``+`` skipped it entirely, shipping the password
+#: password is set, and ``+`` skipped it entirely, shipping the password
 #: verbatim. With ``*`` group 1 is the bare scheme prefix, so the masked
 #: form still reads ``scheme://:***@host``.
 _URI_CRED_RE = re.compile(r"(\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@]*):([^\s@]+)@")
@@ -167,7 +167,7 @@ _URI_CRED_RE = re.compile(r"(\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@]*):([^\s@]+)@")
 #: Connection-parameter names whose value is credential material. Kept tight
 #: to the password family: broader names (``secret``, ``token``, …) would
 #: redact non-credential parameters, which is its own bug. ``sslpassword`` is
-#: the passphrase for the client TLS key — a credential in its own right.
+#: the passphrase for the client TLS key, a credential in its own right.
 #:
 #: Spelled once, in one case, and compiled into the matcher below rather than
 #: written out as literals inside a pattern: a hand-maintained list of exact
@@ -176,8 +176,8 @@ _URI_CRED_RE = re.compile(r"(\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@]*):([^\s@]+)@")
 _CRED_PARAM_NAMES = ("password", "passphrase", "passwd", "pwd", "sslpassword")
 
 #: password-family credentials in a connection string, in BOTH spellings that
-#: carry one. Group 1 is the delimiter plus the parameter name — kept verbatim
-#: so the masked form still names which setting carried the credential — and
+#: carry one. Group 1 is the delimiter plus the parameter name, kept verbatim
+#: so the masked form still names which setting carried the credential, and
 #: group 2 is the value.
 #:
 #: Delimiters cover the URI query string (``?password=…`` / ``&password=…``)
@@ -191,9 +191,9 @@ _CRED_PARAM_NAMES = ("password", "passphrase", "passwd", "pwd", "sslpassword")
 #: and operator-typed DSNs echo back whatever casing was written, so a matcher
 #: keyed to one exact spelling ships the value verbatim in every other.
 #:
-#: The value is either a libpq single-quoted string — which may carry spaces
+#: The value is either a libpq single-quoted string, which may carry spaces
 #: and honours the ``\'`` and ``\\`` escapes, so the quote run must be
-#: consumed whole or the tail of the secret rides along after the ``***`` —
+#: consumed whole or the tail of the secret rides along after the ``***`` ,
 #: or an unquoted token. The unquoted class stops only at whitespace and
 #: ``&`` (the next parameter). It deliberately does NOT stop at ``@``: a
 #: password may legally contain an unencoded ``@``, and a matcher that
@@ -208,12 +208,12 @@ _URI_PARAM_CRED_RE = re.compile(
 
 #: Lowercased trigger substrings for :data:`_URI_PARAM_CRED_RE`'s prefilter.
 #: Derived from the same name tuple, so a name added above is guarded here
-#: without a second edit — a prefilter that drifts from its pattern silently
+#: without a second edit, a prefilter that drifts from its pattern silently
 #: stops masking.
 _CRED_PARAM_TRIGGERS = tuple(f"{name}=" for name in _CRED_PARAM_NAMES)
 
 #: Default bound on scrubbed message text. 2000 to match
-#: ``web/admin/jobs.py``'s ``_TRACEBACK_DISPLAY_LIMIT`` — one number for "how
+#: ``web/admin/jobs.py``'s ``_TRACEBACK_DISPLAY_LIMIT``, one number for "how
 #: much error text do we keep", not two. Overridable via
 #: ``TASKQ_EXCEPTION_MESSAGE_MAX_CHARS`` because no single number suits both a
 #: terse constraint violation and an actor that formats a large object into its
@@ -254,8 +254,8 @@ def _scrub_text(text: str) -> str:
 
     Both credential shapes are masked: userinfo (``scheme://user:pass@host``,
     empty username included) by :data:`_URI_CRED_RE`, then password-family
-    connection parameters — query-string and libpq keyword/value alike, in any
-    casing — by :data:`_URI_PARAM_CRED_RE`. The order is what makes a DSN
+    connection parameters, query-string and libpq keyword/value alike, in any
+    casing, by :data:`_URI_PARAM_CRED_RE`. The order is what makes a DSN
     carrying both at once safe (``scheme://user:SECRET@host/db?password=OTHER``):
     the userinfo mask runs first and claims the password up to the FIRST
     ``@``, so an RFC 3986-shaped DSN leaves the parameter mask a string whose
@@ -268,7 +268,7 @@ def _scrub_text(text: str) -> str:
     text a later ``@`` more often belongs to the next token (an email
     address, a mention) than to the password, so last-``@`` matching would
     over-delete diagnostics to catch a malformed shape. Neither mask's
-    ``***`` output contains anything the other regex can re-match — each
+    ``***`` output contains anything the other regex can re-match, each
     fires exactly once.
 
     The credential masks are applied unconditionally, outside the
@@ -280,11 +280,11 @@ def _scrub_text(text: str) -> str:
     for that pattern to match at all, derived from the pattern text:
 
     * ``_PG_DETAIL_RE`` anchors a line on the literal ``DETAIL:`` and
-      ``_PG_DETAIL_ESCAPED_RE`` matches it after an escaped newline — both
+      ``_PG_DETAIL_ESCAPED_RE`` matches it after an escaped newline, both
       require ``"DETAIL:"`` in the subject.
     * ``_URI_CRED_RE`` requires a ``scheme://`` separator.
     * ``_URI_PARAM_CRED_RE`` requires a password-family parameter name
-      followed by ``=``, compared case-insensitively to match the pattern —
+      followed by ``=``, compared case-insensitively to match the pattern ,
       and deliberately NOT ``://``: bare ``host/db?password=…`` and libpq
       ``host=db … password=…`` text must stay masked, so the guard is on the
       parameter names, not a scheme.
@@ -292,7 +292,7 @@ def _scrub_text(text: str) -> str:
     Skipping a substitution when its trigger substring is absent cannot
     change the output (the pattern could not have matched), which collapses
     the four regex passes to three substring scans for the common
-    error-bearing log field — the cost that matters at error-storm rates.
+    error-bearing log field, the cost that matters at error-storm rates.
     """
     if _redaction_enabled and "DETAIL:" in text:
         text = _PG_DETAIL_RE.sub("", text)
@@ -319,7 +319,7 @@ def _bound_message(text: str) -> str:
     """Strip and length-bound scrubbed message text.
 
     Reports the dropped character count, matching ``_truncate_traceback`` in
-    the admin UI — a bare "...[truncated]" hides how much is missing, so an
+    the admin UI, a bare "...[truncated]" hides how much is missing, so an
     operator cannot tell whether raising the bound would help.
     """
     text = text.strip()
@@ -423,7 +423,7 @@ _ResolvedExcInfo = tuple[type[BaseException], BaseException, TracebackType | Non
 
 #: What structlog event dicts can carry on the ``exc_info`` key. Untrusted
 #: boundary input: the tuple members are ``object`` until validated at runtime,
-#: so the ``_resolve_exc_info`` narrowing checks are load-bearing, not redundant.
+#: so the ``_resolve_exc_info`` narrowing checks are essential, not redundant.
 _ExcInfoInput = bool | BaseException | tuple[object, object, object] | None
 
 
@@ -511,7 +511,7 @@ def record_exception_safe(span: "Span", exc: BaseException) -> None:
 #: Event-dict field names that conventionally carry exception MESSAGE text on
 #: the log channel. Derived from the log sites in ``src/taskq`` that render
 #: exception text into a field (``error=…``, ``error_message=…``, the
-#: terminal-write log's ``job_error_message``/``infra_error_message`` …) —
+#: terminal-write log's ``job_error_message``/``infra_error_message`` …) ,
 #: NOT an automatically exhaustive set: when a new log field is introduced
 #: whose value is rendered exception text (``str(exc)``/``repr(exc)``/
 #: ``traceback.format_exception``), its name must be added here or the JSON
@@ -525,7 +525,7 @@ EXCEPTION_MESSAGE_FIELDS = frozenset(
     {"error", "error_message", "exc", "job_error_message", "infra_error_message"}
 )
 
-#: Event-dict field names that conventionally carry rendered TRACEBACK text —
+#: Event-dict field names that conventionally carry rendered TRACEBACK text ,
 #: scrubbed line-wise like :func:`render_exception`, without the message-length
 #: bound, so the traceback stays diagnostic. Same derivation and guard
 #: contract as :data:`EXCEPTION_MESSAGE_FIELDS`.

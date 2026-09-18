@@ -3,13 +3,13 @@
 One module owns all four detectors plus the diagnostic dump, so nothing
 else in the worker grows a health responsibility:
 
-- :func:`dump_task_stacks` — one structured log record per live asyncio
+- :func:`dump_task_stacks`, one structured log record per live asyncio
   task (name, coro repr, await-site frames), shared by the trip dump,
   the SIGUSR2 handler, the ``/tasks`` endpoint, and the straggler
   logger. A raw stderr fallback follows the records so the bundle
   survives a broken logging pipeline.
-- :class:`LoopLiveness` — per-loop monotonic tick stamps and ages.
-- :class:`ShutdownWatchdog` — detectors 1 (shutdown hard deadline) and
+- :class:`LoopLiveness`, per-loop monotonic tick stamps and ages.
+- :class:`ShutdownWatchdog`, detectors 1 (shutdown hard deadline) and
   the straggler logger. Lives OUTSIDE the worker TaskGroup by design:
   as a group child it would be cancelled by the very sibling crash it
   exists to catch. Parks on ``shutdown_event``; once set, counts down
@@ -17,11 +17,11 @@ else in the worker grows a health responsibility:
   rather than validation-only), logging still-alive siblings every
   ``watchdog_dump_interval`` once the shutdown is into the back half
   of its budget.
-- :class:`LoopLagWatchdog` — detector 4, a daemon thread measuring
+- :class:`LoopLagWatchdog`, detector 4, a daemon thread measuring
   event-loop scheduling lag. Thread-based (and ``faulthandler``-based
   for its dump) because a fully blocked loop cannot run an in-loop
   detector, and ``asyncio.all_tasks`` is not thread-safe.
-- :func:`loop_watchdog_loop` — detector 2, the stale-tick sweep over
+- :func:`loop_watchdog_loop`, detector 2, the stale-tick sweep over
   :class:`LoopLiveness`. Interval-driven loops opt in via
   :meth:`LoopLiveness.tick`; deliberately parked loops (notify listener,
   consumers, reload coordinator) have no cadence and are covered by
@@ -31,7 +31,7 @@ else in the worker grows a health responsibility:
   ``shutdown_event`` is clear is a contract violation and is re-raised.
 
 Trip semantics (:func:`trip`): critical log + metric, dump, flush, then
-``os._exit(EXIT_WATCHDOG)`` with no further awaits — a wedged process
+``os._exit(EXIT_WATCHDOG)`` with no further awaits, a wedged process
 cannot be trusted to unwind, and in-flight jobs are reclaimed by the
 leader sweep on lock-lease expiry (the existing, tested recovery path).
 The non-zero code guarantees the supervisor restarts the worker.
@@ -410,7 +410,7 @@ async def await_tracked_actor_reap() -> bool:
     and then parked in the default executor's join
     (``THREAD_JOIN_TIMEOUT``, 300s) waiting for the very thread the hold
     assumed was gone: a released row became claimable while its actor
-    still ran (the double-run #232 constructed at the default budgets
+    still ran (the double-run built at the default budgets
     with an ordinary long sync actor).
 
     The thread's post-release completion accomplishes nothing: its row
@@ -701,7 +701,7 @@ class LoopLagWatchdog:
     """Detector 4: daemon thread measuring event-loop scheduling lag.
 
     Arms after *startup_grace* seconds or the first liveness tick,
-    whichever comes first — import-heavy startup and DI bootstrap must
+    whichever comes first, import-heavy startup and DI bootstrap must
     never trip it. Two tiers once armed:
 
     - Tier 1 (``warn_budget``): non-terminal. Once per stall, increments
@@ -713,7 +713,7 @@ class LoopLagWatchdog:
     - Tier 2 (``budget``): terminal. When the loop has not scheduled a
       beat within *budget* seconds, dumps thread frames and trips
       (force-exit), because in-flight jobs are recovered by the leader
-      sweep on lock-lease expiry — which is only safe while the trip
+      sweep on lock-lease expiry, which is only safe while the trip
       lands inside the lease (see the lag-lease invariant in
       ``WorkerSettings.post_load``).
 
@@ -814,7 +814,7 @@ class LoopLagWatchdog:
     def _run(self) -> None:
         """Thread entry point: never let an exception escape silently.
 
-        A daemon thread that dies takes detector 4 with it — the worker
+        A daemon thread that dies takes detector 4 with it, the worker
         would keep running with no protection against a blocked loop and
         no indication that the protection was gone. Log loudly instead of
         vanishing.
@@ -940,12 +940,12 @@ class LoopLagWatchdog:
         # Thread-state dump is safe from this thread even while the loop
         # is blocked; the task-stack dump is not (asyncio.all_tasks is not
         # thread-safe), so it is deferred onto the loop and lands once the
-        # loop schedules again — hence the "recovered" reason.
+        # loop schedules again, hence the "recovered" reason.
         faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
         # contextlib.suppress, and functools.partial rather than keyword
         # arguments: call_soon_threadsafe forwards only positional args
         # (its sole keyword is `context`), so the detector label must
-        # travel inside the callable — and a loop already closed by a
+        # travel inside the callable, and a loop already closed by a
         # racing shutdown raises RuntimeError, which the faulthandler
         # dump above has already made moot. Swallowing keeps the thread
         # alive for the terminal tier.

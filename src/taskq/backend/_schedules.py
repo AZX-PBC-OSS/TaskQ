@@ -109,7 +109,7 @@ async def create_schedule(
 ) -> ScheduleRecord:
     """Insert a row into ``cron_schedules`` and return it.
 
-    Does NOT suppress ``UniqueViolationError`` — callers handle it
+    Does NOT suppress ``UniqueViolationError``, callers handle it
     (the ``(actor, name)`` UNIQUE constraint).  ``next_fire_at`` is provided by the
     caller (computed client-side via ``compute_next_fire_after``).
     """
@@ -208,7 +208,7 @@ async def update_schedule(
         params.append(args.last_fire_error)
 
     if not sets:
-        # No fields to update — return current row.
+        # No fields to update, return current row.
         async with _bounded_checkout(pool, "update_schedule") as conn:
             row = await conn.fetchrow(sql.select_by_id, schedule_id)
         if row is None:
@@ -224,6 +224,6 @@ async def update_schedule(
 
 
 async def delete_schedule(pool: "asyncpg.Pool", sql: ScheduleSql, schedule_id: UUID) -> None:
-    """Delete a cron schedule.  Idempotent — no error if row missing."""
+    """Delete a cron schedule.  Idempotent, no error if row missing."""
     async with _bounded_checkout(pool, "delete_schedule") as conn:
         await conn.execute(sql.delete, schedule_id)

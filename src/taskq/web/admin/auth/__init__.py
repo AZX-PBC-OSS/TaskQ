@@ -2,19 +2,19 @@
 
 Public surface:
 
-* :class:`AuthBundle`, :class:`IdentityClaims` — shared, protocol-agnostic.
+* :class:`AuthBundle`, :class:`IdentityClaims`, shared, protocol-agnostic.
 * :func:`create_oidc_auth`, :class:`OIDCAuthConfig`, :class:`OIDCTokenContext`
-  — OIDC backend (``taskq[oidc]``).
-* :func:`create_saml_auth`, :class:`SAMLAuthConfig` — SAML backend
+ , OIDC backend (``taskq[oidc]``).
+* :func:`create_saml_auth`, :class:`SAMLAuthConfig`, SAML backend
   (``taskq[saml]``).
 
 Importing ``oidc.py``/``saml.py`` never requires ``authlib`` or
-``python3-saml`` — those heavy deps are imported lazily *inside*
+``python3-saml``, those heavy deps are imported lazily *inside*
 :func:`create_oidc_auth`/:func:`create_saml_auth` themselves, each raising a
 clear :class:`ImportError` with install instructions the first time they're
 actually called without the matching extra installed. So this package is
 always importable, and so are ``create_oidc_auth``/``create_saml_auth`` as
-plain re-exports below — the ImportError (if any) surfaces on first call, not
+plain re-exports below, the ImportError (if any) surfaces on first call, not
 on import.
 """
 

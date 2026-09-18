@@ -33,8 +33,8 @@ async def _cancel_where(
     rows = await _list_jobs(self, sanitized)
     # cancel_where owes job-id-ascending ids: the PG statement returns
     # ``array_agg(id ORDER BY id)`` over driving windows that are themselves
-    # ``ORDER BY id`` (backend/_cancel_bulk.py), so each batch's ids — and
-    # the drain's concatenation of batches — come back UUID-ascending. No
+    # ``ORDER BY id`` (backend/_cancel_bulk.py), so each batch's ids, and
+    # the drain's concatenation of batches, come back UUID-ascending. No
     # JobSortField is id-ascending (``ordering_for``'s default orders
     # priority first), so the id order is imposed on the listed rows here.
     rows.sort(key=lambda r: r.id)

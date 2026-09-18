@@ -1,6 +1,6 @@
 """Shared SQL helpers for the taskq backend package.
 
-Internal module — the leading underscore on the module name itself signals
+Internal module, the leading underscore on the module name itself signals
 "private to taskq.backend."  Module-level constants and functions here are
 the explicit public surface of this module within the backend package.
 """
@@ -29,11 +29,11 @@ __all__ = [
 # INSERT carrying the id of an already-deleted worker still violates the FK.
 # A live worker's row CAN be gone before it writes a terminal attempt:
 # cleanup_stale_workers (another worker's leader sweep) deletes rows whose
-# heartbeat is stale heartbeat_interval * (max_heartbeat_failures + 3) — a
+# heartbeat is stale heartbeat_interval * (max_heartbeat_failures + 3), a
 # blocked-but-alive loop (watchdog off, or a lag budget above that threshold,
 # or isolate_self after enough heartbeat failures) is exactly such a row.
-# The holder CTE resolves the id at insert time under FOR KEY SHARE — the
-# same row lock the FK check itself takes — so one statement cannot be split
+# The holder CTE resolves the id at insert time under FOR KEY SHARE, the
+# same row lock the FK check itself takes, so one statement cannot be split
 # by a concurrent delete: a present parent records the id, a deleted (or
 # NULL) one records NULL, mirroring the column's ON DELETE SET NULL
 # semantics. Constraint violations are deliberately non-transient (see
@@ -56,7 +56,7 @@ VALUES ($1, $2, $3, clock_timestamp(), $4, $5, $6, $7, $8,
 -- of the number, never raise a PK collision on the hot path (the
 -- deadline sweep's insert carries the same doctrine).
 ON CONFLICT (job_id, attempt) DO NOTHING"""
-# Note: finished_at uses server-side clock_timestamp() — this template
+# Note: finished_at uses server-side clock_timestamp(), this template
 # (INSERT_ATTEMPT_SQL, formatted by worker/heartbeat.py for its
 # isolate-self attempt write) runs on a caller's existing transaction or
 # dedicated connection, where clock_timestamp() is the actual wall-clock
@@ -78,7 +78,7 @@ VALUES ($1, clock_timestamp(), $2, $3::jsonb)"""
 #
 # One statement per batch, not one per row: each round trip here is time the
 # batch transaction stays open against RECLAIM_EVENT_VISIBILITY_DELAY (see
-# taskq.constants), and only the (job_id, detail) pairs vary — kind is shared
+# taskq.constants), and only the (job_id, detail) pairs vary, kind is shared
 # by every row a sweep or bulk write produces.
 #
 # occurred_at carries a microsecond ladder on the row ordinal rather than a
@@ -86,13 +86,13 @@ VALUES ($1, clock_timestamp(), $2, $3::jsonb)"""
 # non-decreasing in job_events.id order, and the audit contract pins it
 # DISTINCT per row. A bare volatile clock_timestamp() is evaluated per row but
 # cannot deliver the second property inside one statement: the OS clock that
-# backs it resolves to microseconds while per-row evaluation is far cheaper —
-# measured on Postgres 18, ~26 rows evaluate within the same microsecond — so
+# backs it resolves to microseconds while per-row evaluation is far cheaper ,
+# measured on Postgres 18, ~26 rows evaluate within the same microsecond, so
 # tens of rows collapse onto one stamp and the ordering information the
 # watermark reads is destroyed. The ladder restores it by construction: each
 # row's stamp is its own evaluation instant plus (ordinal - 1) microseconds,
 # strictly increasing, at most (batch_size - 1) microseconds ahead of real
-# time — four-plus orders of magnitude inside the 2 s visibility margin, far
+# time, four-plus orders of magnitude inside the 2 s visibility margin, far
 # below the commit-order skew the margin already absorbs, so it cannot mask a
 # real inversion. Statements remain separated by whole round trips, so
 # different statements' stamps stay disjoint.
@@ -122,7 +122,7 @@ UPDATE "{schema}".jobs
 SET cancel_phase = 2
 WHERE id = $1 AND status = 'running' AND locked_by_worker = $2 AND cancel_phase = 1"""
 # Shared between PostgresBackend and the cancel-poll hook factory
-# (taskq.worker.cancel) — the hook uses a bare conn.execute on the heartbeat
+# (taskq.worker.cancel), the hook uses a bare conn.execute on the heartbeat
 # connection that already holds an open transaction.  Keeping the SQL in a
 # single module-level constant prevents drift between the two call sites (DRY).
 
@@ -149,8 +149,8 @@ UPDATE_WORKER_LIVENESS_SQL_TEMPLATE = (
 # disowned set (WorkerDeps.disowned_jobs): rows this worker holds but
 # could not record an outcome for, whose leases must lapse so the
 # reclaim sweep can hand them back. The exclusion lives in this shared
-# core so every renewal — the heartbeat loop's gated statement and the
-# backend's own heartbeat_jobs — carries it; a renewal without it would
+# core so every renewal, the heartbeat loop's gated statement and the
+# backend's own heartbeat_jobs, carries it; a renewal without it would
 # keep a disowned row's lease alive for as long as the process lived.
 # An empty array excludes nothing.
 _UPDATE_JOBS_LOCK_WHERE_CORE = (
@@ -162,13 +162,13 @@ UPDATE_JOBS_LOCK_SQL_TEMPLATE = (
     + _UPDATE_JOBS_LOCK_WHERE_CORE
 )
 # The heartbeat loop's renewal: the same write, threshold-gated by the
-# caller (#227).
+# caller.
 #
 # lock_expires_at is the key of jobs_running_lock_expires_idx, so every
 # renewal is a non-HOT update that inserts new entries into every index
 # a running row satisfies (PK, actor_running, locked_by_worker_running,
 # identity_active, lock_expires, the heartbeat_deadline partial, GIN
-# tags/metadata) — per running row, per beat, fleet-wide. The gate renews
+# tags/metadata), per running row, per beat, fleet-wide. The gate renews
 # only rows whose lease is at or under the threshold ($4, computed by
 # the caller: see _lease_renewal_threshold in taskq.worker.heartbeat for
 # the sizing derivation). At the default settings the threshold (56s)
@@ -179,21 +179,21 @@ UPDATE_JOBS_LOCK_SQL_TEMPLATE = (
 # savings begin at leases of about 70s (every second beat, 2x fewer
 # rewrites) and grow with the lease from there.
 #
-# The three OR arms, each load-bearing:
-# * heartbeat_timeout IS NOT NULL — the per-job heartbeat promise: the
+# The three OR arms, each essential:
+# * heartbeat_timeout IS NOT NULL, the per-job heartbeat promise: the
 #   reclaim sweep's heartbeat arm reclaims such a row when
 #   last_heartbeat_at + heartbeat_timeout < now while the lease is STILL
 #   valid, so its beats must stay per-tick fresh. Skipping these rows to
-#   save the write would falsely crash-reclaim healthy jobs — the exact
+#   save the write would falsely crash-reclaim healthy jobs, the exact
 #   regression a naive "skip while more than half the lease remains"
-#   (#227's candidate) produces. Their last_heartbeat_at update is
+#   (the candidate) produces. Their last_heartbeat_at update is
 #   non-HOT anyway (jobs_running_heartbeat_deadline_idx is partial on
 #   heartbeat_timeout IS NOT NULL), so folding the lease extension into
 #   the same statement costs nothing extra for them.
-# * lock_expires_at IS NULL — direct-SQL-reachable shapes; the
+# * lock_expires_at IS NULL, direct-SQL-reachable shapes; the
 #   unconditional statement always renewed them, and the threshold
 #   comparison alone never would (NULL <= x is NULL).
-# * lock_expires_at <= clock_timestamp() + $4 — the renewal threshold
+# * lock_expires_at <= clock_timestamp() + $4, the renewal threshold
 #   itself. Deliberately compared SERVER-side with the same clock that
 #   stamped lock_expires_at: a worker-clock skew cannot make a fresh
 #   lease look expired (or an expiring one look fresh) to this
@@ -225,12 +225,12 @@ def build_heartbeat_sql(
 
     Validates *schema* against the canonical identifier regex before
     formatting. The two renewal statements bind ``(worker_id, lease,
-    disowned_ids)`` — plus, when *renewal_threshold* is given, the
+    disowned_ids)``, plus, when *renewal_threshold* is given, the
     threshold interval as their jobs-lock statement's ``$4``: the loop's
     lease-renewal then only renews rows whose remaining lease is at or
     under the threshold (or that carry a per-job ``heartbeat_timeout``,
-    whose beats must stay fresh for the reclaim sweep's heartbeat arm —
-    see UPDATE_JOBS_LOCK_RENEWAL_SQL_TEMPLATE). ``None`` — the default —
+    whose beats must stay fresh for the reclaim sweep's heartbeat arm ,
+    see UPDATE_JOBS_LOCK_RENEWAL_SQL_TEMPLATE). ``None``, the default ,
     keeps the unconditional renewal every existing caller and test of
     this helper binds, renewing every held row on every call.
 

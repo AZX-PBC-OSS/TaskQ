@@ -3,7 +3,7 @@
 Inspects a callable's signature, resolves each parameter through the
 provider registry and scope containers, and returns a kwargs dict
 suitable for ``**kwargs`` injection. The engine never calls factories
-directly and never registers a teardown — that is the container's
+directly and never registers a teardown, that is the container's
 responsibility.
 """
 
@@ -28,11 +28,11 @@ def _unwrap_scope_override(
 ) -> tuple[type | None, Scope | None]:
     """Return ``(unwrapped_type, scope_override)`` for an annotation.
 
-    - ``(None, None)`` — annotation is not ``Annotated[...]``; caller uses
+    - ``(None, None)``, annotation is not ``Annotated[...]``; caller uses
       ``annotation`` directly as the registry lookup key.
-    - ``(T, None)`` — ``Annotated[T, ...]`` with no ``Scope`` in metadata;
+    - ``(T, None)``, ``Annotated[T, ...]`` with no ``Scope`` in metadata;
       caller uses ``T`` as lookup key and the registered default scope.
-    - ``(T, scope)`` — ``Annotated[T, ...]`` with exactly one ``Scope``;
+    - ``(T, scope)``, ``Annotated[T, ...]`` with exactly one ``Scope``;
       caller uses ``T`` as lookup key and ``scope`` as call-site override.
     - Raises ``DIError`` if multiple ``Scope`` members appear.
     """
@@ -75,8 +75,8 @@ def _cached_introspection(
     and bounded at 512 entries so dynamically-generated callables (e.g.
     test doubles built per-example) cannot grow it without bound. The
     second element precomputes exactly what the unannotated-parameter
-    check needs per signature entry — name, whether a default exists, and
-    the parameter kind — so the hot loop touches no ``inspect`` objects.
+    check needs per signature entry, name, whether a default exists, and
+    the parameter kind, so the hot loop touches no ``inspect`` objects.
 
     Two invariants callers must respect:
 
@@ -85,7 +85,7 @@ def _cached_introspection(
     - Hints resolve against the module globals seen at FIRST resolution
       and are not re-resolved when those globals change afterwards. This
       differs from uncached ``get_type_hints`` only for forward references
-      whose name appears in the module's globals after the first solve —
+      whose name appears in the module's globals after the first solve ,
       not a path actor modules take in practice: registration happens
       after import, and job dispatch resolves against concrete types.
     """

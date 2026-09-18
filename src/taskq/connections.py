@@ -1,11 +1,11 @@
-"""Connection hook points — bring-your-own resources or factories.
+"""Connection hook points, bring-your-own resources or factories.
 
 TaskQ constructs its asyncpg pools, dedicated connections, and Redis
 client internally from DSN strings by default. This module lets you
 replace any of those with either:
 
 1. a **pre-constructed, caller-owned** resource (TaskQ uses it but never
-   closes it — you close it in your own lifespan), or
+   closes it, you close it in your own lifespan), or
 2. a **zero-arg async factory** that TaskQ invokes at the right point in
    its lifecycle and closes the result of on teardown (TaskQ-owned).
 
@@ -22,7 +22,7 @@ Ownership rule
 --------------
 
 * **Pre-constructed** objects are **caller-owned**. TaskQ never closes
-  them — close them in your own ``finally`` / lifespan.
+  them, close them in your own ``finally`` / lifespan.
 * **Factory-produced** objects are **TaskQ-owned**. TaskQ closes them on
   teardown via its :class:`~contextlib.AsyncExitStack`.
 
@@ -67,7 +67,7 @@ __all__ = [
 # ``list_jobs`` emits 384+ filter-combination variants (backend
 # ``_filter_sql.py`` + ``_cursor.py``), and the admin pages add more, so a
 # client or UI whose filters vary crosses the 100-entry cap and thrashes
-# the cache — a measured 90-96% steady-state miss rate, with the eviction
+# the cache, a measured 90-96% steady-state miss rate, with the eviction
 # churn measuring SLOWER than ``statement_cache_size=0`` (1.27 vs
 # 0.77 ms/call; ``benchmarks/ab_stmt_cache.py``). Every miss re-pays the
 # Parse/Describe round trips: +10-40 ms/call at managed-PG RTT. The write
@@ -148,7 +148,7 @@ def bounded_lock_budget_ms(budget_ms: float, command_timeout_secs: float | None)
     first: the caller gets a bare ``TimeoutError`` naming nothing, the
     warning line never logs, the backpressure counter never moves, and
     the typed refusal is unreachable code. Clamping is what makes the
-    configured budget mean what it says — an unclamped budget is not a
+    configured budget mean what it says, an unclamped budget is not a
     longer wait, it is no verdict at all.
 
     ``command_timeout_secs`` of ``None`` is a connection with no
@@ -169,7 +169,7 @@ def lock_budget_command_timeout_secs(
     """The per-query bound a TaskQ-built pool must carry to deliver its
     configured enqueue lock budgets.
 
-    *floor_secs* is the bound sized for the shipped defaults — at the
+    *floor_secs* is the bound sized for the shipped defaults, at the
     defaults each budget is delivered clamped to the floor's
     :data:`_LOCK_BUDGET_COMMAND_TIMEOUT_SHARE` share by
     :func:`bounded_lock_budget_ms`, so the floor is exactly what the
@@ -177,7 +177,7 @@ def lock_budget_command_timeout_secs(
 
     Each pair in *budgets_ms* is ``(configured_ms, default_ms)`` for one
     knob. A budget configured ABOVE its shipped default cannot be
-    delivered inside the floor — the clamp would silently cap it back —
+    delivered inside the floor, the clamp would silently cap it back ,
     so the bound is re-derived as ``configured / share``: the widened
     budget occupies the same share of a larger bound, the clamp no
     longer bites, and the server-side ``lock_timeout`` still fires
@@ -201,8 +201,8 @@ def lock_budget_command_timeout_secs(
 #: (the holder falls back to the *acquire* timeout, which is ``None``
 #: whenever acquire was unbounded), so a server that dies silently,
 #: no FATAL, no FIN: a frozen/black-holed endpoint, parks that reset
-#: forever, wedging the caller's task AND ``pool.close()`` (issue #236's
-#: hang half). Five seconds matches the repo-wide teardown bound
+#: forever, wedging the caller's task AND ``pool.close()`` (the
+#: hang). Five seconds matches the repo-wide teardown bound
 #: (``taskq._close.CLOSE_TIMEOUT_SECS``): the reset is sub-millisecond
 #: on a live server, so the bound only ever fires against a dead one,
 #: where asyncpg's timeout handler terminates the connection and frees
@@ -226,7 +226,7 @@ class _RetryGuard:
       raises: a reset that fails or times out is pool hygiene, not part
       of the op's semantics. asyncpg's release path already terminates
       the connection on any reset failure, so swallowing costs nothing
-      but a log line, and it buys two #236 fixes at once: an op whose
+      but a log line, and it buys two fixes at once: an op whose
       work committed but whose release hit a parked/dead connection
       returns its RESULT instead of an error that invites a
       duplicate-on-retry, and a reset sent into a silently-dead server
@@ -346,7 +346,7 @@ async def _bounded_checkout(
             yield conn
 
 
-async def _with_fresh_connection_retry[T](  # pyright: ignore[reportUnusedFunction]  # Why: the shared dead-on-acquire guard — its callers are the enqueue and bulk-cancel modules; private usage is declared at each import site.
+async def _with_fresh_connection_retry[T](  # pyright: ignore[reportUnusedFunction]  # Why: the shared dead-on-acquire guard, its callers are the enqueue and bulk-cancel modules; private usage is declared at each import site.
     pool: asyncpg.Pool,
     op: Callable[[_RetryGuard], Awaitable[T]],
     *,
@@ -390,7 +390,7 @@ async def _with_fresh_connection_retry[T](  # pyright: ignore[reportUnusedFuncti
     enqueue table's ``id`` is the primary key, and the op's args carry
     their id): a ``UniqueViolationError`` for an enqueue that already
     committed and will run: an error handed back for work that
-    SUCCEEDED, which is the first half of #236's harm. The second half is
+    SUCCEEDED, which is the first half of that harm. The second half is
     the invitation that error creates: a caller that retries it generates
     a fresh id (a new enqueue call does), and THAT row lands: the actual
     job-runs-twice route, and why idempotency keys remain the dedup
@@ -416,7 +416,7 @@ async def _with_fresh_connection_retry[T](  # pyright: ignore[reportUnusedFuncti
     """
     # Why deferred: this module is import-light by design (no asyncpg or
     # taskq runtime imports at module scope), and both names serve only
-    # this cold path — the same discipline ``with_connection_init``
+    # this cold path, the same discipline ``with_connection_init``
     # follows for its close helper.
     from asyncpg.exceptions import InternalClientError
 
@@ -429,7 +429,7 @@ async def _with_fresh_connection_retry[T](  # pyright: ignore[reportUnusedFuncti
             # op would re-issue it with the same identity: against the
             # enqueue table's primary key that is a UniqueViolationError
             # for work that succeeded, and the error invites the caller's
-            # fresh-id retry that DOES run the job twice (#236). The
+            # fresh-id retry that DOES run the job twice. The
             # driver error for a committed write is ambiguous, but never
             # that invitation; idempotency keys remain the caller's dedup
             # channel for the retry THEY choose to issue.
@@ -447,7 +447,7 @@ async def _with_fresh_connection_retry[T](  # pyright: ignore[reportUnusedFuncti
 
 # ── Factory type aliases (PEP 695) ─────────────────────────────────────
 #
-# Zero-arg async factories — closures that capture whatever they need
+# Zero-arg async factories, closures that capture whatever they need
 # (DSN, sizing, credentials). The worker invokes them at the right point
 # in its startup sequence and closes the result via AsyncExitStack.
 # Returning the concrete ``asyncpg`` / ``redis`` types keeps pyright strict
@@ -462,8 +462,8 @@ type RedisFactory = Callable[[], Awaitable[redis_async.Redis]]  # type: ignore[t
 # ── Inheritable per-connection init hooks ────────────────────────────
 #
 # A connection built by a bare factory is opaque: anything applied to it
-# after connect — a ``set_type_codec`` registration, a prepared-statement
-# warmup — lives in the driver's per-connection state, which exposes no
+# after connect, a ``set_type_codec`` registration, a prepared-statement
+# warmup, lives in the driver's per-connection state, which exposes no
 # read-back, so a SECOND connection the worker builds for the same role
 # cannot replay it. The per-slot transaction pool is exactly such a
 # second connection family: it shadows the LOOP-registered
@@ -480,7 +480,7 @@ type RedisFactory = Callable[[], Awaitable[redis_async.Redis]]  # type: ignore[t
 #: Attribute a factory sets to declare the per-connection init hook it
 #: applies. Private on purpose: the name is an implementation detail
 #: shared by the writers (``with_connection_init``,
-#: ``make_dedicated_conn_factory``) and the single reader below — apps
+#: ``make_dedicated_conn_factory``) and the single reader below, apps
 #: declare hooks through those, never by setting the attribute directly.
 _CONNECTION_INIT_HOOK_ATTR: Final[str] = "taskq_connection_init_hook"
 
@@ -490,10 +490,10 @@ def with_connection_init(
     init: Callable[[asyncpg.Connection], Awaitable[None]],
 ) -> ConnFactory:
     """Wrap a connection factory so *init* runs on every connection it
-    opens — and so the worker's per-slot pool can inherit the same hook.
+    opens, and so the worker's per-slot pool can inherit the same hook.
 
     *init* is applied to each produced connection exactly once, right
-    after the factory returns it — the ``setup=`` hook position in
+    after the factory returns it, the ``setup=`` hook position in
     ``asyncpg.connect``. This is the channel through which per-connection
     setup (registering type codecs, preparing statements) reaches the
     connections an actor actually runs on: when the wrapped factory
@@ -508,13 +508,13 @@ def with_connection_init(
     Declare the hook here, not inside *factory* as well: the wrapper
     applies it, so a factory that also applies it would run it twice on
     the LOOP-scope connection. If *init* raises, the produced connection
-    is closed (bounded) before the error propagates — a failed hook
+    is closed (bounded) before the error propagates, a failed hook
     means no usable connection, matching asyncpg's own hook contract.
     """
 
     # Why no return annotation: DI registers factories like this one and
     # resolves type hints at registration time (``_collect_dep_edges``),
-    # and this module keeps asyncpg under TYPE_CHECKING — a runtime-
+    # and this module keeps asyncpg under TYPE_CHECKING, a runtime-
     # evaluated ``-> asyncpg.Connection`` would raise NameError there.
     # The declared ``ConnFactory`` return type of this wrapper keeps the
     # boundary typed; pyright infers the body.
@@ -544,12 +544,12 @@ def connection_init_hook(
 ) -> Callable[[asyncpg.Connection], Awaitable[None]] | None:
     """The init hook *factory* declares, if it declares one.
 
-    The read half of the inheritance channel — public so an application
+    The read half of the inheritance channel, public so an application
     that hand-rolls its factories can verify its declaration is visible
     the way the worker sees it. Returns the hook exactly as declared (so
     the slot pool installs the very callable the LOOP-scope connection
-    got), or ``None`` when the factory carries no declaration — a bare
-    closure, a raw ``asyncpg.connect`` partial — in which case nothing
+    got), or ``None`` when the factory carries no declaration, a bare
+    closure, a raw ``asyncpg.connect`` partial, in which case nothing
     about its per-connection setup is recoverable.
     """
     hook = getattr(factory, _CONNECTION_INIT_HOOK_ATTR, None)
@@ -570,7 +570,7 @@ class WorkerConnections:
     ``<role>_factory`` (zero-arg async factory, TaskQ-owned) slot.
     Leave both ``None`` for DSN-based construction (the default).
 
-    Example — AAD-managed-identity worker::
+    Example, AAD-managed-identity worker::
 
         from azure.identity.aio import DefaultAzureCredential
         from taskq.aad import EntraIdProvider
@@ -594,7 +594,7 @@ class WorkerConnections:
             ),
         )
 
-    Example — share an app-wide pool (caller-owned)::
+    Example, share an app-wide pool (caller-owned)::
 
         connections = WorkerConnections(worker_pool=app_state.pg_pool)
     """
@@ -609,7 +609,7 @@ class WorkerConnections:
     """Heartbeat pool (pg_dsn_direct, heartbeat_command_timeout). Caller-owned."""
     heartbeat_pool_factory: PoolFactory | None = None
     """Factory for the heartbeat pool. TaskQ-owned. ``command_timeout`` is
-    your responsibility when overriding — set it on ``create_pool``."""
+    your responsibility when overriding, set it on ``create_pool``."""
 
     worker_pool: asyncpg.Pool | None = None
     """Worker pool (pg_dsn_pooled role). Caller-owned."""

@@ -61,7 +61,7 @@ def compute_connection_budget(
         web_pool_size: Pool size per web pod.
         pgbouncer_compression_ratio: 1.0 = no PgBouncer; ~10.0 for transaction mode.
         slot_pool_connections: Direct connections of the worker's
-            per-slot transaction pool — ``max_concurrency + 1`` when a
+            per-slot transaction pool, ``max_concurrency + 1`` when a
             worker registers a LOOP-scope connection (the conditional
             fourth pool), ``0`` for every other shape. The startup
             budget log cannot know yet (it runs before the LOOP scope

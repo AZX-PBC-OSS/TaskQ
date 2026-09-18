@@ -54,7 +54,7 @@ class ProviderEntry[T]:
     type_: type[T]
     scope: Scope
     kind: Literal["value", "factory", "class"]
-    impl: object  # Why: heterogeneous (Factory[T] | type[T] | T) — erasure documented
+    impl: object  # Why: heterogeneous (Factory[T] | type[T] | T), erasure documented
     factory_shape: FactoryShape
     lifecycle: ProviderLifecycle | None = field(default=None)
 
@@ -86,7 +86,7 @@ class ProviderRegistry(Protocol):
         registered provider and is not in passthrough_kwargs, the
         MissingProvider raised by this lookup is allowed to propagate.
         Any test double or alternative implementation MUST match this
-        raises-contract — returning None or a sentinel breaks the solver.
+        raises-contract, returning None or a sentinel breaks the solver.
         """
         ...
 
@@ -97,7 +97,7 @@ class ScopeContainer(Protocol):
 
     The container is responsible for ALL factory invocation, caching,
     and teardown registration. The solver engine NEVER calls a factory
-    directly and NEVER registers a teardown — every resolution goes
+    directly and NEVER registers a teardown, every resolution goes
     through ``get_or_create``.
     """
 

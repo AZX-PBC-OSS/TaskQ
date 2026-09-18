@@ -6,8 +6,8 @@ mirrors the deployed log scripts' count-and-window arithmetic. The GCRA
 twin mirrors the deployed pure-GCRA TAT arithmetic exactly and is
 deliberately STRICTER at the window boundary: pure GCRA (the vendored
 redis-gcra Lua and the PG fallback) admits ``limit + 1`` timestamps in
-one window at boundary conditions — an inherent property of the
-algorithm's delay tolerance, and correct-upstream behavior — while the
+one window at boundary conditions, an inherent property of the
+algorithm's delay tolerance, and correct-upstream behavior, while the
 in-memory twin augments the TAT with an exact timestamp log that denies
 that last admission (see ``_InMemorySlidingWindowGCRA``). The divergence
 direction is safe by construction: the twin can only under-admit
@@ -186,11 +186,11 @@ class _InMemorySlidingWindowGCRA:
     ``delay_tolerance = window_ms`` allows up to ``limit + 1`` real
     timestamps in any window of ``window_ms`` at boundary conditions
     (e.g. a burst of ``limit`` cells at t=0 followed by one more at
-    t=emission_interval) — the deployed Redis Lua and PG paths, pure
+    t=emission_interval), the deployed Redis Lua and PG paths, pure
     GCRA, admit that last cell (correct-upstream behavior, vendored from
     redis-gcra); this twin denies it. The guard is a policy choice for
-    the test substitute, safe in the strict direction only — it can
-    under-admit relative to the configured limit, never exceed it — and
+    the test substitute, safe in the strict direction only, it can
+    under-admit relative to the configured limit, never exceed it, and
     it does not alter the TAT arithmetic used to compute ``retry_after``.
     """
 
@@ -437,7 +437,7 @@ class SlidingWindow:
         use Redis ``TIME`` inside their scripts, so callers on nodes with
         divergent Python clocks are all measured against the same window.
         The injected *clock* drives the memory backend only (its single
-        domain) and remains part of the public call shape — the unified
+        domain) and remains part of the public call shape, the unified
         TokenBucket contract.
         """
         request_id: UUID | None = new_uuid() if self._style == "log" else None
@@ -482,8 +482,8 @@ class SlidingWindow:
         # THERE. The decision says which store actually holds it; the
         # primitive's configuration only says where it prefers to go.
         # Dispatching on the latter left the Postgres window permanently
-        # holding an admission that was released, and — for GCRA, whose
-        # previous_state differs per backend — raised KeyError out of the
+        # holding an admission that was released, and, for GCRA, whose
+        # previous_state differs per backend, raised KeyError out of the
         # release path outright. Kept identical to TokenBucket.refund, which
         # dispatches the same way for the same reason.
         #
@@ -492,7 +492,7 @@ class SlidingWindow:
         # is nothing to re-add and no timestamp to read (TokenBucket.refund
         # does use count). Both stay in the signature because
         # RateLimitRegistry dispatches refund/peek/reset polymorphically
-        # over both primitives with one fixed keyword block — dropping
+        # over both primitives with one fixed keyword block, dropping
         # either here would raise TypeError there.
         match (decision.backend, self._style):
             case ("redis", "log"):
@@ -522,7 +522,7 @@ class SlidingWindow:
 
         PG and Redis peeks measure against the store's own clock (the same
         domain their admission state is stamped in); the memory backend
-        uses the injected *clock* (its single domain) — the unified
+        uses the injected *clock* (its single domain), the unified
         TokenBucket contract: *clock* is required only on memory.
         """
         match (self._backend, self._style):

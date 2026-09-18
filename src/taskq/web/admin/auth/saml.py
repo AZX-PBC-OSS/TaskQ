@@ -458,7 +458,7 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
                 # Cookie path: the signed, 300 s cookie is the binding. The
                 # pending set is process-local, so requiring a successful
                 # spend here would reject any callback served by a sibling
-                # replica or worker process that never saw the login (#239)
+                # replica or worker process that never saw the login
                 # -- and an unauthenticated /login flood evicting the ID
                 # would break a legitimate login the same way. The ID is
                 # dropped best-effort instead, and its single-use property
@@ -478,7 +478,7 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
                 # Opt-in fallback: the validated InResponseTo must name an
                 # AuthnRequest this process issued and has not spent -- the
                 # spend IS the single-use gate on this path. Nothing binds
-                # the response to the browser posting it (login CSRF, #240)
+                # the response to the browser posting it (login CSRF)
                 # -- the flag's documentation says so, and the default is
                 # off.
                 if not pending_requests.spend(in_response_to, now=time.time()):

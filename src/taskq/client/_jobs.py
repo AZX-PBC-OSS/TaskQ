@@ -1,4 +1,4 @@
-"""JobsClient — the primary entry point for enqueuing, querying, and
+"""JobsClient, the primary entry point for enqueuing, querying, and
 cancelling jobs, and managing cron schedules.
 
 Wraps a :class:`~taskq.backend._protocol.Backend` instance and adds the
@@ -49,7 +49,7 @@ from taskq.backend._protocol import (
     ScheduleUpdateArgs,
 )
 from taskq.backend._records import (
-    _nul_item_payload_error,  # pyright: ignore[reportPrivateUsage]  # Why: the shared per-item jsonb NUL annotation helper — the same contract the streaming boundary re-locates; redefining it here would let client and backend drift
+    _nul_item_payload_error,  # pyright: ignore[reportPrivateUsage]  # Why: the shared per-item jsonb NUL annotation helper, the same contract the streaming boundary re-locates; redefining it here would let client and backend drift
     item_jsonb_param,
     item_tags_jsonb_param,
 )
@@ -104,20 +104,20 @@ module-level reuse as the intended pattern).
 
 def _item_payload_error(idx: int, actor_name: str, exc: ValidationError) -> PayloadValidationError:
     """Annotate a batch item's payload :class:`~pydantic.ValidationError` with
-    its index and actor, as :class:`~taskq.exceptions.PayloadValidationError`.
+     its index and actor, as :class:`~taskq.exceptions.PayloadValidationError`.
 
-    Shared by both streaming paths (the lazy generator and the chunked
-    loop): ``build_enqueue_args`` performs the single pydantic-core
-    validation pass per item, and the client layer translates its
-    ``ValidationError`` here instead of running a second, discarded
-    validation per item just to attach context.
+     Shared by both streaming paths (the lazy generator and the chunked
+     loop): ``build_enqueue_args`` performs the single pydantic-core
+     validation pass per item, and the client layer translates its
+     ``ValidationError`` here instead of running a second, discarded
+     validation per item just to attach context.
 
-    Error details are sanitized via ``include_url=False, include_input=False``
-    — the same contract :func:`taskq._validation.validate_actor_payload`
-    follows — because ``validation_errors`` propagates into the persisted
-    ``error_message`` / web admin via generic exception handling and payload
-    values are attacker-controlled. (The previous inline ``exc.errors()``
-    calls leaked the raw payload input on this path.)
+     Error details are sanitized via ``include_url=False, include_input=False``
+    , the same contract :func:`taskq._validation.validate_actor_payload`
+     follows, because ``validation_errors`` propagates into the persisted
+     ``error_message`` / web admin via generic exception handling and payload
+     values are attacker-controlled. (The previous inline ``exc.errors()``
+     calls leaked the raw payload input on this path.)
     """
     errs: list[dict[str, object]] = exc.errors(include_url=False, include_input=False)  # type: ignore[assignment]  # Why: pydantic v2 ErrorDetails is a TypedDict (subtype of dict[str, Any]); assignment to list[dict[str,object]] is safe at runtime but pyright cannot prove covariance
     return PayloadValidationError(
@@ -131,7 +131,7 @@ def _item_payload_error(idx: int, actor_name: str, exc: ValidationError) -> Payl
         # The machine-readable copy of the message's index. ``idx`` is
         # already caller-global at both callers: the atomic arm's lazy
         # generator enumerates the WHOLE stream, and the chunked arm's
-        # remap passes chunk_offset + the located position — so the field
+        # remap passes chunk_offset + the located position, so the field
         # needs no second shift anywhere (the chunked arm's backend errors
         # are still chunk-local and shifted once by the registry; the
         # atomic arm's backend errors arrive stream-global from the
@@ -144,7 +144,7 @@ def _item_payload_error(idx: int, actor_name: str, exc: ValidationError) -> Payl
 #
 # enqueue_batch_streaming's chunked arm funnels one caller stream through
 # per-chunk calls, and every per-item typed error those calls raise names
-# an index into THE CHUNK — the backend's per-call contract — while the
+# an index into THE CHUNK, the backend's per-call contract, while the
 # caller needs an index into THE STREAM: with no caller connection each
 # chunk is its own committed transaction, so a later chunk's chunk-local
 # index confidently names a stream position that was never attempted
@@ -159,13 +159,13 @@ def _remap_validation_error(
     chunk_offset: int,
 ) -> NoReturn:
     """Locate the pydantic failure's chunk item by re-validating it, and
-    re-annotate at ``chunk_offset + its chunk-local position`` — the
+    re-annotate at ``chunk_offset + its chunk-local position``, the
     committed prefix plus the in-chunk position is the item's position in
     the CALLER's stream.
 
     The raised :class:`~pydantic.ValidationError` carries no item index,
     so the failing item is located by re-running the same validation the
-    args build already performed once per item (error path only — the
+    args build already performed once per item (error path only, the
     happy path validates exactly once, inside
     :func:`~taskq.client._args.build_enqueue_args`).
     """
@@ -189,7 +189,7 @@ def _nul_rejected_field(args: EnqueueArgs, idx: int) -> str | None:
     when the item is clean.
 
     Re-runs the same serialization guard the backend's batch preflight
-    ran — the shared helpers in :mod:`taskq.backend._records` — purely to
+    ran, the shared helpers in :mod:`taskq.backend._records`, purely to
     LOCATE the rejected item, so the streaming boundary can re-annotate
     it at its stream-global index without parsing the raised message
     apart.
@@ -219,15 +219,15 @@ def _remap_payload_validation_error(
     locate the rejected item, then re-raise its annotation at the
     stream-global index.
 
-    The backend's batch preflight — PG's build loop and the in-memory
-    mirror alike, one shared guard — annotates its rejection with the
+    The backend's batch preflight, PG's build loop and the in-memory
+    mirror alike, one shared guard, annotates its rejection with the
     index into the CALL's args list, which on the streaming path is one
     chunk. The annotation is reconstructed through the same helper the
     guard itself uses, so field, actor and wording cannot drift from the
     backend's.
     """
     if chunk_args is None:
-        # The args build raised before any args existed — it speaks
+        # The args build raised before any args existed, it speaks
         # ValueError/pydantic only, so this arm is unreachable from the
         # boundary today; without built args there is no located item to
         # shift, and the original crosses unchanged rather than
@@ -252,7 +252,7 @@ def _remap_batch_max_pending_error(
     and fold the committed prefix into ``admitted_count``.
 
     The backend's per-actor partition refusal carries indices into the
-    CALL's args list — one chunk on the streaming path; the caller's
+    CALL's args list, one chunk on the streaming path; the caller's
     safe-retry contract (retry only the refused items, never the
     committed prefix) needs indices into the CALLER's stream and an
     ``admitted_count`` covering every committed item. Items after the
@@ -288,19 +288,19 @@ remaps from chunk-local to stream-global indices.
 Why a registry instead of except clauses at the call site: the chunked
 streaming path once remapped exactly the two types it knew about
 (pydantic ``ValidationError`` and the cap partition's
-``BatchMaxPendingExceededError``), so a third per-item typed error — the
-jsonb NUL guard's ``PayloadValidationError`` — silently crossed with its
+``BatchMaxPendingExceededError``), so a third per-item typed error, the
+jsonb NUL guard's ``PayloadValidationError``, silently crossed with its
 chunk-local index and confidently named a stream position that was never
 attempted, on a path where each chunk is separately committed and a
 retry guided by the wrong index duplicates the committed prefix. A new
 typed per-item backend error joins THIS mapping (one entry); the
 boundary's except clause is derived from it and never grows a bolt-on
-arm. A registered type's subclasses inherit its remap — the dispatch
+arm. A registered type's subclasses inherit its remap, the dispatch
 walks by ``isinstance``, not exact type.
 """
 
 _REMAPPABLE_ITEM_ERROR_TYPES: tuple[type[Exception], ...] = tuple(_ITEM_ERROR_REMAPS)
-"""The boundary's except-clause tuple — derived from the registry, never
+"""The boundary's except-clause tuple, derived from the registry, never
 hand-maintained alongside it, so the boundary catches exactly what the
 registry knows and nothing else."""
 
@@ -315,7 +315,7 @@ def _remap_chunk_item_error(
     registry entry and hand it to that entry's remap.
 
     First ``isinstance`` match wins, so a registered type's subclasses
-    inherit its remap. A non-member crosses unchanged — the boundary's
+    inherit its remap. A non-member crosses unchanged, the boundary's
     except clause admits only registry members, so that arm is reachable
     only from direct (test) calls.
     """
@@ -375,8 +375,8 @@ class JobsClient:
         ``asyncpg.exceptions.UndefinedTableError`` surfaces as a raw
         Postgres error (``relation "taskq.jobs" does not exist``) when the
         TaskQ schema hasn't been migrated yet. Wrap it in
-        :class:`~taskq.exceptions.SchemaNotMigratedError` — chained via
-        ``from exc`` so the original traceback is preserved — with a
+        :class:`~taskq.exceptions.SchemaNotMigratedError`, chained via
+        ``from exc`` so the original traceback is preserved, with a
         message pointing at ``taskq migrate up`` / ``TASKQ_MIGRATE_ON_START``.
         """
         import asyncpg
@@ -388,7 +388,7 @@ class JobsClient:
             raise SchemaNotMigratedError(schema) from exc
 
     _OPEN_REDIS_TIMEOUT_SECS: float = 30.0
-    """Bounds the eager ``initialize()`` — the first broker round trip —
+    """Bounds the eager ``initialize()``, the first broker round trip ,
     in :meth:`_open_redis`. Mirrors ``WorkerSettings.reload_factory_timeout``'s
     default (30.0), the same budget the worker gives every first-use
     redis/factory call (worker/deps.py bounds its redis factory
@@ -422,7 +422,7 @@ class JobsClient:
             client = redis_async.from_url(str(settings.redis_url), decode_responses=False)
 
             # Why not stack.enter_async_context(client): Redis.__aexit__
-            # calls aclose() UNBOUNDED — a hung broker would wedge
+            # calls aclose() UNBOUNDED, a hung broker would wedge
             # JobsClient.close(). initialize() preserves
             # __aenter__'s eager-setup semantics; the pushed callback
             # bounds the close instead (b072692 pattern).
@@ -435,12 +435,12 @@ class JobsClient:
 
             # Why push BEFORE initialize(): from_url() has already allocated
             # the connection pool, so if initialize() raises (broker down)
-            # the failed eager setup must still release it — the unwind runs
+            # the failed eager setup must still release it, the unwind runs
             # the pushed callback through the bounded close (never raises;
             # aclose() on a never-initialized client is a no-op).
             self._exit_stack.push_async_callback(_close_client)
             # Why bounded: initialize() is the EAGER first broker round
-            # trip — a black-holed Redis would wedge TaskQ.open() forever,
+            # trip, a black-holed Redis would wedge TaskQ.open() forever,
             # and client processes arm no watchdogs. The pushed callback
             # above already bounds the unwind's close.
             try:
@@ -448,7 +448,7 @@ class JobsClient:
             except TimeoutError as exc:
                 raise TimeoutError(
                     f"Redis client initialize() did not complete within "
-                    f"{self._OPEN_REDIS_TIMEOUT_SECS}s — the broker at "
+                    f"{self._OPEN_REDIS_TIMEOUT_SECS}s, the broker at "
                     f"{settings.redis_url} is unreachable or black-holed. "
                     "The open fails loudly instead of parking forever."
                 ) from exc
@@ -513,7 +513,7 @@ class JobsClient:
         - When the actor's effective ``max_pending`` is set, a pre-flight
           count of ``pending`` + ``scheduled`` jobs for the actor is
           compared to the limit. If ``count >= max_pending``,
-          :class:`MaxPendingExceededError` is raised synchronously — the
+          :class:`MaxPendingExceededError` is raised synchronously, the
           caller decides whether to retry, fail, or wait; the library
           does not block on capacity.
 
@@ -534,7 +534,7 @@ class JobsClient:
           ``max_pending`` to give the caller the more specific
           ``SingletonCollisionError``.
 
-        - ``idempotency_key`` does **not** bypass ``max_pending`` — the
+        - ``idempotency_key`` does **not** bypass ``max_pending``, the
           idempotency ON CONFLICT fires at step 5, after the max_pending
           check at step 3. Re-enqueuing with a duplicate
           ``idempotency_key`` when the queue is full raises
@@ -553,7 +553,7 @@ class JobsClient:
           from ``prune_retention_*``.
 
         - Key length is bounded at ``idempotency_key_max_bytes``
-          (``TASKQ_IDEMPOTENCY_KEY_MAX_BYTES``, default 1024 UTF-8 bytes) —
+          (``TASKQ_IDEMPOTENCY_KEY_MAX_BYTES``, default 1024 UTF-8 bytes) ,
           the bound is the composite unique index's btree entry size, not a
           round number. Empty and whitespace-only keys raise
           :class:`ValueError` at the client boundary before any backend
@@ -563,13 +563,13 @@ class JobsClient:
 
         - **No time-based (TTL) dedupe window.** ``idempotency_scope``
           decouples the dedupe horizon from ``prune_retention_*`` by
-          namespace, not by time — there is no ``idempotency_ttl`` or
+          namespace, not by time, there is no ``idempotency_ttl`` or
           equivalent "dedupe for the next N seconds" parameter. A key
           within a given scope still dedupes **until pruned**, exactly
           like the pre-scope global behavior, just scoped to that
           namespace. This is a deliberate scope decision, not an
           oversight: a real sliding-window TTL cannot be expressed as a
-          single static unique index the way scope can — a sliding
+          single static unique index the way scope can, a sliding
           window would require either abandoning the atomic ``INSERT
           ... ON CONFLICT`` for a check-then-insert lock (weaker
           concurrency guarantee) or encoding time-bucketing into the key
@@ -587,7 +587,7 @@ class JobsClient:
           :class:`~taskq.exceptions.ScopedIdempotencyMigrationPendingError`
           rather than silently dedupe against the wrong scope's job. The
           trigger is a key existing under a different scope, in *either*
-          direction — an unscoped call reusing a key first written under
+          direction, an unscoped call reusing a key first written under
           a non-default scope raises it too. Only brand-new keys and
           same-scope repeats are unaffected. See that exception's
           docstring and the migration file's header comment for the full
@@ -602,7 +602,7 @@ class JobsClient:
           caller is handed that job. This holds on pool connections and on
           a caller-supplied connection with no open transaction. On a
           caller-owned OPEN transaction the lock spans that transaction
-          instead, so single-flight holds until its commit/rollback — a
+          instead, so single-flight holds until its commit/rollback, a
           long-lived caller transaction can exhaust another same-identity
           enqueue's bounded wait
           (:class:`~taskq.exceptions.UniqueForLockTimeoutError`) rather
@@ -712,7 +712,7 @@ class JobsClient:
 
         When ``finalizer`` is set, a finalizer job is enqueued alongside
         the batch. The finalizer is NOT stamped with ``batch_id``
-        metadata (deadlock prevention — if it were, ``wait_for_batch``
+        metadata (deadlock prevention, if it were, ``wait_for_batch``
         would count it as a child and the finalizer would wait for
         itself). The batch row's ``finalizer_job_id`` column records the
         link, and ``wait_for_batch`` automatically excludes that job
@@ -744,13 +744,13 @@ class JobsClient:
         aggregated ``SELECT actor, count(*) … WHERE actor = ANY($1)
         GROUP BY actor`` for the entire batch, resolves per-actor
         effective limits (operator-owned stored value when set, else the
-        ``@actor(...)`` literal — same resolution as :meth:`enqueue`),
+        ``@actor(...)`` literal, same resolution as :meth:`enqueue`),
         and admits every within-cap actor's items; an over-cap actor's
         items are refused as a whole group (never partially filled up to
         the cap).  When any actor is refused, the within-cap actors'
         items are still enqueued and
         :class:`~taskq.exceptions.BatchMaxPendingExceededError` raises
-        afterwards — it names each refused actor, the refused item
+        afterwards, it names each refused actor, the refused item
         indices into ``items``, and the admitted count, so a retry can
         target only the refused items (or rely on ``idempotency_key``s
         to deduplicate a whole-batch retry).  The exception is
@@ -773,15 +773,15 @@ class JobsClient:
 
         Actor-declared ``unique_for`` is a single-enqueue contract (see
         :meth:`enqueue`). The batch INSERT writes every item without a
-        per-identity preflight — the single path's advisory-lock +
+        per-identity preflight, the single path's advisory-lock +
         preflight round trips are exactly what bulk throughput exists to
-        avoid — so two batch items with the same
+        avoid, so two batch items with the same
         ``(actor, identity_key)`` both insert, and the dispatch CTE's
         identity serialization ensures only one runs at a time.
         ``unique_for`` items are conservatively fully counted toward
         ``max_pending`` (a batch mixing ``unique_for`` retries near the
         cap may refuse loudly rather than admit silently). Deduplicate
-        batch items with per-item ``idempotency_key``s — that arbiter IS
+        batch items with per-item ``idempotency_key``s, that arbiter IS
         applied, below. Whether the batch tier should honor
         ``unique_for`` is an open design decision; this documents
         current behavior.
@@ -816,14 +816,14 @@ class JobsClient:
             )
 
         # Resolve the effective cap per actor (stored operator value when
-        # set, else the ``@actor(...)`` literal — same resolution as
+        # set, else the ``@actor(...)`` literal, same resolution as
         # :meth:`enqueue`) so the per-item args carry it into the backend,
         # whose admission check is the single enforcement point: it counts
         # live (not through this client's TTL cache), discounts idempotency
         # pairs that will dedupe instead of writing, and partitions
         # admission per actor. The old client-side aggregated pre-check
-        # raised here for the WHOLE call — one capped actor aborted
-        # everyone's items — and its count was strictly less
+        # raised here for the WHOLE call, one capped actor aborted
+        # everyone's items, and its count was strictly less
         # informed than the backend's, so it was removed rather than
         # duplicated.
         effective_mp: dict[str, int | None] = {}
@@ -841,7 +841,7 @@ class JobsClient:
         queue = items[0].actor_ref.queue
         has_batch_extras = failure_policy is not None or finalizer is not None
 
-        # Build finalizer EnqueueArgs (without batch_id stamping — deadlock prevention).
+        # Build finalizer EnqueueArgs (without batch_id stamping, deadlock prevention).
         finalizer_args: EnqueueArgs | None = None
         if finalizer is not None:
             finalizer_args = build_enqueue_args(
@@ -985,13 +985,13 @@ class JobsClient:
         atomicity.  Otherwise, chunks are inserted via
         :meth:`Backend.enqueue_batch`: with a caller-supplied connection
         all chunks share that connection's open transaction (one
-        transaction aggregate — the caller owns the boundary); with NO
+        transaction aggregate, the caller owns the boundary); with NO
         connection each chunk is its own pool transaction, so progress
         is committed incrementally, chunk by chunk.
 
         **No-connection failure surface:** when chunk *N* fails (cap
         refusal, payload validation, a driver error), chunks 1..*N*-1
-        are already durably committed and nothing is returned — the
+        are already durably committed and nothing is returned, the
         ``BatchHandle`` is only constructed after the whole stream
         drains.  A blind retry of the full iterable would duplicate the
         committed prefix.  Retry safely by giving items
@@ -999,26 +999,26 @@ class JobsClient:
         rows) or by resuming from the point of failure.
 
         **Failure-policy counting limitation (caller-connection path):**
-        the batch row is created AFTER all chunk inserts — it must carry
+        the batch row is created AFTER all chunk inserts, it must carry
         the final ``expected_size`` and ``create_batch`` is INSERT, not
-        upsert — so a child job enqueued on that connection that
+        upsert, so a child job enqueued on that connection that
         reaches a terminal state BEFORE the row exists is not counted
         toward ``failure_policy``: ``increment_batch_failures`` finds
         no row and returns ``(0, None, 0)``. The atomic
-        (no-connection) path is unaffected — its single transaction
+        (no-connection) path is unaffected, its single transaction
         makes the batch row and the child jobs visible together.
 
         **max_pending:** enforced per chunk with the same per-actor
-        partition as :meth:`enqueue_batch` — each chunk's items carry
+        partition as :meth:`enqueue_batch`, each chunk's items carry
         their actors' *effective* caps (operator-stored override when
-        set, else the ``@actor(...)`` literal — same resolution as
+        set, else the ``@actor(...)`` literal, same resolution as
         :meth:`enqueue`), the backend admits every within-cap actor's
         items, and an over-cap actor's items are refused.  On the
         caller-connection path sequential chunks share one transaction,
         so per-chunk admission accumulates to the true aggregate.  On
         the no-connection path each chunk counts against the rows the
         previous committed chunks wrote, which also accumulates to the
-        true aggregate — but the refusal surfaces after the committed
+        true aggregate, but the refusal surfaces after the committed
         prefix: :class:`~taskq.exceptions.BatchMaxPendingExceededError`
         raises with STREAM-GLOBAL refused item indices and an
         ``admitted_count`` covering every committed item; items after
@@ -1032,7 +1032,7 @@ class JobsClient:
 
         **unique_for (not applied on batch paths):** actor-declared
         ``unique_for`` is a single-enqueue contract (see
-        :meth:`enqueue_batch`'s disclosure) — every item writes, items
+        :meth:`enqueue_batch`'s disclosure), every item writes, items
         sharing an ``(actor, identity_key)`` are not deduplicated, and
         ``unique_for`` items are fully counted toward ``max_pending``.
         This holds on both arms (the per-chunk INSERT and the atomic
@@ -1047,7 +1047,7 @@ class JobsClient:
 
         resolved_batch_id = UUID(bytes=new_job_id().bytes) if batch_id is None else batch_id
 
-        # Peek the iterable — empty raises ValueError.
+        # Peek the iterable, empty raises ValueError.
         it = iter(items)
         try:
             first_item = next(it)
@@ -1080,14 +1080,14 @@ class JobsClient:
             )
 
         # Build a lazy generator of EnqueueArgs. The payload is validated
-        # exactly ONCE per item — inside build_enqueue_args — and a
+        # exactly ONCE per item, inside build_enqueue_args, and a
         # ValidationError from there is re-annotated with the item's index
         # and actor here. Why not validate upfront and discard the result
         # (the previous shape): that ran pydantic-core twice per batch item
         # on a hot path, and the discarded pass could not be reused because
         # build_enqueue_args re-validates internally. Note the idempotency/
         # scheduling checks inside build_enqueue_args now precede payload
-        # validation for a doubly-invalid item — the same precedence a
+        # validation for a doubly-invalid item, the same precedence a
         # single enqueue already has.
         # H4: collect per-item (actor_ref, args_id) as a side effect so handles
         # can be paired by index after the backend returns rows. This avoids
@@ -1150,7 +1150,7 @@ class JobsClient:
         # finalizer-only batches also need a row for list_batches
         # discoverability and finalizer_job_id auto-exclusion in
         # wait_for_batch). When only finalizer is set, failure_threshold=None.
-        # expected_size=0 is a sentinel — the backend computes the real count
+        # expected_size=0 is a sentinel, the backend computes the real count
         # from the iterable (H6: no materialization).
         batch_row: BatchRow | None = None
         if failure_policy is not None or finalizer is not None:
@@ -1173,7 +1173,7 @@ class JobsClient:
         total_count = 0
 
         if has_batch_extras and connection is None:
-            # Autonomous atomic path. H6: do NOT materialize the iterable —
+            # Autonomous atomic path. H6: do NOT materialize the iterable ,
             # pass the lazy generator directly to the backend, which consumes
             # it in chunks inside its transaction. expected_size=0 is a
             # sentinel; the backend computes the real count from the items
@@ -1184,8 +1184,8 @@ class JobsClient:
             # Warm the capacity snapshot BEFORE the backend's transaction
             # starts: _lazy_args is a SYNC generator consumed mid-transaction,
             # so it cannot await a (possibly stale-triggering) refresh at
-            # yield time. One awaited resolution here — for the first item's
-            # actor, whose result the generator also reuses — spends the same
+            # yield time. One awaited resolution here, for the first item's
+            # actor, whose result the generator also reuses, spends the same
             # single refresh-per-call budget enqueue_batch spends; every
             # actor the stream later introduces resolves from that snapshot
             # via peek_max_pending. A failed refresh fails open to literals,
@@ -1224,7 +1224,7 @@ class JobsClient:
             # INSERT (not upsert), so the row must carry the real
             # expected_size, which is only known once the stream is drained.
             # KNOWN LIMITATION: until the row exists, a child job reaching a
-            # terminal state finds no batch row — increment_batch_failures
+            # terminal state finds no batch row, increment_batch_failures
             # returns (0, None, 0) and the failure is NOT counted toward
             # failure_policy (see the docstring disclosure above). Insert
             # the finalizer first so its returned row id is known for
@@ -1236,12 +1236,12 @@ class JobsClient:
                 finalizer_row = await self._backend.enqueue_with_conn(connection, finalizer_args)  # type: ignore[arg-type]  # Why: guarded by has_batch_extras; when connection is provided it is runtime-compatible
 
             # Consume chunks. The payload is validated exactly ONCE per item
-            # (inside build_enqueue_args, via build_batch_args) — the previous
+            # (inside build_enqueue_args, via build_batch_args), the previous
             # per-item pre-validation pass ran pydantic-core twice per item and
             # its result was discarded. Every per-item typed error this chunk
-            # can raise — pydantic validation from the args build, the jsonb
+            # can raise, pydantic validation from the args build, the jsonb
             # NUL guard and the per-actor cap partition from the backend call
-            # — crosses ONE remapping boundary below (_ITEM_ERROR_REMAPS) and
+            # , crosses ONE remapping boundary below (_ITEM_ERROR_REMAPS) and
             # leaves annotated at stream-global indices, keeping the
             # index-annotated PayloadValidationError contract (M6) without a
             # second validation on the happy path.
@@ -1250,7 +1250,7 @@ class JobsClient:
                 if not chunk_items:
                     break
                 # Resolve effective caps for actors NEW to this chunk
-                # (memoized in effective_mp across chunks — the TTL'd
+                # (memoized in effective_mp across chunks, the TTL'd
                 # cache makes this a lookup after the first) before the
                 # args are built, so a stored override on a literal-less
                 # actor is enforced exactly as enqueue_batch enforces it.
@@ -1271,8 +1271,8 @@ class JobsClient:
                 # ONE boundary for every remappable per-item error: the
                 # registry's members (and their subclasses, via the
                 # isinstance dispatch) re-raise with stream-global item
-                # indices; anything else — driver errors, programming
-                # errors — crosses untouched.
+                # indices; anything else, driver errors, programming
+                # errors, crosses untouched.
                 try:
                     chunk_args = build_batch_args(
                         chunk_items, resolved_batch_id, max_pending_by_actor=effective_mp
@@ -1402,11 +1402,11 @@ class JobsClient:
     ) -> int:
         """Enqueue jobs via COPY FROM protocol for maximum throughput.
 
-        **WARNING — bulk-import semantics, not general-purpose enqueue:**
+        **WARNING, bulk-import semantics, not general-purpose enqueue:**
         this method does NOT detect or
         reject idempotency-key collisions (a duplicate key aborts the
         whole batch instead of being treated as "already enqueued"), and
-        returns a bare row **count**, not per-job handles — there is no
+        returns a bare row **count**, not per-job handles, there is no
         way to await, cancel, or otherwise reference an individual job
         from the return value. ``max_pending`` IS enforced, with the same
         per-actor partition admission and the same effective-cap
@@ -1416,21 +1416,21 @@ class JobsClient:
         unless you specifically need COPY-level throughput for a one-shot
         bulk import/backfill and have already accounted for these gaps.
 
-        Returns the count of inserted rows — no :class:`~taskq.batch.BatchHandle`,
+        Returns the count of inserted rows, no :class:`~taskq.batch.BatchHandle`,
         no :class:`~taskq.client.JobHandle` instances.
 
         **Validation rules:**
 
         - ``len(items) == 0`` raises :class:`ValueError`.
         - ``len(items) > 50_000`` raises :class:`ValueError`.
-        - ALL payloads are validated before any INSERT — a single failure
+        - ALL payloads are validated before any INSERT, a single failure
           raises :class:`~taskq.exceptions.PayloadValidationError`.
 
         **Tradeoffs vs enqueue_batch:**
 
         - **No idempotency-key collision handling.** A duplicate key
           aborts the entire batch with
-          :class:`~taskq.exceptions.DuplicateIdempotencyKeyError` — a
+          :class:`~taskq.exceptions.DuplicateIdempotencyKeyError`, a
           same-``(idempotency_scope, idempotency_key)`` pair, whether
           repeated within the batch or already stored; nothing is
           written. Callers must pre-deduplicate. One carve-out: during
@@ -1443,10 +1443,10 @@ class JobsClient:
           disclosure): the COPY writes every item, items sharing an
           ``(actor, identity_key)`` are not deduplicated, and
           ``unique_for`` items are fully counted toward ``max_pending``
-          — same semantics as the unnest batch tier.
+         , same semantics as the unnest batch tier.
         - **max_pending partition admission.** One aggregated count runs
           before the COPY: within-cap actors' rows are written, and an
-          over-cap actor's items are refused — the COPY of the admitted
+          over-cap actor's items are refused, the COPY of the admitted
           rows commits first, then
           :class:`~taskq.exceptions.BatchMaxPendingExceededError` raises
           naming the refused actors and item indices (retry only those,
@@ -1455,7 +1455,7 @@ class JobsClient:
           returned.  Use ``batch_id`` to query rows post-insert.
         - **All-or-nothing on constraint violations.** The entire COPY
           fails on any constraint violation (duplicate keys, singleton,
-          CHECK) — only cap admission partitions.
+          CHECK), only cap admission partitions.
 
         Use for bulk import / backfill with 1K-50K rows where throughput
         matters more than idempotency guarantees.
@@ -1475,7 +1475,7 @@ class JobsClient:
             ref = item.actor_ref
             validate_actor_payload(ref.payload_type, item.payload, actor=ref.name)
 
-        # Phase 1.5: Resolve the effective cap per actor — the same
+        # Phase 1.5: Resolve the effective cap per actor, the same
         # resolution and rationale as enqueue_batch (see the comment
         # there): a stored operator override on a literal-less actor must
         # be visible to the backend's cap groups, which skip actors
@@ -1516,7 +1516,7 @@ class JobsClient:
         Returns ``None`` when the job does not exist; otherwise wraps
         the row in a :class:`JobHandle[R]`. The caller may supply
         ``result_adapter`` because lookups by id do not carry actor
-        identity — typical sources are
+        identity, typical sources are
         ``my_actor.result_adapter`` (when reuniting with an actor) or
         ``TypeAdapter(type(None))`` (when only row metadata is needed).
         When *result_adapter* is ``None`` it defaults to
@@ -1542,8 +1542,8 @@ class JobsClient:
     async def get_row(self, job_id: JobId) -> JobRow | None:
         """Look up a job by id and return the raw :class:`JobRow`.
 
-        Mirrors :meth:`get`'s contract — one ``backend.get``, ``None``
-        when the job does not exist — without the handle machinery or
+        Mirrors :meth:`get`'s contract, one ``backend.get``, ``None``
+        when the job does not exist, without the handle machinery or
         result adapter. For callers that never need a
         :class:`JobHandle`, this is the direct form; for the fresh-read
         case that does want a handle, prefer ``get`` plus the handle's
@@ -1560,7 +1560,7 @@ class JobsClient:
         "running"])``).
 
         ``filter.active`` is a meta-filter: ``active=True`` selects
-        *non-terminal* statuses (pending, scheduled, running — 'not yet
+        *non-terminal* statuses (pending, scheduled, running, 'not yet
         finished', not 'currently executing') and ``active=False`` selects
         terminal ones.  See :class:`JobFilter` for full semantics.
 
@@ -1602,7 +1602,7 @@ class JobsClient:
         """Request cancellation of a job and return a :class:`CancelResult`.
 
         Reads the row first via :meth:`Backend.get`. If the job does not
-        exist, raises :class:`KeyError` — matching Python's stdlib
+        exist, raises :class:`KeyError`, matching Python's stdlib
         idiom for "asked for an entry by id; it isn't there".
 
         Then calls :meth:`Backend.write_cancel_request` and reads the
@@ -1660,7 +1660,7 @@ class JobsClient:
 
         Pending/scheduled jobs are moved straight to terminal 'cancelled'
         (no running actor to cooperate with). Running jobs get
-        ``cancel_phase=1`` set (cooperative cancel) — the worker's
+        ``cancel_phase=1`` set (cooperative cancel), the worker's
         heartbeat-driven cancel controller observes the phase change and
         sets the in-process ``cancel_event``.
 
@@ -1699,7 +1699,7 @@ class JobsClient:
         for attr in ("worker_pool", "_worker_pool"):
             pool = getattr(self._backend, attr, None)
             if pool is not None:
-                # Why: cast — duck-typed probe; only an asyncpg-shaped pool reaches this line in practice.
+                # Why: cast, duck-typed probe; only an asyncpg-shaped pool reaches this line in practice.
                 return cast("asyncpg.Pool", pool)
         return None
 
@@ -1709,24 +1709,24 @@ class JobsClient:
 
         The cron loop's due-check is server-side
         (``next_fire_at <= clock_timestamp()``) and its normal-path
-        recompute re-anchors on the STORED fire time — only a miss
-        beyond ``cron_catch_up_window`` re-anchors on the server clock —
+        recompute re-anchors on the STORED fire time, only a miss
+        beyond ``cron_catch_up_window`` re-anchors on the server clock ,
         so the seed fixes the fire chain's phase for the schedule's
         life. Pool-backed (Postgres) clients therefore read the server
         clock first: one row, ``SELECT clock_timestamp()``, mirroring
         the worker bootstrap's schedule seeding. Pool-less clients
         (in-memory tests) have no second clock domain and use the
-        client's injected Clock — tests wire it to the backend's clock.
+        client's injected Clock, tests wire it to the backend's clock.
 
         The pool acquire + read is bounded by
-        ``DEFAULT_CAPACITY_READ_TIMEOUT`` — the same discipline as
+        ``DEFAULT_CAPACITY_READ_TIMEOUT``, the same discipline as
         ``ActorCapacityCache._refresh``: asyncpg acquire has no default
         timeout, so an unbounded acquire wedges every
         ``create_schedule``/``update_schedule`` on an exhausted pool. On
         timeout a clear :class:`TimeoutError` is raised; falling back to
         the client clock here is deliberately NOT an option, because a
         skewed seed would phase-shift the fire chain for the schedule's
-        life — a wedged pool must surface.
+        life, a wedged pool must surface.
         """
         pool = self._server_clock_pool()
         if pool is None:
@@ -1734,7 +1734,7 @@ class JobsClient:
 
         async def _read_server_now() -> datetime:
             async with pool.acquire() as conn:
-                # Why: annotated assignment — clock_timestamp() is non-null in Postgres; mirrors the worker bootstrap's read.
+                # Why: annotated assignment, clock_timestamp() is non-null in Postgres; mirrors the worker bootstrap's read.
                 seed_now: datetime = await conn.fetchval("SELECT clock_timestamp()")
             return seed_now
 
@@ -1744,7 +1744,7 @@ class JobsClient:
             raise TimeoutError(
                 f"schedule seed clock read timed out after "
                 f"{DEFAULT_CAPACITY_READ_TIMEOUT}s: the pool is exhausted or "
-                "wedged. Refusing to seed next_fire_at from the client clock — "
+                "wedged. Refusing to seed next_fire_at from the client clock, "
                 "that would mix clock domains against the server-side due-check."
             ) from exc
 
@@ -1774,7 +1774,7 @@ class JobsClient:
         When *identity_key* is set, the cron loop propagates it to cron-fired
         jobs so they dedup against on-demand jobs for the same business key.
 
-        Does NOT validate actor existence at creation time — any string
+        Does NOT validate actor existence at creation time, any string
         actor name is accepted (validation is deferred to fire time).
 
         The first ``next_fire_at`` is seeded from the clock that
@@ -1786,7 +1786,7 @@ class JobsClient:
         Clock. This matters permanently: the cron loop's normal path
         recomputes every subsequent fire from the STORED fire time
         (only a miss beyond ``cron_catch_up_window`` re-anchors on the
-        server clock), so the seed — not any per-tick correction —
+        server clock), so the seed, not any per-tick correction ,
         fixes the chain's phase for the schedule's life.
 
         Args:
@@ -1875,13 +1875,13 @@ class JobsClient:
         *static_payload* are provided, or if *cron_expr* is invalid.
 
         To explicitly clear ``payload_factory`` (set the column to NULL),
-        pass ``clear_payload_factory=True`` — ``None`` for payload_factory
+        pass ``clear_payload_factory=True``, ``None`` for payload_factory
         means "don't change this field."
 
         When *cron_expr* changes, the recomputed ``next_fire_at`` is
         seeded from the same clock as ``create_schedule`` (the PG
         server clock on Postgres-backed clients; the client's injected
-        Clock in-memory) — the stored chain keeps its server-anchored
+        Clock in-memory), the stored chain keeps its server-anchored
         phase.
         """
         # Lazy import: croniter (+ dateutil) costs ~16ms at import time and
@@ -1921,5 +1921,5 @@ class JobsClient:
         return await self._backend.update_schedule(schedule_id, args)
 
     async def delete_schedule(self, schedule_id: UUID) -> None:
-        """Delete a cron schedule by ID.  Idempotent — no error if missing."""
+        """Delete a cron schedule by ID.  Idempotent, no error if missing."""
         await self._backend.delete_schedule(schedule_id)

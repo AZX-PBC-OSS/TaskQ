@@ -4,11 +4,11 @@ Solves the EADDRINUSE-under-xdist problem with the worker health server:
 ``WorkerSettings.health_socket_path`` defaults to the shared production path
 ``/tmp/taskq_health.sock``, and ``worker._main`` starts a real
 ``HealthServer`` on it. Under pytest-xdist, two workers running ``_main``
-in-process concurrently race on that one filesystem path — the loser gets
+in-process concurrently race on that one filesystem path, the loser gets
 ``EADDRINUSE`` (there is a TOCTOU window in ``create_unix_server``'s
 stale-file removal), or silently steals the socket from the live winner.
 
-Recommended consumer pattern — mint a unique path per test at settings
+Recommended consumer pattern, mint a unique path per test at settings
 construction time::
 
     from taskq.testing.health import unique_health_sock_path
@@ -20,7 +20,7 @@ construction time::
 
 Suites that build settings through the env cascade (``WorkerSettings.load()``)
 instead of a factory should additionally redirect ``HealthServer.start`` away
-from the shared default via an autouse monkeypatch — see
+from the shared default via an autouse monkeypatch, see
 ``tests/conftest.py::_isolate_health_server_socket`` in the TaskQ repo for the
 reference implementation (it is repo-specific and deliberately not published).
 """
@@ -36,7 +36,7 @@ def unique_health_sock_path(module: str) -> str:
     """Return a unique unix-socket path for one test's health server.
 
     ``/tmp/tq-<module>-<pid>-<token>.sock``: the pid scopes across xdist
-    workers, the random token across tests within a worker (stateless — no
+    workers, the random token across tests within a worker (stateless, no
     shared counter, so uniqueness survives any pytest import mode), and the
     module label identifies the owner when debugging stale files. The short
     ``/tmp/tq-`` prefix keeps paths well under the 104-char AF_UNIX
@@ -49,7 +49,7 @@ def unique_health_sock_path(module: str) -> str:
     ``tests/conftest.py::_sweep_health_sock_files``).
 
     :param module: label embedded in the path. Must not contain path
-        separators — ``/`` would point the socket at a nonexistent
+        separators, ``/`` would point the socket at a nonexistent
         directory and surface as a confusing ENOENT at bind time.
     :raises ValueError: if *module* contains ``/`` or ``\\``.
     """

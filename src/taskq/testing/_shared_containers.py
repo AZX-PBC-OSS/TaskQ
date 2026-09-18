@@ -1,6 +1,6 @@
 """Shared test-container machinery: ONE Postgres + ONE Dragonfly per pytest invocation.
 
-Under pytest-xdist every worker process gets its own fixture ``session`` — a
+Under pytest-xdist every worker process gets its own fixture ``session``, a
 ``-n 4`` run with the old per-worker session containers booted **four Postgres
 plus four Dragonfly containers**, all hammering the same Docker daemon. That
 contention is the measured cause of heavy PG tests (property-sweep equivalence,
@@ -13,7 +13,7 @@ went from 2-14s each (worst 14.46s) to 0.05s.
 
 Blast-radius trade-off, stated next to that tuning rationale: ONE shared
 container concentrates the failure signature of an out-of-band ``docker rm``
-or daemon crash onto every worker at once — an instrumented kill of the shared
+or daemon crash onto every worker at once, an instrumented kill of the shared
 pair errored ~84 tests across every PG module, vs ~1/4 of the run per worker
 under the old per-worker topology. That concentration is inherent to sharing
 and accepted for the contention win above; the ``[TaskQ]`` decision logs below
@@ -21,26 +21,26 @@ and accepted for the contention win above; the ``[TaskQ]`` decision logs below
 / ``swept``) exist so such an event is diagnosable from the run's output.
 
 How the sharing works: the first session fixture to take a file lock (under the
-per-invocation state dir — :func:`invocation_state_dir`, shared by every xdist
+per-invocation state dir, :func:`invocation_state_dir`, shared by every xdist
 worker of the invocation and visible to no other invocation, of this repo or
 any other) starts BOTH containers and publishes connection info to a JSON state
 file; every other session fixture (in any worker of the invocation) reuses it.
-References are tracked as HOLDER PIDS in a per-invocation registry — not as a
-bare counter — so the pair comes down when the last LIVE holder of the
+References are tracked as HOLDER PIDS in a per-invocation registry, not as a
+bare counter, so the pair comes down when the last LIVE holder of the
 invocation releases, and a killed worker neither wedges it up forever nor gets
 it torn down under a surviving sibling. Stale containers from crashed runs are
 removed before starting fresh ones, by pid-label liveness alone (see the sweep
 rules).
 
 The module lives in ``taskq.testing`` (not ``tests/``) because the published
-fixture module :mod:`taskq.testing.fixtures` needs it — ``tests.conftest``
+fixture module :mod:`taskq.testing.fixtures` needs it, ``tests.conftest``
 cannot be imported cross-module in a pyright-resolvable way, and a bare ``conftest``
 import self-shadows under ``tests/e2e/``.
 
 Import purity: module level is stdlib-only. ``filelock``, ``docker`` and
 ``testcontainers`` are imported inside the functions that use them, so importing
 this module (and therefore :mod:`taskq.testing.fixtures`) never requires those
-packages — the same boundary rule :mod:`taskq.testing.fixtures` documents for
+packages, the same boundary rule :mod:`taskq.testing.fixtures` documents for
 asyncpg/testcontainers/pytest.
 """
 
@@ -60,7 +60,7 @@ from taskq._json import loads as _json_loads
 
 # Ryuk must not manage the shared containers: testcontainers' reaper removes a
 # container when the *registering* process exits, and the creator worker can
-# finish before other workers — Ryuk would reap the shared containers mid-run.
+# finish before other workers, Ryuk would reap the shared containers mid-run.
 # Lifecycle is explicit instead (holder registry + docker rm by the last live
 # reference to release). This also disables Ryuk for this process's OTHER testcontainers
 # (disposable chaos containers), which is why those are labeled with
@@ -74,7 +74,7 @@ os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
 CREATOR_PID_LABEL = "taskq.test.creator-pid"
 CONTROLLER_PID_LABEL = "taskq.test.controller-pid"
 
-# Any sibling repo's ownership-label key shape — see the sweep rules below. Cross-repo
+# Any sibling repo's ownership-label key shape, see the sweep rules below. Cross-repo
 # on purpose: cennan (``cennan.test.*``), warden (``warden.test.*``) and other repos on
 # this shared Docker daemon label with the same key shape, and every repo's sweep honors
 # ANY matching key, so one checkout's stale sweep never kills another checkout's live
@@ -96,7 +96,7 @@ def creator_labels() -> dict[str, str]:
 
 def pid_alive(pid: int) -> bool:
     """``os.kill(pid, 0)`` liveness probe: ESRCH (``ProcessLookupError``) means dead;
-    EPERM (another uid) means alive; anything else assumes alive — a sweep must never
+    EPERM (another uid) means alive; anything else assumes alive, a sweep must never
     remove a live run's containers on a guess."""
     try:
         os.kill(pid, 0)
@@ -109,8 +109,8 @@ def pid_alive(pid: int) -> bool:
 
 def labeled_pids(labels: Mapping[str, str]) -> list[int]:
     """The parseable pid values across ALL ownership labels (ours and any sibling
-    repo's — see ``OWNER_PID_LABEL_RE``). An unparseable value cannot have come from a
-    real labeling site (all write ``str(pid)``), protects no live run, and is dropped —
+    repo's, see ``OWNER_PID_LABEL_RE``). An unparseable value cannot have come from a
+    real labeling site (all write ``str(pid)``), protects no live run, and is dropped ,
     it never counts as alive."""
     pids: list[int] = []
     for key, raw in labels.items():
@@ -131,7 +131,7 @@ _PG_PASSWORD = "taskq"  # noqa: S105 # Why: throwaway test-container credential;
 _PG_DBNAME = "taskq"
 # Server settings for the throwaway shared test cluster.
 #
-# ``max_connections=1000``: ONE container now serves EVERY xdist worker — ``-n auto``
+# ``max_connections=1000``: ONE container now serves EVERY xdist worker, ``-n auto``
 # on a 32-core machine opens 32 x ~22 connections = ~700 against it, well past
 # PostgreSQL's default of 100.
 #
@@ -140,7 +140,7 @@ _PG_DBNAME = "taskq"
 # checkpoint on every module teardown (``DROP DATABASE ... WITH (FORCE)``) and every
 # per-test reset (``DROP SCHEMA ... CASCADE``), and on a shared cluster every worker's
 # forced checkpoint queues behind every other worker's. With default settings that
-# checkpoint has to fsync the whole dirty buffer pool — measured on cennan's port of
+# checkpoint has to fsync the whole dirty buffer pool, measured on cennan's port of
 # this design at 4 workers: individual drops took 2-14s (worst 14.46s, vs 0.05s tuned)
 # and pushed tests past their timeout budgets. Turning durability off makes the forced
 # checkpoint nearly free; ``checkpoint_timeout=3600`` keeps ordinary time-triggered
@@ -156,7 +156,7 @@ _PG_COMMAND = (
     " -c checkpoint_timeout=3600"
 )
 
-# Dragonfly is a drop-in Redis replacement (RESP wire protocol, EVALSHA, FLUSHDB — all
+# Dragonfly is a drop-in Redis replacement (RESP wire protocol, EVALSHA, FLUSHDB, all
 # verified); pinned by tag for reproducibility.
 DRAGONFLY_IMAGE = "docker.dragonflydb.io/dragonflydb/dragonfly:v1.39.0"
 
@@ -170,25 +170,25 @@ DRAGONFLY_IMAGE = "docker.dragonflydb.io/dragonflydb/dragonfly:v1.39.0"
 DRAGONFLY_RESOURCE_FLAGS = "--proactor_threads 2 --maxmemory 512mb"
 
 # Logical DBs available for per-module / per-test allocation (Dragonfly caps --dbnum
-# at 1024; DB 0 is reserved for ad-hoc use). The budget is per PAIR — and the pair is
+# at 1024; DB 0 is reserved for ad-hoc use). The budget is per PAIR, and the pair is
 # per invocation, so it sizes one invocation's consumers, one DB each across all of
-# its workers — see ``next_redis_logical_db``.
+# its workers, see ``next_redis_logical_db``.
 REDIS_DB_POOL_SIZE = 1024
 
 # Only containers running these EXACT images are sweep candidates: the shared pair and
 # TaskQ's disposable chaos containers all use them. Deliberately not a bare
-# ``postgres`` repository prefix — the docker-compose dev stack runs versioned
+# ``postgres`` repository prefix, the docker-compose dev stack runs versioned
 # ``postgres:18.x`` tags (same repository, different tag), and a repository-wide
 # prefix would make the sweep a hazard to it (the fixed ``container_name: taskq-*``
 # guard below is the second line of defense).
 #
 # ``taskq-e2e-worker`` (tagged ``taskq-e2e-worker-r<pid>:sha-<hash>`` by
-# containerspec — pid-owned repository names, so each session's teardown
+# containerspec, pid-owned repository names, so each session's teardown
 # removes exactly its own image) is in by IMAGE PREFIX rather than via a
 # generic ``taskq.test-managed`` label honored
 # by the sweep: the name is a repo-owned constant, so this one entry makes every e2e
 # worker-container creation site (a dozen across tests/e2e, and any future one) a
-# sweep candidate with no per-site opt-in to forget — the exact labeling omission that
+# sweep candidate with no per-site opt-in to forget, the exact labeling omission that
 # left crashed e2e runs' worker containers unsweepable in the first place. It is safe
 # alongside the compose guard: the dev stack's containers are name-protected
 # (``taskq-*``) and run different images.
@@ -204,7 +204,7 @@ _SWEEP_IMAGE_PREFIXES = (
 SWEEP_AGE_LIMIT = timedelta(hours=24)
 
 # The docker-compose dev stack pins ``container_name: taskq-postgres``/``taskq-redis``/
-# ``taskq-admin`` — never this suite's to remove, whatever their image or state.
+# ``taskq-admin``, never this suite's to remove, whatever their image or state.
 _PROTECTED_NAME_PREFIX = "taskq-"
 
 
@@ -217,28 +217,28 @@ def should_sweep_stale_container(
     created: datetime,
     now: datetime,
 ) -> bool:
-    """The keep/remove decision for one leftover container — pure except the pid-liveness
+    """The keep/remove decision for one leftover container, pure except the pid-liveness
     probe (``os.kill(pid, 0)`` reads OS state), so the unit lane can test it without
     Docker (``tests/test_shared_containers.py``); the Docker I/O wrapper around it is
     exercised by every integration run.
 
     Rules, in order:
 
-    1. Named ``taskq-*`` → the docker-compose dev stack — never ours to remove.
+    1. Named ``taskq-*`` → the docker-compose dev stack, never ours to remove.
     2. Image outside ``_SWEEP_IMAGE_PREFIXES`` → not a test container this suite manages.
     3. Older than ``SWEEP_AGE_LIMIT`` → swept whatever the liveness signals say. Both
        of those signals are pids, and over days a dead run's pid can be recycled by an
        unrelated live process; the age backstop is what stops such a phantom shielding
        a leftover forever.
-    4. Ownership label present (ours or any sibling repo's — ``OWNER_PID_LABEL_RE``) →
+    4. Ownership label present (ours or any sibling repo's, ``OWNER_PID_LABEL_RE``) →
        sweep iff EVERY labeled pid is dead. Two pids because the creating xdist worker
        can legitimately exit first (see ``creator_labels``). The labels alone carry the
        cross-invocation guarantee, by construction: a pair belongs to exactly one
-       invocation (:func:`invocation_state_dir` — no other invocation can even find its
+       invocation (:func:`invocation_state_dir`, no other invocation can even find its
        state file), and while that invocation is alive, the creating worker or the
        xdist controller (under ``-n0``, the pytest process itself) is alive too. All
        labeled pids dead therefore means no live invocation of ANY repo is using the
-       container — the foreign label shapes are honored for exactly that reason. A
+       container, the foreign label shapes are honored for exactly that reason. A
        liveness-blind sweep killing concurrently running sessions' containers was the
        ~98x ConnectionRefusedError flake class in the sibling repo this design is
        ported from.
@@ -258,20 +258,20 @@ def should_sweep_stale_container(
 
 
 # e2e sessions create one pid-suffixed Docker network per test process
-# (``taskq-e2e-net-<pid>``); a crashed run leaks it — networks are outside
+# (``taskq-e2e-net-<pid>``); a crashed run leaks it, networks are outside
 # Ryuk's reap even when enabled, and Ryuk is disabled here anyway.
 _E2E_NETWORK_NAME_RE = re.compile(r"^taskq-e2e-net-(\d+)$")
 
 
 def should_sweep_stale_network(*, name: str, created: datetime, now: datetime) -> bool:
-    """The keep/remove decision for one leftover e2e Docker network — pure
+    """The keep/remove decision for one leftover e2e Docker network, pure
     except the pid-liveness probe, mirroring :func:`should_sweep_stale_container`
     so the unit lane can test it without Docker.
 
     The pid suffix IS the owner identity (the e2e suite mints it from the
     test process's own pid): sweep iff that pid is dead, with the same 24h
-    age backstop against pid recycling. Names outside the exact pattern —
-    Docker's own bridges, the compose dev stack's networks — are never this
+    age backstop against pid recycling. Names outside the exact pattern ,
+    Docker's own bridges, the compose dev stack's networks, are never this
     suite's to remove, however old.
     """
     match = _E2E_NETWORK_NAME_RE.fullmatch(name)
@@ -344,8 +344,8 @@ def _docker_client() -> _DockerClientLike:
 
 def _docker_errors() -> tuple[type[Exception], ...]:
     """``docker.errors.DockerException`` and its subclasses (``NotFound``, ``APIError``)
-    — the specific failure modes of the calls below (missing container, daemon down,
-    API error), instead of a broad swallow that would also hide bugs in this module."""
+    , the specific failure modes of the calls below (missing container, daemon down,
+     API error), instead of a broad swallow that would also hide bugs in this module."""
     from docker.errors import DockerException
 
     return (DockerException,)
@@ -360,11 +360,11 @@ def docker_unreachable_reason() -> str | None:
     """Why this process cannot reach the Docker daemon, or ``None`` if it can.
 
     A cheap ``ping()`` through the same client configuration every container
-    start in this module uses (``docker.from_env()`` — ``DOCKER_HOST`` and
+    start in this module uses (``docker.from_env()``, ``DOCKER_HOST`` and
     friends honored), so what the probe reports is exactly what a container
     start would hit. Deliberately narrow: only the daemon-connection failure
     modes produce a reason (``DockerException`` from the SDK, ``OSError`` for
-    an absent or refused socket/pipe) — anything else is a real bug and must
+    an absent or refused socket/pipe), anything else is a real bug and must
     surface, not be skipped away.
     """
     try:
@@ -381,8 +381,8 @@ def skip_test_without_docker() -> None:
     daemon is unreachable.
 
     Every container-dependent fixture calls this FIRST, so a machine without
-    a running daemon sees SKIPPED tests with instructions — never fixture
-    ERRORS — the same skip-with-reason discipline the suite already applies
+    a running daemon sees SKIPPED tests with instructions, never fixture
+    ERRORS, the same skip-with-reason discipline the suite already applies
     to missing extras and platform limits. A Docker-less agent can still run
     every non-container tier of the suite.
     """
@@ -391,7 +391,7 @@ def skip_test_without_docker() -> None:
         import pytest
 
         pytest.skip(
-            f"{reason} — start Docker, or deselect the container tier with -m 'not integration'"
+            f"{reason}, start Docker, or deselect the container tier with -m 'not integration'"
         )
 
 
@@ -408,7 +408,7 @@ def container_running(container_id: str) -> bool:
 
 
 def _created_or_now(attrs: Mapping[str, object], now: datetime) -> datetime:
-    """The ``Created`` attr, or *now* when missing/unparseable — age 0 keeps a
+    """The ``Created`` attr, or *now* when missing/unparseable, age 0 keeps a
     running unlabeled container (safe) and an exited one is swept anyway."""
     try:
         return datetime.fromisoformat(str(attrs.get("Created")))
@@ -446,9 +446,9 @@ def cleanup_stale_testcontainers() -> None:
     before starting fresh ones.
 
     The keep/remove decisions live in :func:`should_sweep_stale_container`
-    and :func:`should_sweep_stale_network` (pure, unit-tested — the container
+    and :func:`should_sweep_stale_network` (pure, unit-tested, the container
     rules consult pid labels, age and running state only, never a registry);
-    this wrapper only does Docker I/O and never raises — a broken daemon or a
+    this wrapper only does Docker I/O and never raises, a broken daemon or a
     container removed mid-list must not stop the suite starting. One ``[TaskQ]``
     ``event=swept`` line records that the sweep ran and what it removed (its
     ABSENCE means a Docker error short-circuited the sweep before the list).
@@ -462,7 +462,7 @@ def cleanup_stale_testcontainers() -> None:
     swept_containers = 0
     for container in containers:
         try:
-            # Config.Image is the name:tag the container was created with — no extra
+            # Config.Image is the name:tag the container was created with, no extra
             # images.get round-trip per container, and no skipped sweep when the image
             # was since deleted.
             config = cast("dict[str, object] | None", container.attrs.get("Config"))
@@ -506,7 +506,7 @@ def start_shared_services() -> SharedServices:
     redis = (
         RedisContainer(image=DRAGONFLY_IMAGE)
         # --dbnum 1024 so every consumer (module or test function, across ALL workers)
-        # gets its own logical DB — the 16-DB default would force sharing, and sharing
+        # gets its own logical DB, the 16-DB default would force sharing, and sharing
         # lets one consumer's FLUSHDB wipe another's mid-run state.
         .with_command(f"--dbnum {REDIS_DB_POOL_SIZE} {DRAGONFLY_RESOURCE_FLAGS}")
         .with_kwargs(labels=owner_labels)
@@ -538,13 +538,13 @@ def services_have_live_owner(info: SharedServices) -> bool:
     labels.
 
     Secondary to the holder registry, which knows about every live holder of the
-    invocation — including workers that never started the pair: this answers only
+    invocation, including workers that never started the pair: this answers only
     "did the invocation that started these containers die". It still earns its place
     as the fallback for a lost registry file and for the window between starting the
     containers and registering the first holder.
 
     Unlabeled running containers (started by pre-label code) are kept: there is no
-    owner information to contradict the reuse. Any inspection error also keeps them —
+    owner information to contradict the reuse. Any inspection error also keeps them ,
     a docker hiccup must never break suite startup, and ``container_running`` has
     already vetted the pair.
     """
@@ -569,7 +569,7 @@ def services_have_live_owner(info: SharedServices) -> bool:
 
 
 class _TempPathFactoryLike(Protocol):
-    """The ``pytest.TempPathFactory`` surface the state-dir resolver needs —
+    """The ``pytest.TempPathFactory`` surface the state-dir resolver needs ,
     structural, so the real factory satisfies it and unit tests can pass a
     controlled basetemp without building a pytest ``Config``."""
 
@@ -579,15 +579,15 @@ class _TempPathFactoryLike(Protocol):
 def invocation_state_dir(factory: _TempPathFactoryLike) -> Path:
     """The per-invocation state dir for the shared pair, from pytest's basetemp.
 
-    Invariant: an xdist worker's basetemp is ``<invocation>/popen-gwK`` — one
-    level below the invocation dir — while a serial run's basetemp IS the
-    invocation dir (``pytest-N``); pytest allocates a fresh numbered dir per
-    invocation and never reuses one. So the parent of a worker basetemp, or a
-    serial basetemp itself, is a directory exactly ONE invocation owns: the
-    pair's state files and holder registry live there, and no other invocation
-    — of this repo or any other — can find them. A custom ``--basetemp`` that
-    names the same path for two runs opts into that sharing explicitly, the
-    same way it opts into sharing every ``tmp_path``.
+     Invariant: an xdist worker's basetemp is ``<invocation>/popen-gwK``, one
+     level below the invocation dir, while a serial run's basetemp IS the
+     invocation dir (``pytest-N``); pytest allocates a fresh numbered dir per
+     invocation and never reuses one. So the parent of a worker basetemp, or a
+     serial basetemp itself, is a directory exactly ONE invocation owns: the
+     pair's state files and holder registry live there, and no other invocation
+    , of this repo or any other, can find them. A custom ``--basetemp`` that
+     names the same path for two runs opts into that sharing explicitly, the
+     same way it opts into sharing every ``tmp_path``.
     """
     basetemp = factory.getbasetemp()
     return basetemp.parent if basetemp.name.startswith("popen-") else basetemp
@@ -617,7 +617,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
     tmp = path.with_name(path.name + ".tmp")
     # Why an explicit encoding: the orjson writers emit raw UTF-8 (no
     # ensure_ascii escape), so text is no longer guaranteed pure-ASCII the way
-    # the previous stdlib-json writer's output was — without the pin, a C/POSIX
+    # the previous stdlib-json writer's output was, without the pin, a C/POSIX
     # locale would make the write (and every read_text() below) locale-encoded.
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
@@ -625,7 +625,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 def _read_int(path: Path) -> int:
     """Tolerant read for the logical-DB counter: missing, empty or unparseable yields
-    0 — the self-healing value, matching the reset-on-pair-start semantics."""
+    0, the self-healing value, matching the reset-on-pair-start semantics."""
     with suppress(OSError, ValueError):
         return int(path.read_text().strip())
     return 0
@@ -637,10 +637,10 @@ def _read_int(path: Path) -> int:
 #
 # Why a registry at all, when the containers already carry pid labels: the labels
 # prove the OWNING invocation is alive (the creating worker and the xdist controller
-# it recorded — see ``creator_labels``), but not HOW MANY session fixtures of that
+# it recorded, see ``creator_labels``), but not HOW MANY session fixtures of that
 # invocation still hold the pair. The creating worker can exit before its siblings
 # finish, and the pair must come down exactly when the LAST holder of the invocation
-# releases — not when the creator exits, and not while any sibling still runs. So
+# releases, not when the creator exits, and not while any sibling still runs. So
 # every acquire records ITS OWN pid against the container ids it holds, dead holders
 # are pruned on every access (a killed worker neither wedges the pair up forever nor
 # tears it down under a survivor), and the release that leaves no live holder owns
@@ -667,8 +667,8 @@ def _holder_registry(state_dir: Path) -> Generator[Path, None, None]:
 
 
 def _read_holders(path: Path) -> dict[str, list[int]]:
-    """``{container_id: [holder pid, ...]}`` with every dead holder — and every
-    container left with none — dropped. A missing, empty or corrupt file reads as
+    """``{container_id: [holder pid, ...]}`` with every dead holder, and every
+    container left with none, dropped. A missing, empty or corrupt file reads as
     "nothing is held": the same self-healing tolerance the counters use."""
     raw: object = None
     with suppress(OSError, ValueError):
@@ -716,7 +716,7 @@ def release_container_holders(
     container_ids: Iterable[str], *, state_dir: Path, pid: int | None = None
 ) -> bool:
     """Retire one reference held by *pid* on each of *container_ids* in *state_dir*'s
-    registry; return whether NO live holder remains on any of them — i.e. whether
+    registry; return whether NO live holder remains on any of them, i.e. whether
     this release is the last one and the caller owns the teardown."""
     holder = os.getpid() if pid is None else pid
     ids = list(container_ids)
@@ -733,7 +733,7 @@ def release_container_holders(
 
 
 def _recorded_pair_is(info_path: Path, info: SharedServices) -> bool:
-    """Whether the state file still names *info*'s pair — the guard on unlinking it,
+    """Whether the state file still names *info*'s pair, the guard on unlinking it,
     since another worker's fresh start may already have replaced it."""
     with suppress(OSError, ValueError, TypeError):
         return SharedServices(**_json_loads(info_path.read_text(encoding="utf-8"))) == info
@@ -749,7 +749,7 @@ def _log_pair_event(
 ) -> None:
     """One ``[TaskQ]``-prefixed structured line per shared-pair decision point
     (``pair-started`` / ``pair-reused`` / ``pair-fresh-started`` /
-    ``pair-stopped``), matching the clock-divergence diagnostic's style — this
+    ``pair-stopped``), matching the clock-divergence diagnostic's style, this
     module has no structlog setup. Keys are stable per event; the 12-char
     container-id prefixes are enough to cross-reference ``docker ps`` without
     dumping full ids, and ``state_dir`` identifies the invocation that owns the
@@ -771,9 +771,9 @@ def shared_service_pair(state_dir: Path) -> Generator[SharedServices, None, None
     """Acquire the shared Postgres + Dragonfly pair for one session-fixture lifetime.
 
     The first caller to take the lock starts the pair and publishes connection info
-    into *state_dir* (the per-invocation pytest tmpdir — :func:`invocation_state_dir`;
+    into *state_dir* (the per-invocation pytest tmpdir, :func:`invocation_state_dir`;
     every xdist worker of the invocation shares it, and no other invocation of any
-    repo can find it); later callers — in any worker of the invocation — reuse it.
+    repo can find it); later callers, in any worker of the invocation, reuse it.
     Each acquire registers its own pid as a holder of the pair's containers and each
     release retires it; the pair is torn down by the release that leaves NO live
     holder. A recorded pair that no live process holds and whose labeled owners are
@@ -783,7 +783,7 @@ def shared_service_pair(state_dir: Path) -> Generator[SharedServices, None, None
 
     Every decision point logs one ``[TaskQ]`` line with stable keys
     (:func:`_log_pair_event`): ``pair-started`` (no prior state), ``pair-reused``,
-    ``pair-fresh-started`` (a recorded pair was rejected — the reason says why), and
+    ``pair-fresh-started`` (a recorded pair was rejected, the reason says why), and
     ``pair-stopped`` on the last release.
 
     Both session fixtures that share the pair (``pg_container`` in ``tests/conftest.py``
@@ -863,13 +863,13 @@ def shared_service_pair(state_dir: Path) -> Generator[SharedServices, None, None
 def next_redis_logical_db(state_dir: Path) -> int:
     """The next globally-unique logical DB index on the shared Dragonfly.
 
-    Old topology note: with per-worker containers, a per-process counter was enough —
+    Old topology note: with per-worker containers, a per-process counter was enough ,
     each worker's DBs lived in its own Dragonfly. On the ONE shared Dragonfly two
     workers' local counters would hand the SAME DB to different consumers, and one
     consumer's FLUSHDB would wipe another's mid-run state. Allocation therefore draws
     from one file-backed counter under the pair's lock, so every consumer (module or
     test function) across EVERY worker is unique. The counter is reset when a fresh
-    pair starts (the DBs die with the container) and never wraps around — exhaustion
+    pair starts (the DBs die with the container) and never wraps around, exhaustion
     raises loudly instead of silently sharing.
     """
     from filelock import FileLock

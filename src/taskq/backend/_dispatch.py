@@ -8,7 +8,7 @@ The worker-side :class:`QueueModeCache` also lives here: the resolver it
 caches is defined one screen above it, and the queue-ops seam
 (:mod:`taskq.worker.queue_ops`) reaches it through
 :func:`invalidate_queue_mode_caches` rather than holding a backend
-reference — worker → backend is the correct layer direction.
+reference, worker → backend is the correct layer direction.
 """
 
 import time
@@ -52,13 +52,13 @@ QUEUE_MODE_CACHE_TTL_SECONDS: Final[float] = 5.0
 
 Bounds the trade the cache makes: a mode flip (strict_fifo ↔ round_robin)
 reaches an out-of-band worker within this many seconds, and in exchange
-the per-dispatch-round resolve statement disappears — a notify-driven
+the per-dispatch-round resolve statement disappears, a notify-driven
 fleet dispatches many times per second, so the round trip it removes is
 paid far more often than the staleness it can cause. A stale mode is a
 bounded fairness degradation, never a correctness one: the strict-FIFO
 variant is the round-robin CTE with no-op fairness ranks, so a batch
 dispatched under a stale strict mode still admits and orders by
-priority/scheduled_at — only cohort interleaving waits out the TTL.
+priority/scheduled_at, only cohort interleaving waits out the TTL.
 5 s matches the notify fallback poll cadence (notify_poll_interval), the
 system's existing bound for how stale a worker's view of the database
 may be before it re-reads on its own.
@@ -76,14 +76,14 @@ coming back empty.
 Each expansion doubles the per-cohort candidate window
 (``residual * oversample * 2**expansions``), so three expansions absorb a
 transient lock-out by up to ``oversample * 8`` concurrent dispatchers on
-one (actor, queue) — 16 at the default oversample of 2 — before the
+one (actor, queue), 16 at the default oversample of 2, before the
 round reports empty and defers to the next tick. The steady-state sizing
 rule lives on ``WorkerSettings.dispatch_oversample``: an oversample at
 or above the number of dispatchers polling the same (actor, queue) keeps
 the common case expansion-free. The claim's own per-round bounds are
-untouched — every re-run still admits at most ``limit_n`` rows, and each
+untouched, every re-run still admits at most ``limit_n`` rows, and each
 candidate probe stays an ORDER BY + LIMIT index read whose cost is
-independent of backlog depth — so expansion multiplies the round's
+independent of backlog depth, so expansion multiplies the round's
 constant factor, never its depth coupling.
 """
 
@@ -91,20 +91,20 @@ constant factor, never its depth coupling.
 class QueueModeCache:
     """Per-backend-instance TTL cache of resolved queue modes.
 
-    Owned by one :class:`~taskq.backend.postgres.PostgresBackend` — the
-    backend the worker's single dispatch loop dispatches through — so
+    Owned by one :class:`~taskq.backend.postgres.PostgresBackend`, the
+    backend the worker's single dispatch loop dispatches through, so
     one worker's mode view never couples to another worker sharing the
     process (two workers, two schemas, two backends).
 
     Concurrency: the dispatch loop is single-per-worker, and no method
-    here awaits — every mutation is one event-loop step, so entries are
+    here awaits, every mutation is one event-loop step, so entries are
     never observed torn and no lock is needed. A backend shared by
     concurrent dispatch callers on one loop can only race two misses
     into duplicate resolves; both stores write the same freshly read
     data, so last-write-wins is benign.
 
     Negative caching: a queue with no ``queues`` row is cached as
-    ``strict_fifo`` (the resolver's fallback) with the same TTL — an
+    ``strict_fifo`` (the resolver's fallback) with the same TTL, an
     unconfigured queue must not re-pay the round trip every dispatch,
     or the commonest deployment (no rows at all, nothing in TaskQ seeds
     them) would get no benefit. A queue configured mid-flight is picked
@@ -125,7 +125,7 @@ class QueueModeCache:
 
     def resolved_modes(self, queues: list[str]) -> set[str] | None:
         """The distinct-mode set for *queues* when every queue has a fresh
-        entry, else ``None`` — the caller resolves the whole list through
+        entry, else ``None``, the caller resolves the whole list through
         the query (the fallback for unknown and expired queues alike) and
         stores the result.
 
@@ -164,7 +164,7 @@ def invalidate_queue_mode_caches() -> int:
 
     Called wherever this process writes the ``queues`` table (the
     queue-ops seam): the process that changed a mode must not keep
-    serving it stale for a TTL. Returns the number of caches cleared —
+    serving it stale for a TTL. Returns the number of caches cleared ,
     zero in a CLI-only process with no live backends, which is the
     common case (operators usually run queue ops out of process).
     """
@@ -192,7 +192,7 @@ async def _dispatch_batch(
 
     When *queues* mixes ``strict_fifo`` and ``round_robin`` queues in a
     single call, the round-robin CTE variant is used for the whole batch
-    (round-robin is a superset behaviour — strict_fifo queues still dispatch
+    (round-robin is a superset behaviour, strict_fifo queues still dispatch
     in priority/scheduled_at order, just with an extra no-op fairness_rank
     partition). This is silent by design elsewhere, so a debug log is
     emitted here to make the mode selection observable when queues are
@@ -201,12 +201,12 @@ async def _dispatch_batch(
     *queue_mode_cache* is the backend's worker-side mode cache: a hit
     removes the resolve statement from this round entirely. The
     miss path re-resolves through the query and refills the cache.
-    ``None`` keeps the pre-cache contract — resolve on every call — for
+    ``None`` keeps the pre-cache contract, resolve on every call, for
     standalone callers that want fresh resolution.
 
     A claim deliberately writes NO ``job_events`` row. pending→running is
     the dispatcher's bookkeeping, not an outcome transition, and a claim
-    is the one act every admission-denial cycle repeats — under the 429
+    is the one act every admission-denial cycle repeats, under the 429
     denial contract a denied job is claimed and rescheduled until capacity
     frees or its deadline expires, so a row per claim is precisely the
     unbounded-growth vector the aggregated denial counters on the job row
@@ -219,7 +219,7 @@ async def _dispatch_batch(
     queue_attr = queues[0] if queues else ""
     # Autocommit, deliberately: the claim is one atomic UPDATE … RETURNING
     # whose row locks end with the statement, and nothing else in the round
-    # needs a shared snapshot — the mode resolve and the claimable probe are
+    # needs a shared snapshot, the mode resolve and the claimable probe are
     # read-only, and an empty round holds no locks between iterations.
     # asyncpg sends BEGIN and COMMIT as their own round trips, so a
     # transaction here only tripled the cost of every claim; the claim is
@@ -278,7 +278,7 @@ async def _dispatch_batch(
                     break
                 # An empty round means one of two things: nothing
                 # claimable remains, or every row of the candidate
-                # window is row-locked by peers — the window is
+                # window is row-locked by peers, the window is
                 # deliberately bounded (residual x oversample per cohort
                 # probe) and SKIP LOCKED slides only within it, so more
                 # than oversample dispatchers on one (actor, queue) can
@@ -287,8 +287,8 @@ async def _dispatch_batch(
                 # re-run is paid for: no pending routable rows (the idle
                 # case, by far the commonest empty round) costs one
                 # LIMIT-1 probe and ends the round. A round that returns
-                # empty never holds row locks — zero admissions means
-                # nothing passed the lock stage — so re-executing with a
+                # empty never holds row locks, zero admissions means
+                # nothing passed the lock stage, so re-executing with a
                 # doubled window starts lock-clean, and the expansion
                 # bound keeps a permanently saturated round from
                 # re-running without limit.
@@ -336,7 +336,7 @@ async def _resolve_queue_modes_by_queue(
     schema: str,
 ) -> dict[str, str]:
     """Per-queue modes for exactly *queues*, unknown queues defaulting to
-    ``strict_fifo`` — the shared query core for the set-returning public
+    ``strict_fifo``, the shared query core for the set-returning public
     resolver and the cache fill.
 
     *schema* is re-validated here rather than trusted from the caller:
