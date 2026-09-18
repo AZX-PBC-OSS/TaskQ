@@ -54,6 +54,7 @@ from taskq.worker import (
 )
 from taskq.worker._consumer import (
     _actor_exit_wait_budget,  # pyright: ignore[reportPrivateUsage]  # Why: the park-budget function under test — the anchored shape had no unit pin (F7).
+    _interrupted_actor_hold,  # pyright: ignore[reportPrivateUsage]  # Why: the bare-call arm's fallback hold is a defensive surface a refactor could unbound or zero.
     consume_one_job,
 )
 from taskq.worker._handlers import (  # pyright: ignore[reportPrivateUsage]  # Why: the release write's own budget — the park's reserve term, pinned against the canonical constant.
@@ -737,6 +738,59 @@ async def test_the_anchored_park_budget_is_the_remaining_share_capped_by_the_lea
         "at zero — the consumer releases immediately with the full hold "
         "rather than parking into the reclaim sweep's window"
     )
+
+
+async def test_the_unanchored_park_shapes_pin_their_degraded_bounds() -> None:
+    """The park's two no-anchor bounds: the watchdog-disabled bound is the
+    cleanup grace, and a bare call with neither deps nor settings falls
+    back to the fixed 60s hold.
+
+    Both branches are defensive surfaces a refactor could silently widen:
+    with the watchdog disabled there is no guaranteed exit, so parking
+    longer than the orchestrator's own post-cancel patience buys nothing
+    (RELEASING releases the row regardless at the cleanup grace), and a
+    bare direct ``consume_one_job`` call must still get a bounded hold
+    rather than hold=0 or an unbounded park.
+    """
+    loop = asyncio.get_running_loop()
+
+    degraded = _settings(cleanup_grace=1.0)
+    degraded.watchdog_enabled = False
+    budget = _actor_exit_wait_budget(
+        _deps_with(degraded), degraded, loop, reserve=_TERMINAL_WRITE_BUDGET.total_seconds()
+    )
+    assert budget == pytest.approx(1.0, abs=0.05), (
+        "with the watchdog disabled the park degrades to the cleanup grace — "
+        "the orchestrator's own post-cancel patience, past which RELEASING "
+        "releases the row regardless"
+    )
+
+    class _Ctx:
+        _sync_actor_task: asyncio.Task[object] | None = None
+        _tx_unwind_task: asyncio.Task[object] | None = None
+
+        def _set_sync_actor_task(self, task: asyncio.Task[object]) -> None:
+            self._sync_actor_task = task
+
+    ctx = _Ctx()
+    thread_gate = threading.Event()
+    handle = asyncio.ensure_future(asyncio.to_thread(thread_gate.wait, 10.0))
+    ctx._set_sync_actor_task(handle)
+    try:
+        fallback_hold = await _interrupted_actor_hold(ctx, deps=None, settings=None)
+        from taskq.worker._consumer import (  # pyright: ignore[reportPrivateUsage]  # Why: the fallback constant the bare-call arm returns — pinned so a refactor cannot silently unbound or zero it.
+            _BARE_CALL_HOLD_FALLBACK_SECS,
+        )
+
+        assert fallback_hold == timedelta(seconds=_BARE_CALL_HOLD_FALLBACK_SECS), (
+            "a bare call with neither deps nor settings must carry the fixed "
+            "fallback hold — the lease-expiry bound a stranded row already "
+            "imposes, never hold=0 with no evidence either way"
+        )
+    finally:
+        thread_gate.set()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait({handle}, timeout=10.0)
 
 
 async def test_a_running_sync_actor_is_registered_until_its_thread_returns() -> None:
