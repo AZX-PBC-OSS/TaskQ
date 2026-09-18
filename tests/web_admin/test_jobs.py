@@ -1045,7 +1045,7 @@ def test_live_jobs_list_fetches_the_lease_columns() -> None:
         "same carve-out taskq.jobs.running.lease_expired applies: the reclaim "
         "sweep deliberately waits out the cancel grace ladder for those rows, "
         "so their lease expiring mid-cancel is the protocol working, not a "
-        "zombie — flagging them would page an operator onto a healthy cancel"
+        "zombie, flagging them would page an operator onto a healthy cancel"
     )
 
 
