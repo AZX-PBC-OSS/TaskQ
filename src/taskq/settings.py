@@ -1018,13 +1018,20 @@ class WorkerSettings(TaskQSettings):
         default=2.0,
         gt=0.0,
         description="TASKQ_HEARTBEAT_COMMAND_TIMEOUT (seconds). Per-query "
-        "timeout for the heartbeat pool, deliberately tighter than "
-        "dispatcher_command_timeout: a beat that takes longer than the tick "
-        "cannot keep a lock lease alive, so failing it fast is the point. "
-        "Raise it on a loaded or cross-region Postgres — max_heartbeat_failures "
-        "consecutive timeouts self-terminate the worker, and before this was a "
-        "setting the 2 s literal made that unavoidable. Must be > 0: asyncpg "
-        "reads 0 as 'no timeout', which turns a stalled beat into a hang.",
+        "timeout for the heartbeat pool — and, since the #227 fix round, "
+        "the SINGLE command budget the heartbeat tick wraps around its "
+        "whole command sequence (BEGIN, the liveness write, the lease "
+        "renewals, the still-held probe, the cancel hook's statements, "
+        "COMMIT — each statement's own per-query timeout stays as the "
+        "inner backstop). A tick whose statements legitimately need more "
+        "than one of these in total now fails fast instead of dragging "
+        "the beat out past the lease model's gap bound: raise this for a "
+        "loaded or cross-region Postgres, and the lease-renewal "
+        "threshold's safety floor absorbs the raised value automatically "
+        "(see taskq.worker.heartbeat._lease_renewal_threshold). "
+        "max_heartbeat_failures consecutive timeouts self-terminate the "
+        "worker. Must be > 0: asyncpg reads 0 as 'no timeout', which "
+        "turns a stalled beat into a hang.",
     )
     # worker_pool max_size is derived: int(max_concurrency * 1.5)
 

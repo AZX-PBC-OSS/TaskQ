@@ -403,15 +403,22 @@ class _CancelController:
             # instead of asyncio reporting "Task exception was never retrieved".
             try:
                 abandoned = await shield_with_retrieval(self._backend.mark_abandoned(job_id))
-            except Exception:
+            except BaseException:
                 # Why the broad catch: whatever failed — a pool-acquire
-                # TimeoutError, a PostgresError, a socket death — the write
-                # did not land and the abandon must stay pending for the
-                # next tick.  CancelledError is deliberately NOT caught:
-                # it means the heartbeat task itself is being torn down
-                # (no later drain exists to re-attempt) and the detached
+                # TimeoutError, a PostgresError, a socket death, or the
+                # heartbeat tick's command-budget cut (#227 fix round,
+                # delivered as a CancelledError through the shield) — the
+                # write did not land and the abandon must stay pending
+                # for the next tick. CancelledError is caught for the
+                # SAME re-queue reason and re-raised unchanged: at real
+                # task teardown the queue dies with the controller
+                # (nothing drains later, exactly as the old pop-and-lose
+                # behaved), while at a budget cut the next tick drains
+                # the re-queued entry — the old pop-and-lose would have
+                # stranded the job between phases forever. The detached
                 # inner write's outcome is retrieved by the shield's
-                # callback.
+                # callback, and a late-landing duplicate is absorbed by
+                # the not-applied guard below.
                 self._pending_abandons.appendleft(job_id)
                 raise
             if not abandoned:

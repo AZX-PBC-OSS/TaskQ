@@ -299,11 +299,22 @@ class _RecordingConn:
 
 
 class _NoopTransaction:
-    async def __aenter__(self) -> None:
-        return None
+    """Explicit-API transaction stand-in (the heartbeat tick drives the
+    transaction explicitly since the #227 fix round's command budget)."""
 
-    async def __aexit__(self, *args: object) -> None:
-        return None
+    def __init__(self) -> None:
+        self.started = False
+        self.committed = False
+        self.rolled_back = False
+
+    async def start(self) -> None:
+        self.started = True
+
+    async def commit(self) -> None:
+        self.committed = True
+
+    async def rollback(self) -> None:
+        self.rolled_back = True
 
 
 class _AcquiredConn:

@@ -167,19 +167,28 @@ expire. Don't lower `TASKQ_LOCK_LEASE` without re-checking both
 The heartbeat does not rewrite a healthy lease every beat: it renews a held
 row only when the row's remaining lease drops to the renewal threshold —
 `max(lock_lease / 2, (max_heartbeat_failures + 1) * (heartbeat_interval +
-heartbeat_command_timeout))`, compared server-side on the clock that stamped
-the lease. At the defaults that is 48 s of a 60 s lease, so a healthy
-worker's renewals run on a ~20 s cadence instead of every 10 s beat, halving
-the per-row non-HOT index churn the renewal writes (see
+2 * heartbeat_command_timeout))`, compared server-side on the clock that
+stamped the lease. Every term of that floor is *enforced*: the tick's whole
+command sequence (BEGIN, the writes, the cancel hook, COMMIT) runs under a
+single `TASKQ_HEARTBEAT_COMMAND_TIMEOUT` budget, its teardown is a bounded
+rollback-or-close, and the pool acquire is bounded by the heartbeat
+interval — so a failed beat costs at most `interval + 2 × command_timeout`,
+and the floor covers `max_heartbeat_failures + 1` of them (the cascade the
+`lock_lease >= 4 × heartbeat_interval` invariant exists to bound). At the
+default settings (60 s lease, 10 s interval, 2 s command timeout) the floor
+is 56 s — at or above what the lease has to harvest — so the renewal runs
+on **every beat exactly as before**; the rewrite savings apply from leases
+of roughly 70 s upward (2× at 70 s, 4× at 90 s, ~6× at 120 s; see
 [perf-evidence-lease-renewal.md](../perf-evidence-lease-renewal.md) for the
-sizing math and measurement). The threshold is sized so a lease still
-survives `max_heartbeat_failures + 1` consecutive missed beats — the same
-cascade the `4x` invariant bounds — and configs with no safe slack (the
-minimum lease, fast heartbeats with a large command timeout) renew on every
-beat exactly as before. A live worker's `jobs.lock_expires_at` is therefore
-never closer than the threshold to expiring; jobs carrying the enqueue-time
-`heartbeat_timeout` are renewed on every beat regardless, because the sweep's
-heartbeat arm reads their `last_heartbeat_at` freshness, not the lease.
+sizing math, the enforced-bound measurement, and the fix-round history).
+A live worker's lease never comes closer to expiring than one worst
+beat-gap below the renewal threshold (`threshold − interval − 2 ×
+command_timeout`, or `lock_lease −` that same gap on every-beat configs) —
+renewal fires *at or under* the threshold, so the threshold itself is the
+renewal point, not the closest approach. Jobs carrying the enqueue-time
+`heartbeat_timeout` are renewed on every beat regardless, because the
+sweep's heartbeat arm reads their `last_heartbeat_at` freshness, not the
+lease.
 
 ---
 
