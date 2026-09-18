@@ -6,7 +6,7 @@ route the ``TimeoutError`` to ``_handle_timeout``, whose terminal write
 re-pends the row (``mark_failed_or_retry``) for the retry decision. For a
 sync ``def`` actor the wrapped executor thread cannot be cancelled: the
 ``wait_for`` cancel detaches the shield, the thread keeps executing, and the
-row went straight back to claimable while the body was still mid-run — the
+row went straight back to claimable while the body was still mid-run, the
 same overlap shape the shutdown release path closed for the interrupt path
 (#232/#274), on the timeout path.
 
@@ -17,7 +17,7 @@ interrupt path uses: the handler parks on the job's tracked exit handles
 delay only on a provable exit inside that window. A thread that outlives
 the window is not provable: the re-pend is deferred behind the release hold
 (the process's exit window, the same ``_release_hold`` computation), and the
-promise is scoped in docs/architecture.md — a sync actor that outlives both
+promise is scoped in docs/architecture.md, a sync actor that outlives both
 the park and that window can still overlap a re-claim, because a runtime
 timeout has no watchdog deadline to anchor an enforced bound on.
 
@@ -214,7 +214,7 @@ async def test_a_sync_actor_outliving_the_exit_park_repends_behind_the_release_h
 
     The park is bounded (``_actor_exit_wait_budget``); a body still running
     at its expiry cannot earn hold=0, so the retry delay must carry the
-    same hold the interrupt path's release uses — the row is not claimable
+    same hold the interrupt path's release uses, the row is not claimable
     for the process's exit window. The scope is honest: this is a deferral,
     not a proof, and docs/architecture.md says so for this shape.
     """
@@ -254,7 +254,7 @@ async def test_a_sync_actor_outliving_the_exit_park_repends_behind_the_release_h
     assert not body_returned.is_set(), "the thread outlived the park: the write landed while it ran"
     delay = backend.mark_failed_or_retry_calls[0]["retry_delay"]
     expected_hold = timedelta(seconds=20.0 + _watchdog_exit_tail(settings))
-    assert delay is not None and delay >= expected_hold, (
+    assert isinstance(delay, timedelta) and delay >= expected_hold, (
         "a re-pend written while the thread is provably alive must be "
         f"deferred behind the release hold ({expected_hold}); got {delay}"
     )
@@ -273,7 +273,7 @@ async def test_an_async_actor_timeout_keeps_the_immediate_repend() -> None:
 
     An async actor's timeout propagates the cancellation through its own
     frames: the actor has provably exited by the time the handler runs, no
-    tracked handle is pending, and the re-pend must stay immediate — the
+    tracked handle is pending, and the re-pend must stay immediate, the
     park must never tax the common timeout path.
     """
 

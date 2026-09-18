@@ -1266,8 +1266,8 @@ does is reuse the same exit-proof machinery before the re-pend: it parks on
 the job's tracked exit handles, bounded by the exit-wait budget (the cleanup
 grace when no shutdown anchors it), and re-pends with the retry decision's own
 delay only on a provable exit inside that window. A sync actor still running
-at the window's expiry defers the re-pend behind the release hold — the same
-exit window the interruption release parks behind — but that deferral is a
+at the window's expiry defers the re-pend behind the release hold, the same
+exit window the interruption release parks behind, but that deferral is a
 bound, not a proof: a sync actor that outlives both the park and the release
 window can still overlap a later re-claim of its retry. The enforced exit
 boundary (the watchdog gate) protects the interruption release; the timeout

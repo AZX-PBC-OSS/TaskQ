@@ -499,8 +499,8 @@ async def _handle_timeout(
     the exception escaped the span; rendered here when the caller has none.
 
     *ctx* / *deps* / *settings* carry the exit-proof hold (#286): the write
-    below re-pends the row, and a sync actor's executor thread — detached by
-    the ``wait_for`` cancel, unreachable from the loop — may still be
+    below re-pends the row, and a sync actor's executor thread, detached by
+    the ``wait_for`` cancel, unreachable from the loop, may still be
     executing its body. Before anything re-pends, the handler parks on the
     job's tracked exit handles exactly as the interrupt path does
     (:func:`taskq.worker._consumer._interrupted_actor_hold`): a provable
@@ -555,7 +555,7 @@ async def _handle_timeout(
     # the tracked exit handles, bounded by _actor_exit_wait_budget: hold=0
     # on a provable exit inside the window, otherwise the release hold. A
     # runtime timeout has no shutdown anchor, so the park's bound is the
-    # cleanup grace and the deferral below is a bound, not a proof — the
+    # cleanup grace and the deferral below is a bound, not a proof, the
     # promise scoping in docs/architecture.md says exactly that. A
     # cancellation landing on the park ends the waiting, never the write
     # (the interrupt path's contract: the row must not be left running on
@@ -572,7 +572,7 @@ async def _handle_timeout(
         if exit_hold > retry_delay:
             # The thread outlived the park: the re-pend is claimable while
             # the actor may still run, so the decision's delay is raised to
-            # the release hold — the same exit window the interrupt path's
+            # the release hold, the same exit window the interrupt path's
             # release is parked behind.
             retry_delay = exit_hold
         updated_row = await _terminal_write_with_retry(
