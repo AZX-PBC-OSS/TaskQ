@@ -19,11 +19,14 @@ from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("redis", reason="requires taskq[redis]")
+pytest.importorskip("fastapi", reason="requires taskq[fastapi]")
+
 
 from taskq.web.admin.ops import (
     _fetch_redis_rl_state,  # pyright: ignore[reportPrivateUsage]  # Why: pinning the production fetch path, not a copy.
 )
+
+pytestmark = [pytest.mark.fastapi]
 
 
 class _RecordingPipeline:

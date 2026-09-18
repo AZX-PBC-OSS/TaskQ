@@ -142,26 +142,28 @@ jobs:
     strategy:
       matrix:
         include:
-          - { extra: aad, install: aad }
-          - { extra: saml, install: "saml fastapi" }
-          - { extra: oidc, install: "oidc fastapi" }
-          - { extra: otel, install: "otel fastapi" }
-          - { extra: vault, install: vault }
-          - { extra: aws, install: aws }
-          - { extra: redis, install: redis }
-          - { extra: fastapi, install: fastapi }
+          - { extra: aad, sync: "--extra aad" }
+          - { extra: saml, sync: "--extra saml --extra fastapi" }
+          - { extra: oidc, sync: "--extra oidc --extra fastapi" }
+          - { extra: otel, sync: "--extra otel --extra fastapi" }
+          - { extra: vault, sync: "--extra vault" }
+          - { extra: aws, sync: "--extra aws" }
+          - { extra: redis, sync: "--extra redis --extra fastapi" }
+          - { extra: fastapi, sync: "--extra fastapi" }
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: ./.github/actions/setup-uv-env
         with:
-          sync-args: ${{ matrix.install != 'fastapi' && '--extra' || '' }} ${{ matrix.install != 'fastapi' && matrix.install || '' }} ${{ matrix.install == 'fastapi' && '--extra fastapi' || '' }} --group dev
+          sync-args: ${{ matrix.sync }} --group dev
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - name: Run the extra's own tests
-        run: uv run --no-sync pytest -n 2 -m "${{ matrix.extra }}"
+        # The fastapi leg installs no redis, so the tests tagged for both
+        # extras run in the redis leg (which installs fastapi) only.
+        run: uv run --no-sync pytest -n 2 -m "${{ matrix.extra == 'fastapi' && 'fastapi and not redis' || matrix.extra }}"
 
   test-cross:
     # Common extra PAIRS in one process: both families' tests run together
@@ -173,18 +175,18 @@ jobs:
     strategy:
       matrix:
         include:
-          - { pair: "redis and oidc", install: "redis oidc fastapi" }
-          - { pair: "redis and saml", install: "redis saml fastapi" }
-          - { pair: "saml and oidc", install: "saml oidc fastapi" }
-          - { pair: "aad and redis", install: "aad redis" }
-          - { pair: "otel and fastapi", install: "otel fastapi" }
+          - { pair: "redis and oidc", sync: "--extra redis --extra oidc --extra fastapi" }
+          - { pair: "redis and saml", sync: "--extra redis --extra saml --extra fastapi" }
+          - { pair: "saml and oidc", sync: "--extra saml --extra oidc --extra fastapi" }
+          - { pair: "aad and redis", sync: "--extra aad --extra redis" }
+          - { pair: "otel and fastapi", sync: "--extra otel --extra fastapi" }
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: ./.github/actions/setup-uv-env
         with:
-          sync-args: ${{ matrix.install != 'fastapi' && '--extra' || '' }} ${{ matrix.install != 'fastapi' && matrix.install || '' }} ${{ matrix.install == 'fastapi' && '--extra fastapi' || '' }} --group dev
+          sync-args: ${{ matrix.sync }} --group dev
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
