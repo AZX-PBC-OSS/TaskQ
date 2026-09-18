@@ -298,7 +298,7 @@ def _make_deps(
         "postgresql://x:x@localhost/x",
         HEARTBEAT_INTERVAL=str(heartbeat_interval),
         LEADER_LEASE=str(leader_lease),
-        # 3.0 + the tiny command timeout satisfies the #284 cascade
+        # 3.0 + the tiny command timeout satisfies the cascade
         # floor: 4 * (0.5 + 2 * 0.1) = 2.8 <= 3.0 (the lease value itself is
         # arbitrary for these unit doubles).
         HEARTBEAT_COMMAND_TIMEOUT="0.1",

@@ -82,7 +82,7 @@ def _worker_settings_dict(pg_dsn: str, socket_path: str, schema: str) -> dict[st
         "TASKQ_SCHEMA_NAME": schema,
         "TASKQ_HEALTH_SOCKET_PATH": socket_path,
         # Shorten shutdown grace periods for fast test teardown.
-        # Must satisfy the #284 cascade floor (4 * (0.5 + 2 * 0.1) = 2.8
+        # Must satisfy the cascade floor (4 * (0.5 + 2 * 0.1) = 2.8
         # <= 3.0, hence the tiny heartbeat command timeout) and
         # cancel+cleanup < lock_lease (/).
         # Watchdog off: these tests exercise the health server and shutdown

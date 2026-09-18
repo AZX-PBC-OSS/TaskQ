@@ -1572,8 +1572,8 @@ comfortably inside `lock_lease`.
 
 These raise dotenvmodel's `ValidationError` / `MultipleValidationErrors`, not
 `ValueError`. The cross-field invariants (the `lock_lease` failed-beat-cascade
-check, since #284 sized with the command timeouts — see the unreleased note
-[below](#the-lock_lease-invariant-accounts-for-heartbeat-command-timeouts) —
+check, since sized with the command timeouts, see the unreleased note
+[below](#the-lock_lease-invariant-accounts-for-heartbeat-command-timeouts),
 and the grace-budget checks) previously raised `ValueError`,
 so callers that catch `ValueError` around `WorkerSettings.load*()` will no
 longer catch them — catch `DotEnvModelError` (the common base) to cover both
@@ -2113,9 +2113,9 @@ a heartbeat tick pays: a failed beat's gap spans the interval plus two
 `heartbeat_command_timeout` budgets (the tick's command sequence and its
 bounded rollback-or-close teardown, made true by enforcement by the
 per-tick command budget), and the isolate decision lands on the
-`(max_heartbeat_failures + 1)`-th consecutive failed beat — so the lease
+`(max_heartbeat_failures + 1)`-th consecutive failed beat, so the lease
 could lapse before the isolate decision even at the defaults under
-contention (issue #284).
+contention.
 
 The validator now requires
 
@@ -2124,7 +2124,7 @@ lock_lease >= (max_heartbeat_failures + 1) *
               (heartbeat_interval + 2 * heartbeat_command_timeout)
 ```
 
-— the same sizing the lease-renewal threshold derives in
+, the same sizing the lease-renewal threshold derives in
 `taskq.worker.heartbeat._lease_renewal_threshold`, so the threshold's floor
 can never exceed the lease it guards. At the defaults this is
 `4 * (10 + 2 * 2) = 56` against the 60 s lease: the shipped defaults still
@@ -2140,11 +2140,11 @@ loading with the new message naming the command-timeout term: raise
 
 The worker bootstrap's per-reservation ensure pass called
 `ConcurrencyReservation.ensure_slots` with no bound; under dispatcher-pool
-starvation the bare `pool.acquire()` waited forever (issue #293, observed
+starvation the bare `pool.acquire` waited forever, observed
 once as a 300 s CI hang). The pass now carries the same
 `dispatcher_command_timeout` budget every sibling bootstrap await has, and
 an acquire lapse logs the typed `ensure_slots_timeout` event (distinct from
-the generic `ensure_slots_failed`) and continues booting — the next restart
+the generic `ensure_slots_failed`) and continues booting, the next restart
 re-runs the idempotent materialisation. `ensure_slots`, `slot_rows_exist`,
 and `ConcurrencyReservation.acquire` grew an optional `timeout=` forward to
 `asyncpg.Pool.acquire` for callers with a budget in hand (default `None`

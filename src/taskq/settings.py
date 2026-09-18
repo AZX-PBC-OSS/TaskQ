@@ -934,12 +934,12 @@ def _queue_names_validator(value: list[str], ctx: ValidatorContext) -> list[str]
 class WorkerSettings(TaskQSettings):
     """Worker-specific configuration with three-pool sizing and dual-DSN support.
 
-    Extends :class:`TaskQSettings` with pool-size knobs, dual-DSN fields, and
-    the validated ``lock_lease >= (max_heartbeat_failures + 1) *
-    (heartbeat_interval + 2 * heartbeat_command_timeout)`` invariant: the
-    lease must outlive the worst coherent failed-beat cascade to the
-    heartbeat's isolate decision (#284), with the per-tick command budget
-    (#282) making each failed beat's gap bound true by enforcement.
+       Extends :class:`TaskQSettings` with pool-size knobs, dual-DSN fields, and
+       the validated ``lock_lease >= (max_heartbeat_failures + 1) *
+       (heartbeat_interval + 2 * heartbeat_command_timeout)`` invariant: the
+       lease must outlive the worst coherent failed-beat cascade to the
+       heartbeat's isolate decision, with the per-tick command budget
+    making each failed beat's gap bound true by enforcement.
     """
 
     # -- DSNs -----------------------------------------------------------
@@ -2108,8 +2108,8 @@ class WorkerSettings(TaskQSettings):
             self.pg_dsn_pooled = self.pg_dsn
 
         # lock_lease invariant: the lease must outlive the worst coherent
-        # failed-beat cascade (#284). A heartbeat tick's beat-to-beat gap is
-        # bounded — with the per-tick command budget (#227/#282) enforced —
+        # failed-beat cascade. A heartbeat tick's beat-to-beat gap is
+        # bounded, with the per-tick command budget/ enforced,
         # by heartbeat_interval (the pool acquire's own timeout) + ONE
         # heartbeat_command_timeout (the tick's whole command sequence) + ONE
         # heartbeat_command_timeout (the bounded rollback-or-close teardown);
@@ -2121,8 +2121,8 @@ class WorkerSettings(TaskQSettings):
         # that gate's floor can never exceed the lease it guards. The bare
         # 4 * heartbeat_interval rule this check replaced ignored both
         # command-timeout terms and let the lease lapse before the isolate
-        # decision under contention (#284). Tightening note: this refuses
-        # configs that loaded before — a lease between the old 4x edge and
+        # decision under contention. Tightening note: this refuses
+        # configs that loaded before, a lease between the old 4x edge and
         # the cascade floor must come up (or the command timeouts come down);
         # see docs/guides/upgrading.md.
         isolate_beats = self.max_heartbeat_failures + 1

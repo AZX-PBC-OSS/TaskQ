@@ -140,7 +140,7 @@ _LEADER_TRUST_MARGIN_SECS: Final[float] = 1.0
 #: which is never shorter (``resolved_leader_lease``), so this slack never
 #: decides a leasing holder's fate. Four missed beats is the same slack the
 #: jobs' lock leases carry (the ``lock_lease`` failed-beat-cascade
-#: invariant, #284).
+#: invariant,.
 _PRE_LEASE_STALE_HEARTBEATS: Final[int] = 4
 
 #: Claim or take over the lease. Zero rows returned means the role is not

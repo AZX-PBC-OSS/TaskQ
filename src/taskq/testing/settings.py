@@ -20,7 +20,7 @@ from taskq.settings import WorkerSettings
 
 _DEFAULTS: dict[str, str] = {
     "TASKQ_HEARTBEAT_INTERVAL": "0.5",
-    # Lease 3.0 + the tiny command timeout satisfy the #284 cascade floor
+    # Lease 3.0 + the tiny command timeout satisfy the cascade floor
     # (4 * (0.5 + 2 * 0.1) = 2.8 <= 3.0) while keeping lease-expiry waits
     # in the seconds range the chaos/fast tiers assume.
     "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",

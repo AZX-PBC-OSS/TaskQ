@@ -69,7 +69,7 @@ def _deps(sweep_interval: float | None = None) -> WorkerDeps:
     data: dict[str, str] = {
         "TASKQ_PG_DSN": "postgresql://x:x@localhost/x",
         "TASKQ_HEARTBEAT_INTERVAL": "0.5",
-        # 3.0 + the tiny command timeout satisfies the #284 cascade
+        # 3.0 + the tiny command timeout satisfies the cascade
         # floor: 4 * (0.5 + 2 * 0.1) = 2.8 <= 3.0.
         "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
         "TASKQ_LOCK_LEASE": "3.0",

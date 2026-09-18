@@ -493,7 +493,7 @@ Every `heartbeat_interval` seconds (default `10.0`s, env `TASKQ_HEARTBEAT_INTERV
 3. Runs the cancel-controller `run_in_tx` inside the same transaction.
 4. After the transaction commits, calls `run_post_tx`.
 
-`lock_lease` (default `60.0`s, env `TASKQ_LOCK_LEASE`) is the duration a job's lock remains valid without a heartbeat. The invariant `lock_lease >= (max_heartbeat_failures + 1) * (heartbeat_interval + 2 * heartbeat_command_timeout)` is enforced at startup and prevents the recovery sweep from reclaiming locks on a live worker that experienced transient heartbeat delays: the lease must outlive the worst coherent failed-beat cascade to the heartbeat's isolate decision, including the command timeouts a contended beat can burn (issue #284). At the defaults that floor is 56s against the 60s lease.
+`lock_lease` (default `60.0`s, env `TASKQ_LOCK_LEASE`) is the duration a job's lock remains valid without a heartbeat. The invariant `lock_lease >= (max_heartbeat_failures + 1) * (heartbeat_interval + 2 * heartbeat_command_timeout)` is enforced at startup and prevents the recovery sweep from reclaiming locks on a live worker that experienced transient heartbeat delays: the lease must outlive the worst coherent failed-beat cascade to the heartbeat's isolate decision, including the command timeouts a contended beat can burn. At the defaults that floor is 56s against the 60s lease.
 
 If `heartbeat_pool.acquire()` times out, raises a connection error, or `run_in_tx` raises an `OSError`, `heartbeat_failures` is incremented. When `heartbeat_failures > max_heartbeat_failures` (default `3`), `isolate_self` is called:
 

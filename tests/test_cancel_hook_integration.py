@@ -463,7 +463,7 @@ async def test_abandoned(pg_dsn: str) -> None:
         worker_id,
         cancellation_grace_period="0.1",
         cleanup_grace_period="0.05",
-        # 3.0 >= the #284 cascade floor 2.8 at the factory defaults (h=0.5, c=0.1).
+        # 3.0 >= the cascade floor 2.8 at the factory defaults (h=0.5, c=0.1).
         lock_lease="3.0",
     ) as (deps, backend, settings):
         client = JobsClient(backend)
@@ -600,7 +600,7 @@ async def test_worker_dies_phase1(pg_dsn: str) -> None:
         worker_id,
         cancellation_grace_period="1.0",
         cleanup_grace_period="0.5",
-        # 3.0 >= the #284 cascade floor 2.8 at the factory defaults (h=0.5, c=0.1).
+        # 3.0 >= the cascade floor 2.8 at the factory defaults (h=0.5, c=0.1).
         lock_lease="3.0",
     ) as (deps, backend, settings):
         client = JobsClient(backend)

@@ -151,7 +151,7 @@ async def test_heartbeat_pool_command_timeout(pg_dsn: str) -> None:
     settings = make_integration_settings(
         pg_dsn,
         # The shipped default command timeout is the subject of this test;
-        # the lease rises with it for the #284 cascade floor
+        # the lease rises with it for the cascade floor
         # (4 * (0.5 + 2 * 2) = 18).
         HEARTBEAT_COMMAND_TIMEOUT="2.0",
         LOCK_LEASE="18.0",

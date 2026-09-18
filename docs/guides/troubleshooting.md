@@ -402,7 +402,7 @@ A healthy worker's `stale_for` should be under `heartbeat_interval` (default 10s
 ### Fix
 
 - **Connection issues:** verify `TASKQ_PG_DSN_DIRECT` resolves to a reachable Postgres. Check `heartbeat_pool_size` (default 4) is sufficient.
-- **Increase tolerance:** set `TASKQ_MAX_HEARTBEAT_FAILURES` higher (e.g. `5`) to absorb transient blips. Keep `lock_lease >= (max_heartbeat_failures + 1) * (heartbeat_interval + 2 * heartbeat_command_timeout)` — raising `TASKQ_MAX_HEARTBEAT_FAILURES` or `TASKQ_HEARTBEAT_COMMAND_TIMEOUT` raises the floor with it.
+- **Increase tolerance:** set `TASKQ_MAX_HEARTBEAT_FAILURES` higher (e.g. `5`) to absorb transient blips. Keep `lock_lease >= (max_heartbeat_failures + 1) * (heartbeat_interval + 2 * heartbeat_command_timeout)`, raising `TASKQ_MAX_HEARTBEAT_FAILURES` or `TASKQ_HEARTBEAT_COMMAND_TIMEOUT` raises the floor with it.
 - **Pool exhaustion:** if `heartbeat_pool.acquire()` times out, increase `TASKQ_HEARTBEAT_POOL_SIZE`.
 - **After self-isolation:** restart the worker via your process supervisor. Its running jobs were already transitioned — retryable jobs are re-pended with a 5s delay. `HeartbeatLost` is intentionally distinct from `WorkerCrashed` (Sweep 1): a heartbeat-lost worker may still be alive but partitioned.
 

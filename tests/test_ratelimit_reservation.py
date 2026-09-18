@@ -674,7 +674,7 @@ async def test_sync_slots_timeout_bounds_a_wedged_store() -> None:
         )
 
 
-# ── Bounded pool acquire (#293) ─────────────────────────────────
+# ── Bounded pool acquire ─────────────────────────────────
 
 
 class _FakePGConn:
@@ -696,8 +696,8 @@ class _StarvablePool:
     """asyncpg-shaped pool double for the acquire-timeout contract.
 
     Mirrors the driver's own contract (asyncpg wraps the queue get in a
-    wait_for): ``acquire(timeout=None)`` never resolves under starvation —
-    the unbounded wait #293 hung bootstrap on — and a set timeout raises
+    wait_for): ``acquire(timeout=None)`` never resolves under starvation,
+    the unbounded wait hung bootstrap on, and a set timeout raises
     ``TimeoutError`` once the budget lapses.
     """
 
@@ -713,7 +713,7 @@ class _StarvablePool:
             yield _FakePGConn(self)
             return
         if timeout is None:
-            await asyncio.Event().wait()  # never resolves: the #293 hang
+            await asyncio.Event().wait()  # never resolves: the hang
         await asyncio.sleep(min(timeout, 5.0))
         raise TimeoutError("starved: could not acquire a pool connection")
         yield  # pragma: no cover - unreachable, keeps the generator a generator
@@ -723,7 +723,7 @@ async def test_ensure_slots_forwards_the_acquire_timeout() -> None:
     """ensure_slots must forward the caller's budget to pool.acquire.
 
     The dispatcher pool's per-query command_timeout does NOT bound a pool
-    ACQUIRE — the bare acquire is the unbounded wait #293 pinned. The
+    ACQUIRE, the bare acquire is the unbounded wait pinned. The
     forward is the whole bound; the kwarg's arrival is the contract.
     """
     clock = FakeClock(_START)
@@ -739,7 +739,7 @@ async def test_ensure_slots_forwards_the_acquire_timeout() -> None:
 async def test_ensure_slots_starved_pool_is_bounded() -> None:
     """A starved pool acquire with a budget raises TimeoutError, bounded.
 
-    On the pre-#293 code the timeout kwarg did not exist and the acquire
+    On the pre- code the timeout kwarg did not exist and the acquire
     hung forever (the 300s CI hang); this pin fails fast if the bound is
     ever dropped again.
     """

@@ -30,7 +30,7 @@ from taskq.worker.heartbeat import heartbeat_loop
 pytestmark = pytest.mark.integration
 
 _HEARTBEAT_INTERVAL = 0.5
-# The factory's tiny heartbeat command timeout: the #284 cascade floor's
+# The factory's tiny heartbeat command timeout: the cascade floor's
 # per-beat gap is heartbeat_interval + 2 * heartbeat_command_timeout = 0.7s.
 _HB_COMMAND_TIMEOUT = 0.1
 _MAX_HEARTBEAT_FAILURES = 2
@@ -43,8 +43,8 @@ async def _setup(
     from taskq.migrate import apply_pending
 
     # The lease must scale with the isolate bound the test configures:
-    # (F+1) failed beats at ~0.7s of worst gap each is what the #284
-    # cascade floor requires, so an F=20 chaos config needs a ~15s lease —
+    # (F+1) failed beats at ~0.7s of worst gap each is what the
+    # cascade floor requires, so an F=20 chaos config needs a ~15s lease,
     # a 3s lease under 21 failed beats is exactly what the validator now
     # refuses. An explicit LOCK_LEASE override still wins.
     max_failures = int(overrides.get("MAX_HEARTBEAT_FAILURES", _MAX_HEARTBEAT_FAILURES))
@@ -505,7 +505,7 @@ async def test_tc6_oserror_on_execute(pg_dsn: str) -> None:
 #: than isolating itself.
 _SAFE_SIZING_INTERVAL = 1.5
 _SAFE_SIZING_TIMEOUT = timedelta(seconds=2 * _SAFE_SIZING_INTERVAL)
-# 36 >= the #284 cascade floor at F=20: 21 * (1.5 + 2 * 0.1) = 35.7.
+# 36 >= the cascade floor at F=20: 21 * (1.5 + 2 * 0.1) = 35.7.
 _SAFE_SIZING_LEASE = 36.0
 _NO_GRACE = timedelta(seconds=0)
 

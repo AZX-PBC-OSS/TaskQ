@@ -626,14 +626,14 @@ class ConcurrencyReservation:
         self,
         pool: "asyncpg.Pool",
         *,
-        timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg.Pool.acquire(timeout=...); the bound IS the forwarded driver kwarg (#293), not an enclosing asyncio.timeout scope.
+        timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg.Pool.acquire(timeout=...); the bound IS the forwarded driver kwarg, not an enclosing asyncio.timeout scope.
     ) -> None:
         """Idempotent pre-allocation of slot rows.
 
         *timeout* bounds the pool acquire (forwarded to
-        ``asyncpg.Pool.acquire``): ``None`` — the historical default — waits
+        ``asyncpg.Pool.acquire``): ``None``, the historical default, waits
         unboundedly under pool starvation, which is how a bootstrap startup
-        could hang forever on a contended dispatcher pool (#293). Callers in
+        could hang forever on a contended dispatcher pool. Callers in
         bounded contexts (the bootstrap's ensure-slots loop passes its
         ``dispatcher_command_timeout`` budget) must pass it.
 
@@ -666,7 +666,7 @@ class ConcurrencyReservation:
         self,
         pool: "asyncpg.Pool",
         *,
-        timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg.Pool.acquire(timeout=...); same forward contract as ensure_slots (#293).
+        timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg.Pool.acquire(timeout=...); same forward contract as ensure_slots.
     ) -> bool:
         """Whether any ``reservation_slots`` row exists for this bucket.
 
@@ -675,7 +675,7 @@ class ConcurrencyReservation:
         (zero rows — re-materialise via :meth:`ensure_slots`) from
         ordinary contention (rows present, all held — deny). A read-only
         existence probe: it never writes. *timeout* bounds the pool
-        acquire exactly as :meth:`ensure_slots`' does (#293).
+        acquire exactly as:meth:`ensure_slots`' does.
         """
         async with pool.acquire(timeout=timeout) as conn:
             return (
@@ -692,7 +692,7 @@ class ConcurrencyReservation:
         worker_id: UUID,
         pool: "asyncpg.Pool | None" = None,
         *,
-        timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg.Pool.acquire(timeout=...); same forward contract as ensure_slots (#293).
+        timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg.Pool.acquire(timeout=...); same forward contract as ensure_slots.
     ) -> SlotLease:
         """Acquire a slot. Returns the acquired ``slot_index``.
 
@@ -707,8 +707,8 @@ class ConcurrencyReservation:
         no slot is available.
 
         *timeout* bounds the pool acquire (forwarded to
-        ``asyncpg.Pool.acquire``; ``None`` — the default — waits
-        unboundedly under pool starvation, the #293 shape). Callers that
+        ``asyncpg.Pool.acquire``; ``None``, the default, waits
+        unboundedly under pool starvation, the shape). Callers that
         already run under their own budget wrapper can leave it unset;
         callers with a budget in hand should pass it.
         """

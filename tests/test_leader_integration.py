@@ -36,7 +36,7 @@ pytestmark = pytest.mark.integration
 _HEARTBEAT_INTERVAL = 0.5
 _LOCK_LEASE = 750.0
 # These modules pass max_heartbeat_failures=999 (isolation must never
-# fire mid-test); the #284 cascade floor sizes the lease with it:
+# fire mid-test); the cascade floor sizes the lease with it:
 # 1000 beats x (0.5 + 2 x 0.1) = 700s of worst coherent gap, and the
 # validator refuses anything under it. Nothing here waits on the lease:
 # rows are stamped with explicit expiry timestamps.

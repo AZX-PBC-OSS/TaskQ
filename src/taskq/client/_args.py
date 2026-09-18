@@ -261,7 +261,7 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
     # dispatch would reclaim a healthy job's lease out from under its
     # holder. Sizing guidance lives in docs/guides/ops.md: keep it >= 2x
     # the fleet's TASKQ_HEARTBEAT_INTERVAL (the per-job analogue of the
-    # lock_lease failed-beat-cascade invariant, #284).
+    # lock_lease failed-beat-cascade invariant,.
     if heartbeat_timeout is not None and heartbeat_timeout <= timedelta(0):
         raise ValueError(f"heartbeat_timeout must be > 0, got {heartbeat_timeout!r}")
 

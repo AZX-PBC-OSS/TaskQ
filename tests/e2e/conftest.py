@@ -501,7 +501,7 @@ async def e2e_schema(
         "TASKQ_MIGRATE_ON_START": "false",
         "TASKQ_ENVIRONMENT": "dev",
         "TASKQ_HEARTBEAT_INTERVAL": "0.5",
-        # The tiny command timeout keeps the #284 cascade floor satisfied
+        # The tiny command timeout keeps the cascade floor satisfied
         # for this lease: 4 * (0.5 + 2 * 0.1) = 2.8 <= 8.0.
         "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
         # 8 s, widened from 3.0 for the same reason test_pg_restart_chaos

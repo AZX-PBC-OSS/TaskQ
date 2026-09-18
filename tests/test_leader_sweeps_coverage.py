@@ -138,7 +138,7 @@ def _make_deps(
 ) -> WorkerDeps:
     overrides: dict[str, str] = {
         "HEARTBEAT_INTERVAL": str(heartbeat_interval),
-        # 3.0 + the tiny command timeout satisfies the #284 cascade
+        # 3.0 + the tiny command timeout satisfies the cascade
         # floor: 4 * (0.5 + 2 * 0.1) = 2.8 <= 3.0.
         "HEARTBEAT_COMMAND_TIMEOUT": "0.1",
         "LOCK_LEASE": "3.0",
@@ -1385,7 +1385,7 @@ async def test_sweep_loop_acquire_has_timeout() -> None:
     pool = _HangingPool()
     settings = _worker_settings(
         HEARTBEAT_INTERVAL="0.5",
-        # 3.0 + the tiny command timeout satisfies the #284 cascade floor:
+        # 3.0 + the tiny command timeout satisfies the cascade floor:
         # 4 * (0.5 + 2 * 0.1) = 2.8 <= 3.0.
         HEARTBEAT_COMMAND_TIMEOUT="0.1",
         LOCK_LEASE="3.0",

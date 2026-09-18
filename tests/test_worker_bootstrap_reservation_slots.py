@@ -1,11 +1,11 @@
-"""Unit pins for the bootstrap's ensure-slots loop (#293).
+"""Unit pins for the bootstrap's ensure-slots loop.
 
 The bootstrap's per-reservation ensure pass must wait no longer than
-``dispatcher_command_timeout`` — the budget every sibling bootstrap await
-already carries — and a lapse must surface as the typed
+``dispatcher_command_timeout``, the budget every sibling bootstrap await
+already carries, and a lapse must surface as the typed
 ``ensure_slots_timeout`` warning (distinct from the generic
 ``ensure_slots_failed`` so a starvation stall is diagnosable from startup
-logs) without aborting the loop. Before #293 the pass called
+logs) without aborting the loop. Before the pass called
 ``ensure_slots`` with no bound at all: under dispatcher-pool starvation the
 bare ``pool.acquire()`` waited forever, which is the observed 300s CI hang.
 """
@@ -40,7 +40,7 @@ class _StarvedThenHealthyPool:
         if self._pending_starvation > 0:
             self._pending_starvation -= 1
             if timeout is None:
-                await asyncio.Event().wait()  # never resolves: the #293 hang
+                await asyncio.Event().wait()  # never resolves: the hang
             await asyncio.sleep(min(timeout, 5.0))
             raise TimeoutError("starved: could not acquire a pool connection")
         yield self
@@ -77,8 +77,8 @@ def _deps(pool: object) -> WorkerDeps:
 async def test_starved_ensure_slots_logs_typed_timeout_and_continues() -> None:
     """A pool-acquire lapse must log ``ensure_slots_timeout`` and move on.
 
-    The bound is the whole point of #293: the loop must finish (here under
-    a generous outer wait_for — on the pre-fix code the first acquire never
+    The bound is the whole point of: the loop must finish (here under
+    a generous outer wait_for, on the pre-fix code the first acquire never
     resolves and the outer wait fires instead), the typed event must name
     the bucket and the budget, and the NEXT reservation's ensure must still
     run.
