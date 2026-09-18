@@ -113,7 +113,7 @@ Selecting `TASKQ_SSO_BACKEND=oidc` or `saml` activates two dedicated sub-config 
 | Class | Env prefix | Fields |
 |---|---|---|
 | `OIDCSettings` | `TASKQ_OIDC_` | `ISSUER`, `CLIENT_ID`, `CLIENT_SECRET` (secret), `REDIRECT_URI`, `SESSION_SECRET` (secret), `SESSION_MAX_AGE_SECONDS`, `SCOPE`, `GROUP_CLAIM`, `ALLOWED_GROUPS` |
-| `SAMLSettings` | `TASKQ_SAML_` | `ENTITY_ID`, `ACS_URL`, `IDP_ENTITY_ID`, `IDP_SSO_URL`, `IDP_X509_CERT`, `SP_X509_CERT`, `SP_PRIVATE_KEY` (secret), `SESSION_SECRET` (secret), `SESSION_MAX_AGE_SECONDS`, `GROUP_ATTRIBUTE`, `ALLOWED_GROUPS` |
+| `SAMLSettings` | `TASKQ_SAML_` | `ENTITY_ID`, `ACS_URL`, `IDP_ENTITY_ID`, `IDP_SSO_URL`, `IDP_X509_CERT`, `SP_X509_CERT`, `SP_PRIVATE_KEY` (secret), `SESSION_SECRET` (secret), `SESSION_MAX_AGE_SECONDS`, `GROUP_ATTRIBUTE`, `ALLOWED_GROUPS`, `ALLOW_COOKIELESS_FALLBACK` |
 
 Both `SESSION_SECRET` fields sign session cookies: use at least 32 bytes of random data, and rotate to invalidate all sessions. `ALLOWED_GROUPS` is a comma-separated group allowlist on either backend.
 

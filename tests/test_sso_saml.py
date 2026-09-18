@@ -7,6 +7,8 @@ system dependency) is not installed.
 
 from __future__ import annotations
 
+import base64
+import re
 from typing import Any
 
 import pytest
@@ -35,6 +37,7 @@ def _config(
     group_attribute: str | None = None,
     allowed_groups: frozenset[str] = frozenset(),
     secure_cookie: bool = False,
+    allow_cookieless_fallback: bool = False,
 ) -> SAMLAuthConfig:
     return SAMLAuthConfig(
         entity_id=SP_ENTITY_ID,
@@ -46,6 +49,7 @@ def _config(
         secure_cookie=secure_cookie,
         group_attribute=group_attribute,
         allowed_groups=allowed_groups,
+        allow_cookieless_fallback=allow_cookieless_fallback,
     )
 
 
@@ -109,6 +113,25 @@ def _do_login(client: TestClient, base_path: str = "/admin") -> str:
     return issued[-1]
 
 
+def _correlation_cookie(client: TestClient) -> str:
+    """The current ``taskq_saml_request`` cookie value held by *client*.
+
+    Capture it right after the /login it must answer: a later /login on the
+    same client overwrites the jar entry with a fresh cookie.
+    """
+    value = client.cookies.get("taskq_saml_request")
+    assert value, "client holds no AuthnRequest correlation cookie to capture"
+    return value
+
+
+def _assertion_id(response_b64: str) -> str:
+    """The Assertion ID inside a built fixture response (base64 → XML → ID)."""
+    xml = base64.b64decode(response_b64).decode("utf-8")
+    match = re.search(r'<saml:Assertion[^>]*\bID="([^"]+)"', xml)
+    assert match is not None, "could not locate the Assertion ID in the fixture XML"
+    return match.group(1)
+
+
 # ── Full login → ACS callback → session → authorized request round trip ───
 
 
@@ -140,17 +163,25 @@ def test_login_succeeds_when_idp_acs_post_is_genuinely_cross_site() -> None:
     The shipped policy is therefore two-layered. The correlation cookie is
     marked ``SameSite=None`` when ``secure_cookie`` is on and kept ``Lax``
     when it is not (browsers reject ``None`` without ``Secure``, and a
-    plain-http dev deployment has no cross-site IdP to serve). And the
-    callback still completes login with no usable cookie when a fully
-    validated assertion's ``InResponseTo`` names an AuthnRequest this process
-    issued and has not yet spent.
+    plain-http dev deployment has no cross-site IdP to serve). And a
+    deployment that must serve cookie-blocking browsers opts in with
+    ``allow_cookieless_fallback``: the callback then completes login with
+    no usable cookie when a fully validated assertion's ``InResponseTo``
+    names an AuthnRequest this process issued and has not yet spent. The
+    tradeoff is stated as directly as it can be: nothing ties that response
+    to the browser posting it, so a party who starts a login,
+    authenticates as themselves, and captures the signed response without
+    posting it can have a cookie-less victim's browser post it within the
+    5-minute window and receive a session for that party's NameID
+    (login CSRF). That is why the flag defaults to off: a deployment that
+    accepts the tradeoff opts in deliberately.
 
     FastAPI's TestClient does not enforce SameSite cookie semantics itself,
     so the cookie drop is simulated by driving the callback with a second
     client that shares no cookie jar with the one that performed /login,
     rather than relying on TestClient for cross-site cookie behavior.
     """
-    config = _config()
+    config = _config(allow_cookieless_fallback=True)
     app = _make_app(config)
     client = _client(app)
 
@@ -443,13 +474,17 @@ def test_session_cookie_keeps_its_hardened_policy_after_cross_site_login() -> No
 def test_cookieless_acs_post_without_a_pending_login_is_still_rejected() -> None:
     """A correctly-signed assertion answering no live login mints no session.
 
-    The cross-site fix relaxes *where the AuthnRequest binding is stored*, not
-    *whether it is checked*. Accepting any well-signed assertion would let a
-    captured or IdP-initiated response log an attacker's browser in, so the
-    binding must still refuse a response that answers no AuthnRequest this
-    deployment actually issued — the property the cookie gate was protecting.
+    The cross-site fallback relaxes *where the AuthnRequest binding is
+    stored*, not *whether it is checked*. Accepting any well-signed
+    assertion would let a captured or IdP-initiated response log the
+    posting party's browser in, so the binding must still refuse a response
+    that answers no AuthnRequest this deployment actually issued: the
+    property the cookie gate was protecting.
+
+    Runs with the fallback opted in, so the refusal exercised here is the
+    fallback's own pending-set gate, not the off-by-default flag.
     """
-    config = _config()
+    config = _config(allow_cookieless_fallback=True)
     app = _make_app(config)
 
     # No /login: nothing is pending anywhere, neither in a cookie nor in any
@@ -468,4 +503,336 @@ def test_cookieless_acs_post_without_a_pending_login_is_still_rejected() -> None
     assert "error=authentication+failed" in resp.headers.get("location", "")
     assert "taskq_session=" not in resp.headers.get("set-cookie", ""), (
         "an assertion answering no pending AuthnRequest must not establish a session"
+    )
+
+
+# ── Multi-replica deployments (#239): the cookie is the cross-process binding ─
+
+
+def test_callback_on_a_sibling_replica_sharing_session_secret_succeeds() -> None:
+    """A callback served by a different process than the one that issued the
+    login must succeed when the correlation cookie is present and valid.
+
+    Two admin replicas behind one load balancer, or a single host running
+    ``uvicorn --workers N``, are separate processes: the pending-AuthnRequest
+    set of the process that served ``/login`` is invisible to the process that
+    serves the ACS POST. The signed correlation cookie is the binding that
+    crosses processes: every replica sharing ``session_secret`` can verify
+    it, python3-saml compares the response's ``InResponseTo`` against it, and
+    it is single-use with a 300 s TTL. Requiring the process-local pending
+    set on top of a valid cookie rejected every cross-process callback with
+    "SAML response answers no pending AuthnRequest" (#239): the failure
+    this test pins as fixed.
+    """
+    config = _config()
+    # Two bundles from one config (same session_secret, same SP/IdP pair):
+    # the deployment shape of two replicas (or two worker processes) of one
+    # admin mount.
+    replica_a = _make_app(config)
+    replica_b = _make_app(config)
+    client_a = _client(replica_a)
+
+    request_id = _do_login(client_a)
+    # The browser carries replica A's cookie to whichever replica receives
+    # the IdP's ACS POST (here replica B, which never saw the login).
+    correlation_cookie = _correlation_cookie(client_a)
+    saml_response = build_saml_response(nameid="user-saml-1", in_response_to=request_id)
+
+    client_b = _client(replica_b)
+    # The browser presents replica A's correlation cookie to replica B.
+    client_b.cookies.set("taskq_saml_request", correlation_cookie)
+    resp = client_b.post(
+        "/admin/callback",
+        data={"SAMLResponse": saml_response},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/admin", (
+        "a cookie-valid callback must complete on any replica sharing "
+        f"session_secret, not only on the process that issued the login; "
+        f"got redirect to {resp.headers.get('location')!r}"
+    )
+    assert "taskq_session=" in resp.headers.get("set-cookie", ""), (
+        "a cookie-valid cross-replica login must mint a session"
+    )
+
+    # The minted session is valid on the serving replica, as the browser
+    # will immediately use it there.
+    resp = client_b.get("/admin/protected", headers={"accept": "application/json"})
+    assert resp.status_code == 200
+    assert resp.json()["sub"] == "user-saml-1"
+
+
+def test_pending_set_flood_eviction_cannot_break_the_cookie_bound_login(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unauthenticated /login spam cannot evict a real login's binding on the
+    cookie path.
+
+    The pending set is capped (10k entries) and evicts its
+    soonest-to-expire entry when full, so a flood of /login requests can
+    push a real login's pending ID out before its callback arrives (#239's
+    flood half). The cookie-valid path must not depend on that set: the
+    signed, single-use cookie alone completes the login. The opt-in
+    cookie-less fallback still does depend on it; that dependence is
+    pinned here too, so the eviction is proven to have happened rather
+    than assumed.
+    """
+    import taskq.web.admin.auth.saml as saml_module
+
+    # Shrink the cap so a handful of /login calls forces eviction, with
+    # the same soonest-to-expire policy the production 10k cap applies.
+    monkeypatch.setattr(saml_module, "_PENDING_REQUEST_MAX_ENTRIES", 2)
+    config = _config(allow_cookieless_fallback=True)
+    app = _make_app(config)
+    client = _client(app)
+
+    real_request_id = _do_login(client)
+    real_cookie = _correlation_cookie(client)
+    # The flood: unauthenticated /login GETs, each minting a fresh pending
+    # ID. With the cap at 2, four extra logins evict the real login's ID
+    # (each new add evicts the soonest-to-expire entry, i.e. the oldest).
+    for _ in range(4):
+        _do_login(client)
+
+    # Eviction proven through the fallback: the flood pushed the real
+    # login's ID out of the process-local set, so even the opted-in
+    # fallback can no longer answer it.
+    evicted_response = build_saml_response(nameid="user-saml-1", in_response_to=real_request_id)
+    cookieless_client = TestClient(app, base_url=_TEST_BASE_URL)
+    resp = cookieless_client.post(
+        "/admin/callback",
+        data={"SAMLResponse": evicted_response},
+        follow_redirects=False,
+    )
+    assert "error=authentication+failed" in resp.headers.get("location", ""), (
+        "expected the flood to evict the real login's pending ID; if the "
+        "fallback still accepts it, the eviction premise of this test is wrong"
+    )
+    assert "taskq_session=" not in resp.headers.get("set-cookie", "")
+
+    # The cookie-bound path survives the same eviction: it never consults
+    # the pending set, so eviction pressure stops being a way to break (or
+    # DoS) logins on the default path.
+    cookie_response = build_saml_response(nameid="user-saml-1", in_response_to=real_request_id)
+    cookie_client = TestClient(app, base_url=_TEST_BASE_URL)
+    cookie_client.cookies.set("taskq_saml_request", real_cookie)
+    resp = cookie_client.post(
+        "/admin/callback",
+        data={"SAMLResponse": cookie_response},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/admin", (
+        "a cookie-valid login must complete even when its pending ID was "
+        f"evicted; got redirect to {resp.headers.get('location')!r}"
+    )
+    assert "taskq_session=" in resp.headers.get("set-cookie", "")
+
+
+# ── Single-use properties the relaxation must not lose ──────────────────────
+
+
+def test_second_presentation_of_the_same_response_is_refused_on_the_issuing_process() -> None:
+    """The same signed response never mints a second session on the process
+    that accepted it.
+
+    The replaying party re-supplies the still-valid correlation cookie
+    explicitly (the browser's copy was cleared on first use), so the
+    cookie binding still passes. On the issuing process that presentation
+    is now refused
+    twice over: the answered-request record refuses the request ID first,
+    and the replay cache remains the backstop for shapes where the
+    request-ID gates cannot fire (a fresh pending ID, or record eviction
+    under flood).
+    """
+    config = _config()
+    app = _make_app(config)
+    client = _client(app)
+
+    request_id = _do_login(client)
+    correlation_cookie = _correlation_cookie(client)
+    saml_response = build_saml_response(nameid="user-saml-1", in_response_to=request_id)
+    resp = _post_saml_response(client, saml_response)
+    assert resp.headers["location"] == "/admin"
+
+    # The success response cleared the browser's cookie; a replaying party
+    # who captured the POST re-supplies it. The cookie still verifies and
+    # still matches InResponseTo, so the gates below must refuse it.
+    replay_client = TestClient(app, base_url=_TEST_BASE_URL)
+    replay_client.cookies.set("taskq_saml_request", correlation_cookie)
+    resp = replay_client.post(
+        "/admin/callback",
+        data={"SAMLResponse": saml_response},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert "error=authentication+failed" in resp.headers.get("location", ""), (
+        "a second presentation of the same assertion must not mint another session"
+    )
+    assert "taskq_session=" not in resp.headers.get("set-cookie", "")
+
+
+def test_a_second_distinct_assertion_answering_the_same_request_id_is_refused() -> None:
+    """The AuthnRequest ID is single-use server-side, not just cookie-side.
+
+    The follow-up review's demonstration this pins: after a successful
+    cookie-path login, re-POST on the SAME (issuing) process with the
+    captured correlation cookie re-supplied and a FRESH assertion ID
+    answering the same request ID. Signature, timestamps and the
+    cookie↔InResponseTo binding all still pass, and the replay cache
+    cannot fire (the assertion ID is new), so before the answered-request
+    record this minted a second session.
+    """
+    config = _config()
+    app = _make_app(config)
+    client = _client(app)
+
+    request_id = _do_login(client)
+    correlation_cookie = _correlation_cookie(client)
+    first = build_saml_response(nameid="user-saml-1", in_response_to=request_id)
+    resp = _post_saml_response(client, first)
+    assert resp.headers["location"] == "/admin"
+
+    second = build_saml_response(nameid="user-saml-1", in_response_to=request_id)
+    assert _assertion_id(second) != _assertion_id(first), (
+        "the replayed response must carry a fresh assertion ID; otherwise "
+        "the replay cache, not the answered-request record, is the rejector"
+    )
+
+    replay_client = TestClient(app, base_url=_TEST_BASE_URL)
+    replay_client.cookies.set("taskq_saml_request", correlation_cookie)
+    resp = replay_client.post(
+        "/admin/callback",
+        data={"SAMLResponse": second},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert "error=authentication+failed" in resp.headers.get("location", ""), (
+        "a second distinct assertion answering an already-answered "
+        "AuthnRequest must not mint a session: this is the captured-cookie "
+        "replay the answered-request record exists to refuse"
+    )
+    assert "taskq_session=" not in resp.headers.get("set-cookie", "")
+
+
+def test_answered_request_id_record_covers_the_opt_in_fallback_path() -> None:
+    """Flag on: the answered-request record is written by fallback
+    acceptances too, closing the cross-path replay.
+
+    The fallback path's own single-use gate is the pending-set spend (pinned
+    by test_cookieless_fallback_spends_the_pending_id_single_use): a second
+    cookie-less presentation of the same request ID is refused there, and
+    so is a cookie-path re-presentation after a *cookie-path* acceptance
+    (the spend/drop removes the ID from pending). What the spend cannot
+    see is the reverse order: a cookie-less acceptance, then a party
+    replaying a fresh assertion through the cookie path with the
+    correlation cookie captured from the browser that started the login.
+    The answered-request record, written on both acceptance paths,
+    refuses it.
+    """
+    config = _config(allow_cookieless_fallback=True)
+    app = _make_app(config)
+    client = _client(app)
+
+    request_id = _do_login(client)
+    # The cookie exists in the login browser's jar; the replaying party
+    # captures it while the IdP response is instead POSTed cookie-less
+    # (the shape the fallback exists to serve).
+    correlation_cookie = _correlation_cookie(client)
+    first = build_saml_response(nameid="user-saml-1", in_response_to=request_id)
+    cookieless_client = TestClient(app, base_url=_TEST_BASE_URL)
+    resp = cookieless_client.post(
+        "/admin/callback", data={"SAMLResponse": first}, follow_redirects=False
+    )
+    assert resp.headers["location"] == "/admin", "the opted-in fallback must accept"
+
+    second = build_saml_response(nameid="user-saml-1", in_response_to=request_id)
+    assert _assertion_id(second) != _assertion_id(first)
+    replay_client = TestClient(app, base_url=_TEST_BASE_URL)
+    replay_client.cookies.set("taskq_saml_request", correlation_cookie)
+    resp = replay_client.post(
+        "/admin/callback",
+        data={"SAMLResponse": second},
+        follow_redirects=False,
+    )
+    assert "error=authentication+failed" in resp.headers.get("location", ""), (
+        "a fresh assertion answering a request ID the fallback already "
+        "answered must be refused even through the cookie path"
+    )
+    assert "taskq_session=" not in resp.headers.get("set-cookie", "")
+
+
+def test_cookieless_fallback_spends_the_pending_id_single_use() -> None:
+    """The opt-in fallback keeps the AuthnRequest ID single-use (#180's intent).
+
+    A fresh, correctly-signed response answering an already-spent pending ID
+    is refused: a second POST must begin a new login. Uses a *new*
+    assertion (fresh assertion ID) so the refusal can only come from the
+    pending-set spend, not the replay cache.
+
+    This is the fallback path's own single-use gate: the spend IS the
+    enforcement there, so no answered-request record is needed for
+    same-process fallback replays; the record's job on that path is the
+    cross-path replay pinned by
+    test_answered_request_id_record_covers_the_opt_in_fallback_path.
+    """
+    config = _config(allow_cookieless_fallback=True)
+    app = _make_app(config)
+    client = _client(app)
+
+    request_id = _do_login(client)
+    first = build_saml_response(nameid="user-saml-1", in_response_to=request_id)
+    cookieless_client = TestClient(app, base_url=_TEST_BASE_URL)
+    resp = cookieless_client.post(
+        "/admin/callback", data={"SAMLResponse": first}, follow_redirects=False
+    )
+    assert resp.headers["location"] == "/admin"
+
+    second = build_saml_response(nameid="user-saml-1", in_response_to=request_id)
+    resp = cookieless_client.post(
+        "/admin/callback", data={"SAMLResponse": second}, follow_redirects=False
+    )
+    assert "error=authentication+failed" in resp.headers.get("location", ""), (
+        "the pending AuthnRequest ID is single-use: a second response answering it must be refused"
+    )
+    assert "taskq_session=" not in resp.headers.get("set-cookie", "")
+
+
+# ── The cookie-less fallback is opt-in and defaults off (#240) ──────────────
+
+
+def test_cookieless_callback_is_refused_when_the_fallback_is_not_opted_in() -> None:
+    """A cookie-less callback is refused cleanly unless the operator opted in.
+
+    With no usable correlation cookie, nothing ties a validated response to
+    the browser posting it: a party who starts a login and captures the
+    signed response for their own account can have a cookie-less victim's
+    browser post it and end up with a session for that party's NameID
+    (login CSRF, #240). Default policy therefore refuses the callback: a
+    clean redirect, not a 500, with the remedy (the opt-in flag) in the
+    server-side log.
+    """
+    config = _config()  # allow_cookieless_fallback defaults to False
+    app = _make_app(config)
+    client = _client(app)
+
+    # The posting party's login: a pending ID exists on this very process,
+    # so the old always-on fallback would have accepted the victim's POST.
+    request_id = _do_login(client)
+    saml_response = build_saml_response(nameid="attacker-nameid", in_response_to=request_id)
+
+    cookieless_client = TestClient(app, base_url=_TEST_BASE_URL)
+    resp = cookieless_client.post(
+        "/admin/callback",
+        data={"SAMLResponse": saml_response},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 302, "the refusal must be a clean redirect, not a 500"
+    assert "error=authentication+failed" in resp.headers.get("location", "")
+    assert "taskq_session=" not in resp.headers.get("set-cookie", ""), (
+        "a cookie-less callback on a default (fallback-off) deployment must "
+        "not mint a session: this is the #240 login-CSRF shape"
     )

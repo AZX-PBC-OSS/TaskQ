@@ -157,6 +157,17 @@ class SAMLSettings(DotEnvConfig):
         default="",
         description="Comma-separated group allowlist.",
     )
+    allow_cookieless_fallback: bool = Field(
+        default=False,
+        description="TASKQ_SAML_ALLOW_COOKIELESS_FALLBACK. Opt in to the SAML "
+        "cookie-less ACS fallback: accept a callback with no usable "
+        "correlation cookie when its validated InResponseTo names a pending "
+        "AuthnRequest this process issued. Serves browsers that block the "
+        "cross-site cookie; nothing ties the response to the browser "
+        "posting it, so a captured signed response can be planted on a "
+        "cookie-less victim (login CSRF) -- opt in only if that tradeoff is "
+        "acceptable. Default off; see docs/guides/sso.md.",
+    )
 
     @property
     def allowed_groups_set(self) -> frozenset[str]:
