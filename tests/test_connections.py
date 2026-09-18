@@ -8,6 +8,8 @@ test_worker_deps.py (marked ``integration``).
 
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -17,9 +19,11 @@ import structlog.testing
 from asyncpg.exceptions import InternalClientError
 
 from taskq.connections import (
+    _POOL_RELEASE_RESET_TIMEOUT_SECS,  # pyright: ignore[reportPrivateUsage]  # Why: the checkout's release bound is the unit under test; the constant is the seam the assertion reads.
     DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
     DEFAULT_STATEMENT_CACHE_SIZE,
     WorkerConnections,
+    _RetryGuard,  # pyright: ignore[reportPrivateUsage]  # Why: the guard handed to the op is the unit under test: pinning it directly keeps this contract off the intermittent full-stack race test.
     _with_fresh_connection_retry,  # pyright: ignore[reportPrivateUsage]  # Why: the shared dead-on-acquire guard is the unit under test — pinning it directly keeps this contract off the intermittent full-stack race test.
     bounded_lock_budget_ms,
     connection_init_hook,
@@ -391,7 +395,83 @@ async def test_with_connection_init_closes_the_connection_when_the_hook_fails() 
 # ``connection_lost`` lands — is pinned against a real interrupted
 # Postgres in tests/test_fleet_pg_transient_failure.py, which is
 # intermittent by nature; these unit pins hold the wrapper's own contract
-# so the coverage does not rest on that race reproducing.
+# so the coverage does not rest on that race reproducing: when the retry
+# runs, when it is REFUSED (a write already acknowledged, #236's
+# duplication half), and what the guard's bounded checkout does with a
+# release that fails or hangs after the op's work is done (#236's
+# release/hang half).
+
+
+class _FakeConn:
+    """Structural stand-in for a checked-out pool connection proxy."""
+
+    def __init__(self) -> None:
+        self.terminated = False
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    async def close(self) -> None:
+        return None
+
+
+class _FakePool:
+    """Fake ``asyncpg.Pool`` for the guard's checkout, modelling asyncpg's
+    ``PoolConnectionHolder.release`` in miniature. The release records the
+    timeout the guard passes and can be told to fail (a parked connection's
+    reset raising) or to PARK: a server that never answers, the shape the
+    bound exists for. A parked release under a budget raises ``TimeoutError``
+    at the budget and TERMINATES the connection (asyncpg's timeout handler
+    does exactly this), freeing the holder either way; with no budget it
+    simply parks: the unbounded shape that wedged the caller's task and
+    ``pool.close()`` (#236's hang half, reproduced live against a
+    SIGSTOP-frozen backend)."""
+
+    def __init__(
+        self,
+        *,
+        release_exc: BaseException | None = None,
+        release_park_secs: float | None = None,
+    ) -> None:
+        self.release_exc = release_exc
+        self.release_park_secs = release_park_secs
+        self.release_timeouts: list[float | None] = []
+        self.releases = 0
+        self.in_use = 0
+        self.terminated_conns: list[_FakeConn] = []
+
+    async def acquire(self) -> _FakeConn:
+        self.in_use += 1
+        return _FakeConn()
+
+    async def release(
+        self,
+        conn: _FakeConn,
+        *,
+        timeout: float | None = None,  # noqa: ASYNC109  # Why: the parameter models asyncpg's Pool.release(timeout=...) signature: the guard's bounded-release channel, not a cancel scope.
+    ) -> None:
+        self.releases += 1
+        self.release_timeouts.append(timeout)
+        try:
+            if self.release_park_secs is not None:
+                # The reset is awaited UNDER the budget, as asyncpg awaits
+                # it (compat.timeout inside holder.release).
+                await asyncio.wait_for(asyncio.sleep(self.release_park_secs), timeout=timeout)
+            if self.release_exc is not None:
+                # A reset failure: asyncpg's except clause terminates the
+                # connection and re-raises.
+                conn.terminate()
+                self.terminated_conns.append(conn)
+                raise self.release_exc
+        except TimeoutError:
+            # Budget expiry: the connection is terminated and the timeout
+            # re-raised; the holder is freed either way (asyncpg's
+            # terminate -> _release_on_close).
+            conn.terminate()
+            self.terminated_conns.append(conn)
+            raise
+        finally:
+            self.in_use -= 1
 
 
 async def test_fresh_connection_retry_retries_once_on_a_poisoned_handout() -> None:
@@ -400,7 +480,7 @@ async def test_fresh_connection_retry_retries_once_on_a_poisoned_handout() -> No
     runs again on the fresh connection and its result is returned."""
     calls = 0
 
-    async def op() -> str:
+    async def op(guard: object) -> str:
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -409,7 +489,7 @@ async def test_fresh_connection_retry_retries_once_on_a_poisoned_handout() -> No
             )
         return "done"
 
-    result = await _with_fresh_connection_retry(op, operation="unit-probe")
+    result = await _with_fresh_connection_retry(_FakePool(), op, operation="unit-probe")
 
     assert result == "done"
     assert calls == 2
@@ -421,13 +501,13 @@ async def test_fresh_connection_retry_retries_only_once() -> None:
     keeps poisoning."""
     calls = 0
 
-    async def op() -> None:
+    async def op(guard: object) -> None:
         nonlocal calls
         calls += 1
         raise InternalClientError("still poisoned")
 
     with pytest.raises(InternalClientError, match="still poisoned"):
-        await _with_fresh_connection_retry(op, operation="unit-probe")
+        await _with_fresh_connection_retry(_FakePool(), op, operation="unit-probe")
 
     assert calls == 2
 
@@ -438,13 +518,13 @@ async def test_fresh_connection_retry_passes_other_errors_through_untried() -> N
     so the wrapper neither retries nor rewrites them."""
     calls = 0
 
-    async def op() -> None:
+    async def op(guard: object) -> None:
         nonlocal calls
         calls += 1
         raise asyncpg.DeadlockDetectedError("real deadlock")
 
     with pytest.raises(asyncpg.DeadlockDetectedError, match="real deadlock"):
-        await _with_fresh_connection_retry(op, operation="unit-probe")
+        await _with_fresh_connection_retry(_FakePool(), op, operation="unit-probe")
 
     assert calls == 1
 
@@ -455,16 +535,186 @@ async def test_fresh_connection_retry_logs_the_retry_with_the_operation_name() -
     a failover."""
     calls = 0
 
-    async def op() -> None:
+    async def op(guard: object) -> None:
         nonlocal calls
         calls += 1
         if calls == 1:
             raise InternalClientError("poisoned")
 
     with structlog.testing.capture_logs() as logs:
-        await _with_fresh_connection_retry(op, operation="unit-probe")
+        await _with_fresh_connection_retry(_FakePool(), op, operation="unit-probe")
 
     warnings = [e for e in logs if e.get("event") == "pool-conn-dead-on-acquire"]
     assert len(warnings) == 1
     assert warnings[0]["kind"] == "pool_conn_dead_on_acquire"
     assert warnings[0]["operation"] == "unit-probe"
+
+
+async def test_fresh_connection_retry_refuses_the_retry_once_a_write_is_acknowledged() -> None:
+    """#236's refusal half: an ``InternalClientError`` raised AFTER the
+    op marked its write durable (the connection died between the INSERT's
+    acknowledgement and a LATER statement of the same attempt: a
+    post-INSERT read, a savepoint RELEASE) must NOT re-run the op. The
+    unguarded wrapper read every ``InternalClientError`` as
+    dead-on-acquire and re-issued the write with the same identity;
+    against the enqueue table's ``uuid PRIMARY KEY`` that cannot land a
+    second row; it raised ``UniqueViolationError`` for an enqueue that
+    had committed and would run (observed live under old-contract
+    emulation: 11 UniqueViolations in 400 jittered kills), and that
+    error-for-committed-work is precisely what invites the caller's
+    fresh-id retry that DOES run the job twice."""
+    calls = 0
+
+    async def op(guard: _RetryGuard) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            # The write was acknowledged (marked), then a later statement
+            # hit the parked dead connection.
+            guard.mark_wrote()
+            raise InternalClientError("died between the INSERT's ack and the follow-up read")
+        raise AssertionError("unreachable: the retry must be refused once a write is durable")
+
+    with pytest.raises(InternalClientError, match="died between the INSERT's ack"):
+        await _with_fresh_connection_retry(_FakePool(), op, operation="enqueue")
+
+    assert calls == 1, (
+        "a retry after an acknowledged write re-issues it with the same id: "
+        "a UniqueViolationError for work that succeeded, and the invitation "
+        "for the caller's fresh-id re-enqueue that runs the job twice (#236)"
+    )
+
+
+async def test_fresh_connection_retry_retry_starts_a_clean_guard() -> None:
+    """The retry attempt's flag starts clear: the FIRST attempt's
+    pre-write failure (the dead-on-acquire case this wrapper exists for)
+    must not poison the retry's durability accounting: the retried op
+    can mark and complete normally."""
+    calls = 0
+
+    async def op(guard: _RetryGuard) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise InternalClientError("poisoned before any statement was sent")
+        guard.mark_wrote()
+        return "done-on-retry"
+
+    result = await _with_fresh_connection_retry(_FakePool(), op, operation="unit-probe")
+
+    assert result == "done-on-retry"
+
+
+async def test_retry_guard_checkout_passes_the_release_bound_to_the_pool() -> None:
+    """The checkout replaces the acquire context manager precisely so the
+    RELEASE can carry a timeout: asyncpg's context release falls back to
+    the (unbounded) acquire timeout, which parks the reset against a
+    silently-dead server forever: #236's hang half."""
+
+    pool = _FakePool()
+    guard = _RetryGuard(pool, "unit-probe")
+
+    async with guard.checkout() as conn:
+        assert isinstance(conn, _FakeConn)
+
+    assert pool.releases == 1
+    assert pool.release_timeouts == [_POOL_RELEASE_RESET_TIMEOUT_SECS]
+
+
+async def test_retry_guard_checkout_bounds_a_parked_release_and_frees_the_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#236's hang half as a committed end-to-end pin: the live SIGSTOP
+    experiment's shape (a release whose reset is sent into a server that
+    never answers), driven through the guard's own checkout against a
+    miniature that models what asyncpg's holder.release does at source
+    level: the reset is awaited UNDER the budget; on expiry the connection
+    is TERMINATED, the holder freed, and the timeout re-raised (which the
+    checkout swallows into one WARNING). The op's committed result is
+    returned, and a follow-up checkout on the same pool completes
+    instantly: the pool is not wedged. The unbounded shape this replaces
+    parked the caller's task and ``pool.close()`` forever (live-reproduced:
+    release pending past 3 s with close() wedged; the bounded channel
+    raised at 2.00 s and close() completed instantly)."""
+    from taskq import connections as connections_mod
+
+    shrunk_bound = 0.2
+    monkeypatch.setattr(connections_mod, "_POOL_RELEASE_RESET_TIMEOUT_SECS", shrunk_bound)
+    # The parked reset would answer in 10 s (it never answers at all, the
+    # park is the point); the unbounded release shape waits all of it.
+    pool = _FakePool(release_park_secs=10.0)
+    guard = _RetryGuard(pool, "enqueue")
+
+    async def op() -> str:
+        async with guard.checkout():
+            pass  # the op's statements all acknowledged; its work is committed
+        return "committed"
+
+    # The TEST budget is the red result for a regression to the unbounded
+    # handoff: a checkout that stops passing the bound parks for the full
+    # 10 s and the test budget fires at 2 s instead of the shrunk bound.
+    budget = asyncio.timeout(2.0)
+    started = time.monotonic()
+    with structlog.testing.capture_logs() as logs:
+        async with budget:
+            result = await op()
+    elapsed = time.monotonic() - started
+
+    assert result == "committed", "a parked release must not fail the op's committed work"
+    assert not budget.expired(), (
+        "the checkout parked past the 2 s test budget: the release bound "
+        "never reached the pool: the unbounded #236 hang shape"
+    )
+    assert elapsed < 1.0, (
+        f"the parked release cost {elapsed:.2f}s; the bound is {shrunk_bound}s; "
+        "only the budget plus epsilon should have elapsed"
+    )
+    assert pool.release_timeouts == [shrunk_bound], "the bound must be the one handed to release"
+    assert len(pool.terminated_conns) == 1, "budget expiry must terminate the parked connection"
+    assert pool.terminated_conns[0].terminated
+    assert pool.in_use == 0, "the holder must be freed: a wedged holder is pool.close() stuck"
+    warnings = [e for e in logs if e.get("event") == "pool-release-failed"]
+    assert len(warnings) == 1, "the swallowed timeout is the operator's signal"
+    assert warnings[0]["kind"] == "pool_release_failed"
+    assert warnings[0]["operation"] == "enqueue"
+
+    # The pool is not wedged: a follow-up checkout completes instantly.
+    followup_guard = _RetryGuard(pool, "enqueue")
+    async with asyncio.timeout(1.0):
+        async with followup_guard.checkout():
+            pass
+    assert pool.releases == 2
+
+
+async def test_retry_guard_checkout_swallows_a_failed_release_after_a_committed_op() -> None:
+    """A release whose reset fails (the parked-error-consume connection:
+    asyncpg terminates it and re-raises) must not hand the caller an
+    error for work that committed: that error invited the caller-side
+    retry that duplicates the row, which is #236's other duplication
+    route. The op's result stands; the failure is observable as one
+    WARNING."""
+    pool = _FakePool(release_exc=asyncpg.InterfaceError("pool release: reset failed"))
+    guard = _RetryGuard(pool, "enqueue")
+
+    with structlog.testing.capture_logs() as logs:
+        async with guard.checkout():
+            pass  # the op's statements all acknowledged; its work is committed
+
+    warnings = [e for e in logs if e.get("event") == "pool-release-failed"]
+    assert len(warnings) == 1, "the swallowed release failure is the operator's signal"
+    assert warnings[0]["kind"] == "pool_release_failed"
+    assert warnings[0]["operation"] == "enqueue"
+    assert "reset failed" in warnings[0]["error"]
+
+
+async def test_retry_guard_checkout_release_failure_never_masks_the_ops_own_error() -> None:
+    """When the op's body raised, its error is the meaningful one: the
+    checkout's release runs in the finally but its failure is swallowed,
+    so the body's error is what the caller sees (the acquire context
+    manager would have let the release error REPLACE it)."""
+    pool = _FakePool(release_exc=asyncpg.InterfaceError("release blew up too"))
+    guard = _RetryGuard(pool, "enqueue")
+
+    with pytest.raises(ValueError, match="typed refusal"):
+        async with guard.checkout():
+            raise ValueError("typed refusal the caller must classify")

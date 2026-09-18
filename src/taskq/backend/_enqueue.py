@@ -7,7 +7,7 @@
 wrappers that delegate.
 """
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -45,6 +45,7 @@ from taskq.backend._sql_templates import COPY_ENQUEUE_STATUS, SqlTemplates
 from taskq.backend.clock import Clock
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.connections import (
+    _RetryGuard,  # pyright: ignore[reportPrivateUsage]  # Why: the per-attempt pool discipline the dead-on-acquire retry hands to this module's ops: the annotation seam for the op signatures below; a local copy would drift from the discipline it documents.
     _with_fresh_connection_retry,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the dead-on-acquire retry, shared with the bulk-cancel drain — a local copy would drift from the discipline it documents.
 )
 from taskq.constants import (
@@ -816,6 +817,7 @@ async def _enqueue_on_conn(
     unique_for_lock_timeout_ms: float = DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS,
     idempotency_lock_timeout_ms: float = DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS,
     owns_transaction: bool = False,
+    mark_wrote: Callable[[], None] | None = None,
 ) -> JobRow:
     """Core enqueue logic running on *conn*.
 
@@ -839,6 +841,15 @@ async def _enqueue_on_conn(
     bounded idempotency arm skips the savepoint and the read-then-restore
     of ``lock_timeout`` that only a caller-owned transaction needs. A bare
     connection always qualifies: any scope opened here ends here.
+
+    *mark_wrote*: the retry guard's durability flag, called immediately
+    after the INSERT's acknowledgement: the earliest point at which
+    this enqueue's write is durable (autocommit plain arm) or at least
+    acknowledged (the preflight arms' transaction still has to commit;
+    marking there is conservative, never duplicating). ``None`` on every
+    caller-owned-connection path: no retry wrapper wraps those, so there
+    is no flag to feed. See ``_with_fresh_connection_retry``'s docstring
+    for why the mark is after the ack, not before the write.
     """
     owns_transaction = owns_transaction or not conn.is_in_transaction()
     unique_for_single_flight = args.unique_for is not None and args.identity_key is not None
@@ -870,6 +881,7 @@ async def _enqueue_on_conn(
                 unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
                 idempotency_lock_timeout_ms=idempotency_lock_timeout_ms,
                 owns_transaction=True,
+                mark_wrote=mark_wrote,
             )
     if args.unique_for is not None and args.identity_key is not None:
         # Why a lock at all: what follows is a check-then-insert. Under READ
@@ -1121,6 +1133,15 @@ async def _enqueue_on_conn(
                 args.retry_backoff,
                 args.retry_jitter,
             )
+            if mark_wrote is not None:
+                # The INSERT is acknowledged: on the autocommit paths it is
+                # COMMITTED (a re-run would duplicate the row, #236); on
+                # the savepoint/transaction arms it is at least past the
+                # point where a retry is provably safe. Marked before the
+                # restore / savepoint RELEASE / follow-up SELECT below,
+                # because any of those can be the statement that hits a
+                # parked dead connection and raise InternalClientError.
+                mark_wrote()
             if restore_lock_timeout:
                 # Restore before the savepoint's RELEASE — see above. The
                 # None arm is unreachable (the read ran under the same
@@ -1277,9 +1298,14 @@ async def _enqueue(
     # capped / single-flight preflights, the singleton savepoint, the
     # bounded idempotency wait — so a wrapper here only added BEGIN and
     # COMMIT round trips to every enqueue.
-    async def _attempt() -> JobRow:
+    async def _attempt(guard: _RetryGuard) -> JobRow:
+        # Retry-safety under the wrapper: the guard's flag is marked inside
+        # _enqueue_on_conn at the INSERT's acknowledgement, so a retry only
+        # runs when no write was acknowledged (the poisoned-connection
+        # first-statement case); a parked-connection failure after the
+        # INSERT propagates instead of re-running the enqueue (#236).
         try:
-            async with pool.acquire() as conn:
+            async with guard.checkout() as conn:
                 return await _enqueue_on_conn(
                     conn,
                     sql,
@@ -1289,6 +1315,7 @@ async def _enqueue(
                     max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
                     unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
                     idempotency_lock_timeout_ms=idempotency_lock_timeout_ms,
+                    mark_wrote=guard.mark_wrote,
                 )
         except _LegacyIdempotencyKeyConflictError as exc:
             public = exc.to_public()
@@ -1299,7 +1326,7 @@ async def _enqueue(
         # dedupes cleanly below. If it was genuine cross-scope reuse, the
         # legacy index violates again and the public typed error is raised.
         try:
-            async with pool.acquire() as conn:
+            async with guard.checkout() as conn:
                 return await _enqueue_on_conn(
                     conn,
                     sql,
@@ -1309,6 +1336,7 @@ async def _enqueue(
                     max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
                     unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
                     idempotency_lock_timeout_ms=idempotency_lock_timeout_ms,
+                    mark_wrote=guard.mark_wrote,
                 )
         except _LegacyIdempotencyKeyConflictError as exc:
             logger.warning(
@@ -1319,7 +1347,7 @@ async def _enqueue(
             )
             raise public from exc.original or exc
 
-    return await _with_fresh_connection_retry(_attempt, operation="enqueue")
+    return await _with_fresh_connection_retry(pool, _attempt, operation="enqueue")
 
 
 def _membership_batch_ids(args_list: list[EnqueueArgs]) -> list[UUID]:
@@ -1809,18 +1837,28 @@ async def _enqueue_batch(
             )
         return rows
 
-    async def _attempt_pool() -> tuple[
-        list[JobRow], list[MaxPendingExceededError], dict[str, list[int]]
-    ]:
-        async with pool.acquire() as conn:
+    async def _attempt_pool(
+        guard: _RetryGuard,
+    ) -> tuple[list[JobRow], list[MaxPendingExceededError], dict[str, list[int]]]:
+        # Retry-safety under the wrapper: the flag is marked only after the
+        # transaction's COMMIT is acknowledged: a parked/dead connection
+        # failing any statement INSIDE the transaction rolled the whole
+        # batch back server-side, so a retry re-runs it atomically and
+        # duplicates nothing; after the COMMIT (e.g. the release) the flag
+        # refuses the retry (#236).
+        async with guard.checkout() as conn:
             async with conn.transaction():
-                return await _insert_on_conn(conn, owns_transaction=True)
+                rows_out, refusals_out, refused_out = await _insert_on_conn(
+                    conn, owns_transaction=True
+                )
+        guard.mark_wrote()
+        return rows_out, refusals_out, refused_out
 
-    async def _attempt_pool_with_legacy_retry() -> tuple[
-        list[JobRow], list[MaxPendingExceededError], dict[str, list[int]]
-    ]:
+    async def _attempt_pool_with_legacy_retry(
+        guard: _RetryGuard,
+    ) -> tuple[list[JobRow], list[MaxPendingExceededError], dict[str, list[int]]]:
         try:
-            return await _attempt_pool()
+            return await _attempt_pool(guard)
         except _LegacyIdempotencyKeyConflictError as exc:
             public = exc.to_public()
             # One retry on a fresh transaction (see _enqueue for the rationale).
@@ -1830,13 +1868,13 @@ async def _enqueue_batch(
             # follow-up fetch, while genuine cross-scope reuse violates the legacy
             # index again and surfaces as the public typed error.
             try:
-                return await _attempt_pool()
+                return await _attempt_pool(guard)
             except _LegacyIdempotencyKeyConflictError as exc:
                 logger.warning("scoped-idempotency-migration-pending-batch")
                 raise public from exc.original or exc
 
     rows, refusals, refused_indices = await _with_fresh_connection_retry(
-        _attempt_pool_with_legacy_retry, operation="enqueue_batch"
+        pool, _attempt_pool_with_legacy_retry, operation="enqueue_batch"
     )
     # The pool transaction has committed: raise the partition refusal
     # only after the admitted items are durable. A blind whole-batch
@@ -2180,13 +2218,21 @@ async def _enqueue_batch_fast(
             _raise_refusals(refusals, refused_indices, count)
         return count
 
-    async def _attempt_pool() -> tuple[int, list[MaxPendingExceededError], dict[str, list[int]]]:
-        async with pool.acquire() as conn:
+    async def _attempt_pool(
+        guard: _RetryGuard,
+    ) -> tuple[int, list[MaxPendingExceededError], dict[str, list[int]]]:
+        # Retry-safety under the wrapper: marked only after the COPY
+        # transaction's COMMIT is acknowledged: a mid-transaction failure
+        # rolled the whole COPY back, so the retry re-runs it atomically;
+        # past the COMMIT the flag refuses the retry (#236).
+        async with guard.checkout() as conn:
             async with conn.transaction():
-                return await _copy_on_conn(conn)
+                count_out, refusals_out, refused_out = await _copy_on_conn(conn)
+        guard.mark_wrote()
+        return count_out, refusals_out, refused_out
 
     count, refusals, refused_indices = await _with_fresh_connection_retry(
-        _attempt_pool, operation="enqueue_batch_fast"
+        pool, _attempt_pool, operation="enqueue_batch_fast"
     )
     # Pool transaction committed: the partition refusal raises only after
     # the admitted rows are durable.
