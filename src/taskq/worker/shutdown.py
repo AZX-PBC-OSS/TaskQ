@@ -208,8 +208,29 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
         return 0
 
 
+def _watchdog_exit_tail(settings: "WorkerSettings") -> float:
+    """Seconds past the termination deadline the process can still be alive.
+
+    The deadline trip is not instantaneous. ``ShutdownWatchdog`` checks the
+    deadline once per ``watchdog_dump_interval`` sleep (clipped to the
+    deadline, so real check lag is loop jitter and the dump-interval term
+    is margin), then ``trip()`` renders every live task's stack
+    (synchronous, on the loop thread) and joins the bounded metrics flush
+    (``WATCHDOG_METRICS_FLUSH_TIMEOUT_SECS``) before ``os._exit``. The
+    stack render and the critical log write have no bound of their own, so
+    the fixed slack covers them. A hold that ends at the bare deadline
+    leaves exactly this window in which the row is claimable while the
+    dying process can still touch it: the overlap the hold exists to
+    prevent (#232). The composition itself lives on the settings
+    (``WorkerSettings.release_exit_tail_seconds``) so the disown-path
+    lease floor reads the identical arithmetic; this reader exists so the
+    worker layer's call sites stay named.
+    """
+    return settings.release_exit_tail_seconds
+
+
 def _release_hold(
-    deps: "WorkerDeps",
+    deps: "WorkerDeps | None",
     settings: "WorkerSettings",
     loop: asyncio.AbstractEventLoop,
 ) -> timedelta:
@@ -219,22 +240,31 @@ def _release_hold(
     must not be claimable by another pod until this process cannot touch it
     any more. The shutdown watchdog force-exits at
     ``termination_grace_period`` counted from the shutdown's start, so the
-    hold is the budget's remaining share (zero is fine: the release then
-    lands pending, and a past-budget process is already on borrowed time).
-    With ``watchdog_enabled = False`` there is no guaranteed exit, so the
-    hold is ``lock_lease`` — the bound the lease-expiry path already imposes
-    today, now without spending the attempt.
+    hold is the budget's remaining share plus the exit tail past the
+    deadline itself: the dump-interval lag before the trip is observed and
+    the bounded flush the trip performs before ``os._exit``
+    (:func:`_watchdog_exit_tail`). Zero is fine: the release then lands
+    pending, and a past-budget process is already on borrowed time the tail
+    still covers. With ``watchdog_enabled = False`` there is no guaranteed
+    exit, so the hold is ``lock_lease``: the bound the lease-expiry path
+    already imposes today, now without spending the attempt.
+
+    *deps* may be ``None`` (the consumer's release arm on a bare direct
+    call): there is no shutdown start to anchor on, so the defensive full
+    budget applies: the same bound the watchdog enforces from the first
+    signal.
     """
     if not settings.watchdog_enabled:
         return timedelta(seconds=settings.lock_lease)
-    started_at = deps.shutdown_started_at
+    tail = _watchdog_exit_tail(settings)
+    started_at = deps.shutdown_started_at if deps is not None else None
     if started_at is None:
         # Unreachable through orchestrate_shutdown (DRAINING stamps it
         # first); the defensive shape is the full budget, the same bound
         # the watchdog enforces from the first signal.
-        return timedelta(seconds=settings.termination_grace_period)
+        return timedelta(seconds=settings.termination_grace_period + tail)
     remaining = settings.termination_grace_period - (loop.time() - started_at)
-    return timedelta(seconds=max(0.0, remaining))
+    return timedelta(seconds=max(0.0, remaining) + tail)
 
 
 def _cancel_origin_counts(deps: "WorkerDeps") -> dict[str, int]:
@@ -355,6 +385,17 @@ async def orchestrate_shutdown(
                     job_id=str(active.job_id),
                     error=str(e),
                 )
+                # The local cancel is delivered even when the row-side
+                # write failed: skipping it let a cancellable actor run
+                # untouched into RELEASING and be released-with-hold
+                # while still alive: the exact overlap the hold exists
+                # to prevent (#233). The escalation probe is the row-side
+                # half of FORCING; task.cancel() is the process-side
+                # half, and only both together advance the entry. The
+                # phase stamp mirrors the success path below so the
+                # registry's local ladder stays truthful either way.
+                active.task.cancel()
+                active.cancel_phase = CancelPhase.FORCED
                 continue
             if escalated and active.cancel_origin is CancelOrigin.SHUTDOWN:
                 active.cancel_origin = CancelOrigin.OPERATOR
@@ -383,11 +424,13 @@ async def orchestrate_shutdown(
         # both cancels. The shutdown owes it a release, not a verdict:
         # mark_interrupted hands the row back to the fleet with the claim's
         # attempt increment refunded, HELD behind the rest of this
-        # process's termination budget so no other pod can claim the row
-        # while this one might still touch it. The release is ordered
-        # before the process dies, never after, and the hold closes the
-        # overlap where the row is claimable while the dying process could
-        # still touch it.
+        # process's termination budget: plus the watchdog's exit tail
+        # past the deadline itself (the dump-interval lag before the trip
+        # is observed and the bounded flush before os._exit), so no other
+        # pod can claim the row while this one might still touch it. The
+        # release is ordered before the process dies, never after, and the
+        # hold closes the overlap where the row is claimable while the
+        # dying process could still touch it.
         deps.shutdown_phase = ShutdownPhase.RELEASING
         hold = _release_hold(deps, settings, loop)
         _log.info(
@@ -435,6 +478,34 @@ async def orchestrate_shutdown(
             except asyncio.CancelledError:
                 continue
             except Exception as exc:
+                # No retry, no disown. The row stays running and locked.
+                # Its recovery is the lease-expiry reclaim sweep. What
+                # keeps that fallback safe is NOT a settings-load
+                # rejection. No such validation exists, by design. Two
+                # real protections do the work, and both live in code:
+                #
+                # 1. The parked consumer's later release write usually
+                #    saves the row outright. That park is lease-capped
+                #    (WorkerSettings.release_park_lease_cap, applied in
+                #    _actor_exit_wait_budget): the cap is exactly the
+                #    bound that puts the parked release write ahead of the
+                #    earliest lease reclaim for every config that loads.
+                #    Do not remove the cap on the belief that startup
+                #    validation catches a bad config here. It does not.
+                #    With the cap gone, a lease shorter than the
+                #    termination budget lets the sweep re-pend this row
+                #    while its actor thread still executes.
+                # 2. When both writes fail (this one and the consumer's,
+                #    whose exhausted retries disown the row), the residue
+                #    is the WorkerSettings.release_disown_lease_floor
+                #    bound. That one is surfaced as a startup warning by
+                #    _emit_startup_warnings, again not a rejection.
+                #
+                # If you are tempted to add a retry here, first read the
+                # mark_cancelled arm's comment in _consumer.py: a retry
+                # wait inside this phase races the watchdog's deadline and
+                # the teardown that deadline bounds. The sweep is the
+                # designed backstop.
                 _log.warning(
                     "release-pg-write-failed",
                     job_id=str(active.job_id),

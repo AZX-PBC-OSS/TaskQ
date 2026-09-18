@@ -14,7 +14,7 @@ direction.
 
 import asyncio
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AsyncExitStack
 from datetime import timedelta
 from typing import TYPE_CHECKING, Final, cast
@@ -29,6 +29,9 @@ from pydantic import BaseModel
 from taskq._di.registry import ProviderRegistry
 from taskq._di.scope import Scope
 from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, build_actor_scope
+from taskq._shield import (
+    _log_detached_failure,  # pyright: ignore[reportPrivateUsage]  # Why: the shared detached-shield-outcome retriever; _run_sync_actor_tracked's thread task is a detached inner exactly like a terminal write (see that helper's docstring).
+)
 from taskq._validation import validate_actor_payload
 from taskq.actor import ActorRef
 from taskq.backend._protocol import Backend, ConnLike, JobRow
@@ -69,6 +72,9 @@ from taskq.worker._handlers import (
     _handle_generic_exception,  # pyright: ignore[reportPrivateUsage]  # Why: _handle_generic_exception implements the same exception→retry/fail routing as consume_one_job's inner handlers; dispatch_one_job needs it for DI-resolution failures that escape consume_one_job's own try/except.
     _log_terminal_write_failed,  # pyright: ignore[reportPrivateUsage]  # Why: same rationale as _TERMINAL_WRITE_INFRA_EXCEPTIONS above.
 )
+from taskq.worker._watchdog import (  # pyright: ignore[reportPrivateUsage]  # Why: the tracked-handle registry is the dispatch layer's designated writer surface (see register_tracked_actor_handle's contract); no cycle: _watchdog imports nothing from the worker consumer side.
+    register_tracked_actor_handle,
+)
 from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.deps import POOL_INFRA_EXCEPTIONS, WorkerDeps
 
@@ -92,6 +98,51 @@ def _redis_client_type() -> "type[redis_async.Redis] | None":
 
 
 _REDIS_CLIENT_TYPE: Final["type[redis_async.Redis] | None"] = _redis_client_type()
+
+
+async def _run_sync_actor_tracked(
+    fn: Callable[..., object],
+    actor_kwargs: dict[str, object],
+    ctx: JobContext[BaseModel],
+) -> object:
+    """Run a sync actor in the default executor with an exit-tracked handle.
+
+    ``asyncio.to_thread`` semantics exactly: same default executor, same
+    contextvars copy: plus the one thing a bare await can never offer:
+    the executor work is a task whose handle lands on the job's context
+    (``ctx._sync_actor_task``), so a shutdown that cancels this await can
+    later tell "the await was cancelled" (always true for a sync actor;
+    the thread is unreachable from the loop) from "the actor body exited"
+    (true only once the thread finished). Without the handle, every
+    consumer-side release assumed the actor unwound with the await and
+    handed the row to the fleet while the thread was still mid-body: the
+    double-execution overlap #232 describes.
+
+    ``asyncio.shield``, not a bare await: the cancellation must detach the
+    thread task rather than deliver to it: the executor thread cannot be
+    interrupted either way, and a cancelled task would end in a
+    CancelledError the parked shutdown path could mistake for the body's
+    own exit. The shield leaves the task running to the thread's real
+    outcome; the detached outcome is retrieved (and a late actor exception
+    logged) by the same done-callback discipline
+    :func:`taskq._shield.shield_with_retrieval` applies to a detached
+    terminal write, so an actor that fails in the thread after a cancel is
+    a visible signal, not asyncio "exception never retrieved" noise.
+    """
+    thread_task: asyncio.Task[object] = asyncio.ensure_future(asyncio.to_thread(fn, **actor_kwargs))
+    ctx._set_sync_actor_task(thread_task)
+    # The process-wide twin of the ctx stash: the shutdown path's exit
+    # gate (await_tracked_actor_reap) reads this registry to decide
+    # whether the watchdog may be disarmed: a live thread here keeps it
+    # armed past the TaskGroup, which is what makes the release hold's
+    # exit window true by construction.
+    register_tracked_actor_handle(thread_task)
+    try:
+        return await asyncio.shield(thread_task)
+    except asyncio.CancelledError:
+        thread_task.add_done_callback(_log_detached_failure)  # pyright: ignore[reportPrivateUsage]  # Why: the one shared detached-outcome retriever (taskq._shield): the sync actor task is a detached shield inner exactly like a terminal write.
+        raise
+
 
 # Why the shared pool-infra family (defined in taskq.worker.deps, the
 # module that owns the pools): the acquire below runs no queries, so any
@@ -667,7 +718,11 @@ async def dispatch_one_job(
                             if actor_ref.wants_ctx:
                                 actor_kwargs["ctx"] = ctx_arg
                             if actor_ref.is_sync:
-                                return await asyncio.to_thread(actor_ref.fn, **actor_kwargs)
+                                return await _run_sync_actor_tracked(
+                                    actor_ref.fn,
+                                    actor_kwargs,
+                                    ctx_arg,
+                                )
                             return await actor_ref.fn(**actor_kwargs)  # type: ignore[no-any-return]  # Why: actor_ref.fn is typed Callable[..., object]; runtime result is R.
 
                         rl_registry: RateLimitRegistry | None = None

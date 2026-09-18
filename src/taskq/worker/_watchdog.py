@@ -45,6 +45,7 @@ import os
 import sys
 import threading
 import time
+import weakref
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -52,6 +53,7 @@ import structlog
 from opentelemetry import metrics as otel_metrics
 from opentelemetry.metrics import CallbackOptions, Observation
 
+from taskq.constants import WATCHDOG_METRICS_FLUSH_TIMEOUT_SECS
 from taskq.obs import get_logger, get_meter, record_loop_stall_attribution
 from taskq.worker._stall_tally import (
     KIND_BLOCKING_CALL,
@@ -65,8 +67,11 @@ __all__ = [
     "LoopLagWatchdog",
     "LoopLiveness",
     "ShutdownWatchdog",
+    "await_tracked_actor_reap",
     "dump_task_stacks",
+    "live_tracked_actor_handles",
     "loop_watchdog_loop",
+    "register_tracked_actor_handle",
     "trip",
 ]
 
@@ -90,8 +95,10 @@ _StackSample = tuple[_StackFrame, ...]
 # timeout_millis, and self-bounds at 10s+), so the
 # flush runs on a daemon thread with this join deadline: a wedged exporter
 # costs at most this many seconds, never more, and the thread dies with
-# the process on os._exit.
-_METRICS_FLUSH_TIMEOUT_SECS = 2.0
+# the process on os._exit. Canonical value: taskq.constants (it is one of
+# the three terms of the release hold's exit tail, which the settings
+# layer composes as WorkerSettings.release_exit_tail_seconds).
+_METRICS_FLUSH_TIMEOUT_SECS = WATCHDOG_METRICS_FLUSH_TIMEOUT_SECS
 
 # Default lower bound on any staleness budget, overridden per worker by
 # TASKQ_WATCHDOG_STALE_FLOOR. Kept as the single source of the documented
@@ -318,20 +325,126 @@ def _flush_metrics_before_exit() -> None:
 
 def trip(detector: str, reason: str) -> None:
     """Critical log + metric + dump + force-exit. Never returns."""
-    _watchdog_trips.add(1, {"detector": detector})
-    _log.critical(
-        "worker-watchdog-trip",
-        kind="worker_watchdog_trip",
-        detector=detector,
-        reason=reason,
-    )
     try:
+        # Inside the try, deliberately: a raising OTel counter add or a
+        # log sink on a broken pipe must not kill this task before the
+        # exit. The exit is the whole point of the trip. Everything
+        # around it is best-effort observability. The tracked-exit gate
+        # in the worker's shutdown path relies on this function always
+        # reaching os._exit.
+        _watchdog_trips.add(1, {"detector": detector})
+        _log.critical(
+            "worker-watchdog-trip",
+            kind="worker_watchdog_trip",
+            detector=detector,
+            reason=reason,
+        )
         dump_task_stacks(reason, detector=detector)
     finally:
-        sys.stderr.flush()
-        sys.stdout.flush()
-        _flush_metrics_before_exit()
+        # Nothing before the exit may be allowed to raise: a broken pipe
+        # on the flushes would otherwise skip the exit the trip exists
+        # for, so the observability tail is suppressed, not trusted.
+        with contextlib.suppress(BaseException):
+            sys.stderr.flush()
+            sys.stdout.flush()
+            _flush_metrics_before_exit()
         os._exit(EXIT_WATCHDOG)
+
+
+# ── Tracked actor handles: the exit bound a released row's hold models ──
+#
+# A sync actor's executor thread cannot be cancelled from the loop, and a
+# transactional actor's tx task unwinds asynchronously after its cancel.
+# Both leave a handle behind (JobContext._sync_actor_task /
+# _tx_unwind_task) whose completion is the actor's *provable exit*: the
+# event the consumer's release park waits on and the release hold's window
+# is sized against. This registry is the process-wide view of those
+# handles: the shutdown path keeps the watchdog armed until every one of
+# them is reaped (or the deadline trip kills the process, and the threads
+# with it), which is what makes "the row becomes claimable only once this
+# process is provably gone" true by construction rather than by hope. See
+# await_tracked_actor_reap for the shutdown-side half.
+
+_tracked_actor_handles: "weakref.WeakSet[asyncio.Task[object]]" = weakref.WeakSet()
+"""Live tracked actor handles (sync-actor thread tasks, transactional
+unwind tasks). Weak: a completed task nobody references drops out on its
+own, and a *pending* task is kept alive by the await chain that holds it
+(the executor future's callbacks, the ctx stash), so membership while
+alive is guaranteed without any unregister discipline to forget."""
+
+
+def register_tracked_actor_handle(task: "asyncio.Task[object]") -> None:
+    """Record a tracked actor handle. Called by the dispatch layer when a
+    sync actor's body starts and by the transactional consumer when it
+    detaches a still-unwinding tx task: the two designated writers, the
+    same contract the matching JobContext setters document."""
+    _tracked_actor_handles.add(task)
+
+
+def live_tracked_actor_handles() -> "list[asyncio.Task[object]]":
+    """The tracked actor handles that have not completed yet.
+
+    Done-but-not-yet-collected entries are filtered out: only a pending
+    handle means an actor body (or its transactional unwind) is still
+    executing in this process.
+    """
+    return [t for t in _tracked_actor_handles if not t.done()]
+
+
+_REAP_POLL_INTERVAL_SECS = 0.1
+"""Cadence of the reap wait's liveness poll: the same quantum the shutdown
+orchestrator's own grace loops use."""
+
+
+async def await_tracked_actor_reap() -> bool:
+    """Block until every tracked actor handle is reaped.
+
+    The shutdown path's exit gate: the worker's TaskGroup has already
+    exited when this runs, so nothing on the loop can deliver a cancel to
+    an executor thread: the only exits from this wait are (a) every
+    tracked handle completing (the actor bodies finished on their own) or
+    (b) the caller's watchdog, still armed, tripping at its deadline and
+    ``os._exit``-ing the process with the threads inside it. Both are
+    inside the window a release hold models (deadline + exit tail), which
+    is the point: without this gate the clean path disarmed the watchdog
+    and then parked in the default executor's join
+    (``THREAD_JOIN_TIMEOUT``, 300s) waiting for the very thread the hold
+    assumed was gone: a released row became claimable while its actor
+    still ran (the double-run #232 constructed at the default budgets
+    with an ordinary long sync actor).
+
+    The thread's post-release completion accomplishes nothing: its row
+    was already released-with-hold and the fleet re-attempts the work, so
+    the trip losing the tail of an outlived actor is the cheap end of the
+    trade.
+
+    Returns:
+        ``True`` when at least one handle was live and the wait actually
+        parked; ``False`` when nothing needed reaping (the common clean
+        shutdown, which pays nothing).
+    """
+    handles = live_tracked_actor_handles()
+    if not handles:
+        return False
+    _log.warning(
+        "shutdown-tracked-actor-reap-wait",
+        kind="shutdown_tracked_actor_reap",
+        handle_count=len(handles),
+        handles=[t.get_name() for t in handles],
+        note=(
+            "actor handle(s) outlived the TaskGroup teardown; the shutdown "
+            "watchdog stays armed while they are reaped (the deadline trip "
+            "is the exit bound the release hold already models)"
+        ),
+    )
+    # Poll-for-reap with the armed watchdog as the hard bound is the
+    # intentional design: no Event can be set from an executor thread's
+    # completion without a done-callback per handle, and the poll matches
+    # the orchestrator's own grace-loop quantum (its loops carry the same
+    # suppression for the same reason).
+    while live_tracked_actor_handles():  # noqa: ASYNC110
+        await asyncio.sleep(_REAP_POLL_INTERVAL_SECS)
+    return True
 
 
 class LoopLiveness:
@@ -438,7 +551,11 @@ class ShutdownWatchdog:
     front half is within expectations and gets silence; one in its back
     half is already abnormal enough to observe, and a genuinely hung
     shutdown still accumulates dumps right up to the trip. On deadline:
-    trip. Cancelled on clean exit.
+    trip: with a distinct reason when the straggler is a tracked actor
+    handle (a thread the cancel could never reach) rather than a stall.
+    Cancelled on clean exit, AFTER the tracked-actor reap gate (see
+    :func:`await_tracked_actor_reap`): the watchdog is what bounds the
+    reap, so it must outlive the TaskGroup whenever a tracked actor does.
     """
 
     def __init__(
@@ -528,12 +645,43 @@ class ShutdownWatchdog:
         while True:
             elapsed = self._clock() - t0
             if elapsed >= self._deadline:
+                # The distinct reason matters: a live tracked actor handle
+                # at the deadline is NOT a stall: the shutdown completed,
+                # the TaskGroup exited, and an executor thread the cancel
+                # could never reach is still running its body. The trip is
+                # the designed exit for exactly that shape (the release
+                # hold's window already covers it), and an operator reading
+                # the dump must not chase a phantom deadlock.
+                tracked = live_tracked_actor_handles()
+                if tracked:
+                    trip(
+                        "shutdown-deadline",
+                        f"tracked-actor-outlived-teardown: {len(tracked)} tracked actor "
+                        f"handle(s) (sync-actor executor thread(s) / transactional "
+                        f"unwind(s)) still live {elapsed:.1f}s into shutdown (deadline "
+                        f"{self._deadline:.1f}s); force-exiting inside the release "
+                        f"hold's window: the row was already released-with-hold and "
+                        f"the fleet re-attempts the work, so ending the outlived "
+                        f"attempt here loses nothing",
+                    )
                 trip(
                     "shutdown-deadline",
                     f"shutdown still incomplete {elapsed:.1f}s after shutdown_event "
                     f"(deadline {self._deadline:.1f}s)",
                 )
-            await asyncio.sleep(self._dump_interval)
+            # Clipped to the deadline: the check must not lag the deadline
+            # by a full dump interval. The release hold's exit tail models
+            # a full dump interval of check lag as its margin: an
+            # unclipped sleep consumes that margin exactly (a deadline
+            # passing just after a check is observed up to
+            # dump_interval late, and deadline + lag + flush then EQUALS
+            # the hold's scheduled_at, zero margin): while a clipped
+            # final sleep lands the check on the deadline and keeps the
+            # whole dump-interval term as real margin. Straggler dumps
+            # keep their cadence except possibly one fewer dump in the
+            # final partial interval.
+            remaining = self._deadline - (self._clock() - t0)
+            await asyncio.sleep(min(self._dump_interval, max(0.0, remaining)))
             # Re-read the clock AFTER the sleep so the gate reflects when
             # the dump would actually fire, not when the iteration began.
             if self._clock() - t0 < self._dump_gate_secs:
