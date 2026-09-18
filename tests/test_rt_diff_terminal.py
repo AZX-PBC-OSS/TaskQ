@@ -89,15 +89,6 @@ async def _failed_or_retry_arms(side: DiffSide) -> None:
     row = await side.mark_failed_or_retry("retry", "w1", retry_delay_s=10.0)
     side.record("retry_returned", [side.token_of(row.id), row.status])
 
-    # Retry arm, zero delay -> floored to MIN_DEFERRAL_INTERVAL (1 s) ->
-    # scheduled: the anti-monopolisation floor PG's mark_retry params CTE
-    # pins (GREATEST($3, MIN_DEFERRAL_INTERVAL)), the same bound the
-    # deferral arms and the decision layer (retry.py) apply.
-    await side.enqueue("quick", scheduled_in=-39.0, max_attempts=3)
-    await side.dispatch("w1", ["default"], limit=1)
-    row = await side.mark_failed_or_retry("quick", "w1", retry_delay_s=0.0)
-    side.record("zero_delay_returned", [side.token_of(row.id), row.status])
-
     # Deadline arm: the next retry point passes schedule_to_close.
     await side.enqueue("late", scheduled_in=-38.0, stc_in=5.0, max_attempts=3)
     await side.dispatch("w1", ["default"], limit=1)
@@ -109,6 +100,19 @@ async def _failed_or_retry_arms(side: DiffSide) -> None:
     await side.dispatch("w1", ["default"], limit=1)
     row = await side.mark_failed_or_retry("dead", "w1", retry_delay_s=None)
     side.record("failed_returned", [side.token_of(row.id), row.status])
+
+    # Retry arm, zero delay -> floored to MIN_DEFERRAL_INTERVAL (1 s) ->
+    # scheduled: the anti-monopolisation floor PG's mark_retry params CTE
+    # pins (GREATEST($3, MIN_DEFERRAL_INTERVAL)), the same bound the
+    # deferral arms and the decision layer (retry.py) apply. This block
+    # runs LAST: the quick pin asserts a 1 s backoff against the
+    # scenario-end reference, so its write must sit at that reference;
+    # earlier placement let runner latency between it and the reference
+    # eat the 0.5 s bucket fence and read the floor backoff as "now".
+    await side.enqueue("quick", scheduled_in=-39.0, max_attempts=3)
+    await side.dispatch("w1", ["default"], limit=1)
+    row = await side.mark_failed_or_retry("quick", "w1", retry_delay_s=0.0)
+    side.record("zero_delay_returned", [side.token_of(row.id), row.status])
 
 
 async def test_diff_mark_failed_or_retry_arms(pg_dsn: str) -> None:
