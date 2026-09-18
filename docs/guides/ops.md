@@ -507,6 +507,13 @@ disabled, or no lifetime cap. These knobs apply **only to pools TaskQ builds**: 
 pools (`WorkerConnections` factories, a caller-supplied `pool=`) must set the same two
 `create_pool` kwargs themselves — TaskQ cannot resize a pool it did not build.
 
+One deployment must set them to `0` regardless: behind a transaction-mode pooler
+(`TASKQ_PG_IS_POOLED=true`; PgBouncer `pool_mode=transaction` and friends remap server connections
+between statements, so a cached prepared statement's Parse and Bind can land on different server
+connections and fail with SQLSTATE `26000`). TaskQ then forces `statement_cache_size=0` and
+`max_cached_statement_lifetime=0` on every pool it builds, overriding these two knobs, and treats
+the pooler-remap statement errors as transient.
+
 **Autovacuum overrides for the hot tables.** `jobs` and `job_events` turn over hard; the default
 `autovacuum_vacuum_scale_factor` (0.2 of the table) lets bloat accumulate until vacuums are rare
 and huge. Per-table overrides, tuned for queue churn:

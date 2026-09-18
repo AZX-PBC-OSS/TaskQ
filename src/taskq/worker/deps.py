@@ -117,6 +117,37 @@ _TCP_KEEPCNT = 3
 # startup-packet values do; a post-connect ``SET`` does not), and ride the
 # direct DSN only.
 
+# ── Transaction-mode pooler hygiene (TASKQ_PG_IS_POOLED) ───────────────
+#
+# A worker whose DSN(s) route through a transaction-mode pooler (PgBouncer
+# pool_mode=transaction) cannot keep asyncpg's per-connection prepared-
+# statement cache: the pooler remaps server connections between statements,
+# and a name cached on one lands on another where it was never prepared
+# (SQLSTATE 26000 InvalidSQLStatementNameError, or 42P05
+# DuplicatePreparedStatementError on the re-Prepare). Two consequences,
+# both gated on the operator's TASKQ_PG_IS_POOLED declaration - a pooler
+# speaks plain Postgres on the wire, so no client can detect it:
+#
+# 1. Every pool TaskQ builds passes statement_cache_size=0 and
+#    max_cached_statement_lifetime=0 instead of the tuned pair: the
+#    override lives in taskq.connections.statement_cache_kwargs, which is
+#    the single resolver every TaskQ-built pool's create_pool call reads
+#    through (the dispatcher, heartbeat, and worker role pools below, the
+#    per-slot pool, the client pool, the admin UI pool). Bring-your-own
+#    pools keep their own kwargs (the caller-owned doctrine).
+# 2. The producer loop classifies the pooler-remap statement errors as
+#    transient (taskq.worker._transient.is_transient_pg_error, pooled=...),
+#    so a remap storm degrades a dispatch round to a warning and a retry
+#    next tick instead of a loud dispatch-batch-error per tick.
+#
+# Both halves are belt-and-suspenders for each other: the hygiene makes
+# the error impossible on TaskQ-built pools, and the classification covers
+# shapes the hygiene cannot reach (a caller-owned pool behind a pooler
+# that TaskQ was never able to re-kwarg). Leave the knob False when every
+# DSN reaches Postgres directly - the tuned cache is the better default
+# there, and 26000 stays a loud bug.
+
+
 _ADMISSION_LOCK_BUDGET_FIELDS: Final[tuple[str, ...]] = (
     "token_bucket_lock_timeout_ms",
     "sliding_window_lock_timeout_ms",
@@ -612,7 +643,10 @@ async def open_worker_deps(
         # that DSN is overridden) or when the role itself is overridden.
         # Statement-cache values resolve through statement_cache_kwargs so
         # TASKQ_STATEMENT_CACHE_SIZE / TASKQ_MAX_CACHED_STATEMENT_LIFETIME
-        # apply; the pair is still forwarded as explicit kwargs.
+        # apply; the pair is still forwarded as explicit kwargs. Under
+        # TASKQ_PG_IS_POOLED the resolver overrides the pair to 0/0 - the
+        # transaction-mode pooler hygiene documented at the top of the
+        # module.
         _stmt_kwargs = statement_cache_kwargs(settings)
         dispatcher_dsn_factory: PoolFactory | None = None
         heartbeat_dsn_factory: PoolFactory | None = None

@@ -1926,6 +1926,58 @@ def test_transient_pg_error_taxonomy_facts() -> None:
     assert not issubclass(asyncpg.InvalidPasswordError, TRANSIENT_PG_ERRORS)
 
 
+def test_pooled_transient_taxonomy_facts() -> None:
+    """The pooled companion set's classification facts.
+
+    26000/42P05 are statement-name errors: on a direct connection only an
+    asyncpg bug can produce them (the driver's own cache authors every
+    statement name), which is why they live OUTSIDE TRANSIENT_PG_ERRORS
+    and join the transient set only through the pooled gate.
+    """
+    from taskq.worker._transient import (
+        POOLED_TRANSIENT_PG_ERRORS,
+        TRANSIENT_PG_ERRORS,
+    )
+
+    assert asyncpg.InvalidSQLStatementNameError.sqlstate == "26000"
+    assert asyncpg.DuplicatePreparedStatementError.sqlstate == "42P05"
+    for cls in POOLED_TRANSIENT_PG_ERRORS:
+        assert not issubclass(cls, asyncpg.PostgresConnectionError), (
+            f"{cls.__name__} entered the connection family; re-check the pooled set"
+        )
+        assert not issubclass(cls, OSError), (
+            f"{cls.__name__} is now an OSError; re-check the pooled set"
+        )
+        assert not issubclass(cls, TRANSIENT_PG_ERRORS), (
+            f"{cls.__name__} needs no pooled gate anymore; fold it into the base set"
+        )
+
+
+def test_sqlstate_26000_classifies_transient_under_pooled_and_not_direct() -> None:
+    """The pooled gate: 26000/42P05 are transient ONLY when the deployment
+    declares a transaction-mode pooler (TASKQ_PG_IS_POOLED)."""
+    from taskq.worker._transient import is_transient_pg_error
+
+    remapped = asyncpg.InvalidSQLStatementNameError("unnamed prepared statement does not exist")
+    duplicate = asyncpg.DuplicatePreparedStatementError("prepared statement _pq_42 already exists")
+    assert is_transient_pg_error(remapped, pooled=True)
+    assert is_transient_pg_error(duplicate, pooled=True)
+    assert not is_transient_pg_error(remapped, pooled=False)
+    assert not is_transient_pg_error(duplicate, pooled=False)
+
+
+def test_pooled_gate_extends_never_narrows_the_transient_set() -> None:
+    """The pooled flag only widens the classification: base-transient
+    shapes stay transient either way, and permanent refusals (auth) are
+    never laundered into retries by the pooled declaration."""
+    from taskq.worker._transient import is_transient_pg_error
+
+    conn_gone = asyncpg.ConnectionDoesNotExistError("gone")
+    assert is_transient_pg_error(conn_gone, pooled=False)
+    assert is_transient_pg_error(conn_gone, pooled=True)
+    assert not is_transient_pg_error(asyncpg.InvalidPasswordError("revoked"), pooled=True)
+
+
 _TRANSIENT_SHAPES: list[tuple[str, object]] = [
     ("TimeoutError", lambda: TimeoutError("local deadline")),
     ("OSError", lambda: OSError("socket died")),

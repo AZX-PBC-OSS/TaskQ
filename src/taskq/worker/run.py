@@ -61,7 +61,7 @@ from taskq.ratelimit.refs import KeyedReservationRef
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.settings import WorkerSettings
 from taskq.worker._bootstrap import worker_main, worker_main_async
-from taskq.worker._transient import TRANSIENT_PG_ERRORS
+from taskq.worker._transient import TRANSIENT_PG_ERRORS, is_transient_pg_error
 from taskq.worker.cancel import make_cancel_controller
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.dispatch import SlotPoolAcquireError, dispatch_one_job
@@ -254,6 +254,10 @@ async def producer_loop(
     queues = settings.queues
     lock_lease_td = timedelta(seconds=settings.lock_lease)
     notify_enabled = getattr(settings, "notify_enabled", False)
+    # Same getattr-with-default convention as notify_enabled above: the
+    # producer-loop unit tests drive SimpleNamespace stand-ins for
+    # WorkerSettings, and the pooled flag defaults to False (direct DSN).
+    pooled = bool(getattr(settings, "pg_is_pooled", False))
     poll_interval = settings.notify_poll_interval if notify_enabled else settings.poll_interval
     rng_source = rng if rng is not None else _PRODUCER_RNG
     # Wakes this producer at the consumers' two slot-release points: a
@@ -355,8 +359,23 @@ async def producer_loop(
                     limit=available,
                     lock_lease=lock_lease_td,
                 )
-            except Exception:
-                _producer_log.exception("dispatch-batch-error", worker_id=str(worker_id))
+            except Exception as exc:
+                # Transient shapes degrade quietly: log at warning and
+                # retry next tick (the TRANSIENT_PG_ERRORS doctrine; the
+                # pooled extension covers a transaction-mode pooler
+                # remapping a prepared statement's server connection out
+                # from under a cached name, SQLSTATE 26000/42P05, declared
+                # via TASKQ_PG_IS_POOLED). Everything else keeps the loud,
+                # exception-level record: a real bug must stay visible.
+                if is_transient_pg_error(exc, pooled=pooled):
+                    _producer_log.warning(
+                        "dispatch-batch-transient",
+                        worker_id=str(worker_id),
+                        error_class=type(exc).__name__,
+                        error=str(exc),
+                    )
+                else:
+                    _producer_log.exception("dispatch-batch-error", worker_id=str(worker_id))
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.sleep(poll_interval)
                 continue

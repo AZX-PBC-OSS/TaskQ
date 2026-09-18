@@ -183,6 +183,40 @@ async def test_dsn_built_pool_resolves_statement_cache_from_settings_env(
     assert captured["max_cached_statement_lifetime"] == 7200
 
 
+async def test_pooled_knob_builds_pools_with_statement_cache_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TASKQ_PG_IS_POOLED=true → the TaskQ-built pool's create_pool kwargs are 0/0.
+
+    Layer 2 of the pooler hygiene: a transaction-mode pooler remaps server
+    connections between statements, so a cached prepared statement's Parse
+    and Bind can land on different server connections (SQLSTATE 26000).
+    The only safe cache size is 0, and the resolver override is what a
+    TaskQ-built pool actually forwards - pinned at a representative
+    construction site so a call site cannot bypass the override by
+    forwarding its own stale pair.
+    """
+    monkeypatch.setenv("TASKQ_PG_IS_POOLED", "true")
+    monkeypatch.setenv("TASKQ_STATEMENT_CACHE_SIZE", "1024")
+    monkeypatch.setenv("TASKQ_MAX_CACHED_STATEMENT_LIFETIME", "7200")
+    monkeypatch.setenv("TASKQ_PG_DSN_DIRECT", "postgresql://taskq:taskq@localhost:5432/taskq")
+    settings = WorkerSettings.load(read_dotfiles=False)
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_create_pool(**kwargs: Any) -> asyncpg.Pool:
+        captured.update(kwargs)
+        return MagicMock(spec=asyncpg.Pool)  # type: ignore[return-value]
+
+    monkeypatch.setattr(asyncpg, "create_pool", _fake_create_pool)
+
+    pool = await _slot_pool_factory(settings, None)()
+
+    assert pool is not None
+    assert captured["statement_cache_size"] == 0
+    assert captured["max_cached_statement_lifetime"] == 0
+
+
 # ── statement-cache settings wiring ────────────────────────────────────
 
 
