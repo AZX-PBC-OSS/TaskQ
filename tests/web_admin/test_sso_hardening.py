@@ -11,6 +11,8 @@ from taskq.web.admin.auth._session import (  # pyright: ignore[reportPrivateUsag
     SessionManager,
 )
 
+pytestmark = [pytest.mark.saml]
+
 _CLAIMS = IdentityClaims(subject="u1", email=None, groups=frozenset(), raw={})
 
 

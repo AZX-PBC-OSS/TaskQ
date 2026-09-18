@@ -81,6 +81,8 @@ from taskq.web.admin.auth._session import (
     create_auth_dependency,
 )
 
+pytestmark = [pytest.mark.fastapi]
+
 
 @pytest.fixture(autouse=True)
 def _admin_dev_env(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]  # Why: pytest autouse fixture consumed implicitly by the runner; pyright does not track fixture usage.

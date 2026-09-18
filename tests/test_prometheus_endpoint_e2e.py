@@ -31,6 +31,8 @@ import pytest
 
 from taskq.testing.fixtures import ModulePgSchema
 
+pytestmark = [pytest.mark.otel]
+
 pytest.importorskip("fastapi")
 pytest.importorskip("opentelemetry.exporter.prometheus")
 

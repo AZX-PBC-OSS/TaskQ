@@ -25,6 +25,8 @@ from taskq.web.admin.ops import _fetch_redis_rl_state
 
 from . import StubBackend, StubConnection, StubPipelinedRedis, StubRecord, _stub_job_row
 
+pytestmark = [pytest.mark.fastapi]
+
 
 def _get_csrf_token(client: Any) -> str:
     """GET the queues page to set the CSRF cookie, then return the token value."""

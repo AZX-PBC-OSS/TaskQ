@@ -21,9 +21,13 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+
+pytest.importorskip("fastapi", reason="requires taskq[fastapi]")
 from fastapi import HTTPException
 
 from taskq.web import _sse_limit
+
+pytestmark = [pytest.mark.fastapi]
 
 _JOB_ID = UUID("00000000-0000-0000-0000-000000000001")
 

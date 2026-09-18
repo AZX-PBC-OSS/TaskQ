@@ -359,6 +359,7 @@ async def _window_entry_count(pool: asyncpg.Pool, schema: str, bucket: str) -> i
 # ── PIN 4 — the admin mutating-route surface stays gated ────────────
 
 
+@pytest.mark.fastapi
 def test_every_mutating_admin_route_is_gated_by_actions_and_csrf() -> None:
     """PIN (surface sweep): EVERY state-changing route under
     ``taskq.web.admin`` checks ``settings.admin_actions_enabled`` and depends

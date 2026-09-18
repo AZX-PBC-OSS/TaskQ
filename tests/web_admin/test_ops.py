@@ -21,6 +21,9 @@ from . import StubBackend, StubPipelinedRedis, StubRecord, _stub_job_row, _StubP
 # ── Schedules, rate-limits, reservations routes: discovery ───────────────
 
 
+pytestmark = [pytest.mark.fastapi]
+
+
 def test_schedules_route_registered_via_discovery(
     monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
 ) -> None:

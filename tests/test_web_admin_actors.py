@@ -12,12 +12,16 @@ cookie; POST must include it as the csrf_token form field.
 import asyncpg
 import httpx
 import pytest
+
+pytest.importorskip("fastapi", reason="requires taskq[fastapi]")
 from fastapi import FastAPI
 
 from taskq.actor_config import ActorConfig
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.web.admin import create_router, setup_admin_state
 from taskq.worker.startup import sync_actor_config
+
+pytestmark = [pytest.mark.fastapi]
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 

@@ -30,6 +30,7 @@ from tests._sso_saml_crypto import (
 )
 from tests.test_sso_saml import _do_login, _make_app
 
+pytestmark = [pytest.mark.saml]
 _SSO_URL = "https://idp.test.invalid/sso"
 _SESSION_SECRET = "s" * 32
 _TEST_BASE_URL = "http://testserver.invalid"

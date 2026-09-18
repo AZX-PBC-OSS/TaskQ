@@ -17,6 +17,7 @@ from taskq.worker.health import build_ready_body, compute_health
 from taskq.worker.shutdown import ShutdownPhase
 from tests._import_discipline import imports_guarded_by_try, module_level_imports
 
+pytestmark = [pytest.mark.fastapi]
 pytestmark = pytest.mark.asyncio
 
 

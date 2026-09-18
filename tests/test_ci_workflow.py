@@ -537,7 +537,7 @@ def test_every_job_that_runs_the_admin_js_tests_installs_node() -> None:
     for path in _WORKFLOWS:
         for job_name, job in _jobs(path).items():
             scripts = _run_scripts(job)
-            if "pytest" not in scripts or "tests/e2e" in scripts or '-m "slow"' in scripts:
+            if "pytest" not in scripts or "tests/e2e" in scripts or '-m "slow' in scripts:
                 continue
             if not any("actions/setup-node" in str(step.get("uses", "")) for step in _steps(job)):
                 offenders.append(f"{path.name}:{job_name}")

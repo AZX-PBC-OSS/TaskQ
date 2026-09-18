@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 from taskq.web._pool import BoundedPool
 from taskq.web.admin import create_router, setup_admin_state
 
+pytestmark = [pytest.mark.fastapi]
 _WEB = Path(__file__).resolve().parents[2] / "src" / "taskq" / "web"
 
 # Modules whose functions are request handlers or run inside one. The LISTEN

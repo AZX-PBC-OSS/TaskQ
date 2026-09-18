@@ -20,6 +20,9 @@ from taskq.aws import RDS_TOKEN_LIFETIME_SECONDS, RdsIamProvider, fetch_rds_iam_
 # ── fetch_rds_iam_token ────────────────────────────────────────────────
 
 
+pytestmark = [pytest.mark.aws]
+
+
 def test_fetch_rds_iam_token_calls_generate_db_auth_token() -> None:
     """fetch_rds_iam_token delegates to the boto3 client's generate_db_auth_token."""
     fake_client = MagicMock()

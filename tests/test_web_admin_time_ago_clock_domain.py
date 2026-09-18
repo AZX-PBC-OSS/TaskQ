@@ -17,6 +17,8 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
+
+pytest.importorskip("fastapi", reason="requires taskq[fastapi]")
 import pytest_asyncio
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -25,6 +27,8 @@ import taskq.web.admin._factory as factory
 from taskq.actor import actor
 from taskq.client import JobsClient
 from taskq.web.admin import create_router, setup_admin_state
+
+pytestmark = [pytest.mark.fastapi]
 
 pytestmark = pytest.mark.integration
 

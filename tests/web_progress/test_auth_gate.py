@@ -17,6 +17,8 @@ pytest.importorskip("sse_starlette")
 
 from taskq.web.progress import create_router
 
+pytestmark = [pytest.mark.fastapi]
+
 
 class _StubPool:
     """Duck-typed stand-in for asyncpg.Pool — the factory only stores it."""

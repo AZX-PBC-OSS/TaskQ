@@ -18,6 +18,8 @@ from taskq.backend._protocol import JobId
 
 from . import StubBackend, _stub_job_row
 
+pytestmark = [pytest.mark.fastapi]
+
 
 def _get_csrf_token(client: Any) -> str:
     """GET the queues page to set the CSRF cookie, then return the token value."""

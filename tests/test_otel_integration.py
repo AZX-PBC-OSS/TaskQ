@@ -65,6 +65,8 @@ from taskq.worker.heartbeat import heartbeat_loop
 from taskq.worker.leader import MaintenanceLeader
 from tests._di_scopes import bootstrap_scopes, make_scopes
 
+pytestmark = [pytest.mark.otel]
+
 pytestmark = pytest.mark.integration
 
 _HEARTBEAT_INTERVAL = 0.5
@@ -1057,6 +1059,7 @@ class TestMalformedTraceId:
 # ── Enqueue span overhead ──────────────────────────────────────
 
 
+@pytest.mark.load_sensitive
 class TestEnqueueSpanOverhead:
     """Measure enqueue span overhead with no-op exporter."""
 

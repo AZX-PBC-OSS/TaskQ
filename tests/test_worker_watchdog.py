@@ -33,6 +33,8 @@ from taskq.worker._watchdog import (
     trip,
 )
 
+pytestmark = [pytest.mark.load_sensitive]
+
 
 class _ExitSentinelError(Exception):
     def __init__(self, code: int) -> None:

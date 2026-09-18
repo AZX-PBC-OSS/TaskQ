@@ -27,6 +27,8 @@ from taskq.auth import PgCredential, ReloadSchedule, make_pg_pool_factory
 from taskq.settings import TaskQSettings
 from taskq.testing.assertions import wait_for
 
+pytestmark = [pytest.mark.fastapi]
+
 
 class _FakePool:
     def __init__(self, name: str) -> None:

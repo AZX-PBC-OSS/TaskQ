@@ -31,6 +31,8 @@ import sys
 
 import pytest
 
+pytestmark = [pytest.mark.otel]
+
 pytest.importorskip("fastapi")
 pytest.importorskip("opentelemetry.exporter.prometheus")
 

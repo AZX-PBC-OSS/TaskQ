@@ -249,7 +249,7 @@ def _success_updates(
     ]
 
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio]
 
 
 # ── consecutive_failures increments on factory error ────────────────

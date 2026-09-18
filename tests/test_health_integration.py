@@ -32,6 +32,8 @@ from taskq.migrate import apply_pending
 from taskq.settings import WorkerSettings
 from taskq.testing._shared_containers import creator_labels, skip_test_without_docker
 
+pytestmark = [pytest.mark.fastapi]
+
 pytestmark = pytest.mark.integration
 
 

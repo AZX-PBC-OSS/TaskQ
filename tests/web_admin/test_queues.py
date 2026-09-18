@@ -16,6 +16,9 @@ from . import StubRecord, _StubPool
 # ── Queue routes: discovery and registration ───────────────────────────
 
 
+pytestmark = [pytest.mark.fastapi]
+
+
 def test_queue_routes_registered_via_discovery(
     monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
 ) -> None:

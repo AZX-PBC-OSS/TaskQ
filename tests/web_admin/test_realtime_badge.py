@@ -20,6 +20,9 @@ from . import _StubPool
 # ---------------------------------------------------------------------------
 
 
+pytestmark = [pytest.mark.fastapi]
+
+
 @pytest.fixture(autouse=True)
 def reset_health_cache() -> None:
     """Reset the module-level Redis health cache before each test."""

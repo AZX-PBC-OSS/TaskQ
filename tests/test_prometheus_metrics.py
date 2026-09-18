@@ -44,6 +44,9 @@ from taskq.contrib.prometheus import create_metrics_router
 # ── isolated test environment ──────────────────────────────────────────────
 
 
+pytestmark = [pytest.mark.otel]
+
+
 class _PromEnv:
     """Isolated Prometheus registry + OTel MeterProvider wired together."""
 

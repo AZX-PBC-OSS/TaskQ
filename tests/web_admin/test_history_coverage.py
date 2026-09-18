@@ -35,6 +35,9 @@ from . import StubRecord, _StubPool
 # ── Configurable stub pool/connection ───────────────────────────────────
 
 
+pytestmark = [pytest.mark.fastapi]
+
+
 class _FetchConn:
     """Connection returning preset ``fetch`` results in call order."""
 

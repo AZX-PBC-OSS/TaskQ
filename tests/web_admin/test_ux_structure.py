@@ -23,6 +23,7 @@ from taskq.web.admin import (  # Why: importorskip guard must precede.
 
 from . import StubBackend, StubPool, _stub_job_row  # Why: importorskip guard must precede.
 
+pytestmark = [pytest.mark.fastapi]
 _PREFIX = "/taskq"
 
 _PAGES: tuple[str, ...] = (

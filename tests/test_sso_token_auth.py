@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from taskq.web.admin.auth.token import token_auth
 
+pytestmark = [pytest.mark.fastapi]
 _TOKEN = "test-secret-token-12345"
 
 

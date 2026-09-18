@@ -45,6 +45,8 @@ import inspect
 import pkgutil
 import re
 
+import pytest
+
 import taskq
 from taskq.backend._batch_sql import (  # pyright: ignore[reportPrivateUsage]  # Why: pinning the exact production statement is the point; redefining it here would let the pin drift from the SQL that runs.
     _PRUNE_OLD_BATCHES_SQL,
@@ -267,6 +269,7 @@ def _discover_write_statements() -> dict[str, str]:
     return found
 
 
+@pytest.mark.fastapi
 def test_every_write_statement_is_bounded_or_registered() -> None:
     """The guard against the tenth site: any unbounded UPDATE/DELETE that
     is not registered in ``_EXEMPT`` fails here.
@@ -306,6 +309,7 @@ def test_every_write_statement_is_bounded_or_registered() -> None:
     )
 
 
+@pytest.mark.fastapi
 def test_exemption_registry_has_no_stale_entries() -> None:
     """The reverse direction: every registry entry must still name a real,
     still-unbounded statement.

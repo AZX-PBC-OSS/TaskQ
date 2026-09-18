@@ -73,6 +73,8 @@ from taskq.web.progress import (
     create_router,
 )
 
+pytestmark = [pytest.mark.fastapi]
+
 
 @pytest.fixture(autouse=True)
 def _dev_env(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]  # Why: pytest autouse fixture consumed implicitly by the runner; pyright does not track fixture usage.

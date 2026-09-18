@@ -21,6 +21,8 @@ from fastapi.testclient import TestClient
 
 from taskq.web.admin import create_router, setup_admin_state
 
+pytestmark = [pytest.mark.fastapi]
+
 
 class _StubRecord(dict[str, object]):
     """Minimal asyncpg.Record duck type for testing."""

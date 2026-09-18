@@ -42,6 +42,7 @@ from taskq.web.progress import (
     create_router,
 )
 
+pytestmark = [pytest.mark.fastapi]
 _SCHEMA_LABEL = "taskq"
 _JOB_ID = UUID("00000000-0000-0000-0000-000000000001")
 _HEARTBEAT = timedelta(milliseconds=10)

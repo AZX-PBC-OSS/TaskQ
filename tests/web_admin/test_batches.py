@@ -16,6 +16,8 @@ from taskq.web.admin import create_router
 
 from . import StubAcquireContext, StubConnection, StubRecord, _StubPool
 
+pytestmark = [pytest.mark.fastapi]
+
 
 class _BatchRowsPool(_StubPool):
     """Pool whose connection returns two batch rows, one per status."""

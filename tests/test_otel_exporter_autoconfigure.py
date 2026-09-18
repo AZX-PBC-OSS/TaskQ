@@ -41,6 +41,8 @@ from taskq.obs import (
 )
 from taskq.obs import configure_exporters
 
+pytestmark = [pytest.mark.otel]
+
 
 @dataclass(frozen=True)
 class _Settings:

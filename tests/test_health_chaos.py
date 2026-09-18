@@ -28,6 +28,8 @@ from taskq.worker.health import (
 )
 from taskq.worker.shutdown import ShutdownPhase
 
+pytestmark = [pytest.mark.fastapi]
+
 # -- No module-level pytestmark -- tests individually marked below.
 
 

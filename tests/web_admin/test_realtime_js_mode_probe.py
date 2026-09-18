@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = [pytest.mark.fastapi]
+
 pytest.importorskip("fastapi")
 
 REALTIME_JS = (

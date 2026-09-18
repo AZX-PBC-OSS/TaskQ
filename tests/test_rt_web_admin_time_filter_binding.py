@@ -61,6 +61,7 @@ from taskq._ids import new_base62, new_uuid
 from taskq.migrate import apply_pending
 from taskq.web.admin import create_router, setup_admin_state
 
+pytestmark = [pytest.mark.fastapi]
 pytestmark = pytest.mark.integration
 
 

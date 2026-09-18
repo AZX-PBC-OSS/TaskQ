@@ -45,6 +45,7 @@ import taskq.web
 #: ``module.qualname`` at the definition site (re-exports are deduplicated by
 #: ``__module__``). The value names the factory's own gate test file, where
 #: the environment-scoped and opt-out halves of its contract are pinned.
+pytestmark = [pytest.mark.fastapi]
 _KNOWN_FACTORIES: dict[str, str] = {
     "taskq.web.progress.create_router": "tests/web_progress/test_auth_gate.py",
     "taskq.web.admin._factory.create_router": "tests/web_admin/test_factory.py",
