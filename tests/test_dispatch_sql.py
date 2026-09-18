@@ -47,7 +47,6 @@ class TestDispatchStrictFifoSql:
         # is a no-op permission, so one template serves both.
         assert "WITH RECURSIVE params AS" in rendered
         expected_ctes = [
-            "running_per_actor AS",
             "running_identities AS",
             "per_actor_capacity AS",
             "candidates AS",
@@ -68,6 +67,80 @@ class TestDispatchStrictFifoSql:
         # UNION ALL is a plain set operation, not a recursion).
         assert "rr_keys AS (" not in rendered
         assert "WITH RECURSIVE" in rendered
+
+    def test_no_fleet_wide_running_per_actor_cte(self) -> None:
+        """The per-actor running count must never return as a fleet-wide
+        materialized CTE.
+
+        ``running_per_actor`` (``SELECT actor, count(*) FROM jobs WHERE
+        status='running' GROUP BY actor``) was referenced three times, so
+        Postgres materialized it on every claim round: one scan and
+        aggregate of the fleet's ENTIRE running population per round,
+        paid whether or not any actor declared a cap — O(fleet running
+        rows) on the hottest statement in the library (#226). The count
+        is now a cap-gated correlated count per read (see
+        test_running_counts_are_cap_gated_correlated_counts), so an
+        uncapped fleet pays zero running-row work.
+        """
+        for variant, sql in (
+            ("strict_fifo", DISPATCH_STRICT_FIFO_SQL),
+            ("round_robin", DISPATCH_ROUND_ROBIN_SQL),
+        ):
+            rendered = sql.format(schema="taskq")
+            assert "running_per_actor AS (" not in rendered, (
+                f"{variant}: a fleet-wide running-count CTE is materialized "
+                "on every claim round (three references) at a cost "
+                "proportional to the fleet's total running rows — the "
+                "count must stay a cap-gated correlated count"
+            )
+
+    def test_running_counts_are_cap_gated_correlated_counts(self) -> None:
+        """All three per-actor running-count reads are CASE-gated on the
+        actor's own cap, so an uncapped actor's branch never executes its
+        count subquery.
+
+        A scalar subquery in a CASE branch is evaluated only when that
+        branch is taken, which is what makes the uncapped fleet's
+        running-row work zero; a LEFT JOIN against a count source could
+        not give that (the join is evaluated per row regardless), which
+        is why the gate must live inside the CASE. The count itself is
+        a scan over the actor's own running-row partial-index entries
+        (the planner picks jobs_actor_running_idx or the
+        jobs_locked_by_worker_running_idx partial at its own cost
+        discretion) — bounded by that actor's running rows, never the
+        fleet's.
+        """
+        for variant, sql in (
+            ("strict_fifo", DISPATCH_STRICT_FIFO_SQL),
+            ("round_robin", DISPATCH_ROUND_ROBIN_SQL),
+        ):
+            rendered = sql.format(schema="taskq")
+            capacity_body = _cte_body(rendered, "per_actor_capacity")
+            assert "WHEN ac.max_concurrent IS NULL" in capacity_body, (
+                f"{variant}: the residual's count must be gated on the actor's own cap"
+            )
+            assert "rj.actor = pa.actor" in capacity_body, (
+                f"{variant}: the residual's count must be correlated to "
+                "the round's own actor, not a fleet-wide aggregate"
+            )
+            repend_body = _cte_body(rendered, "repend_capacity")
+            assert "rj.actor = ta.actor" in repend_body, (
+                f"{variant}: the re-pended arm's residual count must be correlated to its own actor"
+            )
+            eligible_body = _cte_body(rendered, "eligible_candidates")
+            assert "WHEN ac.max_concurrent IS NULL THEN 0" in eligible_body, (
+                f"{variant}: the post-lock re-check's count must be cap-gated the same way"
+            )
+            assert "rj.actor = l.actor" in eligible_body, (
+                f"{variant}: the post-lock re-check's count must be "
+                "correlated to the claimed row's actor"
+            )
+            # The LIMIT 1 fence is what keeps the gated count at ONE
+            # evaluation per claimed row: without it the projection-only
+            # lateral can be pulled up and re-evaluated at every
+            # reference site.
+            assert "END AS in_flight" in eligible_body
+            assert "r.in_flight < ac.max_concurrent" in eligible_body
 
     def test_locked_contains_for_update_of_j_skip_locked(self) -> None:
         rendered = DISPATCH_STRICT_FIFO_SQL.format(schema="taskq")
@@ -151,7 +224,7 @@ class TestDispatchStrictFifoSql:
         rendered = DISPATCH_STRICT_FIFO_SQL.format(schema="taskq")
         body = _cte_body(rendered, "eligible_candidates")
         assert "max_concurrent IS NULL" in body
-        assert "COALESCE(r.in_flight, 0)" in body
+        assert "r.in_flight" in body
         assert "< ac.max_concurrent" in body
 
     def test_eligible_candidates_contains_actor_rank_window(self) -> None:

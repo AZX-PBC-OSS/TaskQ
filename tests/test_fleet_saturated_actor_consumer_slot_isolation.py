@@ -137,6 +137,12 @@ async def _drain_healthy_actor_throughput(
 
     async def producer() -> None:
         while not stop.is_set():
+            # Deliberately the pre-#229 queue-emptiness formula: this
+            # harness measures the dispatch SQL's reservation gate
+            # (perf-evidence-dispatch.md A6), whose conditions include
+            # claims landing while consumers are busy — the shipped
+            # producer's exact-slot accounting (run.py, #229) is pinned
+            # separately in tests/test_producer_slot_accounting.py.
             available = local_queue.maxsize - local_queue.qsize()
             if available <= 0:
                 await asyncio.sleep(0.01)

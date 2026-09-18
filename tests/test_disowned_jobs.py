@@ -299,11 +299,22 @@ class _RecordingConn:
 
 
 class _NoopTransaction:
-    async def __aenter__(self) -> None:
-        return None
+    """Explicit-API transaction stand-in (the heartbeat tick drives the
+    transaction explicitly since the #227 fix round's command budget)."""
 
-    async def __aexit__(self, *args: object) -> None:
-        return None
+    def __init__(self) -> None:
+        self.started = False
+        self.committed = False
+        self.rolled_back = False
+
+    async def start(self) -> None:
+        self.started = True
+
+    async def commit(self) -> None:
+        self.committed = True
+
+    async def rollback(self) -> None:
+        self.rolled_back = True
 
 
 class _AcquiredConn:
@@ -386,11 +397,15 @@ async def test_heartbeat_excludes_disowned_jobs_from_lease_renewal() -> None:
     renewals = _lease_renewals(conn)
     assert len(renewals) == 1
     sql, args = renewals[0]
-    assert len(args) == 3 and list(cast(list[UUID], args[2])) == [disowned], (
+    # $4 is the renewal threshold the loop binds since the gated
+    # renewal (#227): (worker_id, lease, disowned, threshold).
+    assert len(args) == 4 and list(cast(list[UUID], args[2])) == [disowned], (
         f"the lease renewal ran with {args!r}: the disowned ids are not bound, so "
         "the statement still renews every row this worker holds"
     )
     assert "$3::uuid[]" in sql
+    # The gated statement, with the threshold compared server-side.
+    assert "lock_expires_at <= clock_timestamp() + $4::interval" in sql
 
 
 async def test_heartbeat_excludes_disowned_jobs_from_reservation_lease_renewal() -> None:
@@ -536,6 +551,9 @@ async def test_producer_reowns_a_disowned_job_it_claims_again() -> None:
         settings=settings,
         liveness=SimpleNamespace(tick=lambda *a, **k: None, forget=lambda *a, **k: None),
         disowned_jobs=disowned,
+        # The producer's availability subtracts active jobs (#229); this
+        # test's single claimed job is never registered.
+        active_jobs=SimpleNamespace(count=lambda: 0),
     )
     local_queue: asyncio.Queue[JobRow] = asyncio.Queue(maxsize=1)
     shutdown_event = asyncio.Event()

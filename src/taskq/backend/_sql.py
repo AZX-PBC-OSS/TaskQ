@@ -5,6 +5,8 @@ Internal module — the leading underscore on the module name itself signals
 the explicit public surface of this module within the backend package.
 """
 
+from datetime import timedelta
+
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
 )
@@ -14,6 +16,7 @@ __all__ = [
     "INSERT_ATTEMPT_SQL",
     "INSERT_EVENT_SQL",
     "POLL_CANCEL_FLAGS_SQL",
+    "UPDATE_JOBS_LOCK_RENEWAL_SQL_TEMPLATE",
     "UPDATE_JOBS_LOCK_SQL_TEMPLATE",
     "UPDATE_RESERVATION_LEASES_SQL_TEMPLATE",
     "UPDATE_WORKER_LIVENESS_SQL_TEMPLATE",
@@ -140,18 +143,68 @@ UPDATE_WORKER_LIVENESS_SQL_TEMPLATE = (
     "SET last_seen_at = clock_timestamp(), metadata = metadata || $2::jsonb "
     "WHERE id = $1"
 )
-# $3 is the worker's disowned set (WorkerDeps.disowned_jobs): rows this
-# worker holds but could not record an outcome for, whose leases must
-# lapse so the reclaim sweep can hand them back. The exclusion lives in
-# the template so every renewal — the heartbeat loop's and the backend's
-# own heartbeat_jobs / extend_reservation_leases — carries it; a renewal
-# without it would keep a disowned row's lease alive for as long as the
-# process lived. An empty array excludes nothing.
+# The WHERE core shared by both jobs-lock statements (the unconditional
+# renewal below and the threshold-gated renewal after it): the disowned
+# exclusion must never drift between the two. $3 is the worker's
+# disowned set (WorkerDeps.disowned_jobs): rows this worker holds but
+# could not record an outcome for, whose leases must lapse so the
+# reclaim sweep can hand them back. The exclusion lives in this shared
+# core so every renewal — the heartbeat loop's gated statement and the
+# backend's own heartbeat_jobs — carries it; a renewal without it would
+# keep a disowned row's lease alive for as long as the process lived.
+# An empty array excludes nothing.
+_UPDATE_JOBS_LOCK_WHERE_CORE = (
+    "WHERE locked_by_worker = $1 AND status = 'running' AND NOT (id = ANY($3::uuid[]))"
+)
 UPDATE_JOBS_LOCK_SQL_TEMPLATE = (
     'UPDATE "{schema}".jobs '
     "SET last_heartbeat_at = clock_timestamp(), lock_expires_at = clock_timestamp() + $2 "
-    "WHERE locked_by_worker = $1 AND status = 'running'"
-    " AND NOT (id = ANY($3::uuid[]))"
+    + _UPDATE_JOBS_LOCK_WHERE_CORE
+)
+# The heartbeat loop's renewal: the same write, threshold-gated by the
+# caller (#227).
+#
+# lock_expires_at is the key of jobs_running_lock_expires_idx, so every
+# renewal is a non-HOT update that inserts new entries into every index
+# a running row satisfies (PK, actor_running, locked_by_worker_running,
+# identity_active, lock_expires, the heartbeat_deadline partial, GIN
+# tags/metadata) — per running row, per beat, fleet-wide. The gate renews
+# only rows whose lease is at or under the threshold ($4, computed by
+# the caller: see _lease_renewal_threshold in taskq.worker.heartbeat for
+# the sizing derivation). At the default settings the threshold (56s)
+# sits under one beat's decay of the 60s lease, so a healthy worker
+# rewrites its leases every beat, byte-identical to the unconditional
+# renewal. The gate defers nothing at the default lease; it only starts
+# spacing the rewrites out once lock_lease exceeds that floor, and the
+# savings begin at leases of about 70s (every second beat, 2x fewer
+# rewrites) and grow with the lease from there.
+#
+# The three OR arms, each load-bearing:
+# * heartbeat_timeout IS NOT NULL — the per-job heartbeat promise: the
+#   reclaim sweep's heartbeat arm reclaims such a row when
+#   last_heartbeat_at + heartbeat_timeout < now while the lease is STILL
+#   valid, so its beats must stay per-tick fresh. Skipping these rows to
+#   save the write would falsely crash-reclaim healthy jobs — the exact
+#   regression a naive "skip while more than half the lease remains"
+#   (#227's candidate) produces. Their last_heartbeat_at update is
+#   non-HOT anyway (jobs_running_heartbeat_deadline_idx is partial on
+#   heartbeat_timeout IS NOT NULL), so folding the lease extension into
+#   the same statement costs nothing extra for them.
+# * lock_expires_at IS NULL — direct-SQL-reachable shapes; the
+#   unconditional statement always renewed them, and the threshold
+#   comparison alone never would (NULL <= x is NULL).
+# * lock_expires_at <= clock_timestamp() + $4 — the renewal threshold
+#   itself. Deliberately compared SERVER-side with the same clock that
+#   stamped lock_expires_at: a worker-clock skew cannot make a fresh
+#   lease look expired (or an expiring one look fresh) to this
+#   comparison, the way a client-side remaining-lease computation would.
+UPDATE_JOBS_LOCK_RENEWAL_SQL_TEMPLATE = (
+    'UPDATE "{schema}".jobs '
+    "SET last_heartbeat_at = clock_timestamp(), lock_expires_at = clock_timestamp() + $2 "
+    + _UPDATE_JOBS_LOCK_WHERE_CORE
+    + " AND (heartbeat_timeout IS NOT NULL"
+    " OR lock_expires_at IS NULL"
+    " OR lock_expires_at <= clock_timestamp() + $4::interval)"
 )
 UPDATE_RESERVATION_LEASES_SQL_TEMPLATE = (
     'UPDATE "{schema}".reservation_slots '
@@ -163,12 +216,23 @@ UPDATE_RESERVATION_LEASES_SQL_TEMPLATE = (
 )
 
 
-def build_heartbeat_sql(schema: str) -> tuple[str, str, str]:
+def build_heartbeat_sql(
+    schema: str,
+    *,
+    renewal_threshold: timedelta | None = None,
+) -> tuple[str, str, str]:
     """Render the three heartbeat SQL templates for *schema*.
 
     Validates *schema* against the canonical identifier regex before
     formatting. The two renewal statements bind ``(worker_id, lease,
-    disowned_ids)``.
+    disowned_ids)`` — plus, when *renewal_threshold* is given, the
+    threshold interval as their jobs-lock statement's ``$4``: the loop's
+    lease-renewal then only renews rows whose remaining lease is at or
+    under the threshold (or that carry a per-job ``heartbeat_timeout``,
+    whose beats must stay fresh for the reclaim sweep's heartbeat arm —
+    see UPDATE_JOBS_LOCK_RENEWAL_SQL_TEMPLATE). ``None`` — the default —
+    keeps the unconditional renewal every existing caller and test of
+    this helper binds, renewing every held row on every call.
 
     The liveness statement's ``$2`` merge is deliberately a jsonb
     concat (``metadata || $2``) rather than a metadata overwrite: the
@@ -184,8 +248,13 @@ def build_heartbeat_sql(schema: str) -> tuple[str, str, str]:
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
+    jobs_template = (
+        UPDATE_JOBS_LOCK_RENEWAL_SQL_TEMPLATE
+        if renewal_threshold is not None
+        else UPDATE_JOBS_LOCK_SQL_TEMPLATE
+    )
     return (
         UPDATE_WORKER_LIVENESS_SQL_TEMPLATE.format(schema=schema),
-        UPDATE_JOBS_LOCK_SQL_TEMPLATE.format(schema=schema),
+        jobs_template.format(schema=schema),
         UPDATE_RESERVATION_LEASES_SQL_TEMPLATE.format(schema=schema),
     )

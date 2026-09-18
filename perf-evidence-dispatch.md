@@ -154,7 +154,13 @@ id-array bitmap driven by the round's own pending-rows population, and the
 candidate probes' scan bounds are foldable parameter expressions with the
 exact `residual * oversample` admission window re-imposed as a rank cut over
 the bounded probe output. Plus the operational guard: TaskQ-built dispatcher
-pools now carry `server_settings={"jit": "off"}` (worker/deps.py).
+pools now carry `server_settings={"jit": "off"}` (worker/deps.py). *(Follow-up,
+#247: that guard was later REMOVED — the startup-packet parameter broke worker
+boot behind poolers that reject unknown startup parameters, and the guard was
+never the mechanism of this fix. The JIT protection now lives server-side
+(`ALTER ROLE ... SET jit = off`, DSN `?options=` — docs/guides/ops.md
+§"Database performance knobs"); the measurements and verdicts on this page are
+unchanged and remain the evidence that the statement itself carries the win.)*
 
 ## Method
 
@@ -229,7 +235,13 @@ both pin the NEW numbers.
   cardinalities), not suppressed — the depth oracle's JIT assertion passes
   with JIT *enabled* on a plain connection. The `jit = off` server_settings
   entry on TaskQ-built dispatcher pools is a guard against future estimate
-  surprises, not the mechanism of this fix.
+  surprises, not the mechanism of this fix. *(Follow-up, #247: the
+  server_settings entry was later removed — it rode the startup packet and
+  broke worker boot behind poolers rejecting unknown startup parameters.
+  The oracle above is the guard that remains: it fails loudly if an
+  estimate surprise ever returns the compile-per-round tax, with JIT
+  enabled, on a plain connection. Operators who want the extra guard
+  set the role default server-side; see docs/guides/ops.md.)*
 - Dispatch cost is now independent of the registered-actor count: the round
   reads actor_config by primary key for its own actors only.
 - No regression on the shallow shapes: 1k execution is flat (1.77-1.97 ms
@@ -314,3 +326,184 @@ depth. Series semantics under the cap — depth exact below 1000 / reading
 the cap at or above it, oldest_age as head-of-line age — are documented on
 the template and in `docs/guides/ops.md`; the `TaskQQueueDepthHigh` alert
 (oldest-pending age) is unaffected.
+
+---
+
+## A8 — cap-gated running counts (the #226 running-row axis)
+
+Before/after for the removal of the materialized `running_per_actor`
+CTE (`SELECT actor, count(*) FROM jobs WHERE status='running' GROUP BY
+actor`, referenced three times and therefore materialized on every
+claim round): the per-actor running count is now a correlated count
+gated on `ac.max_concurrent IS NOT NULL` inside the CASE that computes
+each capacity CTE's residual (and the same gate in
+`eligible_candidates`' post-lock re-check), so the count subplan is
+evaluated only for actors that declared a cap, reading only that
+actor's own `jobs_actor_running_idx` entries.
+
+- **Method**: the same engine, EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+  protocol, re-seed discipline and median-of-3 recording as the pages
+  above. **OLD** = `src/taskq/backend/_dispatch_sql.py` at `5caf054`
+  (main, the branch point), **NEW** = this change. The measurement
+  connection sets `jit = off` (matching the production dispatcher
+  pools' `server_settings`). *(Follow-up, #247: the pools'
+  `server_settings` entry was later removed — it rode the startup
+  packet and broke worker boot behind poolers rejecting unknown startup
+  parameters — so TaskQ-built pools now set no GUCs at all. The harness's
+  explicit `jit = off` matches the server-side role default ops can set
+  (`ALTER ROLE ... SET jit = off`, docs/guides/ops.md), and the
+  measurements and verdicts below are unchanged.)* Host: Linux x86_64, Docker.
+- **The OLD plan's shape, measured**: at a 1000-row fleet running
+  population the CTE was served as a **Seq Scan on jobs** — 1000 rows of
+  row work per round, emitted after filtering the whole heap (the
+  partial index was not chosen at this shape) — on BOTH variants, capped
+  or not. The cost is O(heap), not even O(running rows via index).
+
+### R1 — the #226 axis: uncapped actor, fleet running population 0 -> 1000
+
+60 due pending rows on one uncapped polled actor; the fleet's running
+population (never-polled actors, live leases) grows 0 -> 1000.
+
+| variant | running rows | widest node rows (OLD -> NEW) | buffers (OLD -> NEW) | exec ms (OLD -> NEW) |
+|---|---|---|---|---|
+| strict_fifo | 0 | 60 -> 60 | 944 -> 942 | 1.80 -> 1.64 |
+| strict_fifo | 1,000 | **1000 (Seq Scan on jobs) -> 60** | 1192 -> 1150 | 2.26-2.43 -> 2.34-2.42 |
+| round_robin | 0 | 60 -> 60 | 943 -> 941 | 2.12 -> 1.64 |
+| round_robin | 1,000 | **1000 (Seq Scan on jobs) -> 60** | 1196-1205 -> 1143-1157 | 2.44-2.49 -> 2.37-2.76 |
+
+The NEW round's widest node stays the round's own candidate work (60
+rows) at every fleet running size; wall clock at the 1000-row shape is
+within run-to-run noise of OLD (±0.3 ms across repetitions — the Seq
+Scan's pages are largely the same heap pages the round's own probes
+touch, which is also why buffers move only ~40). The 0-running shape is
+where the wall-clock win is cleanest: OLD paid the CTE machinery (empty
+scan + three hash joins against it) that NEW simply does not have
+(2.12 -> 1.64 ms round-robin).
+
+### R2 — the capped branch: capped actor (cap=5, 2 own running), fleet running 0 -> 1000
+
+The gated count's taken branch: the polled actor declares
+`max_concurrent = 5` and holds 2 of its own running rows.
+
+| variant | running rows | widest node rows (OLD -> NEW) | buffers (OLD -> NEW) | exec ms (OLD -> NEW) |
+|---|---|---|---|---|
+| strict_fifo | 0 | 60 -> 60 | 104 -> 130 | 1.37 -> 1.28 |
+| strict_fifo | 1,000 | **1002 (Seq Scan on jobs) -> 60** | 158 -> 148 | 1.37-1.49 -> 1.31-1.51 |
+| round_robin | 0 | 60 -> 60 | 103 -> 129 | 1.20 -> 1.21 |
+| round_robin | 1,000 | **1002 (Seq Scan on jobs) -> 60** | 159 -> 156 | 1.47-1.73 -> 1.37-1.47 |
+
+The capped round reads only its own actor's running rows — never the
+fleet's. Plan-level ground truth (EXPLAIN ANALYZE BUFFERS, the count
+subplans' own nodes):
+
+- **Uncapped round (even with the polled actor holding 7 of its own
+  running rows)**: every count subplan reports `Actual Loops: 0` and
+  **zero shared-hit/read buffers** — the CASE gate means an uncapped
+  fleet does literally zero running-row work per round.
+- **Capped round (cap=5, 2 own running, 1000 unrelated running)**: the
+  count executes at 1 loop for `per_actor_capacity`'s residual and 6
+  loops (once per claimed row) for `eligible_candidates`' re-check —
+  plus the planner's duplicate of each at the inlined
+  `eligible_candidates` -> `eligible` boundary — for 14 executions
+  x 2 rows = 28 rows of count work, every one a read of the actor's OWN
+  running entries through the running-row partial indexes (the planner
+  picked a heap-visiting scan — Bitmap Heap + Bitmap Index on jobs at the
+  R2 shape, an Index Scan on the jobs_locked_by_worker_running_idx
+  partial at the cap=100 shape below — NOT an index-only scan; the
+  round-1 text here over-claimed the plan class). Honest note: the duplication is a
+  bounded constant factor on capped actors only (the `LIMIT 1` fence
+  holds per site; without it the pull-up would re-evaluate per
+  reference), and it is still 28 rows versus OLD's fleet-wide 1002-row
+  heap scan — while the uncapped default pays 0.
+
+### R3 — standing depth shape sanity (1k due pending, no running rows)
+
+| variant | widest node rows (OLD -> NEW) | buffers (OLD -> NEW) | exec ms (OLD -> NEW) |
+|---|---|---|---|
+| strict_fifo | 100 -> 100 | 1140-1152 -> 1146-1159 | 1.94-2.12 -> 2.05-2.07 |
+| round_robin | 100 -> 100 | 1139-1145 -> 1150-1159 | 2.02-2.35 -> 1.99-2.16 |
+
+Flat: the depth contract's 100-row bound and buffer class are unchanged
+on both sides (the CTE over a 0-row running population was nearly free,
+which is why the depth/registry oracles never caught the fleet-running
+axis — they seed no running rows; the new oracle
+`tests/test_dispatch_running_rows_scope_bound.py` does).
+
+### Verdict
+
+- An uncapped fleet — the default deployment — does **zero** running-row
+  work per claim round (measured: every count subplan at 0 loops, 0
+  buffers), where OLD materialized a fleet-wide count whose widest node
+  was a 1000-row Seq Scan of the heap at a 1000-row running population.
+- A capped fleet pays only its own capped actors' running rows (28 rows
+  at the R2 shape vs 1002), a per-round constant bounded by the capped
+  actor's own concurrency, never the fleet's.
+- The standing depth/registry shapes are unchanged in row work, buffers
+  and wall clock; the correctness pins (claim semantics, cap
+  enforcement, over-admission bound, reservation headroom, identity
+  serialization, fleet concurrency, cohort rotation) all stay green.
+
+---
+
+## A8 addendum — the capped-actor cost curve, and the honest crossover (fix round)
+
+The §A8 measurements above were taken at **cap=5** — the correlated
+count's best case. The fix-round attack measured the full curve, and it
+crosses over: the correlated count's row work is
+**O(oversample × cap²) per capped actor per round** — the
+`eligible_candidates` re-check executes once per *claimed* row (×2 plan
+sites after the inlined `eligible_candidates` → `eligible` boundary),
+and each execution reads the actor's *running* rows (≈ cap at
+saturation), while a capped actor's claimed rows scale with its cap:
+
+| capped actor's cap | NEW (correlated count) row work | OLD (fleet-wide CTE) row work | verdict |
+|---|---|---|---|
+| 5 (the §A8 shape) | 28 | 1,002 | ~36× win |
+| 25 | 648 | 1,012 | win |
+| **~30** | ≈ crossover | ≈ | — |
+| 50 | 2,550 | 1,025 | **2.5× worse than the CTE this replaced** |
+| 100 | 10,100 | 1,050 | **9.6× worse** |
+| 100, fleet running = 0 | — | — | **202× worse** (the CTE's empty aggregate is nearly free; the count still pays per-claimed-row × per-running-row) |
+
+Wall clock at cap=100: 3.4-3.6 ms NEW vs 1.8-2.6 ms OLD (the same
+container and protocol as §A8; the red-team's measurements, shapes
+consistent with the §A8 cap=5 numbers). The curve is why: the win
+§A8 reported holds for modest caps and *any* uncapped fleet (the
+default), and inverts for high-cap actors — a capped actor with cap ≥
+~30 pays more per round than the fleet-wide CTE it replaced.
+
+Index-plan correction from the same review: the count subplans' actual
+plans are heap-visiting scans over the running-row partial indexes (an
+Index Scan on `jobs_locked_by_worker_running_idx` at the cap=100 shape,
+Bitmap Heap + Bitmap Index on `jobs` at the §A8 shapes — the planner's
+own cost discretion), **not** index-only scans over
+`jobs_actor_running_idx` as §A8's round-1 text claimed; the row-work
+numbers were emitted-row counts either way.
+
+### The recommended follow-up shape (filed by the orchestrator, sibling of #281)
+
+A **SQL-gated capped-actors-only CTE** keeps both ends of the curve:
+
+```sql
+running_per_capped_actor AS (
+  SELECT j.actor, count(*) AS in_flight
+  FROM "{schema}".jobs j
+  WHERE j.status = 'running'
+    AND j.actor IN (SELECT actor FROM "{schema}".actor_config
+                    WHERE max_concurrent IS NOT NULL)
+  GROUP BY j.actor
+)
+```
+
+— one count per *capped actor* (not per claimed row, not per plan
+site): the uncapped fleet's zero-work stays (no capped actors ⇒ nothing
+to count) and the capped cost profile returns to the CTE's
+O(capped actors × their running rows) instead of O(oversample × cap²),
+with no client-side state and no variant selection. The follow-up's
+plan-shape obligation (the trap to avoid): the CTE must be *driven from
+the capped-actor side* — a nested-loop over the (typically tiny)
+capped-actor set probing `jobs_actor_running_idx` per actor. A planner
+that instead hash-joins the running population against the IN-subquery
+keeps the fleet-wide scan and gives back the uncapped zero-work — the
+follow-up's oracles should pin the driver shape the way §A8's pin the
+row counts.
