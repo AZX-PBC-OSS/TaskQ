@@ -6,12 +6,12 @@ backpressure, but the RELEASE carries
 ``taskq.connections._POOL_RELEASE_RESET_TIMEOUT_SECS`` and never raises,
 because asyncpg's context-manager release passes NO timeout (the holder
 falls back to the acquire timeout, which is ``None`` for an unbounded
-acquire) and a server that dies silently — no FATAL, no FIN: a
-frozen/black-holed endpoint — parks that release's reset forever, wedging
+acquire) and a server that dies silently (no FATAL, no FIN: a
+frozen/black-holed endpoint) parks that release's reset forever, wedging
 the caller's task AND ``pool.close()``.
 
 Issue #280: every read, schedule, and batch path still used the bare
-``async with pool.acquire()`` — the identical unbounded-release hang
+``async with pool.acquire()``, the identical unbounded-release hang
 shape. These tests drive the swept sites through a pool miniature that
 models what asyncpg does at source level (a dual-surface acquire context
 whose context-manager release passes no timeout; a holder release that
@@ -78,19 +78,19 @@ class _AcquireContext:
 
     async def __aexit__(self, *exc: object) -> None:
         assert self._conn is not None
-        # asyncpg's context release: pool.release(conn) with NO timeout —
+        # asyncpg's context release: pool.release(conn) with NO timeout;
         # the holder falls back to the acquire timeout (None: unbounded).
         await self._pool.release(self._conn)
 
 
 class _DeadServerPool:
     """Fake ``asyncpg.Pool`` whose release PARKS: a server that never
-    answers (no FATAL, no FIN — a frozen/black-holed endpoint), the shape
+    answers (no FATAL, no FIN: a frozen/black-holed endpoint), the shape
     the release bound exists for. Models asyncpg's
     ``PoolConnectionHolder.release`` at source level: the reset is awaited
     UNDER the budget; on expiry the connection is TERMINATED and the
     timeout re-raised (asyncpg's timeout handler does exactly this),
-    freeing the holder either way; with no budget it simply parks forever —
+    freeing the holder either way; with no budget it simply parks forever:
     the unbounded #236/#280 hang shape."""
 
     def __init__(self, *, park_secs: float = _PARK_SECS) -> None:
@@ -151,7 +151,7 @@ async def test_reads_get_release_is_bounded_against_a_silently_dead_server(
 ) -> None:
     """#280's repro, on one previously-unbounded read site: ``_get``'s
     release, sent into a server that never answers, must cost the shrunk
-    bound — a typed, bounded outcome instead of parking the caller (and
+    bound: a typed, bounded outcome instead of parking the caller (and
     ``pool.close()``) forever. The unbounded shape this replaces waited
     the full park: the test's own 2 s budget firing IS the red result."""
     shrunk_bound = 0.2

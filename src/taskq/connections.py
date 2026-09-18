@@ -282,8 +282,8 @@ async def _bounded_checkout(
 
     Replaces a bare ``async with pool.acquire()``: the acquire is
     unchanged unless *acquire_timeout* is given (a site that already
-    bounded its acquire — the notify-pool sweeps' dispatcher command
-    timeout — keeps that bound verbatim), but the RELEASE carries
+    bounded its acquire, such as the notify-pool sweeps' dispatcher
+    command timeout, keeps that bound verbatim), but the RELEASE carries
     :data:`_POOL_RELEASE_RESET_TIMEOUT_SECS` and never raises: a reset
     that fails or times out is pool hygiene, not part of the op's
     semantics. asyncpg's release path already terminates the connection
@@ -295,7 +295,7 @@ async def _bounded_checkout(
     ``pool.close()``) forever.
 
     *operation* names the call site in the ``pool-release-failed``
-    WARNING — the operator's one observable trace of the swallowed
+    WARNING, the operator's one observable trace of the swallowed
     failure.
     """
     acquired = (
