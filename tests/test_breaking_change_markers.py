@@ -351,6 +351,14 @@ _BREAKING_SECTION_ENTRIES: dict[str, tuple[str, tuple[str, ...]]] = {
         "0.3.0",
         ("refund the store",),
     ),
+    "The SAML cookie-less ACS fallback is opt-in and defaults off": (
+        "0.3.0",
+        ("allow_cookieless_fallback",),
+    ),
+    "Worker pools send no per-connection GUCs in the startup packet": (
+        "0.3.0",
+        ("startup packet",),
+    ),
 }
 
 
