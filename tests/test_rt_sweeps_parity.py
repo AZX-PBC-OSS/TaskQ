@@ -52,16 +52,25 @@ _CAP = 2
 _START = datetime(2025, 1, 1, tzinfo=UTC)
 
 # Per-branch corpus: (branch name, max_attempts, cancel_phase).
+# "cancel_retryable" is the #238 pin: a cancel in flight outranks the
+# retry budget on BOTH backends: the pre-fix budget-first CASE (and its
+# twin) re-pended this row 'pending' with the operator's cancel wiped.
 _BRANCHES: list[tuple[str, int, int]] = [
     ("retry", 3, 0),
     ("cancel", 1, 1),
+    ("cancel_retryable", 3, 1),
     ("crash", 1, 0),
 ]
 _PER_BRANCH = 2
 
 
 def _expected_status(branch: str) -> str:
-    return {"retry": "pending", "cancel": "cancelled", "crash": "crashed"}[branch]
+    return {
+        "retry": "pending",
+        "cancel": "cancelled",
+        "cancel_retryable": "cancelled",
+        "crash": "crashed",
+    }[branch]
 
 
 # ── Postgres side ────────────────────────────────────────────────────────

@@ -306,14 +306,65 @@ async def _reclaim_expired_locks(
         # tests/test_rt_sweeps_parity.py::test_sweep1_double_reclaim_keeps_one_attempt_row_on_both_backends.
         await _write_attempt(self, attempt_row)
 
-        # The same budget question the SQL asks (see
-        # _sweeps._RECLAIM_HAS_BUDGET_SQL): 'indefinite' has no attempt
-        # ceiling — its schedule_to_close deadline is its budget — while
-        # every other kind is bounded by max_attempts, and
-        # 'non_retryable' has no second attempt at all.
-        if row.retry_kind == "indefinite" or (
+        # Operator intent outranks retry budget, mirroring _SWEEP_1_SQL's
+        # CASE ordering exactly (the PG statement evaluates the cancel
+        # arm FIRST): a cancel-in-flight row terminalises 'cancelled'
+        # whatever its budget: the holder is the only writer that could
+        # honour the request cooperatively, and this reclaim fired
+        # because the holder broke its liveness promise. The cancel
+        # columns are PRESERVED on that arm as the audit trail of the
+        # honoured request (the mark_cancelled/mark_abandoned doctrine);
+        # the re-pend arm below reads phase 0 by construction (it fell
+        # through the cancel arm), so its reset is a no-op kept as the
+        # mirror of the SQL's defence-in-depth spelling.
+        if row.cancel_phase != CancelPhase.NONE:
+            self._jobs[job_id] = replace(
+                row,
+                status="cancelled",
+                finished_at=now,
+                locked_by_worker=None,
+                lock_expires_at=None,
+                # assignment_routed is set on every arm for the same
+                # reason (the SQL sets it unconditionally): on a
+                # terminal row the flag is inert, the row is never
+                # dispatchable again, but the stored value must match
+                # the contract source.
+                assignment_routed=True,
+                # cancel_phase/cancel_requested_at and the error fields
+                # are deliberately NOT in this replace: the cancel arm
+                # keeps the audit columns (the honoured request's
+                # record) and stamps no error marker: no cancel-origin
+                # marker describes a worker that died mid-protocol, so
+                # the attempt row and the event's cause carry the
+                # explanation there.
+            )
+            self._append_state_change_event(
+                job_id,
+                from_state="running",
+                to_state="cancelled",
+                now=now,
+                worker_id=row.locked_by_worker,
+                reason="lock_expired",
+                cause=cause,
+            )
+            logger.debug(
+                "state-change",
+                kind="state_change",
+                from_state="running",
+                to_state="cancelled",
+                job_id=str(job_id),
+            )
+        elif row.retry_kind == "indefinite" or (
             row.attempt < row.max_attempts and row.retry_kind != "non_retryable"
         ):
+            # The re-pend arm: cancel_phase = 0 by construction (the
+            # cancel arm above took every phase-carrying row), budget
+            # remaining. The same budget question the SQL asks (see
+            # _sweeps._RECLAIM_HAS_BUDGET_SQL): 'indefinite' has no
+            # attempt ceiling: its schedule_to_close deadline is its
+            # budget, while every other kind is bounded by
+            # max_attempts, and 'non_retryable' has no second attempt
+            # at all.
             # The row's own stamped RetryPolicy curve, mirroring
             # _RECLAIM_RAW_BACKOFF_SQL / _RECLAIM_DELAY_SQL exactly through
             # the shared twin _compute_reclaim_backoff: same three-way raw
@@ -362,6 +413,9 @@ async def _reclaim_expired_locks(
                 lock_expires_at=None,
                 cancel_phase=CancelPhase.NONE,
                 cancel_requested_at=None,
+                # The reset above is a no-op by construction (the arm
+                # fell through `cancel_phase != 0`), kept as the mirror
+                # of the SQL's defence-in-depth spelling.
                 # A reclaim hands the row back to the fleet, so it routes
                 # by the actor's current assignment from here on.
                 assignment_routed=True,
@@ -383,10 +437,9 @@ async def _reclaim_expired_locks(
                 job_id=str(job_id),
             )
         else:
-            # Exhausted: an in-flight cancel request makes 'cancelled'
-            # the honest terminal label (mirrors _SWEEP_1_SQL's CASE).
-            crashed = row.cancel_phase == CancelPhase.NONE
-            new_status = "crashed" if crashed else "cancelled"
+            # Crashed arm: no cancel in flight (the cancel arm above
+            # took every phase-carrying row), no budget. The row
+            # self-describes exactly as _SWEEP_1_SQL's crashed arm does.
             # locked_by_worker/lock_expires_at are cleared on EVERY
             # branch by _SWEEP_1_SQL's single SET clause list; the
             # twin must match or a terminal row keeps pointing at a
@@ -397,7 +450,7 @@ async def _reclaim_expired_locks(
             # the stored value must match the contract source.
             self._jobs[job_id] = replace(
                 row,
-                status=new_status,
+                status="crashed",
                 finished_at=now,
                 locked_by_worker=None,
                 lock_expires_at=None,
@@ -407,18 +460,14 @@ async def _reclaim_expired_locks(
                 # Twin of _SWEEP_1_SQL's crashed-arm SET: a crashed row
                 # self-describes (WorkerCrashed plus the deadline that
                 # fired, drawn from the same _ATTEMPT_MESSAGES map the
-                # attempt row uses — one map, no drift). The
-                # cancel-honoured arm stamps nothing: no cancel-origin
-                # marker describes a worker that died mid-protocol, so
-                # the attempt row and the event's cause carry the
-                # explanation there.
-                error_class="WorkerCrashed" if crashed else row.error_class,
-                error_message=_ATTEMPT_MESSAGES[cause] if crashed else row.error_message,
+                # attempt row uses: one map, no drift).
+                error_class="WorkerCrashed",
+                error_message=_ATTEMPT_MESSAGES[cause],
             )
             self._append_state_change_event(
                 job_id,
                 from_state="running",
-                to_state=new_status,
+                to_state="crashed",
                 now=now,
                 worker_id=row.locked_by_worker,
                 reason="lock_expired",
@@ -428,7 +477,7 @@ async def _reclaim_expired_locks(
                 "state-change",
                 kind="state_change",
                 from_state="running",
-                to_state=new_status,
+                to_state="crashed",
                 job_id=str(job_id),
             )
         # The disposition derives from the row's own post-transition

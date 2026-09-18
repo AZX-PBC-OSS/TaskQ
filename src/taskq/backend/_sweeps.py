@@ -429,20 +429,49 @@ _SWEEP_1_BODY = """\
 -- for a crash. The heartbeat arm's carve-out uses the same grace ladder
 -- applied to its own deadline expression.
 --
--- Cancel-state handling on reclaim (a deliberate, documented tradeoff):
--- * Retry branch ('pending'): cancel_phase/cancel_requested_at are
---   RESET, so the next dispatch doesn't immediately re-cancel the
---   retried job — crash-reclaim starts the new attempt with a clean
---   cancellation slate.  A caller's cancel therefore does not survive
---   into a retried attempt; phase-2 escalation only ever runs on the
---   (dead) lock-holding worker, so there is no other path that could
---   honor it there.
--- * Exhausted branch: a job whose cancel was still in-flight lands on
---   'cancelled', NOT 'crashed' — the caller's explicit request is the
---   honest terminal label: anyone reconciling terminal states sees the
---   cancel was honored.  Jobs with no cancel in-flight still land on
---   'crashed' as before.  The job_attempts row records outcome='crashed'
---   either way: that IS what happened to the attempt.
+-- Cancel-state handling on reclaim (operator intent outranks retry
+-- budget, the ordering #238 pinned, supersedes the old reset-on-
+-- re-pend tradeoff):
+-- * Cancel branch (cancel_phase != 0, ANY budget): the row is
+--   terminalised 'cancelled', NOT re-pended: the lock-holding
+--   worker is the only writer that could honour the request
+--   cooperatively, and the carve-out above already gave that
+--   worker cancel_grace + cleanup_grace + 60s to finish; past it
+--   the row is provably abandoned mid-protocol, and the caller's
+--   explicit request is the honest terminal label: anyone
+--   reconciling terminal states sees the cancel was honored. The
+--   row KEEPS its cancel_phase/cancel_requested_at as the audit
+--   trail of the honoured request, exactly as mark_cancelled does.
+-- * Retry branch (cancel_phase = 0, budget remains): 'pending' on
+--   the reclaim delay. The row's cancel columns were already
+--   clean (the CASE fell through the cancel arm), so the re-pend
+--   cannot hand a next claimant an inherited phase: the re-cancel
+--   loop the old reset-on-re-pend spelling existed to prevent is
+--   now excluded structurally: no arm this statement owns can
+--   produce a re-pended row carrying cancel columns.
+-- * Crashed branch (cancel_phase = 0, no budget): 'crashed' as
+--   before, error fields self-describing on the row.
+--   The job_attempts row records outcome='crashed' on every
+--   branch: that IS what happened to the attempt.
+--
+-- THE SHAPE (vendor/river's JobCancel + JobRescuer): operator intent
+-- outranking reclaim-driven retry is river's pattern too. JobCancel
+-- (vendor/river/riverdriver/riverpgxv5/internal/dbsqlc/
+-- river_job.sql:40-77) leaves a running row running, the cooperative
+-- protocol belongs to the live holder, and stamps
+-- metadata.cancel_attempted_at "so that the rescuer knows not to
+-- rescue it, even if it gets stuck in the running state"; the rescuer
+-- (vendor/river/internal/maintenance/job_rescuer.go:195-259) checks
+-- that stamp and routes a stamped stuck job straight to 'cancelled',
+-- never into the retry decision. Two deliberate divergences here:
+-- the marker rides first-class columns (cancel_phase /
+-- cancel_requested_at, readable as an audit trail and PRESERVED on
+-- the terminal row) rather than a metadata JSONB stamp, and the
+-- terminalisation happens in THIS statement, under the grace ladder
+-- the carve-out above already waited out, rather than in a separate
+-- rescuer on its own stuck horizon (river's default is an hour) during
+-- which a cancel-addressed row whose holder is dead simply sits
+-- running.
 --
 -- locked_by_worker is snapshotted raw (the last-known holder id, even when
 -- that worker's workers row was already removed by cleanup_stale_workers on
@@ -557,28 +586,66 @@ snap AS (
 )
 UPDATE "{schema}".jobs j
 SET status = CASE
-        WHEN {has_budget}
-            THEN 'pending'::"{schema}".job_status
+        -- Operator intent outranks retry budget. The cancel arm is
+        -- evaluated FIRST: a row carrying cancel_phase != 0 is
+        -- terminalised 'cancelled' whether or not retries remain.
+        -- The pre-reorder shape (budget first) re-pended such a row
+        -- and wiped its cancel columns: the operator's request
+        -- silently lost against a dead worker that could never
+        -- honour it. Ordering cancel first cannot resurrect the
+        -- re-cancel loop the reset was introduced to prevent: that
+        -- loop required a RE-PENDED row still carrying cancel
+        -- columns (each new claimant's cancel-poll re-raises the
+        -- phase, and a reclaim that leaves the columns set re-pends
+        -- it again). The cancel arm never re-pends, it
+        -- terminalises, so no row it touches can re-enter the
+        -- claim/reclaim cycle, and the re-pend arm below now reads
+        -- cancel_phase = 0 by construction (the CASE fell through
+        -- the cancel arm), so the columns it resets were already
+        -- clean. The exhausted-with-cancel shape this arm always
+        -- owned keeps its exact old outcome.
         WHEN j.cancel_phase != 0
             THEN 'cancelled'::"{schema}".job_status
+        WHEN {has_budget}
+            THEN 'pending'::"{schema}".job_status
         ELSE 'crashed'::"{schema}".job_status
     END,
     locked_by_worker = NULL,
     lock_expires_at = NULL,
-    cancel_phase = 0,
-    cancel_requested_at = NULL,
+    -- The cancel columns survive exactly the arm that honoured
+    -- them. A terminal 'cancelled' row keeps phase and
+    -- cancel_requested_at as its audit trail: the same doctrine
+    -- every other terminal cancel path carries (mark_cancelled
+    -- deliberately sets neither column, and mark_abandoned's
+    -- cancel_phase = 2 guard reads them back). The re-pend and
+    -- crashed arms read 0/NULL by construction after the CASE
+    -- reorder (the re-pend arm fell through `cancel_phase != 0`;
+    -- no writer stamps cancel_requested_at without phase 1), so
+    -- the CASE arms are no-ops there, kept as defence-in-depth
+    -- against direct-SQL shapes.
+    cancel_phase = CASE WHEN j.cancel_phase != 0 THEN j.cancel_phase ELSE 0 END,
+    cancel_requested_at = CASE
+        WHEN j.cancel_phase != 0 THEN j.cancel_requested_at
+        ELSE NULL END,
     -- A reclaim hands the row back to the fleet, so it routes by the
     -- actor's current assignment from here on (the routing contract in
     -- taskq/backend/_dispatch_sql.py). Set on every arm: a row that
     -- terminalises instead is not dispatchable, and the flag is inert.
     assignment_routed = true,
+    -- The re-pend arm alone reschedules: its membership after the
+    -- reorder is exactly `cancel_phase = 0 AND {has_budget}`: the
+    -- cancelled and crashed arms keep the row's own scheduled_at.
     scheduled_at = CASE
-        WHEN {has_budget}
+        WHEN j.cancel_phase = 0 AND {has_budget}
             THEN clock_timestamp() + {reclaim_delay}
         ELSE j.scheduled_at
     END,
+    -- finished_at is stamped on every terminal arm: cancelled (any
+    -- budget) and crashed alike. The pre-reorder spelling keyed on
+    -- the budget alone, which after the reorder would leave a
+    -- budget-carrying cancelled row with a NULL finished_at.
     finished_at = CASE
-        WHEN NOT ({has_budget})
+        WHEN j.cancel_phase != 0 OR NOT ({has_budget})
             THEN clock_timestamp()
         ELSE j.finished_at
     END,
@@ -590,7 +657,7 @@ SET status = CASE
     -- snap.reason — never the sibling arm's, the same honesty standard
     -- the attempt rows carry; row and attempt draw from the one
     -- _ATTEMPT_MESSAGES map so the two audit surfaces cannot drift.
-    -- The retry and cancelled arms keep their error fields untouched:
+    -- The re-pend and cancelled arms keep their error fields untouched:
     -- a re-pended row has no failure to describe yet, and a
     -- cancel-honouring row's record is the in-flight request — no
     -- cancel-origin marker describes a worker that died mid-protocol,
@@ -1191,21 +1258,26 @@ async def sweep_expired_locks(
     ``statement_timeout`` included); repeated calls drain the eligible
     backlog a batch at a time.  For each reclaimed job:
 
-    - If attempts remain and retry is allowed: transition to
+    - If a cancel request was in-flight (``cancel_phase != 0``):
+      transition to ``'cancelled``: the caller's explicit request is
+      the honest terminal label, whatever the retry budget; the row
+      keeps its cancel columns as the audit trail of the honoured
+      request.
+    - Else, if attempts remain and retry is allowed: transition to
       ``'pending'`` with ``scheduled_at = clock_timestamp() + <delay>``,
       the delay derived from the row's own stamped retry curve (see
       ``_RECLAIM_DELAY_SQL``) and clamped at the lesser of the row's cap
       and *max_retry_backoff* — the operator's global ceiling, the same
       effective cap the failure path's ``compute_backoff`` applies.
-    - Otherwise, if a cancel request was still in-flight
-      (``cancel_phase != 0``): transition to ``'cancelled'`` — the
-      caller's explicit request is the honest terminal label.
     - Otherwise: transition to ``'crashed'``.
 
-    Both terminal branches set ``finished_at = clock_timestamp()``, and
-    all branches reset ``cancel_phase``/``cancel_requested_at`` — see the
-    ``_SWEEP_1_SQL`` comment for the deliberate tradeoff this makes on
-    the retry branch.
+    Both terminal branches set ``finished_at = clock_timestamp()``; the
+    re-pend branch leaves it NULL. The cancel columns are reset only on
+    the branches whose rows read ``cancel_phase = 0`` by construction
+    (re-pend and crashed), a no-op kept as defence-in-depth, and are
+    preserved on the cancel branch; see the ``_SWEEP_1_SQL`` comment for
+    the operator-intent-first ordering and why it cannot resurrect the
+    re-cancel loop the old reset-on-re-pend spelling prevented.
 
     All branches write a ``job_attempts`` row (outcome ``'crashed'``,
     error_class ``'WorkerCrashed'`` — that IS what happened to the

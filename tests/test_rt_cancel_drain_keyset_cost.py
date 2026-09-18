@@ -38,11 +38,11 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
-from taskq.backend._cancel_bulk import _cancel_where
+from taskq.backend._cancel_bulk import _UUID_MIN, _cancel_where
 from taskq.backend._protocol import JobFilter
 from taskq.backend._sql_templates import render
 from taskq.testing.fixtures import ModulePgSchema
-from taskq.testing.pg import RowVisitCounter, install_row_visit_counter
+from taskq.testing.pg import RowVisitCounter, install_row_visit_counter, read_row_visits
 
 pytestmark = pytest.mark.integration
 
@@ -82,17 +82,22 @@ async def _drain(
     """Run the real bulk cancel to completion.
 
     Returns its result and the per-batch row visits **grouped by driving
-    statement**. A bulk cancel runs two arms -- terminal cancel of
-    pending/scheduled, then cooperative cancel of running -- and each has
-    its own drain with its own cursor, so each is asserted against its own
-    bound. Concatenating them would compare one arm's first batch against
-    the other arm's last and report a reset cursor as a cost regression.
+    statement within one fixpoint round**. A bulk cancel runs two arms
+    -- terminal cancel of pending/scheduled, then cooperative cancel of
+    running -- each with its own cursor, and since #237 the pair runs as
+    bounded fixpoint ROUNDS: every round re-issues each arm's statement
+    from a fresh cursor, so grouping by statement text alone would pool
+    the later rounds' single probing batches into the round-1 drain and
+    misread a two-probe arm as a drain. The round-aware counter below
+    splits the groups at every fresh-cursor batch, so each arm's
+    round-1 DRAIN stays measurable against its own bound.
 
-    Only groups that actually drained (more than one batch) are returned:
-    an arm with nothing to do issues a single probing statement whose cost
-    says nothing about how the drain scales.
+    Only groups that actually drained (more than one batch within the
+    round) are returned: an arm with nothing to do issues a single
+    probing statement per round whose cost says nothing about how the
+    drain scales.
     """
-    counter = RowVisitCounter(pool, schema)
+    counter = _RoundAwareDrainCounter(pool, schema)
     result, _notify = await _cancel_where(
         counter,  # type: ignore[arg-type]  # Why: duck-typed pool; only acquire() is used.
         schema,
@@ -101,7 +106,75 @@ async def _drain(
         reason,
         batch_size=_BATCH,
     )
-    return result, [v for v in counter.by_statement.values() if len(v) > 1]
+    return result, [v for v in counter.by_round.values() if len(v) > 1]
+
+
+class _RoundAwareDrainCounter(RowVisitCounter):
+    """:class:`RowVisitCounter` with the #237 fixpoint's round boundaries.
+
+    Measurement is the parent's verbatim (the RLS row-visit policy, the
+    role switch, the per-statement deltas); this subclass additionally
+    reads the keyset cursor each driving batch binds -- the argument
+    after the filter params, exactly as `_drain_cancel_batches` binds
+    them -- and attributes every batch to ``(statement, round)``, where
+    a round begins at each fresh-cursor batch (``_UUID_MIN``: the first
+    batch of an arm's drain in each fixpoint round). The grouping is
+    what keeps the pins below honest under the rounds: an arm that
+    drains pays its batch-per-batch cost in round 1, while the later
+    rounds' single confirmation probes stay single-batch groups the
+    `len(v) > 1` drain filter excludes -- for the same reason the
+    original harness excluded a lone probe: its cost says nothing about
+    how a drain scales.
+
+    One harness caveat, accepted: a deadlock RETRY of a drain's first
+    batch re-binds the same fresh cursor and would bump the round
+    counter spuriously -- these pins seed no contention, so no batch
+    ever retries here.
+    """
+
+    def __init__(self, pool: Any, schema: str) -> None:
+        super().__init__(pool, schema)
+        #: (arm statement, round index) -> per-batch row visits.
+        self.by_round: dict[tuple[str, int], list[int]] = {}
+        self._round_of: dict[str, int] = {}
+
+    def acquire(self, **kwargs: object) -> Any:
+        outer = self
+        inner_acquire = super().acquire(**kwargs)
+
+        class _Acquire:
+            async def __aenter__(self) -> Any:
+                self._conn = await inner_acquire.__aenter__()
+                return _RoundSniffingConnection(self._conn, outer)
+
+            async def __aexit__(self, *exc: object) -> Any:
+                return await inner_acquire.__aexit__(*exc)
+
+        return _Acquire()
+
+
+class _RoundSniffingConnection:
+    """Delegates to the counting connection, attributing each driving
+    batch to its (statement, round) group."""
+
+    def __init__(self, inner: Any, counter: _RoundAwareDrainCounter) -> None:
+        self._inner = inner
+        self._counter = counter
+
+    async def fetchrow(self, sql: str, *args: object) -> Any:
+        counter = self._counter
+        key = str(sql)
+        if args and args[-2] == _UUID_MIN:
+            counter._round_of[key] = counter._round_of.get(key, 0) + 1
+        round_idx = counter._round_of.get(key, 0)
+        before = await read_row_visits(self._inner, counter._schema)
+        row = await self._inner.fetchrow(sql, *args)
+        after = await read_row_visits(self._inner, counter._schema)
+        counter.by_round.setdefault((key, round_idx), []).append(after - before)
+        return row
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
 
 
 def _assert_total_work_is_linear(visits: list[int], backlog: int, *, what: str) -> None:
@@ -169,7 +242,10 @@ async def test_cancel_drain_does_not_reread_rows_it_already_cancelled(
     assert result.cancelled_directly == _BACKLOG, (
         "a bounded drain must still cancel the whole match set"
     )
-    assert len(drains) == 1, "only the terminal arm should have drained"
+    assert len(drains) == 1, (
+        "only the terminal arm should have drained (one multi-batch group: "
+        "its round-1 pass; every other arm-round pair is a single probe)"
+    )
     _assert_total_work_is_linear(
         drains[0], _BACKLOG, what="terminal cancel of pending/scheduled jobs"
     )
@@ -206,13 +282,13 @@ async def test_running_arm_drain_does_not_reread_rows_it_already_requested(
     assert result.cancel_requested == _BACKLOG, "every running job must still be cancel-requested"
     assert result.cancelled_directly == 0, "a bulk cancel never terminalises a running job"
     # The terminal arm runs first and finds nothing (every job is
-    # running), so it issues a single probing statement and does not
-    # drain; the cooperative arm is the one that drains. Assert that
-    # explicitly rather than assuming which group is which -- picking the
-    # wrong group would measure a statement that never looped and pass
-    # regardless of the defect.
+    # running), so it issues a single probing statement per fixpoint
+    # round and never drains; the cooperative arm is the one that drains.
+    # Assert that explicitly rather than assuming which group is which --
+    # picking the wrong group would measure a statement that never looped
+    # and pass regardless of the defect.
     assert len(drains) == 1, (
-        f"expected exactly one arm to drain; got {len(drains)} groups of sizes "
+        f"expected exactly one arm-round to drain; got {len(drains)} groups of sizes "
         f"{[len(d) for d in drains]}"
     )
     _assert_total_work_is_linear(drains[0], _BACKLOG, what="cooperative cancel of running jobs")

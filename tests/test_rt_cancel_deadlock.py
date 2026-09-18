@@ -253,9 +253,18 @@ async def test_real_deadlock_mid_drain_retries_cleanly_with_no_phantoms(
         f"expected exactly one genuine DeadlockDetectedError from the drain's batch-2 "
         f"event INSERT; saw {state.event_insert_deadlocks}"
     )
-    assert state.ps_driving_calls == 3, (
-        f"batch 1 + deadlocked batch 2 + retried batch 2 = three ps driving executions; "
-        f"saw {state.ps_driving_calls} — the retry did not re-run the batch"
+    # PR #272 (issue #237): the drain runs as bounded fixpoint rounds. Round
+    # 1 is batch 1 + deadlocked batch 2 + retried batch 2. All 102 rows are
+    # terminal 'cancelled' after it, so round 2's pending arm executes its
+    # driving statement exactly once, windows zero matching rows, and the
+    # round commits no progress: that confirming execution is the fourth, and
+    # the stop-on-no-progress rule ends the loop there. The count is exact by
+    # construction, not a tolerance.
+    assert state.ps_driving_calls == 4, (
+        f"batch 1 + deadlocked batch 2 + retried batch 2 + the fixpoint's "
+        f"confirming round = four ps driving executions; "
+        f"saw {state.ps_driving_calls}, so the retry did not re-run the batch "
+        f"or the confirming round did not execute exactly once"
     )
 
     # Exact totals, no phantom ids, no duplicates.
