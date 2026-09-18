@@ -94,6 +94,16 @@ def _args(**overrides: object) -> EnqueueArgs:
             timedelta(seconds=-1),
             "a negative result lifetime expires the result before it is written",
         ),
+        (
+            "retry_base",
+            timedelta(seconds=-5),
+            "a negative backoff base anchors the reclaim reschedule in the past",
+        ),
+        (
+            "retry_cap",
+            timedelta(seconds=-5),
+            "a negative backoff cap feeds the reclaim band a ceiling below zero",
+        ),
     ],
 )
 def test_out_of_domain_enqueue_value_is_refused_where_it_is_created(
@@ -131,6 +141,11 @@ def test_boundary_values_inside_the_domain_are_accepted() -> None:
     assert _args(priority=_SMALLINT_MIN).priority == _SMALLINT_MIN
     assert _args(heartbeat_timeout=timedelta(0)).heartbeat_timeout == timedelta(0)
     assert _args(start_to_close=timedelta(seconds=1)).start_to_close == timedelta(seconds=1)
+    # A zero retry_base is inside the struct's domain (the same doctrine as
+    # heartbeat_timeout=0: the boundary that knows the semantics refuses
+    # non-positive, the struct refuses negative) and the reclaim writes
+    # floor the degenerate curve it produces at MIN_DEFERRAL_INTERVAL.
+    assert _args(retry_base=timedelta(0)).retry_base == timedelta(0)
 
 
 # ── Parity: both backends refuse, neither writes ───────────────────────
