@@ -1,7 +1,9 @@
 """Shared test utilities for the taskq.web.admin test suite.
 
 Stub classes for duck-typing asyncpg and Redis primitives in unit tests.
-Pytest fixtures that use these classes live in the adjacent ``conftest.py``.
+Pytest fixtures that use these classes live in ``_fixtures.py``, which
+``tests/conftest.py`` imports and registers so fixture resolution never
+depends on conftest adjacency (see that module's docstring).
 """
 
 from __future__ import annotations
