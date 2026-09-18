@@ -10,6 +10,10 @@ Every assertion here is on an observable response header — never on source tex
 from collections.abc import Callable
 
 import pytest
+
+pytest.importorskip("fastapi")
+pytest.importorskip("jinja2")
+
 import structlog.types
 from fastapi.testclient import TestClient
 
