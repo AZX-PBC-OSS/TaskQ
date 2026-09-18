@@ -5,7 +5,16 @@ transaction, and atomically extends workers.last_seen_at, jobs lock /
 heartbeat columns, and reservation_slots leases for jobs locked by this
 worker — except the jobs the worker has disowned (``WorkerDeps.disowned_jobs``:
 finished with, outcome unrecordable), whose leases must lapse so the
-reclaim sweep can hand them back. After max_heartbeat_failures
+reclaim sweep can hand them back. The tick's whole command sequence runs
+under ONE command-timeout budget (see the tick block and
+:func:`_lease_renewal_threshold` for the lease-model arithmetic that
+depends on it), with a bounded rollback-or-close teardown. The jobs-lock
+renewal is threshold-gated (:func:`_lease_renewal_threshold`): a row
+whose lease is still comfortably fresh is left alone so a healthy beat
+stops paying a non-HOT update per running row per tick (#227), while
+rows carrying a per-job ``heartbeat_timeout`` (the reclaim sweep's
+heartbeat arm needs their beats fresh) and rows at/under the threshold
+renew on every beat. After max_heartbeat_failures
 consecutive connection failures, isolate_self proactively transitions
 running jobs and signals shutdown.
 """
@@ -50,6 +59,103 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 _meter = get_meter()
 
+
+def _lease_renewal_threshold(
+    lock_lease: timedelta,
+    heartbeat_interval: float,
+    max_heartbeat_failures: int,
+    heartbeat_command_timeout: float,
+) -> timedelta:
+    """The remaining-lease floor below which the heartbeat renews a row.
+
+    Renewing every held row on every beat rewrites ``lock_expires_at`` —
+    the key of ``jobs_running_lock_expires_idx`` — so every beat is a
+    non-HOT update per running row (new index entries in every index a
+    running row satisfies, fleet-wide, forever; #227). Renewing only
+    rows whose remaining lease is at or under this threshold spaces the
+    rewrites out instead of paying them every beat.
+
+    Sizing — measured against the ENFORCED failed-tick bound, not a
+    hoped-for one. The heartbeat's tick runs its whole command sequence
+    (BEGIN, the three writes, the still-held probe, the cancel hook's
+    statements, COMMIT) under ONE ``asyncio.timeout(
+    heartbeat_command_timeout)`` budget, and its teardown is bounded by
+    the same budget's remainder (a rollback that fits) or by a bounded
+    close (server-side rollback on disconnect — no awaited round trip).
+    A failed tick is therefore bounded by, with every term enforced:
+
+    * the pool acquire: at most ``heartbeat_interval`` (its own timeout;
+      an acquire that takes the whole timeout fails the tick with no
+      commands and no teardown at all);
+    * the command sequence: at most one ``heartbeat_command_timeout``
+      (the budget);
+    * the teardown: at most one ``heartbeat_command_timeout`` (the
+      bounded rollback-or-close).
+
+    so the worst beat-to-beat gap is ``heartbeat_interval + 2 *
+    heartbeat_command_timeout``, and the floor is ``(F+1)`` of those —
+    the loop isolates on the (F+1)-th consecutive failure, and the lease
+    must still be valid at that decision.
+
+    Fix-round premise correction: the round-1 derivation assumed a
+    failed tick was bounded by "acquire-block then a timed-out command"
+    (interval + ONE command timeout). That premise was false — the tick
+    issues >= 3 commands each separately bounded by the pool's
+    per-query command timeout, and the transaction's teardown adds its
+    own round trip — so a brownout tick (a contended acquire, then two
+    just-under-timeout statements, then a timeout) lasted acquire +
+    ~3 command-timeouts, which the round-1 floor of (F+1) * (interval +
+    command_timeout) did not cover: a legal skip at 49.5s of a 60s lease
+    followed by four such failed ticks let the lease expire 3.2-9.2s
+    BEFORE the isolate decision while the unconditional renewal
+    survived. The per-tick command budget above makes the bound true by
+    enforcement, and this floor sizes against it.
+
+    Consequences, stated honestly:
+
+    * Healthy beats: a skip happens only while remaining > threshold, so
+      the next beat's remaining is > ``threshold - worst_gap``; at the
+      floor that is ``F * worst_gap`` (>= one full worst gap for F >= 1)
+      — a healthy-but-slow worker never lets a lease lapse.
+    * The failure cascade: the worst case is a skip at remaining
+      ``threshold + eps`` followed by ``F+1`` failed beats, each gap
+      STRICTLY under one worst gap (an acquire that consumed its whole
+      timeout fails with no commands and no teardown — a gap of exactly
+      the interval; a tick that ran commands consumed strictly less than
+      its whole acquire allowance). The lease at the isolate decision is
+      then > 0 by construction, and a worker that recovers after F
+      failures still holds a full worst gap of lease and renews it.
+    * At the DEFAULT settings the floor is ``4 * (10 + 2 + 2) = 56s``
+      against a 60s lease: the gate renews every beat — byte-identical
+      cadence to the unconditional renewal, so the round-1
+      default-settings lapse window closes outright — and the enforced
+      budget independently makes the default-config cascade survivable
+      with margin (4 gaps x 14s = 56s against the 60s lease), which the
+      un-enforced per-statement bound (statement-count-dependent, up to
+      ``interval + (k+1) * command_timeout`` per tick) is not.
+    * The gate saves again from ``lock_lease`` ≈ 70s upward (2x at 70,
+      4x at 90, and the ``lock_lease / 2`` arm dominates from ≈ 112,
+      giving ~6x at 120+). Raising ``heartbeat_command_timeout`` (for a
+      loaded or cross-region Postgres whose beat needs more than one
+      command-timeout in total) raises the floor with it — the gate
+      harvests only slack that actually exists.
+    * Whenever the floor meets or exceeds the lease itself, the gate
+      renews every row on every beat — zero savings, exactly the
+      unconditional behaviour, because there is no slack that is safe to
+      harvest.
+
+    The comparison itself is server-side (``lock_expires_at <=
+    clock_timestamp() + $4`` in the gated statement), so worker-clock
+    skew cannot move the threshold: the same clock that stamped the
+    lease judges it.
+    """
+    worst_beat_gap = heartbeat_interval + 2 * heartbeat_command_timeout
+    safety_floor = timedelta(
+        seconds=(max_heartbeat_failures + 1) * worst_beat_gap,
+    )
+    return max(safety_floor, lock_lease / 2)
+
+
 # Which disowned ids still name a running row locked to this worker: the
 # rest have been reclaimed (re-pended, or claimed by another worker) and
 # leave the set. Only issued on a tick whose set is non-empty.
@@ -75,11 +181,28 @@ async def heartbeat_loop(
     interval = deps.settings.heartbeat_interval
     lock_lease = timedelta(seconds=deps.settings.lock_lease)
     schema = deps.settings.schema_name
+    # The tick's single command budget (#227 fix round): ONE
+    # heartbeat_command_timeout for the tick's whole command sequence
+    # (BEGIN + writes + probes + hook + COMMIT, and the post-tx drain's
+    # share). See the tick block below for why the sequence — not each
+    # statement — is the unit the lease model needs bounded.
+    tick_command_budget = deps.settings.heartbeat_command_timeout
+    # The renewal threshold (#227): a healthy beat only rewrites leases
+    # whose remaining time is at or under this. See
+    # _lease_renewal_threshold for the sizing derivation (against the
+    # tick budget's enforced bound) and the failure-cascade margin
+    # proof.
+    renewal_threshold = _lease_renewal_threshold(
+        lock_lease,
+        interval,
+        deps.settings.max_heartbeat_failures,
+        deps.settings.heartbeat_command_timeout,
+    )
     (
         update_worker_liveness_sql,
         update_jobs_lock_sql,
         update_reservation_leases_sql,
-    ) = build_heartbeat_sql(schema)
+    ) = build_heartbeat_sql(schema, renewal_threshold=renewal_threshold)
     select_still_held_sql = _SELECT_STILL_HELD_SQL_TEMPLATE.format(schema=schema)
 
     # Monotonic stamp of the last jobs-lock renewal that landed: the
@@ -92,56 +215,153 @@ async def heartbeat_loop(
         tick_start = time.monotonic()
         try:
             _tick_raised = False
+            # The tick's single command budget (#227 fix round): None
+            # until the acquire lands -- the acquire is bounded by its
+            # own timeout (the interval) OUTSIDE this budget -- then the
+            # deadline every later phase of the tick shares.
+            budget_deadline: float | None = None
             try:
-                async with (
-                    deps.heartbeat_pool.acquire(timeout=interval) as conn,
-                    conn.transaction(),
-                ):
-                    # Snapshot: consumers add to the set while this tick
-                    # awaits, and an id that arrives mid-tick belongs to
-                    # the next tick's exclusion — the prune below must
-                    # not read it as "still held" and drop it.
-                    disowned = list(deps.disowned_jobs)
-                    # The stall-attribution tally rides the liveness write:
-                    # one dict merge in the statement the tick already
-                    # issues, no extra round trip. An empty tally merges a
-                    # no-op, so a quiet process leaves the registered
-                    # metadata keys untouched.
-                    await conn.execute(
-                        update_worker_liveness_sql,
-                        worker_id,
-                        jsonb_param(deps.stall_tally.metadata_value()),
-                    )
-                    renewal_at = time.monotonic()
-                    jobs_tag = await conn.execute(
-                        update_jobs_lock_sql, worker_id, lock_lease, disowned
-                    )
-                    await conn.execute(
-                        update_reservation_leases_sql, worker_id, lock_lease, disowned
-                    )
-                    if disowned:
-                        held_rows = await conn.fetch(select_still_held_sql, disowned, worker_id)
-                        still_held = {row["id"] for row in held_rows}
-                        deps.disowned_jobs.difference_update(set(disowned) - still_held)
-                    if cancel_controller is not None:
-                        try:
-                            await cancel_controller.run_in_tx(conn)  # type: ignore[arg-type]  # Why: asyncpg PoolConnectionProxy is a Connection subclass at runtime; pyright types don't reflect this delegation.
-                        except Exception as hook_exc:
-                            _in_tx_failed = True
-                            deps.heartbeat_failures += 1
-                            update_heartbeat_consecutive_failures(
-                                str(worker_id), deps.heartbeat_failures
+                async with deps.heartbeat_pool.acquire(timeout=interval) as conn:
+                    budget_deadline = time.monotonic() + tick_command_budget
+                    tx = conn.transaction()
+                    try:
+                        # ONE command-timeout for the tick's whole command
+                        # sequence: BEGIN, the liveness write, the gated
+                        # renewal, the reservation-lease write, the
+                        # still-held probe, the cancel hook's statements,
+                        # COMMIT. Each statement's own pool-level
+                        # command_timeout stays as the inner backstop; the
+                        # budget is what bounds the SEQUENCE, because a
+                        # failed tick's cost to the lease model is the
+                        # whole tick, not any one statement: a brownout
+                        # tick whose first two statements each take just
+                        # under one timeout and whose third times out
+                        # lasts acquire + ~3 command-timeouts when only
+                        # the per-statement bounds apply, which is the
+                        # gap bound the round-1 threshold arithmetic
+                        # assumed away (the reproduced default-settings
+                        # lease-lapse window). A tick whose statements
+                        # legitimately need more than one command-timeout
+                        # IN TOTAL now fails fast here instead: raise
+                        # TASKQ_HEARTBEAT_COMMAND_TIMEOUT for that regime
+                        # (the renewal threshold's floor absorbs the
+                        # raised value automatically -- see
+                        # _lease_renewal_threshold).
+                        async with asyncio.timeout(tick_command_budget):
+                            await tx.start()
+                            # Snapshot: consumers add to the set while this tick
+                            # awaits, and an id that arrives mid-tick belongs to
+                            # the next tick's exclusion — the prune below must
+                            # not read it as "still held" and drop it.
+                            disowned = list(deps.disowned_jobs)
+                            # The stall-attribution tally rides the liveness write:
+                            # one dict merge in the statement the tick already
+                            # issues, no extra round trip. An empty tally merges a
+                            # no-op, so a quiet process leaves the registered
+                            # metadata keys untouched.
+                            await conn.execute(
+                                update_worker_liveness_sql,
+                                worker_id,
+                                jsonb_param(deps.stall_tally.metadata_value()),
                             )
-                            logger.warning(
-                                "heartbeat-hook-failure",
-                                kind="state_change",
-                                cause="heartbeat_hook_failure",
-                                worker_id=str(worker_id),
-                                error=repr(hook_exc),
+                            renewal_at = time.monotonic()
+                            # The gated renewal (#227): binds the threshold as
+                            # $4. Rows with a per-job heartbeat_timeout, rows
+                            # with no lease stamp, and rows at/under the
+                            # threshold renew; fresh leases are left alone so a
+                            # healthy beat stops paying a non-HOT update per
+                            # running row per tick. parse_rowcount on the tag
+                            # now counts rows RENEWED this tick, not rows held.
+                            jobs_tag = await conn.execute(
+                                update_jobs_lock_sql,
+                                worker_id,
+                                lock_lease,
+                                disowned,
+                                renewal_threshold,
                             )
-                            raise OSError(
-                                f"cancel_controller.run_in_tx failed: {hook_exc!r}"
-                            ) from hook_exc
+                            await conn.execute(
+                                update_reservation_leases_sql,
+                                worker_id,
+                                lock_lease,
+                                disowned,
+                            )
+                            if disowned:
+                                held_rows = await conn.fetch(
+                                    select_still_held_sql, disowned, worker_id
+                                )
+                                still_held = {row["id"] for row in held_rows}
+                                deps.disowned_jobs.difference_update(set(disowned) - still_held)
+                            if cancel_controller is not None:
+                                try:
+                                    await cancel_controller.run_in_tx(conn)  # type: ignore[arg-type]  # Why: asyncpg PoolConnectionProxy is a Connection subclass at runtime; pyright types don't reflect this delegation.
+                                except Exception as hook_exc:
+                                    _in_tx_failed = True
+                                    deps.heartbeat_failures += 1
+                                    update_heartbeat_consecutive_failures(
+                                        str(worker_id), deps.heartbeat_failures
+                                    )
+                                    logger.warning(
+                                        "heartbeat-hook-failure",
+                                        kind="state_change",
+                                        cause="heartbeat_hook_failure",
+                                        worker_id=str(worker_id),
+                                        error=repr(hook_exc),
+                                    )
+                                    raise OSError(
+                                        f"cancel_controller.run_in_tx failed: {hook_exc!r}"
+                                    ) from hook_exc
+                            # The commit rides the SAME budget: a commit
+                            # that would push the sequence past the
+                            # command-timeout is cut, the tick fails
+                            # without the commit having been confirmed,
+                            # and the teardown below closes the
+                            # connection (the writes are idempotent
+                            # re-stamps, so an unconfirmed commit is
+                            # benign: the next tick rewrites them).
+                            await tx.commit()
+                    except BaseException:
+                        # Teardown, bounded by the SAME budget's
+                        # remainder — deliberately OUTSIDE the expired
+                        # asyncio.timeout scope: an await started after
+                        # the scope expired is NOT re-cancelled (measured
+                        # — asyncio.timeout fires once), so the teardown
+                        # must carry its own bound rather than hide
+                        # inside the dead scope.
+                        left = budget_deadline - time.monotonic()
+                        rolled_back = False
+                        if left > 0:
+                            try:
+                                async with asyncio.timeout(left):
+                                    await tx.rollback()
+                                rolled_back = True
+                            except TimeoutError:
+                                # The rollback did not fit what the tick
+                                # had left; fall through to the close.
+                                pass
+                        if not rolled_back:
+                            # Close instead of awaiting a rollback round
+                            # trip: the server rolls the transaction back
+                            # on disconnect, the close is a local
+                            # Terminate write (bounded, terminate() on
+                            # timeout — close_conn_bounded never raises),
+                            # and the pool discards the closed connection
+                            # on release. This is the budget-exhausted
+                            # path, so it is also the path that keeps the
+                            # failed tick inside the lease model's
+                            # h + 2c bound.
+                            await close_conn_bounded(
+                                conn,  # type: ignore[arg-type]  # Why: PoolConnectionProxy delegates close()/terminate() to the underlying Connection at runtime; pyright's stubs model the proxy as unrelated, the same delegation the run_in_tx call below relies on.
+                                "heartbeat-tick-budget",
+                                tick_command_budget,
+                                mid_run=True,
+                            )
+                        # Re-raise the tick's ORIGINAL exception (a bare
+                        # raise re-raises it identically): a teardown
+                        # timeout or the close's bounds must never
+                        # displace what actually failed the tick — least
+                        # of all an external cancellation, which must
+                        # stay a cancellation.
+                        raise
             except BaseException:
                 _tick_raised = True
                 raise
@@ -154,32 +374,73 @@ async def heartbeat_loop(
                 # by the time this runs — the transaction has committed or
                 # rolled back — so mark_abandoned cannot self-deadlock here.
                 if cancel_controller is not None:
-                    try:
-                        await cancel_controller.run_post_tx()
-                    except Exception as post_exc:
-                        # A post-tx failure on a healthy tick is the tick's
-                        # failure and propagates to the handlers below; on an
-                        # already-failing tick it must NOT displace the
-                        # original error, which is the root cause worth
-                        # reporting.
-                        if not _tick_raised:
-                            raise
-                        logger.warning(
-                            "heartbeat-post-tx-failure",
+                    # post_tx shares the tick's ONE command budget: it
+                    # runs under whatever the deadline has left, and is
+                    # deferred to the next tick when nothing is left (an
+                    # expired asyncio.timeout does not re-cancel an
+                    # await that starts after expiry — measured — so the
+                    # remaining time is enforced with a fresh scope).
+                    # The controller's deque persists, so a deferred
+                    # drain loses nothing. When the acquire itself
+                    # failed, no budget was consumed: post_tx drains the
+                    # PREVIOUS ticks' queue under a full budget of its
+                    # own (the acquire's own timeout already bounds that
+                    # tick).
+                    left = (
+                        budget_deadline - time.monotonic()
+                        if budget_deadline is not None
+                        else tick_command_budget
+                    )
+                    if left <= 0:
+                        logger.debug(
+                            "heartbeat-post-tx-deferred",
                             worker_id=str(worker_id),
-                            error=repr(post_exc),
+                            reason="tick_command_budget_exhausted",
                         )
+                    else:
+                        try:
+                            async with asyncio.timeout(left):
+                                await cancel_controller.run_post_tx()
+                        except Exception as post_exc:
+                            # A post-tx failure on a healthy tick is the tick's
+                            # failure and propagates to the handlers below; on an
+                            # already-failing tick it must NOT displace the
+                            # original error, which is the root cause worth
+                            # reporting. (A mid-drain budget cut lands here as
+                            # TimeoutError: the in-flight abandon is shielded
+                            # from the tick and re-queued by the drain itself,
+                            # so the deferred work rides the next tick.)
+                            if not _tick_raised:
+                                raise
+                            logger.warning(
+                                "heartbeat-post-tx-failure",
+                                worker_id=str(worker_id),
+                                error=repr(post_exc),
+                            )
             deps.heartbeat_failures = 0
             update_heartbeat_consecutive_failures(str(worker_id), 0)
             tick_duration_s = time.monotonic() - tick_start
             _tick_duration.record(tick_duration_s)
-            # The lease the previous renewal stamped had this much left when
-            # this one landed: lease minus the gap between the two UPDATEs
-            # (both measured at the same point, so network latency cancels).
-            # A failed or late tick widens the gap and lowers the sample,
-            # which is the signal the lock-expiry alert reads; the config
-            # constant would never move. Clamped at 0: a renewal that lands
-            # after expiry renews an already-expired lease.
+            # The lease the previous beat's UPDATE stamped had this much
+            # left when this one landed: lease minus the gap between the
+            # two UPDATEs (both measured at the same point, so network
+            # latency cancels). A failed or late tick widens the gap and
+            # lowers the sample, which is the signal the lock-expiry
+            # alert reads; the config constant would never move. Clamped
+            # at 0: a renewal that lands after expiry renews an
+            # already-expired lease.
+            # Under threshold-gated renewal (#227) the sample keeps this
+            # beat-cadence meaning deliberately: it is stamped on every
+            # successful tick, whether or not the gate renewed any rows,
+            # so a late or failing beat lowers it exactly as before and
+            # alert thresholds calibrated to the old per-tick cadence
+            # keep their semantics. For rows the gate skipped (still
+            # above the threshold) the true remaining is anywhere up to
+            # the full lease — the sample is the "if this beat renewed
+            # everything" floor, never an overstatement of a RENEWED
+            # row's remaining, and the threshold's own sizing is pinned
+            # by the _lease_renewal_threshold unit and property tests
+            # rather than by this histogram.
             if last_renewal_at is not None:
                 record_lock_expires_in_seconds(
                     str(worker_id),

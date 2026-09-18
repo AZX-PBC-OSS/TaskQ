@@ -85,6 +85,9 @@ def _deps(*, maxsize: int, notify_enabled: bool) -> SimpleNamespace:
         settings=settings,
         liveness=SimpleNamespace(tick=lambda *a, **k: None, forget=lambda *a, **k: None),
         disowned_jobs=set(),
+        # The producer's availability subtracts active jobs (#229); the
+        # cooldown tests hold zero active throughout.
+        active_jobs=SimpleNamespace(count=lambda: 0),
     )
 
 

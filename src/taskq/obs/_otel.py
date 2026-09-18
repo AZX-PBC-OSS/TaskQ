@@ -849,9 +849,13 @@ _lock_expires_in_seconds = get_meter().create_histogram(
     "taskq.lock.expires_in_seconds",
     description=(
         "Lease remaining on this worker's job locks at the moment the "
-        "heartbeat renewed them: lock_lease minus the gap since the previous "
-        "renewal, measured, so a late or failed tick lowers the sample. "
-        "0 when the renewal landed after expiry. No dimensions."
+        "heartbeat's jobs-lock UPDATE landed: lock_lease minus the gap since "
+        "the previous beat's UPDATE, measured, so a late or failed tick "
+        "lowers the sample. 0 when the beat landed after expiry. Under "
+        "threshold-gated renewal the sample is stamped on every successful "
+        "beat (renewed or not), so it measures the beat cadence — the floor "
+        "the renewal threshold keeps is pinned by tests, not by this "
+        "histogram. No dimensions."
     ),
     unit="s",
     explicit_bucket_boundaries_advisory=(0, 5, 10, 15, 20, 30, 45, 60),
