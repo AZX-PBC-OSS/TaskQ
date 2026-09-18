@@ -410,8 +410,8 @@ async def await_tracked_actor_reap() -> bool:
     and then parked in the default executor's join
     (``THREAD_JOIN_TIMEOUT``, 300s) waiting for the very thread the hold
     assumed was gone — a released row became claimable while its actor
-    still ran (#232's attack: the double-run was constructible at the
-    default budgets with an ordinary long sync actor).
+    still ran (the double-run #232 constructed at the default budgets
+    with an ordinary long sync actor).
 
     The thread's post-release completion accomplishes nothing — its row
     was already released-with-hold and the fleet re-attempts the work — so
@@ -433,8 +433,8 @@ async def await_tracked_actor_reap() -> bool:
         handles=[t.get_name() for t in handles],
         note=(
             "actor handle(s) outlived the TaskGroup teardown; the shutdown "
-            "watchdog stays armed while they are reaped — the deadline trip "
-            "is the exit bound the release hold already models"
+            "watchdog stays armed while they are reaped (the deadline trip "
+            "is the exit bound the release hold already models)"
         ),
     )
     # Poll-for-reap with the armed watchdog as the hard bound is the
@@ -660,7 +660,7 @@ class ShutdownWatchdog:
                         f"handle(s) (sync-actor executor thread(s) / transactional "
                         f"unwind(s)) still live {elapsed:.1f}s into shutdown (deadline "
                         f"{self._deadline:.1f}s); force-exiting inside the release "
-                        f"hold's window — the row was already released-with-hold and "
+                        f"hold's window: the row was already released-with-hold and "
                         f"the fleet re-attempts the work, so ending the outlived "
                         f"attempt here loses nothing",
                     )

@@ -223,7 +223,7 @@ def test_release_park_lease_capped_warning_names_the_arithmetic() -> None:
     """The lease-cap warning fires exactly when the cap binds before the
     budget bound, with both numbers and the raise-the-lease remedy.
 
-    The 120/30/10/60 shape is the one the attack constructed: under an
+    The 120/30/10/60 shape is the one the #232 review constructed: under an
     uncapped park its lease expires mid-park (a single failed RELEASING
     write away from a double-run). The cap makes it safe by construction —
     and the warning says the trade being made instead of staying quiet

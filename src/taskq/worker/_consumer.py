@@ -370,7 +370,7 @@ async def _interrupted_actor_hold(
     bounded by the remaining termination budget minus the release write's
     own retry budget, so the write still fits before the watchdog's
     deadline — and releases with hold=0 only on a provable exit inside that
-    window. An actor that outlives the window (red-team: an unbounded sync
+    window. An actor that outlives the window (the unbounded sync
     actor) is still released, never stranded: the hold is the rest of this
     process's exit window plus the watchdog's exit tail
     (:func:`taskq.worker.shutdown._release_hold`), so the row becomes
