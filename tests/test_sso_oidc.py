@@ -462,7 +462,7 @@ def _state_cookie_headers(resp: Any) -> list[str]:
 def test_state_cookie_is_scoped_to_the_callback_route() -> None:
     """The state cookie (state + PKCE verifier + nonce) is consumed by exactly
     one route, so it is offered on exactly one: the mount's callback. Pinned
-    on a non-default base_path, so a hardcoded literal fails here too — the
+    on a non-default base_path, so a hardcoded literal fails here too, the
     SAML correlation cookie carries the same pin."""
     client = TestClient(_make_app(_config(), base_path="/console"))
 
@@ -503,7 +503,7 @@ def test_state_cookie_is_cleared_on_the_callback_path() -> None:
 def test_login_and_callback_fetch_discovery_and_jwks_once_per_issuer() -> None:
     """An unauthenticated /login is free to flood; each one must not perform a
     live outbound discovery fetch. Within one bundle and TTL window the
-    discovery document is fetched once and the JWKS once — the second
+    discovery document is fetched once and the JWKS once, the second
     /login and the callback both read the cache."""
     client = TestClient(_make_app(_config()))
     jwks_url = make_discovery(_ISSUER)["jwks_uri"]
@@ -513,7 +513,7 @@ def test_login_and_callback_fetch_discovery_and_jwks_once_per_issuer() -> None:
         state2 = _do_login(client)
         # The callback answers the SECOND login (its state cookie is the one
         # still in the jar). Whether the exchange itself later validates is
-        # out of scope here — discovery and JWKS are read before it.
+        # out of scope here, discovery and JWKS are read before it.
         client.get(
             "/admin/callback",
             params={"code": "fake-code", "state": state2},
@@ -523,11 +523,11 @@ def test_login_and_callback_fetch_discovery_and_jwks_once_per_issuer() -> None:
         jwks_calls = [c for c in router.calls if str(c.request.url) == jwks_url]
 
     assert len(discovery_calls) == 1, (
-        f"expected one discovery fetch, saw {len(discovery_calls)} — discovery is "
+        f"expected one discovery fetch, saw {len(discovery_calls)}, discovery is "
         "being fetched per request instead of served from the per-issuer cache"
     )
     assert len(jwks_calls) == 1, (
-        f"expected one JWKS fetch, saw {len(jwks_calls)} — JWKS is being "
+        f"expected one JWKS fetch, saw {len(jwks_calls)}, JWKS is being "
         "refetched instead of served from the per-issuer cache"
     )
 

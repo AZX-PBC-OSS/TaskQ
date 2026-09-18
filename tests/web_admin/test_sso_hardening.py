@@ -186,7 +186,7 @@ def _logout_pins_for(
     session_cookie = _crafted_session_cookie()
     client.cookies.set("taskq_session", session_cookie)
 
-    # GET — the shape a forced top-level navigation produces — is refused.
+    # GET, the shape a forced top-level navigation produces, is refused.
     got = client.get(f"{base_path}/logout", follow_redirects=False)
     assert got.status_code == 405, got.status_code
     assert not any("taskq_session=" in header for header in got.headers.get_list("set-cookie")), (

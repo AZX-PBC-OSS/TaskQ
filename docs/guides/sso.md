@@ -84,7 +84,7 @@ invalidates every outstanding session at once — no session store to flush.
    validates the ID token (issuer, audience, signature via JWKS), extracts
    claims into `IdentityClaims`, sets the session cookie, and redirects to the
    admin UI root.
-3. **`/logout`** (POST) — requires a CSRF token bound to the live session
+3. **`/logout`** (POST), requires a CSRF token bound to the live session
    (the admin UI's Sign out control posts it), clears the session cookie,
    and redirects to the admin root. `GET /logout` is refused (405), so a
    forced top-level navigation from any page cannot clear an admin session
@@ -102,8 +102,8 @@ discovery document plus the JWKS. Both are cached in memory per issuer with
 a 300 s TTL (bounded to the most recently used 16 issuers), so a flood of
 unauthenticated `/login` requests costs at most one outbound fetch per
 issuer per TTL window instead of one per request. A refresh that fails
-invalidates the issuer's cache entry — the next request starts from a fresh
-fetch rather than serving a document the IdP would not refresh — and a
+invalidates the issuer's cache entry, the next request starts from a fresh
+fetch rather than serving a document the IdP would not refresh, and a
 rotated IdP signing key is picked up when the entry expires, at most one
 TTL window later. The cache is process-local, like every store in the SSO
 layer; replicas fetch independently.
@@ -187,7 +187,7 @@ bundle = create_oidc_auth(config, base_path="/admin")
   attributes into `IdentityClaims`, sets the session cookie, and redirects
   to the admin root.
 - **`/metadata`** (GET) — returns SP metadata XML for IdP configuration.
-- **`/logout`** (POST) — requires the session-bound CSRF token; clears the
+- **`/logout`** (POST), requires the session-bound CSRF token; clears the
   session cookie (see [Logging out](#logging-out)).
 
 v1 supports SP-initiated flow only (the user hits `/login` first). IdP-initiated
@@ -367,7 +367,7 @@ is marked `SameSite=None` when `secure_cookie` is on and is scoped to the
 
 The OIDC backend sets the analogous short-lived cookie (`taskq_oidc_state`,
 5 minutes) carrying the `state`, the PKCE `code_verifier`, and the `nonce` in
-one signed record. It is scoped to the callback route the same way — it is
+one signed record. It is scoped to the callback route the same way, it is
 consumed by exactly one route, so it is offered on exactly one.
 
 The correlation cookie is the binding: the callback accepts an assertion only
@@ -453,7 +453,7 @@ group no longer intersects the allowlist gets 401 on the next request). Rotating
 ### Logging out
 
 Logout is a POST, not a GET. Both backends refuse `GET /logout` (405), so a
-forced top-level navigation — a link, an image, a redirect from any page —
+forced top-level navigation, a link, an image, a redirect from any page ,
 cannot clear an admin session, and the POST must carry a CSRF token derived
 from the live session cookie (an HMAC of the cookie value under
 `session_secret`). The admin UI's **Sign out** control is a small POST form

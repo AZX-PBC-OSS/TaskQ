@@ -294,7 +294,7 @@ never diverge.
 > fetching `GET /admin/logout`.
 
 Both SSO backends accepted `GET /logout`, so a forced top-level navigation
-to it — a link, an image, a redirect from any page — cleared the admin
+to it, a link, an image, a redirect from any page, cleared the admin
 session. Logout is now POST-only and requires a CSRF token derived from the
 live session cookie; `GET /logout` answers 405 and a POST without the token
 answers 403. The admin UI's Sign out control posts the token. Switch

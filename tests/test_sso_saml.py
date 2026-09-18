@@ -376,7 +376,7 @@ def test_saml_logout_clears_session() -> None:
 
 def test_saml_logout_by_get_is_refused() -> None:
     """A forced top-level navigation is a GET; it must not clear the session
-    (mirror of the OIDC pin — both backends must hold the line)."""
+    (mirror of the OIDC pin, both backends must hold the line)."""
     config = _config()
     app = _make_app(config)
     client = _client(app)

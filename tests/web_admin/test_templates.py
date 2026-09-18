@@ -80,7 +80,7 @@ def test_base_template_renders_logout_as_a_post_form_with_the_session_bound_toke
     monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
 ) -> None:
     """With an SSO session on the request, the control must be a POST form
-    whose hidden field carries the session-bound logout token — a plain link
+    whose hidden field carries the session-bound logout token, a plain link
     (GET) is exactly the shape the logout hardening removed."""
     from taskq.web.admin.auth import (
         _session,  # pyright: ignore[reportPrivateUsage]  # Why: the ContextVar the auth dependency arms is what the template global reads.
