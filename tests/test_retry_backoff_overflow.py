@@ -43,8 +43,16 @@ def test_indefinite_classification_survives_huge_attempt() -> None:
 
 
 def test_zero_base_saturates_without_overflow() -> None:
-    """base=0 must not overflow either — the delay is simply zero."""
-    policy = RetryPolicy(
+    """base=0 must not overflow either: the raw curve value is simply zero.
+
+    The shape is built with model_construct: the validating boundary
+    refuses a non-positive base, but a row stamped by an earlier release
+    still carries one, and the curve arithmetic must stay overflow-free
+    for it. The zero raw value is then lifted to MIN_DEFERRAL_INTERVAL by
+    the decision and reclaim floors downstream; compute_backoff itself
+    stays the raw curve.
+    """
+    policy = RetryPolicy.model_construct(
         backoff="exponential",
         base=timedelta(0),
         cap=timedelta(hours=1),

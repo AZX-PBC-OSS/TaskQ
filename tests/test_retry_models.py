@@ -67,6 +67,38 @@ def test_cap_less_than_base_raises() -> None:
         RetryPolicy(cap=timedelta(seconds=1), base=timedelta(seconds=5))
 
 
+# ── base > 0 validator (the monopolisation boundary) ───────────────────
+
+
+@pytest.mark.parametrize("bad_base", [timedelta(0), timedelta(seconds=-1)])
+def test_non_positive_base_raises(bad_base: timedelta) -> None:
+    """RetryPolicy(base<=0) raises ValidationError naming base and the hazard.
+
+    A zero base degenerates the curve (0 * 2**k == 0 at every rung) and a
+    negative one anchors the reschedule in the past; on the reclaim path
+    that is a claim/lease-expiry/reclaim loop with no period and, for an
+    indefinite kind, no attempt ceiling. The boundary refuses the shape
+    instead of silently substituting the floored curve.
+    """
+    with pytest.raises(pydantic.ValidationError, match="base"):
+        RetryPolicy(base=bad_base)
+
+
+def test_non_positive_base_error_names_the_monopolisation_hazard() -> None:
+    """The refusal's text names the degenerate-curve hazard explicitly, so
+    the operator's eye lands on the reason and not just the field."""
+    with pytest.raises(pydantic.ValidationError, match="monopolis") as excinfo:
+        RetryPolicy(base=timedelta(0))
+    assert "zero-period retry loop" in str(excinfo.value)
+
+
+def test_smallest_positive_base_is_valid() -> None:
+    """Any base above zero stays valid: the write-side floors handle the
+    sub-second tail, the boundary only refuses the degenerate shapes."""
+    p = RetryPolicy(base=timedelta(microseconds=1))
+    assert p.base == timedelta(microseconds=1)
+
+
 # ── JobRetryState projection ──────────────────────────────────────
 
 

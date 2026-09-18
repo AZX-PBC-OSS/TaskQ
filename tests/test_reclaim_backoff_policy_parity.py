@@ -440,11 +440,14 @@ _FORMULA_ROWS: tuple[tuple[UUID, int], ...] = (
 #: The curve shapes the reclaim formula branches on: all three backoff
 #: kinds, zero / mid / full jitter, and a policy whose cap sits above the
 #: operator ceiling (exercising LEAST(retry_cap_seconds, max_retry_backoff)).
-#: The trailing zero policy pins the degenerate-cap contract: cap = 0 (with
-#: base = 0, the only shape RetryPolicy's cap >= base admits) means a zero
-#: delay on both evaluators — preserved deliberately across the
-#: overflow-clamp change, which introduced no division that a zero cap
-#: could fault.
+#: The trailing entry pins the degenerate-row contract: a row stamped with
+#: base = 0 and cap = 0 by an earlier release (the policy boundary refused
+#: non-positive bases only after that release) draws zero from its own
+#: curve, and both evaluators must lift it to exactly MIN_DEFERRAL_INTERVAL
+#: rather than re-pend the row at or before now. The policy is built with
+#: model_construct for that reason: the validating constructor now refuses
+#: the shape, while the SQL and the twin must still agree on rows that
+#: already carry it.
 _FORMULA_POLICIES: tuple[RetryPolicy, ...] = (
     RetryPolicy(
         backoff="exponential", base=timedelta(seconds=5), cap=timedelta(hours=1), jitter=0.2
@@ -455,7 +458,9 @@ _FORMULA_POLICIES: tuple[RetryPolicy, ...] = (
         backoff="exponential", base=timedelta(seconds=5), cap=timedelta(hours=1), jitter=0.0
     ),
     RetryPolicy(backoff="fixed", base=timedelta(days=3), cap=timedelta(days=7), jitter=0.2),
-    RetryPolicy(backoff="exponential", base=timedelta(0), cap=timedelta(0), jitter=0.2),
+    RetryPolicy.model_construct(
+        backoff="exponential", base=timedelta(0), cap=timedelta(0), jitter=0.2
+    ),
 )
 
 # The shipped fragments, evaluated against a one-row VALUES table aliased

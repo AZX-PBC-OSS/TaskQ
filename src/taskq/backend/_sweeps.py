@@ -119,6 +119,7 @@ from taskq.constants import (
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
     DEFAULT_KEYED_ROW_RECLAIM_BATCH_SIZE,
     DEFAULT_MAX_RETRY_BACKOFF,
+    MIN_DEFERRAL_INTERVAL,
     RECLAIM_OUTBOX_RETENTION_MULTIPLIER,
     wake_channel,
 )
@@ -273,13 +274,30 @@ _RECLAIM_BAND_UPPER_SQL = (
     f"LEAST({_RECLAIM_CAPPED_RAW_SQL} * (1.0 + j.retry_jitter), {_RECLAIM_EFFECTIVE_CAP_SQL})"
 )
 
+# The monopolisation floor, in the seconds domain the band draws in
+# (derived from taskq.constants.MIN_DEFERRAL_INTERVAL, the same constant
+# the failure-retry decision's floor reads, so the SQL and the Python
+# side cannot drift). The floor wraps the whole delay draw, AFTER the
+# band and the cap: a degenerate row (a zero or negative base stamped by
+# an earlier release, or a direct-SQL writer) draws zero or a negative
+# value from its own curve, and without this floor the re-pend would
+# reschedule the job at or before now, a claim/lease-expiry/reclaim loop
+# across the fleet with no period and, for an indefinite kind, no attempt
+# ceiling. It is the same floor the deferral arms apply at their writes
+# and the failure-retry decision applies at the classifier. The band's
+# edges are left untouched, so any curve above the floor draws exactly as
+# before and only sub-floor values are lifted.
+_MIN_DEFERRAL_SECONDS_SQL = f"{MIN_DEFERRAL_INTERVAL.total_seconds()!r}::float8"
+
 _RECLAIM_DELAY_SQL = (
-    # lower + (upper - lower) · fraction, then a closing LEAST that only
+    # lower + (upper - lower) · fraction, a closing LEAST that only
     # absorbs float rounding at the top edge (the band already lies inside
-    # [0, cap]) — operand for operand taskq.retry._draw_in_band.
-    f"(LEAST({_RECLAIM_EFFECTIVE_CAP_SQL}, {_RECLAIM_BAND_LOWER_SQL} "
+    # [0, cap]), then the GREATEST monopolisation floor: operand for
+    # operand taskq.retry._compute_reclaim_backoff including its floor.
+    f"(GREATEST(LEAST({_RECLAIM_EFFECTIVE_CAP_SQL}, {_RECLAIM_BAND_LOWER_SQL} "
     f"+ ({_RECLAIM_BAND_UPPER_SQL} - {_RECLAIM_BAND_LOWER_SQL}) "
-    f"* {_RECLAIM_JITTER_FRACTION_SQL})) * interval '1 second'"
+    f"* {_RECLAIM_JITTER_FRACTION_SQL}), {_MIN_DEFERRAL_SECONDS_SQL}))"
+    f" * interval '1 second'"
 )
 """How far out a reclaimed job is rescheduled — the job's own
 ``RetryPolicy`` curve (base, cap, backoff kind, jitter), stamped on the
@@ -289,6 +307,11 @@ including its ceiling: the lesser of the row's stamped cap and the
 operator's ``max_retry_backoff``, bound per statement through the
 ``{max_backoff_seconds}`` placeholder, and including the band fitted
 under that ceiling so a cohort at the cap spreads over ``[cap·(1-j), cap]``.
+The result is floored at ``MIN_DEFERRAL_INTERVAL`` (the same monopolisation
+floor the failure-retry decision and the deferral arms apply), so a
+degenerate row curve cannot re-pend at or before now. Both consumers of
+this fragment (sweep 1's re-pend and the heartbeat isolate that embeds it)
+inherit the floor.
 
 A fleet-wide event — a node drain, a zone loss, an OOM sweep across a
 deployment — expires many leases at once, and one sweep hands the whole
