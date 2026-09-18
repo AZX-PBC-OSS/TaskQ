@@ -1024,7 +1024,9 @@ visible to tag-based filters and bulk cancels.
 > **Unreleased.** Silent unless a `reload()` or a `validate=False` load
 > produces values an earlier load would have accepted.
 
-dotenvmodel is bumped 0.3.0 → 0.5.0 and `WorkerSettings` uses dotenvmodel's
+dotenvmodel is bumped to 1.x (`>=1.1.0,<2`, the same bump as the
+environment-variable precedence change earlier in this guide) and
+`WorkerSettings` uses dotenvmodel's
 native `post_load()` hook instead of manual `load()`/`load_from_dict()`
 overrides. The base `DotEnvConfig._load_fields` invokes `post_load`
 automatically on every load path — `load()`, `load_from_dict()`, and
