@@ -573,8 +573,14 @@ Anything that consumed per-denial event rows (e.g. dashboards over
 > **Unreleased.** Breaking for anything that read `max_attempts` as a
 > counter that deferrals inflate.
 
-`max_attempts` is now immutable — no code path raises it (the ceiling is
-a bound, not a counter). Two behaviours follow from that:
+`max_attempts` is now immutable — no automatic code path raises it (the
+ceiling is a bound, not a counter; nothing a deferral, denial or retry
+loop does moves it). The one deliberate exception is the explicit operator
+re-run, [`retry_job`](#operator-re-runs-retry_job-keep-the-attempt-and-raise-the-ceiling),
+which raises the ceiling to `GREATEST(max_attempts, attempt + 1)` (capped
+at the smallint bound) so a re-pended job can always run at least once
+more — the same "raise it only as an explicit admin action" convention
+Oban and River follow. Two behaviours follow from the immutability rule:
 
 * **Actor-requested deferrals are unbounded, and never spend budget.**
   A `Snooze`, or a `RetryAfter(consume_budget=False)` honouring a
@@ -603,6 +609,26 @@ a bound, not a counter). Two behaviours follow from that:
   unaffected: it is a real execution asking for a known delay, so its
   budget exhaustion still terminally fails the job, deadline or no
   deadline.
+
+### Operator re-runs (`retry_job`) keep the attempt and raise the ceiling
+
+> **Unreleased.** Behaviour change for operator tooling that reads the job
+> row after an admin retry; nothing breaks at a call site.
+
+`retry_job` no longer resets the attempt counter. In v0.2.2 a re-run set
+`attempt = 0`, handing the job a full fresh budget; the row now keeps its
+`attempt` (an idempotent admin operation must not restart the counter, and
+a re-pended job climbs to fresh attempt numbers so no `job_attempts` write
+can collide on a spent epoch's primary key) and raises `max_attempts` to
+`GREATEST(max_attempts, attempt + 1)`, capped at the smallint bound
+(32767). An exhausted 3/3 job comes back as 3/4 — one fresh execution, not
+three; a mid-budget 1/5 job stays 1/5 and keeps its remaining budget. When
+the attempt already sits at the cap the retry is refused and the row stays
+terminal rather than re-pending a job whose next claim would overflow the
+`attempt` column. The retryable source statuses also widened: every
+terminal status is now valid (`succeeded` — the replay path after a bad
+deploy — and `abandoned` included), while `running` stays excluded because
+re-pending a live row races its own terminal write.
 
 ### Graceful shutdown interrupts — it no longer terminalises in-flight work
 
@@ -998,7 +1024,9 @@ visible to tag-based filters and bulk cancels.
 > **Unreleased.** Silent unless a `reload()` or a `validate=False` load
 > produces values an earlier load would have accepted.
 
-dotenvmodel is bumped 0.3.0 → 0.5.0 and `WorkerSettings` uses dotenvmodel's
+dotenvmodel is bumped to 1.x (`>=1.1.0,<2`, the same bump as the
+environment-variable precedence change earlier in this guide) and
+`WorkerSettings` uses dotenvmodel's
 native `post_load()` hook instead of manual `load()`/`load_from_dict()`
 overrides. The base `DotEnvConfig._load_fields` invokes `post_load`
 automatically on every load path — `load()`, `load_from_dict()`, and

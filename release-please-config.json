@@ -3,6 +3,7 @@
   "package-name": "taskq-py",
   "include-component-in-tag": false,
   "bump-minor-pre-major": true,
+  "commit-search-depth": 1000,
   "packages": {
     ".": {
       "component": "taskq-py",
