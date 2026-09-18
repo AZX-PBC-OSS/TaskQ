@@ -1,4 +1,4 @@
-.PHONY: help install env test test-fast test-e2e clean-e2e test-cov lint format type-check clean build css security docs docs-serve bench bench-save bench-check bench-profile bench-matrix bench-stall
+.PHONY: help install env test test-fast test-e2e test-otel clean-e2e test-cov lint format type-check clean build css security docs docs-serve bench bench-save bench-check bench-profile bench-matrix bench-stall test-contended soak-contended
 
 help:
 	@echo "Available commands:"
@@ -23,6 +23,8 @@ help:
 	@echo "  make bench-profile- Profile a single hotspot (default: di; see profile_hotspot.py)"
 	@echo "  make bench-matrix - Run benchmarks across Python 3.12/3.13/3.14 (uv; needs uv)"
 	@echo "  make bench-stall  - Run the event-loop stall probes"
+	@echo "  make test-contended - Run the contended-CPU lane (runner + PG pinned to one core)"
+	@echo "  make soak-contended - Baseline-vs-contended soak over the benchmark engines"
 
 # ---------------------------------------------------------------------------
 # Environment discipline. Mirrors the policy comment at the top of
@@ -77,6 +79,17 @@ test-cov: env
 
 test-fast: env
 	$(UVRUN) pytest -n 4 -m "not integration"
+
+# Contended-CPU lane: the runner (and every process it spawns) and the suite's
+# PG/Dragonfly containers share one core, so deadline, budget, lease, and
+# watchdog logic runs under real starvation. Run it solo; see the script header.
+test-contended: env
+	scripts/test-contended.sh --core 0 --workers 2 --repeat 3
+
+# Soak lane: wraps the existing benchmark engines (stress_dispatch,
+# soak_cardinality) in the same pinning profiles and reports deltas.
+soak-contended: env
+	scripts/soak-contended.sh --core 0 --repeat 3
 
 # `--group e2e` belongs in SYNC_ARGS, not on this line: passing it to `uv run`
 # would ask uv to sync a second time, which is what --no-sync exists to stop.
