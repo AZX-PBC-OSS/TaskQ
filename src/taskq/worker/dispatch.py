@@ -14,6 +14,7 @@ direction.
 
 import asyncio
 import time
+import weakref
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AsyncExitStack
 from datetime import timedelta
@@ -170,13 +171,16 @@ class SlotPoolAcquireError(Exception):
         )
 
 
-#: Marker set on a slot connection once the registration's declared init
-#: hook has been applied to it by the dispatch repair path — the
+#: Process-local record of the physical connections the dispatch repair
+#: path has already carried the registration's declared init hook to — the
 #: exactly-once-per-physical-connection record for pools bootstrap did not
-#: build (asyncpg connections are ``__slots__``-sealed with no read-back of
-#: applied setup, so the marker is the only place the applied state can
-#: live on an injected pool's connection).
-_SLOT_CONN_INIT_APPLIED_ATTR: Final[str] = "taskq_slot_conn_init_applied"
+#: build (an injected/foreign pool leaves ``deps.slot_pool_connection_init``
+#: unset). asyncpg 0.31.0's ``PoolConnectionProxy`` is ``__slots__``-sealed
+#: (``('_con', '_holder')``) so a setattr marker on it raises
+#: AttributeError and kills every dispatch; the record lives here instead,
+#: keyed by the physical connection (weakly, so a closed connection is
+#: forgotten with it and a fresh connection starts unmarked).
+_SLOT_CONN_INIT_APPLIED: Final[weakref.WeakSet[asyncpg.Connection]] = weakref.WeakSet()
 
 
 def _to_consumed_outcome(attempt_outcome: AttemptOutcome) -> ConsumedOutcome:
@@ -329,8 +333,9 @@ async def _ensure_registered_init_on_slot_conn(
     handing out bare connections: the actor's DI would resolve a connection
     missing the registered setup — codecs, session configuration — and
     silently diverge from what the application configured. For that shape
-    the hook is applied here, once per physical connection, marked on the
-    connection itself.
+    the hook is applied here, once per physical connection, recorded in a
+    process-local weak set keyed by the physical connection (a proxy's
+    ``__slots__`` cannot carry a marker attribute).
 
     Hot path: with no hook declared, or a pool that already carries it,
     this costs the attribute read plus the registry probe (dict lookups) —
@@ -345,15 +350,20 @@ async def _ensure_registered_init_on_slot_conn(
     if deps.slot_pool_connection_init is not None:
         return
     hook = _registered_connection_init_hook(registry)
-    if hook is None or getattr(conn, _SLOT_CONN_INIT_APPLIED_ATTR, False) is True:
+    if hook is None:
         return
-    # Why the cast: ConnLike is the object-typed runtime alias for
-    # Connection | PoolConnectionProxy, and the hook's contract is the one
-    # asyncpg's own init= receives — the proxy forwards it to the physical
-    # connection. The marker setattr on the repair path targets injected
-    # pools' connections (bootstrap-built pools never reach it); asyncpg's
-    # __slots__-sealed Connection could not carry the marker, which is fine:
-    # that shape always takes the deps-recorded early return above.
+    # Why the physical connection: ConnLike is the object-typed runtime
+    # alias for Connection | PoolConnectionProxy, and the hook's contract
+    # is the one asyncpg's own init= receives — the proxy forwards it to
+    # the physical connection. The exactly-once record keys on the
+    # physical connection (the proxy is __slots__-sealed with no
+    # __weakref__, the physical Connection is weakref-able): a released
+    # and reacquired proxy re-keys to the same physical connection, a
+    # fresh one starts unmarked.
+    physical = getattr(conn, "_con", conn)
+    trackable = physical is not None
+    if trackable and physical in _SLOT_CONN_INIT_APPLIED:
+        return
     target = cast(asyncpg.Connection, conn)
     try:
         await asyncio.wait_for(hook(target), timeout=acquire_timeout)
@@ -373,7 +383,11 @@ async def _ensure_registered_init_on_slot_conn(
                 f"slot-pool connection ({type(exc).__name__}: {exc})"
             ),
         ) from exc
-    setattr(conn, _SLOT_CONN_INIT_APPLIED_ATTR, True)
+    if trackable:
+        # Why the cast: the set is keyed by the physical connection behind
+        # the slot connection, whatever shape ConnLike handed over — the
+        # same runtime alias the target cast above already bridges.
+        _SLOT_CONN_INIT_APPLIED.add(cast(asyncpg.Connection, physical))
 
 
 async def dispatch_one_job(
