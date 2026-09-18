@@ -1,4 +1,4 @@
-.PHONY: help install env test test-fast test-e2e clean-e2e test-cov lint format type-check clean build css security docs docs-serve bench bench-save bench-check bench-profile bench-matrix bench-stall test-contended soak-contended
+.PHONY: help install env test test-fast test-e2e test-otel clean-e2e test-cov lint format type-check clean build css security docs docs-serve bench bench-save bench-check bench-profile bench-matrix bench-stall test-contended soak-contended
 
 help:
 	@echo "Available commands:"

@@ -37,6 +37,9 @@
 #   - The lane reports measurements; it does not grade them. Compare against a
 #     saved baseline (make bench-save) or against previous CSVs before calling
 #     any delta a regression.
+#   - A crashed engine or a cardinality CSV with no data rows fails the lane
+#     with a nonzero exit and the engine's stderr tail; it never reports
+#     empty fields as if they were measurements.
 set -euo pipefail
 
 CORE=0
@@ -63,17 +66,33 @@ mkdir -p "$CSV_DIR"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 
 run_engine() {
-  # $1 = label, $2 = core or "none", $3 = engine; echoes one summary number
-  local label="$1" core="$2" engine="$3" out csv
+  # $1 = label, $2 = core or "none", $3 = engine; echoes one summary number.
+  # A failed engine is a failed lane: report the captured stderr tail and
+  # exit nonzero instead of printing empty fields and exiting 0.
+  local label="$1" core="$2" engine="$3" out csv status summary
   out="$(mktemp)"
+  status=0
   if [ "$engine" = cpu ]; then
     # stress_dispatch prints "jobs: N in Xs -> 1,234 jobs/sec" (comma-grouped)
     if [ "$core" = none ]; then
-      uv run python benchmarks/stress_dispatch.py >"$out" 2>&1
+      uv run python benchmarks/stress_dispatch.py >"$out" 2>&1 || status=$?
     else
-      taskset -c "$core" uv run python benchmarks/stress_dispatch.py >"$out" 2>&1
+      taskset -c "$core" uv run python benchmarks/stress_dispatch.py >"$out" 2>&1 || status=$?
     fi
-    grep 'jobs/sec' "$out" | sed 's/,//g' | grep -oE '[0-9]+(\.[0-9]+)? +jobs/sec' | tail -1 | grep -oE '^[0-9]+(\.[0-9]+)?'
+    if [ "$status" -ne 0 ]; then
+      echo "soak engine 'cpu' ($label) failed with exit status $status; last output lines:" >&2
+      tail -n 20 "$out" >&2
+      rm -f "$out"
+      exit 1
+    fi
+    summary="$(grep 'jobs/sec' "$out" | sed 's/,//g' | grep -oE '[0-9]+(\.[0-9]+)? +jobs/sec' | tail -1 | grep -oE '^[0-9]+(\.[0-9]+)?')"
+    if [ -z "$summary" ]; then
+      echo "soak engine 'cpu' ($label) exited 0 but produced no jobs/sec line; last output lines:" >&2
+      tail -n 20 "$out" >&2
+      rm -f "$out"
+      exit 1
+    fi
+    echo "$summary"
   else
     # CSV columns: t_virtual,tracked_res,tracked_rl,evicted_res,evicted_rl,
     #              scan_ms_res,scan_ms_rl,traced_bytes
@@ -81,9 +100,21 @@ run_engine() {
     # report both plus the final scan latency so the delta line shows growth.
     csv="$CSV_DIR/cardinality-$label-$STAMP.csv"
     if [ "$core" = none ]; then
-      uv run python benchmarks/soak_cardinality.py --memory --csv "$csv" >"$out" 2>&1
+      uv run python benchmarks/soak_cardinality.py --memory --csv "$csv" >"$out" 2>&1 || status=$?
     else
-      taskset -c "$core" uv run python benchmarks/soak_cardinality.py --memory --csv "$csv" >"$out" 2>&1
+      taskset -c "$core" uv run python benchmarks/soak_cardinality.py --memory --csv "$csv" >"$out" 2>&1 || status=$?
+    fi
+    if [ "$status" -ne 0 ]; then
+      echo "soak engine 'cardinality' ($label) failed with exit status $status; last output lines:" >&2
+      tail -n 20 "$out" >&2
+      rm -f "$out"
+      exit 1
+    fi
+    if [ ! -f "$csv" ] || [ -z "$(sed -n '2p' "$csv")" ]; then
+      echo "soak engine 'cardinality' ($label) wrote no data rows to $csv; last output lines:" >&2
+      tail -n 20 "$out" >&2
+      rm -f "$out"
+      exit 1
     fi
     echo "first_tracked=$(sed -n '2p' "$csv" | cut -d, -f2) last_tracked=$(tail -1 "$csv" | cut -d, -f2) last_scan_ms_rl=$(tail -1 "$csv" | cut -d, -f7)"
     grep '\[FAIL\]' "$out" || true
@@ -101,6 +132,15 @@ for eng in cpu cardinality; do
   echo "== $eng"
   echo "   baseline:  ${BASE["$eng"]#|}"
   echo "   contended: ${CONT["$eng"]#|}"
+  if [ "$eng" = cpu ]; then
+    # Delta table: contended/baseline jobs/sec per repeat. A ratio near 1 is
+    # impossible under one-core contention; what matters is the trend across
+    # repeats, so each pair is printed, not just an average.
+    echo "   delta (contended/baseline jobs/sec):"
+    paste <(printf '%s\n' "${BASE["$eng"]#|}" | tr '|' '\n') \
+          <(printf '%s\n' "${CONT["$eng"]#|}" | tr '|' '\n') \
+      | awk -F'\t' 'NF == 2 && $1 + 0 > 0 && $2 + 0 > 0 { printf "     repeat %d: %.2fx\n", NR, $2 / $1 }'
+  fi
   if [ "$eng" = cardinality ]; then
     echo "   CSVs in $CSV_DIR: first vs last tracked_res is the leak evidence; a"
     echo "   contended series that grows repeat over repeat is a finding, not noise."

@@ -23,12 +23,14 @@
 #                     (default: 1; use 3+ to separate flake from deterministic)
 #   --profile split   workers on core $CORE, containers on core $((CORE+1))
 #                     instead of both on $CORE (hyperthread-sibling severity)
+#   --force           skip the foreign-container refusal (knowingly-solo host)
 #
 # Requirements and honest limits:
-#   - Run this lane SOLO. It pins every postgres/dragonfly container started
-#     after lane startup; a concurrent testcontainers session would get its
-#     containers pinned too. The script refuses to run if it sees foreign
-#     postgres/dragonfly containers younger than its own start snapshot.
+#   - Run this lane SOLO. The lane refuses to start (exit 2) when any foreign
+#     postgres/dragonfly container is already running, because its poller pins
+#     every such container it sees and would repin a concurrent session's
+#     containers too. The docker-compose dev stack (taskq-*) is exempt, and
+#     --force overrides the refusal for a knowingly-solo host.
 #   - The lane does not re-run full CI; it is a stress lens over the fast tier
 #     (or any pytest selection you pass after --).
 #   - A failure here is a robustness finding, not automatically a product bug:
@@ -41,6 +43,7 @@ CORE=0
 WORKERS=2
 REPEAT=1
 SPLIT=0
+FORCE=0
 PYTEST_ARGS=()
 
 while [ $# -gt 0 ]; do
@@ -49,6 +52,7 @@ while [ $# -gt 0 ]; do
     --workers) WORKERS="$2"; shift 2 ;;
     --repeat) REPEAT="$2"; shift 2 ;;
     --profile) [ "$2" = "split" ] && SPLIT=1; shift 2 ;;
+    --force) FORCE=1; shift ;;
     --) shift; PYTEST_ARGS=("$@"); break ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -60,6 +64,23 @@ PG_CORE=$CORE
 command -v docker >/dev/null || { echo "docker required" >&2; exit 1; }
 command -v taskset >/dev/null || { echo "taskset required" >&2; exit 1; }
 docker info >/dev/null 2>&1 || { echo "docker daemon unreachable" >&2; exit 1; }
+
+# Refusal guard. The poller below pins every postgres/dragonfly container it
+# sees, so a concurrent testcontainers session's containers would be repinned
+# to this lane's core. Refuse when any such container exists that is not part
+# of the docker-compose dev stack (its containers are named taskq-*).
+# --force overrides for a knowingly-solo host.
+foreign="$(docker ps --format '{{.ID}} {{.Image}} {{.Names}}' \
+  | grep -E 'postgres|dragonfly' \
+  | grep -v ' taskq-' || true)"
+if [ "$FORCE" -ne 1 ] && [ -n "$foreign" ]; then
+  echo "refusing to start: foreign postgres/dragonfly containers are already" >&2
+  echo "running, and the lane would pin them to core $PG_CORE:" >&2
+  echo "$foreign" >&2
+  echo "the lane runs only alongside the docker-compose dev stack (taskq-*);" >&2
+  echo "pass --force if this host is knowingly solo." >&2
+  exit 2
+fi
 
 # Snapshot of container IDs alive before the lane starts. The poller pins only
 # containers that appear after this point and match the suite's images, so the
