@@ -488,19 +488,19 @@ class HealthUnixBindCollisionError(OSError):
         self.path = path
         if cause.errno == errno.EADDRINUSE:
             detail = (
-                "a live peer worker owns the path — give each replica a "
+                "a live peer worker owns the path: give each replica a "
                 "unique TASKQ_HEALTH_SOCKET_PATH"
             )
         else:
             detail = (
-                f"the path is unusable ({cause}) — check what sits at "
+                f"the path is unusable ({cause}): check what sits at "
                 "TASKQ_HEALTH_SOCKET_PATH and the permissions leading to it"
             )
         super().__init__(
             cause.errno,
             f"health unix socket path {path!r} could not be bound; "
             "the TCP probe listener is serving, so booting continues with "
-            f"the Unix surface alone missing — {detail}",
+            f"the Unix surface alone missing: {detail}",
         )
 
 

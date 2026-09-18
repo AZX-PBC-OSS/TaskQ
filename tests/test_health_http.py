@@ -407,7 +407,7 @@ async def test_a_directory_at_the_socket_path_with_a_port_set_reports_the_real_c
 
     A directory at the socket path fails the bind with ``EISDIR`` (the
     stale-file cleaner cannot remove it), and the old message told the
-    operator "a live peer owns the path — give each replica a unique
+    operator "a live peer owns the path, give each replica a unique
     TASKQ_HEALTH_SOCKET_PATH", which sends them hunting for a peer that
     does not exist. The message now names the errno shape, but the TYPE
     and the ownership contract are unchanged: with a port set the TCP
@@ -482,6 +482,78 @@ async def test_unix_collision_without_health_port_keeps_the_bare_oserror_contrac
     finally:
         peer.close()
         await peer.wait_closed()
+
+
+async def test_a_unix_bind_failure_with_health_tasks_enabled_still_reaches_the_tcp_bind() -> None:
+    """The tasks-enabled Unix arm fails the same way as the plain arm.
+
+    ``start()`` binds the Unix socket through two branches (the
+    tasks-enabled one wraps the bind in a umask swap), and both must
+    route a bind failure into the same partial-start outcome: the TCP
+    bind is still attempted, and the collision is raised only after it,
+    as its own type. Pinning the tasks-enabled arm keeps the umask-wrapped
+    branch from silently diverging from the contract the other arm
+    implements.
+    """
+    peer_path = _next_sock_path()
+    peer = await asyncio.start_unix_server(_peer_http_ok, path=peer_path)
+    server = HealthServer()
+    try:
+        settings = _make_settings(peer_path, health_port=0, health_tasks_enabled=True)
+        with pytest.raises(HealthUnixBindCollisionError) as excinfo:
+            await server.start(_make_deps(settings))
+        assert excinfo.value.errno == errno.EADDRINUSE
+        assert "live peer worker owns the path" in str(excinfo.value)
+        resp = await _tcp_get(_port(server), "/live")
+        assert resp.startswith(b"HTTP/1.0 200 OK\r\n"), resp
+    finally:
+        await server.stop()
+        peer.close()
+        await peer.wait_closed()
+
+
+async def test_stop_when_the_stat_cannot_read_the_inode_never_unlinks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stat that fails with something other than a missing file leaves
+    ownership unprovable, so ``stop()`` never unlinks and records the
+    skip.
+
+    The F3 pin above covers the ENOENT arm (the clean outcome on
+    3.13+, where asyncio's own ``close()`` has usually done the
+    unlink). This is the sibling arm: the file is still there but
+    ``os.stat`` cannot read it (a permission error on the directory
+    chain), so the inode is unknown, the guard cannot prove this
+    server still owns the path, and the socket file must survive the
+    teardown untouched.
+    """
+    sock_path = _next_sock_path()
+    settings = _make_settings(sock_path)
+    server = HealthServer()
+    await server.start(_make_deps(settings))
+    assert pathlib.Path(sock_path).exists(), "sanity: the server bound the path"  # noqa: ASYNC240  # Why: a single fast metadata read in a test assertion; matches this file's existing convention.
+
+    real_stat = os.stat
+
+    def _stat_unreadable(path: object, **kwargs: object) -> os.stat_result:
+        if path == sock_path:
+            raise PermissionError(errno.EACCES, "Operation not permitted", sock_path)
+        return real_stat(path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "stat", _stat_unreadable)
+    try:
+        with structlog.testing.capture_logs() as captured:
+            await server.stop()
+        assert pathlib.Path(sock_path).exists(), (  # noqa: ASYNC240  # Why: the unlink guard is the behavior under test.
+            "stop() unlinked a socket whose ownership it could not prove"
+        )
+        assert any(e["event"] == "health-server-stop-skipped-unlink" for e in captured), (
+            "an unprovable-ownership stop must record why it did not unlink"
+        )
+    finally:
+        monkeypatch.undo()
+        with contextlib.suppress(OSError):
+            os.unlink(sock_path)
 
 
 async def test_stop_with_the_socket_already_unlinked_is_clean() -> None:
