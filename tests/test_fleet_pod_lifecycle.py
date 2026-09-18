@@ -405,8 +405,11 @@ async def test_concurrent_pods_cannot_both_finish_the_same_job(pg_dsn: str) -> N
 async def test_rolling_deploy_interrupts_running_jobs_and_the_fleet_finishes_them(
     pg_dsn: str,
 ) -> None:
-    """A pod stopped with actors mid-flight hands every one back — refunded,
-    held until the pod is gone, and finished by the fleet exactly once.
+    """A pod stopped with actors mid-flight hands every one back — held
+    until the pod is gone, and finished by the fleet exactly once. The
+    interrupted claims spend their attempt: the interrupt arm does not
+    refund it (issue #287: a refund re-creates the epoch a zombie
+    handler holds).
 
     Eight jobs run on one pod, every actor slower than the grace periods —
     the ordinary shape of a rolling deploy under load. The deploy must not
@@ -480,9 +483,11 @@ async def test_rolling_deploy_interrupts_running_jobs_and_the_fleet_finishes_the
             )
             by_id = {row["id"]: row for row in rows}
             for jid in job_ids:
-                assert by_id[jid]["attempt"] == 0, (
-                    "the claim's attempt increment was not refunded at release — "
-                    "the deploy spent budget on work it interrupted"
+                assert by_id[jid]["attempt"] == 1, (
+                    "the interrupt arm must not refund the attempt increment: "
+                    "the attempt started executing, and a refund re-creates the "
+                    "epoch a zombie handler holds (issue #287) — the interrupted "
+                    "claim spends the attempt"
                 )
                 assert by_id[jid]["interrupt_count"] == 1
             assert all(by_id[jid]["scheduled_at"] > datetime.now(UTC) for jid in job_ids), (
@@ -496,7 +501,9 @@ async def test_rolling_deploy_interrupts_running_jobs_and_the_fleet_finishes_the
             assert early == [], "pod-2 claimed a row whose departing pod may still be running it"
         finally:
             # The interrupted actors' late writes race the released rows and
-            # lose (the refund moved the attempt epoch); join them quietly.
+            # lose on the attempt fence: the interrupt arm did not refund,
+            # so the re-claimed attempt's epoch is strictly higher. Join
+            # them quietly.
             release_actors.set()
             for task in tasks:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -520,8 +527,10 @@ async def test_rolling_deploy_interrupts_running_jobs_and_the_fleet_finishes_the
             "the surviving pod could not re-claim the interrupted jobs once their holds elapsed"
         )
         for row in claimed_back:
-            assert row.attempt == 1, (
-                "the re-claim lands on the refunded epoch — the interruption cost the job no budget"
+            assert row.attempt == 2, (
+                "the re-claim must climb past the interrupted attempt's epoch "
+                "(the interrupt arm does not refund, issue #287): the zombie "
+                "handler's late write can then only lose the fence"
             )
 
         async def finish(payload: FleetPayload, _ctx: object) -> object:

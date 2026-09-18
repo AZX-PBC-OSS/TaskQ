@@ -650,11 +650,13 @@ process is provably gone; with `TASKQ_WATCHDOG_ENABLED=false` the hold is
 `TASKQ_LOCK_LEASE`). The no-concurrent-run promise is two-legged: it holds
 when the watchdog is enabled, or when the platform SIGKILL lands at or
 before `TASKQ_TERMINATION_GRACE_PERIOD` plus the exit tail. The claim's
-`attempt` increment is refunded — the
-same idiom the snooze/denial arms use — so a deploy no longer spends a
-job's retry budget, and a job interrupted on every deploy is rescheduled
-until it finishes or its `schedule_to_close` fails it with
-`DeadlineExceeded`. The release writes one `job_events` transition with
+`attempt` increment is NOT refunded: the attempt did start executing, and
+a refund would re-create the attempt epoch the interrupted handler still
+holds, letting its late terminal write land on the re-dispatched attempt
+(issue #287). An interrupted claim therefore spends the attempt; a job
+interrupted on every deploy climbs its retry budget until it finishes or
+its `schedule_to_close` fails it with `DeadlineExceeded`. The release
+writes one `job_events` transition with
 `reason = 'interrupted'` and bumps the new `interrupt_count` column on the
 row; `taskq.jobs.interrupted{actor,hold}` and
 `taskq.jobs.interrupted_noop` are the OTEL counters.
