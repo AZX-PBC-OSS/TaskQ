@@ -718,3 +718,147 @@ async def test_acceptance_definition_heartbeat_extension(
             await task
     finally:
         await stack.aclose()
+
+
+# ── Threshold-gated renewal (#227): which rows a beat rewrites ──────
+
+
+async def test_threshold_gated_renewal_selects_rows_by_remaining_lease(
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """The gated jobs-lock renewal rewrites exactly the rows that need it.
+
+    Row-level contract of ``UPDATE_JOBS_LOCK_RENEWAL_SQL_TEMPLATE``, driven
+    directly (the loop's threshold math is pinned separately in
+    tests/test_heartbeat.py) with a lease of 60s and a renewal threshold
+    of 30s:
+
+    * a row with 60s of lease remaining (above the threshold) is left
+      entirely alone — its ``lock_expires_at`` AND ``last_heartbeat_at``
+      keep their exact prior values, which is the point of the change: a
+      healthy beat no longer pays a non-HOT update per running row;
+    * a row with 25s remaining (at/under the threshold) renews to a live
+      future lease;
+    * a row carrying a per-job ``heartbeat_timeout`` renews even with a
+      fresh lease — the reclaim sweep's heartbeat arm reclaims such rows
+      on a stale ``last_heartbeat_at`` while the lease is still valid, so
+      their beats must stay per-tick fresh (the naive "skip while more
+      than half the lease remains" would falsely crash-reclaim them);
+    * a row with no lease stamp (direct-SQL shape) renews;
+    * a disowned row renews nothing — its lease must lapse for the
+      reclaim sweep;
+    * another worker's row is never touched.
+    """
+    from taskq._ids import new_uuid
+    from taskq.backend._sql import build_heartbeat_sql, parse_rowcount
+
+    stack, deps, schema = await _setup_fast(module_pg_schema)
+    try:
+        lease = timedelta(seconds=60.0)
+        threshold = timedelta(seconds=30.0)
+        _liveness, gated_sql, _slots = build_heartbeat_sql(schema, renewal_threshold=threshold)
+        worker_id = new_uuid()
+        other_worker = new_uuid()
+        fresh_id = new_uuid()
+        due_id = new_uuid()
+        promise_id = new_uuid()
+        no_lease_id = new_uuid()
+        disowned_id = new_uuid()
+
+        async with deps.heartbeat_pool.acquire() as conn:
+            for wid in (worker_id, other_worker):
+                await conn.execute(
+                    f'INSERT INTO "{schema}".workers '  # Why: schema is the fixture's throwaway identifier; every value is $n-bound.
+                    "(id, hostname, pid, queues) VALUES ($1, 'gt-host', 1, ARRAY['default'])",
+                    wid,
+                )
+
+            async def _seed(
+                job_id: UUID,
+                *,
+                holder: UUID,
+                expires_in: float | None,
+                heartbeat_timeout: timedelta | None = None,
+            ) -> None:
+                await conn.execute(
+                    f"""INSERT INTO "{schema}".jobs (
+                        id, actor, queue, payload, status, priority, attempt,
+                        scheduled_at, max_attempts, retry_kind, locked_by_worker,
+                        lock_expires_at, started_at, last_heartbeat_at,
+                        heartbeat_timeout
+                    ) VALUES (
+                        $1, 'gt_actor', 'default', '{{"v": 1}}'::jsonb, 'running', 0, 1,
+                        clock_timestamp(), 3, 'transient', $2,
+                        $3, clock_timestamp(), clock_timestamp(), $4
+                    )""",  # Why: schema is the fixture's throwaway identifier; every value is $n-bound.
+                    job_id,
+                    holder,
+                    (
+                        datetime.now(UTC) + timedelta(seconds=expires_in)
+                        if expires_in is not None
+                        else None
+                    ),
+                    heartbeat_timeout,
+                )
+
+            await _seed(fresh_id, holder=worker_id, expires_in=60.0)
+            await _seed(due_id, holder=worker_id, expires_in=25.0)
+            await _seed(
+                promise_id,
+                holder=worker_id,
+                expires_in=60.0,
+                heartbeat_timeout=timedelta(hours=1),
+            )
+            await _seed(no_lease_id, holder=worker_id, expires_in=None)
+            await _seed(disowned_id, holder=worker_id, expires_in=25.0)
+            await _seed(new_uuid(), holder=other_worker, expires_in=25.0)
+
+            before = await conn.fetchrow(
+                f'SELECT lock_expires_at, last_heartbeat_at FROM "{schema}".jobs WHERE id = $1',
+                fresh_id,
+            )
+            assert before is not None
+
+            tag = await conn.execute(
+                gated_sql,
+                worker_id,
+                lease,
+                [disowned_id],
+                threshold,
+            )
+            assert parse_rowcount(tag) == 3, (
+                "the gated renewal must renew exactly the under-threshold row, "
+                "the heartbeat_timeout row, and the NULL-lease row — not the "
+                "fresh row, not the disowned row, not another worker's row"
+            )
+
+            # One statement per read: the server clock and the lease are
+            # observed atomically (this file's standing doctrine).
+            rows = {
+                r["id"]: r
+                for r in await conn.fetch(
+                    f"SELECT id, now() AS pg_now, lock_expires_at, "
+                    "last_heartbeat_at "
+                    f'FROM "{schema}".jobs WHERE locked_by_worker = $1',
+                    worker_id,
+                )
+            }
+            # The fresh row was not rewritten at all — byte-identical
+            # stamps, the non-HOT update it no longer pays.
+            assert rows[fresh_id]["lock_expires_at"] == before["lock_expires_at"]
+            assert rows[fresh_id]["last_heartbeat_at"] == before["last_heartbeat_at"]
+            # The renewed rows carry a live full lease and a fresh beat.
+            for job_id in (due_id, promise_id, no_lease_id):
+                row = rows[job_id]
+                assert row["lock_expires_at"] is not None
+                assert row["lock_expires_at"] > row["pg_now"]
+                assert row["lock_expires_at"] - row["pg_now"] <= lease
+                assert row["pg_now"] - row["last_heartbeat_at"] <= timedelta(seconds=5)
+            # The disowned row keeps its decaying lease: the reclaim
+            # sweep's hand-back depends on it lapsing.
+            assert rows[disowned_id]["lock_expires_at"] is not None
+            assert rows[disowned_id]["lock_expires_at"] - rows[disowned_id]["pg_now"] <= timedelta(
+                seconds=25.0
+            )
+    finally:
+        await stack.aclose()

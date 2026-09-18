@@ -386,11 +386,15 @@ async def test_heartbeat_excludes_disowned_jobs_from_lease_renewal() -> None:
     renewals = _lease_renewals(conn)
     assert len(renewals) == 1
     sql, args = renewals[0]
-    assert len(args) == 3 and list(cast(list[UUID], args[2])) == [disowned], (
+    # $4 is the renewal threshold the loop binds since the gated
+    # renewal (#227): (worker_id, lease, disowned, threshold).
+    assert len(args) == 4 and list(cast(list[UUID], args[2])) == [disowned], (
         f"the lease renewal ran with {args!r}: the disowned ids are not bound, so "
         "the statement still renews every row this worker holds"
     )
     assert "$3::uuid[]" in sql
+    # The gated statement, with the threshold compared server-side.
+    assert "lock_expires_at <= clock_timestamp() + $4::interval" in sql
 
 
 async def test_heartbeat_excludes_disowned_jobs_from_reservation_lease_renewal() -> None:

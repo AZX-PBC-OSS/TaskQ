@@ -1158,3 +1158,281 @@ def test_build_heartbeat_sql_liveness_shape_pins_the_merge() -> None:
         "SET last_seen_at = clock_timestamp(), metadata = metadata || $2::jsonb "
         "WHERE id = $1"
     )
+
+
+# ── Threshold-gated lease renewal (#227) ────────────────────────────
+
+
+def test_lease_renewal_threshold_default_config() -> None:
+    """Defaults (lease 60s, interval 10s, 3 failures, 2s command timeout):
+    the floor (F+1) * (interval + command_timeout) = 48s binds, so a
+    healthy worker renews on every second beat (the beat after a renewal
+    carries 50s of lease — above 48 — and skips; the next carries 40s
+    and renews): half the non-HOT renewal writes."""
+    from taskq.worker.heartbeat import _lease_renewal_threshold
+
+    threshold = _lease_renewal_threshold(
+        lock_lease=timedelta(seconds=60.0),
+        heartbeat_interval=10.0,
+        max_heartbeat_failures=3,
+        heartbeat_command_timeout=2.0,
+    )
+    assert threshold == timedelta(seconds=48.0)
+
+
+def test_lease_renewal_threshold_generous_lease_uses_half() -> None:
+    """A generously sized lease keeps MORE than the safety floor — half
+    the lease — whenever half exceeds the cascade bound (the issue's
+    half-lease intuition, free of margin cost in the regime where it is
+    safe)."""
+    from taskq.worker.heartbeat import _lease_renewal_threshold
+
+    threshold = _lease_renewal_threshold(
+        lock_lease=timedelta(seconds=300.0),
+        heartbeat_interval=10.0,
+        max_heartbeat_failures=3,
+        heartbeat_command_timeout=2.0,
+    )
+    assert threshold == timedelta(seconds=150.0)
+
+
+@pytest.mark.parametrize(
+    ("lock_lease", "interval", "failures", "command_timeout"),
+    [
+        # The 4x invariant's minimum: no slack to harvest — the floor
+        # meets the lease and the gate renews every beat.
+        (40.0, 10.0, 3, 2.0),
+        # Fast heartbeats with a command timeout larger than the tick:
+        # the floor dwarfs the lease — renew every beat.
+        (2.0, 0.5, 3, 2.0),
+        # A failure-tolerant fleet (F=10) with a default lease: the
+        # cascade bound exceeds the lease — renew every beat.
+        (60.0, 10.0, 10, 2.0),
+    ],
+)
+def test_lease_renewal_threshold_degenerate_configs_renew_every_beat(
+    lock_lease: float,
+    interval: float,
+    failures: int,
+    command_timeout: float,
+) -> None:
+    """Whenever the safety floor meets or exceeds the lease, the
+    threshold sits at/above the lease and the gated statement renews
+    every held row on every beat — exactly the unconditional behaviour,
+    because those configs have no slack that is safe to harvest."""
+    from taskq.worker.heartbeat import _lease_renewal_threshold
+
+    threshold = _lease_renewal_threshold(
+        lock_lease=timedelta(seconds=lock_lease),
+        heartbeat_interval=interval,
+        max_heartbeat_failures=failures,
+        heartbeat_command_timeout=command_timeout,
+    )
+    assert threshold >= timedelta(seconds=lock_lease)
+
+
+def test_naive_half_lease_threshold_lapses_before_isolation_at_defaults() -> None:
+    """Red-team pin: the issue's naive candidate — skip while more than
+    HALF the lease remains — is NOT safe at the default settings.
+
+    At lease 60s / interval 10s / 3 tolerated failures, a worker whose
+    last successful beat skipped at remaining 30s+eps (just under half)
+    and then fails four consecutive beats (the loop isolates on the
+    F+1-th) has already lost the lease before the isolate decision:
+    four worst-coherent gaps of interval+command_timeout (12s each)
+    consume 48s of the 30s remaining. The sweep — a leader on healthy
+    Postgres while this worker is merely partitioned — can then reclaim
+    rows the worker still holds and may still be running. The shipped
+    floor ((F+1) * (interval + command_timeout) = 48s) keeps the lease
+    valid through exactly that cascade; this test exists so the floor
+    cannot be "simplified" back to lease/2.
+    """
+    lease = 60.0
+    interval = 10.0
+    command_timeout = 2.0
+    failures = 3
+    naive_threshold = lease / 2
+    gap = interval + command_timeout  # worst coherent beat gap
+
+    remaining = naive_threshold + 1e-6  # the last successful beat skipped here
+    for _ in range(failures + 1):  # the failure cascade to the isolate decision
+        remaining -= gap
+    assert remaining < 0, (
+        "the naive half-lease threshold should lapse the lease before "
+        "isolation at the default settings — if this assert fails, the "
+        "default margin model changed and the floor formula must be "
+        "re-derived"
+    )
+
+    # The shipped floor holds the same cascade: strictly-positive
+    # remaining at the isolate decision (gaps are strictly under the
+    # worst bound), and a full gap of margin for a worker that recovers
+    # after only F failures.
+    from taskq.worker.heartbeat import _lease_renewal_threshold
+
+    floor = _lease_renewal_threshold(timedelta(seconds=lease), interval, failures, command_timeout)
+    remaining = floor.total_seconds() + 1e-6
+    for _ in range(failures + 1):
+        remaining -= gap * (1.0 - 1e-9)  # strictly under the worst gap
+    assert remaining > 0
+    remaining = floor.total_seconds() + 1e-6
+    for _ in range(failures):
+        remaining -= gap * (1.0 - 1e-9)
+    assert remaining > gap  # recovering after F failures still holds margin
+
+
+@settings(max_examples=300, deadline=timedelta(seconds=10))
+@given(
+    interval=st.floats(min_value=0.5, max_value=30.0),
+    command_timeout=st.floats(min_value=0.01, max_value=10.0),
+    failures=st.integers(min_value=1, max_value=10),
+    lease_beats=st.floats(min_value=4.0, max_value=30.0),
+    healthy_gap_scale=st.lists(st.floats(min_value=0.01, max_value=0.999), min_size=3, max_size=8),
+    cascade_gap_scale=st.lists(st.floats(min_value=0.01, max_value=0.999), min_size=1, max_size=11),
+    recover_after=st.integers(min_value=0, max_value=10),
+)
+def test_gated_renewal_never_lets_a_live_lease_lapse(
+    interval: float,
+    command_timeout: float,
+    failures: int,
+    lease_beats: float,
+    healthy_gap_scale: list[float],
+    cascade_gap_scale: list[float],
+    recover_after: int,
+) -> None:
+    """Property: under the shipped threshold, a worker that keeps beating
+    — or that fails at most max_heartbeat_failures consecutive beats and
+    then recovers — never lets a lease lapse, and the lease outlives the
+    isolate decision by staying valid through F+1 failed beats.
+
+    The gap model is the system's own documented worst case (the
+    heartbeat loop's cadence comment and the lock_lease >= 4 x
+    heartbeat_interval invariant's rationale): one beat gap is at most
+    heartbeat_interval + heartbeat_command_timeout — a pool acquire
+    bounded at the interval plus one command bounded at the command
+    timeout — and failed beats are bounded by the same sum. Gaps are
+    drawn strictly under that bound (a tick that consumed its full
+    acquire budget waits zero, so the sum is not reachable exactly); the
+    epsilon-boundary itself is pinned deterministically by
+    test_naive_half_lease_threshold_lapses_before_isolation_at_defaults.
+
+    The lease respects the enforced invariant (>= 4 x interval). The
+    cascade is sized to the loop's actual behaviour: the loop isolates
+    on the (F+1)-th consecutive failure; a worker that recovers at or
+    before F failures keeps beating.
+    """
+    from taskq.worker.heartbeat import _lease_renewal_threshold
+
+    lease = interval * lease_beats  # >= 4 * interval, the enforced invariant
+    threshold = _lease_renewal_threshold(
+        timedelta(seconds=lease), interval, failures, command_timeout
+    ).total_seconds()
+    worst_gap = interval + command_timeout
+    # The worst failure-cascade consumption the CONFIG allows: F+1
+    # failed beats (the loop isolates on the F+1-th), each costing up to
+    # one worst gap (a pool acquire bounded at the interval plus one
+    # command bounded at the command timeout).
+    cascade_bound = (failures + 1) * worst_gap
+
+    if cascade_bound >= lease:
+        # A config whose worst cascade can outlive the lease: NO renewal
+        # policy operating at beat boundaries can keep it — the
+        # unconditional renewal main ships today has exactly the same
+        # exposure (this is the 4x invariant's own blind spot: it sizes
+        # the cascade as (F+1) * interval, but a failed beat can cost
+        # interval + command_timeout). What the gate must guarantee
+        # there is that it does not make things WORSE: the threshold's
+        # safety floor IS the cascade bound, so it meets or exceeds the
+        # lease and the gate renews on every beat — exactly the
+        # unconditional behaviour. That degenerate equivalence is what
+        # this branch pins; the lapse-free properties below are asserted
+        # only in the regime where survival is possible at all.
+        assert threshold >= lease, (
+            "a config whose worst cascade can outlive the lease must fall "
+            "back to renewing every beat (the safety floor meets the "
+            f"lease); threshold={threshold} < lease={lease} would be a "
+            "regression against the unconditional renewal"
+        )
+        return
+
+    remaining = lease  # a freshly claimed row
+
+    # Phase 1 — healthy beats with adversarial (sub-worst) gaps: the
+    # lease never lapses while the worker keeps beating, and every
+    # renewal resets it to the full lease.
+    for scale in healthy_gap_scale:
+        remaining -= worst_gap * scale
+        assert remaining > 0, "a healthy beat sequence let the lease lapse"
+        if remaining <= threshold:
+            remaining = lease
+
+    # Phase 2 — the failure cascade: up to F failures, then either the
+    # isolate decision (recover_after > F: the worker is gone by design,
+    # the lease may do what leases do) or a recovering beat.
+    cascade_len = min(recover_after, failures + 1)
+    for i in range(cascade_len):
+        remaining -= worst_gap * cascade_gap_scale[i % len(cascade_gap_scale)]
+        if i == failures:
+            # The isolate decision itself: the lease is still valid —
+            # the sweep must not be able to steal a row from a worker
+            # whose failure cascade only just reached the threshold.
+            assert remaining > 0, "the lease lapsed before the isolate decision"
+            return
+        assert remaining > 0, "the lease lapsed mid-cascade"
+    # The recovering beat: the lease is still valid (the renew-or-skip
+    # decision is the policy's, and either way the sweep never saw the
+    # row expired), and the worker keeps its row.
+    assert remaining > 0, "a recovering worker found its lease already expired"
+
+
+def test_build_heartbeat_sql_threshold_selects_the_gated_statement() -> None:
+    """The threshold kwarg is what arms the gate: None keeps the
+    unconditional renewal every existing caller binds; a threshold
+    renders the gated statement, whose three OR arms are each
+    load-bearing (per-job heartbeat_timeout beats must stay fresh for
+    the sweep's heartbeat arm; NULL leases always renewed; the
+    threshold compared server-side, on the clock that stamped the
+    lease)."""
+    from taskq.backend._sql import (
+        UPDATE_JOBS_LOCK_RENEWAL_SQL_TEMPLATE,
+        UPDATE_JOBS_LOCK_SQL_TEMPLATE,
+        build_heartbeat_sql,
+    )
+
+    _liveness, plain_jobs, _slots = build_heartbeat_sql("taskq")
+    _liveness2, gated_jobs, _slots2 = build_heartbeat_sql(
+        "taskq", renewal_threshold=timedelta(seconds=48.0)
+    )
+    # None: byte-identical to the public unconditional template.
+    assert plain_jobs == UPDATE_JOBS_LOCK_SQL_TEMPLATE.format(schema="taskq")
+    assert "$4" not in plain_jobs
+    # Threshold: the gated template, with the shared disowned-exclusion
+    # core (no drift between the two statements).
+    assert gated_jobs == UPDATE_JOBS_LOCK_RENEWAL_SQL_TEMPLATE.format(schema="taskq")
+    assert "heartbeat_timeout IS NOT NULL" in gated_jobs
+    assert "lock_expires_at IS NULL" in gated_jobs
+    assert "lock_expires_at <= clock_timestamp() + $4::interval" in gated_jobs
+    assert "NOT (id = ANY($3::uuid[]))" in gated_jobs
+    assert "NOT (id = ANY($3::uuid[]))" in plain_jobs
+
+
+async def test_heartbeat_loop_binds_the_renewal_threshold() -> None:
+    """The loop computes the threshold from its settings and binds it as
+    the jobs-lock renewal's $4 (the gated statement's only new
+    parameter)."""
+    from taskq.worker.heartbeat import _lease_renewal_threshold
+
+    await _patch_tick_duration(lambda v: None)
+    pool = FakePool()
+    deps, _shutdown = await _run_tick(pool=pool)
+    jobs_calls = [(sql, args) for sql, args in pool.execute_calls if "lock_expires_at" in sql]
+    assert jobs_calls, "the tick must issue the jobs-lock renewal"
+    sql, args = jobs_calls[0]
+    assert "clock_timestamp() + $4::interval" in sql
+    expected = _lease_renewal_threshold(
+        timedelta(seconds=deps.settings.lock_lease),
+        deps.settings.heartbeat_interval,
+        deps.settings.max_heartbeat_failures,
+        deps.settings.heartbeat_command_timeout,
+    )
+    assert args[3] == expected
