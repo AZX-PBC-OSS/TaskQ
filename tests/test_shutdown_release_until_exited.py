@@ -4,7 +4,7 @@ exited (#232).
 ``task.cancel()`` on a sync actor cancels the *await* on the executor
 thread, never the thread: the consumer's cancellation handler used to write
 ``mark_interrupted(hold=timedelta(0))`` on the assumption the actor had
-unwound with the await, so the row went straight back to ``pending`` —
+unwound with the await, so the row went straight back to ``pending``:
 claimable by another worker while the thread was still mid-body. The
 transactional path had the same gap: ``tx_task.cancel()`` followed by an
 immediate re-raise released the row while the transaction task was still
@@ -14,13 +14,13 @@ This is the unit tier (no Postgres): the tracked sync-actor handle
 (``_run_sync_actor_tracked``, the production dispatch helper), the bounded
 exit park, and the hold the release carries, all driven through the
 production ``consume_one_job`` cancellation arm against the recording
-``FakeBackend``. The real-Postgres gate — a second worker's claim while the
-first worker's sync thread is provably still running — lives in
+``FakeBackend``. The real-Postgres gate: a second worker's claim while the
+first worker's sync thread is provably still running: lives in
 ``tests/test_shutdown_interrupts_running_work.py``.
 
 The companion fix for #233's first half is pinned here too: an infra-failed
 release write must propagate the *cancellation* out of ``consume_one_job``,
-never the infra error — a bare ``raise`` in that except arm replaced the
+never the infra error: a bare ``raise`` in that except arm replaced the
 CancelledError with the InterfaceError and dispatch's generic handler spent
 the attempt's budget on a deploy.
 """
@@ -53,16 +53,16 @@ from taskq.worker import (
     _handlers as _handlers_mod,  # pyright: ignore[reportPrivateUsage]  # Why: the retry backoff is monkeypatched to keep the infra-failure test inside the unit lane's time budget.
 )
 from taskq.worker._consumer import (
-    _actor_exit_wait_budget,  # pyright: ignore[reportPrivateUsage]  # Why: the park-budget function under test — the anchored shape had no unit pin (F7).
+    _actor_exit_wait_budget,  # pyright: ignore[reportPrivateUsage]  # Why: the park-budget function under test: the anchored shape had no unit pin (F7).
     _interrupted_actor_hold,  # pyright: ignore[reportPrivateUsage]  # Why: the bare-call arm's fallback hold is a defensive surface a refactor could unbound or zero.
     consume_one_job,
 )
-from taskq.worker._handlers import (  # pyright: ignore[reportPrivateUsage]  # Why: the release write's own budget — the park's reserve term, pinned against the canonical constant.
+from taskq.worker._handlers import (  # pyright: ignore[reportPrivateUsage]  # Why: the release write's own budget: the park's reserve term, pinned against the canonical constant.
     _TERMINAL_WRITE_BUDGET,
 )
 from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.deps import WorkerDeps
-from taskq.worker.dispatch import (  # pyright: ignore[reportPrivateUsage]  # Why: the production sync-actor dispatch helper — the tracking under test is exactly what dispatch_one_job calls for a sync actor.
+from taskq.worker.dispatch import (  # pyright: ignore[reportPrivateUsage]  # Why: the production sync-actor dispatch helper: the tracking under test is exactly what dispatch_one_job calls for a sync actor.
     _run_sync_actor_tracked,
 )
 from taskq.worker.shutdown import (  # pyright: ignore[reportPrivateUsage]  # Why: the hold math under test is the module's own; the test recomputes the expected hold from the same exit tail.
@@ -131,8 +131,8 @@ class _InfraFailingReleaseBackend(FakeBackend):
 class _ParkedTxConnection:
     """asyncpg.Connection stand-in whose transaction unwind can be parked.
 
-    The transactional path's unwind — the ``async with transaction()``
-    exit that rolls back — is the thing the release used to race (#232's
+    The transactional path's unwind: the ``async with transaction()``
+    exit that rolls back: is the thing the release used to race (#232's
     second mechanism). Parking it lets the test hold the unwind open past
     the cancel and observe the ordering: the release write must land only
     after ``rollback_done``.
@@ -243,7 +243,7 @@ def _tracked_sync_run_actor(
 
 
 async def test_a_cancelled_sync_actor_await_detaches_but_the_thread_is_tracked() -> None:
-    """Cancelling the await does not stop the thread — and now it is provable.
+    """Cancelling the await does not stop the thread, and now it is provable.
 
     The tracked helper keeps ``asyncio.to_thread``'s semantics (default
     executor, context copy, the thread runs to its own outcome) while
@@ -289,7 +289,7 @@ async def test_a_cancelled_sync_actor_await_detaches_but_the_thread_is_tracked()
     release_body.set()
     done, _pending = await asyncio.wait({handle}, timeout=10.0)
     assert handle in done and body_returned.is_set(), (
-        "the handle completes exactly when the thread's body returns — that "
+        "the handle completes exactly when the thread's body returns: that "
         "is the provable-exit signal the shutdown release parks on"
     )
 
@@ -372,7 +372,7 @@ async def test_a_sync_actor_exiting_inside_the_window_is_released_pending_hold_z
 
     Waiting is the point of the park: a sync actor that is merely slow (not
     unbounded) finishes inside the remaining budget, its handle completes,
-    and the row is released claimable immediately — the actor is provably
+    and the row is released claimable immediately: the actor is provably
     gone, so no hold is owed. A fix that skipped the wait and always held
     would turn every deploy-interrupted sync actor into ~a-termination-
     budget of dead latency.
@@ -411,7 +411,7 @@ async def test_a_sync_actor_exiting_inside_the_window_is_released_pending_hold_z
     await _stamp_shutdown_origin(registry, job.id)
 
     attempt.cancel()
-    # The body exits shortly after the cancel — inside the 1.0s park window.
+    # The body exits shortly after the cancel: inside the 1.0s park window.
     await asyncio.sleep(0.05)
     release_body.set()
 
@@ -432,7 +432,7 @@ async def test_a_sync_actor_exiting_inside_the_window_is_released_pending_hold_z
 async def test_an_async_actor_that_unwound_keeps_the_immediate_release() -> None:
     """The responsive-async fast path is unchanged: hold=0, no park.
 
-    An async actor has unwound by the time the cancellation handler runs —
+    An async actor has unwound by the time the cancellation handler runs:
     the CancelledError propagated through its frames to get there. No
     handles exist, so no park and no hold: the row goes straight back to
     the fleet, exactly as before the fix.
@@ -551,7 +551,7 @@ async def test_the_transactional_release_lands_only_after_the_unwind() -> None:
 
     The old path cancelled ``tx_task`` and re-raised without waiting, so
     ``mark_interrupted`` raced the rollback. Here the rollback is parked
-    open: the release write must observe it finished first — and with the
+    open: the release write must observe it finished first, and with the
     unwind completing inside the park window, the release is hold=0 (the
     actor is provably gone with its transaction).
     """
@@ -627,7 +627,7 @@ async def test_infra_failed_release_write_propagates_the_cancellation_not_the_er
     and REPLACED the CancelledError being handled: the interruption escaped
     ``consume_one_job`` as a job exception and dispatch's generic handler
     spent the attempt's budget on a deploy. The fix mirrors the
-    ``mark_cancelled`` arm — log, disown, fall to the handler's final
+    ``mark_cancelled`` arm: log, disown, fall to the handler's final
     raise so the cancellation propagates.
     """
     # Zero the retry backoff so the four attempts fit the unit lane; the
@@ -671,7 +671,7 @@ async def test_infra_failed_release_write_propagates_the_cancellation_not_the_er
         escaped = exc
 
     assert isinstance(escaped, asyncio.CancelledError), (
-        "the cancellation must be what leaves the consumer — an "
+        "the cancellation must be what leaves the consumer: an "
         "InterfaceError escaping here is the deploy-mislabelled-as-failure "
         f"bug (#233); got {escaped!r}"
     )
@@ -690,7 +690,7 @@ async def test_infra_failed_release_write_propagates_the_cancellation_not_the_er
 
 
 async def test_the_anchored_park_budget_is_the_remaining_share_capped_by_the_lease() -> None:
-    """The anchored park is min(remaining - write budget, lease cap) — both
+    """The anchored park is min(remaining - write budget, lease cap): both
     orders pinned (F7: every unit park shape was unanchored before this;
     only the integration run exercised the anchored branch).
 
@@ -702,7 +702,7 @@ async def test_the_anchored_park_budget_is_the_remaining_share_capped_by_the_lea
     still executes. Whichever binds first is the park.
     """
     from taskq.worker._watchdog import (
-        live_tracked_actor_handles,  # pyright: ignore[reportPrivateUsage]  # Why: asserting the registry stayed empty — the budget function itself must not touch it.
+        live_tracked_actor_handles,  # pyright: ignore[reportPrivateUsage]  # Why: asserting the registry stayed empty: the budget function itself must not touch it.
     )
 
     loop = asyncio.get_running_loop()
@@ -724,7 +724,7 @@ async def test_the_anchored_park_budget_is_the_remaining_share_capped_by_the_lea
 
     # A tight lease: the cap binds (same remaining share, lease cap
     # 2 - 0.5 - 5 < 0 → the park is gone entirely and the release write
-    # happens immediately — still ahead of any lease reclaim).
+    # happens immediately: still ahead of any lease reclaim).
     tight = _settings(termination_grace=60.0, cleanup_grace=0.1)
     tight.lock_lease = 2.0
     tight.heartbeat_interval = 0.5
@@ -760,7 +760,7 @@ async def test_the_unanchored_park_shapes_pin_their_degraded_bounds() -> None:
         _deps_with(degraded), degraded, loop, reserve=_TERMINAL_WRITE_BUDGET.total_seconds()
     )
     assert budget == pytest.approx(1.0, abs=0.05), (
-        "with the watchdog disabled the park degrades to the cleanup grace — "
+        "with the watchdog disabled the park degrades to the cleanup grace: "
         "the orchestrator's own post-cancel patience, past which RELEASING "
         "releases the row regardless"
     )
@@ -778,7 +778,7 @@ async def test_the_unanchored_park_shapes_pin_their_degraded_bounds() -> None:
     ctx._set_sync_actor_task(handle)
     try:
         fallback_hold = await _interrupted_actor_hold(ctx, deps=None, settings=None)
-        from taskq.worker._consumer import (  # pyright: ignore[reportPrivateUsage]  # Why: the fallback constant the bare-call arm returns — pinned so a refactor cannot silently unbound or zero it.
+        from taskq.worker._consumer import (  # pyright: ignore[reportPrivateUsage]  # Why: the fallback constant the bare-call arm returns: pinned so a refactor cannot silently unbound or zero it.
             _BARE_CALL_HOLD_FALLBACK_SECS,
         )
 
@@ -830,7 +830,7 @@ async def test_a_running_sync_actor_is_registered_until_its_thread_returns() -> 
     handle = ctx._sync_actor_task
     assert handle is not None
     assert live_tracked_actor_handles() == [handle], (
-        "a sync actor mid-body must be registered process-wide — this is "
+        "a sync actor mid-body must be registered process-wide: this is "
         "what keeps the shutdown watchdog armed past the TaskGroup"
     )
 
@@ -839,7 +839,7 @@ async def test_a_running_sync_actor_is_registered_until_its_thread_returns() -> 
         await runner
     assert handle.done()
     assert live_tracked_actor_handles() == [], (
-        "a reaped handle must leave the registry's live set — the exit "
+        "a reaped handle must leave the registry's live set: the exit "
         "gate disarms the watchdog exactly when this empties"
     )
 

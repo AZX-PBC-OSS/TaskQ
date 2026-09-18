@@ -356,11 +356,11 @@ def trip(detector: str, reason: str) -> None:
 # A sync actor's executor thread cannot be cancelled from the loop, and a
 # transactional actor's tx task unwinds asynchronously after its cancel.
 # Both leave a handle behind (JobContext._sync_actor_task /
-# _tx_unwind_task) whose completion is the actor's *provable exit* — the
+# _tx_unwind_task) whose completion is the actor's *provable exit*: the
 # event the consumer's release park waits on and the release hold's window
 # is sized against. This registry is the process-wide view of those
 # handles: the shutdown path keeps the watchdog armed until every one of
-# them is reaped (or the deadline trip kills the process — and the threads
+# them is reaped (or the deadline trip kills the process, and the threads
 # with it), which is what makes "the row becomes claimable only once this
 # process is provably gone" true by construction rather than by hope. See
 # await_tracked_actor_reap for the shutdown-side half.
@@ -376,7 +376,7 @@ alive is guaranteed without any unregister discipline to forget."""
 def register_tracked_actor_handle(task: "asyncio.Task[object]") -> None:
     """Record a tracked actor handle. Called by the dispatch layer when a
     sync actor's body starts and by the transactional consumer when it
-    detaches a still-unwinding tx task — the two designated writers, the
+    detaches a still-unwinding tx task: the two designated writers, the
     same contract the matching JobContext setters document."""
     _tracked_actor_handles.add(task)
 
@@ -392,7 +392,7 @@ def live_tracked_actor_handles() -> "list[asyncio.Task[object]]":
 
 
 _REAP_POLL_INTERVAL_SECS = 0.1
-"""Cadence of the reap wait's liveness poll — the same quantum the shutdown
+"""Cadence of the reap wait's liveness poll: the same quantum the shutdown
 orchestrator's own grace loops use."""
 
 
@@ -401,7 +401,7 @@ async def await_tracked_actor_reap() -> bool:
 
     The shutdown path's exit gate: the worker's TaskGroup has already
     exited when this runs, so nothing on the loop can deliver a cancel to
-    an executor thread — the only exits from this wait are (a) every
+    an executor thread: the only exits from this wait are (a) every
     tracked handle completing (the actor bodies finished on their own) or
     (b) the caller's watchdog, still armed, tripping at its deadline and
     ``os._exit``-ing the process with the threads inside it. Both are
@@ -409,12 +409,12 @@ async def await_tracked_actor_reap() -> bool:
     is the point: without this gate the clean path disarmed the watchdog
     and then parked in the default executor's join
     (``THREAD_JOIN_TIMEOUT``, 300s) waiting for the very thread the hold
-    assumed was gone — a released row became claimable while its actor
+    assumed was gone: a released row became claimable while its actor
     still ran (the double-run #232 constructed at the default budgets
     with an ordinary long sync actor).
 
-    The thread's post-release completion accomplishes nothing — its row
-    was already released-with-hold and the fleet re-attempts the work — so
+    The thread's post-release completion accomplishes nothing: its row
+    was already released-with-hold and the fleet re-attempts the work, so
     the trip losing the tail of an outlived actor is the cheap end of the
     trade.
 
@@ -551,7 +551,7 @@ class ShutdownWatchdog:
     front half is within expectations and gets silence; one in its back
     half is already abnormal enough to observe, and a genuinely hung
     shutdown still accumulates dumps right up to the trip. On deadline:
-    trip — with a distinct reason when the straggler is a tracked actor
+    trip: with a distinct reason when the straggler is a tracked actor
     handle (a thread the cancel could never reach) rather than a stall.
     Cancelled on clean exit, AFTER the tracked-actor reap gate (see
     :func:`await_tracked_actor_reap`): the watchdog is what bounds the
@@ -646,7 +646,7 @@ class ShutdownWatchdog:
             elapsed = self._clock() - t0
             if elapsed >= self._deadline:
                 # The distinct reason matters: a live tracked actor handle
-                # at the deadline is NOT a stall — the shutdown completed,
+                # at the deadline is NOT a stall: the shutdown completed,
                 # the TaskGroup exited, and an executor thread the cancel
                 # could never reach is still running its body. The trip is
                 # the designed exit for exactly that shape (the release
@@ -671,11 +671,11 @@ class ShutdownWatchdog:
                 )
             # Clipped to the deadline: the check must not lag the deadline
             # by a full dump interval. The release hold's exit tail models
-            # a full dump interval of check lag as its margin — an
+            # a full dump interval of check lag as its margin: an
             # unclipped sleep consumes that margin exactly (a deadline
             # passing just after a check is observed up to
             # dump_interval late, and deadline + lag + flush then EQUALS
-            # the hold's scheduled_at, zero margin) — while a clipped
+            # the hold's scheduled_at, zero margin): while a clipped
             # final sleep lands the check on the deadline and keeps the
             # whole dump-interval term as real margin. Straggler dumps
             # keep their cadence except possibly one fewer dump in the

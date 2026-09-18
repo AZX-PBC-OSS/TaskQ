@@ -713,7 +713,7 @@ def sync_outlive_shutdown(payload: SyncOutliveShutdownPayload) -> None:
     ``task.cancel()`` cancels the await, never this body, so the body is
     exactly the shape the release-until-exited design and the shutdown
     exit gate exist for. Sleeps long enough (60 s) to outlive any test
-    termination budget, so the watchdog's deadline trip — not the body —
+    termination budget, so the watchdog's deadline trip (not the body)
     ends the attempt. No pool DI and no effects writes: an asyncpg pool is
     not thread-safe, and the thread's liveness evidence is the trip's
     ``tracked-actor-outlived-teardown`` reason, not a row it wrote.

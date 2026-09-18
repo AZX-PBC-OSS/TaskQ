@@ -177,7 +177,7 @@ def test_release_exit_tail_composes_the_three_canonical_terms() -> None:
     """deadline check margin (dump interval) + bounded flush (2s) + slack (1s).
 
     The exit tail is what a release hold pads its remaining share with, so
-    its terms are pinned against the canonical constants — a drift here
+    its terms are pinned against the canonical constants: a drift here
     either under-covers a released row (tail shrinks below the real trip
     lag) or silently inflates every held release's latency.
     """
@@ -225,7 +225,7 @@ def test_release_park_lease_capped_warning_names_the_arithmetic() -> None:
 
     The 120/30/10/60 shape is the one the #232 review constructed: under an
     uncapped park its lease expires mid-park (a single failed RELEASING
-    write away from a double-run). The cap makes it safe by construction —
+    write away from a double-run). The cap makes it safe by construction,
     and the warning says the trade being made instead of staying quiet
     about a 45s park where the budget promised 75s.
     """
@@ -259,13 +259,13 @@ def test_release_park_lease_capped_warning_is_silent_at_the_defaults() -> None:
 
 
 def test_disown_floor_warning_fires_at_the_defaults_with_the_arithmetic() -> None:
-    """The disown residue: 63 needed, 60 shipped — surfaced, not enforced.
+    """The disown residue: 63 needed, 60 shipped: surfaced, not enforced.
 
     The double-write-failure shape (the RELEASING write AND the consumer's
     both failing) leaves the row to lease expiry, and the earliest reclaim
     (last heartbeat + lease) must stay behind the deadline trip + exit
     tail where an outlived actor dies. At the defaults that demands 63
-    against the shipped 60 — a ~3s residue the maintainer chose to surface
+    against the shipped 60: a ~3s residue the maintainer chose to surface
     rather than hard-fail (the default would not load) or change (a
     maintainer call, flagged in the fix-round report).
     """

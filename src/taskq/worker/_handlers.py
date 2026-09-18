@@ -57,7 +57,7 @@ from taskq.backend._protocol import (
     SnoozeOutcome as BackendSnoozeOutcome,
 )
 from taskq.constants import (
-    TERMINAL_WRITE_BUDGET_SECS,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical seconds behind _TERMINAL_WRITE_BUDGET — the settings layer's release-park lease floor reserves exactly this much, so the number is shared rather than re-declared.
+    TERMINAL_WRITE_BUDGET_SECS,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical seconds behind _TERMINAL_WRITE_BUDGET: the settings layer's release-park lease floor reserves exactly this much, so the number is shared rather than re-declared.
 )
 from taskq.exceptions import (
     ReservationUnavailable,
