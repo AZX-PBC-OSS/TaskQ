@@ -18,8 +18,12 @@ extra installed.
 """
 
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any
+from hashlib import sha256
+from hmac import compare_digest
+from hmac import new as _hmac_new
+from typing import Any, NoReturn
 
 import structlog
 from fastapi import HTTPException, Request
@@ -31,11 +35,68 @@ __all__ = [
     "IdentityClaims",
     "SessionManager",
     "create_auth_dependency",
+    "current_sso_logout_token",
+    "logout_csrf_token",
+    "require_logout_csrf",
     "warn_if_no_group_allowlist",
 ]
 SESSION_COOKIE_NAME: str = "taskq_session"
 
 logger = structlog.get_logger("taskq.web.admin.auth")
+
+_LOGOUT_CSRF_PURPOSE: bytes = b"taskq-logout-csrf:"
+
+# Armed by the auth dependency on every authenticated request and read by the
+# Jinja global of the same name in the admin chrome: the base template renders
+# the Sign out control only when a token is present, which is exactly when a
+# live SSO session is. A ContextVar rather than a per-route context key so a
+# new page route cannot forget it - one forgotten key is one page whose Sign
+# out button silently posts without a token.
+_sso_logout_token: ContextVar[str] = ContextVar("taskq-sso-logout-token", default="")
+
+
+def current_sso_logout_token() -> str:
+    """The per-request logout CSRF token, or ``""`` when no SSO session is live.
+
+    Registered as a Jinja global (``sso_logout_token``) by the admin router
+    factory; the base template calls it to decide whether the Sign out
+    control renders at all.
+    """
+    return _sso_logout_token.get()
+
+
+def logout_csrf_token(session_secret: str, session_cookie: str) -> str:
+    """Derive the logout CSRF token for one live session.
+
+    An HMAC of the session-cookie value under ``session_secret``. The token is
+    therefore bound to the very session it can end: it is void the moment the
+    session ends (a fresh login mints a fresh value), it cannot be forged
+    without ``session_secret``, and it is never sent anywhere but the admin
+    page of the browser that owns the session. A cross-site attacker has
+    neither the cookie (HttpOnly, SameSite=Lax) nor the secret, so a forced
+    form POST cannot carry a valid token either.
+    """
+    return _hmac_new(
+        session_secret.encode(), _LOGOUT_CSRF_PURPOSE + session_cookie.encode(), sha256
+    ).hexdigest()
+
+
+async def require_logout_csrf(request: Request, session_manager: "SessionManager") -> None:
+    """Gate a POST on a live session and its matching logout CSRF token.
+
+    Both SSO backends call this from their ``POST /logout`` handler. Fails
+    closed with 403: no session cookie (there is nothing to end, and serving
+    a success shape to an unauthenticated probe teaches nothing), or a
+    missing/mismatched token.
+    """
+    cookie = request.cookies.get(session_manager.cookie_name)
+    if not cookie:
+        raise HTTPException(status_code=403, detail="logout requires an active session")
+    form = await request.form()
+    submitted = form.get("csrf_token")
+    expected = logout_csrf_token(session_manager.secret, cookie)
+    if not isinstance(submitted, str) or not compare_digest(submitted, expected):
+        raise HTTPException(status_code=403, detail="logout CSRF token missing or mismatched")
 
 
 def warn_if_no_group_allowlist(backend: str, allowed_groups: frozenset[str]) -> None:
@@ -190,7 +251,7 @@ def _accepts_html(request: Request) -> bool:
     return "text/html" in accept
 
 
-def _unauthorized(request: Request, login_path: str) -> None:
+def _unauthorized(request: Request, login_path: str) -> NoReturn:
     """Raise 401 (API) or redirect to *login_path* (browser navigation)."""
     if _accepts_html(request):
         raise HTTPException(
@@ -218,14 +279,16 @@ def create_auth_dependency(
         cookie = request.cookies.get(session_manager.cookie_name)
         if cookie is None:
             _unauthorized(request, login_path)
-        claims = session_manager.verify_session_cookie(cookie) if cookie else None
+        claims = session_manager.verify_session_cookie(cookie)
         if claims is None:
             _unauthorized(request, login_path)
-        if allowed_groups and claims is not None and allowed_groups.isdisjoint(claims.groups):
+        if allowed_groups and allowed_groups.isdisjoint(claims.groups):
             _unauthorized(request, login_path)
-        assert (
-            claims is not None
-        )  # Why: narrowed by the guards above; satisfies pyright strict return type.
+        # Arm the admin chrome's Sign out control for this request: the token
+        # is derived from the live session cookie value, so it ends with the
+        # session and cannot be computed by any origin that cannot read the
+        # HttpOnly cookie.
+        _sso_logout_token.set(logout_csrf_token(session_manager.secret, cookie))
         return claims
 
     return _dependency

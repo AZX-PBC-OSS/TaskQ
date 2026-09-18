@@ -355,6 +355,10 @@ _BREAKING_SECTION_ENTRIES: dict[str, tuple[str, tuple[str, ...]]] = {
         "0.3.0",
         ("allow_cookieless_fallback",),
     ),
+    "`/logout` is now a POST with a session-bound CSRF token": (
+        "0.3.0",
+        ("GET /logout",),
+    ),
     "Worker pools send no per-connection GUCs in the startup packet": (
         "0.3.0",
         ("startup packet",),

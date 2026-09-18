@@ -84,12 +84,29 @@ invalidates every outstanding session at once — no session store to flush.
    validates the ID token (issuer, audience, signature via JWKS), extracts
    claims into `IdentityClaims`, sets the session cookie, and redirects to the
    admin UI root.
-3. **`/logout`** — clears the session cookie and redirects to the admin root.
+3. **`/logout`** (POST) — requires a CSRF token bound to the live session
+   (the admin UI's Sign out control posts it), clears the session cookie,
+   and redirects to the admin root. `GET /logout` is refused (405), so a
+   forced top-level navigation from any page cannot clear an admin session
+   (see [Logging out](#logging-out)).
 
 On any error during `/callback` (token exchange failure, JWKS fetch timeout,
 invalid ID token), the user is redirected with a generic
 `?error=authentication+failed` — **never** raw exception text. The full
 exception is logged server-side.
+
+### Discovery and JWKS caching
+
+`/login` needs the issuer's discovery document and `/callback` needs the
+discovery document plus the JWKS. Both are cached in memory per issuer with
+a 300 s TTL (bounded to the most recently used 16 issuers), so a flood of
+unauthenticated `/login` requests costs at most one outbound fetch per
+issuer per TTL window instead of one per request. A refresh that fails
+invalidates the issuer's cache entry — the next request starts from a fresh
+fetch rather than serving a document the IdP would not refresh — and a
+rotated IdP signing key is picked up when the entry expires, at most one
+TTL window later. The cache is process-local, like every store in the SSO
+layer; replicas fetch independently.
 
 ### Group overage (Entra-specific)
 
@@ -170,7 +187,8 @@ bundle = create_oidc_auth(config, base_path="/admin")
   attributes into `IdentityClaims`, sets the session cookie, and redirects
   to the admin root.
 - **`/metadata`** (GET) — returns SP metadata XML for IdP configuration.
-- **`/logout`** — clears the session cookie.
+- **`/logout`** (POST) — requires the session-bound CSRF token; clears the
+  session cookie (see [Logging out](#logging-out)).
 
 v1 supports SP-initiated flow only (the user hits `/login` first). IdP-initiated
 SSO is a non-goal for v1.
@@ -347,6 +365,11 @@ browser withholds a `SameSite=Lax` cookie from a cross-site POST, so this one
 is marked `SameSite=None` when `secure_cookie` is on and is scoped to the
 `/callback` path alone. The session cookie's policy is untouched.
 
+The OIDC backend sets the analogous short-lived cookie (`taskq_oidc_state`,
+5 minutes) carrying the `state`, the PKCE `code_verifier`, and the `nonce` in
+one signed record. It is scoped to the callback route the same way — it is
+consumed by exactly one route, so it is offered on exactly one.
+
 The correlation cookie is the binding: the callback accepts an assertion only
 when its `InResponseTo` matches the request ID the signed cookie carries
 (python3-saml enforces the same comparison inside `process_response`), and the
@@ -426,6 +449,25 @@ group no longer intersects the allowlist gets 401 on the next request). Rotating
 `session_secret` invalidates all sessions at once.
 
 ---
+
+### Logging out
+
+Logout is a POST, not a GET. Both backends refuse `GET /logout` (405), so a
+forced top-level navigation — a link, an image, a redirect from any page —
+cannot clear an admin session, and the POST must carry a CSRF token derived
+from the live session cookie (an HMAC of the cookie value under
+`session_secret`). The admin UI's **Sign out** control is a small POST form
+that the server renders with that token in a hidden field whenever an SSO
+session is live, and the token ends where the session ends: a fresh login
+mints a fresh value, and a logged-out or expired session has no valid token
+at all. A cross-site attacker has neither the HttpOnly session cookie the
+token is derived from nor `session_secret`, so a forged form POST cannot
+carry a valid token either; the `SameSite=Lax` session cookie would not ride
+a cross-site POST in the first place.
+
+Integrations that logged out by fetching `GET /admin/logout` must switch to
+an authenticated `POST /admin/logout` with the token. There is no endpoint
+that ends a session without one.
 
 ## Machine-token auth (`token_auth`)
 
