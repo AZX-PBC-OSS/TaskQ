@@ -2,7 +2,8 @@
 
 Scenario:
 SIGTERM a worker with a running job; verify the job is interrupted
-(released back to the fleet, budget refunded) and no tasks are lost.
+(released back to the fleet, the spent attempt standing) and no tasks
+are lost.
 
 The ``slow_deliver_webhook`` actor (actors.py) sleeps 3 s — longer than
 the e2e shutdown drain window (``cancellation_grace=1.0`` +
@@ -10,9 +11,9 @@ the e2e shutdown drain window (``cancellation_grace=1.0`` +
 shutdown orchestration (DRAINING → CANCELLING → FORCING → RELEASING)
 cancels the in-flight task: the ``asyncio.sleep`` is interrupted by
 ``task.cancel()`` in the FORCING phase, so the actor never records its
-``finished`` effect and the job is RELEASED (``pending`` with the
-attempt refunded) — a deploy is an infrastructure event, never a verdict
-on the job.
+``finished`` effect and the job is RELEASED (``pending``, the claim's
+attempt increment standing) — a deploy is an infrastructure event,
+never a verdict on the job.
 
 After the SIGTERM a replacement worker is started: it claims the released
 job and runs it to completion — the deploy cost the work nothing but
@@ -158,13 +159,16 @@ async def test_sigterm_drains_inflight_job(
     run_id: str,
 ) -> None:
     """SIGTERM a worker with a running job: the job is interrupted (released,
-    refunded) and the replacement worker runs it to completion.
+    the spent attempt standing) and the replacement worker runs it to
+    completion.
 
     (a) The ``slow_deliver_webhook`` actor records ``started`` immediately,
     sleeps 3 s, then records ``finished``.  SIGTERM arrives during the
     sleep.  The shutdown orchestration cancels the task within the 2 s
-    grace window; the interrupted attempt is released back to the fleet
-    (``pending``, attempt refunded, ``interrupt_count`` bumped) — never
+    grace window; the interrupted claim is released back to the fleet
+    (``pending``, ``interrupt_count`` bumped, the attempt increment
+    standing: the attempt started executing, and refunding it would
+    re-create the epoch the interrupted handler still holds) — never
     terminalised by an infrastructure event.
 
     (b) A replacement worker container is started on the same schema/queue.
@@ -198,7 +202,8 @@ async def test_sigterm_drains_inflight_job(
 
     # ── Phase 1 assertions: drain orchestration released the job ────────
     # Poll to the released state (pending/scheduled with the interruption
-    # counted and the attempt refunded) — the test's docstring contract.
+    # counted and the attempt increment standing) — the test's docstring
+    # contract, matching mark_interrupted's merged semantics.
     # A worker with NO drain orchestration at all (hard SIGTERM death, row
     # stuck 'running') cannot satisfy it: the row would sit running until
     # a lease sweep reclaims it with the attempt spent as a crash.
@@ -208,15 +213,16 @@ async def test_sigterm_drains_inflight_job(
             bool(rows)
             and rows[0]["status"] in ("pending", "scheduled")
             and rows[0]["interrupt_count"] >= 1
-            and rows[0]["attempt"] == 0
+            and rows[0]["attempt"] == 1
         )
 
     await poll_until(
         _drained_released,
         timeout=30.0,
         description=(
-            f"job {handle.job_id} released back to the fleet (pending, refunded, "
-            "interrupt_count bumped) by the SIGTERM drain orchestration"
+            f"job {handle.job_id} released back to the fleet (pending, the "
+            f"attempt increment standing, interrupt_count bumped) by the "
+            f"SIGTERM drain orchestration"
         ),
     )
 
@@ -285,10 +291,12 @@ async def test_sigterm_drains_inflight_job(
             "the job interrupted by the SIGTERM must complete on the "
             f"replacement worker, not be lost to it; got {rows[0]['status']}"
         )
-        assert rows[0]["attempt"] == 1, (
-            "the interrupted attempt was refunded at release, so the "
-            "completion is the job's FIRST spent attempt — the deploy cost "
-            f"no budget; attempt reads {rows[0]['attempt']}"
+        assert rows[0]["attempt"] == 2, (
+            "the interrupted claim spent the attempt at release, so the "
+            "replacement worker's completion is the job's second spent "
+            "attempt: a deploy costs one attempt of budget, the price of "
+            f"not re-running against a live handler; attempt reads "
+            f"{rows[0]['attempt']}"
         )
 
 
