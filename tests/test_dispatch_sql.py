@@ -234,7 +234,12 @@ class TestDispatchStrictFifoSql:
         params_body = _cte_body(rendered, "params")
         assert "oversample" in params_body
         candidates_body = _cte_body(rendered, "candidates")
-        assert "LIMIT pac.residual * $5::int" in candidates_body
+        # The admission LIMIT carries the queue-cap headroom fold
+        # (#242): LEAST(pac.residual, queue_cap_headroom) * $5, NULL
+        # (no held cap bucket for the pair) leaves the residual alone.
+        assert "LIMIT LEAST(" in candidates_body
+        assert "SELECT qc.headroom FROM queue_cap_headroom qc" in candidates_body
+        assert "pac.residual * $5::int" not in candidates_body
 
     def test_final_update_race_guard(self) -> None:
         """The terminal UPDATE re-finds its rows through a one-shot id
@@ -429,7 +434,12 @@ class TestDispatchRoundRobinSql:
             "cannot share the keyed cohorts' path; IS NOT DISTINCT FROM "
             "never indexes)"
         )
-        assert "LIMIT pac.residual * $5::int" in candidates_body
+        # The admission LIMIT carries the queue-cap headroom fold
+        # (#242): LEAST(pac.residual, queue_cap_headroom) * $5, NULL
+        # (no held cap bucket for the pair) leaves the residual alone.
+        assert "LIMIT LEAST(" in candidates_body
+        assert "SELECT qc.headroom FROM queue_cap_headroom qc" in candidates_body
+        assert "pac.residual * $5::int" not in candidates_body
         # The fairness window sits INSIDE the per-pair lateral, over the
         # bounded probe union — one partition per cohort of THIS
         # (actor, queue) pair, never a cross-pair merge of equal keys.

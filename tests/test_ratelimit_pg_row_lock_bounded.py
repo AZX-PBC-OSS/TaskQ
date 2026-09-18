@@ -100,13 +100,18 @@ class _NullSavepoint:
 
 
 class _RowLockFakeConn:
-    """ConnLike stand-in modelling a stuck ``FOR UPDATE`` row lock.
+    """ConnLike stand-in modelling a stuck row lock on the bucket row.
 
-    The bucket-row SELECT raises the raw 55P03 (*select_times_out*: the
-    server-side ``lock_timeout`` fired while the row was held by a
-    black-holed peer) or returns *select_row* (*granted*). The preseed
-    and upsert statements are recorded so the tests can pin the fail
-    closed shape; ``set_config`` calls record the GUC budget.
+    The fused acquires (token bucket and GCRA, #228) take the bucket
+    row's lock in the ``ON CONFLICT (bucket_name) DO UPDATE`` arm, so
+    THAT fetchrow is where the bounded wait lands: it raises the raw
+    55P03 (*select_times_out*: the server-side ``lock_timeout`` fired
+    while the row was held by a black-holed peer) or returns the
+    decision row (*granted*). The refund's ``SELECT … FOR UPDATE``
+    keeps its own shape (unchanged by the fusion, the refund is the
+    cold rollback path). ``set_config`` calls record the GUC budget;
+    ``fused_results`` records the fused acquires that RETURNED, a
+    timeout records nothing, the fail-closed observable.
     """
 
     def __init__(
@@ -121,6 +126,7 @@ class _RowLockFakeConn:
         self.executed_sql: list[str] = []
         self.fetched_rows: list[str] = []
         self.set_config_values: list[str | None] = []
+        self.fused_results: list[dict[str, object]] = []
 
     def transaction(self) -> _NullSavepoint:
         self.savepoint_opens += 1
@@ -134,21 +140,33 @@ class _RowLockFakeConn:
         return "OK"
 
     async def fetchrow(self, sql: str, *params: object) -> object:
+        if "ON CONFLICT (bucket_name) DO UPDATE" in sql:
+            self.fetched_rows.append(sql)
+            if self.select_times_out:
+                raise asyncpg.LockNotAvailableError("simulated server lock_timeout")
+            if "tokens_after" in sql:
+                # token-bucket fused acquire: the final token count and
+                # the decision bit the statement carried home.
+                row = {"tokens_after": 4.0, "granted": True}
+            else:
+                # GCRA fused acquire: the advanced TAT and the statement
+                # clock the arithmetic used.
+                row = {"new_tat": 1000.25, "now_s": 1000.0}
+            self.fused_results.append(row)
+            return row
         if "FOR UPDATE" in sql:
             self.fetched_rows.append(sql)
             if self.select_times_out:
                 raise asyncpg.LockNotAvailableError("simulated server lock_timeout")
             assert self.select_row is not None
             return self.select_row
-        # The GCRA upsert's RETURNING fetch: any non-None means the row
-        # was written.
         self.fetched_rows.append(sql)
         return {"written": 1}
 
 
 class _BlackHoleRowLockConn(_RowLockFakeConn):
-    """Row-lock SELECT that NEVER returns (network black hole: the server
-    is unreachable, the statement never completes) — only the
+    """Row-lock statement that NEVER returns (network black hole: the
+    server is unreachable, the statement never completes), only the
     client-side wait_for backstop can bound this."""
 
     def __init__(self, select_row: dict[str, object] | None = None) -> None:
@@ -156,7 +174,7 @@ class _BlackHoleRowLockConn(_RowLockFakeConn):
         self._gate = asyncio.Event()
 
     async def fetchrow(self, sql: str, *params: object) -> object:
-        if "FOR UPDATE" in sql:
+        if "ON CONFLICT (bucket_name) DO UPDATE" in sql or "FOR UPDATE" in sql:
             self.fetched_rows.append(sql)
             await self._gate.wait()
             assert self.select_row is not None
@@ -214,13 +232,13 @@ class TestTokenBucketRowLockBoundedWaitUnit:
         assert elapsed < 2.0, f"budget was 100 ms but the wait took {elapsed:.3f}s"
         # The GUC budget was set for this transaction.
         assert conn.set_config_values == ["100ms"]
-        # One savepoint from the acquire's OWN transaction wrapper, one
-        # wrapping the lock-taking statements.
-        assert conn.savepoint_opens == 2
-        # Fail closed: no upsert — the preseed (DO NOTHING) may have run
-        # inside the rolled-back savepoint, but the admission write
-        # (DO UPDATE) never executed.
-        assert not any("DO UPDATE" in s for s in conn.executed_sql), (
+        # Only the acquire's OWN transaction wrapper opened: the fused
+        # statement needs no savepoint of its own (a refusal aborts the
+        # transaction outright and the bound dies with it).
+        assert conn.savepoint_opens == 1
+        # Fail closed: the fused acquire never RETURNED, a statement that
+        # raised spent and admitted nothing (statement-level atomicity).
+        assert conn.fused_results == [], (
             "a timed-out racer wrote bucket state — the denial must be "
             "fail closed, never an admission."
         )
@@ -261,8 +279,9 @@ class TestTokenBucketRowLockBoundedWaitUnit:
         assert decision.remaining == 4.0
         assert decision.retry_after == timedelta(0)
         assert conn.set_config_values == ["1000ms"]
-        assert conn.savepoint_opens == 2
-        assert any("DO UPDATE" in s for s in conn.executed_sql)
+        assert conn.savepoint_opens == 1
+        assert len(conn.fused_results) == 1, "the fused acquire returned the decision row"
+        assert conn.fused_results[0]["granted"] is True
 
     async def test_lock_timeout_budget_zero_waits_indefinitely(self) -> None:
         """``lock_timeout_ms <= 0`` disables the bound (the pre-fix
@@ -279,9 +298,14 @@ class TestTokenBucketRowLockBoundedWaitUnit:
             lock_timeout_ms=0.0,
         )
         assert decision.allowed is True
-        # Only the acquire's OWN transaction wrapper opened — indefinite
-        # mode adds no savepoint of its own.
-        assert conn.savepoint_opens == 1, "indefinite mode must not open a savepoint"
+        # Indefinite mode opens NO transaction at all: the fused
+        # statement is one autocommit round trip, its row lock ending
+        # with the statement.
+        assert conn.savepoint_opens == 0, (
+            "indefinite mode must not open a transaction, the pre-fused "
+            "shape needed one to span preseed + read + upsert; the fused "
+            "statement does not"
+        )
         assert conn.set_config_values == [], "indefinite mode must not touch the GUC"
 
     async def test_client_backstop_bounds_black_holed_row_lock(self) -> None:
@@ -307,8 +331,8 @@ class TestTokenBucketRowLockBoundedWaitUnit:
         # well before any plausible unbounded hang.
         assert elapsed >= 0.5, f"the backstop must outlast the 100ms budget, took {elapsed:.3f}s"
         assert elapsed < 2.0, f"the backstop must bound the black hole, took {elapsed:.3f}s"
-        # Fail closed: no admission write.
-        assert not any("DO UPDATE" in s for s in conn.executed_sql)
+        # Fail closed: the fused acquire never RETURNED.
+        assert conn.fused_results == []
 
 
 class TestGcraRowLockBoundedWaitUnit:
@@ -336,13 +360,10 @@ class TestGcraRowLockBoundedWaitUnit:
         assert decision.bucket_name == "gcra_row_lock_unit"
         assert elapsed < 2.0, f"budget was 100 ms but the wait took {elapsed:.3f}s"
         assert conn.set_config_values == ["100ms"]
-        assert conn.savepoint_opens == 2
-        # Fail closed: the TAT-mutating upsert (a fetchrow — RETURNING)
-        # never ran; the preseed (DO NOTHING) may have executed inside
-        # the rolled-back savepoint, but no admission write happened on
-        # either recorder.
-        assert not any("DO UPDATE" in s for s in conn.executed_sql)
-        assert not any("DO UPDATE" in s for s in conn.fetched_rows), (
+        assert conn.savepoint_opens == 1
+        # Fail closed: the fused upsert never RETURNED, a statement that
+        # raised advanced no TAT and admitted nothing.
+        assert conn.fused_results == [], (
             "a timed-out racer advanced the TAT — the denial must be "
             "fail closed, never an admission."
         )
@@ -382,15 +403,14 @@ class TestGcraRowLockBoundedWaitUnit:
         assert decision.allowed is True
         assert decision.retry_after == timedelta(0)
         assert conn.set_config_values == ["1000ms"]
-        assert conn.savepoint_opens == 2
-        # The GCRA upsert is a fetchrow (RETURNING), not an execute.
-        assert any("DO UPDATE" in s for s in conn.fetched_rows)
+        assert conn.savepoint_opens == 1
+        assert len(conn.fused_results) == 1, "the fused upsert returned the advanced TAT"
 
     async def test_lock_timeout_budget_zero_waits_indefinitely(self) -> None:
         """``lock_timeout_ms <= 0`` disables the bound — the GUC
         convention, pinned by contract: the granted fake proves the
-        indefinite mode takes the plain blocking read with no GUC
-        statements and no savepoint of its own."""
+        indefinite mode is ONE autocommit statement with no GUC
+        statements and no transaction of its own."""
         sw = _sw("gcra_row_lock_unit3")
         conn = _RowLockFakeConn(select_times_out=False, select_row=_GCRA_ROW)
         decision = await _acquire_pg_gcra(
@@ -400,7 +420,11 @@ class TestGcraRowLockBoundedWaitUnit:
             lock_timeout_ms=0.0,
         )
         assert decision.allowed is True
-        assert conn.savepoint_opens == 1, "indefinite mode must not open a savepoint"
+        assert conn.savepoint_opens == 0, (
+            "indefinite mode must not open a transaction, the pre-fused "
+            "shape needed one to span preseed + read + upsert; the fused "
+            "statement does not"
+        )
         assert conn.set_config_values == [], "indefinite mode must not touch the GUC"
 
     async def test_client_backstop_bounds_black_holed_row_lock(self) -> None:
@@ -422,9 +446,8 @@ class TestGcraRowLockBoundedWaitUnit:
         assert decision.retry_after == timedelta(milliseconds=100.0)
         assert elapsed >= 0.5, f"the backstop must outlast the 100ms budget, took {elapsed:.3f}s"
         assert elapsed < 2.0, f"the backstop must bound the black hole, took {elapsed:.3f}s"
-        # Fail closed: no admission write on either recorder.
-        assert not any("DO UPDATE" in s for s in conn.executed_sql)
-        assert not any("DO UPDATE" in s for s in conn.fetched_rows)
+        # Fail closed: the fused upsert never RETURNED.
+        assert conn.fused_results == []
 
 
 # ── Unit: bounded refund row-lock wait, fake pool (no PG) ───────────────

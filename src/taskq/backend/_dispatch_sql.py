@@ -151,9 +151,22 @@ Headroom bounds the round's candidate window (residual * oversample);
 final admission can overshoot a partially-free bucket by the
 oversample factor, the same best-effort doctrine running_per_actor
 documents for max_concurrent, and self-corrects on the next round when
-the over-claimed jobs fill the slots. Keyed and queue-cap buckets ride
-the same derivation for free — the gate keys off holder state, not
-declarations.
+the over-claimed jobs fill the slots. Static buckets ride the
+per-actor fold directly. Queue-cap buckets ride it scoped to the queue
+being probed (``queue_cap_headroom``, folded into each candidates
+lateral's per-(actor, queue) admission LIMIT), a fleet-wide queue
+cap binds per queue, so queue X's saturation must not zero the same
+actor's admission on queue Y (#242). Keyed buckets ride NOTHING here,
+deliberately: their concrete names are payload-derived per job and
+resolvable only in-process, so the claim cannot know which key a
+pending row needs, one saturated tenant must not block every other
+tenant of the actor. Their caps stay enforced where the key is known,
+in the consumer's post-claim ``acquire_for_actor`` (the authority),
+which resolves ``f"{base_name}:{key}"`` from the validated payload and
+denies (snooze) when that key's bucket is full: for keyed rows the
+gate's damper is traded away entirely, and the bounded
+claim→deny→snooze cycle is the accepted cost of not gating a whole
+actor on one tenant's saturation.
 
 Routing contract (the running-job-tail fix for
 :func:`taskq.actor_config_ops.move_actor_queue`): a pending row's
@@ -200,6 +213,7 @@ import structlog
 from opentelemetry.trace import SpanKind, StatusCode
 
 from taskq.backend._protocol import ConnLike
+from taskq.constants import QUEUE_CONCURRENCY_PREFIX
 from taskq.obs import (
     get_logger,
     record_dispatch_duration,
@@ -284,11 +298,24 @@ running_identities AS (
 -- holder state alone: reservation_slots.job_id points at the claimed
 -- jobs row, whose actor is the holder. The derivation needs no
 -- actor -> bucket declaration mapping (the DB has none — declarations
--- live in the workers' rate-limit registries), so static, keyed, and
--- queue-cap buckets all ride it. "Live" mirrors the acquire statement's
--- acquirability predicate exactly (taskq.ratelimit.reservation): a held
--- row whose lease has not yet expired — with the deliberate clock swap
--- to statement_timestamp() (STABLE), the same two-clock doctrine the
+-- live in the workers' rate-limit registries), so static and queue-cap
+-- buckets both ride it. KEYED buckets deliberately do not: their
+-- concrete names are payload-derived per job (the base name, a colon,
+-- and the per-job key, composed in-process by the consumer's
+-- acquire_for_actor; the comment spells the shape out brace-free, the
+-- SQL template guard refuses unregistered render placeholders), so the
+-- claim
+-- cannot know which key a pending row will need: folding a keyed
+-- bucket's occupancy in would gate the actor on a tenant the pending
+-- row may not even belong to (one saturated tenant blocking every other
+-- tenant's claims, #242). Keyed caps are still enforced where the key
+-- IS known: the post-claim acquire_for_actor, the admission authority,
+-- resolves the concrete name from the payload and denies (snooze) when
+-- that key's bucket is full: the gate below is a damper, never the
+-- enforcement. "Live" mirrors the acquire statement's acquirability
+-- predicate exactly (taskq.ratelimit.reservation): a held row whose
+-- lease has not yet expired, with the deliberate clock swap to
+-- statement_timestamp() (STABLE), the same two-clock doctrine the
 -- candidates laterals keep, so the liveness bound can ride
 -- reservation_slots_lease_expires_idx as an Index Cond and the whole
 -- statement keeps one snapshot. A lease that expires mid-statement
@@ -315,6 +342,7 @@ reservation_holdings AS (
     SELECT rs.bucket_name, rs.job_id
     FROM "{schema}".reservation_slots rs
     WHERE rs.job_id IS NOT NULL
+      AND NOT rs.keyed
       AND (rs.lease_expires_at IS NULL OR rs.lease_expires_at >= statement_timestamp())
   ) lh
   CROSS JOIN LATERAL (
@@ -324,10 +352,14 @@ reservation_holdings AS (
     LIMIT 1
   ) hj
 ),
--- Acquirable slots per held bucket, folded to the actor's binding
--- constraint: an actor's jobs AND-compose their declared reservations,
--- so the least-free held bucket caps how many more of the actor's rows
--- can actually run. The free predicate is the acquire statement's own
+-- Acquirable slots per held STATIC bucket, folded to the actor's binding
+-- constraint: an actor's jobs AND-compose their declared static
+-- reservations, so the least-free held static bucket caps how many more
+-- of the actor's rows can actually run. Queue-cap buckets are folded
+-- separately (queue_cap_headroom below) because their constraint binds
+-- per QUEUE, not per actor: an actor with running jobs on two queues
+-- must not have queue X's saturation close the gate on queue Y's
+-- claims (#242). The free predicate is the acquire statement's own
 -- (job_id IS NULL OR lease expired — an expired lease is the design's
 -- abandonment signal and is acquirable on the spot), again on
 -- statement_timestamp(). Each probe is a primary-key-prefix range over
@@ -345,7 +377,36 @@ reservation_headroom AS (
     WHERE rs2.bucket_name = h.bucket_name
       AND (rs2.job_id IS NULL OR rs2.lease_expires_at < statement_timestamp())
   ) f
+  WHERE left(h.bucket_name, __QUEUE_CAP_PREFIX_LEN__) <> '__QUEUE_CAP_PREFIX__'
   GROUP BY h.actor
+),
+-- The queue-scoped half of the headroom fold: acquirable slots of held
+-- QUEUE-CAP buckets (the taskq:global:queue: reserved prefix plus the
+-- queue name, registered per queue with a max_concurrent), keyed by the
+-- (actor, queue) the constraint
+-- actually binds. The queue is recovered from the bucket name (the
+-- register() reserved-prefix guard makes the prefix an unambiguous
+-- discriminator: no user or keyed declaration can produce a name
+-- inside the namespace), so the fold needs no declaration mapping, the
+-- same holder-state doctrine as reservation_holdings. A full queue-cap
+-- bucket zeroes its holder actors' admission FOR THAT QUEUE while
+-- their claims on every other queue flow untouched, and actors
+-- holding nothing in it are absent here, so the first claim on the
+-- queue is never gated (the damper, not authority, doctrine the static
+-- fold keeps).
+queue_cap_headroom AS (
+  SELECT h.actor,
+         substring(h.bucket_name from __QUEUE_CAP_QUEUE_START__) AS queue,
+         MIN(f.free_slots) AS headroom
+  FROM reservation_holdings h
+  CROSS JOIN LATERAL (
+    SELECT count(*) AS free_slots
+    FROM "{schema}".reservation_slots rs3
+    WHERE rs3.bucket_name = h.bucket_name
+      AND (rs3.job_id IS NULL OR rs3.lease_expires_at < statement_timestamp())
+  ) f
+  WHERE left(h.bucket_name, __QUEUE_CAP_PREFIX_LEN__) = '__QUEUE_CAP_PREFIX__'
+  GROUP BY h.actor, substring(h.bucket_name from __QUEUE_CAP_QUEUE_START__)
 ),
 -- Per-actor admission for the label-routed arm. The driver is pa_actors
 -- (the round's own label-routed population, enumerated from jobs by the
@@ -386,18 +447,20 @@ per_actor_capacity AS (
   SELECT
     base.actor,
     base.max_concurrent,
-    -- The reservation-headroom fold: an actor holding a live slot in a
-    -- bucket with no acquirable slot left is admitted NOTHING this
-    -- round — its pending rows could only be claimed into consumer
-    -- coroutines whose acquire_for_actor must deny them, spending the
-    -- worker's shared max_concurrency slots on work that cannot run
-    -- (the consumer-slot churn this gate exists to remove). A
-    -- partially free held bucket admits at most its free count. An
-    -- actor with no live holdings has headroom NULL and LEAST ignores
-    -- NULL, so the base residual is untouched — the gate never blocks
-    -- a first claim, and a full bucket implies a holder already
-    -- running whose completion (or lease expiry) re-opens admission,
-    -- so saturated work drains the moment capacity frees.
+    -- The reservation-headroom fold (STATIC buckets only, keyed buckets
+    -- are excluded from the derivation, and queue-cap buckets are folded
+    -- per queue in the candidates laterals' admission LIMIT): an actor
+    -- holding a live slot in a static bucket with no acquirable slot
+    -- left is admitted NOTHING this round: its pending rows could only
+    -- be claimed into consumer coroutines whose acquire_for_actor must
+    -- deny them, spending the worker's shared max_concurrency slots on
+    -- work that cannot run (the consumer-slot churn this gate exists to
+    -- remove). A partially free held static bucket admits at most its
+    -- free count. An actor with no live static holdings has headroom
+    -- NULL and LEAST ignores NULL, so the base residual is untouched,
+    -- the gate never blocks a first claim, and a full bucket implies a
+    -- holder already running whose completion (or lease expiry) re-opens
+    -- admission, so saturated work drains the moment capacity frees.
     LEAST(base.residual, rh.headroom) AS residual,
     base.actor_claimed_at
   FROM (
@@ -523,12 +586,18 @@ repend_capacity AS (
   SELECT
     base.actor,
     base.max_concurrent,
-    -- The same reservation-headroom fold as per_actor_capacity: a
-    -- re-pended row of a reservation-saturated actor (a denied job
-    -- coming back through the snooze/promote path routes here by its
-    -- assignment_routed marker) is no more runnable than a
+    -- The same reservation-headroom fold as per_actor_capacity (STATIC
+    -- half only): a re-pended row of a reservation-saturated actor (a
+    -- denied job coming back through the snooze/promote path routes
+    -- here by its assignment_routed marker) is no more runnable than a
     -- producer-placed one — claiming it would churn a consumer slot
-    -- into another denial.
+    -- into another denial. The queue-cap half is deliberately NOT
+    -- folded here: this arm's rows carry any queue label (the marker
+    -- population is label-agnostic), and the queue-cap acquire that
+    -- decides each row post-claim uses that row's OWN label: no
+    -- single queue's cap could gate the arm without gating rows it
+    -- does not bind. The post-claim acquire stays the authority for
+    -- that half; the damper for re-pended rows is the static fold.
     LEAST(base.residual, rh.headroom) AS residual,
     base.actor_claimed_at
   FROM (
@@ -1046,8 +1115,22 @@ _STRICT_FIFO_CANDIDATES_LATERAL = """\
     -- BEFORE identity_dedup, matters: the shipped bound counted
     -- identity-duplicate rows against the window, so a post-dedup cut
     -- would silently widen it.
+    --
+    -- The queue-cap headroom rides the LIMIT, per (actor, queue): a
+    -- scalar probe of queue_cap_headroom (at most one row per pair, so
+    -- the subquery is exact), NULL, ignored by LEAST, when the actor
+    -- holds nothing in this queue's cap bucket, so an uncapped pair
+    -- pays the bound not at all. A full queue-cap bucket admits ZERO
+    -- rows of its holder actors on THIS queue while their claims on
+    -- every other queue flow untouched (#242). The bound stays an
+    -- unfoldable expression like the residual it extends: only the
+    -- SCAN bound above must fold.
     ORDER BY w.probe_rank
-    LIMIT pac.residual * $5::int"""
+    LIMIT LEAST(
+            pac.residual,
+            (SELECT qc.headroom FROM queue_cap_headroom qc
+              WHERE qc.actor = pac.actor AND qc.queue = sq.queue_name)
+          ) * $5::int"""
 
 _ROUND_ROBIN_CANDIDATES_LATERAL = """\
     SELECT w.id, w.actor, w.identity_key, w.fairness_key,
@@ -1093,7 +1176,12 @@ _ROUND_ROBIN_CANDIDATES_LATERAL = """\
       -- residual <= limit_n makes the two coincide, and a capped actor
       -- with residual above limit_n is bound by the round's own limit
       -- first, its tail draining on later rounds per the depth
-      -- contract.
+      -- contract. The queue-cap headroom rides this admission LIMIT
+      -- per (actor, queue): the same scalar queue_cap_headroom probe
+      -- the strict-FIFO arm's comment above documents (NULL ignored by
+      -- LEAST when the actor holds nothing in this queue's cap), so a
+      -- full queue-cap bucket admits zero rows of its holder actors on
+      -- THIS queue and touches their claims on no other queue (#242).
       SELECT c.id, c.actor, c.identity_key, c.fairness_key,
              c.priority, c.scheduled_at,
              ROW_NUMBER() OVER (
@@ -1130,7 +1218,11 @@ _ROUND_ROBIN_CANDIDATES_LATERAL = """\
             ) p
           ) ck
           ORDER BY ck.cohort_rank
-          LIMIT pac.residual * $5::int
+          LIMIT LEAST(
+                  pac.residual,
+                  (SELECT qc.headroom FROM queue_cap_headroom qc
+                    WHERE qc.actor = pac.actor AND qc.queue = sq.queue_name)
+                ) * $5::int
         ) c
       -- The pair restriction sits OUTSIDE the probe: rr_keys is the
       -- global cohort enumeration (the recursive term cannot be
@@ -1291,6 +1383,15 @@ def _render_dispatch_sql(
     template itself; only the two candidates arms differ per variant,
     through ``candidates_lateral`` (label-routed) and ``repended_lateral``
     (assignment-routed).
+
+    The queue-cap namespace tokens (``__QUEUE_CAP_PREFIX__`` and its derived
+    length) are substituted from :data:`taskq.constants.QUEUE_CONCURRENCY_PREFIX`
+    so the headroom fold's bucket-name discriminator and the registry's
+    queue-cap name builder can never drift apart, the same
+    single-source-of-truth rule the acquire predicate shares with the
+    reservation statements. The prefix's charset (validated at constant
+    definition) contains no single quotes or braces, so the literal
+    substitution is SQL-safe and ``str.format``-safe.
     """
     return (
         template.replace("__FAIRNESS_RANK_COLUMN__", fairness_rank_column)
@@ -1300,6 +1401,9 @@ def _render_dispatch_sql(
         .replace("__REPENDED_LATERAL__", repended_lateral)
         .replace("__RANKED_ORDER_BY__", ranked_order_by)
         .replace("__ELIGIBLE_CANDIDATES_ORDER_BY__", eligible_candidates_order_by)
+        .replace("__QUEUE_CAP_PREFIX__", QUEUE_CONCURRENCY_PREFIX)
+        .replace("__QUEUE_CAP_PREFIX_LEN__", str(len(QUEUE_CONCURRENCY_PREFIX)))
+        .replace("__QUEUE_CAP_QUEUE_START__", str(len(QUEUE_CONCURRENCY_PREFIX) + 1))
     )
 
 

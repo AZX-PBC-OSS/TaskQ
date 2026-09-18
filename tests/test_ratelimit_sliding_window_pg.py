@@ -867,13 +867,18 @@ async def test_peek_gcra_retry_after_clamped_to_1ms() -> None:
 
 
 async def test_acquire_log_oldest_row_none_fallback() -> None:
-    """acquire_pg_log: the INSERT ... WHERE (subquery) < limit fails
-    (denied), and the subsequent oldest-row lookup also races to no
-    rows — retry_after falls back to 1 ms."""
+    """acquire_pg_log: the fused statement's row reports the admission
+    insert as not landed (denied) and no oldest in-window entry (the
+    window drained between the count and the read), retry_after falls
+    back to 1 ms."""
     sw = SlidingWindow(
         name="fake_log3", limit=1, window=timedelta(seconds=10), backend="postgres", style="log"
     )
-    fake_pool = _FakePgPool(fetchrow_returns=[None, None])
+    fake_pool = _FakePgPool(
+        fetchrow_returns=[
+            {"inserted": False, "count_in_window": 0, "oldest_ts": None, "server_now": None}
+        ]
+    )
 
     decision = await _acquire_pg_log(
         sw, fake_pool, _fake_settings(), "11111111-1111-1111-1111-111111111111"
@@ -884,13 +889,23 @@ async def test_acquire_log_oldest_row_none_fallback() -> None:
 
 
 async def test_acquire_log_retry_after_clamped_to_1ms() -> None:
-    """acquire_pg_log: denied, oldest row present with ts exactly
-    `now - window` (and the server-domain now in the same row) so the raw
-    retry_after computes to timedelta(0); the clamp raises it to 1 ms."""
+    """acquire_pg_log: denied with the oldest in-window entry's ts at
+    exactly `now - window` (and the server-domain now in the same fused
+    row) so the raw retry_after computes to timedelta(0); the clamp
+    raises it to 1 ms."""
     now_dt = datetime(2025, 1, 1, tzinfo=UTC)
     window = timedelta(seconds=10)
     sw = SlidingWindow(name="fake_log4", limit=1, window=window, backend="postgres", style="log")
-    fake_pool = _FakePgPool(fetchrow_returns=[None, {"ts": now_dt - window, "server_now": now_dt}])
+    fake_pool = _FakePgPool(
+        fetchrow_returns=[
+            {
+                "inserted": False,
+                "count_in_window": 1,
+                "oldest_ts": now_dt - window,
+                "server_now": now_dt,
+            }
+        ]
+    )
 
     decision = await _acquire_pg_log(
         sw, fake_pool, _fake_settings(), "11111111-1111-1111-1111-111111111111"
@@ -901,17 +916,17 @@ async def test_acquire_log_retry_after_clamped_to_1ms() -> None:
 
 
 async def test_acquire_gcra_kind_collision_race_on_upsert() -> None:
-    """acquire_pg_gcra: SELECT finds an existing gcra row (allowing the
-    acquire to proceed), but the upsert's RETURNING clause comes back
-    empty — simulating a competing writer that flipped `kind` away from
-    'gcra' between the SELECT and the upsert. Raises RuntimeError."""
-    now_dt = datetime(1970, 1, 1, tzinfo=UTC)
-    now_s = now_dt.timestamp()
+    """acquire_pg_gcra: the fused upsert's WHERE guard (kind = 'gcra')
+    refuses a row a competing writer flipped to another kind, RETURNING
+    comes back empty, and the denial follow-up read reports the foreign
+    kind. Raises RuntimeError, exactly as the pre-fused SELECT's kind
+    check did: refusing to corrupt prior state is a loud error, not a
+    silent denial."""
     sw = SlidingWindow(
         name="collide_race", limit=3, window=timedelta(seconds=1), backend="postgres", style="gcra"
     )
     fake_pool = _FakePgPool(
-        fetchrow_returns=[{"kind": "gcra", "state": {"tat": 0.0}, "now_s": now_s}, None]
+        fetchrow_returns=[None, {"kind": "token_bucket", "tat": 0.0, "now_s": 0.0}]
     )
 
     with pytest.raises(RuntimeError, match="collide_race"):
