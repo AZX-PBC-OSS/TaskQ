@@ -40,6 +40,9 @@ from taskq.backend._protocol import (
 from taskq.backend._records import _batch_row_from_record
 from taskq.backend._sql_templates import SqlTemplates
 from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
+from taskq.connections import (
+    _bounded_checkout,  # pyright: ignore[reportPrivateUsage] # Why: the one implementation of the bounded pool checkout (release carries _POOL_RELEASE_RESET_TIMEOUT_SECS and never raises); a local copy would drift from the discipline it documents.
+)
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_CHUNK_SIZE,
@@ -741,7 +744,7 @@ async def enqueue_batch_atomic(
     all_rows: list[JobRow] = []
     item_count = 0
 
-    async with pool.acquire() as conn:
+    async with _bounded_checkout(pool, "enqueue_batch_atomic") as conn:
         tx = conn.transaction()
         await tx.start()
         try:

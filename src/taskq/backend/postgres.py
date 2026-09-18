@@ -170,6 +170,9 @@ from taskq.backend._terminal import (
     _write_cancel_escalation,
 )
 from taskq.backend.clock import Clock
+from taskq.connections import (
+    _bounded_checkout,  # pyright: ignore[reportPrivateUsage] # Why: the one implementation of the bounded pool checkout (release carries _POOL_RELEASE_RESET_TIMEOUT_SECS and never raises); a local copy would drift from the discipline it documents.
+)
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_CHUNK_SIZE,
@@ -474,7 +477,7 @@ class PostgresBackend:
         disowned: Collection[UUID] = (),
     ) -> int:
         sql = UPDATE_JOBS_LOCK_SQL_TEMPLATE.format(schema=self._schema_name)
-        async with self._heartbeat_pool.acquire() as conn:
+        async with _bounded_checkout(self._heartbeat_pool, "heartbeat_jobs") as conn:
             tag = await conn.execute(sql, worker_id, lock_lease, list(disowned))
         return parse_rowcount(tag)
 
@@ -486,7 +489,7 @@ class PostgresBackend:
         disowned: Collection[UUID] = (),
     ) -> int:
         sql = UPDATE_RESERVATION_LEASES_SQL_TEMPLATE.format(schema=self._schema_name)
-        async with self._heartbeat_pool.acquire() as conn:
+        async with _bounded_checkout(self._heartbeat_pool, "extend_reservation_leases") as conn:
             tag = await conn.execute(sql, worker_id, lock_lease, list(disowned))
         return parse_rowcount(tag)
 
@@ -792,7 +795,7 @@ class PostgresBackend:
         _cancel_phase: int | None = None
         _locked_by_worker: UUID | None = None
 
-        async with self._worker_pool.acquire() as conn:
+        async with _bounded_checkout(self._worker_pool, "write_cancel_request") as conn:
             async with conn.transaction():
                 rec = await conn.fetchrow(self._sql.cancel_pending_scheduled, job_id)
                 if rec is not None:
@@ -829,7 +832,9 @@ class PostgresBackend:
                 payload = _cancel_notify_payload(job_id, _locked_by_worker)
                 fleet_ch, worker_ch = _cancel_notify_channels(self._schema_name, _locked_by_worker)
                 try:
-                    async with self._worker_pool.acquire() as notify_conn:
+                    async with _bounded_checkout(
+                        self._worker_pool, "write_cancel_request_notify"
+                    ) as notify_conn:
                         await notify_conn.execute(
                             "SELECT pg_notify($1, $2), pg_notify($3, $4)",
                             fleet_ch,
@@ -856,7 +861,7 @@ class PostgresBackend:
         self,
         worker_id: UUID,
     ) -> list[CancelFlag]:
-        async with self._worker_pool.acquire() as conn:
+        async with _bounded_checkout(self._worker_pool, "poll_cancel_flags") as conn:
             recs = await conn.fetch(
                 self._sql.poll_cancel_flags,
                 worker_id,
@@ -898,7 +903,9 @@ class PostgresBackend:
                 channels.extend(ch)
                 payloads.extend([payload, payload])
             try:
-                async with self._worker_pool.acquire() as notify_conn:
+                async with _bounded_checkout(
+                    self._worker_pool, "cancel_where_notify"
+                ) as notify_conn:
                     await notify_conn.execute(
                         "SELECT pg_notify(channel, payload) "
                         "FROM unnest($1::text[], $2::text[]) AS t(channel, payload)",
@@ -917,7 +924,7 @@ class PostgresBackend:
     # ── Admin operations ──────────────────────────────────────────────
 
     async def retry_job(self, job_id: JobId) -> bool:
-        async with self._worker_pool.acquire() as conn:
+        async with _bounded_checkout(self._worker_pool, "retry_job") as conn:
             async with conn.transaction():
                 rec = await conn.fetchrow(self._sql.retry_job, job_id)
                 if rec is None:
@@ -1017,8 +1024,10 @@ class PostgresBackend:
         # the prune loop's own acquire convention, and the resulting
         # TimeoutError is transient-classified by the leader loops that
         # call these entrypoints (worker/_transient.py).
-        async with self._notify_pool.acquire(
-            timeout=self._deps.settings.dispatcher_command_timeout
+        async with _bounded_checkout(
+            self._notify_pool,
+            "scheduled_to_pending",
+            acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         ) as conn:
             return await self._run_bounded_sweep(
                 "scheduled_to_pending",
@@ -1034,8 +1043,10 @@ class PostgresBackend:
     async def deadline_sweep(self, *, batch_size: int | None = None) -> int:
         # Bounded acquire — same contract and rationale as
         # scheduled_to_pending above.
-        async with self._notify_pool.acquire(
-            timeout=self._deps.settings.dispatcher_command_timeout
+        async with _bounded_checkout(
+            self._notify_pool,
+            "deadline_sweep",
+            acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         ) as conn:
             return await self._run_bounded_sweep(
                 "deadline_exceeded",
@@ -1057,8 +1068,10 @@ class PostgresBackend:
     ) -> int:
         # Bounded acquire — same contract and rationale as
         # scheduled_to_pending above.
-        async with self._notify_pool.acquire(
-            timeout=self._deps.settings.dispatcher_command_timeout
+        async with _bounded_checkout(
+            self._notify_pool,
+            "reclaim_expired_locks",
+            acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         ) as conn:
             return await self._run_bounded_sweep(
                 "expired_locks",
@@ -1280,7 +1293,7 @@ class PostgresBackend:
                 originating_actor,
             )
         else:
-            async with self._worker_pool.acquire() as conn:
+            async with _bounded_checkout(self._worker_pool, "create_batch") as conn:
                 await _create_batch(
                     conn,
                     self._batch_sql,
@@ -1300,7 +1313,7 @@ class PostgresBackend:
     ) -> tuple[int, int | None, int]:
         if connection is not None:
             return await _increment_batch_failures(connection, self._batch_sql, batch_id)
-        async with self._worker_pool.acquire() as conn:
+        async with _bounded_checkout(self._worker_pool, "increment_batch_failures") as conn:
             return await _increment_batch_failures(conn, self._batch_sql, batch_id)
 
     async def reset_batch_failures(
@@ -1311,7 +1324,7 @@ class PostgresBackend:
     ) -> int:
         if connection is not None:
             return await _reset_batch_failures(connection, self._batch_sql, batch_id)
-        async with self._worker_pool.acquire() as conn:
+        async with _bounded_checkout(self._worker_pool, "reset_batch_failures") as conn:
             return await _reset_batch_failures(conn, self._batch_sql, batch_id)
 
     async def abort_batch(
@@ -1322,7 +1335,7 @@ class PostgresBackend:
     ) -> int:
         if connection is not None:
             return await _abort_batch(connection, self._batch_sql, batch_id)
-        async with self._worker_pool.acquire() as conn:
+        async with _bounded_checkout(self._worker_pool, "abort_batch") as conn:
             async with conn.transaction():
                 return await _abort_batch(conn, self._batch_sql, batch_id)
 
@@ -1335,18 +1348,18 @@ class PostgresBackend:
         if connection is not None:
             await _complete_batch(connection, self._batch_sql, batch_id)
         else:
-            async with self._worker_pool.acquire() as conn:
+            async with _bounded_checkout(self._worker_pool, "complete_batch") as conn:
                 await _complete_batch(conn, self._batch_sql, batch_id)
 
     async def get_batch(self, batch_id: UUID) -> BatchRow | None:
-        async with self._worker_pool.acquire() as conn:
+        async with _bounded_checkout(self._worker_pool, "get_batch") as conn:
             return await _get_batch(conn, self._batch_sql, batch_id)
 
     async def list_batches(
         self,
         filter: BatchFilter,
     ) -> list[tuple[BatchRow, BatchCounts]]:
-        async with self._worker_pool.acquire() as conn:
+        async with _bounded_checkout(self._worker_pool, "list_batches") as conn:
             return await _list_batches(conn, self._batch_sql, filter)
 
     async def count_batch_non_terminal(
@@ -1357,9 +1370,9 @@ class PostgresBackend:
     ) -> int:
         if connection is not None:
             return await _count_batch_non_terminal(connection, self._batch_sql, batch_id)
-        async with self._worker_pool.acquire() as conn:
+        async with _bounded_checkout(self._worker_pool, "count_batch_non_terminal") as conn:
             return await _count_batch_non_terminal(conn, self._batch_sql, batch_id)
 
     async def prune_old_batches(self, cutoff: datetime) -> int:
-        async with self._worker_pool.acquire() as conn:
+        async with _bounded_checkout(self._worker_pool, "prune_old_batches") as conn:
             return await _prune_old_batches(conn, self._batch_sql, cutoff)
