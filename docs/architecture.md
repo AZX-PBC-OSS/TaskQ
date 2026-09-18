@@ -662,8 +662,8 @@ statement; an empty round is the claim plus one probe (pinned by
 
 | Mode | Ordering | Use case |
 |---|---|---|
-| `strict_fifo` | `priority DESC, scheduled_at, id` | No fairness requirement; simple priority queue |
-| `round_robin` | `fairness_rank, priority DESC, scheduled_at` | Multi-tenant or multi-cohort queues where one busy actor must not starve others |
+| `strict_fifo` | `priority DESC, scheduled_at, id` within an actor; across actors sharing the queue the round rotates (each eligible actor's rank-1 job admits before any actor's rank-2, so the LIMIT cuts per-actor prefixes, never a global priority order) | No fairness requirement; simple priority queue |
+| `round_robin` | `fairness_rank, priority DESC, scheduled_at` within an actor; the same cross-actor rotation applies | Multi-tenant or multi-cohort queues where one busy actor must not starve others |
 
 The round-robin mode computes `fairness_rank` via:
 ```sql
@@ -709,7 +709,11 @@ eligible_candidates → LEFT JOIN actor_config for max_concurrent
                       LEFT JOIN running_per_actor for in_flight count
                       BOOLEAN gate: in_flight < max_concurrent
                       ROW_NUMBER() OVER (PARTITION BY actor …) for per-actor ranking
-eligible            → cap: actor_rank <= max_concurrent - in_flight, LIMIT limit_n
+eligible            → cap: actor_rank <= max_concurrent - in_flight
+                      ORDER BY pending_rank, fairness_rank, priority DESC,
+                               actor_claimed_at, scheduled_at; LIMIT limit_n
+                      (the rotation order the lock stages cut on: each eligible
+                       actor's rank-1 job admits before any actor's rank-2)
 UPDATE jobs         → WHERE j.id IN eligible AND j.status = 'pending'
                       SET status='running', started_at=clock_timestamp(), attempt=attempt+1, …
 ```

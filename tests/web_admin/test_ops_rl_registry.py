@@ -10,6 +10,9 @@ from typing import Any
 
 import pytest
 
+pytest.importorskip("fastapi")
+pytest.importorskip("jinja2")
+
 from taskq.backend.clock import SystemClock
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.registry import registry as singleton

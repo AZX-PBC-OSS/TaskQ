@@ -3,6 +3,10 @@
 from typing import Any
 
 import pytest
+
+pytest.importorskip("fastapi")
+pytest.importorskip("jinja2")
+
 import structlog.types
 from fastapi.responses import Response
 
