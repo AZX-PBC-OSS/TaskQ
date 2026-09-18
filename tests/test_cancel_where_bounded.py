@@ -31,8 +31,8 @@ statement itself returns.  The two layers below pin that contract:
   terminal), re-runs are idempotent, and the returned counts equal the
   rows actually cancelled.  Completeness includes the mid-drain re-pend
   dimension (#237): a matching running row moved back to pending /
-  scheduled BEHIND the pending arm's keyset cursor — a crash reclaim, a
-  denial snooze, a shutdown interrupt, a consumer retry — must still be
+  scheduled BEHIND the pending arm's keyset cursor (a crash reclaim, a
+  denial snooze, a shutdown interrupt, a consumer retry) must still be
   cancelled by the same call, and the two-arm drain must terminate as a
   bounded fixpoint (a first empty round stops it; a hard round cap
   bounds it under sustained churn), never an unbounded loop.
@@ -1549,9 +1549,9 @@ class _DrainSpyPool:
     """Pool stand-in that interleaves a hook between the drain's batches
     and records every driving fetchrow's arm and keyset cursor.
 
-    The hook fires BEFORE each acquire's transaction opens — the one
+    The hook fires BEFORE each acquire's transaction opens, the one
     moment a concurrent writer can act on rows the drain has windowed
-    past without contending a held row lock — and runs on the RAW pool,
+    past without contending a held row lock, and runs on the RAW pool,
     exactly where a real reclaim sweep or peer producer would run.
 
     The driving-statement observation sniffs the two arms' distinctive
@@ -1601,7 +1601,7 @@ class _DrainSpyPool:
 
     @property
     def ps_drains_started(self) -> int:
-        """How many pending/scheduled arm drains began — one per fixpoint
+        """How many pending/scheduled arm drains began: one per fixpoint
         round that actually ran, identified by the fresh-cursor pass
         (the first batch of every arm binds ``_UUID_MIN``)."""
         return sum(1 for arm, cursor in self.driving if arm == "ps" and cursor == _UUID_MIN)
@@ -1634,7 +1634,7 @@ async def _seed_running_matching_job(
 ) -> UUID:
     """One running job carrying *tags*, via the suite's shared seeder
     (the running-row shape the drain's running arm matches), with the
-    tag stamped by a follow-up UPDATE — ``create_running_job`` predates
+    tag stamped by a follow-up UPDATE (``create_running_job`` predates
     tag-aware seeding and tests patch columns this way."""
     job_id = await create_running_job(
         conn,
@@ -1665,7 +1665,7 @@ async def test_repend_behind_the_cursor_is_caught_by_the_next_round(
     Reproduction of the defect on the pre-rounds drain: the row was
     'running' when the pending arm windowed past its id (no window ever
     held it), the sweep hands it back 'pending' between the two arms,
-    and the running arm matches only ``running AND cancel_phase = 0`` —
+    and the running arm matches only ``running AND cancel_phase = 0``,
     so the call returned normally with the row uncancelled.  The fix's
     next round restarts the pending arm's cursor at the bottom of the
     key space and cancels the straggler there.
@@ -1722,7 +1722,7 @@ async def test_repend_behind_the_cursor_is_caught_by_the_next_round(
         batch_size=batch_size,
     )
 
-    assert swept, "the interleaving hook never fired — the reproduction did not run"
+    assert swept, "the interleaving hook never fired: the reproduction did not run"
     assert result.cancelled_directly == 5, (
         f"every matching job must be cancelled by the one call: the 4 seeded "
         f"pending rows plus the row the sweep re-pended behind the cursor "
@@ -1752,28 +1752,28 @@ async def test_cancel_in_flight_reclaimed_mid_drain_is_terminal_cancelled(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """The #237 + #238 composition, end to end: a running job whose cancel
-    is ALREADY in flight (phase 1, requested_at stamped — a prior
+    is ALREADY in flight (phase 1, requested_at stamped by a prior
     single-job cancel), reclaimed by the production sweep between the
     drain's two arms, behind the pending arm's cursor.
 
     Doubly lost on the pre-fix code: the budget-first sweep re-pended the
     row 'pending' with the operator's cancel columns WIPED (#238), and
     the re-pended row sat at an id the pending arm had already passed so
-    no later arm of the call could see it (#237) — the call returned
+    no later arm of the call could see it (#237): the call returned
     normally reporting nothing about a job whose cancel it had been asked
     to complete.  That doubly-lost OUTCOME needs both defects together;
     the pin is stronger than that outcome: patch-out experiments show the
-    test red with EITHER fix alone reverted — #237 out (single pass, no
+    test red with EITHER fix alone reverted. #237 out (single pass, no
     rounds): the row ends 'cancelled' via the fixed sweep but
     ``ps_drains_started`` reads 1, not the asserted 2; #238 out
     (budget-first sweep): the rounds catch the re-pended row so it ends
-    'cancelled', but via arm 1 directly — ``cancelled_directly`` reads 5,
+    'cancelled', but via arm 1 directly (``cancelled_directly`` reads 5,
     not the asserted 4, and the preserved-audit-column assertions fail
     (the sweep wiped the phase before the round cancelled it).  So the
     scenario pins each fix independently AND their composition.  With
-    both fixes the sweep itself terminalises the row 'cancelled' — the
+    both fixes the sweep itself terminalises the row 'cancelled', the
     honest resolution for a request whose only cooperative writer is
-    provably gone — with the audit columns preserved.
+    provably gone, with the audit columns preserved.
     """
     schema = module_pg_schema.schema_name
     conn = clean_pg_conn
@@ -1822,7 +1822,7 @@ async def test_cancel_in_flight_reclaimed_mid_drain_is_terminal_cancelled(
         batch_size=batch_size,
     )
 
-    assert swept, "the interleaving hook never fired — the reproduction did not run"
+    assert swept, "the interleaving hook never fired: the reproduction did not run"
     # The drain itself never matched the row (running+phase-1 for arm 2's
     # predicate, terminal by the time any fresh cursor ran): its cancel
     # was honored by the sweep, and the result must not claim otherwise.
@@ -1836,7 +1836,7 @@ async def test_cancel_in_flight_reclaimed_mid_drain_is_terminal_cancelled(
     )
     assert row is not None
     assert row["status"] == "cancelled", (
-        "the composition's doubly-lost cancel must land terminal 'cancelled' — "
+        "the composition's doubly-lost cancel must land terminal 'cancelled': "
         "on the pre-fix code this row sat 'pending' with cancel_phase=0 and a "
         "NULL cancel_requested_at, the operator's request erased"
     )
@@ -1863,12 +1863,12 @@ async def test_drain_rounds_terminate_at_the_first_empty_round(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """The fixpoint's termination and cost bound on a quiescent match set:
-    exactly two rounds run — round 1 drains, round 2 re-walks from the
+    exactly two rounds run: round 1 drains, round 2 re-walks from the
     bottom of the key space, matches nothing, and stops the loop.
 
     This is the bound proof for the no-churn case: the second pass is the
     price of the #237 fix (one extra empty two-arm pass), and it is paid
-    ONCE, not per batch — a regression to an unbounded loop shows up as
+    ONCE, not per batch: a regression to an unbounded loop shows up as
     more pending-arm drains, and a regression to the single-pass drain as
     exactly one.
     """
@@ -1891,7 +1891,7 @@ async def test_drain_rounds_terminate_at_the_first_empty_round(
     assert result.cancelled_directly == 3
     assert pool.ps_drains_started == 2, (
         f"a quiescent drain must run exactly 2 rounds (drain + one empty "
-        f"confirmation); saw {pool.ps_drains_started} — the fixpoint either "
+        f"confirmation); saw {pool.ps_drains_started}, so the fixpoint either "
         f"never confirmed (1) or did not terminate (> 2)"
     )
     # The per-batch cost bound is unchanged by the rounds: every batch is
@@ -1913,7 +1913,7 @@ async def test_drain_rounds_are_hard_capped_under_sustained_repend_churn(
     The hard cap (``_MAX_CANCEL_DRAIN_ROUNDS``) is what keeps one call's
     work a constant multiple of one drain: the call must return at the
     cap with the churn it caught cancelled and the tail left for a
-    re-run — the same non-atomic contract the drain already documents
+    re-run, the same non-atomic contract the drain already documents
     for concurrent enqueues, bounded instead of unbounded.
     """
     schema = module_pg_schema.schema_name
@@ -1952,6 +1952,6 @@ async def test_drain_rounds_are_hard_capped_under_sustained_repend_churn(
     )
     assert leftover >= 1, (
         "the churn fed after the last pending-arm drain must be left for a "
-        "re-run — the cap's documented residual, not a silent loss: a re-run "
+        "re-run, the cap's documented residual, not a silent loss: a re-run "
         "resumes and converges"
     )

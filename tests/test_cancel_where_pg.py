@@ -434,7 +434,7 @@ class TestDeadlockRetry:
 
         assert conn.fetchrow.call_count == 4, (
             "round 1's two driving batches plus round 2's two empty "
-            "confirmation batches — the fixpoint's bounded, terminating shape"
+            "confirmation batches: the fixpoint's bounded, terminating shape"
         )
 
     async def test_deadlock_during_executemany_retries_correctly(self) -> None:

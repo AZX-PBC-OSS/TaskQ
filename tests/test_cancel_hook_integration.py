@@ -681,7 +681,7 @@ async def test_worker_dies_phase1(pg_dsn: str) -> None:
                 assert row is not None
                 assert row.status == "cancelled", (
                     "a worker that dies mid-phase-1 leaves the operator's "
-                    "cancel in flight with no holder left to honour it — the "
+                    "cancel in flight with no holder left to honour it: the "
                     "deeply-expired reclaim must terminalise 'cancelled' "
                     "(#238: operator intent outranks the retry budget), not "
                     "re-pend the row with its cancel wiped"

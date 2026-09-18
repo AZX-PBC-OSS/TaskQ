@@ -1282,7 +1282,7 @@ async def sweep_expired_locks(
     backlog a batch at a time.  For each reclaimed job:
 
     - If a cancel request was in-flight (``cancel_phase != 0``):
-      transition to ``'cancelled`` — the caller's explicit request is
+      transition to ``'cancelled``: the caller's explicit request is
       the honest terminal label, whatever the retry budget; the row
       keeps its cancel columns as the audit trail of the honoured
       request.
@@ -1297,7 +1297,7 @@ async def sweep_expired_locks(
     Both terminal branches set ``finished_at = clock_timestamp()``; the
     re-pend branch leaves it NULL. The cancel columns are reset only on
     the branches whose rows read ``cancel_phase = 0`` by construction
-    (re-pend and crashed) — a no-op kept as defence-in-depth — and are
+    (re-pend and crashed), a no-op kept as defence-in-depth, and are
     preserved on the cancel branch; see the ``_SWEEP_1_SQL`` comment for
     the operator-intent-first ordering and why it cannot resurrect the
     re-cancel loop the old reset-on-re-pend spelling prevented.
