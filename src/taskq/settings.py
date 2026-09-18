@@ -259,6 +259,23 @@ class TaskQSettings(DotEnvConfig):
         default=PostgresDsn("postgresql://taskq:taskq@localhost:5432/taskq"),
         description="Direct (non-PgBouncer) DSN. LISTEN/NOTIFY and advisory locks need a session.",
     )
+    pg_is_pooled: bool = Field(
+        default=False,
+        description="TASKQ_PG_IS_POOLED. Declare that the DSN(s) TaskQ builds pools "
+        "from route through a transaction-mode pooler (PgBouncer pool_mode=transaction, "
+        "RDS Proxy, Supavisor). asyncpg cannot detect a pooler from the wire protocol - "
+        "PgBouncer speaks plain Postgres - so the operator declares the topology. When "
+        "True every pool TaskQ builds disables the prepared-statement cache "
+        "(statement_cache_size=0, max_cached_statement_lifetime=0, overriding "
+        "TASKQ_STATEMENT_CACHE_SIZE / TASKQ_MAX_CACHED_STATEMENT_LIFETIME) so a prepared "
+        "statement can never outlive the server connection a pooler remaps underneath it, "
+        "and the worker treats pooler-remap statement errors (SQLSTATE 26000 "
+        "unnamed_prepared_statement, 42P05 duplicate_prepared_statement) as transient "
+        "instead of loud surprises. Applies only to pools TaskQ builds: bring-your-own "
+        "pools (WorkerConnections factories, a caller-supplied pool) must set the same "
+        "create_pool kwargs themselves. Leave False when every DSN reaches Postgres "
+        "directly.",
+    )
     schema_name: str = Field(
         default="taskq",
         validator=_schema_name_validator,

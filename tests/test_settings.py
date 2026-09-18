@@ -370,6 +370,70 @@ def test_statement_cache_round_trip_to_pool_kwargs() -> None:
     }
 
 
+# ── pooled-DSN declaration (transaction-mode pooler) ──────────────────
+
+
+def test_pg_is_pooled_defaults_false() -> None:
+    """pg_is_pooled defaults to False: every DSN reaches Postgres directly.
+
+    Direct is the common case and the safe default: the tuned statement
+    cache stays on, and a 26000 stays the loud bug it is on a direct
+    connection.
+    """
+    s = _load()
+    assert s.pg_is_pooled is False
+
+
+def test_pg_is_pooled_via_dict() -> None:
+    """TASKQ_PG_IS_POOLED=true round-trips through load_from_dict."""
+    s = _load(TASKQ_PG_IS_POOLED="true")
+    assert s.pg_is_pooled is True
+
+
+def test_pg_is_pooled_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TASKQ_PG_IS_POOLED round-trips through the process environment."""
+    monkeypatch.setenv("TASKQ_PG_DSN", _DSN)
+    monkeypatch.setenv("TASKQ_PG_IS_POOLED", "true")
+    s = WorkerSettings.load()
+    assert s.pg_is_pooled is True
+
+
+def test_pg_is_pooled_forces_statement_cache_off_over_operator_tuning() -> None:
+    """The pooled declaration overrides the operator's cache tuning.
+
+    Under a remapping pooler a nonzero cache is broken by definition
+    (SQLSTATE 26000), so the knob wins over TASKQ_STATEMENT_CACHE_SIZE /
+    TASKQ_MAX_CACHED_STATEMENT_LIFETIME rather than compounding with
+    them: 0 is asyncpg's documented "cache disabled", the only safe
+    value.
+    """
+    s = _load(
+        TASKQ_PG_IS_POOLED="true",
+        TASKQ_STATEMENT_CACHE_SIZE="1024",
+        TASKQ_MAX_CACHED_STATEMENT_LIFETIME="7200",
+    )
+    assert statement_cache_kwargs(s) == {
+        "statement_cache_size": 0,
+        "max_cached_statement_lifetime": 0,
+    }
+
+
+def test_pg_is_pooled_false_keeps_statement_cache_tuning() -> None:
+    """Without the declaration the resolver returns the operator's pair.
+
+    The knob is opt-in: a direct-DSN deployment that never sets it keeps
+    the exact pre-knob cache behavior.
+    """
+    s = _load(
+        TASKQ_STATEMENT_CACHE_SIZE="256",
+        TASKQ_MAX_CACHED_STATEMENT_LIFETIME="900",
+    )
+    assert statement_cache_kwargs(s) == {
+        "statement_cache_size": 256,
+        "max_cached_statement_lifetime": 900,
+    }
+
+
 # ── TASKQ_ prefix env-var loading ─────────────────────────────────
 
 

@@ -91,6 +91,16 @@ def statement_cache_kwargs(settings: TaskQSettings | None = None) -> dict[str, i
     constants above. Either way the result is the pair every TaskQ-built
     pool passes.
 
+    When the settings declare a transaction-mode pooler
+    (``TASKQ_PG_IS_POOLED``, field ``pg_is_pooled``) the pair is
+    ``0``/``0`` regardless of the operator's cache tuning: a pooler that
+    remaps server connections between statements can split a prepared
+    statement's Parse from its Bind, and asyncpg's per-connection cache
+    has no way to notice - the only safe cache size is zero. The knob
+    deliberately wins over ``TASKQ_STATEMENT_CACHE_SIZE``: a nonzero
+    cache under a remapping pooler is broken by definition, not a
+    tuning trade-off.
+
     Call sites with a settings instance in scope resolve through this
     helper and forward the two values as **explicit** ``create_pool``
     kwargs (``statement_cache_size=kwargs["statement_cache_size"]`` …):
@@ -100,6 +110,8 @@ def statement_cache_kwargs(settings: TaskQSettings | None = None) -> dict[str, i
     settings instance (the testing fixtures) pass the constants directly.
     Returns a fresh dict.
     """
+    if settings is not None and settings.pg_is_pooled:
+        return {"statement_cache_size": 0, "max_cached_statement_lifetime": 0}
     if settings is None:
         return {
             "statement_cache_size": DEFAULT_STATEMENT_CACHE_SIZE,
