@@ -175,11 +175,11 @@ jobs:
     strategy:
       matrix:
         include:
-          - { pair: "redis and oidc", sync: "--extra redis --extra oidc --extra fastapi" }
-          - { pair: "redis and saml", sync: "--extra redis --extra saml --extra fastapi" }
-          - { pair: "saml and oidc", sync: "--extra saml --extra oidc --extra fastapi" }
-          - { pair: "aad and redis", sync: "--extra aad --extra redis" }
-          - { pair: "otel and fastapi", sync: "--extra otel --extra fastapi" }
+          - { pair: "redis and oidc", select: "redis or oidc", sync: "--extra redis --extra oidc --extra fastapi" }
+          - { pair: "redis and saml", select: "redis or saml", sync: "--extra redis --extra saml --extra fastapi" }
+          - { pair: "saml and oidc", select: "saml or oidc", sync: "--extra saml --extra oidc --extra fastapi" }
+          - { pair: "aad and redis", select: "aad or redis", sync: "--extra aad --extra redis --extra fastapi" }
+          - { pair: "otel and fastapi", select: "otel or (fastapi and not redis)", sync: "--extra otel --extra fastapi" }
     steps:
       - uses: actions/checkout@v7
         with:
@@ -191,7 +191,7 @@ jobs:
         with:
           node-version: "22"
       - name: Run both families together
-        run: uv run --no-sync pytest -n 2 -m "${{ matrix.pair }}"
+        run: uv run --no-sync pytest -n 2 -m "${{ matrix.select }}"
 
   slow-suite:
     # The slow-marked family's own lane: the fleet/chaos tier whose tests are
