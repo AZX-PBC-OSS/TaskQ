@@ -479,7 +479,7 @@ RELEASE_EXIT_TAIL_SLACK_SECS: Final[float] = 1.0
 Covers the unbounded-but-small synchronous work ``trip()`` performs between
 the deadline check and the flush: the task-stack render and the critical
 log write. Neither has a bound of its own (a full stderr pipe under a slow
-docker logging driver outlives any fixed slack — documented as the
+docker logging driver outlives any fixed slack: documented as the
 residual in docs/guides/workers.md), so a second is a heuristic, chosen
 generous against dozens of live tasks on a loaded loop; the cost of
 over-padding a release hold is latency, never overlap. Canonical home is

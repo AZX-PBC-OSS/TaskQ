@@ -432,7 +432,7 @@ async def test_forcing_failure_isolation(monkeypatch: pytest.MonkeyPatch) -> Non
 
     The job whose escalation write failed is still force-cancelled locally
     (#233): the row-side probe failing must not keep the process-side
-    ``task.cancel()`` from being delivered — a cancellable actor that never
+    ``task.cancel()`` from being delivered: a cancellable actor that never
     gets the cancel runs untouched into RELEASING and is released-with-hold
     while still alive. Its registry phase advances to FORCED like every
     other job's; only the row-side escalation is missing, and the ladder's
@@ -506,7 +506,7 @@ async def test_forcing_write_failure_still_cancels_a_real_task(
     task; this one pins the actual delivery: a cancellable asyncio task
     registered in-flight must END cancelled when FORCING's row-side write
     raises, not keep running into RELEASING. That is the overlap #233
-    names — an actor alive past both graces because the one cancel that
+    names: an actor alive past both graces because the one cancel that
     could reach it was skipped after a PG blip.
     """
     import taskq.worker.shutdown as shutdown_mod
@@ -576,7 +576,7 @@ async def test_release_hold_pads_the_remaining_budget_by_the_exit_tail() -> None
 
     The watchdog checks the deadline once per ``watchdog_dump_interval``
     sleep and then dumps stacks and joins the bounded metrics flush before
-    ``os._exit`` — the process can be alive up to that tail past the
+    ``os._exit``: the process can be alive up to that tail past the
     deadline. A hold ending at the bare deadline leaves exactly that window
     in which the released row is claimable while the dying process could
     still touch it.
@@ -591,7 +591,7 @@ async def test_release_hold_pads_the_remaining_budget_by_the_exit_tail() -> None
 
     tail = _watchdog_exit_tail(settings)
     assert tail > 0
-    # 60s budget, 10s spent: 50s remaining, plus the tail — never the bare
+    # 60s budget, 10s spent: 50s remaining, plus the tail: never the bare
     # remaining share. (abs tolerance: the remaining share decays with the
     # real loop clock between the anchoring and the computation.)
     expected_remaining = 60.0 - 10.0 - (loop.time() - anchored)
@@ -620,7 +620,7 @@ async def test_release_hold_unanchored_covers_the_full_budget_plus_tail() -> Non
 
 async def test_release_hold_without_the_watchdog_is_the_lock_lease_unchanged() -> None:
     """Watchdog disabled: no guaranteed exit exists to pad towards, so the
-    hold stays the lock lease — the bound the lease-expiry path already
+    hold stays the lock lease: the bound the lease-expiry path already
     imposes (the pre-existing fallback, unpadded)."""
     settings = _worker_settings(termination_grace=60.0)
     settings.watchdog_enabled = False

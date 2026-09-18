@@ -19,7 +19,7 @@ The watchdog is a safety net for *when things go beyond bounds*. This test
 triggers it by pausing Postgres's container mid-run. Paused, not stopped: a
 stopped container loses its Docker DNS record, and on a runner whose resolver
 honours that immediately every pool-path PG write fails FAST (gaierror name
-resolution, no retries worth the name) — the whole orchestration then
+resolution, no retries worth the name): the whole orchestration then
 completes inside the 5.01 s budget, the clean path disarms the watchdog
 (it is cancelled only after the TaskGroup's exit, so a completed shutdown
 exits 0, which is the correct behavior for a shutdown that finished before
@@ -28,7 +28,7 @@ runner's DNS behavior. CI rolled exactly that once: the worker log showed
 ``terminal-write-failed ... gaierror`` and the container exited 0. A paused
 container is the deterministic shape this test needs: the DNS record stays,
 the established TCP connections blackhole (the peer's network stack is
-frozen — no RST, no reply), so every in-flight and next PG write hangs
+frozen: no RST, no reply), so every in-flight and next PG write hangs
 past the deadline and the trip is the only exit left. The orchestration
 sets ``shutdown_event`` BEFORE the bounded close, so the watchdog starts
 counting during the hang. With ``termination_grace = 5.01`` and zero grace
@@ -266,7 +266,7 @@ async def test_shutdown_hard_deadline_watchdog(
 
     With ``termination_grace = 5.01`` and zero grace periods, every
     pool-path PG write hangs once PG's container is paused (the peer's
-    TCP stack is frozen: no RST, no reply, no DNS change — see the module
+    TCP stack is frozen: no RST, no reply, no DNS change; see the module
     docstring for why the container is paused rather than stopped). The
     watchdog checks every 0.5 s; at ``elapsed ≈ 5.0 s >= 5.01``, it trips
     with ``detector="shutdown-deadline"`` and exits the container with
@@ -293,7 +293,7 @@ async def test_shutdown_hard_deadline_watchdog(
     # failing fast, so the shutdown provably cannot complete before the
     # watchdog's deadline). Stopping instead would let a runner whose
     # resolver drops the container's DNS record fail every write fast,
-    # finish the orchestration inside the budget, and exit 0 — correct
+    # finish the orchestration inside the budget, and exit 0: correct
     # behavior for a completed shutdown, and a coin flip this test must
     # not depend on.
     wrapped_pg = chaos_pg.container.get_wrapped_container()
@@ -411,12 +411,12 @@ async def test_shutdown_exit_gate_trips_when_a_sync_actor_outlives_teardown(
     chaos_pool: asyncpg.Pool,
 ) -> None:
     """THE F1 closure, at process level: a sync actor whose thread outlives
-    the TaskGroup makes the process exit at the deadline trip — not park in
+    the TaskGroup makes the process exit at the deadline trip: not park in
     the default executor's join past the hold it modeled.
 
     Pre-closure this was the constructible double-run: the TaskGroup exited
     cleanly (~0.1s), the watchdog was disarmed, and ``asyncio.Runner.close``
-    then joined the detached 60s thread (THREAD_JOIN_TIMEOUT, 300s) — the
+    then joined the detached 60s thread (THREAD_JOIN_TIMEOUT, 300s): the
     container stayed alive well past the released row's ``scheduled_at``
     (deadline + exit tail), the sweep promoted it, and a second worker
     claimed it while the thread still executed. With the exit gate the
@@ -461,7 +461,7 @@ async def test_shutdown_exit_gate_trips_when_a_sync_actor_outlives_teardown(
         return str(wrapped_worker.status) == "exited"
 
     # 30s, not 60: the pre-closure shape parked in the executor join until
-    # the 60s body finished — this poll times out on that shape. The
+    # the 60s body finished: this poll times out on that shape. The
     # closure trips at ~termination_grace + render/flush, ~10s.
     await poll_until(
         _exited,
@@ -478,7 +478,7 @@ async def test_shutdown_exit_gate_trips_when_a_sync_actor_outlives_teardown(
         f"because an actor thread does\n{logs}"
     )
     assert "tracked-actor-outlived-teardown" in logs, (
-        "the trip must name the live tracked actor handle(s) — the distinct "
+        "the trip must name the live tracked actor handle(s): the distinct "
         f"reason is what keeps an operator from misreading it as a loop stall\n{logs}"
     )
 
@@ -488,7 +488,7 @@ async def test_shutdown_exit_gate_trips_when_a_sync_actor_outlives_teardown(
         f"behind the exit window); got {row['status']!r}"
     )
     assert row["attempt"] == enqueued.attempt, (
-        "the interruption refunds the claim's attempt increment — the re-run "
+        "the interruption refunds the claim's attempt increment: the re-run "
         "must not spend a second attempt on one interruption"
     )
     assert row["interrupt_count"] == 1

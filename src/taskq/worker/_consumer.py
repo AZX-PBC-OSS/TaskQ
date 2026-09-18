@@ -106,7 +106,7 @@ from taskq.worker._handlers import (
     _terminal_write_with_retry,
     _TerminalWriteFailed,
 )
-from taskq.worker._watchdog import (  # pyright: ignore[reportPrivateUsage]  # Why: the tracked-handle registry registration for a detached tx unwind — the designated-writer contract mirrors the ctx stash beside it; no cycle (_watchdog imports nothing from the consumer side).
+from taskq.worker._watchdog import (  # pyright: ignore[reportPrivateUsage]  # Why: the tracked-handle registry registration for a detached tx unwind: the designated-writer contract mirrors the ctx stash beside it; no cycle (_watchdog imports nothing from the consumer side).
     register_tracked_actor_handle,
 )
 from taskq.worker.cancel import ActiveJobRegistry
@@ -342,8 +342,8 @@ _BARE_CALL_HOLD_FALLBACK_SECS: Final[float] = 60.0
 """Hold for an actor that never provably exited when neither deps nor
 settings reached the consumer (a bare direct ``consume_one_job`` call). The
 production dispatch path always carries one of the two; the fallback is the
-default ``lock_lease`` — the lease-expiry bound a stranded row already
-imposes — so a naked call stays honest rather than assuming the actor gone
+default ``lock_lease``: the lease-expiry bound a stranded row already
+imposes, so a naked call stays honest rather than assuming the actor gone
 (hold=0) with no evidence either way."""
 
 
@@ -357,8 +357,8 @@ async def _interrupted_actor_hold(
     hold its release must carry.
 
     An async actor has provably unwound by the time the cancellation handler
-    runs — the ``CancelledError`` propagated through its frames to get here
-    — and a sync actor that honoured the stop raised from its own thread,
+    runs: the ``CancelledError`` propagated through its frames to get here,
+    and a sync actor that honoured the stop raised from its own thread,
     leaving its tracked handle done. Both earn ``hold=timedelta(0)``: the
     row is genuinely free the moment the release write lands, exactly the
     fast path a responsive actor has always had.
@@ -366,10 +366,10 @@ async def _interrupted_actor_hold(
     A sync actor still executing in its executor thread (``task.cancel()``
     cancels the await, never the thread) and a transactional actor whose tx
     task is still unwinding its rollback are NOT exited. Their tracked
-    handles on *ctx* are the only proof available, so this parks on them —
+    handles on *ctx* are the only proof available, so this parks on them:
     bounded by the remaining termination budget minus the release write's
     own retry budget, so the write still fits before the watchdog's
-    deadline — and releases with hold=0 only on a provable exit inside that
+    deadline, and releases with hold=0 only on a provable exit inside that
     window. An actor that outlives the window (the unbounded sync
     actor) is still released, never stranded: the hold is the rest of this
     process's exit window plus the watchdog's exit tail
@@ -384,8 +384,8 @@ async def _interrupted_actor_hold(
     # The dispatch layer and the transactional consumer are the designated
     # writers of these handles (JobContext._set_sync_actor_task /
     # _set_tx_unwind_task); this shutdown arm is their designated reader.
-    sync_handle = ctx._sync_actor_task  # pyright: ignore[reportPrivateUsage]  # Why: reading the dispatch layer's tracked thread handle — see the setter's contract.
-    tx_handle = ctx._tx_unwind_task  # pyright: ignore[reportPrivateUsage]  # Why: reading the transactional consumer's unwind handle — see the setter's contract.
+    sync_handle = ctx._sync_actor_task  # pyright: ignore[reportPrivateUsage]  # Why: reading the dispatch layer's tracked thread handle: see the setter's contract.
+    tx_handle = ctx._tx_unwind_task  # pyright: ignore[reportPrivateUsage]  # Why: reading the transactional consumer's unwind handle: see the setter's contract.
     pending: list[asyncio.Task[object]] = [
         handle for handle in (sync_handle, tx_handle) if handle is not None and not handle.done()
     ]
@@ -400,7 +400,7 @@ async def _interrupted_actor_hold(
         deps,
         effective_settings,
         loop,
-        reserve=_TERMINAL_WRITE_BUDGET.total_seconds(),  # pyright: ignore[reportPrivateUsage]  # Why: the release write's own bounded budget — the park must leave room for the write before the deadline.
+        reserve=_TERMINAL_WRITE_BUDGET.total_seconds(),  # pyright: ignore[reportPrivateUsage]  # Why: the release write's own bounded budget: the park must leave room for the write before the deadline.
     )
     still_pending: set[asyncio.Task[object]] | None = None
     if wait_budget > 0:
@@ -429,7 +429,7 @@ async def _interrupted_actor_hold(
         outcome="held",
         still_alive_handles=sum(1 for t in (still_pending or set(pending)) if not t.done()),
     )
-    return _release_hold(  # pyright: ignore[reportPrivateUsage]  # Why: the one hold computation both release writers share — the consumer arm and the RELEASING phase must never disagree on what "held until this process is provably gone" means.
+    return _release_hold(  # pyright: ignore[reportPrivateUsage]  # Why: the one hold computation both release writers share: the consumer arm and the RELEASING phase must never disagree on what "held until this process is provably gone" means.
         deps,
         effective_settings,
         loop,
@@ -447,20 +447,20 @@ def _actor_exit_wait_budget(
 
     Deadline-anchored when the shutdown started and the watchdog enforces
     the deadline: the remaining termination budget minus *reserve* (the
-    release write's own bounded budget — parking to the last second would
+    release write's own bounded budget: parking to the last second would
     leave the release itself racing the watchdog trip), then CAPPED by the
-    lease: the heartbeat — the row's only lease renewer — stops at
+    lease: the heartbeat (the row's only lease renewer) stops at
     ``shutdown_event``, so a park that outlived the lease would let the
     reclaim sweep re-pend a row whose actor thread is still executing (a
     single infra-failed RELEASING write away from the double-run). The cap
     (``lock_lease - heartbeat - reserve``, see
     ``WorkerSettings.release_park_lease_cap``) is the exact bound that
     makes the parked consumer's release write land before the earliest
-    reclaim for ANY loadable config — safety by construction rather than
+    reclaim for ANY loadable config: safety by construction rather than
     by a cross-field rejection, which is why no validator enforces the
     lease/budget pair. Without an anchor or a guaranteed exit (watchdog
     disabled, a bare call, a shutdown that never stamped its start) the
-    bound is the orchestrator's own post-cancel patience — the cleanup
+    bound is the orchestrator's own post-cancel patience: the cleanup
     grace, after which RELEASING releases the row regardless, so parking
     longer buys nothing.
     """
@@ -926,7 +926,7 @@ async def consume_one_job(
                 # has provably unwound by the time this handler runs (the
                 # cancellation propagated through its frames to get
                 # here), and a sync actor that honoured the stop raised
-                # from its own thread — both are gone, hold=0, and the
+                # from its own thread: both are gone, hold=0, and the
                 # row lands pending at the head of the order: available
                 # immediately, attempt refunded, no error recorded. A
                 # sync actor still executing in its executor thread
@@ -935,19 +935,19 @@ async def consume_one_job(
                 # NOT gone: _interrupted_actor_hold parks on their
                 # tracked handles, bounded by the remaining termination
                 # budget, and holds the release behind this process's
-                # exit window when they never finish — the row must not
+                # exit window when they never finish: the row must not
                 # be claimable while this process might still touch it
                 # (#232).
                 #
                 # The row is the final arbiter: a "noop" means the fence
-                # declined the release — an operator cancel raced the
+                # declined the release: an operator cancel raced the
                 # deploy onto the row (cancel_phase != 0), the RELEASING
                 # phase already released it while this consumer parked,
-                # or the row moved underneath the attempt (a reclaim) —
+                # or the row moved underneath the attempt (a reclaim),
                 # and the attempt falls through to the ordinary cancel
                 # write below, whose own fence decides what is left to
                 # write. Retried like every other state write (the
-                # bounded budget of _terminal_write_with_retry) — see the
+                # bounded budget of _terminal_write_with_retry): see the
                 # mark_cancelled arm below for why a retry is safe inside
                 # this handler and what a second cancel does to it.
                 release_hold = await _interrupted_actor_hold(
@@ -981,7 +981,7 @@ async def consume_one_job(
                     # CancelledError this handler is handling, so the
                     # interruption escapes consume_one_job as a job
                     # exception and dispatch's generic handler spends the
-                    # attempt's budget on a deploy — the exact mislabel the
+                    # attempt's budget on a deploy: the exact mislabel the
                     # mark_cancelled arm's comment below describes (an
                     # eaten cancellation) (#233). Logged and disowned
                     # above; the `raise` at the end of this handler
@@ -1469,8 +1469,8 @@ async def _consume_transactional(
                 # the enclosing transaction rolls back.
                 tx_task.cancel()
             # The unwind is ASYNCHRONOUS: savepoint rollback, the
-            # enclosing transaction's rollback, and — when the actor is
-            # a sync def — an executor thread the cancel cannot reach at
+            # enclosing transaction's rollback, and, when the actor is
+            # a sync def, an executor thread the cancel cannot reach at
             # all. The re-raise below lands in the consumer's
             # cancellation handler while tx_task is still unwinding, so
             # the handle is stashed on the ctx: that handler parks on
@@ -1478,7 +1478,7 @@ async def _consume_transactional(
             # release back when the unwind (or the thread inside it)
             # never finishes (#232).
             ctx._set_tx_unwind_task(tx_task)  # pyright: ignore[reportPrivateUsage]  # Why: the transactional consumer is the designated writer of the unwind handle (see the setter's contract); the consumer's shutdown arm is its designated reader.
-            register_tracked_actor_handle(tx_task)  # pyright: ignore[reportPrivateUsage]  # Why: the process-wide twin of the ctx stash — a tx task still unwinding past the TaskGroup keeps the shutdown watchdog armed (see await_tracked_actor_reap), the same as a live sync-actor thread.
+            register_tracked_actor_handle(tx_task)  # pyright: ignore[reportPrivateUsage]  # Why: the process-wide twin of the ctx stash: a tx task still unwinding past the TaskGroup keeps the shutdown watchdog armed (see await_tracked_actor_reap), the same as a live sync-actor thread.
             # Past the actor (commit machinery in flight) the detached
             # task is deliberately left to finish: its eventual outcome
             # must be retrieved here or asyncio reports "Task exception

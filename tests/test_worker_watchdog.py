@@ -254,7 +254,7 @@ async def test_shutdown_watchdog_deadline_check_does_not_lag_a_full_dump_interva
     """The deadline check is clipped to the deadline, not cadence-bound.
 
     An unclipped ``sleep(dump_interval)`` observes a deadline that passes
-    just after a check up to a full dump interval late — and the release
+    just after a check up to a full dump interval late, and the release
     hold's exit tail models that lag as its margin, so an unclipped watch
     consumes the margin exactly (deadline + lag + flush EQUALS the held
     scheduled_at, zero margin). With the clip, a 5s dump interval against
@@ -286,7 +286,7 @@ async def test_shutdown_watchdog_trip_names_live_tracked_actor_handles(
 
     The trip at the deadline with a tracked actor still alive is NOT a
     stall: the shutdown completed, the TaskGroup exited, and an executor
-    thread the cancel could never reach is still running its body — the
+    thread the cancel could never reach is still running its body: the
     designed exit for exactly that shape. An operator reading the dump
     must not chase a phantom deadlock, so the reason says what it is and
     how many handles are live.
@@ -380,7 +380,7 @@ async def test_await_tracked_actor_reap_waits_for_the_last_handle() -> None:
     """The wait parks on live handles and returns once every one is reaped.
 
     This is the exit gate's race shape: a handle reaping shortly after the
-    TaskGroup exited costs one poll interval and the WARN with the count —
+    TaskGroup exited costs one poll interval and the WARN with the count:
     never a trip (the deadline is far away), never a skipped disarm.
     """
     release = asyncio.Event()

@@ -72,7 +72,7 @@ from taskq.worker._handlers import (
     _handle_generic_exception,  # pyright: ignore[reportPrivateUsage]  # Why: _handle_generic_exception implements the same exception→retry/fail routing as consume_one_job's inner handlers; dispatch_one_job needs it for DI-resolution failures that escape consume_one_job's own try/except.
     _log_terminal_write_failed,  # pyright: ignore[reportPrivateUsage]  # Why: same rationale as _TERMINAL_WRITE_INFRA_EXCEPTIONS above.
 )
-from taskq.worker._watchdog import (  # pyright: ignore[reportPrivateUsage]  # Why: the tracked-handle registry is the dispatch layer's designated writer surface (see register_tracked_actor_handle's contract); no cycle — _watchdog imports nothing from the worker consumer side.
+from taskq.worker._watchdog import (  # pyright: ignore[reportPrivateUsage]  # Why: the tracked-handle registry is the dispatch layer's designated writer surface (see register_tracked_actor_handle's contract); no cycle: _watchdog imports nothing from the worker consumer side.
     register_tracked_actor_handle,
 )
 from taskq.worker.cancel import ActiveJobRegistry
@@ -107,19 +107,19 @@ async def _run_sync_actor_tracked(
 ) -> object:
     """Run a sync actor in the default executor with an exit-tracked handle.
 
-    ``asyncio.to_thread`` semantics exactly — same default executor, same
-    contextvars copy — plus the one thing a bare await can never offer:
+    ``asyncio.to_thread`` semantics exactly: same default executor, same
+    contextvars copy: plus the one thing a bare await can never offer:
     the executor work is a task whose handle lands on the job's context
     (``ctx._sync_actor_task``), so a shutdown that cancels this await can
     later tell "the await was cancelled" (always true for a sync actor;
     the thread is unreachable from the loop) from "the actor body exited"
     (true only once the thread finished). Without the handle, every
     consumer-side release assumed the actor unwound with the await and
-    handed the row to the fleet while the thread was still mid-body — the
+    handed the row to the fleet while the thread was still mid-body: the
     double-execution overlap #232 describes.
 
     ``asyncio.shield``, not a bare await: the cancellation must detach the
-    thread task rather than deliver to it — the executor thread cannot be
+    thread task rather than deliver to it: the executor thread cannot be
     interrupted either way, and a cancelled task would end in a
     CancelledError the parked shutdown path could mistake for the body's
     own exit. The shield leaves the task running to the thread's real
@@ -133,14 +133,14 @@ async def _run_sync_actor_tracked(
     ctx._set_sync_actor_task(thread_task)
     # The process-wide twin of the ctx stash: the shutdown path's exit
     # gate (await_tracked_actor_reap) reads this registry to decide
-    # whether the watchdog may be disarmed — a live thread here keeps it
+    # whether the watchdog may be disarmed: a live thread here keeps it
     # armed past the TaskGroup, which is what makes the release hold's
     # exit window true by construction.
     register_tracked_actor_handle(thread_task)
     try:
         return await asyncio.shield(thread_task)
     except asyncio.CancelledError:
-        thread_task.add_done_callback(_log_detached_failure)  # pyright: ignore[reportPrivateUsage]  # Why: the one shared detached-outcome retriever (taskq._shield) — the sync actor task is a detached shield inner exactly like a terminal write.
+        thread_task.add_done_callback(_log_detached_failure)  # pyright: ignore[reportPrivateUsage]  # Why: the one shared detached-outcome retriever (taskq._shield): the sync actor task is a detached shield inner exactly like a terminal write.
         raise
 
 

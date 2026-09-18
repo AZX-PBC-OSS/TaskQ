@@ -158,8 +158,8 @@ class JobContext[P: BaseModel]:
         cancellation. Called by the transactional consumer on the cancel
         path, never by actor code.
 
-        The tx task unwinds asynchronously after ``tx_task.cancel()`` —
-        savepoint rollback, the enclosing transaction's rollback — and the
+        The tx task unwinds asynchronously after ``tx_task.cancel()``:
+        savepoint rollback, the enclosing transaction's rollback, and the
         release write must not land while that unwind is still in flight
         (#232): the consumer's shutdown arm parks on this handle, bounded,
         before releasing the row. ``object.__setattr__`` because the
