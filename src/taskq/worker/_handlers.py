@@ -1186,7 +1186,7 @@ async def _dispatch_exception(
         when the exception escaped it (the autonomous path); the handlers that
         report a traceback reuse it rather than rendering a second time. The
         transactional path catches inside the span and passes none, and only
-        those handlers render — a snooze never pays for a traceback.
+        those handlers render, so a snooze never pays for a traceback.
 
         *disowned_jobs* is the worker's disowned set, handed to
         ``_run_terminal_path`` for the exhausted-write path.
