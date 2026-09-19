@@ -19,6 +19,37 @@ instead of subtracting in your own clock domain.
 
 ---
 
+## TaskQQueueDepthHigh
+
+**What fired.** `max by (actor, queue) (taskq_jobs_oldest_pending_age_seconds) > 900` for 5 minutes: the oldest PENDING job of some (actor, queue) pair has been eligible for more than 15 minutes, sustained. The gauge is attributed per actor and per queue on purpose, not per queue: in a multi-worker fleet no worker refuses to start because an actor's declared queue has no consumer (no supervisor can know what consumes a queue), so a misrouted actor produces no refusal, no error and no failed job, and its rows simply pile up pending while every probe stays green. Age rather than depth, because a deep queue that drains is healthy throughput.
+
+**How to confirm.**
+
+- Metric: `taskq_jobs_oldest_pending_age_seconds{actor="...", queue="..."}` climbing while the same queue's other actors stay flat is the misroute-or-starvation shape; the whole queue rising together is shared capacity. Read `taskq_queue_live_workers{queue="..."}` beside it: a zero there is the never-consumed case, which [TaskQQueueUnserved](#taskqqueueunserved) owns.
+- SQL: the pending head of every (actor, queue) pair right now:
+
+  ```sql
+  SELECT actor, queue, count(*) AS depth,
+         extract(epoch FROM (clock_timestamp() - min(scheduled_at)))::int AS oldest_age_s
+  FROM taskq.jobs
+  WHERE status = 'pending' AND scheduled_at <= clock_timestamp()
+  GROUP BY actor, queue
+  ORDER BY oldest_age_s DESC;
+  ```
+
+- The gauge is fed by the leader's `actor_backlog` sampler. If the series went absent or frozen exactly when the incident got worst, the sampler read is what died; check [TaskQSweepTimeouts](#taskqsweeptimeouts) before trusting the (now silent) gauge.
+
+**How to remediate.**
+
+1. No live worker subscribes to the queue: add the queue to some worker's `TASKQ_QUEUES` and restart it, or run a worker that serves it. The pile dispatches on its own once a consumer exists; nothing was lost.
+2. Live workers present and draining slowly: the queue is under-provisioned. Add workers or raise `TASKQ_MAX_CONCURRENCY` on the fleet that serves it.
+3. One actor aging while its queue-mates drain: check for a damper holding its rows back, the actor's own `max_concurrent` or a queue cap from `taskq queues set-max-concurrent`; the alert shows the head's age, the cap is the cause.
+4. Confirm recovery: the age falls under the threshold and the depth drains.
+
+Do not clear the gauge by deleting or re-enqueueing the pending pile: the rows are eligible work that dispatches in order once capacity exists, and re-enqueueing duplicates them.
+
+---
+
 ## TaskQScheduledBacklogGrowing
 
 **What fired.** `taskq_jobs_oldest_due_age_seconds > 300 and (taskq_jobs_scheduled_count > (taskq_jobs_scheduled_count offset 5m) or changes(taskq_jobs_scheduled_count[5m]) == 0)` for 5 minutes: the oldest due job has been waiting more than 5 minutes AND the `scheduled` job count is demonstrably not draining: either it is HIGHER than it was 5 minutes ago (promotion from `scheduled` to `pending` is not keeping up with arrivals) or it has not moved at all across those 5 minutes (promotion has stopped and no arrivals are landing net, the stalled plateau). Either way, due work is waiting while the scheduled backlog fails to shrink, not merely one slow-to-clear job.
@@ -181,6 +212,35 @@ Extra workers consume `pending` jobs faster but promote nothing.
 
 ---
 
+## TaskQDispatchLatencyHigh
+
+**What fired.** `histogram_quantile(0.99, rate(taskq_dispatch_duration_seconds_bucket[5m])) > 0.05` for 5 minutes, by `queue`: the dispatch query's p99 exceeds 50 ms. The histogram times the claim round trip's SQL execution only, not actor run time, so this is the database getting slow at handing out work. The threshold is set near where the claim's `FOR UPDATE SKIP LOCKED` plan stops being index-shaped: a healthy dispatch round is sub-millisecond, so a 50 ms p99 is a plan or contention problem, not a tuning nit.
+
+**How to confirm.**
+
+- Metric: `taskq_dispatch_duration_seconds` p99 by `queue`. One queue high while the rest are flat points at that queue's claim path; every queue high at once points at the database.
+- SQL: what the dispatching sessions are waiting on while the alert fires:
+
+  ```sql
+  SELECT pid, state, wait_event_type, wait_event,
+         now() - query_start AS age, left(query, 120) AS query_head
+  FROM pg_stat_activity
+  WHERE query ILIKE '%SKIP LOCKED%' OR query ILIKE '%taskq%';
+  ```
+
+  `wait_event_type = 'Lock'` with short ages is dispatcher-on-dispatcher contention; ages near the threshold with an I/O wait is heap or index pressure on `jobs`.
+- Plan check: the claim reads the `pending` partial index (`jobs_dispatch_idx`). A bloated table or a dropped index shows as a sequential-scan plan; `EXPLAIN` the claim query and compare against the flat sub-millisecond expectation in `docs/design/sql-hotpath-followups.md`.
+
+**How to remediate.**
+
+1. Every queue slow: treat it as a database incident first. [TaskQSweepTimeouts](#taskqsweeptimeouts) and [TaskQRateLimitDependencyOutage](#taskqratelimitdependencyoutage) read the same Postgres; a latency problem there degrades dispatch with it, and fixing dispatch alone fixes nothing.
+2. One queue slow: check the population the claim has to consider. A very deep `pending` backlog on that queue, a large `TASKQ_DISPATCH_OVERSAMPLE`, and table bloat all grow the candidate set the claim probes before it locks.
+3. Confirm recovery: the p99 falls back under 50 ms.
+
+Do not scale dispatchers out to fix this: more concurrent claim rounds multiply contention on the same rows and push the p99 up, not down. Capacity adds consumption rate; it does not make the claim faster.
+
+---
+
 ## TaskQLeaderLockContention
 
 **What fired.** `sum(rate(taskq_leader_lock_contention_total[10m])) > 0 and sum(taskq_maintenance_leader_is_leader) < 1` sustained for 10 minutes: maintenance-lock acquisitions are being lost AND no worker holds leadership. The counter is recorded by the *losing* side at every maintenance acquisition point, labeled by `lock`.
@@ -228,6 +288,34 @@ The leader-count operand is what makes this alertable at all. A healthy multi-wo
 
 ---
 
+## TaskQLeaderSplitBrainOrNoLeader
+
+**What fired.** `sum(taskq_maintenance_leader_is_leader) != 1` for 2 minutes, severity critical. The gauge reads 1 on the elected leader pod and 0 on every follower, labeled by `worker_id`, so the fleet-wide sum is the leader count. 0 means no worker holds the maintenance role: promotion, cron, reclaim and prune are all stopped. Above 1 means two pods both believe they are leader. Both are split-brain conditions in the operational sense: the single-serialiser contract everything else assumes is not holding.
+
+**How to confirm.**
+
+- Metric: `taskq_maintenance_leader_is_leader` per `worker_id`. All zeros, or two 1s. The zero case with `taskq_leader_lock_contention_total` rising is no worker ever winning the election; see [TaskQLeaderLockContention](#taskqleaderlockcontention).
+- SQL: who the database says holds the role, and who holds the advisory lock:
+
+  ```sql
+  SELECT worker_id, elected_at, expires_at FROM taskq.maintenance_leader;
+
+  SELECT pid, granted, now() - backend_start AS session_age
+  FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+  WHERE locktype = 'advisory' AND classid = 0;
+  ```
+
+  A healthy read is exactly one lease row with `expires_at` in the future, held (via the schema-qualified bigint key) by that pod. Two lease rows with overlapping terms, or a pod still reporting `is_leader = 1` after its own row lapsed, is the finding.
+- The above-one shape has a known mundane cause: a fleet mid-upgrade across releases whose lock names differ holds different keys and can both act as leader of the same schema at once. Rule the mixed-fleet case out first (see the upgrade discipline in [TaskQLeaderLockContention](#taskqleaderlockcontention)) before hunting anything exotic.
+
+**How to remediate.**
+
+1. Zero leaders: work the contention path, not the gauge. Follow [TaskQLeaderLockContention](#taskqleaderlockcontention) and [TaskQPromotionStalled](#taskqpromotionstalled). Everything leader-side is stopped while this reads 0, so pending and scheduled work piles up, but nothing is lost; workers keep consuming what is already `pending`.
+2. Two leaders: identify the stale believer from the metric's `worker_id` and restart that pod. The usual shape is a pod partitioned from Postgres right after winning: its in-process `is_leader` event stays set until a renewal fails, while the lease row it left behind lapses and a successor takes over. The sweeps are row-safe under `FOR UPDATE SKIP LOCKED` either way; the one real double-fire window is cron, whose advisory lock is what serialises ticks, so check `cron_schedules`-driven jobs for duplicates on the overlap interval before declaring no damage.
+3. Confirm recovery: the sum returns to exactly 1 and the per-sweep `last_success` stamps move again.
+
+---
+
 ## TaskQRateLimitDependencyOutage
 
 **What fired.** `rate(taskq_ratelimit_acquire_dependency_failures_total[5m]) > 0` for 5 minutes: rate-limit acquires are failing because the limiter's store (Redis, or the PG fallback behind it) could not answer, and the worker failed the acquire closed as a denial. Every rate-limited dispatch is snoozing while the outage lasts: no work is lost, but nothing rate-limited moves either, and the queue looks calm while it piles up behind the limiter.
@@ -243,6 +331,25 @@ The leader-count operand is what makes this alertable at all. A healthy multi-wo
 1. Restore the store dependency: Redis connectivity from the worker pods first (the common cause), then the store itself. The PG fallback fails the same closed way when Postgres is the sick dependency; check `TaskQSweepTimeouts` / `TaskQDispatchLatencyHigh` before touching Redis.
 2. Do NOT raise bucket limits or disable rate limiting during the outage: the denials are the limiter failing closed (the configured safe behavior), and widening limits cannot create store capacity.
 3. Snoozed dispatches retry on their own once acquires succeed again; confirm recovery by watching `taskq_ratelimit_acquire_dependency_failures_total` flatten and the snoozed backlog drain (`taskq_jobs_by_status{status="scheduled"}` falling).
+
+---
+
+## TaskQProgressPublishFailures
+
+**What fired.** `rate(taskq_progress_publish_failures_total[5m]) > 0` for 5 minutes: Redis publish round trips for progress events are failing. The counter is bumped on every failed publish attempt, labeled by `channel` (`per_job` or `global`) and `error_type` (the exception class name). The `progress-publish-failure` WARNING beside it is window-gated to one line per channel per minute, because a sustained Redis death fails every publish of every job and a log line per attempt is a flood, not a signal; the counter is the per-attempt aggregate the alert reads.
+
+**What it means.** Only the real-time fanout degrades: the admin UI's live progress views fall back to polling at `TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS`, so pages stay correct and merely stale between polls. The progress rows themselves persist on a separate Postgres path, counted by `taskq_progress_flush_failures_total` (a `stage="per_job"` versus `stage="pool"` distinction, a different incident); a job's settled progress is not lost by a publish failure.
+
+**How to confirm.**
+
+- Metric: `taskq_progress_publish_failures_total` by `channel, error_type`. `per_job` failures drop live updates for individual jobs' viewers; `global` failures drop the fleet-wide progress channel. `error_type` distinguishes the shapes: connection classes are network between the worker and Redis, `ResponseError` is Redis answering with an error (read-only replica, maxmemory), timeout classes are saturation.
+- The admin UI shows the degradation directly: a page whose SSE stream cannot deliver events still polls, so "the page updates, only late" is the published symptom of this alert, never of the flush counter.
+
+**How to remediate.**
+
+1. Restore Redis from the worker pods' position (the outage is between them and the store, so test from there, not from your laptop): connectivity first, then capacity (`maxmemory` evictions, a read-only replica after a failover).
+2. Do not disable progress emission to quiet the alert: the publish is fire-and-forget and its failure mode (a stale admin page that still polls) is strictly better than flying without progress telemetry.
+3. Confirm recovery: the rate returns to 0 and the live views resume updating between polls.
 
 ---
 
@@ -302,6 +409,35 @@ The leader-count operand is what makes this alertable at all. A healthy multi-wo
 2. If the monopolizer's duration is legitimate, raise `TASKQ_DISPATCHER_COMMAND_TIMEOUT` so the funded factory budget (90% of it) fits the monopolizer plus a fundable grant (a quarter of the funded budget) for its peers, which then fire in the same tick. Check the watchdog interplay documented on that setting before widening it.
 3. Or move the slow work out of the factory: payload factories run inside the leader's tick, holding the cron advisory lock for the whole planning batch. Work slower than a fraction of a tick belongs in the job the schedule enqueues, not in the payload build.
 4. Confirm recovery: `taskq_cron_budget_deferrals_total` stops rising, the deferring schedules' `cron fired` lines resume, and their owed slots fire (deferred slots are retried, not skipped; nothing was lost).
+
+---
+
+## TaskQCronScheduleDisabled
+
+**What fired.** `taskq_cron_disabled_schedules > 0` (for 0m, immediately): one or more cron schedules have been auto-disabled after `TASKQ_CRON_AUTO_DISABLE_THRESHOLD` (default 3) consecutive `payload_factory` failures. The gauge is refreshed by the leader's cron tick from the database's own count of disabled rows, so it settles on what every process has left behind after each tick. A disabled schedule enqueues nothing: its jobs stop firing, silently, on the schedule's own cadence.
+
+**How to confirm.**
+
+- Metric: the gauge value itself. It does not decay; it moves when the database's set of disabled schedules changes, and it returns to 0 when the last disabled schedule is re-enabled.
+- SQL: which schedules are disabled and why:
+
+  ```sql
+  SELECT actor, name, consecutive_failures, last_fire_error, next_fire_at
+  FROM taskq.cron_schedules
+  WHERE NOT enabled
+  ORDER BY actor, name;
+  ```
+
+  `last_fire_error` carries the exception text of the strike that disabled the schedule; the `cron schedule auto-disabled` ERROR log lines and the per-tick `cron fire failed` lines name the same schedules.
+- The strikes are consecutive: a single success resets the count, so a schedule that reached auto-disable failed three ticks in a row. A factory raising every tick is a defect of that factory's code or configuration, not a transient dependency; a rate-limit or database outage during the ticks instead shows up in the alerts that own those dependencies.
+
+**How to remediate.**
+
+1. Fix the `payload_factory` the `last_fire_error` names and deploy the correction before re-enabling. Re-enabling a still-broken schedule spends three more strikes on the same defect and lands back here.
+2. Re-enable the schedule: the schedule handle's `enable()` resets `consecutive_failures` to 0 and clears `last_fire_error`, and the admin UI's schedules page exposes the same action. Missed fires inside `TASKQ_CRON_CATCH_UP_WINDOW` catch up on the next tick after enabling; older misses are skipped by design.
+3. Confirm recovery: the gauge returns to 0 and `cron fired` lines resume for the re-enabled schedule.
+
+Do not raise `TASKQ_CRON_AUTO_DISABLE_THRESHOLD` to keep a broken schedule alive: the auto-disable exists so a permanently failing factory stops consuming tick budget every second, and a larger budget only delays the same silence.
 
 ---
 
@@ -416,6 +552,66 @@ The leader-count operand is what makes this alertable at all. A healthy multi-wo
 1. The named actor does not yield to cancellation: it is blocking the event loop (a sync call without `asyncio.to_thread`), swallowing `CancelledError`, or running a native call that cannot be interrupted. Make it cooperative: poll `ctx.cancellation_requested` (or await `ctx.cancel_event`) in long loops, keep blocking work off the loop; see [ops.md: Thread-unsafe native libraries](ops.md#thread-unsafe-native-libraries).
 2. The abandoned row is terminal; the actor's coroutine may still be running in the worker until the process restarts. If it holds resources, restart that worker (`taskq_active_jobs` on its health socket shows the stuck slot).
 3. If the graces are simply too short for a well-behaved actor's cleanup, widen `TASKQ_CANCELLATION_GRACE_PERIOD` / `TASKQ_CLEANUP_GRACE_PERIOD`, but only after (1) is ruled out.
+
+---
+
+## TaskQHeartbeatMisses
+
+**What fired.** `rate(taskq_heartbeat_misses_total[5m]) > 0` for 5 minutes, severity critical: a worker's heartbeat renewal ticks are failing. The counter is bumped once per failed beat in the heartbeat loop, on every transient Postgres error class (connection resets, statement timeouts, server-side cancels). At `TASKQ_MAX_HEARTBEAT_FAILURES` (default 3) consecutive failures the worker does not limp on: it self-isolates, handing its running jobs back to the fleet (retryable rows re-pended, exhausted rows crashed) and terminating, so a sustained miss escalates from lost renewals to lost capacity within a few beats.
+
+**How to confirm.**
+
+- Metric: `rate(taskq_heartbeat_misses_total[5m])`. A blip that decays within a beat or two is one transient error; a flat sustained rate is a worker that cannot reach Postgres. The counter carries no worker label, so read it beside the logs of the replica that is reporting it.
+- Logs: `heartbeat-tick-failure` WARNING lines with `error_class` naming the Postgres failure, then `heartbeat-failures-approaching-limit` at half the budget, then the self-isolation. At the defaults the whole escalation fits in about 30 seconds (3 beats x 10 s).
+- SQL: which workers the database still considers alive:
+
+  ```sql
+  SELECT id, hostname, pid, worker_label, last_seen_at,
+         now() - last_seen_at AS silent_for
+  FROM taskq.workers
+  ORDER BY last_seen_at DESC;
+  ```
+
+  A row going silent for more than a beat while its process is up is the confirmation.
+
+**How to remediate.**
+
+1. Read `error_class` on the `heartbeat-tick-failure` lines. Connection-refused classes are network or DNS between the pod and Postgres; server-shutdown classes are the database restarting under the fleet; timeout classes are latency, and [TaskQDispatchLatencyHigh](#taskqdispatchlatencyhigh) or [TaskQSweepTimeouts](#taskqsweeptimeouts) firing alongside points at a shared database incident.
+2. A worker that crossed the budget has already isolated: it exits, the orchestrator restarts it, and its re-pended jobs dispatch elsewhere. The capacity dip is the design working; do not pin a whole fleet's queue set on one replica.
+3. If misses cluster at deploys or failovers, check the lease arithmetic the settings loader enforces: `lock_lease` must cover `(max_heartbeat_failures + 1) * (heartbeat_interval + 2 * heartbeat_command_timeout)` (56 s at the defaults). A lease tighter than that turns a beat hiccup into [TaskQRunningLeaseExpired](#taskqrunningleaseexpired).
+4. Confirm recovery: the rate returns to 0 and the affected `taskq.workers` row's `last_seen_at` is fresh again.
+
+Do not raise `TASKQ_MAX_HEARTBEAT_FAILURES` to quiet this alert: the budget is the worker's deadline for handing its jobs back while their leases are still sane, and widening it widens the window in which a dead worker's jobs look running.
+
+---
+
+## TaskQLockExpiringSoon
+
+**What fired.** `histogram_quantile(0.99, rate(taskq_lock_expires_in_seconds_bucket[5m])) < 30` for 5 minutes: the lease left on job locks at the moment the heartbeat renewed them has a p99 below 30 s. The histogram records, on every successful beat, `lock_lease` minus the measured gap since the previous beat's UPDATE, both stamps taken at the same point so network latency cancels; a sample near 0 means the beat landed just before the leases it renewed expired. The reclaim sweep takes a job the moment the gap reaches the lease, so this alert is the leading edge of [TaskQRunningLeaseExpired](#taskqrunningleaseexpired): renewals are landing late, and the budget is being spent.
+
+**How to confirm.**
+
+- Metric: the p99 of `taskq_lock_expires_in_seconds` against your configured `TASKQ_LOCK_LEASE` (default 60 s): a p99 of 30 s means half the lease is gone to lateness. Read `taskq_heartbeat_misses_total` (failed ticks) and `taskq_worker_event_loop_lag_seconds` (a blocked loop) beside it; those two say WHICH kind of lateness this is.
+- The sample is stamped on every successful beat whether or not the renewal threshold renewed any rows, so the histogram measures the beat cadence itself: a late beat lowers it exactly as a failed one does.
+- SQL: what the fleet's running locks have left:
+
+  ```sql
+  SELECT id, actor, locked_by_worker, lock_expires_at,
+         extract(epoch FROM (lock_expires_at - clock_timestamp()))::int AS remaining_s
+  FROM taskq.jobs
+  WHERE status = 'running'
+  ORDER BY lock_expires_at
+  LIMIT 20;
+  ```
+
+**How to remediate.**
+
+1. `taskq_heartbeat_misses_total` rising with it: the heartbeat pool cannot answer in time. Follow [TaskQHeartbeatMisses](#taskqheartbeatmisses) (connectivity first, then the heartbeat pool's `TASKQ_HEARTBEAT_POOL_SIZE` and `TASKQ_HEARTBEAT_COMMAND_TIMEOUT`).
+2. Heartbeats clean but `taskq_worker_event_loop_lag_seconds` high: the beats are late because the loop is blocked. Find the blocking actor (the worker's `event-loop-stall-attributed` warnings name it and the admin UI's Stall hotspots column aggregates it); this is an actor defect, not a lease misconfiguration.
+3. Neither, and Postgres latency is the story: widen the budget through the enforced arithmetic (`lock_lease >= (max_heartbeat_failures + 1) * (heartbeat_interval + 2 * heartbeat_command_timeout)`); a settings load that fails the invariant is the loader keeping the lease ahead of the isolation cascade, not a bug.
+4. Confirm recovery: the p99 climbs back above the threshold, toward the full lease.
+
+Do not fix this by raising `TASKQ_LOCK_LEASE` alone when the cause is a blocked event loop: a longer lease moves the reclaim deadline out over the same wedged beat, and the actor stays wedged twice as long before anything notices.
 
 ---
 

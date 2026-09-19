@@ -74,6 +74,12 @@ jobs:
           uv pip install --python test-env/bin/python dist/*.whl
           cd /tmp && $GITHUB_WORKSPACE/test-env/bin/python -c "import importlib.metadata, os; print(importlib.metadata.version(os.environ['DIST_NAME']))"
 
+      # Build-only verification of the repo-root Dockerfile (docs/guides/deployment.md,
+      # "Container"): the release path proves the image builds on every tag. No push,
+      # no registry credentials: publishing an image is a separate decision.
+      - name: Build container image (no push)
+        run: docker build -t taskq-worker:${{ github.sha }} .
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7.0.1
         with:

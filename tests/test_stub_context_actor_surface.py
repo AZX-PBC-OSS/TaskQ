@@ -35,8 +35,12 @@
 import asyncio
 from datetime import UTC, datetime
 
+from pydantic import BaseModel
+
 from taskq._ids import new_job_id
+from taskq.actor import actor
 from taskq.backend._protocol import EnqueueArgs
+from taskq.testing._runner import PassthroughPayload
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 
@@ -174,3 +178,142 @@ async def test_stub_context_cancellation_methods_observe_a_requested_cancel() ->
         "should_abort": True,
         "check_cancelled_raised": True,
     }, f"the cancellation surface must observe the requested cancel; got {observed}"
+
+
+# ── Real sub-job and logging surfaces ───────────────────────────────────
+
+
+async def test_stub_context_jobs_enqueue_enqueues_a_row_the_drain_runs() -> None:
+    """An actor calling the production sub-job surface,
+    ``await ctx.jobs.enqueue(...)``, under ``run_until_drained`` enqueues
+    a real row the drain then dispatches: the parent succeeds, the
+    sub-job drains and succeeds. A bare ``AttributeError`` here would
+    fail every actor that uses the documented sub-job pattern only under
+    the test backend."""
+    clock = FakeClock(start=_START)
+    backend = InMemoryBackend(clock=clock)
+
+    class ChildPayload(BaseModel):
+        value: int
+
+    class ChildResult(BaseModel):
+        doubled: int
+
+    @actor
+    async def child(payload: ChildPayload) -> ChildResult:
+        return ChildResult(doubled=payload.value * 2)
+
+    def child_stub(payload: object, ctx: object) -> object:
+        return {"doubled": 42}
+
+    async def parent_enqueuer(payload: object, ctx: object) -> object:
+        handle = await ctx.jobs.enqueue(child, ChildPayload(value=21))  # type: ignore[attr-defined]  # Why: stub ctx is duck-typed; the pinned contract is that the production sub-job surface works under the runner.
+        child_row = await backend.get(handle.job_id)
+        assert child_row is not None, "the sub-job row must exist immediately after enqueue"
+        return {"ok": True}
+
+    backend.register_stub("parent_enqueuer", parent_enqueuer, payload_type=PassthroughPayload)
+    backend.register_stub(child, child_stub)
+
+    args = EnqueueArgs(
+        id=new_job_id(),
+        actor="parent_enqueuer",
+        queue="default",
+        payload={},
+        max_attempts=3,
+        retry_kind="transient",
+        scheduled_at=_START,
+    )
+    await backend.enqueue(args)
+    await backend.run_until_drained()
+
+    row = await backend.get(args.id)
+    assert row is not None
+    assert row.status == "succeeded", (
+        "a stub using the documented ctx.jobs.enqueue surface must "
+        f"succeed; got status={row.status} error_class={row.error_class}"
+    )
+
+
+async def test_stub_context_sub_job_drains_to_succeeded() -> None:
+    """The enqueued sub-job is not just written, it drains: the runner
+    picks it up in the same drain and runs its own stub to terminal."""
+    clock = FakeClock(start=_START)
+    backend = InMemoryBackend(clock=clock)
+
+    class ChildPayload(BaseModel):
+        value: int
+
+    class ChildResult(BaseModel):
+        doubled: int
+
+    @actor
+    async def child(payload: ChildPayload) -> ChildResult:
+        return ChildResult(doubled=payload.value * 2)
+
+    async def parent(payload: object, ctx: object) -> object:
+        await ctx.jobs.enqueue(child, ChildPayload(value=21))  # type: ignore[attr-defined]  # Why: stub ctx is duck-typed; the pinned contract is that the production sub-job surface works under the runner.
+        return {"ok": True}
+
+    def child_stub(payload: object, ctx: object) -> object:
+        return {"ok": True}
+
+    backend.register_stub("parent", parent, payload_type=PassthroughPayload)
+    backend.register_stub(child, child_stub)
+
+    args = EnqueueArgs(
+        id=new_job_id(),
+        actor="parent",
+        queue="default",
+        payload={},
+        max_attempts=3,
+        retry_kind="transient",
+        scheduled_at=_START,
+    )
+    await backend.enqueue(args)
+    await backend.run_until_drained()
+
+    parent_row = await backend.get(args.id)
+    assert parent_row is not None
+    assert parent_row.status == "succeeded"
+    child_row = next(
+        (r for r in backend._jobs.values() if r.actor == child.name),  # pyright: ignore[reportPrivateUsage]  # Why: the test asserts on the runner's internal job store because list_jobs requires filter arguments; the child row's id is minted inside the stub, so a direct lookup is not available.
+        None,
+    )
+    assert child_row is not None, "the sub-job must be dispatched by the same drain"
+    assert child_row.status == "succeeded", (
+        f"the sub-job must drain to succeeded like any other job; got {child_row.status}"
+    )
+
+
+async def test_stub_context_log_is_a_usable_bound_logger() -> None:
+    """``ctx.log.info(...)`` works under the runner: the stub gets a
+    structlog logger bound with the job-scope fields, so actors that log
+    through the documented surface are exercisable without a bare
+    ``AttributeError``."""
+    clock = FakeClock(start=_START)
+    backend = InMemoryBackend(clock=clock)
+
+    def logger_user(payload: object, ctx: object) -> object:
+        ctx.log.info("doing work", extra_field="v")  # type: ignore[attr-defined]  # Why: stub ctx is duck-typed; the pinned contract is that the documented logging call works.
+        return {"ok": True}
+
+    backend.register_stub("logger_user", logger_user)
+    args = EnqueueArgs(
+        id=new_job_id(),
+        actor="logger_user",
+        queue="default",
+        payload={},
+        max_attempts=3,
+        retry_kind="transient",
+        scheduled_at=_START,
+    )
+    await backend.enqueue(args)
+    await backend.run_until_drained()
+
+    row = await backend.get(args.id)
+    assert row is not None
+    assert row.status == "succeeded", (
+        "a stub logging through ctx.log must succeed; "
+        f"got status={row.status} error_class={row.error_class}"
+    )

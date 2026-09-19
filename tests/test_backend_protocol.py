@@ -716,7 +716,7 @@ class TestJobFilterRoundTrip:
         assert f.cursor is None
 
     def test_field_count(self) -> None:
-        expected = 10
+        expected = 11
         assert len(fields(JobFilter)) == expected
 
     def test_frozen(self) -> None:

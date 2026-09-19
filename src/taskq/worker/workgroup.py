@@ -14,7 +14,7 @@ Config format (TOML)::
     max_concurrency = 4
 
     [supervisor]
-    shutdown_grace = 30.0
+    shutdown_grace = 100.0
     backoff_initial = 0.5
     backoff_max = 30.0
     backoff_factor = 2.0
@@ -73,10 +73,12 @@ if TYPE_CHECKING:
     from taskq.settings import WorkerSettings
 
 __all__ = [
+    "DEFAULT_SHUTDOWN_GRACE_SECS",
     "WorkerSpec",
     "WorkgroupConfig",
     "load_workgroup_config",
     "run_forever",
+    "worst_case_shutdown_seconds",
 ]
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
@@ -143,12 +145,33 @@ construction rather than restated beside it."""
 
 # ── Config model ──────────────────────────────────────────────────────────
 
+DEFAULT_SHUTDOWN_GRACE_SECS: float = 100.0
+"""Default for ``[supervisor].shutdown_grace``, the supervisor's
+SIGTERM-to-SIGKILL window for its children.
+
+Why 100.0: the window must cover a child's modelled worst-case clean
+exit, ``WorkerSettings.worst_case_shutdown_seconds`` = cancellation
+grace (30s) + cleanup grace (10s) + the bounded-close teardown tail
+(8 sequential closes x 5s + 2s publish drain = 42s) = 82s, plus ~22%
+margin for loop jitter and the shutdown watchdog's non-instantaneous
+deadline trip (the dump interval and bounded metrics flush land inside
+the tail, but the tail is a model, not a bound the supervisor enforces).
+The old 30.0 default sat below even the children's 40s release floor
+(cancellation + cleanup graces): the supervisor SIGKILLed children
+before a held release could land, and every interrupted job rode the
+lease-expiry crash path instead. Operators who want the tighter,
+release-floor-only window can still set it explicitly; the startup
+warning names the numbers rather than refusing.
+"""
+
 
 @dataclass(slots=True)
 class SupervisorConfig:
     """Global supervisor behaviour tunables."""
 
-    shutdown_grace: float = 30.0  # seconds to wait for children during shutdown
+    shutdown_grace: float = (
+        DEFAULT_SHUTDOWN_GRACE_SECS  # seconds to wait for children during shutdown
+    )
     backoff_initial: float = 0.5  # first restart delay (seconds)
     backoff_max: float = 30.0  # ceiling on restart delay
     backoff_factor: float = 2.0  # multiplier per successive crash
@@ -232,7 +255,7 @@ class WorkgroupConfig:
 
         sup_raw: dict[str, Any] = raw.get("supervisor", {})
         supervisor = SupervisorConfig(
-            shutdown_grace=float(sup_raw.get("shutdown_grace", 30.0)),
+            shutdown_grace=float(sup_raw.get("shutdown_grace", DEFAULT_SHUTDOWN_GRACE_SECS)),
             backoff_initial=float(sup_raw.get("backoff_initial", 0.5)),
             backoff_max=float(sup_raw.get("backoff_max", 30.0)),
             backoff_factor=float(sup_raw.get("backoff_factor", 2.0)),
@@ -410,9 +433,22 @@ def _warn_on_actor_queues_no_child_consumes(
     )
 
 
+def worst_case_shutdown_seconds(settings: WorkerSettings) -> float:
+    """The children's modelled worst-case wall clock from SIGTERM to exit.
+
+    Delegates to ``WorkerSettings.worst_case_shutdown_seconds`` (cancellation
+    grace + cleanup grace + the bounded-close teardown tail) so the
+    supervisor surface and the worker's own model stay one number, no
+    drift. Exposed here so ``taskq workgroup validate`` and operators'
+    sizing scripts can compare a config's ``shutdown_grace`` against the
+    floor it must cover, without importing worker bootstrap internals.
+    """
+    return settings.worst_case_shutdown_seconds
+
+
 def _warn_shutdown_grace_window(scfg: SupervisorConfig, settings: WorkerSettings) -> None:
     """Warn when the workgroup's SIGTERM-to-SIGKILL window is too short for
-    the children's held release to ever land.
+    the children's held release or their clean exit.
 
     The workgroup forwards SIGTERM to its children, waits
     ``shutdown_grace``, then SIGKILLs. The children spend
@@ -420,17 +456,38 @@ def _warn_shutdown_grace_window(scfg: SupervisorConfig, settings: WorkerSettings
     the RELEASING release write: a window shorter than that SIGKILLs the
     child before its held release lands, and the interrupted row rides the
     lease-expiry crash path instead (slower, and it spends the attempt the
-    release would have refunded). The honest floor for a CLEAN child exit
-    is the whole ``worst_case_shutdown_seconds`` (graces + bounded-close
-    tail); the floor warned on here is the minimal one at which the
-    release write itself lands. The ceiling matters only when the children
-    run with the watchdog disabled (no deadline trip bounds their exit):
-    then the platform SIGKILL must land by ``termination_grace + exit
-    tail`` or a lingering executor thread can outlive a released row's
-    hold: see docs/guides/workers.md's platform-grace window.
+    release would have refunded). The floor for a CLEAN child exit is the
+    whole ``worst_case_shutdown_seconds`` (graces + bounded-close tail);
+    between the two floors the release lands but the SIGKILL truncates the
+    exit unwind. The ceiling matters only when the children run with the
+    watchdog disabled (no deadline trip bounds their exit): then the
+    platform SIGKILL must land by ``termination_grace + exit tail`` or a
+    lingering executor thread can outlive a released row's hold: see
+    docs/guides/workers.md's platform-grace window.
+
+    Both warnings print the computed numbers (current grace vs the floor
+    they miss) so the remedy is a sizing decision, not a research project.
     """
     release_floor = settings.cancellation_grace_period + settings.cleanup_grace_period
+    clean_exit_floor = worst_case_shutdown_seconds(settings)
+    if scfg.shutdown_grace >= clean_exit_floor:
+        return
     if scfg.shutdown_grace >= release_floor:
+        logger.warning(
+            "workgroup.shutdown_grace_below_clean_exit_floor",
+            shutdown_grace=scfg.shutdown_grace,
+            release_floor_seconds=release_floor,
+            clean_exit_floor_seconds=clean_exit_floor,
+            remedy=(
+                f"shutdown_grace {scfg.shutdown_grace}s lets a child's held release land "
+                f"(release floor {release_floor}s) but still SIGKILLs it before its clean "
+                f"exit completes (clean-exit floor {clean_exit_floor}s, the graces plus "
+                "the bounded-close teardown tail): the SIGKILL truncates the child's exit "
+                "unwind, so terminal writes that needed the tail land via the "
+                "lease-expiry crash path instead. Raise supervisor.shutdown_grace to at "
+                f"least {clean_exit_floor}s."
+            ),
+        )
         return
     logger.warning(
         "workgroup.shutdown_grace_below_release_floor",
@@ -438,12 +495,12 @@ def _warn_shutdown_grace_window(scfg: SupervisorConfig, settings: WorkerSettings
         cancellation_grace_period=settings.cancellation_grace_period,
         cleanup_grace_period=settings.cleanup_grace_period,
         release_floor_seconds=release_floor,
-        clean_exit_floor_seconds=settings.worst_case_shutdown_seconds,
+        clean_exit_floor_seconds=clean_exit_floor,
         remedy=(
             f"raise supervisor.shutdown_grace to at least {release_floor}s so a "
             "child's held release lands before the SIGKILL (its clean exit "
-            f"needs {settings.worst_case_shutdown_seconds}s (the graces plus "
-            "the bounded-close tail); below the floor every interrupted job "
+            f"needs {clean_exit_floor}s (the graces plus the bounded-close "
+            "tail); below the floor every interrupted job "
             "rides the lease-expiry crash path and spends the attempt the "
             "release would have refunded"
         ),
@@ -986,10 +1043,41 @@ def _start_respawn(
     )
 
 
+async def _forward_sighup_to_children(children: Mapping[str, _ChildState]) -> None:
+    """Forward SIGHUP to every living child so each child's own credential
+    hot-reload runs (the single worker's SIGHUP handler sets its reload
+    event; see ``taskq.worker.shutdown.install_signal_handlers``).
+
+    Why the per-child ``restart_lock``: it serializes the send with the
+    liveness monitor's exit/respawn path. A child mid-restart (process
+    None, or exited and not yet replaced) is skipped rather than signalled:
+    its replacement spawns with current credentials anyway, so a reload
+    forwarded into the race window is wasted churn at best. A child that
+    exits between the liveness check and ``send_signal`` raises
+    ``ProcessLookupError``, suppressed for the same reason, the monitor's
+    next tick owns that child now.
+
+    Never raises: this runs as a fire-and-forget task off the signal
+    handler, an exception here would only surface as a loop-level
+    "exception was never retrieved" warning.
+    """
+    for child in children.values():
+        async with child.restart_lock:
+            proc = child.process
+            if proc is None or proc.returncode is not None:
+                continue
+            with contextlib.suppress(ProcessLookupError):
+                proc.send_signal(signal.SIGHUP)
+
+
 async def run_forever(config_path: Path) -> None:
     """Load config, spawn children, manage lifecycle until a signal arrives.
 
     Blocks until SIGTERM or SIGINT, then shuts down all children gracefully.
+    SIGHUP is NOT a shutdown signal: it is forwarded to every living child
+    so each child's credential hot-reload runs (see
+    :func:`_forward_sighup_to_children`); without a handler the default
+    disposition would terminate the supervisor and orphan every child.
     Returns normally after shutdown, the CLI caller handles the exit code.
     """
     config = load_workgroup_config(config_path)
@@ -1047,6 +1135,9 @@ async def run_forever(config_path: Path) -> None:
         children[spec.name] = state
 
     shutting_down = asyncio.Event()
+    # Strong refs to the in-flight SIGHUP forward tasks (asyncio only holds
+    # weak refs): a dropped task can be garbage-collected mid-flight.
+    _sighup_tasks: set[asyncio.Task[None]] = set()
 
     # ── Emit warnings for risky config ────────────────────────────────
     for w in config.workers:
@@ -1090,6 +1181,30 @@ async def run_forever(config_path: Path) -> None:
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, _on_signal)
+
+    # SIGHUP, credential rotation: forward to the children, never shut down.
+    # Without a handler the default disposition kills the supervisor and
+    # orphans every child. The single worker registers its own SIGHUP
+    # reload handler (taskq.worker.shutdown.install_signal_handlers), so
+    # the operator story is one signal for the whole workgroup: each child
+    # runs its own hot-reload. Not available on Windows.
+    if hasattr(signal, "SIGHUP"):
+
+        def _on_sighup() -> None:
+            # Deliberately await-free: signal handlers run between loop
+            # callbacks, the forwarding takes each child's restart_lock
+            # inside its own task. Ignored mid-shutdown: reloading pools a
+            # child is about to tear down churns resources for nothing.
+            if shutting_down.is_set():
+                return
+            logger.info("workgroup-reload-signal", children=len(children))
+            # Referenced until done: a task dropped on the floor can be
+            # garbage-collected mid-flight, losing the reload forward.
+            task = asyncio.create_task(_forward_sighup_to_children(children))
+            _sighup_tasks.add(task)
+            task.add_done_callback(_sighup_tasks.discard)
+
+        loop.add_signal_handler(signal.SIGHUP, _on_sighup)
 
     # ── Liveness monitor, detects exited children and restarts them ──
     async def liveness_monitor() -> None:

@@ -232,7 +232,7 @@ A metrics bar at the top of the page shows the total result count (capped at "10
 | Parameter | Required | Description |
 |---|---|---|
 | `status` | No (default: all terminal) | Filter by one or more terminal statuses. Repeatable: `?status=succeeded&status=failed`. Allowed values: `succeeded`, `failed`, `cancelled`, `crashed`, `abandoned`. |
-| `actor` | No | Exact match on actor name. |
+| `actor` | No | Substring match on actor name (case-insensitive `ILIKE '%...%'`), the same match the jobs page applies. |
 | `queue` | No | Exact match on queue name. |
 | `cursor_at` | No | ISO 8601 timestamp cursor for the next page. Must be provided together with `cursor_id`. |
 | `cursor_id` | No | UUID cursor for the next page. Must be provided together with `cursor_at`. |
@@ -243,7 +243,7 @@ Archived rows (from `jobs_archive`) are shown with an "archived" badge in the So
 
 ### `GET /admin/jobs`
 
-Job listing page with "Live Jobs" and "Archived" tabs. Supports filtering by status (multi-select), actor (substring match), queue, time range, identity key, fairness key, free-text search (matches job ID or actor), and tags. Results are paginated at 100 rows using keyset pagination and can be sorted by created_at, started_at, actor, queue, status, or attempt. HTMX partial refreshes update the table without a full page reload. The table is polled at `TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS` whenever the Live Jobs tab is open; with the live toggle on, an SSE stream (`/admin/sse/jobs`, PG `LISTEN` on the schema's events channel) additionally brings a refresh forward the moment an event arrives. The events channel carries only the running-job cancel fast-path today; terminal writes and dispatch do not NOTIFY it, which is why polling stays the source of truth and SSE is an accelerator, never a replacement.
+Job listing page with "Live Jobs" and "Archived" tabs. Supports filtering by status (multi-select), actor (substring match), queue, time range, identity key, fairness key, free-text search (matches job ID or actor), and tags. Results are paginated at 50 rows using keyset pagination and can be sorted by created_at, started_at, actor, queue, status, or attempt. HTMX partial refreshes update the table without a full page reload. The table is polled at `TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS` whenever the Live Jobs tab is open; with the live toggle on, an SSE stream (`/admin/sse/jobs`, PG `LISTEN` on the schema's events channel) additionally brings a refresh forward the moment an event arrives. The events channel carries only the running-job cancel fast-path today; terminal writes and dispatch do not NOTIFY it, which is why polling stays the source of truth and SSE is an accelerator, never a replacement.
 
 Sorting by `started_at` ascending together with a `status=running` filter is the "running longest" view: the jobs that have held a worker the longest come first. `started_at` is NULL for jobs that have not started, and those rows sort last in both directions (NULLS LAST) so paging through live rows is never interrupted by the not-yet-started tail.
 
@@ -280,7 +280,11 @@ Puts a job that has come to rest back to `pending` via `backend.retry_job`, allo
 
 Returns `{"count": <int>}` for the given `tab` (`live` or `archived`) and the same filter
 query params as `GET /admin/jobs` (`status`, `actor`, `queue`, `time_range`/`time_from`/`time_to`).
-Used by the jobs list page to render the result count without re-fetching the full page.
+
+The endpoint is registered but has no consumer today: the jobs list page renders its
+"Showing N results" line from the page query's own row count, not from this route. Anything
+built against it should not rely on it surviving; use `GET /admin/jobs` and count the page,
+or the per-actor aggregate at `GET /admin/api/history/stats`, instead.
 
 ### `GET /admin/api/history/stats`
 

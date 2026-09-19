@@ -160,6 +160,9 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
     stamped_scheduled_at = args.scheduled_at if args.scheduled_at is not None else now
     status: object = "pending" if stamped_scheduled_at <= now else "scheduled"
 
+    # A stub's explicit retry= budget stamps the row here, exactly like
+    # the ActorRef stamp that build_enqueue_args already applied.
+
     resolved_schedule_to_close = (
         now + args.schedule_to_close_interval
         if args.schedule_to_close_interval is not None

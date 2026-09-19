@@ -39,13 +39,25 @@ The worker is a single asyncio process running a `TaskGroup` of sibling coroutin
 
 ### Container
 
+The repo carries a production image definition at
+[`Dockerfile`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/Dockerfile) at
+the repository root; CI builds it on every release tag (build only, no push).
+It is a multi-stage build: a uv builder stage resolves the locked dependency
+set with `uv sync --frozen --no-dev` (dev group excluded, `otel` and `redis`
+extras installed), and a slim runtime stage ships only the resulting venv,
+run as a non-root `taskq` user. The image sets `TASKQ_HEALTH_PORT=8600` and
+`EXPOSE 8600` so orchestrators without exec probes can route HTTP probes at
+the TCP health listener, and its `HEALTHCHECK` runs `taskq health ready`
+against the in-container Unix socket, the same exec probe the Kubernetes and
+Compose recipes below use.
+
+Applications that use TaskQ extend the image rather than duplicating it;
+`PATH` already points at the installed venv:
+
 ```dockerfile
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
-WORKDIR /app
-COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --extra otel --extra redis
-COPY . .
-CMD ["uv", "run", "taskq", "worker", "--actors", "myapp.actors:registry"]
+FROM taskq-worker        # this repo's Dockerfile, as built by CI
+COPY myapp/ myapp/
+CMD ["taskq", "worker", "--actors", "myapp.actors:registry"]
 ```
 
 ### systemd
@@ -817,7 +829,7 @@ See [workers.md: Queue dispatch modes](workers.md#queue-dispatch-modes).
 
     With `max_concurrent=2` and 3 replicas you can see 6 concurrent executions. For a memory- or GPU-bound actor that is an OOMKill, a restart, and a re-dispatch.
 
-    **If you need a strict cap**, use the per-queue leased-slot reservation instead: `taskq queues set-max-concurrent <queue> --max-concurrent N`. Slots are physical rows and each acquire is a single read-and-write statement on one row, so there is no read-then-decide window. See [rate-limiting.md](rate-limiting.md#queue-level-concurrency-cap). Note it is read once at worker startup, so changing it needs a worker restart, and it bounds a *queue*, not an actor. `max_pending` (per-actor via `@actor(max_pending=N)`) caps queued `pending` jobs; when exceeded, `enqueue` is rejected and `taskq.backpressure.errors` is incremented with `kind="max_pending"`. Monitor `taskq.queue.depth` (leader samples every 15s) for backlog and `taskq.backpressure.errors` for sustained producer pressure; filter on the `kind` label to the capacity kinds (`max_pending`, `max_pending_lock_timeout`), because the same counter also carries identity-serialization refusals (`unique_for_lock_timeout`, `idempotency_lock_timeout`) that page on contention unrelated to capacity.
+    **If you need a strict cap**, use the per-queue leased-slot reservation instead: `taskq queues set-max-concurrent <queue> --max-concurrent N`. Slots are physical rows and each acquire is a single read-and-write statement on one row, so there is no read-then-decide window. See [rate-limiting.md](rate-limiting.md#queue-level-concurrency-cap). Note the asymmetry with the per-actor damper: `taskq queues set-max-concurrent` writes the `queues` row immediately, but each running worker read the cap into memory at startup, so every worker keeps enforcing the OLD value until it restarts; a cap change lands fleet-wide only after the workers serving that queue have been restarted (a rolling restart is fine, one replica at a time). A per-actor change via `taskq actor-config set` needs no restart: dispatch re-reads `actor_config` every round and picks the new value up on the next cycle. `taskq queues get` shows the database value; it cannot tell you which workers have restarted onto it, so treat the change as live only after the fleet has rolled. `max_pending` (per-actor via `@actor(max_pending=N)`) caps queued `pending` jobs; when exceeded, `enqueue` is rejected and `taskq.backpressure.errors` is incremented with `kind="max_pending"`. Monitor `taskq.queue.depth` (leader samples every 15s) for backlog and `taskq.backpressure.errors` for sustained producer pressure; filter on the `kind` label to the capacity kinds (`max_pending`, `max_pending_lock_timeout`), because the same counter also carries identity-serialization refusals (`unique_for_lock_timeout`, `idempotency_lock_timeout`) that page on contention unrelated to capacity.
 
 ### Connection pool sizing
 
