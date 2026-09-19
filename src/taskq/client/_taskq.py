@@ -1110,6 +1110,19 @@ class TaskQ:
             filter, reason, allow_empty_filter=allow_empty_filter
         )
 
+    async def retry_job(self, job_id: JobId) -> bool:
+        """Re-pend a job that has come to rest (a terminal status).
+
+        The backend admin operation the admin UI's retry route calls:
+        every terminal status is a valid source (an operator re-run is
+        "run this again", including after a success), non-terminal
+        statuses are refused, and the attempt counter is not reset.
+        Returns ``False`` when the job was not in a retryable state, or
+        the spent attempt sits at the smallint ceiling, the same
+        conflict the route surfaces as a 409.
+        """
+        return await self._require_open().backend.retry_job(job_id)
+
     # ── Schedule operations ─────────────────────────────────────────────────
 
     async def create_schedule[P: BaseModel, R: BaseModel | None](

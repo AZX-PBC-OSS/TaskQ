@@ -195,6 +195,12 @@ async def _list_jobs(self: "InMemoryBackend", filters: JobFilter) -> list[JobRow
         filter_tags = set(filters.tags)
         candidates = [r for r in candidates if filter_tags & set(r.tags)]
 
+    # Mirror of build_filter_conditions' created_before arm (the PG
+    # backend's spelling): strictly before, so both backends read the
+    # boundary identically.
+    if filters.created_before is not None:
+        candidates = [r for r in candidates if r.created_at < filters.created_before]
+
     # One descriptor drives the sort and the cursor seam on both backends
     # (``taskq.backend._cursor``), so the in-memory mirror cannot order
     # rows one way while comparing the cursor another.

@@ -28,7 +28,7 @@ worker_group = "default"
 
 # Optional: global supervisor behaviour.
 [supervisor]
-shutdown_grace = 30.0       # seconds to wait for children during shutdown
+shutdown_grace = 100.0      # seconds to wait for children during shutdown (covers a child's 82s worst-case clean exit with margin)
 backoff_initial = 0.5       # first restart delay (seconds)
 backoff_max = 30.0          # ceiling on restart delay
 backoff_factor = 2.0        # multiplier per successive crash
@@ -63,7 +63,7 @@ max_concurrency = 2
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `shutdown_grace` | `float` | `30.0` | Seconds to wait for children to exit gracefully after SIGTERM. Children still alive after this window are SIGKILL'd. |
+| `shutdown_grace` | `float` | `100.0` | Seconds to wait for children to exit gracefully after SIGTERM. Children still alive after this window are SIGKILL'd. Sized from the children's modelled worst-case clean exit (`cancellation_grace_period` 30s + `cleanup_grace_period` 10s + the ~42s bounded-close teardown tail = 82s) plus ~22% margin for loop jitter and the watchdog's non-instantaneous deadline trip. The previous 30.0 default sat below even the 40s release floor, so a default workgroup SIGKILLed children before a held release landed and interrupted jobs rode the lease-expiry crash path. A startup warning names the numbers when a configured grace falls below either floor. |
 | `backoff_initial` | `float` | `0.5` | Delay before the first restart attempt (seconds). |
 | `backoff_max` | `float` | `30.0` | Ceiling on restart delay. The delay never exceeds this value. |
 | `backoff_factor` | `float` | `2.0` | Multiplier applied to the delay on each successive crash. Must be >= 1.0. |
@@ -88,7 +88,7 @@ max_concurrency = 2
 taskq workgroup start workgroup.toml
 ```
 
-The supervisor blocks until SIGTERM or SIGINT.
+The supervisor blocks until SIGTERM or SIGINT. SIGHUP is not a stop signal: it is forwarded to every living child for credential rotation (see "Credential rotation (SIGHUP)" below).
 
 ### Validating a config
 
@@ -155,6 +155,24 @@ Each retry logs `workgroup.restart_scheduled` with a `reason` of `child_exit` or
 The backoff resets to `backoff_initial` after a stable period (no restart attempts within `burst_window`).
 
 A failed output pump is not a restart trigger: the supervisor logs `workgroup.stream_pump_failed` and the child keeps running, with its output no longer forwarded.
+
+## Credential rotation (SIGHUP)
+
+Each child worker supports SIGHUP credential hot-reload: the signal triggers the child's reload coordinator, which rebuilds every factory-backed pool, connection, and Redis client with fresh credentials without dropping the process (see the workers guide's reload section). A single SIGHUP can therefore rotate credentials for a whole workgroup:
+
+```shell
+kill -HUP $(pgrep -f "taskq workgroup start")
+```
+
+The supervisor has a SIGHUP handler of its own. Without one, the signal's default disposition would terminate the supervisor itself and orphan every child. The handler instead forwards SIGHUP to each living child (`workgroup-reload-signal` is logged with the child count), and each child then runs its own hot-reload independently.
+
+Details that matter in production:
+
+- **Children mid-restart are skipped.** A child with no live process (spawn failed, or exited and awaiting its backoff respawn) receives nothing; the replacement child starts with current credentials anyway. A child that exits between the liveness check and the signal delivery is similarly ignored rather than errored on; the liveness monitor owns that child's next lifecycle step.
+- **A SIGHUP during shutdown is ignored.** Reloading pools a child is about to tear down is wasted churn, and the shutdown path may already be draining them.
+- **Reload failures never kill the child.** A failed rotation is logged by the child (`credentials-reload-failed`) and the old resources stay live; re-send SIGHUP after fixing the credential source.
+- **Windows has no SIGHUP.** The handler is only registered where the signal exists; on platforms without it, use the child-level `TASKQ_RELOAD_INTERVAL` timer rotation instead.
+- **The supervisor's own health-check pool is not rotated by SIGHUP.** Its connection is rebuilt on supervisor restart; if the health DSN's credentials rotate while a supervisor runs for a long time, plan a supervisor restart into the rotation.
 
 ## Running in production
 

@@ -8,6 +8,7 @@ per-status/per-actor retention overrides, index usage, expiry sweeps,
 and concurrent-lock behavior.
 """
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -1144,3 +1145,71 @@ async def test_prune_cutoff_anchored_to_server_clock(
         schema=settings.schema_name,
     )
     assert result.total_deleted == 1  # pre-fix: 0 - the job survives past its retention
+
+
+@pytest.mark.integration
+async def test_prune_never_deletes_a_row_a_concurrent_retry_retried(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """A retry committing against the prune window cannot lose the live row.
+
+    The failure this pin exists for: the archive CTE selected a terminal
+    row, a concurrent ``retry_job`` flipped it back to pending (its
+    caller already told the operator the retry landed), and the delete
+    arm's lock-time re-check only tested id membership, so it removed the
+    live row: the job never runs again and no shipped path recovers it.
+    The candidates now carry row locks (a retry waits for the prune, then
+    reports the row missing) and both the archive and delete arms
+    re-check the terminal status at lock time (a retry that commits first
+    drops out of the window entirely). Either order is clean; the
+    invariant asserted here is: whenever the retry's UPDATE reports a
+    row, the live row still exists.
+
+    The retry runs as the raw rendered statement ``retry_job`` issues,
+    against its own connection: the race under test is between the two
+    statements, not between backend objects.
+    """
+    from taskq.backend._sql_templates import render
+
+    await _apply(pg_conn, settings)
+    schema = settings.schema_name
+    old = datetime.now(UTC) - timedelta(days=31)
+    retry_sql = render(schema).retry_job
+
+    retry_conn = await asyncpg.connect(str(settings.pg_dsn))
+
+    trials = 50
+    for _trial in range(trials):
+        jid = await _seed_terminal_job(pg_conn, status="succeeded", finished_at=old, schema=schema)
+        prune_result, retried = await asyncio.gather(
+            prune_terminal_jobs(
+                pg_conn,
+                retention_per_status={"succeeded": timedelta(days=30)},
+                archive_retention=timedelta(days=365),
+                batch_size=10000,
+                schema=schema,
+            ),
+            # fetchrow, exactly as the backend's retry_job reads it: the
+            # statement's row presence IS the retry's success signal (the
+            # execute tag is always "SELECT 1").
+            retry_conn.fetchrow(retry_sql, jid),
+        )
+        live = await pg_conn.fetchrow(
+            f"SELECT status FROM {schema}.jobs WHERE id = $1",  # noqa: S608
+            jid,
+        )
+        if retried is not None:
+            # The retry's UPDATE landed: the row MUST still be live and
+            # claimable. This is the assertion the old statement failed.
+            assert live is not None, (
+                "the retry's update reported a row but the live row is "
+                "gone: the prune deleted concurrently retried work"
+            )
+            assert live["status"] == "pending"
+        else:
+            # The prune won the race: the row is archived and gone (the
+            # retry's write found no row).
+            assert live is None
+            assert prune_result.total_deleted >= 0
+
+    await retry_conn.close()

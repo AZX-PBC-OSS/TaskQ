@@ -105,8 +105,11 @@ async def test_list_applied_rejects_invalid_schema_name(pg_dsn: str) -> None:
 # ── apply_pending: checksum drift ───────────────────────────────────────
 
 
-async def test_apply_pending_logs_checksum_drift_without_raising(pg_dsn: str) -> None:
-    """Checksum drift (stored != current) is logged as a warning, not fatal."""
+async def test_apply_pending_refuses_on_checksum_drift_and_applies_nothing(pg_dsn: str) -> None:
+    """Checksum drift (an APPLIED migration's ledger checksum differs from
+    the file) fails the run CLOSED: nothing is applied, not even pending
+    migrations. The old warn-and-continue contract let `migrate up` build
+    on a schema whose provenance no longer matched the files."""
     schema = f"mig_cov_drift_{new_base62()}".lower()
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -121,15 +124,103 @@ async def test_apply_pending_logs_checksum_drift_without_raising(pg_dsn: str) ->
             drifted_key,
         )
 
-        with structlog.testing.capture_logs() as captured:
-            second = await migrate_mod.apply_pending(conn, schema=schema)
+        # A pending migration added on top of the drifted ledger: the
+        # refusal must keep it PENDING, drift poisons the whole run.
+        pending = _fake_migration(
+            "50.00.00_01", "pre", f'CREATE TABLE "{schema}".drift_not_applied (id int);'
+        )
+        bundled = migrate_mod.discover()
+        with (
+            structlog.testing.capture_logs() as captured,
+            pytest.MonkeyPatch.context() as mp,
+        ):
+            mp.setattr(migrate_mod, "discover", lambda: [*bundled, pending])
+            with pytest.raises(migrate_mod.ChecksumDriftError, match=drifted_key):
+                await migrate_mod.apply_pending(conn, schema=schema)
 
-        assert second == [], "already-applied migration must not be re-applied"
+        table_missing = await conn.fetchval(
+            "SELECT NOT EXISTS ("
+            "  SELECT 1 FROM information_schema.tables"
+            "  WHERE table_schema = $1 AND table_name = 'drift_not_applied'"
+            ")",
+            schema,
+        )
+        assert table_missing, "a refused run applied the pending migration anyway"
+        # The drift stays visible: the warning survives the fail-closed turn.
         drift_events = [e for e in captured if e.get("event") == "migration-checksum-drift"]
         assert len(drift_events) == 1
         assert drift_events[0]["key"] == drifted_key
         assert drift_events[0]["stored_checksum"] == "0" * 64
         assert drift_events[0]["log_level"] == "warning"
+    finally:
+        await _drop_schema(conn, schema)
+        await conn.close()
+
+
+async def test_apply_pending_allow_checksum_drift_proceeds_with_warning(pg_dsn: str) -> None:
+    """--allow-checksum-drift (allow_checksum_drift=True) is the operator's
+    explicit escape hatch: the run proceeds past a drifted ledger, the
+    drift warning still fires, and pending migrations apply normally."""
+    schema = f"mig_cov_drift_ok_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _drop_schema(conn, schema)
+        first = await migrate_mod.apply_pending(conn, schema=schema)
+        assert first
+
+        drifted_key = first[0].key
+        await conn.execute(
+            f'UPDATE "{schema}".schema_migrations SET checksum = $1 WHERE version = $2',  # noqa: S608 # Why: schema is a test-generated identifier, not user input; asyncpg has no parameter binding for identifiers.
+            "0" * 64,
+            drifted_key,
+        )
+        pending = _fake_migration(
+            "50.00.00_01", "pre", f'CREATE TABLE "{schema}".drift_allowed (id int);'
+        )
+
+        bundled = migrate_mod.discover()
+        with (
+            structlog.testing.capture_logs() as captured,
+            pytest.MonkeyPatch.context() as mp,
+        ):
+            mp.setattr(migrate_mod, "discover", lambda: [*bundled, pending])
+            applied = await migrate_mod.apply_pending(
+                conn, schema=schema, allow_checksum_drift=True
+            )
+
+        assert [m.key for m in applied] == [pending.key]
+        drift_events = [e for e in captured if e.get("event") == "migration-checksum-drift"]
+        assert len(drift_events) == 1, "the drift warning must survive allow_checksum_drift"
+        assert drift_events[0]["key"] == drifted_key
+    finally:
+        await _drop_schema(conn, schema)
+        await conn.close()
+
+
+async def test_checksum_drifts_reports_drift_for_status(pg_dsn: str) -> None:
+    """The shared status helper reports the same drift `up` refuses on,
+    keyed by migration key with stored and current checksums attached."""
+    schema = f"mig_cov_drift_st_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _drop_schema(conn, schema)
+        # No ledger yet: nothing can drift.
+        assert await migrate_mod.checksum_drifts(conn, schema=schema) == {}
+
+        first = await migrate_mod.apply_pending(conn, schema=schema)
+        assert first
+        assert await migrate_mod.checksum_drifts(conn, schema=schema) == {}
+
+        drifted_key = first[0].key
+        await conn.execute(
+            f'UPDATE "{schema}".schema_migrations SET checksum = $1 WHERE version = $2',  # noqa: S608 # Why: schema is a test-generated identifier, not user input; asyncpg has no parameter binding for identifiers.
+            "0" * 64,
+            drifted_key,
+        )
+        drifts = await migrate_mod.checksum_drifts(conn, schema=schema)
+        assert set(drifts) == {drifted_key}
+        assert drifts[drifted_key].stored == "0" * 64
+        assert drifts[drifted_key].current == first[0].checksum(schema)
     finally:
         await _drop_schema(conn, schema)
         await conn.close()

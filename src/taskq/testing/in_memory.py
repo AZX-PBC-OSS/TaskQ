@@ -937,8 +937,8 @@ class InMemoryBackend:
 
     # ── Run until drained ──────────────────────────────────────────────
 
-    async def run_until_drained(self) -> None:
-        await _run_until_drained(self)
+    async def run_until_drained(self, *, cancel_polling: bool = False) -> None:
+        await _run_until_drained(self, cancel_polling=cancel_polling)
 
     # ── Schedule CRUD ──────────────────────────────────────────────────
 

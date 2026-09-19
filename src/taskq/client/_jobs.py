@@ -1671,13 +1671,14 @@ class JobsClient:
         sets the in-process ``cancel_event``.
 
         **Guardrail:** a filter with no predicates (no queue, status,
-        actor, identity_key, batch_id, tags, or active) is rejected with
-        :class:`EmptyFilterError` unless ``allow_empty_filter=True`` is
-        passed.
+        actor, identity_key, batch_id, tags, active, or created_before)
+        is rejected with :class:`EmptyFilterError` unless
+        ``allow_empty_filter=True`` is passed.
 
         **Filter fields used:** ``queue``, ``status``, ``actor``,
-        ``identity_key``, ``batch_id``, ``tags``, ``active``. The
-        ``limit``, ``cursor``, and ``order_by`` fields are ignored.
+        ``identity_key``, ``batch_id``, ``tags``, ``active``,
+        ``created_before``. The ``limit``, ``cursor``, and ``order_by``
+        fields are ignored.
 
         Returns a :class:`BulkCancelResult` with counts and affected IDs.
         """

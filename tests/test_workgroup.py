@@ -1095,6 +1095,132 @@ async def test_run_forever_multiple_children_graceful_shutdown() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_forever_survives_sighup_and_forwards_to_children() -> None:
+    """SIGHUP is credential rotation, not a stop signal: the supervisor must
+    survive it and forward it to every living child (each child's own
+    hot-reload runs in the child). Without the handler, SIGHUP's default
+    disposition terminates the supervisor and orphans every child.
+
+    The children are also asserted still alive afterwards: a supervisor
+    that "handled" SIGHUP by shutting down would pass a forwarding-only
+    check while exactly orphaning the fleet.
+    """
+    config = WorkgroupConfig(
+        actors="myapp.actors:registry",
+        supervisor=SupervisorConfig(shutdown_grace=1.0),
+        workers=[_make_spec(name="w1"), _make_spec(name="w2")],
+    )
+
+    procs: dict[str, FakeProcess] = {}
+    both_spawned = asyncio.Event()
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> FakeProcess:
+        label = args[args.index("--worker-label") + 1] if "--worker-label" in args else "unknown"
+        proc = FakeProcess(returncode=None)
+        procs[label] = proc
+        if len(procs) == 2:
+            both_spawned.set()
+        return proc
+
+    config_path = Path("/tmp/fake_sighup.toml")
+    signal_handlers: dict[int, Any] = {}
+    sighup_registered = asyncio.Event()
+
+    def capture_handler(sig: int, handler: Any) -> None:
+        signal_handlers[sig] = handler
+        if sig == signal.SIGHUP:
+            sighup_registered.set()
+
+    with (
+        patch("taskq.worker.workgroup.load_workgroup_config", return_value=config),
+        patch("asyncio.create_subprocess_exec", side_effect=fake_exec),
+        patch("asyncio.get_running_loop") as mock_loop,
+    ):
+        mock_loop.return_value.add_signal_handler = capture_handler
+
+        from taskq.worker.workgroup import run_forever
+
+        task = asyncio.create_task(run_forever(config_path))
+        try:
+            await asyncio.wait_for(both_spawned.wait(), timeout=5.0)
+        except TimeoutError:
+            pytest.fail("run_forever did not spawn both children within 5.0s")
+        try:
+            await asyncio.wait_for(sighup_registered.wait(), timeout=5.0)
+        except TimeoutError:
+            pytest.fail(
+                "run_forever did not register its SIGHUP handler within 5.0s "
+                "(the default disposition would orphan every child)"
+            )
+
+        # Invoke the captured handler the way the loop would on a real
+        # SIGHUP. The forwarding runs as a detached task, so the wait
+        # below polls for both children's deliveries on a short deadline
+        # (the sends are synchronous once the task runs; a fixed sleep
+        # would race the forwarding under load).
+        signal_handlers[signal.SIGHUP]()
+
+        async def _both_children_hup() -> None:
+            while any(signal.SIGHUP not in p._signals for p in procs.values()):
+                await asyncio.sleep(0.01)
+
+        try:
+            await asyncio.wait_for(_both_children_hup(), timeout=5.0)
+        except TimeoutError:
+            pytest.fail("the supervisor did not forward SIGHUP to every child within 5.0s")
+
+        # The supervisor is still managing its children: it neither shut
+        # down nor raised in response to the reload signal. A short settle
+        # bounded by the test timeout: long enough for a wrong shutdown
+        # path to flip the task done, short enough to keep the test fast.
+        await asyncio.sleep(0.1)
+        assert not task.done(), (
+            "run_forever shut down in response to SIGHUP: the supervisor "
+            "orphaned every child instead of forwarding the reload"
+        )
+
+        task.cancel()
+        try:
+            await asyncio.wait_for(task, timeout=5.0)
+        except asyncio.CancelledError:
+            pass  # Why: the cancellation the test itself requested, the clean outcome.
+        except TimeoutError:
+            pytest.fail("run_forever did not tear down within 5.0s of cancellation")
+
+    for label, proc in procs.items():
+        assert signal.SIGHUP in proc._signals, f"child {label!r} did not receive SIGHUP"
+
+
+@pytest.mark.asyncio
+async def test_forward_sighup_skips_dead_and_restarting_children() -> None:
+    """Children mid-restart (process None) or already exited (reaped
+    returncode) are skipped, not signalled: the replacement child spawns
+    with current credentials anyway, and a signal into the race window
+    would be wasted churn at best.
+
+    The helper must also never raise on a child that exits between the
+    liveness check and send_signal (ProcessLookupError suppressed), which
+    the FakeProcess duck-type cannot produce; a raising helper here would
+    surface as a loop-level unretrieved-exception warning in production.
+    """
+    from taskq.worker.workgroup import _forward_sighup_to_children
+
+    alive = _make_child(_make_spec(name="alive"))
+    alive.process = _proc(FakeProcess(returncode=None))
+    dead = _make_child(_make_spec(name="dead"))
+    dead.process = _proc(FakeProcess(returncode=0))
+    absent = _make_child(_make_spec(name="absent"))
+    absent.process = None
+
+    await _forward_sighup_to_children({"alive": alive, "dead": dead, "absent": absent})
+
+    alive_proc = cast("FakeProcess", alive.process)
+    assert signal.SIGHUP in alive_proc._signals
+    dead_proc = cast("FakeProcess", dead.process)
+    assert dead_proc._signals == [], "an exited child must not be signalled"
+
+
+@pytest.mark.asyncio
 async def test_run_forever_force_update_warning() -> None:
     """A force_update_actor_config worker emits a warning at startup."""
     import structlog
@@ -2258,19 +2384,18 @@ def _worker_settings_for_grace_window():  # type: ignore[no-untyped-def]  # Why:
 
 
 def test_shutdown_grace_below_the_release_floor_warns_with_the_numbers() -> None:
-    """The workgroup's default 30s grace SIGKILLs children before a held
-    release can land: CANCELLING alone consumes the children's 30s
-    cancellation grace, so the RELEASING write never happens and every
-    interrupted job rides the lease-expiry crash path (slower, and it
-    spends the attempt the release would have refunded). The warning
-    names the floor and the clean-exit number."""
+    """A grace below the children's release floor (cancellation + cleanup
+    graces, 40s at the defaults) SIGKILLs children before a held release
+    can land: the RELEASING write never happens and every interrupted job
+    rides the lease-expiry crash path (slower, and it spends the attempt
+    the release would have refunded). The warning names the floor and the
+    clean-exit number."""
     from taskq.worker.workgroup import _warn_shutdown_grace_window
 
     settings = _worker_settings_for_grace_window()
     assert settings.cancellation_grace_period + settings.cleanup_grace_period == 40.0
 
-    scfg = SupervisorConfig()  # shutdown_grace default 30.0 < 40.0
-    assert scfg.shutdown_grace == 30.0
+    scfg = SupervisorConfig(shutdown_grace=30.0)  # below the 40s release floor
     with structlog.testing.capture_logs() as logs:
         _warn_shutdown_grace_window(scfg, settings)
 
@@ -2284,10 +2409,80 @@ def test_shutdown_grace_below_the_release_floor_warns_with_the_numbers() -> None
     assert "shutdown_grace" in entry["remedy"]
 
 
+def test_shutdown_grace_between_the_floors_warns_clean_exit_only() -> None:
+    """A grace past the release floor but below the clean-exit floor lets
+    the release land, then SIGKILLs the child's exit unwind. That state
+    gets its own warning (release floor met, clean exit not) with the
+    computed numbers, not silence and not a release-floor alarm that
+    would misread the config."""
+    from taskq.worker.workgroup import _warn_shutdown_grace_window
+
+    settings = _worker_settings_for_grace_window()
+    scfg = SupervisorConfig(shutdown_grace=45.0)  # 40s release floor met, 82s clean exit not
+    with structlog.testing.capture_logs() as logs:
+        _warn_shutdown_grace_window(scfg, settings)
+
+    entry = next(
+        log for log in logs if log["event"] == "workgroup.shutdown_grace_below_clean_exit_floor"
+    )
+    assert entry["log_level"] == "warning"
+    assert entry["shutdown_grace"] == 45.0
+    assert entry["release_floor_seconds"] == 40.0
+    assert entry["clean_exit_floor_seconds"] == settings.worst_case_shutdown_seconds
+    assert [
+        e for e in logs if e["event"] == "workgroup.shutdown_grace_below_release_floor"
+    ] == [], "the release floor is met, that alarm must not fire"
+
+
+def test_shutdown_grace_covering_the_worst_case_stays_quiet() -> None:
+    """The control: a grace at or above the clean-exit floor emits nothing:
+    a warning that fires on correct configs is noise that buries the next
+    real one."""
+    from taskq.worker.workgroup import _warn_shutdown_grace_window
+
+    settings = _worker_settings_for_grace_window()
+    scfg = SupervisorConfig(shutdown_grace=settings.worst_case_shutdown_seconds)
+    with structlog.testing.capture_logs() as logs:
+        _warn_shutdown_grace_window(scfg, settings)
+    grace_events = [e for e in logs if e["event"].startswith("workgroup.shutdown_grace_below")]
+    assert grace_events == []
+
+
+def test_default_shutdown_grace_covers_the_worker_worst_case() -> None:
+    """The shipped default must clear the worker's computed worst case
+    with margin, this pin makes shrinking it a deliberate, review-visible
+    act. 82s composes from cancellation_grace 30 + cleanup_grace 10 + the
+    bounded-close teardown tail 42 (8 sequential closes x 5s + 2s publish
+    drain); the old 30.0 default sat below even the 40s release floor,
+    which is what docs/guides/workers.md's platform-grace window called
+    out."""
+    from taskq.worker.workgroup import DEFAULT_SHUTDOWN_GRACE_SECS, worst_case_shutdown_seconds
+
+    settings = _worker_settings_for_grace_window()
+    worst = worst_case_shutdown_seconds(settings)
+    assert worst == 82.0  # 30 cancellation + 10 cleanup + 42 teardown tail
+    assert DEFAULT_SHUTDOWN_GRACE_SECS == 100.0
+    assert worst < DEFAULT_SHUTDOWN_GRACE_SECS, (
+        "the default shutdown_grace must cover the children's worst-case clean exit with margin"
+    )
+
+
+def test_worst_case_shutdown_seconds_helper_delegates_to_the_settings_model() -> None:
+    """The supervisor surface delegates to WorkerSettings' model so the
+    two cannot drift: one number, one source."""
+    from taskq.worker.workgroup import worst_case_shutdown_seconds
+
+    settings = _worker_settings_for_grace_window()
+    assert worst_case_shutdown_seconds(settings) == settings.worst_case_shutdown_seconds
+
+
 def test_shutdown_grace_at_or_above_the_release_floor_stays_quiet() -> None:
-    """The control: a grace that lets the release land (45s against the
-    40s floor) emits nothing: a warning that fires on correct configs is
-    noise that buries the next real one."""
+    """A grace past the release floor but below the clean-exit floor still
+    emits the CLEAN-exit warning (see
+    test_shutdown_grace_between_the_floors_warns_clean_exit_only); the
+    pin here is only that the RELEASE-floor alarm stays quiet: its remedy
+    text ("raise shutdown_grace so a child's held release lands") would
+    misread a config whose release already lands."""
     from taskq.worker.workgroup import _warn_shutdown_grace_window
 
     settings = _worker_settings_for_grace_window()

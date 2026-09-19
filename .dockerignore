@@ -1,0 +1,21 @@
+# Keep build context small: the image needs only pyproject.toml, uv.lock and
+# the package source (src/).
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+site
+dist
+build
+docs
+tests
+benchmarks
+validation
+examples
+scripts
+node_modules
+perf-evidence-*.md

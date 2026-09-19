@@ -11,6 +11,7 @@ section pins the bounded teardown in apply_pending_locked's ``finally``
 """
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -45,7 +46,16 @@ class _FakeMigrateConn:
         return True  # schema_migrations table exists
 
     async def fetch(self, sql: str, *args: object) -> list[dict[str, str]]:
-        return [{"version": key, "checksum": ""} for key in sorted(self._applied)]
+        # Checksums are computed over the schema-RENDERED SQL, so the
+        # stand-in must hash with the same schema the caller passed
+        # (parsed from the ledger query itself) or every applied key
+        # would look drifted under the fail-closed contract.
+        match = re.search(r'FROM "([^"]+)"\.schema_migrations', sql)
+        schema = match.group(1) if match else "taskq"
+        checksums = {m.key: m.checksum(schema) for m in migrate_mod.discover()}
+        return [
+            {"version": key, "checksum": checksums.get(key, "")} for key in sorted(self._applied)
+        ]
 
     def transaction(self) -> _FakeTx:
         return _FakeTx()

@@ -85,13 +85,14 @@ stdlib-only.
 """
 
 import asyncio
+import inspect
 import os
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple, Protocol, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, cast
 from uuid import UUID
 
 import pytest
@@ -127,6 +128,7 @@ if TYPE_CHECKING:
     import asyncpg
     from testcontainers.community.redis import RedisContainer
 
+    from taskq.actor import ActorRef
     from taskq.backend import Backend
     from taskq.backend.postgres import PostgresBackend
     from taskq.worker.deps import WorkerDeps
@@ -188,6 +190,12 @@ __all__ = [
 class ActorRunnerCallable(Protocol):
     """Protocol for the callable yielded by the ``actor_runner`` fixture.
 
+    ``actor_fn`` accepts a bare handler function or an
+    :class:`~taskq.actor.ActorRef` (the decorated handle); the runner
+    omits the ``ctx`` argument when the handler does not declare one,
+    mirroring the production dispatch decision
+    (``worker/dispatch.py`` reads ``actor_ref.wants_ctx``).
+
     ``payload`` is permissively typed: a :class:`pydantic.BaseModel`
     (typed actor payload) or a ``dict[str, object]`` / ``object`` that
     the runner wraps in a :class:`PassthroughPayload` model. The
@@ -199,7 +207,7 @@ class ActorRunnerCallable(Protocol):
 
     async def __call__(
         self,
-        actor_fn: Callable[..., object],
+        actor_fn: Callable[..., object] | ActorRef[Any, Any],
         payload: BaseModel | dict[str, object] | object,
         *,
         backend: InMemoryBackend,
@@ -234,19 +242,70 @@ async def memory_jobs() -> AsyncIterator[InMemoryBackend]:
 # ── actor_runner ────────────────────────────────────────────────────────
 
 
+def _handler_call_shape(fn: Callable[..., object]) -> tuple[bool, frozenset[str] | None]:
+    """Decide how the ``actor_runner`` fixture may call handler *fn*.
+
+    Returns ``(wants_ctx, declared_deps)``. Mirrors the real dispatch
+    decision (``worker/dispatch.py`` reads ``actor_ref.wants_ctx`` and
+    injects only the dependency parameters the handler declared):
+
+    - An :class:`~taskq.actor.ActorRef` carries the decorator's own
+      decision in ``wants_ctx`` and its declared DI surface in
+      ``dependencies``; both are read duck-typed so this module never
+      imports ``taskq.actor`` at runtime (the driver-free testing
+      boundary).
+    - A bare handler function is inspected: a parameter named ``ctx``
+      (or annotated with ``JobContext``) means the handler wants the
+      context, any other named parameter is a DI dependency the fixture
+      may fill from ``**deps``.
+    - ``declared_deps`` is ``None`` when the callable cannot be
+      inspected; the fixture then injects no DI kwargs (the historic
+      shape) instead of guessing a signature it cannot see.
+    """
+    wants_attr = getattr(fn, "wants_ctx", None)
+    if isinstance(wants_attr, bool):
+        dependencies = getattr(fn, "dependencies", None)
+        deps_map = cast("dict[str, object]", dependencies) if isinstance(dependencies, dict) else {}
+        declared: frozenset[str] = frozenset(deps_map)
+        return wants_attr, declared
+
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return True, None
+
+    wants_ctx = False
+    dep_names: set[str] = set()
+    for name, param in sig.parameters.items():
+        if name == "payload":
+            continue
+        if name == "ctx" or "JobContext" in str(param.annotation):
+            wants_ctx = True
+        elif param.kind is not param.VAR_KEYWORD:
+            dep_names.add(name)
+    return wants_ctx, frozenset(dep_names)
+
+
 @pytest.fixture
 def actor_runner() -> ActorRunnerCallable:
     """Yield a callable that constructs a synthetic ``JobContext`` and
-    calls ``actor_fn(payload, ctx)``.
+    calls ``actor_fn(payload, ctx)``, or ``actor_fn(payload)`` when the
+    handler declares no ``ctx`` parameter (a bare ``payload``-only
+    handler, or an :class:`~taskq.actor.ActorRef` whose ``wants_ctx`` is
+    false; calling a no-ctx actor with a context raises ``TypeError`` in
+    production, so the fixture must mirror that contract).
 
     Accepts ``cancel_event`` to test cancellation paths and ``**deps``
     to forward ad-hoc keyword-injected collaborators (e.g. stub HTTP
     clients or database sessions) directly to ``actor_fn`` without
-    wiring the full DI scope hierarchy.
+    wiring the full DI scope hierarchy. Only the dependency parameters
+    the handler declared are injected as keyword arguments (the same
+    selectivity as the production DI pass); the full ``deps`` mapping is
+    also available to the actor as ``ctx.deps``.
     """
 
     async def run_actor(
-        actor_fn: Callable[..., object],
+        actor_fn: Callable[..., object] | ActorRef[Any, Any],
         payload: BaseModel | dict[str, object] | object,
         *,
         backend: InMemoryBackend,
@@ -283,9 +342,15 @@ def actor_runner() -> ActorRunnerCallable:
             payload=ctx_payload,
             cancel_event=evt,
             worker_id=backend._worker_id,  # type: ignore[reportPrivateUsage]  # Why: fixture is an owned helper; _worker_id is private to InMemoryBackend but readable here for JobContext construction
+            # Why a marker for worker_pool: SubJobEnqueuer only None-checks
+            # the pool (the gate on its autonomous fallback arm, which
+            # writes through the backend and never dereferences it); the
+            # in-memory backend has no asyncpg pool, and without the
+            # marker every ctx.jobs.enqueue would raise "ctx.jobs is only
+            # available inside an actor body".
             jobs=SubJobEnqueuer(
                 loop_scope_resolved=None,
-                worker_pool=None,
+                worker_pool=object(),  # type: ignore[arg-type]  # Why: SubJobEnqueuer only None-checks the pool, it gates its autonomous fallback arm which writes through the backend and never dereferences it; the in-memory backend has no asyncpg pool.
                 backend=backend,
             ),
             log=bind_job_context(
@@ -299,7 +364,29 @@ def actor_runner() -> ActorRunnerCallable:
             ),
             deps=deps if deps else None,
         )
-        result: object = actor_fn(payload, ctx)
+
+        wants_ctx, declared_deps = _handler_call_shape(actor_fn)
+        call_deps = (
+            {name: deps[name] for name in declared_deps if name in deps}
+            if declared_deps is not None
+            else {}
+        )
+        # An ActorRef's handler declares a typed payload model, so it is
+        # handed the coerced BaseModel the production worker would pass;
+        # a bare test function keeps the historic raw-payload shape.
+        ref_like = isinstance(getattr(actor_fn, "wants_ctx", None), bool)
+        # Why the cast: the earlier payload-shape narrowing leaves the
+        # parameter's residual union partially unknown (dict[Unknown]);
+        # the fixture only needs the top type here.
+        payload_arg: object = cast("object", ctx_payload if ref_like else payload)
+        if wants_ctx:
+            # Why the ignore: an ActorRef's __call__ declares
+            # JobContext[Any] for the ctx parameter and that generic is
+            # invariant, so the fixture's JobContext[BaseModel] cannot be
+            # proven assignable even though the runtime contract is exact.
+            result: object = actor_fn(payload_arg, ctx, **call_deps)  # type: ignore[arg-type]  # Why: see comment above.
+        else:
+            result = actor_fn(payload_arg, **call_deps)
         if isinstance(result, Awaitable):
             result = await cast(Awaitable[object], result)
         return result

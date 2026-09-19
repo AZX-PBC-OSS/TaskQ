@@ -1101,6 +1101,13 @@ class JobFilter:
     # True selects every non-terminal status (still running or pending);
     # False selects only terminal statuses. See the class docstring.
     active: bool | None = None
+    # Matches jobs enqueued strictly before this instant (``created_at <
+    # created_before``). An aware datetime: the column is timestamptz, so
+    # a naive value would silently change meaning with the server's zone.
+    # A predicate, not a paging field: it counts for has_predicates() and
+    # both backends apply it (build_filter_conditions / _list_jobs), so
+    # the bulk-cancel CLI's --older-than previews exactly what it writes.
+    created_before: datetime | None = None
 
     def __post_init__(self) -> None:
         # A negative limit diverges across backends: PG raises
@@ -1157,6 +1164,7 @@ class JobFilter:
             or self.batch_id is not None
             or (self.tags is not None and len(self.tags) > 0)
             or self.active is not None
+            or self.created_before is not None
         )
 
 
