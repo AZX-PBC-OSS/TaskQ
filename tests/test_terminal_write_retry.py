@@ -26,7 +26,6 @@ from taskq.testing.in_memory import InMemoryBackend
 from taskq.worker._consumer import consume_one_job
 from taskq.worker._handlers import AttemptOutcome
 
-pytestmark = [pytest.mark.load_sensitive]
 _START = datetime(2026, 1, 1, tzinfo=UTC)
 _ACTOR = "blip_actor"
 
