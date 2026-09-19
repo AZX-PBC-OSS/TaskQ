@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-Cancellation in TaskQ is a request, not an immediate kill. When a caller invokes `JobsClient.cancel()`, the library records the request and — for jobs that are not yet running — immediately moves them to `cancelled`. For a running job, the worker must cooperate: the heartbeat loop polls Postgres on every tick, detects the cancel flag, and signals the actor via `JobContext.cancel_event`. If the actor does not exit within `cancellation_grace_period` seconds, the worker escalates by raising `asyncio.CancelledError` inside the actor task. If the actor still does not exit within the subsequent `cleanup_grace_period`, the job is marked `abandoned`. This cooperative-then-forced sequence is the three-phase cancellation protocol (`COOPERATIVE` → `FORCED` → `ABANDON_PENDING`).
+Cancellation in TaskQ is a request, not an immediate kill. When a caller invokes `JobsClient.cancel()`, the library records the request and, for jobs that are not yet running, immediately moves them to `cancelled`. For a running job, the worker must cooperate: the heartbeat loop polls Postgres on every tick, detects the cancel flag, and signals the actor via `JobContext.cancel_event`. If the actor does not exit within `cancellation_grace_period` seconds, the worker escalates by raising `asyncio.CancelledError` inside the actor task. If the actor still does not exit within the subsequent `cleanup_grace_period`, the job is marked `abandoned`. This cooperative-then-forced sequence is the three-phase cancellation protocol (`COOPERATIVE` → `FORCED` → `ABANDON_PENDING`).
 
 ---
 
@@ -120,14 +120,14 @@ async def long_running(payload: Payload, ctx: JobContext[Payload]) -> Result:
     for chunk in payload.chunks:
         if ctx.cancellation_requested:
             await cleanup()
-            return  # or raise — either exits the actor
+            return  # or raise; either exits the actor
         await process(chunk)
     return Result(...)
 ```
 
-`ctx.cancellation_requested` is `ctx.cancel_event.is_set()` — a non-blocking, non-awaited property. It is safe to check inside tight loops.
+`ctx.cancellation_requested` is `ctx.cancel_event.is_set()`: a non-blocking, non-awaited property. It is safe to check inside tight loops.
 
-Cancellation is a request, and the actor's own outcome decides the terminal state: an actor that observes the request, winds down deliberately (flush what it computed, close what it opened), and **returns** a value has *succeeded* — the result is persisted and the job records `succeeded`. An actor that abandons its unit of work signals that by **raising** `asyncio.CancelledError` (or letting it propagate); the job records `cancelled`. A cancel request that lands while the actor runs never by itself discards a completed result.
+Cancellation is a request, and the actor's own outcome decides the terminal state: an actor that observes the request, winds down deliberately (flush what it computed, close what it opened), and **returns** a value has *succeeded*: the result is persisted and the job records `succeeded`. An actor that abandons its unit of work signals that by **raising** `asyncio.CancelledError` (or letting it propagate); the job records `cancelled`. A cancel request that lands while the actor runs never by itself discards a completed result.
 
 For actors with a single long `await`, awaiting `ctx.cancel_event.wait()` directly allows the actor to wake as soon as the signal arrives:
 
@@ -149,7 +149,7 @@ If the grace period expires, `task.cancel()` raises `asyncio.CancelledError` ins
 try:
     await some_long_io()
 except asyncio.CancelledError:
-    pass  # Never do this — re-raise it
+    pass  # Never do this: re-raise it
 ```
 
 Always re-raise `asyncio.CancelledError` or let it propagate. The consumer's exception handler takes care of the terminal write.
@@ -175,11 +175,11 @@ async def exporter(payload: Payload, ctx: JobContext[Payload]) -> Result:
             await ctx.progress(data={"cursor": cursor})
             raise asyncio.CancelledError
         # An operator asked to stop this job for good: the partial result
-        # is the answer — returning it records the job succeeded.
+        # is the answer: returning it records the job succeeded.
         return Result(partial=True, rows_written=n)
 ```
 
-The read model: on `SHUTDOWN` the attempt is retried by another pod with its budget intact, so prefer to checkpoint (progress state is carried onto the released row) and raise; on `OPERATOR` the job terminalises, so a partial result you return is kept. The distinction is by origin, not by exception type — the row itself is the final arbiter, so an operator cancel that races a deploy still ends the job.
+The read model: on `SHUTDOWN` the attempt is retried by another pod with its budget intact, so prefer to checkpoint (progress state is carried onto the released row) and raise; on `OPERATOR` the job terminalises, so a partial result you return is kept. The distinction is by origin, not by exception type; the row itself is the final arbiter, so an operator cancel that races a deploy still ends the job.
 
 ---
 
@@ -211,13 +211,13 @@ After calling `cancel()`, inspect `CancelResult.cancellation_initiated` to deter
 ```python
 result = await client.cancel(job_id)
 if not result.cancellation_initiated:
-    # Job was already terminal — nothing to wait for
+    # Job was already terminal: nothing to wait for
     print(f"job was already {result.previous_status}")
 else:
     # For running jobs, wait for the worker to finish cancelling
     handle = await client.get(job_id, result_adapter=TypeAdapter(None))
     if handle is not None:
-        final_row = handle.row  # the row get() just fetched — no second backend read
+        final_row = handle.row  # the row get() just fetched; no second backend read
         # final_row.status will be "cancelled" or "abandoned" once the worker finishes
 ```
 
@@ -244,7 +244,7 @@ except JobFailed as exc:
 | Field | Type | Description |
 |---|---|---|
 | `job_id` | `UUID` | The job identifier passed to `cancel()`. |
-| `previous_status` | `JobStatus` | The job's status at the time of the first `backend.get()` call — before any write. Subject to TOCTOU: concurrent writes may have changed the status between the read and the `write_cancel_request`. |
+| `previous_status` | `JobStatus` | The job's status at the time of the first `backend.get()` call, before any write. Subject to TOCTOU: concurrent writes may have changed the status between the read and the `write_cancel_request`. |
 | `new_status` | `JobStatus` | The job's status after the cancel write, read back via a second `backend.get()`. |
 | `cancellation_initiated` | `bool` | `True` if `write_cancel_request` changed state (the job was not already terminal). `False` if the job was already in a terminal status and the request had no effect. |
 
@@ -255,7 +255,7 @@ except JobFailed as exc:
 | Status | Meaning in cancellation context |
 |---|---|
 | `cancelled` | The job was cancelled successfully via the cooperative or forced path. |
-| `abandoned` | The actor did not exit within `cancellation_grace_period + cleanup_grace_period` after an *operator's* cancel request; the worker wrote `abandoned` via `mark_abandoned`. Shutdown never produces `abandoned` — a deploy releases (interrupts) the job back to the fleet instead. |
+| `abandoned` | The actor did not exit within `cancellation_grace_period + cleanup_grace_period` after an *operator's* cancel request; the worker wrote `abandoned` via `mark_abandoned`. Shutdown never produces `abandoned`: a deploy releases (interrupts) the job back to the fleet instead. |
 | `failed` | The job failed before the cancel request was processed. A `cancel()` call on a `failed` job returns `cancellation_initiated=False`. |
 | `crashed` | The worker's lock expired and the recovery sweep reclaimed the job. The cancel request, if any, was not processed. |
 
@@ -263,18 +263,18 @@ A cancel request against a job in any terminal status (`succeeded`, `failed`, `c
 
 ### Why it stopped: the cancel-origin marker
 
-Every terminal cancel write stamps a distinguishing `error_class` on the job row — the same self-describing channel every terminal failure path uses (`DeadlineExceeded`, `WorkerCrashed`, ...). Three cancelled rows read side by side say which actor yielded, which had to be interrupted, and which never ran:
+Every terminal cancel write stamps a distinguishing `error_class` on the job row, the same self-describing channel every terminal failure path uses (`DeadlineExceeded`, `WorkerCrashed`, ...). Three cancelled rows read side by side say which actor yielded, which had to be interrupted, and which never ran:
 
 | `error_class` | Terminal write | Meaning |
 |---|---|---|
 | `CancelledCooperatively` | `mark_cancelled` at `cancel_phase = 1` | The actor observed the request while it was still being asked and stopped cleanly. |
 | `CancelledForced` | `mark_cancelled` at `cancel_phase = 2` | The actor did not yield to the request; the worker escalated and `task.cancel()` interrupted it. |
 | `CancelAbandoned` | `mark_abandoned` | The actor did not exit within both grace windows; the worker took the row away (status `abandoned`). |
-| `CancelledBeforeStart` | `write_cancel_request` / `cancel_where` on a `pending`/`scheduled` row | The job never reached a worker — no attempt exists and no actor hook ran. The bulk path stamps the same marker as the single-job path, so a mass cancellation reads identically to the same jobs cancelled one at a time. |
+| `CancelledBeforeStart` | `write_cancel_request` / `cancel_where` on a `pending`/`scheduled` row | The job never reached a worker: no attempt exists and no actor hook ran. The bulk path stamps the same marker as the single-job path, so a mass cancellation reads identically to the same jobs cancelled one at a time. |
 
-The marker also lands on the `job_attempts` row for the running-job paths (the attempt history a postmortem queries after retention reclaims the job row) and in the `state_change` event detail. A job cancelled while pending or scheduled additionally keeps its terminal `pending → cancelled` / `scheduled → cancelled` transition on the `job_events` timeline — no cancelled job has an empty timeline.
+The marker also lands on the `job_attempts` row for the running-job paths (the attempt history a postmortem queries after retention reclaims the job row) and in the `state_change` event detail. A job cancelled while pending or scheduled additionally keeps its terminal `pending → cancelled` / `scheduled → cancelled` transition on the `job_events` timeline; no cancelled job has an empty timeline.
 
-One shape carries no marker, deliberately: a worker can crash after a cancel was requested but before the protocol finished. The crash-reclaim sweep then honours the in-flight request and lands the row `cancelled` with `error_class = NULL` — none of the four markers describes that shape (the actor neither yielded nor was interrupted, the ladder never took the row, and the job did run). Read the cause off the attempt row, which says `WorkerCrashed` and names the deadline that fired, and the `state_change` event's `cause` key (`lock_expired` / `heartbeat_timeout`). A `cancelled` row with a NULL marker therefore always means "cancel was in flight when the worker died"; a `crashed` row self-describes with `WorkerCrashed` and the same deadline message on the row itself.
+One shape carries no marker, deliberately: a worker can crash after a cancel was requested but before the protocol finished. The crash-reclaim sweep then honours the in-flight request and lands the row `cancelled` with `error_class = NULL`: none of the four markers describes that shape (the actor neither yielded nor was interrupted, the ladder never took the row, and the job did run). Read the cause off the attempt row, which says `WorkerCrashed` and names the deadline that fired, and the `state_change` event's `cause` key (`lock_expired` / `heartbeat_timeout`). A `cancelled` row with a NULL marker therefore always means "cancel was in flight when the worker died"; a `crashed` row self-describes with `WorkerCrashed` and the same deadline message on the row itself.
 
 
 ---
@@ -310,7 +310,7 @@ For OTel configuration, exporter setup, and the full list of metrics and log eve
 
 ## 11. The `on_cancel` hook
 
-Work cut short mid-flight usually holds something that has to be released — an external reservation, a remote session, a caller waiting on a callback. `@actor` accepts an optional `on_cancel` callback for that cleanup, alongside `on_success` and `on_retry_exhausted`:
+Work cut short mid-flight usually holds something that has to be released: an external reservation, a remote session, a caller waiting on a callback. `@actor` accepts an optional `on_cancel` callback for that cleanup, alongside `on_success` and `on_retry_exhausted`:
 
 ```python
 from taskq import actor
@@ -321,15 +321,15 @@ from taskq.backend import JobRow
 async def provision(payload: Payload, ctx: JobContext[Payload]) -> Result: ...
 ```
 
-The hook fires when a running job ends `cancelled` — the actor observed the cancellation (cooperatively or under escalation), and the consumer's terminal write moved the row. It receives the terminal `JobRow` and nothing else: a cancelled attempt produced no result.
+The hook fires when a running job ends `cancelled`: the actor observed the cancellation (cooperatively or under escalation), and the consumer's terminal write moved the row. It receives the terminal `JobRow` and nothing else: a cancelled attempt produced no result.
 
 The contract is the same one the other lifecycle hooks carry:
 
-- **Best-effort** — a raising hook is logged and swallowed; it can never break or change the terminal write it runs beside.
-- **Timeout-bounded** — an async hook is abandoned after `on_cancel_timeout` seconds (default `3.0`, the same default the other hooks use); it can never stall the job going terminal.
-- **Ordered after the write** — the hook runs once the row is durably `cancelled`, so `job_row.status` reads `cancelled` inside it.
+- **Best-effort**: a raising hook is logged and swallowed; it can never break or change the terminal write it runs beside.
+- **Timeout-bounded**: an async hook is abandoned after `on_cancel_timeout` seconds (default `3.0`, the same default the other hooks use); it can never stall the job going terminal.
+- **Ordered after the write**: the hook runs once the row is durably `cancelled`, so `job_row.status` reads `cancelled` inside it.
 
-**Boundary: the hook cannot fire for a job cancelled before it ran.** A job cancelled while still `pending` or `scheduled` never enters a worker, so no hook of any kind can run for it — there is no attempt to clean up after. Bookkeeping on that path stays with whoever issued the cancel. This matters because the cancel an operator issues most often — on a job sitting in the queue — is exactly the one the hook cannot see; cleanup that must happen for every cancellation belongs on the caller's side of the enqueue. Tell the paths apart on the row via the [cancel-origin marker](#why-it-stopped-the-cancel-origin-marker): `CancelledBeforeStart` means no worker was ever involved.
+**Boundary: the hook cannot fire for a job cancelled before it ran.** A job cancelled while still `pending` or `scheduled` never enters a worker, so no hook of any kind can run for it, so there is no attempt to clean up after. Bookkeeping on that path stays with whoever issued the cancel. This matters because the cancel an operator issues most often, on a job sitting in the queue, is exactly the one the hook cannot see; cleanup that must happen for every cancellation belongs on the caller's side of the enqueue. Tell the paths apart on the row via the [cancel-origin marker](#why-it-stopped-the-cancel-origin-marker): `CancelledBeforeStart` means no worker was ever involved.
 
 A shutdown interruption is also not a cancel: when `ctx.cancel_origin is CancelOrigin.SHUTDOWN`, the attempt is released back to the fleet (`pending` again; the spent attempt stands, it is not refunded) rather than terminalised, so `on_cancel` does not fire. An operator cancel that races a deploy still wins the row; the job ends `cancelled` and the hook fires.
 
@@ -339,7 +339,7 @@ For in-process embedders: do not stop the worker by cancelling its loop tasks di
 
 ## See also
 
-- [actors.md](actors.md) — `JobContext` fields, `@actor` decorator (including `on_cancel`), actor lifecycle
-- [jobs-clients.md](jobs-clients.md) — `JobsClient`, `JobHandle`, `enqueue()`, `wait()`
-- [workers.md](workers.md) — heartbeat loop, `WorkerSettings`, grace period configuration
-- [retries.md](retries.md) — retry policies, `RetryAfter`, `Snooze`
+- [actors.md](actors.md): `JobContext` fields, `@actor` decorator (including `on_cancel`), actor lifecycle
+- [jobs-clients.md](jobs-clients.md): `JobsClient`, `JobHandle`, `enqueue()`, `wait()`
+- [workers.md](workers.md): heartbeat loop, `WorkerSettings`, grace period configuration
+- [retries.md](retries.md): retry policies, `RetryAfter`, `Snooze`

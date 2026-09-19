@@ -2,7 +2,7 @@
 
 The TaskQ admin UI supports optional single sign-on (SSO) via **OIDC** (primary,
 for Microsoft Entra ID and any OIDC-compliant provider) and **SAML** (for legacy
-IdPs), behind a shared abstraction. Both are purely additive — the default
+IdPs), behind a shared abstraction. Both are purely additive: the default
 (`TASKQ_SSO_BACKEND=none`) remains the unauthenticated / bring-your-own-auth
 behavior described in [admin-ui.md](admin-ui.md).
 
@@ -61,11 +61,11 @@ local `http://localhost`. In any other environment, cookies are `Secure`
 
 | Field | Type | Default | Env var |
 |---|---|---|---|
-| `issuer` | `str` | — | `TASKQ_OIDC_ISSUER` |
-| `client_id` | `str` | — | `TASKQ_OIDC_CLIENT_ID` |
-| `client_secret` | `str` | — | `TASKQ_OIDC_CLIENT_SECRET` |
-| `redirect_uri` | `str` | — | `TASKQ_OIDC_REDIRECT_URI` |
-| `session_secret` | `str` | — | `TASKQ_OIDC_SESSION_SECRET` |
+| `issuer` | `str` | n/a | `TASKQ_OIDC_ISSUER` |
+| `client_id` | `str` | n/a | `TASKQ_OIDC_CLIENT_ID` |
+| `client_secret` | `str` | n/a | `TASKQ_OIDC_CLIENT_SECRET` |
+| `redirect_uri` | `str` | n/a | `TASKQ_OIDC_REDIRECT_URI` |
+| `session_secret` | `str` | n/a | `TASKQ_OIDC_SESSION_SECRET` |
 | `session_max_age_seconds` | `int` | `28800` (8h) | `TASKQ_OIDC_SESSION_MAX_AGE_SECONDS` |
 | `scope` | `str` | `openid profile email` | `TASKQ_OIDC_SCOPE` |
 | `group_claim` | `str \| None` | `None` | `TASKQ_OIDC_GROUP_CLAIM` |
@@ -73,14 +73,14 @@ local `http://localhost`. In any other environment, cookies are `Secure`
 | `group_resolver` | `Callable \| None` | `None` | _(programmatic only)_ |
 
 `session_secret` should be at least 32 bytes of random data. Rotating it
-invalidates every outstanding session at once — no session store to flush.
+invalidates every outstanding session at once, since there is no session store to flush.
 
 ### Login flow
 
-1. **`/login`** — generates a PKCE `code_verifier` + `state`, stores both in a
+1. **`/login`**: generates a PKCE `code_verifier` + `state`, stores both in a
    short-lived signed cookie (separate from the session cookie), and redirects
    to the IdP authorization endpoint.
-2. **`/callback`** — validates `state`, exchanges the code for tokens,
+2. **`/callback`**: validates `state`, exchanges the code for tokens,
    validates the ID token (issuer, audience, signature via JWKS), extracts
    claims into `IdentityClaims`, sets the session cookie, and redirects to the
    admin UI root.
@@ -92,7 +92,7 @@ invalidates every outstanding session at once — no session store to flush.
 
 On any error during `/callback` (token exchange failure, JWKS fetch timeout,
 invalid ID token), the user is redirected with a generic
-`?error=authentication+failed` — **never** raw exception text. The full
+`?error=authentication+failed`; **never** raw exception text. The full
 exception is logged server-side.
 
 ### Discovery and JWKS caching
@@ -117,7 +117,7 @@ optional `group_resolver` callable handles this: it receives an
 `frozenset[str]` of groups, typically by calling Microsoft Graph
 `/me/memberOf`. To use it, add `Group.Read.All` to `TASKQ_OIDC_SCOPE`.
 
-A reference Graph-API resolver (using `httpx2`) ships as a documented example —
+A reference Graph-API resolver (using `httpx2`) ships as a documented example;
 it is **not** a hard dependency of `taskq[oidc]`:
 
 ```python
@@ -164,14 +164,14 @@ bundle = create_oidc_auth(config, base_path="/admin")
 
 | Field | Type | Default | Env var |
 |---|---|---|---|
-| `entity_id` | `str` | — | `TASKQ_SAML_ENTITY_ID` |
-| `acs_url` | `str` | — | `TASKQ_SAML_ACS_URL` |
-| `idp_entity_id` | `str` | — | `TASKQ_SAML_IDP_ENTITY_ID` |
-| `idp_sso_url` | `str` | — | `TASKQ_SAML_IDP_SSO_URL` |
-| `idp_x509_cert` | `str` (PEM) | — | `TASKQ_SAML_IDP_X509_CERT` |
+| `entity_id` | `str` | n/a | `TASKQ_SAML_ENTITY_ID` |
+| `acs_url` | `str` | n/a | `TASKQ_SAML_ACS_URL` |
+| `idp_entity_id` | `str` | n/a | `TASKQ_SAML_IDP_ENTITY_ID` |
+| `idp_sso_url` | `str` | n/a | `TASKQ_SAML_IDP_SSO_URL` |
+| `idp_x509_cert` | `str` (PEM) | n/a | `TASKQ_SAML_IDP_X509_CERT` |
 | `sp_x509_cert` | `str \| None` | `None` | `TASKQ_SAML_SP_X509_CERT` |
 | `sp_private_key` | `str \| None` | `None` | `TASKQ_SAML_SP_PRIVATE_KEY` |
-| `session_secret` | `str` | — | `TASKQ_SAML_SESSION_SECRET` |
+| `session_secret` | `str` | n/a | `TASKQ_SAML_SESSION_SECRET` |
 | `session_max_age_seconds` | `int` | `28800` | _(same as OIDC)_ |
 | `group_attribute` | `str \| None` | `None` | `TASKQ_SAML_GROUP_ATTRIBUTE` |
 | `allowed_groups` | `frozenset[str]` | `frozenset()` | `TASKQ_SAML_ALLOWED_GROUPS` (comma-separated) |
@@ -179,14 +179,14 @@ bundle = create_oidc_auth(config, base_path="/admin")
 
 ### Routes
 
-- **`/login`** — builds a SAML `AuthnRequest` and redirects to the IdP SSO URL.
-- **`/callback`** (POST, the ACS endpoint) — validates the signed SAML
+- **`/login`**: builds a SAML `AuthnRequest` and redirects to the IdP SSO URL.
+- **`/callback`** (POST, the ACS endpoint): validates the signed SAML
   response, requires the AuthnRequest correlation cookie set by `/login`
   (see [Session handling](#session-handling); a cookie-less callback is
   refused unless `allow_cookieless_fallback` is on), extracts the NameID +
   attributes into `IdentityClaims`, sets the session cookie, and redirects
   to the admin root.
-- **`/metadata`** (GET) — returns SP metadata XML for IdP configuration.
+- **`/metadata`** (GET): returns SP metadata XML for IdP configuration.
 - **`/logout`** (POST), requires the session-bound CSRF token; clears the
   session cookie (see [Logging out](#logging-out)).
 
@@ -200,11 +200,11 @@ bound to the system `libxmlsec1` C library at both build and runtime. As
 currently pinned, this is no longer the case on common platforms: `xmlsec`
 ships prebuilt `manylinux`/`musllinux` wheels (Linux x86_64/aarch64, both
 glibc and musl) as well as macOS and Windows wheels, each bundling its
-native dependencies internally — confirmed via `ldd` against the installed
+native dependencies internally, confirmed via `ldd` against the installed
 extension module, which links only against base glibc (`libc`, `libm`,
 `libpthread`, `librt`), nothing `libxmlsec1`/`libxml2`/`libssl`-related.
 **No system package installation is required** to install or run
-`taskq[saml]` on any of these platforms — a plain `uv add "taskq[saml]"`
+`taskq[saml]` on any of these platforms: a plain `uv add "taskq[saml]"`
 (or `pip install`) is sufficient, no Dockerfile changes needed.
 
 The one case that still needs system build dependencies is an **unsupported
@@ -219,7 +219,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ```
 
 Check which case applies to your deployment target by running
-`uv add "taskq[saml]"` (or `pip install taskq[saml]`) directly — if it
+`uv add "taskq[saml]"` (or `pip install taskq[saml]`) directly; if it
 resolves a wheel (no compilation step in the install output), no system
 packages are needed.
 
@@ -234,7 +234,7 @@ When no group field is configured (`group_claim=None` for OIDC,
 authorized. **This is the recommended configuration for Entra** regardless of
 protocol: enable **"User assignment required"** on the enterprise application
 and assign the specific users/groups who should have admin access. Entra then
-refuses to issue a token/assertion to anyone not assigned — the app never sees
+refuses to issue a token/assertion to anyone not assigned, so the app never sees
 a login attempt from an unauthorized user, no group-claim parsing is needed, and
 the group-overage edge case never comes up.
 
@@ -248,7 +248,7 @@ app-assignment concept.
 
 **Fail-closed:** if `allowed_groups` is non-empty but group membership cannot be
 determined (the claim/attribute is absent and no `group_resolver` is configured),
-the login is rejected — no session cookie is issued. The user is never silently
+the login is rejected; no session cookie is issued. The user is never silently
 authorized.
 
 ---
@@ -343,7 +343,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 ```
 
-The SAML equivalent uses `SAMLAuthConfig` and `create_saml_auth` — the wiring is
+The SAML equivalent uses `SAMLAuthConfig` and `create_saml_auth`; the wiring is
 identical. SSO sub-configs are separate `DotEnvConfig` classes with their own
 `env_prefix` (`TASKQ_OIDC_*`, `TASKQ_SAML_*`), accessed via lazy properties:
 `settings.oidc.issuer`, `settings.saml.entity_id`, etc. The env var names are
@@ -353,7 +353,7 @@ unchanged from the flat-field layout.
 
 ## Session handling
 
-Sessions are stateless signed cookies (`itsdangerous.URLSafeTimedSerializer`) —
+Sessions are stateless signed cookies (`itsdangerous.URLSafeTimedSerializer`),
 no Redis/DB dependency. The cookie payload stores only `subject`, `email`, and
 `groups` (as a sorted list). Cookie flags: `HttpOnly`, `Secure` (configurable),
 `SameSite=Lax`.
@@ -373,9 +373,9 @@ consumed by exactly one route, so it is offered on exactly one.
 The correlation cookie is the binding: the callback accepts an assertion only
 when its `InResponseTo` matches the request ID the signed cookie carries
 (python3-saml enforces the same comparison inside `process_response`), and the
-cookie is single-use — cleared on every callback outcome, and its request ID
+cookie is single-use: cleared on every callback outcome, and its request ID
 recorded as answered so a re-supplied captured copy cannot buy a second
-assertion on the process that answered it — with a 300 s TTL. Because it is
+assertion on the process that answered it, with a 300 s TTL. Because it is
 signed with `session_secret`, **any replica sharing the secret can verify
 it**: multi-replica deployments and `uvicorn --workers N` need no sticky
 sessions, and a login whose callback lands on a different process than the
@@ -383,7 +383,7 @@ one that issued it completes normally.
 
 One caveat survives that: the consumed-assertion replay record (and the
 answered-request record) are per process. A party who captured a complete ACS
-POST — cookie plus response body — can mint one additional session per
+POST (cookie plus response body) can mint one additional session per
 sibling process within the 300 s cookie window, and the records are
 capped/evictable under a flood of valid assertions. Over HTTPS that capture
 implies a compromised client, a MITM, or a TLS break, each of which already
@@ -394,7 +394,7 @@ store every replica shares, which is tracked separately.
 
 A hosted IdP's ACS POST is a genuine cross-site POST, and some browsers
 withhold even a `SameSite=None` cookie from it (third-party cookie blocking,
-privacy modes). On a default deployment such a callback is refused — the user
+privacy modes). On a default deployment such a callback is refused, so the user
 sees the standard login error and can retry from the same browser, which
 re-issues a fresh correlation cookie.
 
@@ -423,7 +423,7 @@ Two operational consequences of opting in:
   land on the same process that issued the login: put the SSO routes behind
   sticky sessions, or expect an occasional retry when the browser withholds
   the cookie *and* the callback lands on a different replica than the login.
-  This is the only configuration that needs sticky sessions — the cookie path
+  This is the only configuration that needs sticky sessions: the cookie path
   above works on any replica.
 - The record is capped (10,000 entries, soonest-to-expire eviction) and
   `/login` is unauthenticated, so a flood of login starts can evict a real
@@ -433,13 +433,13 @@ Two operational consequences of opting in:
 ### Why OIDC does not have this fallback
 
 The OIDC callback is a top-level GET redirect, which browsers allow
-`SameSite=Lax` cookies on — the state cookie (carrying `state`, the PKCE
+`SameSite=Lax` cookies on: the state cookie (carrying `state`, the PKCE
 `code_verifier`, and the `nonce` in one signed cookie) arrives where the SAML
 correlation cookie does not, because the ACS POST is not a safe-method
 navigation. PKCE also makes a cookie-less OIDC callback structurally unable
 to complete: without the `code_verifier` from the cookie there is no token
 exchange at all, and the nonce binds the ID token to the login that started
-it. OIDC therefore took the stateless-no-fallback tradeoff — a browser that
+it. OIDC therefore took the stateless-no-fallback tradeoff: a browser that
 loses the state cookie simply cannot log in, and has neither the
 cross-replica dependency nor the cookie-less acceptance shape.
 
@@ -490,9 +490,9 @@ app.include_router(
 
 The dependency uses `hmac.compare_digest` for timing-safe comparison and
 raises `HTTPException(401)` on missing or mismatched tokens. Passing an empty
-string to `token_auth()` raises `ValueError` — an empty token is never
+string to `token_auth()` raises `ValueError`; an empty token is never
 accepted.
 
 When using `taskq ui serve`, set `TASKQ_HEALTH_TOKEN` instead of wiring
-`token_auth` manually — the CLI applies it to health and metrics routes
+`token_auth` manually; the CLI applies it to health and metrics routes
 automatically (see [admin-ui.md](admin-ui.md#protecting-health-endpoints-with-a-bearer-token)).

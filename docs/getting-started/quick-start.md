@@ -9,7 +9,7 @@ This guide walks from a fresh install to a running worker dispatching its first 
 - Python 3.12 or later
 - `uv` or `pip` for package management
 - Postgres 18 (the bundled Docker Compose pins the `postgres:18` image)
-- Redis (optional — required only for real-time progress fanout and admin UI live updates)
+- Redis (optional; required only for real-time progress fanout and admin UI live updates)
 
 ---
 
@@ -47,7 +47,7 @@ Services started:
 |---------|------|-------|
 | `postgres` | 5432 | Postgres with `max_connections=200`, `shared_buffers=256MB` |
 | `redis` | 6379 | Redis without persistence (`appendonly no`) |
-| `admin` | 8080 | TaskQ admin UI — runs `taskq ui serve --migrate` on startup |
+| `admin` | 8080 | TaskQ admin UI (runs `taskq ui serve --migrate` on startup) on startup |
 
 The `admin` service runs `taskq ui serve --migrate` which applies pending migrations before starting the UI. When using the full compose stack you do not need to run migrations manually.
 
@@ -67,7 +67,7 @@ Copy the example env file and adjust as needed:
 cp .env.example .env
 ```
 
-No env var is strictly required — `TASKQ_PG_DSN` defaults to `postgresql://taskq:taskq@localhost:5432/taskq`. For any real deployment, set it to your actual database.
+No env var is strictly required: `TASKQ_PG_DSN` defaults to `postgresql://taskq:taskq@localhost:5432/taskq`. For any real deployment, set it to your actual database.
 
 ```dotenv
 # Direct PG DSN: sessions, LISTEN/NOTIFY, and advisory locks require this.
@@ -97,7 +97,7 @@ Apply all pending migrations before starting a worker:
 taskq migrate up
 ```
 
-The command is idempotent — re-running against an up-to-date schema is a no-op. To inspect applied and pending migrations without making changes:
+The command is idempotent: re-running against an up-to-date schema is a no-op. To inspect applied and pending migrations without making changes:
 
 ```bash
 taskq migrate status
@@ -109,7 +109,7 @@ Alternatively, set `TASKQ_MIGRATE_ON_START=true` to have the admin UI apply migr
 
 ## Define your first actor
 
-An actor is a function decorated with `@actor`. Both `async def` and plain `def` are supported — sync functions run in a thread via `asyncio.to_thread()` to avoid blocking the event loop. The payload and result must be `pydantic.BaseModel` subclasses. `@actor` can be applied bare or with keyword arguments:
+An actor is a function decorated with `@actor`. Both `async def` and plain `def` are supported; sync functions run in a thread via `asyncio.to_thread()` to avoid blocking the event loop. The payload and result must be `pydantic.BaseModel` subclasses. `@actor` can be applied bare or with keyword arguments:
 
 ```python
 # myapp/actors.py
@@ -143,7 +143,7 @@ async def send_email(payload: SendEmailPayload) -> SendEmailResult:
 
 The `@actor` decorator validates the signature at import time. It rejects unannotated parameters and payload types that are not `BaseModel` subclasses. Both `async def` and `def` are accepted.
 
-**Sync actors** run via `asyncio.to_thread()` — the event loop is never blocked. Cancellation for sync actors is cooperative: poll `ctx.should_abort()` in long-running loops. LOOP-scoped DI dependencies (e.g. `asyncpg.Connection`) are not thread-safe and should not be used by sync actors; the worker logs a warning at startup validation when a sync actor declares one. See [Actor API: Sync actors](../guides/actors.md#sync-actors) for details.
+**Sync actors** run via `asyncio.to_thread()`, so the event loop is never blocked. Cancellation for sync actors is cooperative: poll `ctx.should_abort()` in long-running loops. LOOP-scoped DI dependencies (e.g. `asyncpg.Connection`) are not thread-safe and should not be used by sync actors; the worker logs a warning at startup validation when a sync actor declares one. See [Actor API: Sync actors](../guides/actors.md#sync-actors) for details.
 
 **Tags** can be attached at enqueue time for filtering and categorization:
 
@@ -163,7 +163,7 @@ See [Actor API](../guides/actors.md) for the full decorator reference: queue ass
 
 ## Register actors and start a worker
 
-The worker needs a reference to your actor registry. The `--actors` flag takes a `module:attribute` import path. The attribute must resolve to a `Mapping[str, ActorRef]` or a `list`/`tuple` of `ActorRef` objects. Generators are not accepted — they are exhausted during type-checking and cannot be iterated again for dispatch.
+The worker needs a reference to your actor registry. The `--actors` flag takes a `module:attribute` import path. The attribute must resolve to a `Mapping[str, ActorRef]` or a `list`/`tuple` of `ActorRef` objects. Generators are not accepted: they are exhausted during type-checking and cannot be iterated again for dispatch.
 
 Define a registry in your actors module:
 
@@ -208,7 +208,7 @@ See [Worker](../guides/workers.md) for pool sizing, heartbeat configuration, and
 
 ## Enqueue a job
 
-`JobsClient` is the public API for enqueuing jobs. It wraps a `Backend` instance. For demos and tests, use `InMemoryBackend` — it is in-process only and not persistent. For production enqueue from application code outside the worker, see [Client API](../guides/jobs-clients.md) for the production pattern.
+`JobsClient` is the public API for enqueuing jobs. It wraps a `Backend` instance. For demos and tests, use `InMemoryBackend`, which is in-process only and not persistent. For production enqueue from application code outside the worker, see [Client API](../guides/jobs-clients.md) for the production pattern.
 
 **For tests and local demos:**
 
@@ -234,7 +234,7 @@ async def demo() -> None:
     print(handle.was_existing)  # False for a fresh enqueue
 ```
 
-`InMemoryBackend` is for tests and demos only — it holds state in-process and does not persist across restarts.
+`InMemoryBackend` is for tests and demos only: it holds state in-process and does not persist across restarts.
 
 **In production application code** (e.g., a FastAPI route that enqueues a job):
 
@@ -253,9 +253,9 @@ print(result.message_id)  # SendEmailResult.message_id
 
 `wait()` raises:
 
-- `JobFailed` — the job reached a non-success terminal state (`failed`, `cancelled`, `crashed`, or `abandoned`); the raw job row is attached as `exc.row`.
-- `ResultUnavailable` — the job succeeded but no result was stored (e.g., result TTL expired, or the actor returned `None` while `R` is non-`None`).
-- `TimeoutError` — `timeout` elapsed before any terminal transition was observed.
+- `JobFailed`: the job reached a non-success terminal state (`failed`, `cancelled`, `crashed`, or `abandoned`); the raw job row is attached as `exc.row`.
+- `ResultUnavailable`: the job succeeded but no result was stored (e.g., result TTL expired, or the actor returned `None` while `R` is non-`None`).
+- `TimeoutError`: `timeout` elapsed before any terminal transition was observed.
 
 ---
 

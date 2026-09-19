@@ -2,7 +2,7 @@
 
 TaskQ ships a dedicated `taskq.testing` package with deterministic fakes,
 pytest fixtures, OTel helpers, chaos wrappers, and assertion utilities.
-Unit tests run against `InMemoryBackend` with a `FakeClock` — no Postgres,
+Unit tests run against `InMemoryBackend` with a `FakeClock`: no Postgres,
 no Redis, no sleeping. Integration tests use `testcontainers` to spin up real
 Postgres 18 and Dragonfly (Redis-compatible) containers.
 
@@ -42,7 +42,7 @@ clock = FakeClock(start=datetime.now(timezone.utc))
 backend = InMemoryBackend(clock=clock)
 ```
 
-Two `InMemoryBackend` instances in the same process are fully isolated — all
+Two `InMemoryBackend` instances in the same process are fully isolated;
 state is per-instance, never module-level. Single-threaded by contract: do
 not share across threads or event loops.
 
@@ -96,7 +96,7 @@ async def test_double_value() -> None:
 Pass the `ActorRef` itself (not `double_value.name`) so the runner can see
 the actor's declared contract: when `payload_type` is omitted it is
 auto-resolved from the ref, and `run_until_drained` validates every payload
-against the real model before invoking the stub — the same validation a
+against the real model before invoking the stub, the same validation a
 production worker runs on every dispatch. A payload the actor's model would
 reject fails the job in-memory exactly as it would in production, so a
 payload-schema change cannot pass the in-memory suite by accident.
@@ -179,7 +179,7 @@ clock.monotonic()  # → elapsed seconds since an internal epoch (always non-zer
 ```
 
 `advance(delta)` adds `delta` to the clock; `move_to(when)` sets it to an
-absolute instant. Backward steps are safe — elapsed-time guards clamp to zero.
+absolute instant. Backward steps are safe; elapsed-time guards clamp to zero.
 `monotonic()` returns elapsed seconds from a fixed epoch so duration guards
 see a plausible non-zero starting value.
 
@@ -211,7 +211,7 @@ await backend.run_until_drained()
     `run_until_drained` raises `RuntimeError` if it dispatches a job whose
     actor has no registered stub. Register stubs with `backend.register_stub()`
     before calling it. It also raises `RuntimeError` when the drain would
-    otherwise end beside work that can never be dispatched — a pending or
+    otherwise end beside work that can never be dispatched,
     scheduled job whose actor has no registered stub *or* actor config at
     all gets zero dispatch capacity, so without the raise the job would sit
     `pending` forever while the drain reported success (and a caller in
@@ -220,7 +220,7 @@ await backend.run_until_drained()
 
 When the clock is a `FakeClock`, the loop auto-advances through snoozes and
 scheduled jobs so a single call drains the entire queue. With a real clock
-(non-test) the loop returns instead of advancing — `run_until_drained` is
+(non-test) the loop returns instead of advancing: `run_until_drained` is
 intended for tests only.
 
 !!! note "Batch-policy simulation"
@@ -229,7 +229,7 @@ intended for tests only.
     identically to production. A batch enqueued with
     `failure_policy=AbortBatchAfter(...)` will have its consecutive-failure
     counter incremented, threshold checked, and remaining jobs cancelled on
-    abort — all within the in-memory runner, no Postgres required.
+    abort, all within the in-memory runner, no Postgres required.
 
 ---
 
@@ -254,7 +254,7 @@ async def test_with_memory_jobs(memory_jobs: InMemoryBackend) -> None:
 ```
 
 (A bare-name stub like this still runs, but emits `StubPayloadTypeWarning`
-because the runner cannot see a declared payload model for it — pass the
+because the runner cannot see a declared payload model for it: pass the
 `ActorRef` or `payload_type=` as described in "Registering actor stubs" to
 validate payloads for real.)
 
@@ -273,7 +273,7 @@ use them):
 | `clean_jobs_app` | function | `JobsApp` | Truncate + re-seed, then open `WorkerDeps` + backend. |
 | `worker_with_running_job` | function | `(worker_id, job_id, conn)` | Pre-created worker + running job on `clean_pg_conn`. |
 | `redis_container` | session | `RedisContainer` | Dragonfly v1.39.0 (Redis-compatible wire protocol), started with `--dbnum 1024 --proactor_threads 2 --maxmemory 512mb`. |
-| `killable_redis_container` | function | `RedisContainer` | Own Dragonfly container per test — for chaos tests that stop/restart Redis. Never stop the session container. |
+| `killable_redis_container` | function | `RedisContainer` | Own Dragonfly container per test, for chaos tests that stop/restart Redis. Never stop the session container. |
 | `redis_url` | function | `str` | Per-test URL with a UNIQUE, never-reused logical DB (1-1023) allocated from the invocation's file-backed monotonic counter (unique across all xdist workers). DB 0 is reserved. |
 | `module_redis_url` | module | `str` | Unique Redis DB (1-1023) per module. `FLUSHDB` at setup AND on teardown. |
 | `clean_redis_url` | function | `str` | `FLUSHDB` before each test. |
@@ -283,7 +283,7 @@ use them):
 `redis_url_for(container, db)` is a published helper (not a fixture) that
 builds a `redis://host:port/{db}` URL for any container.
 
-The PG fixtures above request a `pg_dsn` fixture **by name** — it is part of
+The PG fixtures above request a `pg_dsn` fixture **by name**; it is part of
 the contract but is deliberately NOT published (how you provision Postgres is
 your call). Consumer contract for defining your own:
 
@@ -303,7 +303,7 @@ created them, so module-scoped fixtures and the tests consuming them must
 share one loop per module.
 
 For reference, TaskQ's OWN suite (`tests/conftest.py`) defines these
-additional fixtures — they are repo-private, not published:
+additional fixtures: they are repo-private, not published:
 
 | Fixture | Scope | Yields | Notes |
 |---|---|---|---|
@@ -322,7 +322,7 @@ async def test_pg_backend(clean_jobs_app: JobsApp) -> None:
     ...
 ```
 
-`JobsApp` is a named tuple — access fields as `jobs_app.deps` and
+`JobsApp` is a named tuple: access fields as `jobs_app.deps` and
 `jobs_app.backend` rather than unpacking.
 
 ### Health-socket isolation under xdist
@@ -413,8 +413,8 @@ Metric query helpers:
 `taskq.testing.otel` exports two `autouse` pytest fixtures imported into
 `conftest.py`:
 
-- `_otel_enabled_guard` — snapshots and restores `_otel_enabled` around each test.
-- `_logging_configured_guard` — resets structlog configuration and removes
+- `_otel_enabled_guard`: snapshots and restores `_otel_enabled` around each test.
+- `_logging_configured_guard`: resets structlog configuration and removes
   `ProcessorFormatter` handlers around each test.
 
 These run automatically for any test that imports from `taskq.testing.otel`.
@@ -499,7 +499,7 @@ assert_has_otel_event(
 |---|---|
 | `wait_for(event, timeout=2.0)` | Wait for an `asyncio.Event` with test-failure semantics on timeout. |
 | `wait_for_leader(deps, timeout=5.0)` | Wait for the leader event on `WorkerDeps`. |
-| `pg_now(conn)` | Return PG's `clock_timestamp()` — use instead of `datetime.now(UTC)` for cutoffs compared against SQL-written rows. |
+| `pg_now(conn)` | Return PG's `clock_timestamp()`: use instead of `datetime.now(UTC)` for cutoffs compared against SQL-written rows. |
 | `plain_cli_output(output)` | Strip ANSI escapes and collapse whitespace for stable CLI-output assertions. |
 
 ---
@@ -558,7 +558,7 @@ finally:
 ```
 
 `ChaosException` carries the `call_number` for debugging. It does not swallow
-`CancelledError` — that propagates naturally from the wrapped connection.
+`CancelledError`, which propagates naturally from the wrapped connection.
 
 ### Shortened timing for chaos tests
 
@@ -579,7 +579,7 @@ with shorten_chaos_settings(deps_a, deps_b):
 
 TaskQ uses [Hypothesis](https://hypothesis.readthedocs.io/) extensively for
 invariant testing. Property tests run against `InMemoryBackend` with a
-`FakeClock` — Hypothesis controls backend lifecycle, and PG requires
+`FakeClock`: Hypothesis controls backend lifecycle, and PG requires
 testcontainers so it cannot be reset between examples.
 
 The pattern: build a strategy of operations, drive the backend, and assert a
@@ -650,7 +650,7 @@ async def test_snooze_deterministic_outcome(
 
 Tips for TaskQ property tests:
 
-- Use `@settings(max_examples=200, deadline=None)` — async tests and PG
+- Use `@settings(max_examples=200, deadline=None)`: async tests and PG
   latency make Hypothesis's default deadline flaky.
 - Use `allow_nan=False, allow_infinity=False` on `st.floats` to avoid
   timedelta edge cases.
@@ -680,7 +680,7 @@ uv run pytest -m integration
 ### Testcontainers setup
 
 The session-scoped `pg_container` and `redis_container` fixtures boot
-Postgres 18 and Dragonfly (Redis-compatible) once per pytest invocation —
+Postgres 18 and Dragonfly (Redis-compatible) once per pytest invocation,
 one pair shared by every xdist worker of that invocation, and visible to no
 other invocation (of this repo or any other):
 
@@ -740,7 +740,7 @@ settings = make_integration_settings(pg_dsn, schema_name="tq_test")
 `_open_two_pg_workers` (in `taskq.testing.fixtures`) opens two independent
 `WorkerDeps` + `PostgresBackend` instances against the same schema for
 two-pod leader-election and chaos-kill tests. It does not start the leader
-loops — callers construct `MaintenanceLeader` themselves with different
+loops; callers construct `MaintenanceLeader` themselves with different
 initial states.
 
 ### xdist isolation
@@ -760,8 +760,8 @@ connection pressure of such a split.
 
 ## See also
 
-- [Actors: testing actors without a database](actors.md#testing-actors-without-a-database) — `InMemoryBackend` + direct invocation
-- [Rate Limiting: testing rate limits](rate-limiting.md#testing-rate-limits) — `backend="memory"` + `FakeClock`
-- [Observability: testing observability](observability.md#6-testing-observability) — `setup_tracer`, `setup_meter`, trace-context propagation
-- [API Reference: Testing](../api-reference/testing.md) — full `taskq.testing` API surface
-- [Workers](workers.md) — worker lifecycle, `WorkerDeps`, maintenance leader
+- [Actors: testing actors without a database](actors.md#testing-actors-without-a-database): `InMemoryBackend` + direct invocation
+- [Rate Limiting: testing rate limits](rate-limiting.md#testing-rate-limits): `backend="memory"` + `FakeClock`
+- [Observability: testing observability](observability.md#6-testing-observability): `setup_tracer`, `setup_meter`, trace-context propagation
+- [API Reference: Testing](../api-reference/testing.md): full `taskq.testing` API surface
+- [Workers](workers.md): worker lifecycle, `WorkerDeps`, maintenance leader
