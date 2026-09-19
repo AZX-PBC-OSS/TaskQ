@@ -208,11 +208,28 @@ def _install_default_chain() -> None:
     application configuring structlog itself after importing taskq
     overrides this one the same way).
 
+    The default is installed ONLY when structlog is still unconfigured:
+    an application that ran its own ``structlog.configure`` before
+    importing taskq keeps its chain untouched, because ``configure``
+    replaces the process-global config and silently stealing it would be
+    an import side effect with no fix except reconfiguring. Note the
+    contract for the never-configured app: pre-setup records render as
+    JSON through stdlib logging (root-level filtered, the application's
+    own handlers), not plain-text stdout, which is the cost fix AND the
+    output change on purpose.
+
     ``cache_logger_on_first_use`` stays False: a logger materialized
     before :func:`setup_logging` runs must re-resolve per call and pick
     the configured chain up, never stay pinned to this pre-config one.
     """
     from taskq._json import structlog_serializer
+
+    if structlog.is_configured():
+        # The application owns the global chain already (it configured
+        # structlog before importing taskq): installing ours would
+        # silently replace it at import time. setup_logging reconfigures
+        # wholesale when the application asks for ours explicitly.
+        return
 
     structlog.configure(
         processors=[

@@ -622,6 +622,10 @@ def test_default_chain_drops_below_level_before_processors(
         return real_merge(logger, method, event_dict)
 
     monkeypatch.setattr(structlog.contextvars, "merge_contextvars", spy)
+    # The guard's reset wiped the import-time install, and the reinstall
+    # above configured the chain again: reset once more so this install
+    # simulates the import-time state (structlog unconfigured).
+    structlog.reset_defaults()
     structlog_mod._install_default_chain()
 
     logging.root.setLevel(logging.WARNING)
