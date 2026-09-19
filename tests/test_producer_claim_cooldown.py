@@ -46,7 +46,7 @@ class _WakeBackend:
         self.wake = asyncio.Event()
         self.round_gate: asyncio.Event | None = None
 
-    def subscribe_wake(self) -> _WakeSubscription:
+    def subscribe_wake(self, queues: object = None) -> _WakeSubscription:
         return _WakeSubscription(self.wake)
 
     async def dispatch_batch(
