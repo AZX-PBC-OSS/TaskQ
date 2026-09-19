@@ -1210,7 +1210,17 @@ async def prune_audit_schema(pg_dsn: str) -> Any:
         await conn.copy_records_to_table(
             "jobs_archive", schema_name=schema, columns=archive_cols, records=archive
         )
-        for table in ("jobs", "jobs_archive"):
+        # jobs gets VACUUM (ANALYZE), matching the audit_schema discipline
+        # above: a production jobs table is constantly vacuumed, so the
+        # planner's stats AND the visibility map are the cost model these
+        # pins are evaluated at. Bare ANALYZE updates the stats but leaves
+        # the COPY-loaded pages' visibility bits unset, which forces every
+        # candidate plan into heap-fetching scans and misprices the
+        # archive candidate's index-only shape (the plan choice then flips
+        # on nothing but the seed's noise). The sibling tables keep bare
+        # ANALYZE: their pins do not depend on the visibility map.
+        await conn.execute(f'VACUUM (ANALYZE) "{schema}".jobs')
+        for table in ("jobs_archive", "job_attempts"):
             await conn.execute(f'ANALYZE "{schema}".{table}')
         yield schema
     finally:
