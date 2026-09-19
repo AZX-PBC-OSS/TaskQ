@@ -57,6 +57,7 @@ from taskq.backend.postgres import PostgresBackend
 from taskq.migrate import apply_pending
 from taskq.settings import WorkerSettings
 from taskq.testing.settings import make_integration_settings
+from tests.conftest import interpreter_is_traced
 
 pytestmark = pytest.mark.integration
 
@@ -161,6 +162,8 @@ async def _seed_running(
 
 @pytest.mark.load_sensitive
 async def test_full_fleet_geometry_saturates_without_livelock(pg_dsn: str) -> None:
+    if interpreter_is_traced():
+        pytest.skip("the saturation budgets measure the tracer, not the code")
     """max_concurrency=2, every pool at its true default size, all four
     dimensions loaded concurrently: both slots hold slot conns across
     their worker-pool terminal writes, the heartbeat tick runs, and the

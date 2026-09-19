@@ -909,3 +909,22 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             continue
         group = f"e2e-{item.path.stem}" if is_e2e else item.path.stem
         item.add_marker(pytest.mark.xdist_group(name=group))
+
+
+def interpreter_is_traced() -> bool:
+    """True when a coverage tool instruments the interpreter right now.
+
+    The coverage lane runs the whole suite unfiltered (the coverage floor
+    counts every family's lines), so timing-sensitive pins execute there
+    under tracing, where a measurement's cost is the tracer's, not the
+    code's. Such pins skip their measurement when this is True and hold
+    it on the untraced lanes (their own serial lane and dev runs).
+    """
+    import sys
+
+    if sys.gettrace() is not None:
+        return True
+    monitoring = getattr(sys, "monitoring", None)
+    if monitoring is None:
+        return False
+    return any(monitoring.get_tool(i) is not None for i in range(6))

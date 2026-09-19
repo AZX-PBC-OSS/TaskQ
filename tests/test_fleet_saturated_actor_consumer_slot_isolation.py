@@ -81,6 +81,7 @@ from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.worker._consumer import consume_one_job
 from tests._fleet import Fleet, FleetPayload, fleet_actor_config, open_fleet
+from tests.conftest import interpreter_is_traced
 
 pytestmark = [pytest.mark.integration, pytest.mark.load_sensitive]
 
@@ -237,6 +238,8 @@ async def _drain_healthy_actor_throughput(
 
 @pytest.mark.slow
 async def test_saturated_actor_does_not_reduce_healthy_actor_throughput(pg_dsn: str) -> None:
+    if interpreter_is_traced():
+        pytest.skip("the throughput bounds measure the tracer, not the code")
     """A co-located actor stuck on an exhausted reservation must not
     measurably slow a healthy actor sharing its worker's consumer pool.
 
