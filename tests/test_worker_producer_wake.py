@@ -45,6 +45,7 @@ from taskq.testing.assertions import wait_for_condition
 from taskq.testing.clock import FakeClock
 from taskq.testing.jobs import make_job_row
 from taskq.worker import run as run_mod
+from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.run import (
     _POLL_JITTER_FRACTION,
     _SLOT_REFILL_POLL_SECONDS,
@@ -308,9 +309,15 @@ async def test_di_consumer_loop_signals_slot_release_when_it_takes_a_job() -> No
     await asyncio.wait_for(
         di_consumer_loop(
             # The loop reads the DRAINING signal off deps on every
-            # iteration (the consumer stop-pulling gate); the rest of deps
-            # is unused on the actor-not-found path.
-            SimpleNamespace(producer_stop_event=asyncio.Event()),  # type: ignore[arg-type]  # Why: minimal stand-in carrying the one field the loop's gate reads; the signature still requires the full WorkerDeps.
+            # iteration (the consumer stop-pulling gate) and records the
+            # claim intent on active_jobs at the take, resolving it on the
+            # actor-not-found release; the rest of deps is unused here.
+            SimpleNamespace(
+                producer_stop_event=asyncio.Event(),
+                active_jobs=ActiveJobRegistry(),
+                disowned_jobs=set(),
+                drain_failures=0,
+            ),  # type: ignore[arg-type]  # Why: minimal stand-in carrying the fields the loop reads on this path; the signature still requires the full WorkerDeps.
             local_queue,
             shutdown_event,
             backend=cast(Backend, _SnoozingBackend()),  # type: ignore[arg-type]  # Why: structural stand-in satisfying the mark_snoozed call the loop makes.

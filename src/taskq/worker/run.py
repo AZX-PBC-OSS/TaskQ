@@ -601,6 +601,12 @@ async def consumer_loop_stub(
 
         job: JobRow = q_get.result()
 
+        # Record the claim intent BEFORE any await: between this take and
+        # register() the DB row is running, locked here, and invisible to
+        # active_jobs, and a hand-back pass running in that window would
+        # re-pend it to the fleet while this loop is about to execute it.
+        deps.active_jobs.mark_claimed(job.id)
+
         # Slot-release point #1 of 2: the get() above dropped
         # qsize by one, so a producer held up on queue capacity can
         # claim again, wake it now. Point #2 is the deregister at the
@@ -678,6 +684,7 @@ async def consumer_loop_stub(
                 _consumer_log.exception("consumer-stub-error", job_id=str(job.id))
 
             finally:
+                deps.active_jobs.resolve_claim(job.id)
                 await deps.active_jobs.deregister(job.id)
                 # Slot-release point #2: the producer's
                 # availability subtracts active jobs, so this slot
@@ -766,6 +773,12 @@ async def di_consumer_loop(
 
         job: JobRow = q_get.result()
 
+        # Record the claim intent BEFORE any await: between this take and
+        # register() the DB row is running, locked here, and invisible to
+        # active_jobs, and a hand-back pass running in that window would
+        # re-pend it to the fleet while this loop is about to execute it.
+        deps.active_jobs.mark_claimed(job.id)
+
         # Slot-release point #1 of 2: the get() above dropped
         # qsize by one, so a producer held up on queue capacity can
         # claim again, wake it now. Point #2 is the finally around
@@ -836,6 +849,10 @@ async def di_consumer_loop(
                         job_id=str(job.id),
                         actor=job.actor,
                     )
+            # This exit path bypasses the dispatch finally below: drop the
+            # claim intent here, or a stale id would fence a future claim
+            # of the same row out of every hand-back pass.
+            deps.active_jobs.resolve_claim(job.id)
             continue
 
         actor_ref = actor_registry[job.actor]
@@ -872,6 +889,13 @@ async def di_consumer_loop(
             _consumer_log.exception("dispatch-failed", job_id=str(job.id))
             deps.drain_failures += 1
         finally:
+            # The claim intent's life ends here on every path: register()
+            # absorbed it when the job ran, and every non-running path
+            # (skip, release, acquire failure, error) is past the window
+            # the intent exists to fence. Resolving in the loop's own
+            # finally cannot straddle a drain: the row is no longer
+            # running-and-unowned by the time this runs.
+            deps.active_jobs.resolve_claim(job.id)
             # Slot-release point #2: the producer's availability
             # subtracts active jobs, so the slot this job held frees at
             # the deregister dispatch_one_job's own finally has run by

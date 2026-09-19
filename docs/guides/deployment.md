@@ -242,7 +242,7 @@ spec:
     spec:
       terminationGracePeriodSeconds: 120
       initContainers:
-        # `--phase pre` is load-bearing: the init container runs on every new
+        # `--phase pre` is essential to the invariant: the init container runs on every new
         # pod DURING the rolling update, while old pods still serve. A bare
         # `migrate up` would also apply `post`-phase migrations, which remove
         # structures the old release still needs — breaking the old pods'

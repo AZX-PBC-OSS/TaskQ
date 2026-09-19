@@ -688,7 +688,19 @@ async def isolate_self(
     jobs_lost_race_count = 0
 
     try:
-        conn = await asyncpg.connect(pg_dsn, timeout=5.0)  # pyright: ignore[reportCallIssue, reportUnknownVariableType]  # Why: asyncpg-stubs does not declare timeout kwarg on connect(); the parameter exists at runtime at 0.31.0.  asyncpg default is 60s, far too long when PG is already problematic.
+        # command_timeout, not just the connect timeout: the connect budget
+        # bounds the handshake only, and every statement inside _inner() would
+        # otherwise block on the socket read for asyncpg's default 60s each,
+        # against the browned-out PG (accepts connections, answers slowly)
+        # that a heartbeat-failure cascade produces. The isolate must finish
+        # or give up promptly either way: shutdown.set() in the finally is
+        # what ends the worker, and an unbounded transaction park would turn
+        # the graceful-walk-away path into the watchdog's force exit.
+        conn = await asyncpg.connect(
+            pg_dsn,
+            timeout=5.0,  # pyright: ignore[reportCallIssue]  # Why: asyncpg-stubs does not declare timeout kwarg on connect(); the parameter exists at runtime at 0.31.0.
+            command_timeout=deps.settings.dispatcher_command_timeout,
+        )
         try:
 
             async def _inner() -> tuple[int, int, int, int]:

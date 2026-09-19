@@ -488,8 +488,8 @@ flag) and the same `max_pending` cap. A schedule whose actor is blocked is
 A suppressed slot advances `next_fire_at` and nothing else: no `last_fired_at` stamp
 (nothing fired), no `last_fire_error` write, and no `consecutive_failures` change in
 either direction. Suppression says nothing about the schedule's health — the actor is
-merely busy — so it must neither punish nor amnesty. The classification is
-load-bearing: a collision routed into the failure path instead would strike the
+merely busy — so it must neither punish nor amnesty. The classification
+is essential to the invariant: a collision routed into the failure path instead would strike the
 schedule, and three consecutive collisions (the default
 `TASKQ_CRON_AUTO_DISABLE_THRESHOLD`) would permanently auto-disable a healthy, busy
 actor's own schedule. The failure path stays reserved for genuine defects — payload

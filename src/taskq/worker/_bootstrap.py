@@ -2212,6 +2212,16 @@ async def _main(
                         # event too, so its deadline trip arms and bounds the
                         # whole exit exactly as on the signal path.
                         shutdown_event.set()
+                        # Stamp the shutdown start HERE, synchronously: the
+                        # watchdog's own stamping is asynchronous (its task
+                        # wakes through asyncio.wait hops and can lose the
+                        # race to this finally on a group whose siblings are
+                        # already dead). Without the stamp, the tracked-actor
+                        # reap gate below reads None and skips its wait,
+                        # falling back to the unbounded executor join the
+                        # gate exists to prevent. Idempotent against the
+                        # watchdog's own conditional stamp.
+                        _stamp_shutdown_started(asyncio.get_running_loop().time())
                         raise
             finally:
                 # The order here matters, and every statement must be

@@ -53,9 +53,17 @@ async def _mark_jobs_running(
     deps: WorkerDeps,
     job_ids: list[UUID],
     worker_id: UUID,
+    *,
+    cancel_phase: int = 1,
 ) -> None:
-    """Set job rows to status='running', locked_by_worker, started_at, and cancel_phase=1 for shutdown testing.
-    Also inserts the worker_id into the workers table so foreign key constraints on job_attempts are satisfied."""
+    """Set job rows to status='running', locked_by_worker, started_at, and cancel_phase for shutdown testing.
+
+    Also inserts the worker_id into the workers table so foreign key constraints on job_attempts are satisfied.
+
+    ``cancel_phase`` defaults to 1 (an operator cancel in flight, the shape
+    the shutdown-cancel tests need); pass 0 for a row the production claim
+    CTE leaves alone, where the drain's cancel fence must not refuse it.
+    """
     schema = deps.settings.schema_name
     async with deps.worker_pool.acquire() as conn:
         await conn.execute(
@@ -64,9 +72,10 @@ async def _mark_jobs_running(
         )
         for jid in job_ids:
             await conn.execute(
-                f"UPDATE \"{schema}\".jobs SET status='running', locked_by_worker=$1, started_at=now(), cancel_phase = 1 WHERE id=$2 AND status='pending'",  # noqa: S608 # Why: schema validated by WorkerSettings/conftest; asyncpg has no parameter binding for identifiers.
+                f"UPDATE \"{schema}\".jobs SET status='running', locked_by_worker=$1, started_at=now(), cancel_phase = $3 WHERE id=$2 AND status='pending'",  # noqa: S608 # Why: schema validated by WorkerSettings/conftest; asyncpg has no parameter binding for identifiers.
                 worker_id,
                 jid,
+                cancel_phase,
             )
 
 
@@ -381,6 +390,78 @@ async def test_ti4_drain_to_pending(
         assert row.locked_by_worker is None
 
 
+async def test_drain_refuses_rows_carrying_a_cancel_phase(
+    clean_jobs_app: JobsApp,
+) -> None:
+    """The drain's hand-back carries the deferral arms' cancel fence.
+
+    Three rows claimed by this worker, one with an operator cancel in
+    flight (cancel_phase = 1, the shape a cancel request stamps on a
+    running row before any consumer poll observes it). The clean two come
+    back to the fleet with their refund; the cancel-carrying row must stay
+    right here (running, locked, attempt standing, audit columns intact):
+    re-pending it would hand the operator's cancel to the next holder's
+    flag poll instead of the cancel ladder, and the refund would re-create
+    the attempt epoch the fenced doctrine forbids. Its lease expiry hands
+    it to sweep-1's cancel arm, which terminalises it with the operator's
+    intent recorded.
+    """
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    schema = deps.settings.schema_name
+
+    job_ids = [new_uuid() for _ in range(3)]
+    for jid in job_ids:
+        await backend.enqueue(
+            EnqueueArgs(
+                id=JobId(jid),
+                actor="test_actor",
+                queue="default",
+                payload={},
+                max_attempts=3,
+                retry_kind="transient",
+                scheduled_at=_immediate(),
+            )
+        )
+
+    worker_id = new_uuid()
+    async with deps.worker_pool.acquire() as conn:
+        await create_worker(conn, schema, worker_id)
+        for jid in job_ids:
+            await conn.execute(
+                f"UPDATE \"{schema}\".jobs SET status='running', locked_by_worker=$1, "
+                "started_at=now(), attempt = 2 WHERE id=$2 AND status='pending'",  # Why: schema validated by WorkerSettings/conftest; asyncpg has no parameter binding for identifiers.
+                worker_id,
+                jid,
+            )
+        # The operator cancel lands on the row the drain must refuse.
+        await conn.execute(
+            f'UPDATE "{schema}".jobs SET cancel_phase = 1, cancel_requested_at = now() '
+            f"WHERE id = $1",
+            job_ids[0],
+        )
+
+    drained = await drain_local_queue_to_pending(deps, worker_id)
+    assert drained == 2, f"expected only the clean rows drained, got {drained}"
+
+    fenced = await backend.get(JobId(job_ids[0]))
+    assert fenced is not None
+    assert fenced.status == "running", (
+        f"the cancel-carrying row must stay running, got {fenced.status}"
+    )
+    assert fenced.locked_by_worker == worker_id, (
+        "the fenced row keeps its owner: the cancel ladder owns its fate"
+    )
+    assert fenced.attempt == 2, f"the fenced row keeps its spent attempt, got {fenced.attempt}"
+    assert parse_cancel_phase(fenced.cancel_phase) == CancelPhase.COOPERATIVE
+    assert fenced.cancel_requested_at is not None
+
+    for jid in job_ids[1:]:
+        row = await backend.get(JobId(jid))
+        assert row is not None
+        assert row.status == "pending", f"clean job {jid} expected pending, got {row.status}"
+
+
 async def test_draining_hands_back_only_jobs_no_consumer_is_running(
     clean_jobs_app: JobsApp,
 ) -> None:
@@ -423,9 +504,10 @@ async def test_draining_hands_back_only_jobs_no_consumer_is_running(
         )
 
     # Both rows carry the shape the dispatch claim leaves behind: running,
-    # locked by this worker, started_at stamped at claim. The database row
-    # cannot tell the two cases apart — only this process's registry can.
-    await _mark_jobs_running(deps, [backlog_id, executing_id], worker_id)
+    # locked by this worker, started_at stamped at claim, no operator cancel
+    # in flight. The database row cannot tell the two cases apart — only
+    # this process's registry can.
+    await _mark_jobs_running(deps, [backlog_id, executing_id], worker_id, cancel_phase=0)
 
     active = _fake_active_job(job_id=executing_id)
     try:

@@ -516,6 +516,32 @@ class ActiveJobRegistry:
     def __init__(self) -> None:
         self._by_id: dict[JobId, _ActiveJob] = {}
         self._lock: asyncio.Lock = asyncio.Lock()
+        # Claimed-but-not-yet-registered ids: the window between the
+        # consumer's queue take (a bare job.id read, no await) and the
+        # register() call is invisible to ``all()`` because the DB row
+        # carries no "a consumer took it" mark. Any hand-back pass that
+        # ran inside the window would re-pend a row this process is about
+        # to execute, and the fleet would run it concurrently. The intent
+        # set closes that window: the mark lands with no await after the
+        # take, and every hand-back pass excludes both maps.
+        self._claim_intents: set[JobId] = set()
+
+    def mark_claimed(self, job_id: JobId) -> None:
+        """Record a queue take before any await can let a drain observe the gap.
+
+        Must be called with no intervening await after the take: the
+        single-threaded loop makes the record atomic with the take, which
+        is the whole guarantee.
+        """
+        self._claim_intents.add(job_id)
+
+    def resolve_claim(self, job_id: JobId) -> None:
+        """Drop the claim intent once ``register`` covers it or the row is released."""
+        self._claim_intents.discard(job_id)
+
+    def held_ids(self) -> list[JobId]:
+        """Snapshot of every row this process may still execute: registered and intent."""
+        return list(self._by_id) + list(self._claim_intents)
 
     async def register(
         self,
@@ -526,9 +552,11 @@ class ActiveJobRegistry:
         """Register a job as in-flight.
 
         The lock ensures no concurrent ``deregister`` sees an inconsistent state.
+        The claim intent (if any) is absorbed: the registry now owns the row.
         """
         entry = _ActiveJob(job_id=job_id, task=task, ctx=ctx)
         async with self._lock:
+            self._claim_intents.discard(job_id)
             self._by_id[job_id] = entry
 
     async def deregister(self, job_id: JobId) -> None:

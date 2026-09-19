@@ -636,7 +636,7 @@ They are simply not recorded as dimensions.
 The one exception is `taskq.maintenance_leader.is_leader`, which is still
 labeled by `worker_id`: the shipped Prometheus alert
 (`sum(taskq_maintenance_leader_is_leader) != 1`) detects split-brain by summing
-one series per pod, so the dimension is load-bearing there. Operators exporting
+one series per pod, so the dimension is essential to that invariant. Operators exporting
 to Azure Monitor should drop it with an SDK View.
 
 ### Metric recording and sampling independence

@@ -200,7 +200,7 @@ avoided by structure, not by estimates.
   LATERAL** (`FOR UPDATE OF ... SKIP LOCKED` inside it): the
   correlation denies the hash-join-over-backlog path at every depth,
   including the shallow depths where a whole-pending Seq Scan is
-  honestly *cheaper* than `limit_n` pkey probes and is therefore chosen
+  materially *cheaper* than `limit_n` pkey probes and is therefore chosen
   on correct costs (an estimate fix alone cannot close that hole).
 - The terminal UPDATE re-finds its rows via
   `j.id = ANY(ARRAY(SELECT id FROM eligible))`: the array materializes

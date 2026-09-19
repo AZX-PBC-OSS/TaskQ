@@ -165,7 +165,10 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
     # Why the explicit list[UUID] annotation: JobId is NewType(UUID), so
     # the bare comprehension infers list[JobId], and list invariance
     # would refuse the uuid[] bind parameter's declared type below.
-    active_ids: list[UUID] = [active.job_id for active in deps.active_jobs.all()]
+    # held_ids() covers BOTH maps: registered consumers (executing now)
+    # and claim intents (taken off local_queue, not yet registered, the
+    # window the registry's comment documents).
+    active_ids: list[UUID] = deps.active_jobs.held_ids()
     # The attempt refund: the claim stamped attempt + 1 for an execution
     # this hand-back says never happened, so the increment goes back ,
     # the same non-consuming-release idiom the snooze/unavailable and
@@ -180,8 +183,19 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
         # contract in taskq/backend/_dispatch_sql.py) -- the same
         # re-pend class as _SWEEP_1_SQL and the isolate template.
         f"lock_expires_at=NULL, assignment_routed=true, attempt = {_ATTEMPT_REFUND_SQL} "
-        f"WHERE locked_by_worker=$1 AND status='running'"
+        f"WHERE locked_by_worker=$1 AND status='running' AND j.cancel_phase = 0"
     )
+    # The cancel fence (``cancel_phase = 0``): a row carrying an operator
+    # cancel in flight must NOT re-enter the fleet through the drain — the
+    # same fence every other deferral/release arm carries (the snooze and
+    # retry-after arms, mark_interrupted's release arm, sweep-1's
+    # cancel-first CASE, the isolate template). Without it, a cancel
+    # stamped between the operator's write and the consumer's next flag
+    # poll would be handed back to dispatch, and the row would execute
+    # again under the next holder before any ladder terminalises it. The
+    # fenced row stays here: running, owned by this worker, refund never
+    # applied; its lease expiry hands it to sweep-1's cancel arm, which
+    # terminalises it with the operator's audit intact.
     # The exclusion clause is only bound when there is something to
     # exclude: an empty registry (the common drained-worker case) keeps
     # the single-parameter statement shape the helper has always issued.
