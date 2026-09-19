@@ -327,7 +327,7 @@ _ARCHIVE_CTE_SQL = (
     # the arm's lock-time re-read does not match its original terminal
     # status, so a retry that committed in the window keeps the row out
     # of the archive and out of the delete.
-    "  AND j.status = $1::\"{schema}\".job_status"
+    '  AND j.status = $1::"{schema}".job_status'
     "  RETURNING id, actor, status"
     "), moved_attempts AS ("
     f'  INSERT INTO "{{schema}}".job_attempts_archive ({_JOB_ATTEMPTS_COLUMNS_CSV})'
@@ -360,7 +360,7 @@ _ARCHIVE_CTE_ACTOR_SQL = (
     f"  SELECT {_JOBS_COLUMNS_QUALIFIED_CSV}, clock_timestamp(), clock_timestamp() + $4"
     '  FROM "{schema}".jobs j'
     "  JOIN candidate_ids c ON j.id = c.id"
-    "  AND j.status = $1::\"{schema}\".job_status"
+    '  AND j.status = $1::"{schema}".job_status'
     "  RETURNING id, actor, status"
     "), moved_attempts AS ("
     f'  INSERT INTO "{{schema}}".job_attempts_archive ({_JOB_ATTEMPTS_COLUMNS_CSV})'
