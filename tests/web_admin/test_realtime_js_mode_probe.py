@@ -46,24 +46,49 @@ global.window = { TASKQ_BASE_PATH: "/taskq" };
 global.POLL_INTERVAL_MS = 1000;
 
 const badge = {
-    attrs: { "data-mode": scenario === "redis-returns" ? "polling-degraded" : "realtime" },
+    attrs: {
+        "data-mode": scenario === "redis-returns"
+            ? "polling-degraded"
+            : scenario === "polling-empty-progress"
+                ? "polling"
+                : "realtime"
+    },
     textContent: "",
     setAttribute(k, v) { this.attrs[k] = v; },
     getAttribute(k) { return this.attrs[k]; },
 };
 const section = { attrs: { "data-job-id": "j1" }, getAttribute(k) { return this.attrs[k]; } };
+const timeline = { appendChild() { log.push("append-progress"); } };
+const elements = {
+    "progress-section": section,
+    "progress-timeline": timeline,
+};
 
 global.document = {
     addEventListener(name, fn) { if (name === "DOMContentLoaded") fn(); },
-    getElementById(id) { return id === "progress-section" ? section : null; },
+    getElementById(id) { return elements[id] ?? null; },
     querySelector(sel) { return sel === ".taskq-badge" ? badge : null; },
-    createElement() { return {}; },
+    createElement() {
+        return {
+            style: {},
+            appendChild() {},
+            scrollIntoView() {},
+        };
+    },
 };
 
 global.EventSource = class {
-    constructor(url) { this.url = url; this.handlers = {}; log.push("sse-open:" + url); }
+    constructor(url) {
+        this.url = url;
+        this.handlers = {};
+        global.lastEventSource = this;
+        log.push("sse-open:" + url);
+    }
     addEventListener(name, fn) { this.handlers[name] = fn; }
     close() { log.push("sse-close"); }
+    emit(name, data, lastEventId) {
+        this.handlers[name]({ data: JSON.stringify(data), lastEventId });
+    }
 };
 
 global.setInterval = (fn, ms) => { const id = nextTimer++; timers.push({ id, fn, ms, due: now + ms }); return id; };
@@ -74,7 +99,9 @@ global.fetch = (url) => ({
         log.push("fetch:" + url.split("?")[0]);
         const body = url.endsWith("/sse/mode")
             ? { realtime: wantRealtime }
-            : {};
+            : scenario === "polling-empty-progress"
+                ? { status: "succeeded", progress_state: {}, progress_seq: 0 }
+                : {};
         return { then(f2) { f2(f1({ json: () => body })); return { catch() {} }; } };
     },
 });
@@ -90,6 +117,9 @@ function advance(ms) {
 }
 
 new Function(src)();
+if (scenario === "realtime-empty-progress") {
+    global.lastEventSource.emit("terminal", {}, "0");
+}
 advance(30000);
 log.push("mode:" + badge.attrs["data-mode"]);
 process.stdout.write(JSON.stringify(log));
@@ -138,3 +168,24 @@ def test_redis_failing_degrades_a_realtime_page_to_polling() -> None:
     log = _drive("realtime-stays")
     assert "sse-close" in log
     assert log[-1] == "mode:polling-degraded"
+
+
+@requires_node
+def test_polling_does_not_render_the_empty_initial_progress_state() -> None:
+    """A terminal job that never reported progress keeps the empty-state UI.
+
+    Every job starts with ``progress_state={}`` and ``progress_seq=0``. The
+    polling driver must not turn that storage default into a synthetic 0%
+    timeline entry.
+    """
+    log = _drive("polling-empty-progress")
+    assert "fetch:/taskq/jobs/api/job/j1/state" in log
+    assert "append-progress" not in log
+
+
+@requires_node
+def test_realtime_does_not_render_the_empty_initial_progress_state() -> None:
+    """An SSE snapshot at sequence zero is not a progress timeline entry."""
+    log = _drive("realtime-empty-progress")
+    assert "sse-open:/taskq/jobs/api/job/j1/progress/stream" in log
+    assert "append-progress" not in log

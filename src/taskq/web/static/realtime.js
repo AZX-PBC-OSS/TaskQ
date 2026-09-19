@@ -12,6 +12,7 @@
     let eventSource = null;
     let pollingActive = false;
     let pollingInterval = null;
+    let lastRenderedSeq = 0;
 
     function getBadgeEl() {
         return document.querySelector(".taskq-badge");
@@ -107,15 +108,17 @@
         const jobId = section.getAttribute("data-job-id");
         if (!jobId) return;
 
-        let lastRenderedSeq = -1;
-
         pollingInterval = setInterval(function () {
             if (!pollingActive) return;
             fetch(`${BASE}/jobs/api/job/${jobId}/state`)
                 .then(function (res) { return res.json(); })
                 .then(function (body) {
                     if (!pollingActive) return;
-                    if (body.progress_state && body.progress_seq > lastRenderedSeq) {
+                    if (
+                        body.progress_state &&
+                        body.progress_seq > 0 &&
+                        body.progress_seq > lastRenderedSeq
+                    ) {
                         lastRenderedSeq = body.progress_seq;
                         renderProgressEvent(body.progress_state);
                     }
@@ -157,7 +160,11 @@
             } catch {
                 return;
             }
-            renderProgressEvent(evt);
+            const seq = Number(rawEvent.lastEventId);
+            if (seq > 0 && seq > lastRenderedSeq) {
+                lastRenderedSeq = seq;
+                renderProgressEvent(evt);
+            }
             if (evt.terminal) {
                 es.close();
                 eventSource = null;
