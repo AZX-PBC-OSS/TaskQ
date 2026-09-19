@@ -18,7 +18,7 @@ class FlakyPayload(BaseModel):
 
 class SnoozePayload(BaseModel):
     delay_seconds: int = 10
-    wake_after_attempt: int = 1
+    snooze_cycles: int = 1
 
 
 @actor(name="flaky", queue="examples", retry=RetryPolicy(max_attempts=5))
@@ -30,6 +30,6 @@ async def flaky(payload: FlakyPayload, ctx: JobContext[FlakyPayload]) -> None:
 
 @actor(name="snoozer", queue="examples")
 async def snoozer(payload: SnoozePayload, ctx: JobContext[SnoozePayload]) -> None:
-    """Snoozes for a configurable delay on the first attempt, then succeeds."""
-    if ctx.attempt <= payload.wake_after_attempt:
+    """Snoozes for a configurable number of cycles, then succeeds."""
+    if ctx.snooze_count < payload.snooze_cycles:
         raise Snooze(timedelta(seconds=payload.delay_seconds))

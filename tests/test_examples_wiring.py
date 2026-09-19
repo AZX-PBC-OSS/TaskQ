@@ -21,7 +21,7 @@ from examples.actors.advanced import SumResult, capped_job, deduplicated, single
 from examples.actors.basic import counter, deferred
 from examples.actors.chained import fan_out, step_one, step_two
 from examples.actors.di import FakeDb, FakeHttpClient, build_registry, db_lookup_actor, fetch_actor
-from examples.actors.failure import flaky, snoozer
+from examples.actors.failure import SnoozePayload, flaky, snoozer
 from examples.actors.ratelimit import (
     inmemory_rate_limited,
     reserved,
@@ -34,8 +34,11 @@ from taskq._di.registry import ProviderRegistry
 from taskq._di.scope import Scope
 from taskq.actor import ActorRef
 from taskq.backend.clock import Clock, SystemClock
+from taskq.exceptions import Snooze
 from taskq.settings import WorkerSettings
+from taskq.testing.fixtures import ActorRunnerCallable
 from taskq.testing.health import unique_health_sock_path
+from taskq.testing.in_memory import InMemoryBackend
 from taskq.worker.run import _main
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -339,6 +342,20 @@ def test_step_two_no_ctx_no_deps() -> None:
 
 def test_fan_out_wants_ctx() -> None:
     assert fan_out.wants_ctx is True
+
+
+async def test_snoozer_stops_after_configured_cycles(
+    actor_runner: ActorRunnerCallable,
+    memory_jobs: InMemoryBackend,
+) -> None:
+    payload = SnoozePayload(delay_seconds=10, snooze_cycles=2)
+
+    with pytest.raises(Snooze):
+        await actor_runner(snoozer.fn, payload, backend=memory_jobs, snooze_count=0)
+    with pytest.raises(Snooze):
+        await actor_runner(snoozer.fn, payload, backend=memory_jobs, snooze_count=1)
+
+    await actor_runner(snoozer.fn, payload, backend=memory_jobs, snooze_count=2)
 
 
 # ── FakeHttpClient and FakeDb smoke tests ────────────────────────────
