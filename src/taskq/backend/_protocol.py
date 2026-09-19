@@ -2209,7 +2209,9 @@ class Backend(Protocol):
         ...
 
     # ── NOTIFY hook ─────────────────────────────────────────────────────
-    def subscribe_wake(self) -> AsyncContextManager[asyncio.Event]: ...
+    def subscribe_wake(
+        self, queues: Iterable[str] | None = None
+    ) -> AsyncContextManager[asyncio.Event]: ...
 
     def subscribe_cancel_wake(self) -> AsyncContextManager[asyncio.Event]:
         """Return an async context manager yielding a fresh ``asyncio.Event``

@@ -276,6 +276,7 @@ class InMemoryBackend:
         # abandoned. None whenever no attempt is executing.
         self._inflight_attempt: tuple[JobId, asyncio.Task[object]] | None = None
         self._wake_subscribers: set[asyncio.Event] = set()
+        self._wake_queues: dict[asyncio.Event, frozenset[str] | None] = {}
         self._cancel_wake_subscribers: set[asyncio.Event] = set()
         self._actor_stubs: dict[str, StubFn] = {}
         self._actor_configs: dict[str, _InMemoryActorConfig] = {}
@@ -899,9 +900,24 @@ class InMemoryBackend:
 
     # ── NOTIFY hook ────────────────────────────────────────────────────
 
-    def subscribe_wake(self) -> AsyncContextManager[asyncio.Event]:
+    def subscribe_wake(
+        self, queues: Iterable[str] | None = None
+    ) -> AsyncContextManager[asyncio.Event]:
+        """Queue-scoped wake subscription, the PG backend's contract mirrored.
+
+        ``queues=None`` wakes on every enqueue; a queue set wakes only when
+        the enqueued row's queue is served by this subscriber. Parity with
+        the PG backend's payload filtering keeps the differential tests
+        honest about the wake contract.
+        """
         event = asyncio.Event()
-        return _SubscriberContext(event, self._wake_subscribers)
+        queue_set = frozenset(queues) if queues else None
+        return _SubscriberContext(
+            event,
+            self._wake_subscribers,
+            queue_registry=self._wake_queues,
+            queues=queue_set,
+        )
 
     def subscribe_cancel_wake(self) -> AsyncContextManager[asyncio.Event]:
         event = asyncio.Event()

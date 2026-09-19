@@ -72,6 +72,39 @@ class TestEnqueueWakesSubscriber:
             assert event_a.is_set()
             assert event_b.is_set()
 
+    async def test_queue_scoped_subscriber_is_not_woken_by_an_unserved_queue(self) -> None:
+        """A subscriber scoped to a queue set skips wakes for queues it does not serve.
+
+        The trigger carries the inserted row's queue as the NOTIFY payload;
+        the twin mirrors the PG callback's filter so the differential tests
+        hold the wake contract on both backends. A subscriber registered
+        without a queue set (the historical contract) still wakes on
+        everything.
+        """
+        backend = _make_inmem_backend()
+
+        async with (
+            backend.subscribe_wake(queues={"reports"}) as scoped,
+            backend.subscribe_wake() as unscoped,
+        ):
+            await backend.enqueue(_enqueue_args(queue="default"))
+            assert not scoped.is_set(), (
+                "a wake for queue 'default' must not reach a subscriber "
+                "scoped to {'reports'}: the worker would claim nothing"
+            )
+            assert unscoped.is_set()
+
+            await backend.enqueue(_enqueue_args(queue="reports"))
+            assert scoped.is_set()
+
+    async def test_queue_scoped_subscriber_with_empty_set_wakes_on_everything(self) -> None:
+        """An empty queue set means no filter, the wake-everything contract."""
+        backend = _make_inmem_backend()
+
+        async with backend.subscribe_wake(queues=[]) as event:
+            await backend.enqueue(_enqueue_args(queue="default"))
+            assert event.is_set()
+
     async def test_enqueue_does_not_wake_after_unsubscribe(self) -> None:
         """After unsubscribe_wake, enqueue does not set the old event."""
         backend = _make_inmem_backend()
@@ -810,7 +843,9 @@ async def test_producer_uses_notify_poll_with_wake_subscribe(
 
     subscribe_called = False
 
-    def tracking_subscribe() -> contextlib.AbstractAsyncContextManager[asyncio.Event]:
+    def tracking_subscribe(
+        queues: object = None,
+    ) -> contextlib.AbstractAsyncContextManager[asyncio.Event]:
         class _Ctx:
             async def __aenter__(self) -> asyncio.Event:
                 nonlocal subscribe_called

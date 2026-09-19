@@ -302,6 +302,11 @@ class PostgresBackend:
         # needing to re-construct it. The properties below delegate to
         # self._deps at every access.
         self._wake_subscribers: set[asyncio.Event] = set()
+        # Queue-scoped wake filtering: each subscriber records the queue set
+        # it claims (None = wake on everything), and the notify callback
+        # skips wakes for queues the subscriber would never claim. The
+        # trigger carries the inserted row's queue as its payload.
+        self._wake_queues: dict[asyncio.Event, frozenset[str] | None] = {}
         self._wake_lock: asyncio.Lock = asyncio.Lock()
 
         self._cancel_subscribers: set[asyncio.Event] = set()
@@ -1208,9 +1213,26 @@ class PostgresBackend:
 
     # ── NOTIFY hook ─────────────────────────────────────────────────────
 
-    def subscribe_wake(self) -> AsyncContextManager[asyncio.Event]:
+    def subscribe_wake(
+        self, queues: Iterable[str] | None = None
+    ) -> AsyncContextManager[asyncio.Event]:
+        """Subscribe to insert wakes, optionally scoped to the caller's queues.
+
+        ``queues=None`` (or an empty set) wakes on every insert, the
+        historical contract. A queue set wakes only when the inserted
+        row's queue (the NOTIFY payload from the trigger) is served by
+        this subscriber, or when the payload is empty (an older trigger
+        still in a rolling deploy, or the COPY fixup's bulk wake).
+        """
         event = asyncio.Event()
-        return _SubscriberContext(event, self._wake_subscribers, self._wake_lock)
+        queue_set = frozenset(queues) if queues else None
+        return _SubscriberContext(
+            event,
+            self._wake_subscribers,
+            self._wake_lock,
+            queue_registry=self._wake_queues,
+            queues=queue_set,
+        )
 
     def subscribe_cancel_wake(self) -> AsyncContextManager[asyncio.Event]:
         event = asyncio.Event()

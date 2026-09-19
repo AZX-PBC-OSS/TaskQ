@@ -28,22 +28,40 @@ class _SubscriberContext:
         event: asyncio.Event,
         subscribers: set[asyncio.Event],
         lock: asyncio.Lock | None = None,
+        *,
+        queue_registry: dict[asyncio.Event, frozenset[str] | None] | None = None,
+        queues: frozenset[str] | None = None,
     ) -> None:
         self._event = event
         self._subscribers = subscribers
         self._lock = lock
+        # The queue-scoped wake registry: when the caller passes one, the
+        # subscription records which queues this subscriber serves so the
+        # wake callback can skip notifications for queues it would never
+        # claim. ``None`` queues (or no registry) keeps the wake-everything
+        # contract.
+        self._queue_registry = queue_registry
+        self._queues = queues
 
     async def __aenter__(self) -> asyncio.Event:
         if self._lock is not None:
             async with self._lock:
                 self._subscribers.add(self._event)
+                if self._queue_registry is not None:
+                    self._queue_registry[self._event] = self._queues
         else:
             self._subscribers.add(self._event)
+            if self._queue_registry is not None:
+                self._queue_registry[self._event] = self._queues
         return self._event
 
     async def __aexit__(self, *exc: object) -> None:
         if self._lock is not None:
             async with self._lock:
                 self._subscribers.discard(self._event)
+                if self._queue_registry is not None:
+                    self._queue_registry.pop(self._event, None)
         else:
             self._subscribers.discard(self._event)
+            if self._queue_registry is not None:
+                self._queue_registry.pop(self._event, None)

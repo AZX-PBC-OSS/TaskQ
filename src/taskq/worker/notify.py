@@ -92,8 +92,18 @@ def _make_callback(
     """Return a sync closure invoked by asyncpg on each NOTIFY.
 
     The closure captures *backend*, takes a snapshot of
-    ``backend._wake_subscribers``, and calls ``event.set()`` on each.
-    The closure ignores ``payload`` entirely.
+    ``backend._wake_subscribers``, and calls ``event.set()`` on each
+    subscriber the notification can serve.
+
+    Payload filtering: the insert trigger carries the row's queue as the
+    NOTIFY payload, and each subscriber records the queue set it claims,
+    so a worker no longer wakes on inserts to queues it would never
+    claim (a 50-worker fleet stopped answering every insert with a full
+    claim round). An EMPTY payload means "wake everything": it comes from
+    an older trigger still live in a rolling deploy, or from the COPY
+    fixup's bulk wake, and neither can be filtered safely. A subscriber
+    registered with ``queues=None`` (the default) keeps the
+    wake-everything contract.
     """
 
     def _on_notify(
@@ -103,8 +113,14 @@ def _make_callback(
         payload: str,
     ) -> None:
         _notify_received_counter.add(1)
-        for event in list(backend._wake_subscribers):  # pyright: ignore[reportPrivateUsage]  # Why: snapshot iteration per ; safe because event.set() is idempotent
-            event.set()
+        wake_queues = getattr(backend, "_wake_queues", None)
+        if payload == "" or wake_queues is None:
+            for event in list(backend._wake_subscribers):  # pyright: ignore[reportPrivateUsage]  # Why: snapshot iteration per ; safe because event.set() is idempotent
+                event.set()
+        else:
+            for event, queues in list(wake_queues.items()):  # pyright: ignore[reportAttributeAccessUsage]  # Why: the registry rides on the same backend; the getattr guard covers backends that never grew it.
+                if queues is None or payload in queues:
+                    event.set()
         # Guarded: every enqueue in the schema wakes every listener, and a
         # structlog call runs the full processor chain before the stdlib
         # level check drops the record, the level check here is the only

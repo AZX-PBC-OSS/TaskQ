@@ -102,3 +102,44 @@ async def test_a_non_pending_insert_does_not_wake_listeners(
         await conn.close()
 
     assert not woken.is_set(), "only pending inserts may wake the fleet"
+
+
+@pytest.mark.integration
+async def test_the_wake_payload_names_the_inserted_rows_queue(
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """The wake NOTIFY's payload is the inserted row's queue.
+
+    The listener's queue filter reads this payload: a worker scoped to a
+    queue set wakes only when the payload names a queue it serves, and it
+    treats an empty payload as wake-everything (the COPY fixup's bulk
+    wake, an older trigger in a rolling deploy). The filter's correctness
+    rests on this pin: a payload that is not the queue would make the
+    filter drop legitimate wakes.
+    """
+    schema = module_pg_schema.schema_name
+    payloads: list[str] = []
+    payload_event = asyncio.Event()
+    conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+    try:
+        await conn.add_listener(
+            wake_channel(schema),
+            lambda _c, _pid, _ch, payload: (
+                payloads.append(payload),
+                payload_event.set(),
+            ),
+        )
+        await conn.execute(
+            f'INSERT INTO "{schema}".jobs '  # noqa: S608  # Why: schema is fixture-derived and migration-validated.
+            "(id, actor, queue, payload, status, max_attempts, retry_kind, scheduled_at) "
+            "VALUES ($1, 'a', 'reports', '{}'::jsonb, 'pending', 3, 'transient', clock_timestamp())",
+            new_uuid(),
+        )
+        async with asyncio.timeout(5.0):
+            await payload_event.wait()
+
+        assert payloads[-1] == "reports", (
+            f"the wake payload must name the inserted row's queue, got {payloads[-1]!r}"
+        )
+    finally:
+        await conn.close()

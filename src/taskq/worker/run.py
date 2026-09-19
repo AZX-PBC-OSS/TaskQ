@@ -293,7 +293,7 @@ async def producer_loop(
                 wake_event = await stack.enter_async_context(
                     cast(
                         "contextlib.AbstractAsyncContextManager[asyncio.Event]",
-                        _subscribe_wake(),
+                        _subscribe_wake(queues=queues),
                     )
                 )
                 _producer_log.info("producer-subscribed-wake", worker_id=str(worker_id))

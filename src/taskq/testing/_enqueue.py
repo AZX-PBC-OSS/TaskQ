@@ -236,8 +236,12 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
     if args.idempotency_key is not None:
         self._idempotency_index[(args.idempotency_scope, args.idempotency_key)] = args.id
 
-    for event in self._wake_subscribers:
-        event.set()
+    # Queue-scoped wake, the PG trigger's payload filter mirrored: a
+    # subscriber registered with a queue set is not woken by an enqueue
+    # to a queue it would never claim (None = wake on everything).
+    for event, queues in self._wake_queues.items():
+        if queues is None or args.queue in queues:
+            event.set()
 
     logger.debug(
         "state-change",
