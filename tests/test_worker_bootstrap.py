@@ -516,6 +516,49 @@ async def test_ensure_slots_failure_logged_and_bootstrap_continues(
     await _cleanup_schema_for(pg_dsn, schema)
 
 
+@pytest.mark.asyncio
+@pytest.mark.load_sensitive
+async def test_cancelling_main_terminates_the_worker(pg_dsn: str) -> None:
+    """Cancelling ``_main`` from outside must terminate the worker.
+
+    A parent task cancelling the worker (the embedding pattern every
+    ``_run_and_cancel`` caller in this file models) delivers its
+    CancelledError while ``_main`` is parked on the shutdown event, before
+    any sibling has a reason to be exiting. Siblings that absorb
+    cancellation by design (the consumer's cooperative job-cancel, loops
+    parking under ``suppress``) re-check
+    ``while not shutdown_event.is_set()`` and park again while the event is
+    clear: the group's exit then waits forever, the worker never
+    terminates, and the shutdown watchdog is never disarmed. ``_main`` now
+    raises the shutdown flag on the way out of that park so every sibling
+    observes a shutdown in progress, drains, and exits; this pin holds the
+    exit to a bounded window on the real backend.
+    """
+    schema = f"twb_{new_base62()}".lower()
+    await _prepare_schema_for(pg_dsn, schema)
+
+    settings = _settings_for(pg_dsn, schema)
+
+    async def _run() -> None:
+        with contextlib.suppress(asyncio.CancelledError):
+            await _main(settings)
+
+    task = asyncio.create_task(_run())
+    # Cancel mid-run: the instant the hang used to land, with the group
+    # fully spawned and parked.
+    await asyncio.sleep(4.0)
+    task.cancel()
+    # A drained exit is seconds of work. The bound must not await the task:
+    # a worker absorbing its cancellation is exactly the regression this
+    # pin exists for, and waiting on it would hang the lane the same way
+    # the bug hangs a deploy. ``asyncio.wait`` returns at the deadline and
+    # the assert turns the hang into a failure.
+    done, _pending = await asyncio.wait({task}, timeout=60.0)
+    assert done, "cancelling _main left the worker running past the bounded exit window"
+
+    await _cleanup_schema_for(pg_dsn, schema)
+
+
 # ── Cron registry auto-registration ──────────────────────────────────
 
 

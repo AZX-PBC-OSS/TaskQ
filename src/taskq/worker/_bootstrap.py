@@ -2194,7 +2194,25 @@ async def _main(
                             name="worker.drain_monitor",
                         )
 
-                    await shutdown_event.wait()
+                    try:
+                        await shutdown_event.wait()
+                    except asyncio.CancelledError:
+                        # A raw cancel of _main (a parent task cancelling the
+                        # worker, not a signal-driven shutdown) must still
+                        # terminate the worker. The cancelling sibling's
+                        # discipline above documents the trap: several loops
+                        # absorb a CancelledError by design and re-check
+                        # ``while not shutdown_event.is_set()``; with the
+                        # event still clear they park again and the group's
+                        # __aexit__ waits forever, leaving _main unkillable
+                        # and the shutdown watchdog never disarmed. Raise the
+                        # flag BEFORE the group starts collecting siblings so
+                        # every park loop observes a shutdown in progress,
+                        # drains, and exits; the shutdown watchdog sees the
+                        # event too, so its deadline trip arms and bounds the
+                        # whole exit exactly as on the signal path.
+                        shutdown_event.set()
+                        raise
             finally:
                 # The order here matters, and every statement must be
                 # non-raising so the ones after it still run.
