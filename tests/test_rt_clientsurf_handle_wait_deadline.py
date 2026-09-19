@@ -165,7 +165,7 @@ async def test_wait_deadline_is_enforced_when_a_fetch_hangs_mid_poll() -> None:
     stuck = _HungFetchBackend(_pending_row(), hang_after=2)
     handle = _handle(stuck)
 
-    # timeout=1.5 spans three poll cycles (interval 0.5 s): gets and 
+    # timeout=1.5 spans three poll cycles (interval 0.5 s): gets and
     # return promptly at t=0 / t=0.5, get wedges at t=1.0 - a full second
     # BEFORE the deadline - so the deadline can only be honored by enforcing
     # it against the in-flight fetch.

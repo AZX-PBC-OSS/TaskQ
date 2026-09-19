@@ -203,7 +203,7 @@ async def test_real_deadlock_mid_drain_retries_cleanly_with_no_phantoms(
     holder_tx = holder.transaction()
     await holder_tx.start()
     try:
-        # Batch 1 = event INSERTs (state_change) and 
+        # Batch 1 = event INSERTs (state_change) and
         # (cancel_request); the gate holds batch 2's first INSERT
         # open, inside the batch's transaction, after its driving UPDATE.
         state = _DeadlockWitnessState(gate_at=3)

@@ -430,13 +430,13 @@ async def test_forcing_pg_write_before_cancel_phase_advances(
 async def test_forcing_failure_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
     """Single PG write failure isolates that job; others proceed.
 
-    The job whose escalation write failed is still force-cancelled locally
-: the row-side probe failing must not keep the process-side
-    ``task.cancel()`` from being delivered: a cancellable actor that never
-    gets the cancel runs untouched into RELEASING and is released-with-hold
-    while still alive. Its registry phase advances to FORCED like every
-    other job's; only the row-side escalation is missing, and the ladder's
-    row-side arms recover it (or the lease sweep does).
+        The job whose escalation write failed is still force-cancelled locally
+    : the row-side probe failing must not keep the process-side
+        ``task.cancel()`` from being delivered: a cancellable actor that never
+        gets the cancel runs untouched into RELEASING and is released-with-hold
+        while still alive. Its registry phase advances to FORCED like every
+        other job's; only the row-side escalation is missing, and the ladder's
+        row-side arms recover it (or the lease sweep does).
     """
     import taskq.worker.shutdown as shutdown_mod
 

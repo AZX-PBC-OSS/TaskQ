@@ -168,9 +168,9 @@ async def test_partial_headroom_bounds_admission() -> None:
 
 async def test_keyed_full_bucket_does_not_gate() -> None:
     """A keyed bucket held full leaves the actor's admission untouched
-: the keyed mark on the slot rows excludes the bucket from the
-    headroom fold, the per-key cap is the consumer's post-claim
-    acquire's to enforce, where the payload-derived key is known."""
+    : the keyed mark on the slot rows excludes the bucket from the
+        headroom fold, the per-key cap is the consumer's post-claim
+        acquire's to enforce, where the payload-derived key is known."""
     backend = _make_backend()
     _register(backend, "sat")
     await _enqueue(backend, actor="sat")

@@ -111,7 +111,7 @@ async def test_mid_drain_statement_failure_raises_keeps_batch1_and_rerun_complet
     await _seed_jobs(clean_pg_conn, schema, job_ids)
     batch1, batch2 = set(sorted(job_ids)[:100]), set(sorted(job_ids)[100:])
 
-    # Batch 1 writes event INSERTs (state_change) and 
+    # Batch 1 writes event INSERTs (state_change) and
     # (cancel_request); the failure lands on batch 2's first INSERT
     # - after batch 2's driving UPDATE has already mutated and
     # locked its rows inside the open transaction.
