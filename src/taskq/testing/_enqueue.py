@@ -43,6 +43,37 @@ __all__ = [
 logger = structlog.get_logger("taskq.testing.in_memory")
 
 
+def _apply_stub_retry_override(
+    self: "InMemoryBackend",
+    args: EnqueueArgs,
+) -> EnqueueArgs:
+    """Stamp a registered stub's explicit ``retry=`` onto the enqueue args.
+
+    The stub's explicit retry budget must reach the row exactly like an
+    ActorRef's retry does (the client stamps ``max_attempts`` and the
+    retry scalars from the ref when it builds the args), because the
+    twin's retry-exhaustion check reads the ROW's stamped budget, not
+    the live registration. Only an explicitly passed ``retry=``
+    overrides (stored as ``retry_override`` on the stub config); the
+    historical ``RetryPolicy(jitter=0.0)`` default for stubs registered
+    without ``retry=`` must not restamp rows, so a ref-declared budget
+    stands.
+    """
+    cfg = self._actor_configs.get(args.actor)
+    override = cfg.retry_override if cfg is not None else None
+    if override is None:
+        return args
+    return replace(
+        args,
+        max_attempts=override.max_attempts,
+        retry_kind=override.kind,
+        retry_base=override.base,
+        retry_cap=override.cap,
+        retry_backoff=override.backoff,
+        retry_jitter=override.jitter,
+    )
+
+
 async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
     # Why a function-level import: the shared dedup-log helper lives with
     # the PG enqueue path (taskq.backend._enqueue), whose module scope
@@ -159,6 +190,10 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
     # clock, the InMemory mirror of the server's COALESCE stamp.
     stamped_scheduled_at = args.scheduled_at if args.scheduled_at is not None else now
     status: object = "pending" if stamped_scheduled_at <= now else "scheduled"
+
+    # A stub's explicit retry= budget stamps the row here, exactly like
+    # the ActorRef stamp that build_enqueue_args already applied.
+    args = _apply_stub_retry_override(self, args)
 
     resolved_schedule_to_close = (
         now + args.schedule_to_close_interval

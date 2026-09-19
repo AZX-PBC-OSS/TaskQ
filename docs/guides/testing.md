@@ -16,12 +16,13 @@ application code never pulls in test-only helpers.
 1. [InMemoryBackend](#inmemorybackend)
 2. [FakeClock](#fakeclock)
 3. [run_until_drained](#run_until_drained)
-4. [Pytest fixtures](#pytest-fixtures)
-5. [OTel test utilities](#otel-test-utilities)
-6. [Assertions](#assertions)
-7. [Chaos testing](#chaos-testing)
-8. [Property-based testing](#property-based-testing)
-9. [Integration tests](#integration-tests)
+4. [Testing cancellation](#testing-cancellation)
+5. [Pytest fixtures](#pytest-fixtures)
+6. [OTel test utilities](#otel-test-utilities)
+7. [Assertions](#assertions)
+8. [Chaos testing](#chaos-testing)
+9. [Property-based testing](#property-based-testing)
+10. [Integration tests](#integration-tests)
 
 ---
 
@@ -223,6 +224,15 @@ scheduled jobs so a single call drains the entire queue. With a real clock
 (non-test) the loop returns instead of advancing: `run_until_drained` is
 intended for tests only.
 
+The drain accepts one opt-in keyword: `cancel_polling`. When set, the drain
+drives the cancel poller itself (see [Testing cancellation](#testing-cancellation));
+the default keeps the historical behaviour, the drain never ticks cancel
+polling and tests drive cancellation by hand.
+
+```python
+await backend.run_until_drained(cancel_polling=True)
+```
+
 !!! note "Batch-policy simulation"
     `run_until_drained` invokes `apply_batch_terminal_outcome` after each
     job reaches a terminal write, so abort/completion semantics are tested
@@ -233,7 +243,104 @@ intended for tests only.
 
 ---
 
+## Testing cancellation
+
+Cooperative cancellation is a one-liner under the in-memory runner:
+register the job's cancel event, opt the drain into cancel polling, and
+cancel mid-drain. With `run_until_drained(cancel_polling=True)` the drain
+drives `backend.tick_cancel_polling()` itself, both between dispatch
+iterations and, while an attempt is in flight, from a concurrent ticker
+task, so the poller observes the request while the actor is running: it
+fires the registered event, the actor exits through its cancellation check,
+and the job ends terminal `cancelled` in-memory.
+
+```python
+import asyncio
+from datetime import UTC, datetime
+
+from taskq._ids import new_job_id
+from taskq.backend import EnqueueArgs
+from taskq.testing.clock import FakeClock
+from taskq.testing.in_memory import InMemoryBackend
+
+
+async def test_cancel_mid_drain() -> None:
+    clock = FakeClock(start=datetime(2025, 1, 1, tzinfo=UTC))
+    backend = InMemoryBackend(clock=clock)
+
+    async def victim(payload, ctx):
+        await ctx.cancel_event.wait()   # park until the poller fires it
+        ctx.check_cancelled()           # documented cooperative exit
+
+    backend.register_stub("victim", victim)
+
+    job_id = new_job_id()
+    backend.register_cancel_event(job_id, asyncio.Event())
+    await backend.enqueue(
+        EnqueueArgs(
+            id=job_id,
+            actor="victim",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=clock.now(),
+        )
+    )
+
+    drain = asyncio.create_task(backend.run_until_drained(cancel_polling=True))
+
+    # Cancel mid-drain: wait until the job is running, then request the
+    # cancel the same way JobsClient.cancel() would.
+    while (await backend.get(job_id)).status != "running":
+        await asyncio.sleep(0.01)
+    await backend.write_cancel_request(job_id, None)
+
+    await drain
+    row = await backend.get(job_id)
+    assert row.status == "cancelled"
+```
+
+Without the flag the drain never ticks cancel polling; tests that want
+manual control can still call `backend.write_cancel_request()` and
+`backend.tick_cancel_polling()` by hand (advancing the `FakeClock` between
+ticks drives the phase escalation and the force-cancel arms), the same
+moves the runner performs automatically under the flag.
+
+### Asserting on progress
+
+The stub context records every `await ctx.progress(...)` call on
+`ctx.progress_reports`, the in-memory progress assertion surface: one dict
+per call, `{"seq": 1, "step": ..., "percent": ..., "detail": ..., "data":
+...}` with a strictly monotone `seq`, the harness half of the production
+progress contract (production publishes to Redis/Postgres; the runner
+records, so a test asserts on the list).
+
+```python
+def progress_actor(payload, ctx):
+    ...
+    reports = ctx.progress_reports
+    assert reports[0]["seq"] == 1
+```
+
+The stub context also wires the production sub-job and logging surfaces:
+`await ctx.jobs.enqueue(actor_ref, payload)` enqueues a real row the same
+drain dispatches, and `ctx.log` is a structlog logger bound with the job
+scope (`job_id`, `actor`, `queue`, `attempt`).
+
+---
+
 ## Pytest fixtures
+
+Async tests and fixtures need pytest-asyncio configured; the loop scopes
+must match what the fixtures below assume:
+
+```ini
+# pyproject.toml
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "module"
+asyncio_default_test_loop_scope = "module"
+```
 
 Pytest fixtures live in `taskq.testing.fixtures` and are imported into
 `tests/conftest.py` so they are available to all test modules. They are **not**
@@ -245,7 +352,7 @@ re-exported from `taskq.testing.__init__` to avoid importing `pytest` and
 | Fixture | Scope | Yields | Notes |
 |---|---|---|---|
 | `memory_jobs` | function | `InMemoryBackend` | Fresh backend with a `FakeClock` at `2025-01-01 UTC`. Default actors pre-registered. |
-| `actor_runner` | function | `ActorRunnerCallable` | Callable that builds a synthetic `JobContext` and invokes `actor_fn(payload, ctx)`. Forwards `**deps` as DI kwargs. |
+| `actor_runner` | function | `ActorRunnerCallable` | Callable that builds a synthetic `JobContext` and invokes the handler, omitting `ctx` when the handler (or `ActorRef`) declares none. Forwards declared `**deps` as DI kwargs. |
 
 ```python
 async def test_with_memory_jobs(memory_jobs: InMemoryBackend) -> None:

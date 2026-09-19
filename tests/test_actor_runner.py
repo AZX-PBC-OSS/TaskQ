@@ -15,6 +15,10 @@ import asyncio
 from pydantic import BaseModel
 
 from taskq._ids import new_uuid
+from taskq.actor import actor
+from taskq.context import (
+    JobContext as CtxJobContext,  # Why: the @actor decorator detects the ctx parameter by the production JobContext annotation.
+)
 from taskq.testing.fixtures import ActorRunnerCallable
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.job_context import JobContext
@@ -157,3 +161,81 @@ async def test_actor_runner_snooze_count_parameter_reaches_the_context(
 
     assert result is True
     assert observed == [2]
+
+
+# ── ctx omission: handlers that declare no ctx parameter ───────────────
+
+
+async def test_actor_runner_omits_ctx_for_payload_only_actor(
+    actor_runner: ActorRunnerCallable,
+    memory_jobs: InMemoryBackend,
+) -> None:
+    """A handler declaring no ``ctx`` parameter runs under actor_runner.
+
+    The production call path omits the context for a no-ctx handler
+    (calling one WITH a context raises ``TypeError``), so the fixture
+    must mirror that decision instead of passing ctx unconditionally.
+    """
+    seen: dict[str, object] = {}
+
+    async def payload_only(payload: object) -> str:
+        seen["payload"] = payload
+        return "no-ctx"
+
+    result = await actor_runner(payload_only, {"key": "val"}, backend=memory_jobs)
+    assert result == "no-ctx"
+    assert seen["payload"] == {"key": "val"}
+
+
+async def test_actor_runner_forwards_declared_deps_without_ctx(
+    actor_runner: ActorRunnerCallable,
+    memory_jobs: InMemoryBackend,
+) -> None:
+    """The common DI shape (deps, no ctx) works: only the dependency
+    parameters the handler declared are injected as kwargs, the same
+    selectivity the production DI pass applies."""
+    mock_http = object()
+    observed: object | None = None
+
+    async def handler(payload: object, http_client: object) -> None:
+        nonlocal observed
+        observed = http_client
+
+    await actor_runner(handler, {}, backend=memory_jobs, http_client=mock_http)
+    assert observed is mock_http
+
+
+async def test_actor_runner_accepts_actor_ref_without_ctx(
+    actor_runner: ActorRunnerCallable,
+    memory_jobs: InMemoryBackend,
+) -> None:
+    """An ActorRef is accepted directly and runs without a context
+    (the ref's ``wants_ctx`` is False, the production dispatch decision)."""
+
+    class RefPayload(BaseModel):
+        value: int
+
+    @actor
+    async def ref_actor(payload: RefPayload) -> int:
+        return payload.value + 1
+
+    result = await actor_runner(ref_actor, RefPayload(value=1), backend=memory_jobs)
+    assert result == 2
+
+
+async def test_actor_runner_accepts_actor_ref_with_ctx(
+    actor_runner: ActorRunnerCallable,
+    memory_jobs: InMemoryBackend,
+) -> None:
+    """A ctx-declaring ActorRef still receives the JobContext."""
+
+    class CtxPayload(BaseModel):
+        value: int
+
+    @actor
+    async def ref_ctx_actor(payload: CtxPayload, ctx: CtxJobContext[CtxPayload]) -> str:
+        return f"ctx-{ctx.job_id}"
+
+    result = await actor_runner(ref_ctx_actor, CtxPayload(value=1), backend=memory_jobs)
+    assert isinstance(result, str)
+    assert result.startswith("ctx-")
