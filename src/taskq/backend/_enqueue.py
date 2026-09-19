@@ -39,7 +39,8 @@ from taskq.backend._records import (
     _job_row_from_record,
     item_jsonb_param,
     item_tags_jsonb_param,
-    jsonb_param,
+    metadata_jsonb_param,
+    payload_jsonb_param,
 )
 from taskq.backend._sql_templates import COPY_ENQUEUE_STATUS, SqlTemplates
 from taskq.backend.clock import Clock
@@ -1111,7 +1112,7 @@ async def _enqueue_on_conn(
                 args.queue,
                 args.identity_key,
                 args.fairness_key,
-                jsonb_param(args.payload),
+                payload_jsonb_param(args),
                 args.payload_schema_ver,
                 args.priority,
                 args.max_attempts,
@@ -1124,7 +1125,7 @@ async def _enqueue_on_conn(
                 args.idempotency_key,
                 args.trace_id,
                 args.span_id,
-                jsonb_param(args.metadata),
+                metadata_jsonb_param(args),
                 args.result_ttl,
                 list(args.tags),
                 args.schedule_to_close,

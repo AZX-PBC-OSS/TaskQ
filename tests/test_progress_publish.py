@@ -245,6 +245,105 @@ async def test_ctx_progress_publishes_to_schema_scoped_channel() -> None:
         assert call[0][0] == expected_channel
 
 
+class _CountingPublishRedis:
+    """Client double counting single-channel publish round trips.
+
+    Stands in for the non-global publish path (``progress_publish_global``
+    off): one ``publish`` await per event, the round trip the coalescing
+    gate is measured against.
+    """
+
+    def __init__(self) -> None:
+        self.published: list[tuple[str, str]] = []
+
+    async def publish(self, channel: str, payload: str) -> int:
+        self.published.append((channel, payload))
+        return 1
+
+
+# ── ctx.progress() coalesces publishes while one is in flight ──────
+
+
+async def test_rapid_progress_calls_coalesce_in_flight_publishes() -> None:
+    """N rapid progress() calls publish at most twice; the LAST publish
+    carries the final call's seq.
+
+    Why: ctx.progress() fires at actor call rate and each uncoalesced
+    publish is one Redis round trip. The in-flight gate keeps one publish
+    per job in the air at a time; calls racing a running publish latch on
+    the buffer and the running task re-publishes the latch. The final
+    call must never be the dropped one: it reaches the channel either
+    directly or through the latch."""
+    from taskq.progress._buffer import _ProgressBuffer
+    from taskq.settings import WorkerSettings
+
+    redis_client = _CountingPublishRedis()
+    settings = WorkerSettings.load_from_dict(
+        {
+            "TASKQ_SCHEMA_NAME": "testschema",
+            "TASKQ_PROGRESS_PUBLISH_GLOBAL": "false",
+        }
+    )
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
+    buffers = {_JOB_ID: buf}
+    publish_tasks: set[asyncio.Task[None]] = set()
+
+    ctx = make_progress_context(
+        buffers,
+        _JOB_ID,
+        settings=settings,
+        redis_client=redis_client,
+        pending_publish_tasks=publish_tasks,
+    )
+
+    for i in range(10):
+        await ctx.progress(step=i + 1)
+
+    if publish_tasks:
+        await asyncio.gather(*publish_tasks)
+
+    assert len(redis_client.published) <= 2
+    last_event = json.loads(redis_client.published[-1][1])
+    assert last_event["seq"] == 10
+    assert last_event["step"] == 10
+
+
+async def test_progress_call_after_gate_releases_publishes_directly() -> None:
+    """A call landing once the gate is free publishes immediately: the
+    latch is a coalescing mechanism for racing calls, never a delay the
+    next call has to wait behind."""
+    from taskq.progress._buffer import _ProgressBuffer
+    from taskq.settings import WorkerSettings
+
+    redis_client = _CountingPublishRedis()
+    settings = WorkerSettings.load_from_dict(
+        {
+            "TASKQ_SCHEMA_NAME": "testschema",
+            "TASKQ_PROGRESS_PUBLISH_GLOBAL": "false",
+        }
+    )
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
+    buffers = {_JOB_ID: buf}
+    publish_tasks: set[asyncio.Task[None]] = set()
+
+    ctx = make_progress_context(
+        buffers,
+        _JOB_ID,
+        settings=settings,
+        redis_client=redis_client,
+        pending_publish_tasks=publish_tasks,
+    )
+
+    await ctx.progress(step=1)
+    await asyncio.sleep(0)  # let the publish task run to completion
+    assert buf.publish_in_flight is False
+    await ctx.progress(step=2)
+    await asyncio.gather(*publish_tasks)
+
+    seqs = [json.loads(payload)["seq"] for _, payload in redis_client.published]
+    assert seqs == [1, 2]
+
+
 # ── OTel counter incremented with correct attributes on failure ─────
 
 

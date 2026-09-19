@@ -618,8 +618,22 @@ class EnqueueArgs:
     retry_cap: timedelta = timedelta(hours=1)
     retry_backoff: Literal["exponential", "linear", "fixed"] = "exponential"
     retry_jitter: float = 0.2
+    # Lazy jsonb-encoding memos (backend/_records.payload_jsonb_param and
+    # metadata_jsonb_param), never constructor input. compare/repr excluded:
+    # a cache must not take part in value identity. __post_init__ resets
+    # them, see there for why that is not optional.
+    payload_jsonb_memo: str | None = field(default=None, compare=False, repr=False)
+    metadata_jsonb_memo: str | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
+        # Why the memos reset here: ``dataclasses.replace`` feeds every
+        # current field value back through __init__, so a memo computed for
+        # the PREVIOUS payload or metadata would ride along onto the
+        # replaced struct and re-bind a stale encoding. The memos are
+        # call-time caches, so a replace drops them and the next jsonb
+        # binding re-encodes from the live fields.
+        object.__setattr__(self, "payload_jsonb_memo", None)
+        object.__setattr__(self, "metadata_jsonb_memo", None)
         if self.schedule_to_close is not None and self.schedule_to_close_interval is not None:
             raise ValueError(
                 "schedule_to_close and schedule_to_close_interval are mutually exclusive; "

@@ -30,6 +30,7 @@ __all__ = [
     "_publish_event",
     "_publish_event_dual",
     "_publish_progress_event",
+    "_publish_progress_event_coalesced",
     "_publish_state_change_event",
 ]
 
@@ -232,6 +233,77 @@ async def _publish_progress_event(
             seq=seq,
             channel_label="per_job",
         )
+
+
+async def _publish_progress_event_coalesced(
+    redis_client: "redis_async.Redis",  # type: ignore[type-arg]  # Why: redis-py stubs expose Redis as an unparameterised generic; type arg cannot be supplied without a stubs update.
+    settings: "WorkerSettings",
+    actor: str,
+    job_id: UUID,
+    buffer: _ProgressBuffer,
+    *,
+    step: int | None,
+    percent: float | None,
+    detail: str | None,
+    data: dict[str, object] | None,
+    seq: int,
+) -> None:
+    """Publish one progress event under the per-job in-flight gate.
+
+    ``ctx.progress()`` fires at actor call rate, and an uncoalesced
+    publish per call costs one Redis round trip per call (the Postgres
+    side has coalesced into the flush buffer all along). This wrapper
+    keeps at most ONE publish in flight per job: a progress call that
+    lands while one is running only latches its event on the buffer's
+    ``pending_publish`` (set by the caller, see ``JobContext.progress``),
+    and the in-flight task re-publishes the latched event when its round
+    trip lands, draining the latch until it stays empty.
+
+    The latch is the no-lost-final guarantee: a trailing progress call
+    always reaches the channel, either directly (gate free) or through
+    the latch (the in-flight task drains it before releasing the gate).
+    Residual: intermediate events published while the gate is busy are
+    skipped, a live subscriber sees the coalesced tail instead of every
+    step (the consumer seq-discard discipline already treats any event
+    as replaceable by a later seq), and if this task is CANCELLED
+    (worker shutdown does not drain the latch, it abandons the tasks) a
+    latched event is lost with it: the terminal state-change publish and
+    the durable Postgres flush still carry the final state.
+    """
+    try:
+        await _publish_progress_event(
+            redis_client,
+            settings,
+            actor,
+            job_id,
+            step=step,
+            percent=percent,
+            detail=detail,
+            data=data,
+            seq=seq,
+        )
+        while buffer.pending_publish is not None:
+            # Read, clear, then publish: a progress call landing during the
+            # round trip below latches a NEWER event on the buffer, and the
+            # next iteration publishes that one.
+            pending = buffer.pending_publish
+            buffer.pending_publish = None
+            await _publish_progress_event(
+                redis_client,
+                settings,
+                actor,
+                job_id,
+                step=pending.step,
+                percent=pending.percent,
+                detail=pending.detail,
+                data=pending.data,
+                seq=pending.seq,
+            )
+    finally:
+        # Cleared with no await since the last round trip completed, so no
+        # progress call can observe a free gate with this task's latch
+        # still unread: the task either drained it or it is empty.
+        buffer.publish_in_flight = False
 
 
 async def _publish_state_change_event(

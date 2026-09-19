@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import structlog
+from opentelemetry import trace
 from opentelemetry.trace import Span, SpanKind, StatusCode
 from pydantic import BaseModel
 
@@ -32,7 +33,7 @@ from taskq.backend._protocol import (
     _validate_queue_name,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical queue-name validator; redefining it here would let the enqueue and actor chokepoints drift.
 )
 from taskq.constants import MAX_IDEMPOTENCY_KEY_BYTES, check_priority_domain
-from taskq.obs import record_published_message, safe_start_span
+from taskq.obs import otel_enabled, record_published_message, safe_start_span
 from taskq.retry import time_budget_as_interval
 
 if TYPE_CHECKING:
@@ -445,6 +446,19 @@ def enqueue_span(
     *,
     identity_key: str = "",
 ) -> Generator[tuple[Span, str | None, str | None], None, None]:
+    if not otel_enabled():
+        # Why this arm exists: the f-string span name and the five-entry
+        # attribute dict below are per-enqueue allocations whose only reader
+        # is the tracer. With telemetry off, safe_start_span would discard
+        # them unread (its own _otel_enabled gate is the one this mirrors),
+        # so build nothing and hand back the same non-recording span it
+        # would. Everything the disabled path below did is preserved by
+        # cheaper equivalents: a non-recording span's set_status is a
+        # no-op, the invalid span context yields None ids exactly as the
+        # is_valid branch does, and record_published_message re-checks the
+        # flag itself, so skipping it here drops no metric.
+        yield trace.NonRecordingSpan(trace.INVALID_SPAN_CONTEXT), None, None
+        return
     with safe_start_span(
         f"enqueue {actor_name}",
         kind=SpanKind.PRODUCER,

@@ -5,6 +5,7 @@ from uuid import UUID
 
 __all__ = [
     "_EncodedProgressData",
+    "_PendingPublish",
     "_ProgressBuffer",
     "_progress_after_flush",
     "_seq_and_state_after_flush_attempt",
@@ -27,6 +28,24 @@ class _EncodedProgressData:
 
     source: dict[str, object]
     json: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingPublish:
+    """A progress event latched while another publish is in flight.
+
+    The fields are the publish's own arguments, captured at the
+    superseding ``ctx.progress`` call: publishing the latch reproduces
+    exactly the event that call would have published uncoalesced, so the
+    last event a subscriber sees is byte-for-byte the one the final
+    progress call produced.
+    """
+
+    step: int | None
+    percent: float | None
+    detail: str | None
+    data: dict[str, object] | None
+    seq: int
 
 
 @dataclass
@@ -55,6 +74,16 @@ class _ProgressBuffer:
     encoded_data: _EncodedProgressData | None = None
     dirty: bool = False
     last_flush_at: float = 0.0
+    # The Redis publish gate (``JobContext.progress``): at most one publish
+    # task per job is in flight at a time; a progress call that lands while
+    # one is running only latches its event on ``pending_publish`` for the
+    # in-flight task to re-publish when its round trip lands. The latch is
+    # the no-lost-final guarantee: a trailing progress call always reaches
+    # the channel either directly or through it. Mutable like the rest of
+    # the accumulator; the publish task runs on the same event loop as the
+    # progress calls, so the flag never needs a lock.
+    publish_in_flight: bool = False
+    pending_publish: _PendingPublish | None = None
 
 
 def _snapshot_progress(

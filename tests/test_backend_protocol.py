@@ -19,6 +19,7 @@ from typing import Literal, get_type_hints
 import pytest
 
 from taskq._ids import new_uuid
+from taskq._json import dumps_jsonb_str
 from taskq.backend import (
     BACKEND_PROTOCOL_VERSION,
     AttemptOutcome,
@@ -504,7 +505,10 @@ class TestEnqueueArgsRoundTrip:
         # +4 retry-curve scalars (retry_base/retry_cap/retry_backoff/
         # retry_jitter): stamped onto the jobs row at enqueue so the
         # reclaim sweep can reschedule on the job's own policy.
-        expected = 29
+        # +2 jsonb memos (payload_jsonb_memo/metadata_jsonb_memo): lazy
+        # encoding caches the PG binding reuses across statement retries,
+        # never constructor input, compare/repr excluded (see the fields).
+        expected = 31
         assert len(fields(EnqueueArgs)) == expected
 
     def test_frozen(self) -> None:
@@ -535,6 +539,90 @@ class TestEnqueueArgsRoundTrip:
             "heartbeat_timeout",
         ):
             assert d[key] is None
+
+
+class TestEnqueueArgsJsonbMemo:
+    """The lazy jsonb memos: encode once per args, reuse across bindings.
+
+    The double serialization this closes: build_enqueue_args dumps the
+    payload into the dict form, and the PG INSERT re-encoded the same dict
+    to jsonb text on every statement execution (the bounded retry arms
+    re-execute it). The memo carries the encoding on the args instead.
+    """
+
+    def test_memo_encodes_exactly_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import taskq.backend._records as records_mod
+
+        args = _make_enqueue_args()
+        expected = records_mod.jsonb_param(args.payload)
+
+        count = 0
+        real = dumps_jsonb_str
+
+        def counting(value: object) -> str:
+            nonlocal count
+            count += 1
+            return real(value)
+
+        monkeypatch.setattr(records_mod, "dumps_jsonb_str", counting)
+
+        first = records_mod.payload_jsonb_param(args)
+        second = records_mod.payload_jsonb_param(args)
+
+        assert count == 1
+        assert first == second == expected
+
+    def test_metadata_memo_encodes_exactly_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import taskq.backend._records as records_mod
+
+        args = _make_enqueue_args(metadata={"batch_id": "b1"})
+        expected = records_mod.jsonb_param(args.metadata)
+
+        count = 0
+        real = dumps_jsonb_str
+
+        def counting(value: object) -> str:
+            nonlocal count
+            count += 1
+            return real(value)
+
+        monkeypatch.setattr(records_mod, "dumps_jsonb_str", counting)
+
+        first = records_mod.metadata_jsonb_param(args)
+        second = records_mod.metadata_jsonb_param(args)
+
+        assert count == 1
+        assert first == second == expected
+
+    def test_replace_drops_a_stale_memo(self) -> None:
+        """dataclasses.replace copies every field; a memo computed for the
+        previous payload must not ride onto the replaced struct, or the new
+        payload would bind the old encoding."""
+        import dataclasses
+
+        import taskq.backend._records as records_mod
+
+        args = _make_enqueue_args()
+        memo = records_mod.payload_jsonb_param(args)
+        assert memo is not None
+
+        replaced = dataclasses.replace(args, payload={"key": "changed"})
+        assert replaced.payload_jsonb_memo is None
+        fresh = records_mod.payload_jsonb_param(replaced)
+        assert fresh is not None
+        assert fresh != memo
+        assert "changed" in fresh
+
+    def test_memo_is_not_value_identity(self) -> None:
+        """compare/repr excluded: two args differing only in a memo are
+        equal, so the cache cannot leak into dedup or assertion diffs."""
+        import taskq.backend._records as records_mod
+
+        args = _make_enqueue_args()
+        twin = _make_enqueue_args()
+        records_mod.payload_jsonb_param(twin)
+        assert args == twin
+        assert repr(args) == repr(twin)
 
 
 class TestJobRowRoundTrip:

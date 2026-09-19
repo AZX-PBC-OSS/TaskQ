@@ -181,9 +181,10 @@ async def test_redis_publish_failure_does_not_propagate_to_caller() -> None:
     assert len(pending) == 0
 
 
-async def test_multiple_rapid_progress_calls_each_schedule_own_task() -> None:
-    """N rapid progress() calls each schedule their own background task; all
-    eventually complete and are removed from the pending set."""
+async def test_multiple_rapid_progress_calls_coalesce_into_one_in_flight_task() -> None:
+    """N rapid progress() calls share ONE in-flight publish per job; the
+    later calls latch and the in-flight task drains them, and the set is
+    empty again once everything lands."""
     redis_client = AsyncMock()
     redis_client.publish.return_value = 1
     pending: set[asyncio.Task[None]] = set()
@@ -192,7 +193,10 @@ async def test_multiple_rapid_progress_calls_each_schedule_own_task() -> None:
     for i in range(5):
         await ctx.progress(step=i)
 
-    assert len(pending) == 5
+    # The coalescing contract: at most one publish round trip per job at
+    # a time, whatever the call rate. The later calls latched onto the
+    # in-flight task's buffer instead of scheduling their own tasks.
+    assert len(pending) == 1
 
     await asyncio.gather(*pending)
     for _ in range(5):

@@ -20,8 +20,8 @@ from pydantic import BaseModel
 
 from taskq._json import dumps
 from taskq.exceptions import ProgressTooLarge
-from taskq.progress._buffer import _EncodedProgressData
-from taskq.progress._publish import _publish_progress_event
+from taskq.progress._buffer import _EncodedProgressData, _PendingPublish
+from taskq.progress._publish import _publish_progress_event, _publish_progress_event_coalesced
 
 if TYPE_CHECKING:
     import redis.asyncio as redis_async
@@ -226,6 +226,16 @@ class JobContext[P: BaseModel]:
         eventual Postgres flush) is the durable source of truth. Failures
         publishing to Redis are logged and recorded as a metric, never
         raised here.
+
+        The publish is also COALESCED when a shared publish-task set is
+        wired: at most one publish per job is in flight at a time, and a
+        call landing while one is running only latches its event for the
+        in-flight task to re-publish when its round trip lands. A trailing
+        call is never lost (it publishes directly or through the latch);
+        intermediate calls while the gate is busy reach subscribers only as
+        the latched latest event. See
+        :func:`taskq.progress._publish._publish_progress_event_coalesced`
+        for the full residual.
         """
         data_json: bytes | None = None
         if (data is not None or detail is not None) and self._worker_settings is not None:
@@ -294,24 +304,67 @@ class JobContext[P: BaseModel]:
         seq = buffer.base_seq + buffer.pending_seq_delta
 
         if self._redis_client is not None and self._worker_settings is not None:
-            coro = _publish_progress_event(
-                self._redis_client,
-                self._worker_settings,
-                self.actor,
-                self.job_id,
-                step=step,
-                percent=percent,
-                detail=detail,
-                data=data,
-                seq=seq,
-            )
             if self._pending_publish_tasks is not None:
-                task = asyncio.create_task(coro, name=f"taskq-progress-publish-{self.job_id}")
+                # The in-flight gate: at most one publish task per job at a
+                # time. An uncoalesced publish per call is one Redis round
+                # trip per progress call, call rate; a second concurrent
+                # publish could not land before the in-flight one anyway
+                # (consumers discard a stale seq), so a call racing a
+                # running publish only latches its event on the buffer and
+                # the running task re-publishes the latch when its round
+                # trip lands. The latch is what keeps the FINAL publish of
+                # a job from being lost: a trailing call either publishes
+                # directly (gate free) or is drained by the in-flight task
+                # before it releases the gate. Residual, mirrored in
+                # _publish_progress_event_coalesced: intermediate events
+                # are skipped while the gate is busy, and a task cancelled
+                # at shutdown abandons its latch; the terminal
+                # state-change publish and the Postgres flush carry the
+                # final state regardless.
+                if buffer.publish_in_flight:
+                    buffer.pending_publish = _PendingPublish(
+                        step=step,
+                        percent=percent,
+                        detail=detail,
+                        data=data,
+                        seq=seq,
+                    )
+                    return
+                buffer.publish_in_flight = True
+                task = asyncio.create_task(
+                    _publish_progress_event_coalesced(
+                        self._redis_client,
+                        self._worker_settings,
+                        self.actor,
+                        self.job_id,
+                        buffer,
+                        step=step,
+                        percent=percent,
+                        detail=detail,
+                        data=data,
+                        seq=seq,
+                    ),
+                    name=f"taskq-progress-publish-{self.job_id}",
+                )
                 self._pending_publish_tasks.add(task)
                 task.add_done_callback(self._pending_publish_tasks.discard)
             else:
                 # No shared task set to hold a reference (e.g. a caller
                 # constructing JobContext directly without a WorkerDeps) ,
                 # fall back to awaiting inline rather than risking the
-                # scheduled task being garbage-collected mid-publish.
+                # scheduled task being garbage-collected mid-publish. The
+                # gate does not apply here: the inline await runs each
+                # publish to completion before the next progress call can
+                # start, so no second publish can ever race one.
+                coro = _publish_progress_event(
+                    self._redis_client,
+                    self._worker_settings,
+                    self.actor,
+                    self.job_id,
+                    step=step,
+                    percent=percent,
+                    detail=detail,
+                    data=data,
+                    seq=seq,
+                )
                 await coro

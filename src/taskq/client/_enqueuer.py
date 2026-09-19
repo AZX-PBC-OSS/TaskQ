@@ -242,7 +242,13 @@ class SubJobEnqueuer:
                     args,
                     metadata={**args.metadata, "batch_id": _batch_id},
                 )
-            span.set_attribute("messaging.message.id", str(args.id))
+            if span.is_recording():
+                # Why the guard: on a non-recording span (no SDK, sampling)
+                # set_attribute discards the value, so the str() of the job
+                # id is paid per enqueue for nothing. Skipped, the exported
+                # spans are unchanged: a recording span still gets exactly
+                # this attribute.
+                span.set_attribute("messaging.message.id", str(args.id))
             # The per-call seam's coherence check, the same warn-once
             # contract JobsClient.enqueue applies to the actor-declared
             # form; this is the only caller-facing surface that accepts a

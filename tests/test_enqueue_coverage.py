@@ -21,6 +21,7 @@ import asyncpg
 import pytest
 from asyncpg.exceptions import InternalClientError
 
+import taskq.backend._records as _records
 from taskq._ids import new_job_id
 from taskq.backend._enqueue import (
     _enqueue,
@@ -572,6 +573,25 @@ async def test_memory_enqueue_batch_nul_metadata_annotated_and_atomic() -> None:
     assert "item 1" in str(exc_info.value)
     assert "metadata" in str(exc_info.value)
     assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: test-only admission check
+
+
+async def test_memory_enqueue_with_memoized_args_still_stores_dict_payload() -> None:
+    """The jsonb memos are a PG-binding cache, the args' payload/metadata
+    fields stay the dict form: an InMemoryBackend enqueue of args whose
+    encodings were already memoized (as a PG enqueue would have) still
+    stores and dispatches the dicts, the memo never becomes the stored
+    value."""
+    backend = InMemoryBackend(clock=FakeClock(_NOW))
+    args = _make_args()
+    args_jsonb = _records.payload_jsonb_param(args)
+    meta_jsonb = _records.metadata_jsonb_param(args)
+    assert args_jsonb is not None and meta_jsonb is not None
+
+    row = await backend.enqueue(args)
+
+    stored = backend._jobs[row.id]  # type: ignore[reportPrivateUsage]  # Why: the pin reads the stored row directly, the dict form is the storage contract.
+    assert stored.payload == {"value": 1}
+    assert isinstance(stored.payload, dict)
 
 
 # ── _enqueue_batch_fast: schedule_to_close_interval + result_ttl ────────

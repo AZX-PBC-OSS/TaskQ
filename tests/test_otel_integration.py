@@ -302,6 +302,74 @@ class TestEndToEndTrace:
         finally:
             await stack.aclose()
 
+    async def test_disabled_otel_dispatch_builds_no_consumer_attrs(
+        self, pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With telemetry off, dispatch never builds the nine-entry consumer
+        attribute dict: safe_start_span drops attributes unread when the
+        flag is off, so the spy standing at the span start must see
+        ``attributes=None`` on every call, the consumer span's included."""
+        setup_tracer(monkeypatch)
+        setup_meter(monkeypatch)
+        stack, deps, backend, client = await _setup_worker(pg_dsn, monkeypatch)
+        otel_mod.set_otel_enabled(False)
+
+        import taskq.worker.dispatch as dispatch_mod
+
+        seen_attrs: list[object] = []
+        real_start = dispatch_mod.safe_start_span  # pyright: ignore[reportPrivateImportUsage]  # Why: the spy must stand at the module attribute the dispatch call site reads; the canonical re-export home is taskq.obs.
+
+        def spy(name: str, **kwargs: object) -> object:
+            seen_attrs.append(kwargs.get("attributes"))
+            return real_start(name, **kwargs)
+
+        monkeypatch.setattr(dispatch_mod, "safe_start_span", spy)
+        try:
+            handle = await client.enqueue(_integration_test_actor, _Payload())
+            worker_id = new_uuid()
+
+            async with deps.dispatcher_pool.acquire() as conn:
+                from taskq.testing.fixtures import _create_worker
+
+                await _create_worker(conn, deps.settings.schema_name, worker_id)
+                await _dispatch_job_to_running(
+                    conn, deps.settings.schema_name, worker_id, handle.job_id
+                )
+
+            job_row = await backend.get(handle.job_id)
+            assert job_row is not None
+
+            registry, process_scope, thread_scope, loop_scope = _make_scopes_for_dispatch(
+                deps.settings
+            )
+            await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, deps.settings)
+
+            enqueuer = SubJobEnqueuer(
+                loop_scope_resolved=loop_scope.resolved_cache(),
+                worker_pool=deps.worker_pool,
+                backend=backend,
+            )
+
+            await dispatch_one_job(
+                backend=backend,
+                deps=deps,
+                job=job_row,
+                worker_id=worker_id,
+                registry=registry,
+                process_scope=process_scope,
+                thread_scope=thread_scope,
+                loop_scope=loop_scope,
+                actor_ref=_integration_test_actor,
+                actor_config=default_actor_config(),
+                clock=SystemClock(),
+                enqueuer=enqueuer,
+            )
+
+            assert seen_attrs, "spy never saw a span start; the pin is vacuous"
+            assert all(attrs is None for attrs in seen_attrs)
+        finally:
+            await stack.aclose()
+
     async def test_attempt_span_is_child_of_consumer(
         self, pg_dsn: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -147,23 +147,19 @@ def _scrub_exception_fields(
     return event_dict
 
 
-def setup_logging(
-    *,
-    level: str = "INFO",
-    log_format: str = "json",
-) -> None:
-    """Configure structlog with the canonical processor chain.
+def _shared_processors() -> list[structlog.types.Processor]:
+    """The processor chain every TaskQ record runs, shared by
+    :func:`setup_logging`'s stdlib-formatter handoff and the pre-setup
+    default chain :func:`_install_default_chain` installs, so the two
+    can never drift on what a record carries.
 
-    Production (``log_format="json"``): ``JSONRenderer`` via
-    ``ProcessorFormatter`` stdlib bridge. Development (``log_format="console"``):
-    ``ConsoleRenderer`` via ``ProcessorFormatter``. Idempotent, guarded
-    by ``_logging_configured`` flag. Not called at import time .
+    Built per call: the chain closes over the module-global processors
+    (``_otel_span_processor``), and the level-filter pin
+    (``tests/test_obs_structlog.py``) monkeypatches that global before
+    calling :func:`setup_logging`, so a module-level constant would
+    freeze the spy out.
     """
-    global _logging_configured
-    if _logging_configured:
-        return
-
-    shared_processors: list[structlog.types.Processor] = [
+    return [
         # First, and deliberately unwrapped: a call below the configured
         # level must cost nothing beyond this level comparison, so the
         # per-job DEBUG sites do not run the whole chain for a line stdlib
@@ -192,6 +188,76 @@ def setup_logging(
         # unredacted exemption.
         _safe_processor_wrapper(_render_exc_info_safe),
     ]
+
+
+def _install_default_chain() -> None:
+    """Install the pre-``setup_logging`` processor chain, at import.
+
+    Why the default configuration needs its own level filter: structlog's
+    built-in default chain has none, so an embedding application that
+    never calls :func:`setup_logging` paid the full processor chain for
+    every record and let stdlib drop the line afterwards, roughly six
+    times the filtered cost per enqueue log. The installed chain mirrors
+    the configured one's shape: :func:`structlog.stdlib.filter_by_level`
+    FIRST and unwrapped, so a call below the effective level costs one
+    comparison. The level it filters at is the stdlib effective level of
+    the emitting logger, i.e. the embedding application's own root level:
+    this configuration never raises or lowers it, and the application
+    keeps full control (it also keeps full control of rendering, a later
+    :func:`setup_logging` call reconfigures the chain wholesale, and an
+    application configuring structlog itself after importing taskq
+    overrides this one the same way).
+
+    ``cache_logger_on_first_use`` stays False: a logger materialized
+    before :func:`setup_logging` runs must re-resolve per call and pick
+    the configured chain up, never stay pinned to this pre-config one.
+    """
+    from taskq._json import structlog_serializer
+
+    structlog.configure(
+        processors=[
+            *_shared_processors(),
+            # Direct renderer instead of setup_logging's
+            # ``wrap_for_formatter`` handoff: there is no
+            # ``ProcessorFormatter`` installed yet to receive it, and
+            # wrapping without one would hand stdlib's default formatter a
+            # non-string record.
+            structlog.processors.JSONRenderer(serializer=structlog_serializer),
+        ],
+        # Why the stdlib factory (not structlog's default PrintLogger):
+        # ``filter_by_level`` consults the stdlib logger's effective level,
+        # which only this factory produces, and routing through stdlib
+        # logging means TaskQ's pre-setup records reach the embedding
+        # application's own handlers (or stdlib's last-resort handler for
+        # WARNING and above) instead of printing to stdout unconditionally.
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        cache_logger_on_first_use=False,
+    )
+
+
+_install_default_chain()
+
+
+def setup_logging(
+    *,
+    level: str = "INFO",
+    log_format: str = "json",
+) -> None:
+    """Configure structlog with the canonical processor chain.
+
+    Production (``log_format="json"``): ``JSONRenderer`` via
+    ``ProcessorFormatter`` stdlib bridge. Development (``log_format="console"``):
+    ``ConsoleRenderer`` via ``ProcessorFormatter``. Idempotent, guarded
+    by ``_logging_configured`` flag. Not called at import time (the
+    pre-setup default chain :func:`_install_default_chain` is installed
+    at import instead, so an embedding application that never calls this
+    still gets level-filtered logging).
+    """
+    global _logging_configured
+    if _logging_configured:
+        return
+
+    shared_processors = _shared_processors()
 
     formatter_processors: list[structlog.types.Processor]
     if log_format == "console":

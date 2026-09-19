@@ -653,7 +653,13 @@ class JobsClient:
                 tags=tags,
                 idempotency_max_bytes=self._idempotency_max_bytes,
             )
-            span.set_attribute("messaging.message.id", str(args.id))
+            if span.is_recording():
+                # Why the guard: on a non-recording span (no SDK, sampling)
+                # set_attribute discards the value, so the str() of the job
+                # id is paid per enqueue for nothing. Skipped, the exported
+                # spans are unchanged: a recording span still gets exactly
+                # this attribute.
+                span.set_attribute("messaging.message.id", str(args.id))
             if args.unique_for is not None and args.identity_key is None:
                 self._unique_for_warner.maybe_warn(
                     actor=ref.name, queue=ref.queue, unique_for=args.unique_for

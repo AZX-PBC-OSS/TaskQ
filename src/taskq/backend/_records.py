@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Literal
 from taskq._json import NUL_JSONB_ERROR, dumps_jsonb_str, loads
 from taskq.backend._protocol import (
     BatchRow,
+    EnqueueArgs,
     IdempotencyKey,
     IdentityKey,
     JobId,
@@ -33,7 +34,9 @@ __all__ = [
     "item_tags_jsonb_param",
     "jsonb_param",
     "jsonb_to_dict",
+    "metadata_jsonb_param",
     "parse_rowcount",
+    "payload_jsonb_param",
 ]
 
 
@@ -65,6 +68,35 @@ def jsonb_param(value: dict[str, object] | None) -> str | None:
     if value is None:
         return None
     return dumps_jsonb_str(value)
+
+
+def payload_jsonb_param(args: EnqueueArgs) -> str | None:
+    """Bind ``args.payload`` for jsonb, memoizing the encoding on the args.
+
+    Why memoized: :func:`~taskq.client._args.build_enqueue_args` already
+    owns the payload's only other serialization (the pydantic
+    ``model_dump`` into the dict), and the INSERT statement can re-execute
+    on the bounded retry arms (savepoint rollback, parked-connection
+    retry), each execution of the un-memoized shape re-encoding the same
+    dict. The first binding encodes once through the very same
+    :func:`jsonb_param` (NUL guard included); later bindings of the same
+    args reuse the encoded form. ``dataclasses.replace`` cannot smuggle a
+    stale memo through: ``__post_init__`` drops both memos on any
+    re-construction.
+    """
+    if args.payload_jsonb_memo is None:
+        object.__setattr__(args, "payload_jsonb_memo", jsonb_param(args.payload))
+    return args.payload_jsonb_memo
+
+
+def metadata_jsonb_param(args: EnqueueArgs) -> str | None:
+    """Bind ``args.metadata`` for jsonb, memoizing the encoding on the args.
+
+    Same contract as :func:`payload_jsonb_param`, for the metadata column.
+    """
+    if args.metadata_jsonb_memo is None:
+        object.__setattr__(args, "metadata_jsonb_memo", jsonb_param(args.metadata))
+    return args.metadata_jsonb_memo
 
 
 def _nul_item_payload_error(*, idx: int, field: str, actor: str) -> PayloadValidationError:

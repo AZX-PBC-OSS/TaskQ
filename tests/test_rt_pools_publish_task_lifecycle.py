@@ -130,18 +130,20 @@ async def _wait_set_empty(tasks: set[asyncio.Task[None]], drain_bound_s: float) 
 async def test_completed_publishes_are_discarded_from_the_shared_set() -> None:
     """GREEN pin: the set is a window over in-flight publishes, not a ledger.
 
-    Two progress calls with a 0.25 s pipeline round trip each create a
-    tracked task; while in flight the set holds both (the
-    anti-GC-reference is the set's whole purpose), and once both round
-    trips complete the done-callbacks must have discarded them.
+    Two progress calls on DIFFERENT jobs with a 0.25 s pipeline round trip
+    each create a tracked task (per-job coalescing means two rapid calls
+    on the SAME job share one task); while in flight the set holds both
+    (the anti-GC-reference is the set's whole purpose), and once both
+    round trips complete the done-callbacks must have discarded them.
     """
     redis = _FakeRedis(delay=0.25)
     pending: set[asyncio.Task[None]] = set()
     buffers: dict[UUID, _ProgressBuffer] = {}
-    ctx = _ctx(redis, _settings(), pending, buffers, new_uuid())
+    ctx_a = _ctx(redis, _settings(), pending, buffers, new_uuid())
+    ctx_b = _ctx(redis, _settings(), pending, buffers, new_uuid())
 
-    await ctx.progress(step=1)
-    await ctx.progress(step=2)
+    await ctx_a.progress(step=1)
+    await ctx_b.progress(step=2)
 
     assert len(pending) == 2, (
         "each in-flight publish must be strongly referenced by "

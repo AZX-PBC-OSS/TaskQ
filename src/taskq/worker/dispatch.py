@@ -46,6 +46,7 @@ from taskq.obs import (
     ErrorReporter,
     bind_job_context,
     get_logger,
+    otel_enabled,
     record_consumed_message,
     record_process_duration,
     record_queue_wait,
@@ -457,17 +458,25 @@ async def dispatch_one_job(
         if raw_bid is not None:
             batch_id = str(raw_bid)
 
-    consumer_attrs: dict[str, str | int] = {
-        "messaging.system": "taskq",
-        "messaging.destination.name": job.queue,
-        "messaging.operation.type": "process",
-        "messaging.message.id": str(job.id),
-        "messaging.consumer.group.name": deps.settings.worker_group,
-        "taskq.actor": job.actor,
-        "taskq.attempt": job.attempt,
-        "taskq.identity_key": job.identity_key or "",
-        "taskq.batch_id": batch_id,
-    }
+    # Why the flag check duplicates safe_start_span's own gate: these nine
+    # entries (and the str() of the job id among them) are per-job
+    # allocations whose only reader is the span. safe_start_span drops the
+    # attributes unread when telemetry is off, so build them only when the
+    # span can receive them; the exported attribute set is unchanged when
+    # it is on.
+    consumer_attrs: dict[str, str | int] | None = None
+    if otel_enabled():
+        consumer_attrs = {
+            "messaging.system": "taskq",
+            "messaging.destination.name": job.queue,
+            "messaging.operation.type": "process",
+            "messaging.message.id": str(job.id),
+            "messaging.consumer.group.name": deps.settings.worker_group,
+            "taskq.actor": job.actor,
+            "taskq.attempt": job.attempt,
+            "taskq.identity_key": job.identity_key or "",
+            "taskq.batch_id": batch_id,
+        }
 
     dispatch_log = logger_arg if logger_arg is not None else logger
 
