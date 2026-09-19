@@ -249,7 +249,8 @@ re-exported from `taskq.testing.__init__` to avoid importing `pytest` and
 
 ```python
 async def test_with_memory_jobs(memory_jobs: InMemoryBackend) -> None:
-    memory_jobs.register_stub(my_actor, lambda p, ctx: {"ok": True})  # the ActorRef, not a bare name
+    # the ActorRef, not a bare name
+    memory_jobs.register_stub(my_actor, lambda p, ctx: {"ok": True})
     ...
 ```
 
