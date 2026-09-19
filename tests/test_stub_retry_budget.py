@@ -45,11 +45,12 @@ def _failing_stub(calls: list[int]) -> "object":
     return failing
 
 
-async def test_stub_retry_override_fails_the_job_after_the_stub_budget() -> None:
-    """An actor declaring max_attempts=5, stubbed with
-    ``retry=RetryPolicy(max_attempts=2)`` BEFORE enqueue, fails after 2
-    attempts: the stub's budget stamps the enqueued row, so the
-    exhaustion arm fires at 2."""
+async def test_row_budget_is_the_enqueue_declaration_the_stub_never_moves() -> None:
+    """The row's budget is stamped by the enqueue (the client stamps it
+    from the ActorRef), and the stub's registration never moves it,
+    before or after: a stub whose retry= says 2 under a ref declaring 5
+    runs the ref's 5, exactly as production would (the row's budget is
+    the enqueuing side's declaration)."""
     clock = FakeClock(start=_START)
     backend = InMemoryBackend(clock=clock)
     client = JobsClient(backend)
@@ -64,9 +65,8 @@ async def test_stub_retry_override_fails_the_job_after_the_stub_budget() -> None
     handle = await client.enqueue(budget_actor, BudgetPayload())
     row = await backend.get(handle.job_id)
     assert row is not None
-    assert row.max_attempts == 2, (
-        "the stub's explicit retry budget must stamp the enqueued row's "
-        f"max_attempts; got {row.max_attempts}"
+    assert row.max_attempts == 5, (
+        f"the ref's declared budget stamps the row; got {row.max_attempts}"
     )
 
     await backend.run_until_drained()
@@ -74,17 +74,18 @@ async def test_stub_retry_override_fails_the_job_after_the_stub_budget() -> None
     row = await backend.get(handle.job_id)
     assert row is not None
     assert row.status == "failed", f"got status={row.status} error={row.error_class}"
-    assert row.max_attempts == 2
-    assert len(calls) == 2, (
-        "the job must fail after exactly 2 attempts, not the actor's 5 "
-        f"and not the stub default's 3; got {len(calls)}"
-    )
+    assert row.max_attempts == 5
+    assert len(calls) == 5, f"the enqueue declaration governs; got {len(calls)} attempts"
 
 
-async def test_stub_retry_override_stamps_rows_enqueued_before_registration() -> None:
-    """Registration order must not change the budget: a row enqueued
-    BEFORE the stub (carrying the ref's 5) is re-stamped from the stub's
-    explicit retry= at dispatch, so it also fails after 2 attempts."""
+async def test_stub_registered_after_enqueue_never_moves_the_row_budget() -> None:
+    """The row's budget is a bound: a stub registered after the enqueue
+    cannot move it. The row carries the ref's enqueue-time stamp (5) and
+    runs to it; only a stub registered BEFORE the enqueue stamps the row
+    (at enqueue time, via _apply_stub_retry_override). Re-stamping at
+    dispatch would let a test-side registration overwrite a ceiling a
+    test deliberately seeded, breaking the max_attempts-never-moves
+    invariant the denial-budget pins assert."""
     clock = FakeClock(start=_START)
     backend = InMemoryBackend(clock=clock)
     client = JobsClient(backend)
@@ -106,11 +107,8 @@ async def test_stub_retry_override_stamps_rows_enqueued_before_registration() ->
     row = await backend.get(handle.job_id)
     assert row is not None
     assert row.status == "failed", f"got status={row.status} error={row.error_class}"
-    assert row.max_attempts == 2
-    assert len(calls) == 2, (
-        "a late stub registration must still impose the stub budget, "
-        f"not the ref's 5; got {len(calls)}"
-    )
+    assert row.max_attempts == 5, "a late registration must not move the row's budget"
+    assert len(calls) == 5, f"the row's enqueue-time budget governs; got {len(calls)} attempts"
 
 
 async def test_stub_without_retry_keeps_the_ref_declared_budget() -> None:
@@ -144,10 +142,11 @@ async def test_stub_without_retry_keeps_the_ref_declared_budget() -> None:
     )
 
 
-async def test_bare_name_stub_with_retry_still_stamps_the_row() -> None:
+async def test_bare_name_stub_with_retry_does_not_move_the_row_budget() -> None:
     """A stub registered by bare name (no ref) with an explicit
-    ``retry=`` still stamps the row: the budget is the stub's, whatever
-    the row was enqueued with."""
+    ``retry=`` does not move a row the enqueue already stamped: the
+    enqueue's declaration is the budget, whatever the registration says.
+    To test exhaustion at N attempts, declare N at the enqueue."""
     clock = FakeClock(start=_START)
     backend = InMemoryBackend(clock=clock)
     calls: list[int] = []
@@ -174,8 +173,5 @@ async def test_bare_name_stub_with_retry_still_stamps_the_row() -> None:
     row = await backend.get(args.id)
     assert row is not None
     assert row.status == "failed", f"got status={row.status} error={row.error_class}"
-    assert row.max_attempts == 2
-    assert len(calls) == 2, (
-        "the retry= argument must stamp the row even when the stub is "
-        f"registered by bare name; got {len(calls)}"
-    )
+    assert row.max_attempts == 5, "the enqueue's declaration is the budget"
+    assert len(calls) == 5, f"got {len(calls)} attempts"

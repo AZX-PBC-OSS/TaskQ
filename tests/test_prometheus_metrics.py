@@ -112,6 +112,7 @@ _NAME_MAP: list[tuple[str, str, str]] = [
     ),
     ("taskq.error_reporter.failures", "taskq_error_reporter_failures_total", "counter"),
     ("taskq.progress.publish_failures", "taskq_progress_publish_failures_total", "counter"),
+    ("taskq.progress.flush_failures", "taskq_progress_flush_failures_total", "counter"),
     ("taskq.ratelimit.refund_failures", "taskq_ratelimit_refund_failures_total", "counter"),
     ("taskq.leader.election_attempts", "taskq_leader_election_attempts_total", "counter"),
     ("taskq.leader.election_failures", "taskq_leader_election_failures_total", "counter"),
@@ -269,6 +270,9 @@ def _populate_all_instruments(meter: Any) -> None:
         1, {"reporter_type": "sentry"}
     )
     meter.create_counter("taskq.progress.publish_failures", unit="1").add(1)
+    meter.create_counter("taskq.progress.flush_failures", unit="1").add(
+        1, {"stage": "per_job", "error_type": "TimeoutError"}
+    )
     meter.create_counter("taskq.ratelimit.refund_failures", unit="1").add(
         1, {"bucket": "b", "backend": "redis", "error_type": "ConnectionError"}
     )

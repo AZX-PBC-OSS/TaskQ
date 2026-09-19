@@ -15,7 +15,7 @@ import contextlib
 import traceback
 import warnings
 from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
@@ -242,7 +242,6 @@ class _InMemoryActorConfig:
     # ``retry=`` is the test's declared budget for the actor and stamps
     # max_attempts/retry fields onto every row dispatched for it, exactly
     # like an ActorRef's retry stamps rows at enqueue time.
-    retry_override: RetryPolicy | None = None
     non_retryable_exceptions: tuple[type[BaseException], ...] = ()
     retry_classifier: RetryClassifierHook | None = None
     on_retry_exhausted: OnRetryExhausted | None = None
@@ -472,7 +471,6 @@ def register_stub(
     backend._actor_stubs[name] = fn  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
     backend._actor_configs[name] = _InMemoryActorConfig(  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
         retry=retry if retry is not None else RetryPolicy(jitter=0.0),
-        retry_override=retry,
         non_retryable_exceptions=non_retryable_exceptions,
         retry_classifier=retry_classifier,
         on_retry_exhausted=on_retry_exhausted,
@@ -1000,33 +998,11 @@ async def run_until_drained(backend: "InMemoryBackend", *, cancel_polling: bool 
             if actor_cfg is None:
                 actor_cfg = _InMemoryActorConfig(retry=RetryPolicy(jitter=0.0))
 
-            # A stub's explicit retry= is the actor's in-memory retry
-            # budget regardless of registration order: a row enqueued
-            # BEFORE the stub was registered still carries the ref's
-            # enqueue-time stamp, so re-stamp here, exactly the fields
-            # the enqueue-time override writes. Without this, the same
-            # stub budget would depend on whether the test enqueued or
-            # registered first.
-            override = actor_cfg.retry_override
-            if override is not None and (
-                job.max_attempts != override.max_attempts
-                or job.retry_kind != override.kind
-                or job.retry_base != override.base
-                or job.retry_cap != override.cap
-                or job.retry_backoff != override.backoff
-                or job.retry_jitter != override.jitter
-            ):
-                stamped = replace(
-                    job,
-                    max_attempts=override.max_attempts,
-                    retry_kind=override.kind,
-                    retry_base=override.base,
-                    retry_cap=override.cap,
-                    retry_backoff=override.backoff,
-                    retry_jitter=override.jitter,
-                )
-                backend._jobs[job.id] = stamped  # pyright: ignore[reportPrivateUsage]  # Why: same private-state access pattern as every other runner write.
-                job = stamped
+            # The row's retry budget is a bound stamped by the ENQUEUING
+            # call (the client stamps it from the ActorRef): no stub
+            # registration may move it, before or after the enqueue. A
+            # stub's retry= configures the stub's own retry
+            # classification only.
 
             # PayloadValidationError escapes consume_one_job for two pre-actor
             # reasons, both OUTSIDE its actor-body try/except: (1) the fallback

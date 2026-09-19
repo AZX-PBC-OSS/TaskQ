@@ -13,7 +13,7 @@ job refuses retry, and cancel-where refuses an empty filter before any
 connection is opened.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -86,7 +86,7 @@ def _patch_ops_client(monkeypatch: pytest.MonkeyPatch, fake: _FakeTaskQ) -> list
     opened: list[_FakeTaskQ] = []
 
     @asynccontextmanager
-    async def fake_client(settings: Any) -> AsyncIterator[_FakeTaskQ]:
+    async def fake_client(settings: Any) -> AsyncGenerator[_FakeTaskQ]:
         opened.append(fake)
         yield fake
 
