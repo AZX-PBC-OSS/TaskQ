@@ -1,7 +1,7 @@
 """Tests for the `taskq job show` CLI surface.
 
 The asyncpg connection is monkeypatched at the ``taskq.cli`` import
-boundary — these tests pin argument validation, the jobs → jobs_archive
+boundary - these tests pin argument validation, the jobs → jobs_archive
 fallback, the missing-job exit code, and the ``max_attempts`` rendering
 contract: under ``retry_kind='indefinite'`` the stored ceiling is inert
 (the retry path never consults it), so the command must render the
@@ -95,7 +95,7 @@ def test_show_renders_max_attempts_number_for_bounded_retry(
 
 
 def test_show_falls_back_to_jobs_archive(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A pruned terminal job is shown from the archive and marked as such —
+    """A pruned terminal job is shown from the archive and marked as such -
     an archived success must not read as 'no such job'."""
     _patch_db(monkeypatch, None, archive_row=_job_row())
 
@@ -107,7 +107,7 @@ def test_show_falls_back_to_jobs_archive(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_show_unknown_job_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No row in either table: the shell contract is a non-zero exit — a
+    """No row in either table: the shell contract is a non-zero exit - a
     show that found nothing must not read as success."""
     _patch_db(monkeypatch, None)
 

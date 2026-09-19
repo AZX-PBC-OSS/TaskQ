@@ -1,6 +1,6 @@
 """Fixed-quota keyed buckets: which backends idle eviction must hold.
 
-#244: ``TokenBucket.holds_consumed_quota`` held EVERY Postgres fixed-quota
+Pre-fix, ``TokenBucket.holds_consumed_quota`` held EVERY Postgres fixed-quota
 keyed bucket, spent or not, so once a worker had seen
 ``max_keyed_rate_limits`` distinct keys, every NEW key raised
 ``ReservationUnavailable`` (routed by the consumer to the 429
@@ -20,7 +20,7 @@ The memory backend is the one real hold: its token state lives only on
 the in-process instance, so eviction would genuinely reset a spent quota.
 
 This file pins the predicate per backend, the eviction's use of it, the
-cap-refusal regression (the #244 reproduction, inverted), and, against
+cap-refusal regression (the reproduction, inverted), and, against
 real Postgres, that evict-then-reacquire never resets or double-grants a
 spent fixed quota (the adversarial-review shape: two workers evict and
 re-materialize the same key concurrently).
@@ -56,7 +56,7 @@ class _TenantPayload(BaseModel):
 
 
 def _pg_ref(base_name: str, *, capacity: float = 5.0) -> KeyedRateLimitRef:
-    """A PG-backend FIXED-QUOTA keyed ref, the #244 shape."""
+    """A PG-backend FIXED-QUOTA keyed ref, the shape."""
     return KeyedRateLimitRef.typed(
         _TenantPayload,
         base_name=base_name,
@@ -100,7 +100,7 @@ async def test_pg_fixed_quota_bucket_is_not_held_spent_or_not() -> None:
     """A PG fixed-quota bucket never holds its registry entry on eviction:
     the row-delete vetoes own the state-safety guarantee, so the in-process
     hold is redundant bookkeeping, and (pre-fix) it was the cap-filling
-    leak that refused every new key past ``max_keyed_rate_limits`` (#244)."""
+    leak that refused every new key past ``max_keyed_rate_limits``."""
     for spent in (False, True):
         # The instance carries no token state on the postgres backend:
         # the pre-fix hold could not even see spentness, it keyed purely
@@ -150,7 +150,7 @@ async def test_refilling_buckets_are_never_held() -> None:
 
 async def test_idle_eviction_recycles_pg_fixed_quota_entries() -> None:
     """The eviction sweep (and the opportunistic cap-pressure path that
-    calls it) must recycle idle PG fixed-quota keyed entries, the #244
+    calls it) must recycle idle PG fixed-quota keyed entries, the
     reproduction: cap 2, two idle never-again-used PG fixed-quota keys,
     and the third key must resolve instead of being refused forever."""
     reg = RateLimitRegistry()
@@ -236,7 +236,7 @@ class TestPgFixedQuotaEvictReacquire:
             await conn.close()
 
     async def test_spent_quota_survives_eviction_and_rematerialization(self, pg_dsn: str) -> None:
-        """The #244 verification pass on real PG, now pinned: evicting a
+        """The verification pass on real PG, now pinned: evicting a
         spent PG fixed-quota entry keeps its row (the drain's delete veto)
         and re-resolving the key resumes from the surviving state, the
         budget the tenant already spent is never handed back."""

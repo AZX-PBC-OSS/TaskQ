@@ -79,7 +79,7 @@ class TestRuntimeCheckable:
 class TestStaticTypeCompatibility:
     def test_annotated_function_accepts_system_clock(self) -> None:
         """Demonstrates that SystemClock satisfies the Clock protocol
-        at the static-type level — pyright verifies this call site."""
+        at the static-type level - pyright verifies this call site."""
 
         def accept_clock(c: Clock) -> float:
             return c.monotonic()
@@ -135,7 +135,7 @@ class TestNoForbiddenImports:
 
 class TestSystemClockIsStateless:
     def test_frozen(self) -> None:
-        """SystemClock is frozen — cannot mutate attributes.
+        """SystemClock is frozen - cannot mutate attributes.
 
         On CPython, frozen+slots dataclasses raise ``TypeError`` (not
         ``AttributeError``) when setting an undeclared slot on a zero-field
@@ -146,7 +146,7 @@ class TestSystemClockIsStateless:
             clock._arbitrary = 42  # type: ignore[attr-defined] # Why: intentionally assigning to a non-existent attribute to prove the frozen+slots dataclass rejects it
 
     def test_slots(self) -> None:
-        """SystemClock uses slots — no __dict__."""
+        """SystemClock uses slots - no __dict__."""
         clock = SystemClock()
         assert not hasattr(clock, "__dict__")
 

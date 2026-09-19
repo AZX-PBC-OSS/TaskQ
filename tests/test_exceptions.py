@@ -74,7 +74,7 @@ def _coalesce(retry_after_in: timedelta | None) -> timedelta:
 
 
 def test_coalesce_preserves_timedelta_zero() -> None:
-    """Coalesce uses `is None`, not truthiness — `timedelta(0)` MUST pass through unchanged."""
+    """Coalesce uses `is None`, not truthiness - `timedelta(0)` MUST pass through unchanged."""
     coerced = _coalesce(timedelta(0))
     assert isinstance(coerced, timedelta)
     assert coerced.total_seconds() >= 0
@@ -119,7 +119,7 @@ def test_exceptions_importable_from_taskq() -> None:
 
 def test_drift_error_numeric_values_inside_metadata() -> None:
     """str() contains actor, field, and the numeric values nested in a
-    metadata dict — ActorConfigDriftError formats whatever registered/stored
+    metadata dict - ActorConfigDriftError formats whatever registered/stored
     hold via repr(), regardless of what's inside.
     """
     exc = ActorConfigDriftError(
@@ -154,7 +154,7 @@ def test_drift_error_metadata() -> None:
 def test_drift_error_none_values() -> None:
     """str() renders None registered/stored as None.
 
-    registered/stored are typed ``dict[str, object] | None`` — production
+    registered/stored are typed ``dict[str, object] | None`` - production
     call sites (sync_actor_config) never pass None for metadata, but the
     constructor stays defensively None-safe.
     """
@@ -580,7 +580,7 @@ class TestActorDeregistrationErrors:
 
 
 class _IntFieldPayload(BaseModel):
-    """Payload whose only field is an int — a str value fails validation."""
+    """Payload whose only field is an int - a str value fails validation."""
 
     count: int
 
@@ -603,7 +603,7 @@ def test_public_validate_actor_payload_does_not_embed_payload_values() -> None:
 def test_validate_actor_payload_single_sanitized_implementation() -> None:
     """``taskq.validate_actor_payload`` and the ``taskq.exceptions``
     re-export are the SAME sanitized implementation from
-    ``taskq._validation`` — the unsanitized duplicate that embedded the raw
+    ``taskq._validation`` - the unsanitized duplicate that embedded the raw
     payload in its message is gone from the public surface."""
     from taskq import exceptions as exceptions_mod
     from taskq._validation import validate_actor_payload as impl

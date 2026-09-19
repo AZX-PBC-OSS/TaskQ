@@ -1,43 +1,43 @@
 """Contract: client/CLI first-use awaits are bounded (the defect-class sweep).
 
-Client, web-admin and CLI processes arm NO watchdogs — the worker's
-watchdog net does not exist in them — so every unbounded await on a
+Client, web-admin and CLI processes arm NO watchdogs - the worker's
+watchdog net does not exist in them - so every unbounded await on a
 caller-supplied factory, or on the first network round trip at
 open()/startup, is a process wedge with no signal. This file pins the
 bounded discipline for every member of that class the sweep mapped:
 
 * ``TaskQ.open()``'s ``pool_factory()`` call (the AAD first token fetch
-  lives inside it) and ``TaskQ.reload_credentials()``'s rotation call —
+  lives inside it) and ``TaskQ.reload_credentials()``'s rotation call -
   bounded with the SAME bound the worker applies to every factory call
   (``WorkerSettings.reload_factory_timeout``'s default, mirrored as
   ``taskq.client._taskq._RELOAD_FACTORY_TIMEOUT_SECS``).
-* ``JobsClient._open_redis``'s eager ``initialize()`` — the first broker
+* ``JobsClient._open_redis``'s eager ``initialize()`` - the first broker
   round trip; bounded the way the codebase bounds every redis operation
-  (``asyncio.wait_for`` — redis-py socket kwargs are configured nowhere
+  (``asyncio.wait_for`` - redis-py socket kwargs are configured nowhere
   in src/taskq, while the worker bounds its redis factory identically).
 * ``taskq ui serve`` startup: ``pool_factory()``, ``redis_factory()``,
   and the eager redis ``initialize()``; plus the ``/jobs/health/ready``
-  PG probe — bounded with the worker's own readiness discipline
+  PG probe - bounded with the worker's own readiness discipline
   (``acquire(timeout=...)`` + ``wait_for`` around ``SELECT 1``,
   ``health_pg_ping_timeout``'s default mirrored).
-* The UI pool's ``command_timeout`` — the pool-level per-query bound
+* The UI pool's ``command_timeout`` - the pool-level per-query bound
   that covers every admin-page query on it (the one-line fix the sweep
   mapped to ~20 admin query sites).
 * Protocol completeness: ``_ClientSettings`` (and the web-admin test
   double) declare every ``BackendSettings`` member, per the protocol's
-  own doctrine — every settings object that reaches a PostgresBackend
+  own doctrine - every settings object that reaches a PostgresBackend
   must carry the knobs, so the contract is checkable.
 
 Docker-free: hand-rolled fakes wired through the REAL seams
 (``TaskQ.open``/``reload_credentials``, ``_ui_serve``'s lifespan, the
 registered ``/jobs/health/ready`` endpoint closure). asyncpg types are
-C-extensions — no MagicMock where a hang gate is needed. The budget
+C-extensions - no MagicMock where a hang gate is needed. The budget
 pattern is tests/test_notify_bootstrap_bounded.py's: the production
 bound is shrunk through a module-global monkeypatch seam, a test-side
 ``asyncio.timeout`` budget catches the unbounded RED state, and
 ``budget.expired()`` discriminates production-bounded from test-budget.
 
-No ``pytestmark`` — must run under ``pytest -m "not integration"``.
+No ``pytestmark`` - must run under ``pytest -m "not integration"``.
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ runner = CliRunner()
 # budget is what fires.
 _PROD_BOUND_SECS = 0.5
 _PROD_PING_BOUND_SECS = 0.05
-# 10x the configured production bound — generous. This budget firing is
+# 10x the configured production bound - generous. This budget firing is
 # the red result: production never bounded the await on its own.
 _TEST_BUDGET_SECS = 5.0
 
@@ -213,7 +213,7 @@ async def _call_ready_endpoint(app: Any) -> Any:
 
     The route is mounted inside the lifespan, so the app must be inside
     ``app.router.lifespan_context(app)`` when this is called. The raw
-    endpoint is the smallest real seam the CLI exposes for the probe —
+    endpoint is the smallest real seam the CLI exposes for the probe -
     driving it directly bounds the RED state with a test-side budget.
 
     Why the ``original_router`` traversal: this FastAPI mounts routers
@@ -243,9 +243,9 @@ async def _call_ready_endpoint(app: Any) -> Any:
 async def test_taskq_open_pool_factory_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     """The FIRST ``pool_factory()`` call during ``TaskQ.open()`` completes
     or raises within the configured bound. A credential provider that
-    accepts the call and never returns must fail the open loudly — the
+    accepts the call and never returns must fail the open loudly - the
     worker already bounds its identical bootstrap factory calls with
-    ``reload_factory_timeout`` — not park the client process forever
+    ``reload_factory_timeout`` - not park the client process forever
     before anything else exists (no watchdog is armed in client space)."""
     import taskq.client._taskq as taskq_mod
 
@@ -267,15 +267,15 @@ async def test_taskq_open_pool_factory_is_bounded(monkeypatch: pytest.MonkeyPatc
                 "fetch lives inside the factory; the worker bounds its "
                 "identical bootstrap factory calls with "
                 "reload_factory_timeout, and client processes arm no "
-                "watchdogs — a black-holed token endpoint wedges the "
+                "watchdogs - a black-holed token endpoint wedges the "
                 "client undetected."
             )
         assert "pool_factory" in str(exc), f"the timeout must name the seam, got: {exc!r}"
-        # The open failed before anything was constructed — no half-open state.
+        # The open failed before anything was constructed - no half-open state.
         assert tq._pool is None
         assert tq._client is None
         return
-    pytest.fail("open() returned against a factory that never returns — impossible")
+    pytest.fail("open() returned against a factory that never returns - impossible")
 
 
 # ── TaskQ.reload_credentials(): the rotation factory call is bounded ───
@@ -287,8 +287,8 @@ async def test_taskq_reload_credentials_pool_factory_is_bounded(
     """``reload_credentials()``'s factory call completes or raises within
     the configured bound. A token endpoint that wedged after a healthy
     first fetch must fail the rotation loudly and leave the live pool
-    untouched and serving — the worker's reload bounds its identical
-    factory calls — not park the client forever."""
+    untouched and serving - the worker's reload bounds its identical
+    factory calls - not park the client forever."""
     import taskq.client._taskq as taskq_mod
 
     monkeypatch.setattr(taskq_mod, "_RELOAD_FACTORY_TIMEOUT_SECS", _PROD_BOUND_SECS, raising=False)
@@ -326,7 +326,7 @@ async def test_taskq_reload_credentials_pool_factory_is_bounded(
                 "live pool held hostage."
             )
         assert "pool_factory" in str(exc), f"the timeout must name the seam, got: {exc!r}"
-        # The live pool is untouched and still serving — the docstring contract.
+        # The live pool is untouched and still serving - the docstring contract.
         assert tq._pool is first
         assert tq._deps is not None and tq._deps.worker_pool is first
         assert first.close_calls == 0, "a failed rotation must never close the live pool"
@@ -342,8 +342,8 @@ async def test_taskq_reload_credentials_pool_factory_is_bounded(
 async def test_taskq_open_redis_initialize_is_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``JobsClient._open_redis``'s eager ``initialize()`` — the first
-    broker round trip — completes or raises within the configured bound.
+    """``JobsClient._open_redis``'s eager ``initialize()`` - the first
+    broker round trip - completes or raises within the configured bound.
     A black-holed Redis must fail ``TaskQ.open()`` loudly, not park it
     forever. The codebase bounds redis operations with ``asyncio.wait_for``
     (the worker bounds its redis factory that way); redis-py socket kwargs
@@ -383,7 +383,7 @@ async def test_taskq_open_redis_initialize_is_bounded(
         assert "initialize" in str(exc), f"the timeout must name the seam, got: {exc!r}"
         # The failed eager setup must still be releasable without wedging:
         # the bounded-close callback was pushed BEFORE initialize() (the
-        # doctrine pinned by tests/test_jobs_client.py) — close() runs it.
+        # doctrine pinned by tests/test_jobs_client.py) - close() runs it.
         async with asyncio.timeout(_TEST_BUDGET_SECS):
             await tq.close()
         assert fake.aclose_calls == 1
@@ -397,7 +397,7 @@ async def test_taskq_open_redis_initialize_is_bounded(
 async def test_taskq_open_dsn_pool_carries_command_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The DSN pool ``TaskQ.open()`` builds carries ``command_timeout`` —
+    """The DSN pool ``TaskQ.open()`` builds carries ``command_timeout`` -
     the pool-level per-query bound. Without it, a black-holed Postgres
     parks the client's first enqueue/get/cancel forever (client processes
     arm no watchdogs), the one pool family the worker-side pools all
@@ -413,7 +413,7 @@ async def test_taskq_open_dsn_pool_carries_command_timeout(
         return pool
 
     # open() imports asyncpg lazily (line-local, the optional-driver
-    # boundary), so the seam is the asyncpg module itself — the same
+    # boundary), so the seam is the asyncpg module itself - the same
     # patching shape the redis-bound test uses for redis_async.from_url.
     monkeypatch.setattr(asyncpg_mod, "create_pool", _recording_create_pool)
     tq = TaskQ(dsn="postgresql://x:x@localhost/x", schema="taskq")
@@ -424,7 +424,7 @@ async def test_taskq_open_dsn_pool_carries_command_timeout(
 
     assert captured_kwargs.get("command_timeout") == 10.0, (
         "the DSN pool TaskQ builds must carry the pool-level per-query "
-        "bound (client._taskq._CLIENT_POOL_COMMAND_TIMEOUT_SECS — set "
+        "bound (client._taskq._CLIENT_POOL_COMMAND_TIMEOUT_SECS - set "
         "deliberately above the 5 s enqueue-path lock budgets so the "
         "server-side typed lock refusal wins the race against asyncpg's "
         "client-side cancellation), got "
@@ -439,7 +439,7 @@ def test_taskq_pg_provider_pool_factory_carries_command_timeout(
     ``command_timeout``: the sugar collapses into
     ``make_pg_pool_factory``, and a factory that omits the bound leaves
     the provider path the one unbounded client pool left standing. (A
-    caller-supplied ``pool_factory`` stays caller-owned — its timeouts
+    caller-supplied ``pool_factory`` stays caller-owned - its timeouts
     are its choice, the worker's doctrine for caller pools.)"""
 
     import taskq.auth as auth_mod
@@ -470,7 +470,7 @@ def test_taskq_pg_provider_pool_factory_carries_command_timeout(
 # ── Enqueue lock budgets vs the client pool's per-query bound ──────────
 #
 # The typed lock-timeout refusals (MaxPendingLockTimeoutError and
-# siblings) fire server-side via a lock_timeout GUC — they only exist if
+# siblings) fire server-side via a lock_timeout GUC - they only exist if
 # the budget fits inside the pool's per-query command_timeout with the
 # 80% share of headroom the refusal needs to unwind first. These pins
 # cover the wiring that makes an operator's TASKQ_*_LOCK_TIMEOUT_MS reach
@@ -494,7 +494,7 @@ async def test_taskq_open_delivers_default_budgets_inside_the_pool_bound(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """At the shipped defaults the client path delivers each 5000 ms
-    budget in full inside the pool's 10.0 s per-query bound — the bound
+    budget in full inside the pool's 10.0 s per-query bound - the bound
     is deliberately larger than every 5000 ms lock budget, so the
     server-side lock_timeout fires well before the client-side timer and
     the refusal is the typed one, never a bare TimeoutError."""
@@ -522,7 +522,7 @@ async def test_taskq_open_operator_widened_budget_is_delivered_end_to_end(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An operator widening a budget past its default re-derives the
-    pool's per-query bound to fit it at the same 80% share — the widened
+    pool's per-query bound to fit it at the same 80% share - the widened
     budget is delivered in full (not silently clamped to fit the floor),
     and the untouched siblings now fit the larger bound unclamped too."""
     import asyncpg as asyncpg_mod
@@ -553,7 +553,7 @@ async def test_taskq_caller_supplied_pool_leaves_budgets_as_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A caller-owned pool's timeouts are the caller's own choice (the
-    worker's doctrine for caller pools): no derivation, no clamp — the
+    worker's doctrine for caller pools): no derivation, no clamp - the
     budgets stand as configured."""
     monkeypatch.setenv("TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS", "12000")
     tq = TaskQ(pool=_FakePool("caller"), schema="taskq")  # type: ignore[arg-type]  # Why: the pool seam under test is duck-typed at open(); the fake covers the close path.
@@ -570,7 +570,7 @@ def test_taskq_pg_provider_pool_factory_derives_the_bound_from_a_widened_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The pg_provider sugar's pool factory carries the DERIVED bound too,
-    not the bare floor — otherwise the provider path would be the one
+    not the bare floor - otherwise the provider path would be the one
     client pool where widening a lock budget silently does nothing."""
 
     import taskq.auth as auth_mod
@@ -595,7 +595,7 @@ def test_taskq_pg_provider_pool_factory_derives_the_bound_from_a_widened_budget(
     )
 
 
-# ── The lock-budget overlay / schema default vs the .env cascade (#251) ──
+# ── The lock-budget overlay / schema default vs the .env cascade ──
 #
 # The worker resolves TASKQ_* through dotenvmodel's cascade (process
 # environment, then the .env files, per DOTENV_OVERRIDE); the client's
@@ -626,7 +626,7 @@ async def test_taskq_open_delivers_a_dotenv_only_widened_budget_end_to_end(
 ) -> None:
     """A budget widened ONLY in .env (no process env) reaches the client
     pool's derived bound and the backend's budgets: the .env cascade the
-    worker always read, delivered on the client path too (#251)."""
+    worker always read, delivered on the client path too."""
     import asyncpg as asyncpg_mod
 
     _dotenv_dir(
@@ -658,7 +658,7 @@ async def test_taskq_open_delivers_a_dotenv_only_widened_budget_end_to_end(
     assert captured_kwargs.get("command_timeout") == 37.5, (
         "a 30000 ms budget set only in .env needs a 37.5 s pool bound to "
         f"keep its 80% share; got {captured_kwargs.get('command_timeout')!r}: "
-        "the client's overlay is not reading the .env cascade (#251)"
+        "the client's overlay is not reading the .env cascade"
     )
     assert budgets == (5000.0, 5000.0, 30000.0)
 
@@ -805,7 +805,7 @@ def test_taskq_constructor_ignores_a_malformed_unrelated_setting(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A malformed setting the client never reads must not break its
-    constructor: in the process env OR in .env (#251: the constructor's
+    constructor: in the process env OR in .env (the constructor's
     full validating TaskQSettings.load() raised on TASKQ_ADMIN_PORT)."""
     _dotenv_dir(
         tmp_path,
@@ -881,7 +881,7 @@ async def test_ui_serve_lifespan_pool_factory_is_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The UI's startup ``pool_factory()`` call completes or raises within
-    the configured bound — the same first-use factory discipline as
+    the configured bound - the same first-use factory discipline as
     ``TaskQ.open()`` and the worker's bootstrap. A hung credential
     provider must fail UI startup loudly, not park ``taskq ui serve``
     forever before any request is served."""
@@ -917,7 +917,7 @@ async def test_ui_serve_lifespan_redis_factory_is_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The UI's startup ``redis_factory()`` call completes or raises within
-    the configured bound — the worker's reload bounds its redis factory
+    the configured bound - the worker's reload bounds its redis factory
     identically. A hung Redis credential provider must fail UI startup
     loudly, not park it forever."""
     import taskq.cli as cli_mod
@@ -957,7 +957,7 @@ async def test_ui_serve_lifespan_redis_initialize_is_bounded(
 ) -> None:
     """The UI's eager redis ``initialize()`` (the first broker round trip
     on the from_url path) completes or raises within the configured
-    bound. A black-holed broker must fail UI startup loudly — and the
+    bound. A black-holed broker must fail UI startup loudly - and the
     from_url-allocated client must still be released by the pushed
     bounded-close callback during the unwind (the push-before-initialize
     doctrine)."""
@@ -1164,7 +1164,7 @@ async def test_ui_serve_ready_hanging_execute_is_bounded(
 async def test_ui_serve_pool_carries_command_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The UI's admin pool is created with a ``command_timeout`` — the
+    """The UI's admin pool is created with a ``command_timeout`` - the
     pool-level per-query bound that covers every admin-page query on it.
     Without it, a black-holed PG wedges each admin request forever (the
     sweep mapped ~20 such query sites to this one pool-creation line)."""
@@ -1188,7 +1188,7 @@ async def test_ui_serve_pool_carries_command_timeout(
     )
 
 
-class _Provider:  # pyright: ignore[reportUnusedClass]  # Why: reached only through the CLI's dynamic "module:attr" credential-provider ref below — pyright cannot see string-based access.
+class _Provider:  # pyright: ignore[reportUnusedClass]  # Why: reached only through the CLI's dynamic "module:attr" credential-provider ref below - pyright cannot see string-based access.
     """Duck-typed PgCredentialProvider for the ui-serve command wiring test.
 
     Never actually consulted: the factory built from it is captured, not
@@ -1203,7 +1203,7 @@ def test_ui_serve_command_passes_command_timeout_to_pool_factory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The credential-provider path builds the UI's admin pool through
-    ``make_pg_pool_factory`` — that call carries the same per-query
+    ``make_pg_pool_factory`` - that call carries the same per-query
     ``command_timeout``, or the provider path would be the one unbounded
     admin pool left standing. (The migrate ``conn_factory`` is
     deliberately NOT bounded here: DDL may legitimately exceed a
@@ -1257,14 +1257,14 @@ _KNOB_DEFAULT_FIELDS: tuple[tuple[str, Any], ...] = (
     ("idempotency_lock_timeout_ms", 5000.0),
     ("max_retry_backoff", DEFAULT_MAX_RETRY_BACKOFF),
 )
-"""The BackendSettings members whose defaults the doubles must carry —
+"""The BackendSettings members whose defaults the doubles must carry -
 WorkerSettings' own (5000.0 ms each for the enqueue lock budgets, the
 module constants the backend's defensive getattr fallbacks supply;
 24 h for the reclaim sweep's backoff ceiling).
 
 Why presence is asserted via getattr and not runtime_checkable isinstance:
 a runtime protocol isinstance inspects only METHOD members on Python
-3.12+/3.13 — data annotations are ignored — so it cannot pin a settings
+3.12+/3.13 - data annotations are ignored - so it cannot pin a settings
 double's data fields. Direct presence+value is the checkable form of the
 protocol's doctrine (the static check is pyright's, which the tests
 execution environment relaxes for argument passing)."""
@@ -1282,7 +1282,7 @@ def _assert_declared_knobs(settings_object: Any, double_name: str) -> None:
     for field in BackendSettings.__annotations__:
         value = getattr(settings_object, field, _MISSING)
         assert value is not _MISSING, (
-            f"{double_name} must declare BackendSettings.{field} — the "
+            f"{double_name} must declare BackendSettings.{field} - the "
             "protocol's doctrine: every settings object that reaches a "
             "PostgresBackend must carry the knobs, so the contract is "
             "checkable rather than hoped for."
@@ -1295,7 +1295,7 @@ def _assert_declared_knobs(settings_object: Any, double_name: str) -> None:
 
 
 def test_client_settings_satisfies_backend_settings_protocol() -> None:
-    """``_ClientSettings`` declares every ``BackendSettings`` member — the
+    """``_ClientSettings`` declares every ``BackendSettings`` member - the
     protocol's own doctrine: every settings object that reaches a
     PostgresBackend must carry the knobs, so the contract is checkable
     rather than hoped for. The enqueue lock-budget fields and the reclaim
@@ -1308,7 +1308,7 @@ def test_client_settings_satisfies_backend_settings_protocol() -> None:
 
 def test_web_admin_settings_double_satisfies_backend_settings_protocol() -> None:
     """The web-admin integration double satisfies the same declared
-    contract as ``_ClientSettings`` — same doctrine, same fields."""
+    contract as ``_ClientSettings`` - same doctrine, same fields."""
     from tests.test_web_admin_integration import _TestBackendSettings
 
     _assert_declared_knobs(_TestBackendSettings(), "_TestBackendSettings")

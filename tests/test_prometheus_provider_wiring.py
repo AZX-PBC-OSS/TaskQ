@@ -1,26 +1,26 @@
-"""Contract tests for ``ensure_prometheus_meter_provider`` — the auto-wiring
+"""Contract tests for ``ensure_prometheus_meter_provider`` - the auto-wiring
 ``create_metrics_router`` performs at router creation (process start on the
 shipped ``taskq ui serve`` path).
 
 The contract under test, per outcome:
 
-- ``wired`` — nothing was configured: a ``PrometheusMetricReader``-backed
+- ``wired`` - nothing was configured: a ``PrometheusMetricReader``-backed
   ``MeterProvider`` becomes the process-global provider, so the documented
   quick-start populates the ``taskq_*`` series the shipped rules.yaml
   references.
-- ``already_bridged`` — a bridge into the scraped registry already exists
+- ``already_bridged`` - a bridge into the scraped registry already exists
   (operator-wired, or a second router creation): nothing is touched.
-- ``provider_without_bridge`` — an operator SDK provider exists but no
+- ``provider_without_bridge`` - an operator SDK provider exists but no
   reader feeds the scraped registry: the provider is LEFT in place (never
   clobbered) and a WARNING names the gap, because the mounted endpoint
   would otherwise answer 200 with zero ``taskq_*`` series.
-- ``provider_set_blocked`` — the OTel set-once guard was already consumed
+- ``provider_set_blocked`` - the OTel set-once guard was already consumed
   by a non-SDK provider: the constructed bridge is torn down (its
   collector unregistered) and a WARNING names the cause.
-- ``otel_disabled`` — emission is switched off: no provider is installed.
+- ``otel_disabled`` - emission is switched off: no provider is installed.
 
 Every scenario mutates process-global OTel state behind a set-once guard,
-so each runs in a clean subprocess — the same isolation seam
+so each runs in a clean subprocess - the same isolation seam
 tests/test_prometheus_metrics_unwired_by_default.py uses.
 """
 
@@ -43,7 +43,7 @@ def _run_scenario(body: str) -> dict[str, str]:
     The body prints one ``KEY:VALUE`` per line; anything else it prints is
     ignored by the parser but surfaces in the failure message.
     """
-    result = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell — the current interpreter running this file's own literal scenario bodies; no untrusted input.
+    result = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell - the current interpreter running this file's own literal scenario bodies; no untrusted input.
         [sys.executable, "-c", body],
         capture_output=True,
         text=True,
@@ -64,7 +64,7 @@ def _run_scenario(body: str) -> dict[str, str]:
 def test_wires_a_provider_when_nothing_is_configured() -> None:
     """The documented quick-start state (no OTEL_* env vars, no operator
     provider): the helper installs a PrometheusMetricReader-backed SDK
-    provider as the process-global provider — the wiring that makes
+    provider as the process-global provider - the wiring that makes
     "mounted automatically" true of the data, not just the route."""
     out = _run_scenario(
         """
@@ -87,7 +87,7 @@ print("HAS_READERS:" + str(bool(provider._all_metric_readers)))
 
 def test_wired_scrape_serves_recorded_series() -> None:
     """End to end at the helper level: after ``wired``, a series recorded
-    through the real obs emitter lands in the default registry's scrape —
+    through the real obs emitter lands in the default registry's scrape -
     the pre-fix state served only Python process defaults here."""
     out = _run_scenario(
         """
@@ -109,7 +109,7 @@ print("SERIES_PRESENT:" + str("taskq_heartbeat_misses_total" in text))
 
 def test_never_replaces_an_operator_wired_bridge() -> None:
     """An operator who wired their own PrometheusMetricReader + provider
-    before process start keeps exactly that provider — the helper is a
+    before process start keeps exactly that provider - the helper is a
     no-op, and the operator's reader is the one feeding the registry."""
     out = _run_scenario(
         """
@@ -185,7 +185,7 @@ print("WARNED:" + str("prometheus-metrics-reader-missing" in events))
 
 def test_set_once_blocked_by_a_non_sdk_provider_unregisters_the_orphan() -> None:
     """A non-SDK provider installed first (here: an explicit NoOp) wins
-    OTel's set-once guard, so the constructed bridge would be inert —
+    OTel's set-once guard, so the constructed bridge would be inert -
     instruments follow the global provider, not it. The helper detects
     the shadowing, shuts its provider down (unregistering the orphaned
     collector from the registry), and warns."""
@@ -213,15 +213,15 @@ print("BRIDGE_LEFT_BEHIND:" + str(_registry_has_otel_bridge(REGISTRY)))
     assert out["OUTCOME"] == "provider_set_blocked"
     assert out["WARNED"] == "True"
     assert out["BRIDGE_LEFT_BEHIND"] == "False", (
-        "the inert bridge's collector must be unregistered — leaving it "
+        "the inert bridge's collector must be unregistered - leaving it "
         "would serve an empty OTel family set indistinguishable from a "
         "wired-but-idle deployment"
     )
 
 
 def test_otel_disabled_installs_no_provider() -> None:
-    """With emission switched off, mounting the route installs nothing —
-    the off switch governs — and logs at INFO so the empty-of-taskq_*
+    """With emission switched off, mounting the route installs nothing -
+    the off switch governs - and logs at INFO so the empty-of-taskq_*
     scrape is attributable to configuration, not a defect."""
     out = _run_scenario(
         """
@@ -255,7 +255,7 @@ def test_bridge_detection_reads_slots_the_pinned_client_still_has() -> None:
     private ``CollectorRegistry`` slots because prometheus_client has no
     public listing. A client release that renames either would make the
     detection see an empty registry, register a second bridge, and turn
-    every scrape into duplicated exposition — so the slots are pinned
+    every scrape into duplicated exposition - so the slots are pinned
     against the installed client, and a bump that drops one fails here
     rather than at the scrape."""
     from prometheus_client import CollectorRegistry
@@ -273,7 +273,7 @@ def test_bridge_detection_reads_slots_the_pinned_client_still_has() -> None:
     assert not _registry_has_otel_bridge(registry)
 
     class _CustomCollector:
-        """The bridge's collector, by module and name — what the helper matches."""
+        """The bridge's collector, by module and name - what the helper matches."""
 
         def collect(self) -> list[object]:
             return []

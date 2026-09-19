@@ -10,7 +10,7 @@ keyed reservation, so its ``reservation_slots`` rows exist before the name is
 ever handed to ``acquire()``. It also builds the reservation with
 ``schema=settings.schema_name`` rather than the ``ConcurrencyReservation``
 default, so it targets the same schema as every other primitive on the
-worker — both are exercised here against a real Postgres instance.
+worker - both are exercised here against a real Postgres instance.
 """
 
 from datetime import timedelta
@@ -36,7 +36,7 @@ def _pg_settings(pg_dsn: str) -> WorkerSettings:
     """Settings naming the schema these tests migrate (``taskq``).
 
     The keyed-reservation materialization path refuses to guess a schema
-    from a PG pool alone — settings is the schema source, so tests that
+    from a PG pool alone - settings is the schema source, so tests that
     exercise the PG path pass it explicitly.
     """
     return WorkerSettings.load_from_dict(
@@ -48,7 +48,7 @@ def _pg_settings(pg_dsn: str) -> WorkerSettings:
 async def test_keyed_reservation_lazy_registration_against_real_pg(
     pg_dsn: str,
 ) -> None:
-    """A freshly-keyed reservation acquires successfully against real PG —
+    """A freshly-keyed reservation acquires successfully against real PG -
     ensure_slots() runs as part of lazy registration, not only at startup."""
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -88,7 +88,7 @@ async def test_keyed_reservation_lazy_registration_respects_worker_schema(
     pg_dsn: str,
 ) -> None:
     """A keyed reservation is registered against settings.schema_name, not
-    the ConcurrencyReservation default — acquiring against a non-default
+    the ConcurrencyReservation default - acquiring against a non-default
     schema must not raise UndefinedTableError against the default one."""
     schema = "taskq_keyed_refs_schema_test"
     conn = await asyncpg.connect(pg_dsn)
@@ -140,7 +140,7 @@ async def test_eviction_while_holder_active_does_not_over_admit(
     Eviction removes only the in-memory registry entry; the PG
     ``reservation_slots`` rows (the source of truth) stay put. When the same
     key is acquired again afterwards, the key is re-registered and
-    ``ensure_slots`` runs again — ``INSERT ... ON CONFLICT DO NOTHING`` keeps
+    ``ensure_slots`` runs again - ``INSERT ... ON CONFLICT DO NOTHING`` keeps
     the existing rows, including the still-held one. A second acquisition
     for the same key must therefore be DENIED (the slot is genuinely still
     held), and no duplicate slot rows may appear.
@@ -177,7 +177,7 @@ async def test_eviction_while_holder_active_does_not_over_admit(
         assert len(acquired) == 1
         concrete = "keyed-refs-evict-probe:s1"
 
-        # Evict the registry entry while the holder is still active —
+        # Evict the registry entry while the holder is still active -
         # simulates the leader sweep reclaiming an entry it believes idle.
         reg._reservations.pop(concrete, None)  # pyright: ignore[reportPrivateUsage]  # Why: simulating evict_idle_keyed_reservations without needing monotonic control.
         reg._keyed_reservation_last_used.pop(concrete, None)  # pyright: ignore[reportPrivateUsage]

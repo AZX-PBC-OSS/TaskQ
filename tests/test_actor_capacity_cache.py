@@ -3,18 +3,18 @@
 ``max_pending`` is a capacity field: the ``@actor(max_pending=...)``
 literal only seeds the stored ``actor_config`` row; once a row exists, a
 non-NULL stored value is authoritative. Because ``enqueue()`` is a hot
-path, the client does not query ``actor_config`` per enqueue — it holds
+path, the client does not query ``actor_config`` per enqueue - it holds
 a TTL-bounded :class:`~taskq.client._capacity.ActorCapacityCache`
 snapshot of the table (default 5s staleness bound, explicit invalidation
 via ``JobsClient.invalidate_actor_capacity_cache``).
 
 Resolution rule: **a non-NULL stored value wins over the code literal**
-(no row → literal; row with NULL → literal — "clear" reverts to the
+(no row → literal; row with NULL → literal - "clear" reverts to the
 code default). An explicit per-call ``max_pending=`` argument is honored
 in the tightening direction against a stored cap (``min(stored,
-per_call)`` — load shedding is never widened by an operator override),
+per_call)`` - load shedding is never widened by an operator override),
 and wins outright against the literal when nothing is stored
-(historical behavior — actor code may loosen its own declaration, never
+(historical behavior - actor code may loosen its own declaration, never
 an operator's cap).
 
 Unit tier here uses ``InMemoryBackend`` whose ``_actor_configs_meta``
@@ -120,7 +120,7 @@ async def test_no_stored_row_uses_literal() -> None:
 
 async def test_operator_can_cap_actor_with_no_literal() -> None:
     """The capability this feature adds: an actor declared without
-    max_pending can be capped live by the operator — no redeploy."""
+    max_pending can be capped live by the operator - no redeploy."""
     backend = _make_backend()
     backend.register_actor_config(actor="cap_fresh", max_pending=1)
     client = JobsClient(backend)
@@ -132,7 +132,7 @@ async def test_operator_can_cap_actor_with_no_literal() -> None:
 
 
 async def test_stored_zero_rejects_every_enqueue() -> None:
-    """Boundary: max_pending=0 means 'shed all load' — even the first
+    """Boundary: max_pending=0 means 'shed all load' - even the first
     enqueue raises (0 >= 0)."""
     backend = _make_backend()
     backend.register_actor_config(actor="cap_zero", max_pending=0)
@@ -148,7 +148,7 @@ async def test_stored_zero_rejects_every_enqueue() -> None:
 
 async def test_per_call_tighter_than_stored_is_honored() -> None:
     """Load shedding: an explicit per-call cap tighter than the stored
-    (operator) value must be honored — ``min(stored, per_call)``.
+    (operator) value must be honored - ``min(stored, per_call)``.
 
     The stored value here is 100 only because the seeding path copied a
     literal into the row; that must not widen a caller explicitly asking
@@ -172,7 +172,7 @@ async def test_per_call_tighter_than_stored_is_honored() -> None:
 
 async def test_per_call_looser_than_stored_does_not_widen() -> None:
     """The other direction of the same rule: no code path can raise an
-    operator's fleet cap — min(stored=1, per_call=100) stays 1."""
+    operator's fleet cap - min(stored=1, per_call=100) stays 1."""
     backend = _make_backend()
     backend.register_actor_config(actor="cap_sub", max_pending=1)
     enqueuer = SubJobEnqueuer(
@@ -192,7 +192,7 @@ async def test_per_call_looser_than_stored_does_not_widen() -> None:
 
 async def test_per_call_widens_past_literal_when_nothing_stored() -> None:
     """Historical behavior preserved: with no stored cap, an explicit
-    per-call argument may loosen the actor's own literal — actor code
+    per-call argument may loosen the actor's own literal - actor code
     owns its declaration; only the operator cap is a hard ceiling."""
     backend = _make_backend()
     enqueuer = SubJobEnqueuer(
@@ -203,7 +203,7 @@ async def test_per_call_widens_past_literal_when_nothing_stored() -> None:
     ref = _literal_capped("cap_loosen", 1)
 
     await enqueuer.enqueue(ref, _Payload(value=1), max_pending=100)
-    # Literal is 1 — pre-change resolution would raise here; the explicit
+    # Literal is 1 - pre-change resolution would raise here; the explicit
     # per-call widening wins because nothing is stored.
     await enqueuer.enqueue(ref, _Payload(value=2), max_pending=100)
 
@@ -231,7 +231,7 @@ async def test_first_use_rejects_backend_without_get_actor_max_pending() -> None
 
     A backend built before ``get_actor_max_pending`` existed would
     otherwise hit AttributeError inside the fail-open handler on every
-    refresh and silently enforce code literals forever — the exact
+    refresh and silently enforce code literals forever - the exact
     silent drift the protocol version exists to prevent. Construction
     stays cheap and harmless for partial doubles; the first capacity
     resolution raises.
@@ -259,7 +259,7 @@ async def test_change_within_ttl_is_stale_then_invalidate_picks_it_up() -> None:
     visible until the snapshot refreshes; explicit invalidation forces it."""
     backend = _make_backend()
     backend.register_actor_config(actor="cap_tuned", max_pending=1)
-    client = JobsClient(backend)  # default TTL: 5s — the test runs well within it
+    client = JobsClient(backend)  # default TTL: 5s - the test runs well within it
     ref = _uncapped("cap_tuned")
 
     await client.enqueue(ref, _Payload(value=1))
@@ -293,10 +293,10 @@ async def test_zero_ttl_refreshes_on_every_enqueue() -> None:
 
 async def test_positive_ttl_expires_naturally_then_refresh_picks_it_up() -> None:
     """A positive TTL bounds staleness: once the window elapses, the next
-    read refreshes on its own — no explicit invalidation required.
+    read refreshes on its own - no explicit invalidation required.
 
     The within-TTL staleness test and the ttl=0 tests both survive the
-    narrower mutation (a positive-TTL snapshot that never expires) —
+    narrower mutation (a positive-TTL snapshot that never expires) -
     only a test that lets the window actually elapse catches it.
     """
     backend = _make_backend()
@@ -345,12 +345,12 @@ async def test_refresh_failure_falls_back_to_literal_then_recovers() -> None:
 
 async def test_failed_refresh_retains_last_good_snapshot() -> None:
     """The module's fail-open contract is 'fall back to the LAST GOOD
-    SNAPSHOT' — not to an empty table.
+    SNAPSHOT' - not to an empty table.
 
     Prime a good snapshot (stored cap 1), then make every refresh fail:
     the retained rows must keep enforcing the cap. A regression that
     reset ``_rows`` on failure would silently drop enforcement to the
-    (uncapped) literal — and the previous suite could not see it because
+    (uncapped) literal - and the previous suite could not see it because
     every failure test started from an empty table, where {} and
     'retained' look identical.
     """
@@ -370,7 +370,7 @@ async def test_failed_refresh_retains_last_good_snapshot() -> None:
     object.__setattr__(backend, "get_actor_max_pending", always_fails)
 
     # Refresh now fails on every call: the retained snapshot (cap 1)
-    # must still reject the overflow — not silently reset to uncapped.
+    # must still reject the overflow - not silently reset to uncapped.
     with pytest.raises(MaxPendingExceededError):
         await client.enqueue(ref, _Payload(value=3))
 
@@ -381,7 +381,7 @@ async def test_concurrent_enqueues_share_one_refresh() -> None:
 
     The backend double genuinely suspends (an asyncio.Event gate), so
     ``calls == 1`` holds because of the single-flight lock, not because
-    the in-memory read happens to complete without yielding — deleting
+    the in-memory read happens to complete without yielding - deleting
     the lock makes every waiter start its own read and this fails.
     """
     backend = _make_backend()
@@ -414,13 +414,13 @@ async def test_concurrent_enqueues_share_one_refresh() -> None:
 
 async def test_invalidate_during_in_flight_refresh_discards_result() -> None:
     """Behavioral contract of ``invalidate()``: "the next read refreshes
-    from the backend" — even when a read was already in flight.
+    from the backend" - even when a read was already in flight.
 
     Scenario: a refresh reads cap=1 but its response is delayed; while
     it is in flight the operator raises the cap to 5 and invalidates the
     cache. When the delayed read completes it carries the PRE-change
     snapshot. If that result were allowed to re-stamp the cache, every
-    caller would keep seeing cap=1 for another full TTL — the opposite
+    caller would keep seeing cap=1 for another full TTL - the opposite
     of what the invalidation was for. Callers must see cap=5 on the
     very next read.
     """
@@ -451,7 +451,7 @@ async def test_invalidate_during_in_flight_refresh_discards_result() -> None:
     await first
 
     # The next caller must see the operator's new value, not the
-    # pre-invalidation snapshot — inside the TTL window.
+    # pre-invalidation snapshot - inside the TTL window.
     assert await cache.effective_max_pending("cap_inv", None) == 5
 
 
@@ -525,7 +525,7 @@ async def test_enqueue_batch_honors_stored_limit() -> None:
 
 
 async def test_enqueue_batch_stored_null_uses_literal() -> None:
-    """Batch path, cleared override: literal 2 still bounds the batch — the
+    """Batch path, cleared override: literal 2 still bounds the batch - the
     whole single-actor batch is refused with the typed batch error."""
     backend = _make_backend()
     backend.register_actor_config(actor="cap_batch_null")
@@ -542,7 +542,7 @@ async def test_enqueue_batch_operator_raised_cap_above_literal() -> None:
 
     The aggregated phase-2 check resolves the effective (stored) limit;
     the per-item check inside the backend must see the SAME resolved
-    value — if the items carried the stale literal, the in-memory
+    value - if the items carried the stale literal, the in-memory
     backend's per-item check would reject the batch the client just
     admitted (a divergence the PG batch INSERT does not have)."""
     backend = _make_backend()
@@ -558,7 +558,7 @@ async def test_enqueue_batch_operator_raised_cap_above_literal() -> None:
 async def test_sub_enqueuer_batch_honors_stored_limit() -> None:
     """Sub-enqueued batches resolve the same way: the per-item args carry
     the effective (stored) limit, so the autonomous loop's per-item check
-    rejects the overflow — surfaced as PartialBatchError with the
+    rejects the overflow - surfaced as PartialBatchError with the
     MaxPendingExceededError inside (documented autonomous-path semantics)."""
     backend = _make_backend()
     backend.register_actor_config(actor="cap_sub_batch", max_pending=2)
@@ -584,7 +584,7 @@ async def test_enqueue_batch_streaming_honors_stored_limit() -> None:
     ``enqueue_batch``: a stored override on a literal-less actor must
     refuse. The arm previously built its chunk args with no resolved
     caps, so the actor carried ``max_pending=None`` and was invisible to
-    the backend's cap groups — the override was silently unenforced while
+    the backend's cap groups - the override was silently unenforced while
     the docs claimed partition parity with ``enqueue_batch``.
 
     Chunking is deliberate: the capped actor first appears in chunk 2,
@@ -609,7 +609,7 @@ async def test_enqueue_batch_streaming_honors_stored_limit() -> None:
     # Stream-global indices into the caller's stream (chunk 2 = offset 2).
     assert err.refused_indices == {"cap_stream_capped": [2, 3]}
     # The committed prefix (chunk 1's two healthy items) plus this
-    # chunk's admitted items (none — the only actor here is refused).
+    # chunk's admitted items (none - the only actor here is refused).
     assert err.admitted_count == 2
     assert _stored_count(backend, "cap_stream_healthy") == 2
     assert _stored_count(backend, "cap_stream_capped") == 0
@@ -620,7 +620,7 @@ async def test_enqueue_batch_streaming_atomic_honors_stored_limit() -> None:
     the same effective caps and keeps its all-or-nothing contract: a
     stored override on a literal-less actor raises plain
     ``MaxPendingExceededError`` and the whole single transaction rolls
-    back — nothing stored. Same arm gap as the chunked path: without
+    back - nothing stored. Same arm gap as the chunked path: without
     resolution the override was invisible and the batch silently
     succeeded."""
     backend = _make_backend()
@@ -641,7 +641,7 @@ async def test_enqueue_batch_fast_honors_stored_limit() -> None:
     """The COPY arm resolves the same effective caps: a stored override on
     a literal-less actor refuses the whole single-actor batch. Same arm
     gap as the other two: no resolution, no carried cap, no enforcement
-    — while the method's docstring claims partition parity with
+    - while the method's docstring claims partition parity with
     ``enqueue_batch``."""
     backend = _make_backend()
     backend.register_actor_config(actor="cap_fast", max_pending=2)
@@ -692,7 +692,7 @@ async def test_in_memory_get_actor_max_pending_mirrors_registered_meta() -> None
 
 def test_read_timeout_inf_rejected() -> None:
     """inf passes `> 0` but asyncio.wait_for(timeout=inf) doesn't bound
-    the wait — the exact indefinite lock-held hang the timeout was added
+    the wait - the exact indefinite lock-held hang the timeout was added
     to prevent.  Same isfinite guard as result_ttl validation."""
     backend = _make_backend()
     with pytest.raises(ValueError, match="read_timeout"):
@@ -701,7 +701,7 @@ def test_read_timeout_inf_rejected() -> None:
 
 def test_read_timeout_nan_rejected() -> None:
     """NaN passes `> 0` (nan comparisons are always False, but nan > 0 is
-    False so it *would* be caught by `<= 0`) — however it should still be
+    False so it *would* be caught by `<= 0`) - however it should still be
     rejected for the same reason as inf: a non-finite timeout provides no
     bound, and NaN in asyncio.wait_for is undefined behavior."""
     backend = _make_backend()

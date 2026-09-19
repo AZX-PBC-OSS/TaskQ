@@ -4,16 +4,16 @@
 and returns without awaiting it, tracking the task in a shared,
 worker-lifetime set (``_pending_publish_tasks``, sourced from
 ``WorkerDeps.pending_publish_tasks`` in production) so the task isn't
-garbage-collected mid-flight — asyncio only holds a weak reference to
+garbage-collected mid-flight - asyncio only holds a weak reference to
 scheduled tasks, so something must hold a strong one until completion.
 
-When no tracking set is available (``_pending_publish_tasks is None`` —
+When no tracking set is available (``_pending_publish_tasks is None`` -
 only possible when a caller constructs ``JobContext`` directly rather than
 going through the worker consumer, which always wires
 ``deps.pending_publish_tasks``), ``progress()`` deliberately falls back to
 awaiting the publish inline rather than risking that documented
 garbage-collection pitfall. This is intentional, not a partial
-implementation — see ``test_falls_back_to_blocking_without_a_tracking_set``.
+implementation - see ``test_falls_back_to_blocking_without_a_tracking_set``.
 """
 
 import asyncio
@@ -97,7 +97,7 @@ async def test_buffer_mutated_before_progress_returns_even_with_slow_redis() -> 
 
 async def test_progress_returns_without_blocking_on_slow_redis() -> None:
     """With a tracking set available, progress() returns promptly even
-    when the Redis publish hangs — it schedules the publish as a
+    when the Redis publish hangs - it schedules the publish as a
     background task instead of awaiting it."""
     redis_client = _make_hanging_redis_client()
     pending: set[asyncio.Task[None]] = set()
@@ -115,7 +115,7 @@ async def test_progress_returns_without_blocking_on_slow_redis() -> None:
 
 async def test_falls_back_to_blocking_without_a_tracking_set() -> None:
     """Without a tracking set, progress() awaits the publish inline rather
-    than scheduling an untracked (garbage-collectable) background task —
+    than scheduling an untracked (garbage-collectable) background task -
     a deliberate safety trade-off, not a missing feature."""
     redis_client = _make_hanging_redis_client()
     ctx, _buf = _make_ctx(redis_client=redis_client, pending_publish_tasks=None)

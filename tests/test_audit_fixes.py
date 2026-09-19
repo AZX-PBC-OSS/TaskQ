@@ -128,7 +128,7 @@ async def test_producer_loop_single_dispatch_on_empty_poll() -> None:
 
     deps = MagicMock()
     deps.settings = settings
-    # The producer's availability subtracts active jobs (#229): an
+    # The producer's availability subtracts active jobs: an
     # empty-poll round with an empty queue and no active jobs must size
     # at the full slot count.
     deps.active_jobs.count.return_value = 0
@@ -217,7 +217,7 @@ async def test_max_pending_batch_boundary_uses_ge() -> None:
     # MaxPendingExceededError: every item belongs to the one over-cap
     # actor, so the backend's per-actor partition admits nothing and
     # raises BatchMaxPendingExceededError (a BackpressureError sibling,
-    # deliberately not a subclass — see its docstring).
+    # deliberately not a subclass - see its docstring).
     from taskq.batch import EnqueueItem
     from taskq.exceptions import BatchMaxPendingExceededError
 

@@ -7,7 +7,7 @@ Covers:
   idempotency_scope column exists NOT NULL DEFAULT '', the old single-column
   unique index is gone, the new composite unique index exists, and two rows
   with the default scope ('') and the same idempotency_key raise
-  UniqueViolationError — proving the sentinel-not-NULL composite index
+  UniqueViolationError - proving the sentinel-not-NULL composite index
   enforces global dedupe for unscoped keys at the DB level.
 - Migration upgrade path: apply migrations up through 01.00.01, insert a
   job row with idempotency_key (no idempotency_scope column yet), then
@@ -17,7 +17,7 @@ Covers:
   state every worker's schema is in the moment the migration lands, before
   every worker is confirmed running the new code), pre-this-release code's
   exact `ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL`
-  SQL shape must still execute successfully against the schema — this is
+  SQL shape must still execute successfully against the schema - this is
   the assertion that proves the pre/post split actually avoids the outage
   a single combined migration would have caused. See the "PHASE
   OBLIGATIONS" header comment in the pre migration file for the full
@@ -26,8 +26,8 @@ Covers:
   ``PostgresBackend.enqueue`` / ``enqueue_batch`` (not raw SQL) against a
   pre-phase-only schema. Unscoped and same-scope usage must keep working
   exactly as before; cross-scope usage of a repeated key must raise
-  :class:`~taskq.exceptions.ScopedIdempotencyMigrationPendingError` — a
-  clear, typed, documented error — rather than crash on a raw
+  :class:`~taskq.exceptions.ScopedIdempotencyMigrationPendingError` - a
+  clear, typed, documented error - rather than crash on a raw
   ``asyncpg.UniqueViolationError``. See that exception's docstring for why
   the library raises instead of silently falling back to a different
   scope's row.
@@ -161,7 +161,7 @@ class TestMigrationCorrectness:
         self, pg_conn: asyncpg.Connection, settings: TaskQSettings
     ) -> None:
         """Two rows inserted with the DEFAULT scope ('') and the same
-        idempotency_key must raise UniqueViolationError — the critical
+        idempotency_key must raise UniqueViolationError - the critical
         regression check for the NULL-distinctness trap."""
         await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
 
@@ -293,7 +293,7 @@ class TestMigrationUpgradePath:
 # ── Rolling-deploy overlap window: pre phase only ──────────────
 #
 # The moment `taskq migrate up --phase pre` runs, EVERY worker's schema is
-# in the "pre applied, post not yet applied" state — including workers
+# in the "pre applied, post not yet applied" state - including workers
 # still running the code that shipped before this feature. This class
 # proves that state is safe for that old code, which is the entire
 # point of splitting the migration into pre + post phases instead of
@@ -309,7 +309,7 @@ async def _insert_job_old_shape(
 ) -> None:
     """Issue the EXACT INSERT statement pre-this-release code used:
     no idempotency_scope column reference at all (that code doesn't know
-    the column exists), and — critically — the single-column
+    the column exists), and - critically - the single-column
     `ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL`
     target, which only resolves against `jobs_idempotency_key_uniq`.
     """
@@ -339,9 +339,9 @@ class TestPrePhaseOverlapWindow:
         self, pg_conn: asyncpg.Connection, settings: TaskQSettings
     ) -> None:
         """This is the assertion that proves the overlap window is safe:
-        pre-this-release code's `ON CONFLICT (idempotency_key)` — which
+        pre-this-release code's `ON CONFLICT (idempotency_key)` - which
         can only resolve against a unique index whose column set is
-        EXACTLY `(idempotency_key)` — must still find a matching index
+        EXACTLY `(idempotency_key)` - must still find a matching index
         and succeed, not raise
         "there is no unique or exclusion constraint matching the
         ON CONFLICT specification"."""
@@ -388,8 +388,8 @@ class TestPrePhaseOverlapWindow:
         self, pg_conn: asyncpg.Connection, settings: TaskQSettings
     ) -> None:
         """While only the pre phase is applied, the OLD index still
-        enforces "idempotency_key unique across ALL scopes" — strictly
-        stronger than the new composite constraint — so the same key in
+        enforces "idempotency_key unique across ALL scopes" - strictly
+        stronger than the new composite constraint - so the same key in
         different scopes still collides. The new scoped-dedupe behavior
         only activates once the post phase drops the old index."""
         await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
@@ -1108,7 +1108,7 @@ class TestMigrateOnStartDuringTheOverlapWindow:
         Operator sequence: `taskq migrate up --phase pre` (step 1 of the
         documented three-step sequence), fleet still rolling, post phase
         deliberately withheld. An admin process then starts with
-        migrate-on-start enabled — a restart, not a decision. It must
+        migrate-on-start enabled - a restart, not a decision. It must
         bring the schema up to the pre phase and stop there, leaving the
         post phase for the operator.
         """
@@ -1148,7 +1148,7 @@ class TestMigrateOnStartDuringTheOverlapWindow:
         migrate-on-start process has booted against the same schema. A
         NULL idempotency_key is used deliberately: the ON CONFLICT arbiter
         is resolved at plan time, so if the window has been closed even
-        completely unkeyed enqueues fail — the whole enqueue path of the
+        completely unkeyed enqueues fail - the whole enqueue path of the
         un-upgraded half of the fleet goes down, not just the keyed part.
         """
         schema = settings.schema_name

@@ -1,4 +1,4 @@
-"""Testing example — unit-test actors without Postgres or Redis.
+"""Testing example - unit-test actors without Postgres or Redis.
 
 Demonstrates the ``taskq.testing`` package: ``InMemoryBackend``,
 ``FakeClock``, and ``run_until_drained`` for deterministic, fast
@@ -8,7 +8,7 @@ Run with::
 
     uv run pytest examples/test_example.py -v
 
-No Docker, no Postgres, no Redis required — everything runs in-process.
+No Docker, no Postgres, no Redis required - everything runs in-process.
 """
 
 from datetime import UTC, datetime
@@ -72,7 +72,7 @@ async def test_enqueue_and_wait() -> None:
 
 @pytest.mark.asyncio
 async def test_direct_invocation() -> None:
-    """Call an actor directly — bypasses the queue entirely."""
+    """Call an actor directly - bypasses the queue entirely."""
     result = await double_value(DoublePayload(value=21))
     assert result.doubled == 42
 

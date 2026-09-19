@@ -122,7 +122,7 @@ class TestEnqueueWakesSubscriber:
 
     async def test_enqueue_scheduled_job_does_not_wake(self) -> None:
         """Enqueuing a scheduled (future) job should still set wake
-        event — the InMemoryBackend fires on any enqueue regardless of status.
+        event - the InMemoryBackend fires on any enqueue regardless of status.
         This mirrors the PG behavior where pg_notify is fired on INSERT
         even when the trigger only fires on status='pending'.
         """
@@ -132,7 +132,7 @@ class TestEnqueueWakesSubscriber:
         async with backend.subscribe_wake() as event:
             args = _enqueue_args(scheduled_at=future)
             await backend.enqueue(args)
-            # InMemoryBackend fires on all enqueues — matching PG behavior
+            # InMemoryBackend fires on all enqueues - matching PG behavior
             # where application-side pg_notify fires unconditionally.
             assert event.is_set()
 
@@ -315,7 +315,7 @@ class TestPollFallback:
         deps.worker_pool = Mock()
         deps.dispatcher_pool = Mock()
         deps.notify_conn = Mock()
-        # The producer's availability subtracts active jobs (#229).
+        # The producer's availability subtracts active jobs.
         deps.active_jobs = Mock(
             count=lambda: 0,
             held_ids=lambda: [],
@@ -383,7 +383,7 @@ class TestPollFallback:
         deps.worker_pool = Mock()
         deps.dispatcher_pool = Mock()
         deps.notify_conn = Mock()
-        # The producer's availability subtracts active jobs (#229).
+        # The producer's availability subtracts active jobs.
         deps.active_jobs = Mock(
             count=lambda: 0,
             held_ids=lambda: [],
@@ -457,7 +457,7 @@ class _NoopDrainPool:
 def _drain_capable(deps: Mock) -> None:
     """Give a Mock deps the reads the producer makes: the exit
     hand-back's two (``active_jobs`` / ``dispatcher_pool``) and the
-    availability accounting's ``active_jobs.count()`` (#229)."""
+    availability accounting's ``active_jobs.count()``."""
     deps.active_jobs = Mock(
         all=list,
         count=lambda: 0,
@@ -513,7 +513,7 @@ class TestEagerRecheck:
         stop_event = asyncio.Event()
 
         # First call returns 0, eager re-check returns 1 job.
-        # Subsequent calls return 0 (correct — the eager re-check is a one-off).
+        # Subsequent calls return 0 (correct - the eager re-check is a one-off).
         call_count = 0
         jobs_remaining = 1
 
@@ -552,7 +552,7 @@ class TestEagerRecheck:
 
     async def test_eager_recheck_no_loop_when_queue_full(self) -> None:
         """When the queue is full, the eager re-check does not cause
-        an infinite loop — it falls through to sleep."""
+        an infinite loop - it falls through to sleep."""
         from unittest.mock import Mock
 
         settings = WorkerSettings.load_from_dict(
@@ -569,7 +569,7 @@ class TestEagerRecheck:
         deps.worker_pool = Mock()
         deps.dispatcher_pool = Mock()
         deps.notify_conn = Mock()
-        # The producer's availability subtracts active jobs (#229).
+        # The producer's availability subtracts active jobs.
         deps.active_jobs = Mock(
             count=lambda: 0,
             held_ids=lambda: [],
@@ -650,7 +650,7 @@ class TestNotifyDisabled:
         deps.worker_pool = Mock()
         deps.dispatcher_pool = Mock()
         deps.notify_conn = Mock()
-        # The producer's availability subtracts active jobs (#229).
+        # The producer's availability subtracts active jobs.
         deps.active_jobs = Mock(
             count=lambda: 0,
             held_ids=lambda: [],
@@ -804,7 +804,7 @@ def mock_deps() -> tuple[Mock, PostgresBackend]:
     deps.worker_pool = Mock()
     deps.dispatcher_pool = Mock()
     deps.notify_conn = Mock()
-    # The producer's availability subtracts active jobs (#229).
+    # The producer's availability subtracts active jobs.
     deps.active_jobs = Mock(
         count=lambda: 0,
         held_ids=lambda: [],

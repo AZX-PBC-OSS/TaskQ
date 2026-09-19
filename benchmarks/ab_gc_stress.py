@@ -13,7 +13,7 @@ interleaved round-robin so thermal/frequency drift cancels:
 batch, keeping the interleaving honest.  Thresholds are global state and are
 switched per batch.
 
-Methodology: house rules from ``bench_hotspots.py`` — interleaved batches,
+Methodology: house rules from ``bench_hotspots.py`` - interleaved batches,
 median per regime.  There is no B-vs-A output comparison here (all regimes
 run identical work), but every batch asserts the same per-job invariants the
 stress script uses.

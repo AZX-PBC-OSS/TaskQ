@@ -133,7 +133,7 @@ class TestProtocolVersion:
     def test_version_is_three(self) -> None:
         """Pins the current protocol version and the bump rule.
 
-        v3: ``list_jobs`` — ``JobFilter.status`` widened to accept a
+        v3: ``list_jobs`` - ``JobFilter.status`` widened to accept a
         sequence of statuses and the ``active`` meta-filter was added.  A
         backend written against v2 silently returns wrong rows for both
         shapes (0 rows for ``status=[...]``; ``active`` ignored), which is
@@ -342,7 +342,7 @@ class TestReturnAnnotations:
         """The outcome parameter admits exactly the three deferral
         outcomes the statement's arms key on.
 
-        It was previously ``AttemptOutcome`` — eight values, five of
+        It was previously ``AttemptOutcome`` - eight values, five of
         which key no arm: with ``outcome='succeeded'`` at budget, PG
         fired no arm (job stranded ``running``, call returned ``noop``)
         while the in-memory twin silently rescheduled it uncounted. The
@@ -354,9 +354,9 @@ class TestReturnAnnotations:
         outcome = hints.get("outcome")
         expected = {"snoozed", "reservation_denied", "rate_limit_denied"}
         assert outcome is not None and set(get_args(outcome.__value__)) == expected, (  # type: ignore[attr-defined] # Why: PEP 695 type alias introspection
-            f"mark_snoozed's outcome parameter should be SnoozeOutcome — "
+            f"mark_snoozed's outcome parameter should be SnoozeOutcome - "
             f"the Literal{sorted(expected)} deferral outcomes its arms key "
-            f"on — got {outcome!r}"
+            f"on - got {outcome!r}"
         )
 
     def test_mark_retry_after_returns_tri_state(self) -> None:
@@ -389,7 +389,7 @@ class TestFakeBackendMarkSnoozedParity:
     stale annotation on its own seam certifies calls the protocol
     forbids. ``mark_snoozed``'s return Literal previously lacked
     ``"failed:MaxAttemptsExceeded"`` and its ``outcome`` parameter was
-    the wide ``AttemptOutcome`` — both drifted behind the contract the
+    the wide ``AttemptOutcome`` - both drifted behind the contract the
     fake is there to enforce.
     """
 
@@ -474,8 +474,8 @@ class TestTypeAliases:
         assert args == expected
 
     def test_snooze_outcome_literal_values(self) -> None:
-        """SnoozeOutcome — the narrowed outcome set mark_snoozed's arms
-        key on — exists as its own alias so every layer (protocol, PG
+        """SnoozeOutcome - the narrowed outcome set mark_snoozed's arms
+        key on - exists as its own alias so every layer (protocol, PG
         terminal, in-memory twin, FakeBackend) shares one source of
         truth instead of re-declaring a Literal that can drift wide."""
         from taskq.backend._protocol import SnoozeOutcome
@@ -641,7 +641,7 @@ class TestJobRowRoundTrip:
         # field list + tags + the two denial/snooze counters
         # (snooze_count, rate_limit_blocked_count) + the interrupt counter
         # (interrupt_count) + the four retry-curve scalars read back off
-        # the jobs row (retry_base/retry_cap/retry_backoff/retry_jitter —
+        # the jobs row (retry_base/retry_cap/retry_backoff/retry_jitter -
         # the reclaim sweep's policy source) + the assignment-routed
         # marker (re-pend routing by the actor's stored assignment).
         expected = 46

@@ -2,20 +2,20 @@
 
 Quantifies the election mechanics worker/leader.py relies on:
 
-  1. Lock level: pg_try_advisory_lock is SESSION-scoped — verified by
+  1. Lock level: pg_try_advisory_lock is SESSION-scoped - verified by
      holding the lock across a committed transaction and confirming a
      second connection still cannot acquire it.
   2. Clean flap: leader connection closes (SIGTERM, socket FIN) → how
      fast can a follower acquire the lock (re-election latency floor).
   3. Thundering re-election: N candidates poll pg_try_advisory_lock in
-     the same tick when the lock frees — how many rounds/attempts until
+     the same tick when the lock frees - how many rounds/attempts until
      exactly one wins, and what the losers pay.
 
 The half-open-socket case (cable pull; server keeps the session, and the
 lock, alive until TCP keepalive fires) is bounded by TaskQ's keepalive
 policy (worker/deps.py: _TCP_KEEPIDLE=30 + _TCP_KEEPINTVL=5 x
 _KEEPCNT=3 ≈ 45 s to detect) + one election retry (heartbeat_interval,
-default 10 s) — reported arithmetically, since a real cable-pull needs
+default 10 s) - reported arithmetically, since a real cable-pull needs
 network fault injection.
 
 Read-only with respect to src/; writes only its own artifacts under

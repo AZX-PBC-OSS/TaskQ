@@ -73,7 +73,7 @@ async def test_token_bucket_invariants(
 
         result = await tb.acquire(count=count, clock=clock)
 
-        # Invariant 1: Conservation — total tokens consumed ≤ capacity + refill * elapsed
+        # Invariant 1: Conservation - total tokens consumed ≤ capacity + refill * elapsed
         assert total_consumed <= capacity + refill_per_second * total_elapsed + 1e-9, (
             f"conservation violated: consumed={total_consumed} "
             f"capacity={capacity} refill={refill_per_second} "

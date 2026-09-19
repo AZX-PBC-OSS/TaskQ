@@ -24,7 +24,7 @@ _START = datetime(2025, 1, 1, tzinfo=UTC)
 
 class _FakeSettings:
     """Settings stub for the PG dispatch arms: carries the fields the PG
-    acquire/refund paths read — ``schema_name`` plus the lock budgets,
+    acquire/refund paths read - ``schema_name`` plus the lock budgets,
     mirrored at WorkerSettings' shipped defaults. The budget resolution
     seam reads them without a fallback, so a double lacking one fails
     loud instead of silently pinning the wait."""
@@ -293,7 +293,7 @@ class _FakePgConn:
         return self._pool.fetchrow_result
 
     async def fetchval(self, sql: str, *args: object) -> object:
-        # The per-bucket advisory try-lock: uncontended in this fake —
+        # The per-bucket advisory try-lock: uncontended in this fake -
         # the fast-path try-lock acquires, so the locked window sequence
         # runs and the contended tier is never entered.
         if "pg_try_advisory_xact_lock" in sql:
@@ -345,7 +345,7 @@ async def test_acquire_pg_log_decision_carries_request_id() -> None:
     )
     rid = new_uuid()
     pool = _FakeFullPgPool(
-        # The fused statement's row (#228): the insert landed, everything
+        # The fused statement's row: the insert landed, everything
         # else the decision reads from it.
         fetchrow_result={
             "inserted": True,

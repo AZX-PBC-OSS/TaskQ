@@ -45,7 +45,7 @@ async def test_redis_to_pg_degradation(
     """(consolidated): Real Redis container; acquire confirms
     Redis path; stop container; next acquire triggers PG fallback with WARNING.
 
-    Uses a function-scoped killable container — the session container is
+    Uses a function-scoped killable container - the session container is
     shared by every module and must never be stopped (a restart can also
     remap the host port, invalidating the session URL for unrelated tests).
     The container is restarted in the finally block so the recovery path
@@ -74,7 +74,7 @@ async def test_redis_to_pg_degradation(
         assert r.backend == "redis"
 
         # Why: docker-py stop blocks the loop for the whole HTTP round-trip
-        # (measured 2.4-3.8s continuous loop stalls) — off-loop.
+        # (measured 2.4-3.8s continuous loop stalls) - off-loop.
         await asyncio.to_thread(killable_redis_container.stop)  # type: ignore[union-attr] # Why: fixture typed object to avoid transitive imports
 
         r2 = await tb.acquire(
@@ -84,7 +84,7 @@ async def test_redis_to_pg_degradation(
         assert r2.backend == "postgres"
     finally:
         try:
-            # Why: docker-py start (+ readiness wait) blocks the loop — off-loop.
+            # Why: docker-py start (+ readiness wait) blocks the loop - off-loop.
             await asyncio.to_thread(killable_redis_container.start)  # type: ignore[union-attr] # Why: fixture typed object to avoid transitive imports
         except Exception as exc:
             structlog.get_logger("taskq.test_chaos").warning(
@@ -106,7 +106,7 @@ async def test_redis_recovery_after_restart(
     acquire returns backend=="redis" with no WARNING.
 
     redis-py's connection pool transparently re-connects on the next command
-    after the server reappears — do NOT manually reset the pool or call
+    after the server reappears - do NOT manually reset the pool or call
     aclose() between stop() and start(). The cached AsyncScript's SHA is
     stale after Redis restart; redis-py detects NOSCRIPT, re-runs SCRIPT
     LOAD, and retries EVALSHA automatically.
@@ -137,7 +137,7 @@ async def test_redis_recovery_after_restart(
     )
 
     # Why: docker host/port resolution can hit the docker HTTP API (port
-    # inspect + status poll) — off-loop.
+    # inspect + status poll) - off-loop.
     host = await asyncio.to_thread(killable_redis_container.get_container_host_ip)  # type: ignore[union-attr] # Why: fixture typed object to avoid transitive imports
     port = await asyncio.to_thread(killable_redis_container.get_exposed_port, 6379)  # type: ignore[union-attr] # Why: same as above
     original_url = f"redis://{host}:{port}/0"
@@ -150,7 +150,7 @@ async def test_redis_recovery_after_restart(
         assert r.backend == "redis"
 
         # Why: docker-py stop blocks the loop for the whole HTTP round-trip
-        # (measured 2.4-3.8s continuous loop stalls) — off-loop.
+        # (measured 2.4-3.8s continuous loop stalls) - off-loop.
         await asyncio.to_thread(killable_redis_container.stop)  # type: ignore[union-attr] # Why: fixture typed object to avoid transitive imports
 
         r_fallback = await tb.acquire(
@@ -160,10 +160,10 @@ async def test_redis_recovery_after_restart(
 
         await client.aclose()
 
-        # Why: docker-py start (+ readiness wait) blocks the loop — off-loop.
+        # Why: docker-py start (+ readiness wait) blocks the loop - off-loop.
         await asyncio.to_thread(killable_redis_container.start)  # type: ignore[union-attr] # Why: fixture typed object to avoid transitive imports
 
-        # Why: get_exposed_port inspects the container via docker HTTP — off-loop.
+        # Why: get_exposed_port inspects the container via docker HTTP - off-loop.
         new_port = await asyncio.to_thread(
             killable_redis_container.get_exposed_port,  # type: ignore[union-attr] # Why: port differs after restart (testcontainers artifact)
             6379,
@@ -217,7 +217,7 @@ async def test_both_backends_unavailable(
     module_pg_pool: asyncpg.Pool,
 ) -> None:
     """Redis raises ConnectionError; PG raises PostgresConnectionError
-    via ChaosConnection. The PG error propagates from acquire() — the request
+    via ChaosConnection. The PG error propagates from acquire() - the request
     is NOT silently allowed.
     """
     import redis as _redis_mod
@@ -260,7 +260,7 @@ async def test_both_backends_unavailable(
             )
 
 
-# ── PG contention — 50 concurrent acquires ────────────────────────
+# ── PG contention - 50 concurrent acquires ────────────────────────
 
 
 async def test_pg_contention_50_concurrent(
@@ -316,7 +316,7 @@ async def test_pg_contention_50_concurrent(
 # the store (``redis.call('TIME')`` / ``clock_timestamp()``); no Python clock
 # participates.  Simulating a backward step of that clock therefore means
 # moving the store's own persisted ``ts`` FORWARD relative to the store's
-# now — which is exactly the state a backward step leaves behind: the last
+# now - which is exactly the state a backward step leaves behind: the last
 # write is stamped in the future.  Injecting a FakeClock here would be inert.
 
 _SKEW_SECS = 600.0
@@ -365,7 +365,7 @@ async def test_a_backward_step_of_the_store_clock_neither_refills_nor_indebts(
     Without the clamp the refill term runs in reverse: 9 - 600*1.0 = -591, the
     acquire is DENIED, and the debt outlives the clock recovering because
     ``ts`` is restamped forward on every acquire.  That is the regression this
-    pins — an assertion of the form ``remaining <= remaining_after_first``
+    pins - an assertion of the form ``remaining <= remaining_after_first``
     would accept the debt, since a token debt is also a decrease.
     """
     schema = module_pg_schema.schema_name

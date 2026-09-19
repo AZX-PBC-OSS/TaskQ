@@ -1,4 +1,4 @@
-"""Fleet-wide queue concurrency cap e2e — ``max_concurrent`` on the queues
+"""Fleet-wide queue concurrency cap e2e - ``max_concurrent`` on the queues
 table caps total concurrent jobs for a queue across the fleet.
 
 This module overrides the module-scoped ``e2e_schema`` fixture to insert an
@@ -6,7 +6,7 @@ This module overrides the module-scoped ``e2e_schema`` fixture to insert an
 ``TASKQ_QUEUES=e2e,e2e_capped`` in the worker env. The worker reads
 ``max_concurrent`` at startup (``_bootstrap.py``), registers a
 ``ConcurrencyReservation`` for the queue, and ``dispatch.py`` transparently
-prepends the queue-cap reservation name via ``_effective_reservations`` —
+prepends the queue-cap reservation name via ``_effective_reservations`` -
 no actor-level ``reservations`` or ``rate_limits`` declaration needed.
 
 The autouse ``clean_e2e_state`` fixture deletes all rows from
@@ -113,7 +113,7 @@ async def e2e_schema(
         # lease IS the loop-stall budget for in-flight jobs. Every 0.5 s
         # heartbeat tick re-records lock_expires_at = now + lease for
         # running jobs, and the leader sweep (2 s interval) reclaims any
-        # running job whose lock expired — so a transient worker-loop
+        # running job whose lock expired - so a transient worker-loop
         # stall longer than the lease (full-tier Docker load) reclaims
         # the LIVE attempt mid-run. Here each capped_worker job sleeps
         # ~1 s and the five jobs run as 3 waves (~3 s of in-flight
@@ -121,15 +121,15 @@ async def e2e_schema(
         # finished == 5) cannot tolerate a mid-run reclaim: a reclaimed
         # attempt burns a retry and can duplicate or drop effects, which
         # is the same flake class the fleet widening cured. Nothing the
-        # cap assertions measure depends on lease tightness — max
+        # cap assertions measure depends on lease tightness - max
         # concurrency and total time are timing-independent of the lease
-        # — so the wider lease costs nothing. The reservation-slot lease
+        # - so the wider lease costs nothing. The reservation-slot lease
         # on the ConcurrencyReservation below is a different mechanism
         # (slots are re-acquired per attempt) and stays at 3 s.
         "TASKQ_LOCK_LEASE": "8.0",
         # Watchdog off: this test drives dispatch caps, not the
-        # detectors. (The 8 s lease could host a coherent lag budget —
-        # the watchdog modules run exactly that — but arming it here
+        # detectors. (The 8 s lease could host a coherent lag budget -
+        # the watchdog modules run exactly that - but arming it here
         # would add an isolation path no cap assertion depends on.)
         "TASKQ_WATCHDOG_ENABLED": "false",
         "TASKQ_CANCELLATION_GRACE_PERIOD": "1.0",
@@ -165,7 +165,7 @@ async def test_queue_concurrency_cap_limits_parallelism(
 
     Enqueues 5 ``capped_worker`` jobs (each sleeps 1.0s) on the
     ``e2e_capped`` queue. With a fleet-wide cap of 2, at most 2 jobs run
-    simultaneously — the rest are snoozed with ``ReservationUnavailable``
+    simultaneously - the rest are snoozed with ``ReservationUnavailable``
     until a slot frees. The test computes the maximum observed concurrency
     from ``capped_started`` / ``capped_finished`` effect timestamps and
     asserts it never exceeds the cap (and reaches it, proving the cap is
@@ -183,7 +183,7 @@ async def test_queue_concurrency_cap_limits_parallelism(
     # deleted. ensure_slots is idempotent (ON CONFLICT DO NOTHING), so
     # this is safe even if the rows somehow still exist.
     res_name = queue_concurrency_reservation_name("e2e_capped")
-    # The reservation-slot lease — a different mechanism from the worker
+    # The reservation-slot lease - a different mechanism from the worker
     # lock lease above: slots are re-acquired per attempt, and a snoozed
     # job retries within the wake tick, so 3 s is ample and independent
     # of the lease knob the worker env widened.
@@ -195,7 +195,7 @@ async def test_queue_concurrency_cap_limits_parallelism(
     )
     await reservation.ensure_slots(e2e_pg_pool)
 
-    # Enqueue 5 jobs — each sleeps 1.0s. With cap=2, they run in 3 waves
+    # Enqueue 5 jobs - each sleeps 1.0s. With cap=2, they run in 3 waves
     # (2 + 2 + 1), taking ~3s plus wake-tick delays.
     handles = [
         await e2e_client.enqueue(
@@ -238,11 +238,11 @@ async def test_queue_concurrency_cap_limits_parallelism(
         max_concurrent = max(max_concurrent, current)
 
     assert max_concurrent <= _CAP, (
-        f"max concurrency {max_concurrent} exceeded queue cap {_CAP} — "
+        f"max concurrency {max_concurrent} exceeded queue cap {_CAP} - "
         f"the fleet-wide queue concurrency cap is not being enforced"
     )
     assert max_concurrent >= 2, (
-        f"max concurrency {max_concurrent} < 2 — "
+        f"max concurrency {max_concurrent} < 2 - "
         f"the cap slots may not have been created (ensure_slots failed?)"
     )
 
@@ -251,6 +251,6 @@ async def test_queue_concurrency_cap_limits_parallelism(
     # scheduling; the key assertion is max_concurrent above.
     total_time = (max(finished_map.values()) - min(started_map.values())).total_seconds()
     assert total_time >= 2.0, (
-        f"total completion time {total_time:.2f}s < 2.0s — "
+        f"total completion time {total_time:.2f}s < 2.0s - "
         f"all {_NUM_JOBS} jobs ran in parallel (cap not enforced)"
     )

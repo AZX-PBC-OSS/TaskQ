@@ -3,7 +3,7 @@
 The singleton arm is the one enqueue statement whose documented failure
 mode is a typed, catchable refusal: a concurrent singleton insert wins
 the ``jobs_singleton_uniq`` race and this INSERT loses it. The raw
-``UniqueViolationError`` is a STATEMENT error — on a caller-owned
+``UniqueViolationError`` is a STATEMENT error - on a caller-owned
 transaction it aborts the whole transaction, and converting it to
 ``SingletonCollisionError`` does not undo that, so the same typed
 refusal left the caller's transaction dead on the violation path but
@@ -15,7 +15,7 @@ depth unchanged.
 
 The connection stand-in tracks savepoint depth and records whether each
 entered scope exited by ROLLBACK (an exception was converted inside it)
-or RELEASE — the same discipline as the bounded advisory acquire
+or RELEASE - the same discipline as the bounded advisory acquire
 (``taskq._advisory``) and the serialization pins in
 ``tests/test_unique_for_caller_conn_serialization.py``, verified
 without a database.
@@ -96,7 +96,7 @@ def _full_record(*, job_id: UUID | None = None) -> dict[str, object]:
 
 
 class _Record:
-    """Duck-typed asyncpg.Record — supports ``rec[key]``."""
+    """Duck-typed asyncpg.Record - supports ``rec[key]``."""
 
     def __init__(self, data: dict[str, object]) -> None:
         self._data = data
@@ -107,7 +107,7 @@ class _Record:
 
 class _SavepointTx:
     """asyncpg.Transaction stand-in: bumps the connection's depth on enter
-    and records the exit kind — rollback when an exception propagated
+    and records the exit kind - rollback when an exception propagated
     through the scope (the savepoint conversion path), release otherwise."""
 
     def __init__(self, conn: "_ConnStandin") -> None:
@@ -128,9 +128,9 @@ class _ConnStandin:
     savepoint shape around each statement.
 
     ``caller_tx_open`` models the two caller shapes the savepoint must
-    distinguish: a caller-owned OPEN transaction (True — the caller owns
+    distinguish: a caller-owned OPEN transaction (True - the caller owns
     the scope, and a nested ``transaction()`` is a SAVEPOINT of it) and a
-    bare autocommit connection (False — a ``transaction()`` opens a real
+    bare autocommit connection (False - a ``transaction()`` opens a real
     short transaction that must be gone by the time the typed refusal
     raises).
     """
@@ -216,7 +216,7 @@ def _make_args(*, singleton: bool = False) -> EnqueueArgs:
 async def test_singleton_violation_on_caller_tx_rolls_back_to_savepoint() -> None:
     """The losing INSERT's UniqueViolationError must be rolled back to a
     savepoint and converted to the typed refusal with the caller's
-    transaction exactly as TaskQ found it — parity with the preflight
+    transaction exactly as TaskQ found it - parity with the preflight
     path, whose plain Python raise already keeps it usable."""
     conn = _ConnStandin(
         preflight_row=None,  # the race: the blocker is invisible to the preflight
@@ -245,7 +245,7 @@ async def test_singleton_violation_on_caller_tx_rolls_back_to_savepoint() -> Non
     )
     assert conn.statement_depths["insert"] == 1, "the INSERT must run INSIDE the savepoint"
     assert conn.tx_depth == 0, (
-        "the savepoint must be closed by the rollback — the caller's transaction "
+        "the savepoint must be closed by the rollback - the caller's transaction "
         "depth is unchanged, so the scope TaskQ hands back is the one it was given"
     )
 
@@ -254,7 +254,7 @@ async def test_singleton_violation_on_bare_conn_opens_no_scope_and_ends_bare() -
     """On a bare connection there is no caller transaction to keep
     usable: the INSERT runs plain (a statement error in autocommit poisons
     nothing), the typed refusal raises, and the connection is bare
-    afterwards — a dangling transaction would pin the caller's next use."""
+    afterwards - a dangling transaction would pin the caller's next use."""
     conn = _ConnStandin(
         preflight_row=None,
         insert_exc=_singleton_violation(),
@@ -277,7 +277,7 @@ async def test_singleton_violation_on_bare_conn_opens_no_scope_and_ends_bare() -
 
 
 async def test_singleton_preflight_refusal_opens_no_savepoint_and_names_blocker() -> None:
-    """The preflight arm is a plain Python raise after a SELECT — no
+    """The preflight arm is a plain Python raise after a SELECT - no
     statement error, so it needs (and must not pay for) a savepoint. Its
     refusal names the blocking row and, when the blocker has no
     schedule_to_close (the stranded-blocker shape), carries

@@ -1,4 +1,4 @@
-"""Dispatch starvation regression tests — spec
+"""Dispatch starvation regression tests - spec
 
 Validates pending_rank fairness, identity dedup, actor_config gate,
 oversample absorption, per-actor priority resolution, and round-robin
@@ -81,7 +81,7 @@ async def _dispatch_cycles(
 
 @pytest.mark.asyncio
 async def test_starvation_regression_intra_queue() -> None:
-    """Spec Test 1: 1700 copy jobs + 1 monitor job — monitor dispatched within 2 cycles."""
+    """Spec Test 1: 1700 copy jobs + 1 monitor job - monitor dispatched within 2 cycles."""
     backend = _make_backend()
     wid = new_uuid()
     await _enqueue_bulk(backend, "copy_file", "default", 1700, max_concurrent=5)
@@ -94,7 +94,7 @@ async def test_starvation_regression_intra_queue() -> None:
 
 @pytest.mark.asyncio
 async def test_starvation_regression_cross_queue() -> None:
-    """Spec Test 2: 1700 copy jobs on 'copy' + 1 monitor on 'monitor' — monitor dispatched."""
+    """Spec Test 2: 1700 copy jobs on 'copy' + 1 monitor on 'monitor' - monitor dispatched."""
     backend = _make_backend()
     wid = new_uuid()
     await _enqueue_bulk(backend, "copy_file", "copy", 1700, max_concurrent=5)
@@ -216,7 +216,7 @@ async def test_identity_dedup_slot_preservation() -> None:
 async def test_oversample_absorption() -> None:
     """Spec Test 7: oversample=2 reaches 3 distinct identities per actor.
 
-    InMemory doesn't have a configurable oversample — it iterates all
+    InMemory doesn't have a configurable oversample - it iterates all
     candidates. This test confirms that all distinct identities dispatch
     (identity dedup doesn't collapse more than it should).
     """
@@ -239,7 +239,7 @@ async def test_oversample_absorption() -> None:
 
 @pytest.mark.asyncio
 async def test_oversample_absorption_identity_dedupped() -> None:
-    """Identity dedup: 2 per identity, 3 identities — dispatches 1 per identity."""
+    """Identity dedup: 2 per identity, 3 identities - dispatches 1 per identity."""
     backend = _make_backend()
     wid = new_uuid()
     for ident in ["x", "y", "z"]:
@@ -345,10 +345,10 @@ async def test_actor_config_gate_empty_blocks_all() -> None:
 
     PG's per_actor_capacity CTE builds candidates FROM the actor_config
     registry (backend/_dispatch_sql.py): zero registered actors means
-    zero capacity rows means zero candidates — "no actors registered"
+    zero capacity rows means zero candidates - "no actors registered"
     must never read as "no filter". The old escape let the mirror
     dispatch work a real worker polling the same empty registry never
-    would (the mirror was greener than production — pinned as a RED
+    would (the mirror was greener than production - pinned as a RED
     differential in tests/test_rt_diff_dispatch.py).
     """
     backend = _make_backend()
@@ -368,7 +368,7 @@ async def test_actor_config_gate_empty_blocks_all() -> None:
     dispatched = await backend.dispatch_batch(wid, ["default"], limit=30, lock_lease=_LOCK_LEASE)
     assert dispatched == [], (
         "An empty actor registry must dispatch NOTHING on either backend "
-        "(PG's per_actor_capacity has no rows to build candidates from) — "
+        "(PG's per_actor_capacity has no rows to build candidates from) - "
         "never silently read 'no actors registered' as 'no filter'"
     )
 

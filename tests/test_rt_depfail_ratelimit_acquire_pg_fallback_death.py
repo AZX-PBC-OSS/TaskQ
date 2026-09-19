@@ -2,11 +2,11 @@
 
 The Redis-outage instances of the dependency-failure contract are pinned
 in tests/test_rt_depfail_ratelimit_acquire.py: a limiter whose store
-cannot answer must fail CLOSED — the job snoozes, the actor never runs,
+cannot answer must fail CLOSED - the job snoozes, the actor never runs,
 the job's retry budget and error_class are untouched. The PG fallback is
 the same class's second store: with ``rate_limit_pg_fallback_enabled``
 on (the default) and a Redis outage funneling admission into Postgres, a
-PG connection death mid-fallback must take the same fail-closed path —
+PG connection death mid-fallback must take the same fail-closed path -
 not escape into ``dispatch_one_job``'s generic handler, which would burn
 the job's retry budget for an infrastructure outage and persist the
 Postgres error as the job's own ``error_class``.
@@ -103,7 +103,7 @@ class _RaisingScript:
 def _dead_redis_client(error: Exception) -> redis_async.Redis:
     """A REAL ``redis.asyncio.Redis`` instance (dispatch resolves the client
     via ``isinstance(raw_redis, Redis)``) whose Lua script call fails with
-    *error* — no container, no socket: the command surface is duck-typed."""
+    *error* - no container, no socket: the command surface is duck-typed."""
     client = redis_async.Redis(host="127.0.0.1", port=1, decode_responses=False)
     client.register_script = lambda script: _RaisingScript(error)  # type: ignore[method-assign]  # Why: injecting the failure at the script-call seam redis-py would use; no connection exists
     return client
@@ -123,7 +123,7 @@ class _DeadPgAcquireCtx:
 
 
 class _DeadPgPool:
-    """Duck-typed asyncpg.Pool: every acquire raises the injected error —
+    """Duck-typed asyncpg.Pool: every acquire raises the injected error -
     the PG fallback store dying mid-outage, one store failure deep."""
 
     def __init__(self, error: Exception) -> None:
@@ -218,7 +218,7 @@ async def test_pg_fallback_death_acquire_does_not_burn_retry_budget() -> None:
     assert fake_backend.mark_failed_or_retry_calls == [], (
         "DEPENDENCY-FAILURE contract (fail-closed, no misattribution): the PG "
         "fallback's death during acquire must NOT be written as the job's own "
-        "failure — mark_failed_or_retry burns a retry attempt and persists "
+        "failure - mark_failed_or_retry burns a retry attempt and persists "
         "error_class=PostgresConnectionError on the job row for an "
         "infrastructure outage."
     )
@@ -239,7 +239,7 @@ async def test_pg_fallback_death_acquire_does_not_burn_retry_budget() -> None:
         "the store-failure denial must route to the NON-consuming snooze arm "
         "(denial_reason='unavailable'): the PG fallback's death is "
         "infrastructure backpressure about a job whose actor never ran, so the "
-        "claim's attempt increment is refunded and no terminal arm can fire — "
+        "claim's attempt increment is refunded and no terminal arm can fire - "
         "a 'capacity' reason would burn the job's retry budget for the outage."
     )
     assert snoozes[0]["metadata_update"] == {
@@ -251,15 +251,15 @@ async def test_pg_fallback_death_acquire_does_not_burn_retry_budget() -> None:
 
     fallback_warnings = [e for e in captured if e.get("event") == "rate-limit-redis-fallback"]
     assert len(fallback_warnings) == 1, (
-        "the fallback attempt itself stays visible — the operator sees the "
+        "the fallback attempt itself stays visible - the operator sees the "
         "Redis outage AND the failed degradation through the existing "
         "rate-limit-redis-fallback warning"
     )
 
 
 async def test_no_pool_fallback_acquire_does_not_burn_retry_budget() -> None:
-    """The fallback entered with no pool injected at all — the limiter's
-    PG store never wired — is the same dependency-unavailable class as a
+    """The fallback entered with no pool injected at all - the limiter's
+    PG store never wired - is the same dependency-unavailable class as a
     pool death mid-fallback, not a job failure: the no-pool branch raises
     the typed ``RateLimitDependencyUnavailable``, the consumer's
     dependency-failure family recognises it, and the dispatch fails
@@ -278,7 +278,7 @@ async def test_no_pool_fallback_acquire_does_not_burn_retry_budget() -> None:
     assert fake_backend.mark_failed_or_retry_calls == [], (
         "DEPENDENCY-FAILURE contract (fail-closed, no misattribution): an "
         "unwired PG fallback store must NOT be written as the job's own "
-        "failure — mark_failed_or_retry burns a retry attempt and persists "
+        "failure - mark_failed_or_retry burns a retry attempt and persists "
         "a store-wiring error as the job's error_class."
     )
     job_exception_logs = [e for e in captured if e.get("event") == "job_exception"]
@@ -298,7 +298,7 @@ async def test_no_pool_fallback_acquire_does_not_burn_retry_budget() -> None:
         "the store-failure denial must route to the NON-consuming snooze arm "
         "(denial_reason='unavailable'): an unwired fallback store is "
         "infrastructure backpressure about a job whose actor never ran, so the "
-        "claim's attempt increment is refunded and no terminal arm can fire — "
+        "claim's attempt increment is refunded and no terminal arm can fire - "
         "a 'capacity' reason would burn the job's retry budget for the outage."
     )
     assert snoozes[0]["metadata_update"] == {
@@ -306,7 +306,7 @@ async def test_no_pool_fallback_acquire_does_not_burn_retry_budget() -> None:
     }, (
         "the degraded denial must be distinguishable from saturation: the "
         "awaiting annotation names the limiter's unavailability and its "
-        "cause — the typed no-pool error, not a bare RuntimeError the "
+        "cause - the typed no-pool error, not a bare RuntimeError the "
         "family cannot recognise"
     )
 

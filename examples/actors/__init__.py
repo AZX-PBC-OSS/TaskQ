@@ -7,18 +7,18 @@ Rate-limit primitives are registered on the ``ratelimit`` submodule's
 
 Actors are organized by feature domain:
 
-- :mod:`basic` — long-running cancellable jobs and deferred scheduling.
-- :mod:`failure` — retry, snooze, and simulated errors.
-- :mod:`ratelimit` — sliding windows, token buckets, and concurrency reservations.
-- :mod:`chained` — actor chaining and fan-out via ``ctx.jobs.enqueue()`` /
+- :mod:`basic` - long-running cancellable jobs and deferred scheduling.
+- :mod:`failure` - retry, snooze, and simulated errors.
+- :mod:`ratelimit` - sliding windows, token buckets, and concurrency reservations.
+- :mod:`chained` - actor chaining and fan-out via ``ctx.jobs.enqueue()`` /
   ``ctx.jobs.enqueue_batch()``.
-- :mod:`di` — dependency injection with LOOP-scope and TRANSIENT-scope providers.
-- :mod:`batch` — ``enqueue_batch`` and fan-out-then-finalize via ``wait_for_batch``.
-- :mod:`advanced` — singleton, max_concurrent, unique_for, and result_ttl.
-- :mod:`ticker` — cron-scheduled periodic actor.
-- :mod:`progress` — ctx.progress() and JobHandle.progress_stream() (M5).
-- :mod:`tags_demo` — job tagging and tag-based filtering.
-- :mod:`sync_demo` — plain ``def`` actor dispatched via ``asyncio.to_thread``.
+- :mod:`di` - dependency injection with LOOP-scope and TRANSIENT-scope providers.
+- :mod:`batch` - ``enqueue_batch`` and fan-out-then-finalize via ``wait_for_batch``.
+- :mod:`advanced` - singleton, max_concurrent, unique_for, and result_ttl.
+- :mod:`ticker` - cron-scheduled periodic actor.
+- :mod:`progress` - ctx.progress() and JobHandle.progress_stream() (M5).
+- :mod:`tags_demo` - job tagging and tag-based filtering.
+- :mod:`sync_demo` - plain ``def`` actor dispatched via ``asyncio.to_thread``.
 """
 
 from examples.actors.advanced import capped_job, deduplicated, singleton_job, summer

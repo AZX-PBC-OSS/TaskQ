@@ -6,7 +6,7 @@ publish that happened to succeed.
 
 The eviction-drain landed for evicted keyed buckets
 (``evict_idle_keyed_rate_limits`` records the pending reclaim;
-``drain_pending_reservation_reclaims`` deletes the row) — but the
+``drain_pending_reservation_reclaims`` deletes the row) - but the
 recording consults ``_keyed_rate_limit_row_schemas``, a capture written
 ONLY on the ``else`` arm of the materialisation publish
 (``registry.py::_resolve_rate_limit_name``): the capture lands when the
@@ -22,18 +22,18 @@ flows therefore bypass the capture entirely:
    and the redis backend's PG fallback does the same. The row exists,
    the capture does not, so the idle eviction proceeds *unrecorded*
    (``schema is None`` → "nothing to reclaim") and the row orphans
-   permanently — the one-row-per-key-ever-seen growth the eviction-drain
+   permanently - the one-row-per-key-ever-seen growth the eviction-drain
    was built to stop, surviving it by one branch.
 2. **The first resolution has no pool, later ones do.** The publish runs
    only in the first-materialisation branch; the reuse branch refreshes
    recency and never publishes. A bucket materialised pool-less (an
    in-process or memory acquire) that is later resolved with a pool gets
-   its row created by the acquire's preseed — or, for metadata-only
-   backends, never gets the admin-UI row at all — and no capture either
+   its row created by the acquire's preseed - or, for metadata-only
+   backends, never gets the admin-UI row at all - and no capture either
    way, so the eviction again records nothing.
 
 The contract these pins assert, stated once: **any pool-bearing
-resolution of a keyed rate limit owns its PG row** — the row is
+resolution of a keyed rate limit owns its PG row** - the row is
 published (idempotently, best-effort) and its schema is captured for the
 reclaim drain, whatever the publish's outcome. A captured name whose row
 never materialised drains as a one-statement no-op DELETE; an uncaptured
@@ -93,7 +93,7 @@ async def _bucket_rows(pool: asyncpg.Pool, schema: str, bucket: str) -> int:
 
 
 def _pg_ref(base_name: str) -> KeyedRateLimitRef:
-    """A keyed rate limit on the PG backend — the acquire itself creates
+    """A keyed rate limit on the PG backend - the acquire itself creates
     the ``rate_limit_buckets`` row via the preseed."""
     return KeyedRateLimitRef.typed(
         _TenantPayload,
@@ -123,7 +123,7 @@ async def test_publish_failure_row_created_by_acquire_is_still_reclaimed(
     """A publish that fails must not orphan the row the acquire creates.
 
     The materialisation publish is best-effort (a transient PG blip warns
-    and the acquisition proceeds) — and the ``backend="postgres"``
+    and the acquisition proceeds) - and the ``backend="postgres"``
     acquire then preseeds the very row the publish was meant to create.
     The reclamation bookkeeping must not depend on the side quest's
     outcome: the idle eviction has to record the bucket for the
@@ -138,7 +138,7 @@ async def test_publish_failure_row_created_by_acquire_is_still_reclaimed(
         # The publish seam is the MODULE taskq.ratelimit.registry; the
         # package's __init__ re-exports the `registry` singleton under the
         # name the submodule would bind, so `import ... as` hands back the
-        # singleton — the module is reached through sys.modules, which the
+        # singleton - the module is reached through sys.modules, which the
         # RateLimitRegistry import above has already loaded.
         registry_mod = sys.modules["taskq.ratelimit.registry"]
 
@@ -178,7 +178,7 @@ async def test_publish_failure_row_created_by_acquire_is_still_reclaimed(
         assert evicted == 1, "fixture broken: the idle keyed bucket was not evicted"
         assert reg.has_pending_reservation_reclaims, (
             "an eviction whose bucket HAS a PG row (the acquire's preseed created "
-            "it after the publish failed) recorded no pending reclaim — the "
+            "it after the publish failed) recorded no pending reclaim - the "
             "capture must ride the resolution, not the publish's outcome, or "
             "the row orphans with the registry entry gone and no code path left "
             "that can ever name it"
@@ -194,7 +194,7 @@ async def test_publish_failure_row_created_by_acquire_is_still_reclaimed(
             "created the row anyway, and the eviction proceeded unrecorded "
             "because the schema capture only lands on a successful publish. "
             "Steady-state cardinality is one row per key whose first publish "
-            "failed — unbounded in the caller-controlled key space."
+            "failed - unbounded in the caller-controlled key space."
         )
     finally:
         await pool.close()
@@ -211,7 +211,7 @@ async def test_poolless_materialisation_captures_on_pool_bearing_reuse(
     reuse branch refreshes recency and never publishes. A worker that
     resolves the key pool-less (an in-process acquire) and later resolves
     it with a pool therefore never surfaces the admin-UI row AND never
-    captures the schema — so the idle eviction records nothing while the
+    captures the schema - so the idle eviction records nothing while the
     acquire's preseed (PG backend) or the republish (metadata backends)
     stands the row up. Every pool-bearing resolution must own the row:
     publish idempotently and capture."""
@@ -225,7 +225,7 @@ async def test_poolless_materialisation_captures_on_pool_bearing_reuse(
         bucket = "cap-reuse:acme"
 
         # First resolution: pool-less (the bucket is process-local; no row,
-        # no capture — correct for a resolution that cannot touch PG).
+        # no capture - correct for a resolution that cannot touch PG).
         acquired = await reg.acquire_for_actor(
             rate_limits=[ref],
             reservations=[],
@@ -239,7 +239,7 @@ async def test_poolless_materialisation_captures_on_pool_bearing_reuse(
         assert len(acquired) == 1
         assert await _bucket_rows(pool, schema, bucket) == 0
 
-        # The same key resolved again, now with a pool — a worker whose
+        # The same key resolved again, now with a pool - a worker whose
         # dispatch carries the pool, or a later acquire after a pool was
         # registered. This resolution must publish and capture.
         reacquired = await reg.acquire_for_actor(
@@ -263,7 +263,7 @@ async def test_poolless_materialisation_captures_on_pool_bearing_reuse(
         evicted = reg.evict_idle_keyed_rate_limits(idle_for=timedelta(0))
         assert evicted == 1, "fixture broken: the idle keyed bucket was not evicted"
         assert reg.has_pending_reservation_reclaims, (
-            "the pool-bearing reuse captured no reclaim schema — the eviction "
+            "the pool-bearing reuse captured no reclaim schema - the eviction "
             "records nothing and the row the reuse should own orphans"
         )
 

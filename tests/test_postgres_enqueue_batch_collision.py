@@ -48,13 +48,13 @@ class TestFirstEnqueueWins:
     ) -> None:
         backend = clean_jobs_app.backend
 
-        # First enqueue — inserts a new row
+        # First enqueue - inserts a new row
         args_a = _make_args(idempotency_key=_IDEMP_KEY_1)
         batch1 = await backend.enqueue_batch([args_a])
         assert len(batch1) == 1
         original = batch1[0]
 
-        # Second enqueue with same key — should return existing row
+        # Second enqueue with same key - should return existing row
         args_b = _make_args(idempotency_key=_IDEMP_KEY_1)
         batch2 = await backend.enqueue_batch([args_b])
         assert len(batch2) == 1
@@ -222,7 +222,7 @@ class TestMultipleCollisions:
         pre_rows = await backend.enqueue_batch([args_with_key])
         pre_row = pre_rows[0]
 
-        # Second batch: mixed — same key (collision) and a new item without key
+        # Second batch: mixed - same key (collision) and a new item without key
         args_collision = _make_args(
             actor="actor_a",
             idempotency_key=_IDEMP_KEY_1,
@@ -298,7 +298,7 @@ class TestNoCollisions:
 
     async def test_batch_repeated_actor_no_conflict(self, clean_jobs_app: JobsApp) -> None:
         """Same actor multiple times in a batch with different idempotency
-        keys — each should get a new row."""
+        keys - each should get a new row."""
         backend = clean_jobs_app.backend
 
         args_list = [
@@ -333,8 +333,8 @@ class TestNoCollisions:
 
 class TestBatchDedupIsObservable:
     """The batch result assembly logs the same ``enqueue_deduplicated``
-    contract as the single-enqueue path — status on every hit, warning
-    when the target is terminal — so a caller cannot learn about a
+    contract as the single-enqueue path - status on every hit, warning
+    when the target is terminal - so a caller cannot learn about a
     silently deduped batch item only by diffing result ids."""
 
     async def test_batch_dedup_onto_live_job_is_info_with_status(

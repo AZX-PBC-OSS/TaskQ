@@ -177,7 +177,7 @@ class TestDeterminism:
 
             await backend.run_until_drained()
 
-            # Compare by (actor, status, attempt) — UUIDs differ between runs
+            # Compare by (actor, status, attempt) - UUIDs differ between runs
             state = sorted([(r.actor, r.status, r.attempt) for r in backend._jobs.values()])
             results.append(state)
 
@@ -311,7 +311,7 @@ class TestNoClockAdvanceReturns:
 
         backend = InMemoryBackend(clock=SystemClock())
 
-        # No jobs — should return immediately
+        # No jobs - should return immediately
         await backend.run_until_drained()
 
 
@@ -494,7 +494,7 @@ class TestUnregisteredActor:
 
 
 class _StrictPayload(BaseModel):
-    """Payload model with a required field — rejects missing/empty payloads."""
+    """Payload model with a required field - rejects missing/empty payloads."""
 
     required_field: str
 
@@ -571,7 +571,7 @@ async def test_run_until_drained_handles_reservation_unavailable() -> None:
     with metadata['awaiting'] == 'reservation:<bucket>', the
     rate_limit_blocked_count counter incremented on the row, and NO
     attempt row for the denial (a denial is admission control, not an
-    execution — the only attempt row is the eventual success).
+    execution - the only attempt row is the eventual success).
     """
     clock = FakeClock(_START)
     backend = _make_backend(clock)
@@ -604,7 +604,7 @@ async def test_run_until_drained_handles_reservation_unavailable() -> None:
     assert [a.outcome for a in attempts] == ["succeeded"]
     # The recovery happened at the denial's own reschedule point: the
     # drain advanced the clock to it (the limiter's Retry-After promise)
-    # and re-claimed there — a limiter that refills by its own promised
+    # and re-claimed there - a limiter that refills by its own promised
     # point always gets its chance.
     assert attempts[0].started_at == _START + timedelta(seconds=10)
 
@@ -612,8 +612,8 @@ async def test_run_until_drained_handles_reservation_unavailable() -> None:
 async def test_run_until_drained_stops_when_admission_never_recovers() -> None:
     """A limiter that never admits must not spin the drain forever.
 
-    The drain trusts the denial's own reschedule point once — it advances
-    the clock there and re-claims — and a second denial observed at that
+    The drain trusts the denial's own reschedule point once - it advances
+    the clock there and re-claims - and a second denial observed at that
     point proves the starvation: no further advance can drain the job, so
     the drain returns with the job still scheduled (never dropped, never
     terminal), exactly the two denials counted, and the clock left at the
@@ -635,7 +635,7 @@ async def test_run_until_drained_stops_when_admission_never_recovers() -> None:
     assert row is not None
     assert row.status == "scheduled"
     assert row.error_class is None
-    # The initial denial plus the one at the trusted reschedule point —
+    # The initial denial plus the one at the trusted reschedule point -
     # never an unbounded ratchet.
     assert row.rate_limit_blocked_count == 2
     assert await backend.get_attempts(args.id) == []
@@ -647,7 +647,7 @@ async def test_run_until_drained_stops_when_admission_never_recovers() -> None:
 
 async def test_claim_and_denial_write_no_event_rows() -> None:
     """The in-memory mirror of the PG claim contract: a claim writes no
-    ``job_events`` row, so a claim→denial cycle nets zero durable rows —
+    ``job_events`` row, so a claim→denial cycle nets zero durable rows -
     the aggregated denial counter on the job row is the whole record.
 
     Driven at the claim seam directly (no promotion sweep in between, the
@@ -678,7 +678,7 @@ async def test_claim_and_denial_write_no_event_rows() -> None:
     assert row.rate_limit_blocked_count == 1
     assert await backend.get_attempts(args.id) == []
     assert await backend.get_events(args.id) == [], (
-        "a claim→denial cycle must net zero durable event rows — a row per "
+        "a claim→denial cycle must net zero durable event rows - a row per "
         "cycle is the unbounded-growth vector the aggregated denial "
         "counter replaced"
     )
@@ -913,7 +913,7 @@ _job_spec = st.builds(
     actor=_id_actor_names,
     # 9a4178a: EnqueueArgs rejects a NUL (U+0000) in identity_key at the
     # construction chokepoint, so generated keys must stay inside that input
-    # contract. Only NUL is excluded — every other codepoint remains legal
+    # contract. Only NUL is excluded - every other codepoint remains legal
     # input, preserving the strategy's coverage of the identity invariant.
     ik=st.one_of(
         st.none(),
@@ -941,7 +941,7 @@ async def test_property_identity_invariant(
     contractually refuses: a NUL is unstorable in a PostgreSQL text column, so
     enqueue rejects it at the EnqueueArgs chokepoint rather than letting the
     driver raise it later as an apparently transient failure. Both arms are
-    asserted here so the strategy stays honest — narrowing it to exclude NUL
+    asserted here so the strategy stays honest - narrowing it to exclude NUL
     would hide a regression in that rejection instead of pinning it.
     """
     clock = FakeClock(_START)
@@ -1018,7 +1018,7 @@ async def test_dispatch_batch_respects_schedule_to_close_interval() -> None:
 class TestRunningRowLeaseInvariant:
     async def test_running_row_written_without_a_lease_gets_one_stamped(self) -> None:
         """The store stamps a lease on every running-row write that lacks
-        one — the twin of the dispatch CTE's unconditional
+        one - the twin of the dispatch CTE's unconditional
         ``lock_expires_at = clock_timestamp() + lock_lease``
         (backend/_dispatch_sql.py), stamped from the injected clock.
 
@@ -1026,7 +1026,7 @@ class TestRunningRowLeaseInvariant:
         writers, so the twin's store must not hold one either: the reclaim
         sweep's NULL-blind guard (the twin of PG's NULL-false
         ``lock_expires_at < bound``) can never select it, and no other
-        exit reaches a dead holder's row — the stamped lease is what makes
+        exit reaches a dead holder's row - the stamped lease is what makes
         it reclaimable once the clock passes it.
         """
         clock = FakeClock(_START)
@@ -1049,13 +1049,13 @@ class TestRunningRowLeaseInvariant:
         assert stored.status == "running"
         assert stored.lock_expires_at is not None, (
             "a running row must never sit in the twin's store without a "
-            "lease — PG's dispatch CTE stamps one on every claim, and the "
+            "lease - PG's dispatch CTE stamps one on every claim, and the "
             "reclaim sweep's NULL guard leaves a lease-less running row "
             "with no reachable exit"
         )
         assert stored.lock_expires_at > _START, (
             "the stamped lease must run from the injected clock's now, not "
-            "from a wall clock and not from the past — an already-expired "
+            "from a wall clock and not from the past - an already-expired "
             "stamp would make the row instantly reclaimable"
         )
 

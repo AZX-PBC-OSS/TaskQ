@@ -1,4 +1,4 @@
-"""Dependency-injection actors — LOOP-scope and TRANSIENT-scope providers.
+"""Dependency-injection actors - LOOP-scope and TRANSIENT-scope providers.
 
 These actors demonstrate TaskQ's DI system:
 
@@ -27,7 +27,7 @@ from taskq.di import ProviderRegistry, Scope
 
 
 class FakeHttpClient:
-    """Toy HTTP client — simulates a real async HTTP session."""
+    """Toy HTTP client - simulates a real async HTTP session."""
 
     def __init__(self) -> None:
         self._closed = False
@@ -40,14 +40,14 @@ class FakeHttpClient:
 
 
 class FakeDb:
-    """Toy DB session — simulates a per-request database connection."""
+    """Toy DB session - simulates a per-request database connection."""
 
     def query(self, sql: str, *params: object) -> list[dict[str, object]]:
         return [{"id": 1, "sql": sql, "params": list(params), "result": "ok"}]
 
 
 class SmtpClient:
-    """Toy SMTP client — simulates a real email sending service."""
+    """Toy SMTP client - simulates a real email sending service."""
 
     def __init__(self) -> None:
         self._closed = False
@@ -95,7 +95,7 @@ async def fetch_actor(
     *,
     http: FakeHttpClient,
 ) -> FetchResult:
-    """Fetches a URL via injected HTTP client — demonstrates LOOP-scope DI and result_ttl."""
+    """Fetches a URL via injected HTTP client - demonstrates LOOP-scope DI and result_ttl."""
     data = await http.get(payload.url)
     ctx.log.info("fetch_complete", url=payload.url, status=data["status"])
     return FetchResult(status=int(data["status"]), body=str(data["body"]))
@@ -107,7 +107,7 @@ async def db_lookup_actor(
     *,
     db: FakeDb,
 ) -> None:
-    """Queries the fake DB — demonstrates TRANSIENT-scope DI (fresh session per job)."""
+    """Queries the fake DB - demonstrates TRANSIENT-scope DI (fresh session per job)."""
     rows = db.query("SELECT * FROM items WHERE id = $1", payload.item_id)
     _ = rows
 
@@ -116,7 +116,7 @@ def build_registry() -> ProviderRegistry:
     """Build and return a configured DI registry for the example worker.
 
     Called by worker.py and passed to worker_main(di_registry=...).
-    Do NOT call validate() here — the worker does that during bootstrap.
+    Do NOT call validate() here - the worker does that during bootstrap.
     """
     registry = ProviderRegistry()
     registry.register_factory(FakeHttpClient, Scope.LOOP, _http_client_factory)

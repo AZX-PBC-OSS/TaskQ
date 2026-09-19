@@ -41,7 +41,7 @@ async def test_count_active_jobs_running() -> None:
 
     backend = InMemoryBackend(FakeClock(_CLOCK_START))
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="test_actor")
     await backend.enqueue(make_enqueue_args(queue="default", scheduled_at=_CLOCK_START))
     await backend.dispatch_batch(
@@ -65,7 +65,7 @@ async def test_count_active_jobs_terminal_excluded() -> None:
 
     backend = InMemoryBackend(FakeClock(_CLOCK_START))
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="test_actor")
     await backend.enqueue(make_enqueue_args(queue="default", scheduled_at=_CLOCK_START))
     dispatched = await backend.dispatch_batch(

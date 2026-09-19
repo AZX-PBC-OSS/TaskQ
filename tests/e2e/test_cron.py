@@ -1,4 +1,4 @@
-"""Cron e2e — schedule registration and real cross-container firing.
+"""Cron e2e - schedule registration and real cross-container firing.
 
 A dedicated worker container (``TASKQ_E2E_CRON=1``) registers a
 ``* * * * *`` schedule at startup; the leader's cron loop enqueues the
@@ -91,7 +91,7 @@ async def test_cron_schedule_registers_fires_and_completes(
         return status == "succeeded"
 
     # The cron-tick effect lands at enqueue; the job itself still has to be
-    # dispatched and run to completion — wait for it rather than asserting
+    # dispatched and run to completion - wait for it rather than asserting
     # whatever state a single immediate read happens to catch.
     await poll_until(
         _job_succeeded,

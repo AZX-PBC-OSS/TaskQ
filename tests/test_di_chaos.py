@@ -17,7 +17,7 @@ Factory-shape chaos tests are preserved below (solver-level
 failure propagation), separate from the lifecycle chaos surface.
 
 All chaos tests assert teardown side effects via per-instance flags
-(__aexit_called, aclose_called, etc.) — NOT by monkeypatching internals.
+(__aexit_called, aclose_called, etc.) - NOT by monkeypatching internals.
 """
 
 from collections.abc import AsyncIterator
@@ -126,7 +126,7 @@ async def test_aenter_raises_during_loop_bootstrap() -> None:
     registry.validate()
 
     scope_containers: dict[Scope, object] = {}
-    resolver = make_resolver(registry, scope_containers)  # type: ignore[arg-type] # Why: make_resolver expects dict[Scope, ScopeContainerProtocol]; scope_containers holds concrete subclasses that satisfy the Protocol — pyright cannot verify dict covariance across the Protocol boundary
+    resolver = make_resolver(registry, scope_containers)  # type: ignore[arg-type] # Why: make_resolver expects dict[Scope, ScopeContainerProtocol]; scope_containers holds concrete subclasses that satisfy the Protocol - pyright cannot verify dict covariance across the Protocol boundary
 
     process_scope = ProcessScope(resolver=resolver)
     scope_containers[Scope.PROCESS] = process_scope
@@ -545,7 +545,7 @@ async def test_factory_raises_during_scope_bootstrap() -> None:
     registry.validate()
 
     scope_containers: dict[Scope, object] = {}
-    resolver = make_resolver(registry, scope_containers)  # type: ignore[arg-type] # Why: make_resolver expects dict[Scope, ScopeContainerProtocol]; scope_containers holds concrete subclasses that satisfy the Protocol — pyright cannot verify dict covariance across the Protocol boundary
+    resolver = make_resolver(registry, scope_containers)  # type: ignore[arg-type] # Why: make_resolver expects dict[Scope, ScopeContainerProtocol]; scope_containers holds concrete subclasses that satisfy the Protocol - pyright cannot verify dict covariance across the Protocol boundary
 
     process_scope = ProcessScope(resolver=resolver)
     scope_containers[Scope.PROCESS] = process_scope

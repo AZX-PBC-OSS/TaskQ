@@ -240,7 +240,7 @@ async def _get_json(app: FastAPI, path: str) -> httpx.Response:
 
 @pytest.mark.asyncio
 async def test_full_round_trip(pool: asyncpg.Pool, redis_client: aioredis.Redis) -> None:
-    """Full round-trip — connect mid-stream with last_event_id, verify catch-up + duplicate filter + terminal."""
+    """Full round-trip - connect mid-stream with last_event_id, verify catch-up + duplicate filter + terminal."""
     job_id = await _seed_running_job(pool, progress_seq=5, progress_state={"step": 5})
 
     app = _make_app(pool, redis_client, sse_heartbeat_interval=timedelta(seconds=2))
@@ -321,7 +321,7 @@ async def test_reconnect_replay_via_header(
 
     app = _make_app(pool, redis_client, sse_heartbeat_interval=timedelta(seconds=2))
 
-    # Reconnect with Last-Event-ID header — progress_seq=6 > 5, so catch-up fires
+    # Reconnect with Last-Event-ID header - progress_seq=6 > 5, so catch-up fires
     lines = await _collect_sse_lines(
         app,
         f"/jobs/api/job/{job_id}/progress/stream",

@@ -1,6 +1,6 @@
 """Tests for the SAML SSO backend against a fixture IdP.
 
-Uses a self-signed test cert/key to build signed SAML Response XML fixtures —
+Uses a self-signed test cert/key to build signed SAML Response XML fixtures -
 no real IdP dependency. Skips entirely if python3-saml (or its libxmlsec1
 system dependency) is not installed.
 """
@@ -191,7 +191,7 @@ def test_login_succeeds_when_idp_acs_post_is_genuinely_cross_site() -> None:
     # What a real browser does on the cross-site ACS POST from the IdP: the
     # correlation cookie is withheld. The fresh client shares no cookie jar
     # with the one that performed /login, but carries a valid, correctly
-    # signed assertion answering that real pending AuthnRequest — exactly
+    # signed assertion answering that real pending AuthnRequest - exactly
     # what the IdP sends back in a genuine hosted-IdP deployment.
     saml_response = build_saml_response(nameid="user-saml-1", in_response_to=request_id)
     cookieless_client = TestClient(app, base_url=_TEST_BASE_URL)
@@ -322,7 +322,7 @@ def test_group_attribute_user_not_in_allowed_group_401() -> None:
     )
     resp = _post_saml_response(client, saml_response)
     assert "error=authentication+failed" not in resp.headers.get("location", ""), (
-        "callback must accept the assertion — the 401 under test is the "
+        "callback must accept the assertion - the 401 under test is the "
         "dependency's group gate, not a rejected login"
     )
 
@@ -411,7 +411,7 @@ def _request_cookie_header(resp: Any) -> str:
 def test_request_cookie_is_samesite_none_and_secure_when_secure_cookie() -> None:
     """secure_cookie=True (the default, and the hosted-IdP posture): the ACS
     POST is cross-site, so the correlation cookie must be marked
-    ``SameSite=None`` or the browser withholds it — and browsers accept
+    ``SameSite=None`` or the browser withholds it - and browsers accept
     ``None`` only alongside ``Secure``, so the two are pinned together. The
     relaxation is confined to this one short-lived cookie; the session
     cookie's policy is pinned separately below."""
@@ -429,7 +429,7 @@ def test_request_cookie_is_samesite_none_and_secure_when_secure_cookie() -> None
 def test_request_cookie_stays_samesite_lax_when_not_secure_cookie() -> None:
     """secure_cookie=False (plain-http dev): ``SameSite=None`` without
     ``Secure`` is rejected outright by browsers, so the correlation cookie
-    keeps ``Lax`` — there is no cross-site IdP to serve in that configuration."""
+    keeps ``Lax`` - there is no cross-site IdP to serve in that configuration."""
     client = _client(_make_app(_config()))
 
     resp = client.get("/admin/login", follow_redirects=False)
@@ -444,7 +444,7 @@ def test_request_cookie_is_scoped_to_the_acs_callback_path() -> None:
     """The correlation cookie is marked for cross-site delivery, so every path
     it is offered on is one a third-party page can cause it to be sent to; it
     is needed on exactly one. Pin the ``Path`` attribute to the mount's ACS
-    route — a non-default base_path, so a hardcoded literal fails here too."""
+    route - a non-default base_path, so a hardcoded literal fails here too."""
     client = _client(_make_app(_config(), base_path="/console"))
 
     resp = client.get("/console/login", follow_redirects=False)
@@ -532,7 +532,7 @@ def test_cookieless_acs_post_without_a_pending_login_is_still_rejected() -> None
     )
 
 
-# ── Multi-replica deployments (#239): the cookie is the cross-process binding ─
+# ── Multi-replica deployments: the cookie is the cross-process binding ─
 
 
 def test_callback_on_a_sibling_replica_sharing_session_secret_succeeds() -> None:
@@ -547,7 +547,7 @@ def test_callback_on_a_sibling_replica_sharing_session_secret_succeeds() -> None
     it, python3-saml compares the response's ``InResponseTo`` against it, and
     it is single-use with a 300 s TTL. Requiring the process-local pending
     set on top of a valid cookie rejected every cross-process callback with
-    "SAML response answers no pending AuthnRequest" (#239): the failure
+    "SAML response answers no pending AuthnRequest": the failure
     this test pins as fixed.
     """
     config = _config()
@@ -598,7 +598,7 @@ def test_pending_set_flood_eviction_cannot_break_the_cookie_bound_login(
 
     The pending set is capped (10k entries) and evicts its
     soonest-to-expire entry when full, so a flood of /login requests can
-    push a real login's pending ID out before its callback arrives (#239's
+    push a real login's pending ID out before its callback arrives (the
     flood half). The cookie-valid path must not depend on that set: the
     signed, single-use cookie alone completes the login. The opt-in
     cookie-less fallback still does depend on it; that dependence is
@@ -791,7 +791,7 @@ def test_answered_request_id_record_covers_the_opt_in_fallback_path() -> None:
 
 
 def test_cookieless_fallback_spends_the_pending_id_single_use() -> None:
-    """The opt-in fallback keeps the AuthnRequest ID single-use (#180's intent).
+    """The opt-in fallback keeps the AuthnRequest ID single-use (the intent).
 
     A fresh, correctly-signed response answering an already-spent pending ID
     is refused: a second POST must begin a new login. Uses a *new*
@@ -826,7 +826,7 @@ def test_cookieless_fallback_spends_the_pending_id_single_use() -> None:
     assert "taskq_session=" not in resp.headers.get("set-cookie", "")
 
 
-# ── The cookie-less fallback is opt-in and defaults off (#240) ──────────────
+# ── The cookie-less fallback is opt-in and defaults off ──────────────
 
 
 def test_cookieless_callback_is_refused_when_the_fallback_is_not_opted_in() -> None:
@@ -836,7 +836,7 @@ def test_cookieless_callback_is_refused_when_the_fallback_is_not_opted_in() -> N
     the browser posting it: a party who starts a login and captures the
     signed response for their own account can have a cookie-less victim's
     browser post it and end up with a session for that party's NameID
-    (login CSRF, #240). Default policy therefore refuses the callback: a
+    (login CSRF). Default policy therefore refuses the callback: a
     clean redirect, not a 500, with the remedy (the opt-in flag) in the
     server-side log.
     """
@@ -860,5 +860,5 @@ def test_cookieless_callback_is_refused_when_the_fallback_is_not_opted_in() -> N
     assert "error=authentication+failed" in resp.headers.get("location", "")
     assert "taskq_session=" not in resp.headers.get("set-cookie", ""), (
         "a cookie-less callback on a default (fallback-off) deployment must "
-        "not mint a session: this is the #240 login-CSRF shape"
+        "not mint a session: this is the login-CSRF shape"
     )

@@ -1,7 +1,7 @@
 """Red-team checks for the cross-site SAML fix's dual AuthnRequest binding.
 
 The cookie-less fallback (see saml.py's _PendingAuthnRequests), opt-in
-since #240 via ``allow_cookieless_fallback``, accepts a callback with no
+since via ``allow_cookieless_fallback``, accepts a callback with no
 usable correlation cookie when the assertion's *validated* InResponseTo
 names an AuthnRequest this process issued and has not spent. These tests
 probe whether that fallback can be abused to replay a captured,
@@ -38,7 +38,7 @@ _TEST_BASE_URL = "http://testserver.invalid"
 
 def _config(**kwargs: Any) -> SAMLAuthConfig:
     # allow_cookieless_fallback: these tests adversarially probe the
-    # fallback itself, which is opt-in (default off) since #240 (a
+    # fallback itself, which is opt-in (default off) since (a
     # cookie-less callback on a default deployment is refused before any
     # of the behavior under test here is reached).
     return SAMLAuthConfig(
@@ -60,7 +60,7 @@ def _client(app: Any) -> TestClient:
 
 def test_replaying_the_same_cookieless_assertion_twice_mints_only_one_session() -> None:
     """A captured, correctly-signed assertion answering a real pending
-    AuthnRequest must not be usable twice — the second POST (attacker
+    AuthnRequest must not be usable twice - the second POST (attacker
     replaying a sniffed/logged assertion) must be rejected even though the
     first legitimately spent the pending-request gate."""
     config = _config()

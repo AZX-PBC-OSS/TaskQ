@@ -1,9 +1,9 @@
 """Contract: ``open_worker_deps`` bounds its bootstrap notify establishment.
 
 When a caller supplies ``WorkerConnections.notify_conn_factory``, the
-bootstrap open of the notify connection — the first ``factory()`` call and
+bootstrap open of the notify connection - the first ``factory()`` call and
 the ``LISTEN`` execute that puts the factory-built connection into
-subscription state — completes or raises within a bounded time. The notify
+subscription state - completes or raises within a bounded time. The notify
 listener's reconnect path bounds the same two operations with
 ``settings.reload_factory_timeout`` and
 ``settings.notify_listener_setup_timeout``; the bootstrap open runs
@@ -11,14 +11,14 @@ before any watchdog is armed, so an unbounded hang there wedges worker
 startup with nothing to detect or recover it. A black-holed credential
 provider, or a factory-built connection that completes the handshake and
 then stalls on the ``LISTEN`` execute, must fail the open within the
-configured bounds — not park it forever.
+configured bounds - not park it forever.
 
 Docker-free: hand-rolled fakes wired through the REAL ``open_worker_deps``
-via ``WorkerConnections`` factories (asyncpg types are C-extensions — no
+via ``WorkerConnections`` factories (asyncpg types are C-extensions - no
 MagicMock for pool/conn). Fake conventions mirror
 ``tests/test_worker_deps_teardown.py``.
 
-No ``pytestmark`` — must run under ``pytest -m "not integration"``.
+No ``pytestmark`` - must run under ``pytest -m "not integration"``.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 # test budget below: an open that applies them raises within ~0.5s, while
 # an open that does not parks forever and the TEST budget is what fires.
 _PROD_BOUND_SECS = "0.5"
-# 10x the configured production bound — generous. This budget firing is
+# 10x the configured production bound - generous. This budget firing is
 # the red result: production never bounded the bootstrap open on its own.
 _TEST_BUDGET_SECS = 5.0
 
@@ -155,9 +155,9 @@ def _make_conn_factory(fake: _FakeConn) -> Any:
 async def test_bootstrap_notify_factory_call_is_bounded() -> None:
     """The FIRST notify factory() call during the bootstrap open completes
     or raises within the configured bound. A credential provider that
-    accepts the call and never returns must fail the open — the reconnect
+    accepts the call and never returns must fail the open - the reconnect
     loop already bounds its identical factory call with
-    reload_factory_timeout — not park worker startup forever before any
+    reload_factory_timeout - not park worker startup forever before any
     watchdog is armed."""
     settings = _make_settings()
     factory_entered = asyncio.Event()
@@ -208,9 +208,9 @@ async def test_bootstrap_notify_factory_call_is_bounded() -> None:
 async def test_bootstrap_notify_listen_execute_is_bounded() -> None:
     """The bootstrap LISTEN execute completes or raises within the
     configured bound. A factory-built connection that completes the
-    handshake and then stalls on LISTEN must fail the open — the reconnect
+    handshake and then stalls on LISTEN must fail the open - the reconnect
     loop already bounds its identical LISTEN execute with
-    notify_listener_setup_timeout — not park worker startup forever before
+    notify_listener_setup_timeout - not park worker startup forever before
     any watchdog is armed."""
     settings = _make_settings()
     notify = _FakeConn("notify")  # LISTEN execute parks forever
@@ -259,10 +259,10 @@ def test_notify_reconnect_lock_hold_worst_case_is_documented_for_operators() -> 
     """The worst-case time ``notify_reconnect_lock`` can stay held is
     stated on an operator-facing surface.
 
-    Every step inside the lock is individually bounded — the factory call
+    Every step inside the lock is individually bounded - the factory call
     by ``reload_factory_timeout``, each channel's ``LISTEN`` execute and
     ``add_listener`` by ``notify_listener_setup_timeout``, the failed
-    connection's close by the shared close budget — but the operator
+    connection's close by the shared close budget - but the operator
     consequence is the SUM, not any one bound. At shipped defaults a
     fully pathological reconnect serializes to roughly a minute and a
     half during which a SIGHUP credential reload reports the notify
@@ -279,14 +279,14 @@ def test_notify_reconnect_lock_hold_worst_case_is_documented_for_operators() -> 
     settings = WorkerSettings.load_from_dict(
         {"TASKQ_PG_DSN": "postgresql://fake:fake@fake:5432/fake"}
     )
-    channels = 3  # wake, events, worker-scoped — notify_listener_loop's fixed set
+    channels = 3  # wake, events, worker-scoped - notify_listener_loop's fixed set
     worst_case = (
         settings.reload_factory_timeout
         + channels * 2 * settings.notify_listener_setup_timeout
         + CLOSE_TIMEOUT_SECS
     )
     assert worst_case == pytest.approx(95.0), (
-        "the shipped bounds no longer sum to the documented worst case — "
+        "the shipped bounds no longer sum to the documented worst case - "
         f"computed {worst_case}s; update the operator-facing text together "
         "with the bound that changed"
     )
@@ -313,7 +313,7 @@ def test_notify_reconnect_lock_hold_worst_case_is_documented_for_operators() -> 
         "no operator guide describes the notify-reconnect lock hold. A "
         f"reconnect can hold notify_reconnect_lock for up to ~{worst_case:.0f}s "
         "at shipped defaults, during which a credential reload reports "
-        "notify_conn as failed and dispatch falls back to polling — "
+        "notify_conn as failed and dispatch falls back to polling - "
         "indistinguishable from a wedged worker to an operator watching a "
         "rotation. Name the bound and its consequence in ops.md (or "
         "configuration.md / troubleshooting.md), not only in source comments."

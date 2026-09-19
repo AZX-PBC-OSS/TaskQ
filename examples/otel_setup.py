@@ -1,4 +1,4 @@
-# Observability example — OTel setup with Jaeger or any OTLP collector.
+# Observability example - OTel setup with Jaeger or any OTLP collector.
 #
 # This script demonstrates how to wire OpenTelemetry exporters for TaskQ
 # workers and clients. TaskQ emits spans and metrics via the OTel API
@@ -14,7 +14,7 @@
 #   export OTEL_RESOURCE_ATTRIBUTES="deployment.environment=production"
 #
 # TaskQ does NOT override any OTel environment variables. The setup below
-# is the standard OTel SDK initialization — it works identically for
+# is the standard OTel SDK initialization - it works identically for
 # Jaeger, Grafana Tempo, Datadog, Sentry, Azure Monitor, etc.
 #
 # Quick local Jaeger setup:
@@ -34,7 +34,7 @@ from taskq.settings import TaskQSettings
 def setup_otel() -> None:
     """Initialize the OTel SDK with OTLP exporter.
 
-    This is standard OTel boilerplate — nothing TaskQ-specific here.
+    This is standard OTel boilerplate - nothing TaskQ-specific here.
     TaskQ's spans and metrics flow through automatically once the SDK
     is configured. The worker calls this internally; for client-side
     tracing (e.g. enqueue spans), call this before enqueuing.
@@ -74,7 +74,7 @@ def setup_otel() -> None:
     provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
     trace.set_tracer_provider(provider)
 
-    # Metrics (optional — for local dev you can use InMemoryMetricReader)
+    # Metrics (optional - for local dev you can use InMemoryMetricReader)
     metric_reader = PeriodicExportingMetricReader(
         OTLPMetricExporter(
             endpoint=os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
@@ -103,7 +103,7 @@ async def main() -> None:
             CounterPayload(n=5),
             tags=["otel-demo"],
         )
-        print(f"enqueued job {handle.job_id} — trace it in Jaeger")
+        print(f"enqueued job {handle.job_id} - trace it in Jaeger")
         print(
             f"  http://localhost:16686/search?service={os.environ.get('OTEL_SERVICE_NAME', 'taskq-example')}"
         )

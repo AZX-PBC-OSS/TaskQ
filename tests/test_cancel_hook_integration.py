@@ -31,7 +31,7 @@ from taskq.settings import WorkerSettings
 from taskq.testing.actor import EmptyPayload, StubActorConfig
 from taskq.testing.settings import make_integration_settings
 from taskq.worker._consumer import consume_one_job
-from taskq.worker.cancel import (  # type: ignore[reportPrivateUsage]  # Why: _ActiveJob is the return type of the public ActiveJobRegistry.get — needed to annotate the wait helper below; test-only private access.
+from taskq.worker.cancel import (  # type: ignore[reportPrivateUsage]  # Why: _ActiveJob is the return type of the public ActiveJobRegistry.get - needed to annotate the wait helper below; test-only private access.
     CancelController,
     _ActiveJob,
     make_cancel_controller,
@@ -175,7 +175,7 @@ async def _wait_for_cancel_observed(
     the job AND its cancel hook has observed the cancel request.
 
     Replaces a fixed 50x0.02s iteration loop whose only deadline failure
-    was a pair of bare asserts — this names the observable that never
+    was a pair of bare asserts - this names the observable that never
     flipped and turns the wait into the same idiom as
     _wait_for_cancel_phase/_poll_until_status.
     """
@@ -272,7 +272,7 @@ class _ChaosPool:
 
 async def test_cooperative_cancel(pg_dsn: str) -> None:
     """End-to-end cooperative cancel: the actor observes the request and
-    abandons the attempt by raising — the row terminalises as cancelled."""
+    abandons the attempt by raising - the row terminalises as cancelled."""
     worker_id = new_uuid()
     async with _test_infra(pg_dsn, worker_id) as (deps, backend, settings):
         client = JobsClient(backend)
@@ -654,7 +654,7 @@ async def test_worker_dies_phase1(pg_dsn: str) -> None:
                 async with deps.worker_pool.acquire() as sweep_conn, sweep_conn.transaction():
                     # Simulate process death: reset the row to running + expired lock.
                     # In a real SIGKILL the terminal write never commits, so BOTH
-                    # halves of it must be undone here — the jobs row and the
+                    # halves of it must be undone here - the jobs row and the
                     # job_attempts row mark_cancelled recorded for this attempt.
                     # Leaving the attempt row behind is not a state a crashed
                     # worker can produce (the sweep only ever sees an attempt it
@@ -685,7 +685,7 @@ async def test_worker_dies_phase1(pg_dsn: str) -> None:
                     "a worker that dies mid-phase-1 leaves the operator's "
                     "cancel in flight with no holder left to honour it: the "
                     "deeply-expired reclaim must terminalise 'cancelled' "
-                    "(#238: operator intent outranks the retry budget), not "
+                    "(operator intent outranks the retry budget), not "
                     "re-pend the row with its cancel wiped"
                 )
             finally:

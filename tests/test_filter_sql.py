@@ -92,7 +92,7 @@ class TestSQLInjectionSafety:
     """Verify user-supplied values are always parameterized, never
     interpolated into the SQL condition string.
 
-    Every condition must use ``$N`` positional binding — no raw user
+    Every condition must use ``$N`` positional binding - no raw user
     value may appear in ``conditions``. Column names are hardcoded
     literals, not derived from input.
     """
@@ -128,7 +128,7 @@ class TestSQLInjectionSafety:
 
     def test_conditions_only_contain_placeholders_and_column_names(self) -> None:
         """Every condition string must be composed solely of known column
-        names, operators, and $N placeholders — never raw user input."""
+        names, operators, and $N placeholders - never raw user input."""
         result = build_filter_conditions(
             JobFilter(
                 queue="myqueue",

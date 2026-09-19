@@ -4,16 +4,16 @@ Three failure domains meet in one tick, and each owes different
 observable behaviour:
 
 * **Server-side enqueue failure** (C2): the batched INSERT itself fails
-  on the caller's connection — a genuine ``UniqueViolationError`` driven
+  on the caller's connection - a genuine ``UniqueViolationError`` driven
   through the REAL ``enqueue_batch``.  The failure is attributed PER
   SCHEDULE, not per tick: the colliding plan takes one strike (identified
   from the violation's ``Key (cols)=(vals)`` detail line) inside a
   SAVEPOINT that keeps the tick's transaction alive, and the survivors
   retry as a batch and fire.  A transient failure of the INSERT
-  (TimeoutError — PG weather) strikes NO schedule and re-raises for the
+  (TimeoutError - PG weather) strikes NO schedule and re-raises for the
   leader's transient handling.
 * **Client-side enqueue failure** (C2's contrast): the backend raises
-  before any statement is sent — the transaction stays alive, so the
+  before any statement is sent - the transaction stays alive, so the
   per-schedule failure bookkeeping COMMITS and the tick returns 0
   instead of raising.  Both observables are correct for their domain;
   pinning them separately is what makes the boundary visible.
@@ -22,7 +22,7 @@ observable behaviour:
   while other actors in the same batch still fire; three such ticks
   auto-disable the schedule (CASE + ``enabled = true`` guard).
 * **The failures-UPDATE guard** (C3): a schedule disabled by another
-  connection between the due SELECT and the UPDATE must be skipped —
+  connection between the due SELECT and the UPDATE must be skipped -
   the rowcount shortfall warns, and the disabled row is neither
   re-enabled nor error-stamped.
 """
@@ -107,14 +107,14 @@ class TestServerSideEnqueueFailure:
             await collider_conn.close()
 
         assert fired == 2, (
-            "the two non-colliding schedules must fire — one colliding row is a "
+            "the two non-colliding schedules must fire - one colliding row is a "
             "defect of one schedule, not of the tick"
         )
         jobs: int = await clean_pg_conn.fetchval(
             f'SELECT count(*) FROM "{schema}".jobs'  # noqa: S608  # Why: schema is a test-fixture identifier.
         )
         assert jobs == 3, (
-            f"{jobs} jobs after the tick — the committed collision row plus the "
+            f"{jobs} jobs after the tick - the committed collision row plus the "
             "two survivors' fires; nothing more, nothing less"
         )
         after = [await schedule_row(clean_pg_conn, schema, sid) for sid in schedule_ids]
@@ -127,7 +127,7 @@ class TestServerSideEnqueueFailure:
         )
         assert colliding["enabled"] is True, "one strike must not auto-disable"
         assert colliding["next_fire_at"] == before[0]["next_fire_at"], (
-            "a strike does not advance next_fire_at — the failure path is not a fire"
+            "a strike does not advance next_fire_at - the failure path is not a fire"
         )
         for row, _was_before in zip(survivors, before[1:], strict=True):
             assert row["consecutive_failures"] == 0, "survivors take no strike"
@@ -144,7 +144,7 @@ class TestServerSideEnqueueFailure:
             s for s in exporter.spans_named("cron fire") if s.status.status_code == StatusCode.ERROR
         ]
         assert len(error_spans) == 1, (
-            "only the colliding plan's span is errored — the survivors' spans "
+            "only the colliding plan's span is errored - the survivors' spans "
             "closed cleanly on their successful fire"
         )
         assert "jobs_pkey" in (error_spans[0].status.description or "")
@@ -158,7 +158,7 @@ class TestServerSideEnqueueFailure:
         """A TimeoutError from the batched enqueue (statement timeout, conn
         blip) is PG weather, not a schedule defect: the tick re-raises for
         the leader's transient handling, the caller's rollback discards the
-        tick, and NO schedule takes a strike — three seconds of degraded PG
+        tick, and NO schedule takes a strike - three seconds of degraded PG
         must not auto-disable every schedule in the fleet."""
         from typing import NoReturn
 
@@ -204,7 +204,7 @@ class TestServerSideEnqueueFailure:
         after = [await schedule_row(clean_pg_conn, schema, sid) for sid in schedule_ids]
         assert after == before, (
             "a transient infra failure must not increment consecutive_failures or "
-            "write any failure record — PG weather is not a schedule defect"
+            "write any failure record - PG weather is not a schedule defect"
         )
 
 
@@ -213,7 +213,7 @@ class TestSingletonRaceBetweenPreflightAndInsert:
     job between the tick's policy preflight (which saw no blocker) and the
     batched INSERT (whose READ-COMMITTED statement snapshot sees it).
 
-    The whole batch aborts on the ``jobs_singleton_uniq`` violation — and
+    The whole batch aborts on the ``jobs_singleton_uniq`` violation - and
     before per-plan attribution existed, that abort was converted into a
     strike for EVERY schedule in the tick, auto-disabling unrelated
     schedules three ticks in a row because one actor was busy."""
@@ -283,7 +283,7 @@ class TestSingletonRaceBetweenPreflightAndInsert:
         assert len(jobs) == 2, f"exactly the committed blocker and the peer's fire; got {len(jobs)}"
         singleton_jobs = [j for j in jobs if j["actor"] == singleton_actor]
         assert len(singleton_jobs) == 1, (
-            "the colliding cron fire must not be enqueued — the client's job won the slot"
+            "the colliding cron fire must not be enqueued - the client's job won the slot"
         )
         blocker_meta = singleton_jobs[0]["metadata"]
         if isinstance(blocker_meta, str):  # asyncpg returns jsonb as str without a codec
@@ -302,7 +302,7 @@ class TestSingletonRaceBetweenPreflightAndInsert:
 
         peer_after = await schedule_row(clean_pg_conn, schema, peer_id)
         assert peer_after["consecutive_failures"] == 0, (
-            "the unrelated schedule takes no strike — a busy singleton actor is not its defect"
+            "the unrelated schedule takes no strike - a busy singleton actor is not its defect"
         )
         assert peer_after["last_fired_at"] is not None
 
@@ -327,7 +327,7 @@ class TestClientSideEnqueueFailure:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A raise that never reaches PG leaves the transaction alive: every
-        planned fire converts to a per-schedule failure that COMMITS —
+        planned fire converts to a per-schedule failure that COMMITS -
         consecutive_failures=1, raw error text in last_fire_error, no jobs,
         return 0, one failure log per schedule."""
         from typing import NoReturn
@@ -392,7 +392,7 @@ class TestFailuresUpdateGuard:
         """A schedule that fails planning while an operator disables it on
         another connection: the failure UPDATE's guard skips it (rowcount
         shortfall → warning), and the row keeps exactly the operator's
-        state — still disabled, no error stamped, no failure count."""
+        state - still disabled, no error stamped, no failure count."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _PRESENT_ACTOR)
@@ -462,7 +462,7 @@ class TestFailuresUpdateGuard:
 
 
 class TestHungPayloadFactory:
-    """Own attack: a factory that never returns — the 5s ``wait_for`` in
+    """Own attack: a factory that never returns - the 5s ``wait_for`` in
     ``resolve_payload`` is the only bound on how long the tick's
     transaction (and the cron advisory lock) stays open."""
 
@@ -512,7 +512,7 @@ class TestHungPayloadFactory:
 
         assert fired == 1, "the hung schedule fails, its healthy peer in the batch fires"
         assert elapsed < 20, (
-            f"the tick took {elapsed:.1f}s — a hung payload factory must be cut off "
+            f"the tick took {elapsed:.1f}s - a hung payload factory must be cut off "
             "by the 5s resolution timeout, not wedge the tick's transaction and the "
             "cron advisory lock open"
         )
@@ -524,7 +524,7 @@ class TestHungPayloadFactory:
             "with a reason an operator can act on"
         )
         assert "hang_past_factory_timeout" in hung["last_fire_error"], (
-            "the timeout error must name the factory that hung — the dotted "
+            "the timeout error must name the factory that hung - the dotted "
             "path is the only thing that distinguishes it from every other "
             f"schedule's factory; got {hung['last_fire_error']!r}"
         )
@@ -536,7 +536,7 @@ class TestHungPayloadFactory:
             s for s in exporter.spans_named("cron fire") if s.status.status_code == StatusCode.ERROR
         )
         assert hung_span.status.description, (
-            "the exported span status is empty for the same reason — the failure "
+            "the exported span status is empty for the same reason - the failure "
             "reaches the telemetry backend with no diagnostic text at all"
         )
         assert "hang_past_factory_timeout" in (hung_span.status.description or "")
@@ -546,8 +546,8 @@ class TestCallerDeadlineMidTick:
     """Own attack: the leader wraps the WHOLE tick in ``asyncio.timeout`` +
     one transaction.  When the deadline fires mid-tick, the cancellation
     (a ``BaseException``) must pass through the planning loop's
-    ``except Exception`` untouched — not become a per-schedule failure
-    that poisons ``consecutive_failures`` toward auto-disable — and the
+    ``except Exception`` untouched - not become a per-schedule failure
+    that poisons ``consecutive_failures`` toward auto-disable - and the
     rollback must release the cron advisory lock for the next tick."""
 
     async def test_deadline_cancel_is_not_a_schedule_failure_and_releases_the_lock(
@@ -558,7 +558,7 @@ class TestCallerDeadlineMidTick:
         """Tick wedged inside its enqueue past the caller's deadline: the
         caller sees TimeoutError, NOTHING commits (no jobs, no phantom
         consecutive_failures), and the very next tick acquires the lock and
-        fires — the transaction-scoped lock was released by the rollback."""
+        fires - the transaction-scoped lock was released by the rollback."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _PRESENT_ACTOR)
@@ -597,7 +597,7 @@ class TestCallerDeadlineMidTick:
         after = [await schedule_row(clean_pg_conn, schema, sid) for sid in schedule_ids]
         assert after == before, (
             "a deadline cancellation must not increment consecutive_failures or "
-            "write any failure record — the caller's clock is not a schedule defect, "
+            "write any failure record - the caller's clock is not a schedule defect, "
             "and poisoning the count toward auto-disable would disable healthy "
             "schedules one deadline at a time"
         )
@@ -607,7 +607,7 @@ class TestCallerDeadlineMidTick:
                 clean_pg_conn, settings, make_backend(settings), schema, new_uuid()
             )
         assert next_fired == 2, (
-            "the transaction-scoped advisory lock must be released by the rollback — "
+            "the transaction-scoped advisory lock must be released by the rollback - "
             "the next tick has to be able to fire"
         )
 
@@ -828,6 +828,6 @@ class TestMissingActorIsolation:
         assert fourth == 0
         after_fourth = await schedule_row(clean_pg_conn, schema, schedule_id)
         assert after_fourth["consecutive_failures"] == 3, (
-            "a disabled schedule must not accrue further failures — the due SELECT "
+            "a disabled schedule must not accrue further failures - the due SELECT "
             "must skip it entirely"
         )

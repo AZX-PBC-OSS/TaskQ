@@ -3,9 +3,9 @@ headroom gate (parity with
 ``src/taskq/backend/_dispatch_sql.py``'s ``reservation_holdings`` /
 ``reservation_headroom`` CTEs).
 
-The twin reads the same holder-state signal PG reads — the backend's
+The twin reads the same holder-state signal PG reads - the backend's
 slot table (the ``reservation_slots`` mirror) joined to the jobs store
-for the holder's actor — because neither store carries an actor→bucket
+for the holder's actor - because neither store carries an actor→bucket
 declaration mapping. Pinned behavior, identical to the PG gate's
 (tests/test_dispatch_reservation_headroom.py):
 
@@ -13,17 +13,17 @@ declaration mapping. Pinned behavior, identical to the PG gate's
   round, across every queue the actor holds rows on, because the
   static fold is per actor;
 * an actor holding nothing is never gated (the first claim gets
-  through — capacity can always be taken);
+  through - capacity can always be taken);
 * a freed or expired-lease slot re-opens admission (no starvation
   inversion);
 * a co-located actor's rows are claimed throughout;
-* a live-held, full KEYED bucket gates nothing (#242): the keyed mark
+* a live-held, full KEYED bucket gates nothing: the keyed mark
   on its slot rows (the twin of the PG ``reservation_slots.keyed``
   column) excludes the bucket from the fold, because claim time cannot
   know which payload-derived key a pending row needs;
 * a live-held, full QUEUE-CAP bucket gates its holder actor's claims on
   THAT queue only: the same actor's claims on every other queue flow
-  (#242), in strict-FIFO and round-robin alike.
+, in strict-FIFO and round-robin alike.
 """
 
 from __future__ import annotations
@@ -115,7 +115,7 @@ async def test_expired_lease_does_not_gate() -> None:
 async def test_repended_row_is_gated_like_a_producer_placed_one() -> None:
     """The fold sits in the residual both routing arms read: a re-pended
     (assignment_routed) saturated row waits while the bucket is full, and
-    is claimed when it frees — PG's repend_capacity fold mirrored."""
+    is claimed when it frees - PG's repend_capacity fold mirrored."""
     from dataclasses import replace as _replace
 
     backend = _make_backend()
@@ -149,7 +149,7 @@ async def test_repended_row_is_gated_like_a_producer_placed_one() -> None:
 async def test_partial_headroom_bounds_admission() -> None:
     """Two slots, one live-held: the free slot admits at most
     headroom x oversample (1 x 2) further rows of the holder's actor per
-    round — never the whole pending set."""
+    round - never the whole pending set."""
     backend = _make_backend()
     _register(backend, "sat")
     await _enqueue(backend, actor="sat")
@@ -168,7 +168,7 @@ async def test_partial_headroom_bounds_admission() -> None:
 
 async def test_keyed_full_bucket_does_not_gate() -> None:
     """A keyed bucket held full leaves the actor's admission untouched
-    (#242): the keyed mark on the slot rows excludes the bucket from the
+: the keyed mark on the slot rows excludes the bucket from the
     headroom fold, the per-key cap is the consumer's post-claim
     acquire's to enforce, where the payload-derived key is known."""
     backend = _make_backend()
@@ -217,7 +217,7 @@ async def test_static_full_bucket_gates_across_queues() -> None:
 
 async def test_queue_cap_full_bucket_gates_only_its_queue() -> None:
     """A full queue-cap bucket gates the holder actor's claims on ITS
-    queue only; the same actor's claims on another queue flow (#242,
+    queue only; the same actor's claims on another queue flow (,
     the twin of tests/test_dispatch_reservation_headroom.py's PG pin)."""
     backend = _make_backend()
     _register(backend, "sat")

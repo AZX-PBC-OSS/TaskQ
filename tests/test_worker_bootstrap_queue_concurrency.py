@@ -2,7 +2,7 @@
 (Part 1).
 
 Mirrors the exact fixture/assertion conventions of
-``tests/test_worker_bootstrap.py`` — all tests use the real PG container via
+``tests/test_worker_bootstrap.py`` - all tests use the real PG container via
 the ``pg_dsn`` fixture (session-scoped ``pg_container``).
 
 Each test seeds the ``queues`` table with a ``max_concurrent`` value via
@@ -17,7 +17,7 @@ direct SQL, runs the ``_main`` bootstrap sequence, and asserts:
     loudly (a registered-but-unslotted cap would deny every dispatch on
     the queue until a manual restart).
   - Lowering ``max_concurrent`` and re-running bootstrap (simulating a
-    worker restart) shrinks the slot rows — the core regression test for
+    worker restart) shrinks the slot rows - the core regression test for
     the ``sync_slots`` fix that replaced the purely-additive
     ``ensure_slots`` call.
 """
@@ -104,7 +104,7 @@ async def test_queue_cap_registered_and_slots_created(pg_dsn: str) -> None:
     """A queue with ``max_concurrent`` set and included in
     ``settings.queues`` produces a ``ConcurrencyReservation`` in the
     registry with matching slots, and ``reservation_slots`` rows exist
-    in PG for that bucket name — proving ``ensure_slots`` actually ran."""
+    in PG for that bucket name - proving ``ensure_slots`` actually ran."""
     schema = f"twbqc_{new_base62()}".lower()
     await _prepare_schema_for(pg_dsn, schema)
 
@@ -153,7 +153,7 @@ async def test_queue_cap_registered_and_slots_created(pg_dsn: str) -> None:
 @pytest.mark.asyncio
 async def test_queue_cap_shrink_slots_on_restart(pg_dsn: str) -> None:
     """Lowering ``max_concurrent`` and re-running bootstrap shrinks the
-    ``reservation_slots`` row count — the core regression test for the
+    ``reservation_slots`` row count - the core regression test for the
     ``sync_slots`` fix.  ``ensure_slots`` (the old code) was purely
     additive (INSERT ... ON CONFLICT DO NOTHING) and could never remove
     excess slots, so lowering a cap was a silent no-op.  ``sync_slots``
@@ -228,7 +228,7 @@ async def test_queue_cap_grow_slots_on_restart(pg_dsn: str) -> None:
     """Raising ``max_concurrent`` and re-running bootstrap grows the
     ``reservation_slots`` row count.  While the old ``ensure_slots`` code
     could also grow (it was additive), this test confirms the
-    ``sync_slots`` replacement preserves the grow capability — a strict
+    ``sync_slots`` replacement preserves the grow capability - a strict
     superset of ``ensure_slots`` must not regress on the insert path."""
     schema = f"twbqc_{new_base62()}".lower()
     await _prepare_schema_for(pg_dsn, schema)
@@ -297,7 +297,7 @@ async def test_queue_cap_grow_slots_on_restart(pg_dsn: str) -> None:
 @pytest.mark.asyncio
 async def test_queue_cap_null_max_concurrent_produces_no_reservation(pg_dsn: str) -> None:
     """A queue with ``max_concurrent IS NULL`` produces NO registry entry
-    and NO ``reservation_slots`` rows — the cap is opt-in per queue."""
+    and NO ``reservation_slots`` rows - the cap is opt-in per queue."""
     schema = f"twbqc_{new_base62()}".lower()
     await _prepare_schema_for(pg_dsn, schema)
 
@@ -336,7 +336,7 @@ async def test_queue_cap_null_max_concurrent_produces_no_reservation(pg_dsn: str
 @pytest.mark.asyncio
 async def test_queue_cap_not_in_settings_queues_produces_no_reservation(pg_dsn: str) -> None:
     """A queue with ``max_concurrent`` set but NOT in ``settings.queues``
-    produces NO registry entry and NO ``reservation_slots`` rows — only
+    produces NO registry entry and NO ``reservation_slots`` rows - only
     queues this worker consumes are capped."""
     schema = f"twbqc_{new_base62()}".lower()
     await _prepare_schema_for(pg_dsn, schema)
@@ -387,13 +387,13 @@ async def test_queue_cap_sync_slots_failure_crashes_bootstrap(
 
     The reservations are registered BEFORE ``sync_slots`` runs, and
     dispatch prepends the cap name as a plain string (no ensure_slots
-    retry on the acquire path) — so warn-and-continue would leave the cap
+    retry on the acquire path) - so warn-and-continue would leave the cap
     registered with zero slot rows and every dispatch on that queue
     snoozed with ``ReservationUnavailable`` until a manual restart.
     Crash-and-let-the-supervisor-retry self-heals, because ``sync_slots``
     is idempotent.
 
-    This pins the QUEUE-CAP sync_slots block specifically — a previous
+    This pins the QUEUE-CAP sync_slots block specifically - a previous
     version of this test patched ``sync_slots`` to always raise and
     asserted on the FIRST ``sync_slots_failed`` log event, which always
     came from the actor-path call ~100 lines earlier in ``_main``;
@@ -457,7 +457,7 @@ async def test_queue_cap_sync_slots_failure_crashes_bootstrap(
                 await task
             pytest.fail(
                 "bootstrap kept running despite the queue-cap sync_slots "
-                "failure — it must crash loudly instead of leaving a "
+                "failure - it must crash loudly instead of leaving a "
                 "registered-but-unslotted cap that denies every dispatch"
             )
 
@@ -481,7 +481,7 @@ async def test_queue_cap_sync_slots_failure_crashes_bootstrap(
 async def test_bootstrap_raises_when_max_concurrent_column_missing(pg_dsn: str) -> None:
     """When migration ``01.00.04_01_pre_queue_concurrency.sql`` has not been
     applied (the ``queues.max_concurrent`` column is absent), bootstrap MUST
-    raise a clear error identifying the missing migration — not silently
+    raise a clear error identifying the missing migration - not silently
     continue with no queue-cap reservation registered.
 
     Simulates the missing column by applying all migrations then dropping

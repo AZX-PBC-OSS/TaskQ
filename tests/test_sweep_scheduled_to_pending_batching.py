@@ -38,7 +38,7 @@ class _CountingConn:
 
     The statement count IS the property under test: any INSERT into
     ``job_events`` from the promotion sweep is the per-row bookkeeping the
-    denial contract abolished, whatever its spelling — a loop, a batch,
+    denial contract abolished, whatever its spelling - a loop, a batch,
     anything.
     """
 
@@ -65,7 +65,7 @@ async def test_sweep_promotion_writes_no_event_rows(
 
     Driving the real ``sweep_scheduled_to_pending`` and counting round
     trips as well as rows: a reintroduced per-promotion write in any
-    spelling — one statement or a loop — fails both counts.
+    spelling - one statement or a loop - fails both counts.
     """
     schema = module_pg_schema.schema_name
     job_ids = [new_uuid() for _ in range(_PROMOTED)]
@@ -87,7 +87,7 @@ async def test_sweep_promotion_writes_no_event_rows(
     assert count == _PROMOTED, f"all {_PROMOTED} due jobs must be promoted"
     assert counting.event_inserts == 0, (
         f"the promotion sweep issued {counting.event_inserts} job_events "
-        "inserts — a row per promotion is the unbounded-growth vector under "
+        "inserts - a row per promotion is the unbounded-growth vector under "
         "sustained admission denial; the transition of record is the "
         "terminal write, and contention belongs on the row's counters"
     )

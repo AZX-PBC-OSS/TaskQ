@@ -3,13 +3,13 @@
 The job-side instruments bound their ``queue`` label through
 ``_bounded_queue()`` (``obs/_otel.py:361-371``): the first
 ``_MAX_QUEUE_LABEL_VALUES`` (100) distinct names keep their own series,
-everything past the cap collapses onto the fixed ``_other_`` value — the
+everything past the cap collapses onto the fixed ``_other_`` value - the
 ~100-values-per-dimension ceiling Azure Monitor's guidance sets, behind
 which a subscription's 50k-series cap throttles ingestion of EVERY custom
 metric. The gauge is the one instrument that skips the seam:
 ``_observe_queue_depth`` (``obs/_otel.py:632-634``) yields one
 ``Observation`` per raw cache key, and the cache is filled by a
-leader-side ``GROUP BY queue`` — so label cardinality is however many
+leader-side ``GROUP BY queue`` - so label cardinality is however many
 distinct queue names exist in ``jobs``, unbounded.
 
 The fix is NOT the counter-site five-liner: a gauge is observable, not
@@ -82,7 +82,7 @@ def test_queue_depth_gauge_bounds_queue_label_cardinality(
 
     assert len(labels) <= _CAP + 1, (
         f"the queue.depth gauge emitted {len(labels)} distinct queue labels "
-        f"for {_CAP + 50} queues — it reads the raw cache key and never "
+        f"for {_CAP + 50} queues - it reads the raw cache key and never "
         "passes through _bounded_queue (obs/_otel.py:632-634), unlike its "
         "four job-side siblings. Label cardinality here is the distinct "
         "queue-name count in jobs (a leader-side GROUP BY), i.e. unbounded, "
@@ -90,7 +90,7 @@ def test_queue_depth_gauge_bounds_queue_label_cardinality(
         "subscription's custom-metric ingestion that gets throttled."
     )
     assert len(points) <= _CAP + 1, (
-        f"the gauge callback yielded {len(points)} observations — the "
+        f"the gauge callback yielded {len(points)} observations - the "
         "overflow must be ONE aggregated observation, not one per overflow "
         "queue sharing the '_other_' label."
     )
@@ -100,7 +100,7 @@ def test_queue_depth_gauge_overflow_series_aggregates_depth(
     gauge_reader: InMemoryMetricReader,
 ) -> None:
     """The ``_other_`` series must carry the SUM of the overflow queues'
-    depths — bounding the cardinality must not drop the signal: the total
+    depths - bounding the cardinality must not drop the signal: the total
     depth reported across all series must equal the true total."""
     in_cap = {f"queue-{i}": 2 for i in range(_CAP)}
     overflow = {f"extra-{i}": 3 for i in range(20)}
@@ -128,15 +128,15 @@ def test_queue_depth_admission_ranks_by_depth_not_name(
 ) -> None:
     """The partition policy: admission must be depth-ranked.
 
-    The fixture is anti-correlated — deep queues named late in the
-    alphabet, shallow queues named early — so name-sorted, first-seen and
+    The fixture is anti-correlated - deep queues named late in the
+    alphabet, shallow queues named early - so name-sorted, first-seen and
     depth-ranked partitions all disagree on it. A backing-up queue whose
     name sorts late must not become invisible on a fleet-wide,
     leader-only sample: no other process compensates for a partition
     that hides the deepest queues, and the deepest queues are the ones an
     operator pages on. Under a name-sorted partition the 20 deepest
     (``zz-deep-*``) series would be the ones collapsed into
-    ``_other_`` — this test fails against exactly that variant.
+    ``_other_`` - this test fails against exactly that variant.
     """
     deep = {f"zz-deep-{i:02d}": 10 for i in range(30)}
     shallow = {f"aa-shallow-{i:03d}": 1 for i in range(90)}
@@ -149,7 +149,7 @@ def test_queue_depth_admission_ranks_by_depth_not_name(
     missing_deep = sorted(set(deep) - set(reported))
     assert not missing_deep, (
         f"deepest queues lost their own series under the cap: {missing_deep}. "
-        "Admission is not depth-ranked — a name-sorted or first-seen "
+        "Admission is not depth-ranked - a name-sorted or first-seen "
         "partition is hiding the queues an operator most needs to see, on "
         "the one sample (leader-only, fleet-wide) no other process "
         "compensates for."

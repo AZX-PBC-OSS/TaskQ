@@ -2,8 +2,8 @@
 
 The loop's reason to exist: a detector hosted behind the leadership gate
 emits nothing under exactly the failure it exists to expose. The pins here
-attack that property at the LOOP level — leadership held by nobody must
-still feed both gauges — plus the oldest-due age's real computation, the
+attack that property at the LOOP level - leadership held by nobody must
+still feed both gauges - plus the oldest-due age's real computation, the
 per-status split, and the deliberate difference from queue depth on
 demotion (the backlog caches are every-worker authority and must SURVIVE
 demotion).
@@ -71,7 +71,7 @@ class _ConnStub:
 class _ActorBacklogFailingConn(_ConnStub):
     """Fleet reads answer; the per-actor backlog read raises.
 
-    That read — a GROUP BY over the whole pending population — is the
+    That read - a GROUP BY over the whole pending population - is the
     widest-shaped statement in the tick and the first to hit the
     statement timeout under the incident load it exists to expose.
     """
@@ -184,8 +184,8 @@ async def _drive_one_sample(
 
 async def test_backlog_gauges_fed_with_leadership_held_by_nobody() -> None:
     """THE loop-level pin for hosting nothing behind the gate: ``is_leader``
-    is NEVER set on the deps — the exact condition of the second-schema
-    lock loss — and the backlog detectors must still report. A leader gate
+    is NEVER set on the deps - the exact condition of the second-schema
+    lock loss - and the backlog detectors must still report. A leader gate
     reintroduced here is the detector hosted behind the failure it
     detects."""
     conn = _ConnStub(
@@ -198,14 +198,14 @@ async def test_backlog_gauges_fed_with_leadership_held_by_nobody() -> None:
 
     assert by_status is not None, (
         "with leadership held by nobody the backlog sampler never fed the "
-        "jobs-by-status gauge — the detector is hosted behind the failure it "
+        "jobs-by-status gauge - the detector is hosted behind the failure it "
         "exists to expose"
     )
     assert by_status == {"scheduled": 12, "pending": 3}
     assert oldest_due == 87.5
     assert expired_lease == 87, (
         "the running-lease-expired gauge must be fed from the same "
-        "unconditional sample — a zombie-running detector that only reports "
+        "unconditional sample - a zombie-running detector that only reports "
         "under a leader is hosted behind the leadership failure that mutes it"
     )
 
@@ -223,7 +223,7 @@ async def test_backlog_none_due_reports_zero_age() -> None:
     assert oldest_due == 0.0
     assert expired_lease == 0, (
         "a NULL aggregate (nothing running / no lease rows) must read as 0 "
-        "on the running-lease-expired gauge, not as a missing sample — a "
+        "on the running-lease-expired gauge, not as a missing sample - a "
         "missing sample reads identically to a dead sampler"
     )
 
@@ -302,11 +302,11 @@ async def test_actor_backlog_fetch_failure_still_feeds_the_fleet_gauges() -> Non
     before the fleet-wide updates, the scheduled-count and oldest-due
     gauges would freeze at their last values, the backlog-growing
     alert's `count > count offset` comparison would go false, and the
-    loop would stay alive reporting stale health — a failure that looks
+    loop would stay alive reporting stale health - a failure that looks
     like a success. The failure itself surfaces on the actor sampler's
     own log path, and the per-actor caches are rebuilt from the empty
     snapshot rather than frozen at readings the worker can no longer
-    see — the series go absent for the interval, never a stale claim.
+    see - the series go absent for the interval, never a stale claim.
     """
     import structlog.testing
 
@@ -321,11 +321,11 @@ async def test_actor_backlog_fetch_failure_still_feeds_the_fleet_gauges() -> Non
 
     assert fed.get("by_status") == {"scheduled": 12, "pending": 3}, (
         "a failed per-actor read must not cost the tick its jobs-by-status "
-        f"sample — the updates that fired: {sorted(fed)}"
+        f"sample - the updates that fired: {sorted(fed)}"
     )
     assert fed.get("scheduled_count") == 12, (
         "the scheduled-count operand of the backlog-growing alert must still "
-        "update — frozen, its `count > count offset` comparison goes false "
+        "update - frozen, its `count > count offset` comparison goes false "
         "while the loop stays alive"
     )
     assert fed.get("oldest_due_age") == 87.5, (
@@ -336,15 +336,15 @@ async def test_actor_backlog_fetch_failure_still_feeds_the_fleet_gauges() -> Non
     )
     assert fed.get("actor_backlog") == {} and fed.get("actor_oldest_pending_age") == {}, (
         "on a failed read the per-actor caches are rebuilt from the empty "
-        "snapshot — the series go absent for the interval rather than freeze "
+        "snapshot - the series go absent for the interval rather than freeze "
         f"at readings the worker can no longer see; got {fed!r}"
     )
     assert any(e.get("event") == "actor-backlog-sampling-failed" for e in captured), (
-        "the failed read must surface on the actor sampler's own log path — "
+        "the failed read must surface on the actor sampler's own log path - "
         "a degraded tick is reported, never silent"
     )
     assert not any(e.get("event") == "backlog-detection-sampling-failed" for e in captured), (
-        "the per-actor failure must be contained by its own isolation — the "
+        "the per-actor failure must be contained by its own isolation - the "
         "fleet-wide detector's failure handler firing means the raise escaped"
     )
 
@@ -356,9 +356,9 @@ async def test_demotion_keeps_backlog_gauges_and_clears_leader_scoped() -> None:
     """The deliberate difference from queue depth: queue depth,
     reservation slots and stranded jobs are leader-only samplers, so
     demotion must clear them (no authority over numbers it stopped
-    sampling); the backlog gauges — jobs-by-status, the scheduled-count
-    twin, oldest due age, expired leases and the per-(actor, queue) pair —
-    are every-worker samplers, so demotion must NOT clear them — clearing
+    sampling); the backlog gauges - jobs-by-status, the scheduled-count
+    twin, oldest due age, expired leases and the per-(actor, queue) pair -
+    are every-worker samplers, so demotion must NOT clear them - clearing
     would mute the detectors under the exact leadership failure they
     exist to expose."""
     import taskq.obs._otel as otel_mod
@@ -398,24 +398,24 @@ async def test_demotion_keeps_backlog_gauges_and_clears_leader_scoped() -> None:
         assert not _reservation_cache(), "reservation slots must lose authority on demotion"
         assert not _stranded_cache(), "stranded jobs must lose authority on demotion"
         assert otel_mod._jobs_by_status_cache == {"scheduled": 9}, (  # pyright: ignore[reportPrivateUsage]  # Why: same singleton-cache read the observable callback performs.
-            "the backlog gauges are every-worker samplers — demotion must keep them alive"
+            "the backlog gauges are every-worker samplers - demotion must keep them alive"
         )
         assert otel_mod._scheduled_count == 9, (  # pyright: ignore[reportPrivateUsage]  # Why: see above.
             "the scheduled-count twin is fed by the same every-worker "
-            "sampler tick as jobs-by-status — demotion must keep it alive too"
+            "sampler tick as jobs-by-status - demotion must keep it alive too"
         )
         assert otel_mod._oldest_due_age_seconds == 42.0  # pyright: ignore[reportPrivateUsage]  # Why: see above.
-        assert otel_mod._running_lease_expired_count == 5, (  # pyright: ignore[reportPrivateUsage]  # Why: see above — the zombie-running detector is an every-worker sampler with the rest of the backlog family.
-            "the running-lease-expired gauge is an every-worker sampler — "
+        assert otel_mod._running_lease_expired_count == 5, (  # pyright: ignore[reportPrivateUsage]  # Why: see above - the zombie-running detector is an every-worker sampler with the rest of the backlog family.
+            "the running-lease-expired gauge is an every-worker sampler - "
             "demotion must keep it alive like its backlog siblings"
         )
         assert otel_mod._actor_backlog_cache == {("emails", "default"): 3}, (  # pyright: ignore[reportPrivateUsage]  # Why: see above.
             "the per-actor backlog depth is sampled by the same every-worker "
-            "loop — demotion must keep it alive"
+            "loop - demotion must keep it alive"
         )
         assert otel_mod._actor_oldest_pending_age_cache == {("emails", "default"): 12.5}, (  # pyright: ignore[reportPrivateUsage]  # Why: see above.
             "the per-actor oldest-pending age is sampled by the same "
-            "every-worker loop — demotion must keep it alive"
+            "every-worker loop - demotion must keep it alive"
         )
     finally:
         # Restore the process-wide sampler caches this test populated.
@@ -574,7 +574,7 @@ async def test_oldest_due_age_and_by_status_against_real_schema(
 ) -> None:
     """The loop's two statements against a seeded schema: the oldest-due
     age is the seconds since the oldest DUE scheduled job became due
-    (EXTRACT(EPOCH ...) over the due set only — future-scheduled and
+    (EXTRACT(EPOCH ...) over the due set only - future-scheduled and
     already-pending rows must not hold it back), and the by-status cache
     carries EVERY status present, not a merged count."""
     schema = module_pg_schema.schema_name
@@ -594,11 +594,11 @@ async def test_oldest_due_age_and_by_status_against_real_schema(
 
     assert by_status is not None, "the sampler never ran against the real schema"
     assert by_status == {"scheduled": 2, "pending": 1}, (
-        "the by-status cache must carry every status present — a merged or "
+        "the by-status cache must carry every status present - a merged or "
         f"partial split is the promotion-stall invisibility in a new shape: {by_status}"
     )
     assert oldest_due is not None and 25.0 <= oldest_due <= 45.0, (
-        f"the oldest due job was seeded 30 s in the past; got {oldest_due!r} — "
+        f"the oldest due job was seeded 30 s in the past; got {oldest_due!r} - "
         "the age must be the seconds since the OLDEST DUE job, ignoring "
         "future-scheduled rows"
     )
@@ -609,8 +609,8 @@ async def test_oldest_due_age_zero_when_nothing_due(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """Nothing due (only future-scheduled rows): the gauge must read 0.0 —
-    the healthy promotion state — not the future rows' negative age and
+    """Nothing due (only future-scheduled rows): the gauge must read 0.0 -
+    the healthy promotion state - not the future rows' negative age and
     not a missing sample."""
     schema = module_pg_schema.schema_name
 
@@ -641,7 +641,7 @@ async def test_running_lease_expired_counts_only_expired_running_jobs(
 
     A healthy fleet drives this gauge to zero (the reclaim sweep reclaims
     expired leases within a tick or two of expiry), so a SUSTAINED
-    non-zero reading — the alert this gauge feeds — means reclaim is not
+    non-zero reading - the alert this gauge feeds - means reclaim is not
     draining: work is claimed and stuck while health probes stay green.
     """
     schema = module_pg_schema.schema_name
@@ -675,7 +675,7 @@ async def test_running_lease_expired_counts_only_expired_running_jobs(
         lock_expires_at=now - timedelta(seconds=60),
         cancel_phase=1,
     )
-    # …and a pending row whose lock columns are set (a raced write) —
+    # …and a pending row whose lock columns are set (a raced write) -
     # status, not the columns, gates the zombie shape.
     await _seed_job(clean_pg_conn, schema, status="pending", scheduled_at=now)
 
@@ -685,7 +685,7 @@ async def test_running_lease_expired_counts_only_expired_running_jobs(
 
     assert expired_lease == 1, (
         f"exactly one running row carries a past lease with no cancel in "
-        f"flight; the gauge read {expired_lease!r} — the zombie-running "
+        f"flight; the gauge read {expired_lease!r} - the zombie-running "
         "predicate is status='running' AND lock_expires_at < now AND "
         "cancel_phase = 0, nothing broader and nothing narrower"
     )
@@ -696,7 +696,7 @@ async def test_running_jobs_are_counted_per_actor(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """taskq.jobs.running is an exact per-actor count of the running
-    population — the capacity view beside the per-process active_jobs
+    population - the capacity view beside the per-process active_jobs
     gauge: which actors hold the fleet's slots while pending work waits.
     Pending rows are not in it, and an actor with nothing running is
     absent rather than reported as 0."""
@@ -731,7 +731,7 @@ async def test_oldest_running_age_is_per_actor_from_started_at(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """taskq.jobs.oldest_running_age_seconds is the age of each actor's
-    oldest running attempt, measured from started_at by the server clock —
+    oldest running attempt, measured from started_at by the server clock -
     the series that shows an attempt outliving what the actor normally
     takes when nothing (no start_to_close) will end it. An actor with a
     fresh attempt reads near 0; an actor whose oldest attempt started 90 s

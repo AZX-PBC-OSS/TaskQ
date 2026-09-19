@@ -1,24 +1,24 @@
 """Red-team: external cancel detaches the transactional actor (E3).
 
 Contract under attack: an external cancel of the consume task must reach the
-transactional actor attempt — the row already says cancelled
+transactional actor attempt - the row already says cancelled
 (``mark_cancelled`` landed), so the attempt must not keep running and
 committing side effects.
 
 Hypothesis (verified against the current tree): the transactional path wraps
 the whole actor-in-transaction coroutine in ``tx_task`` and awaits
 ``asyncio.shield(tx_task)`` (src/taskq/worker/_consumer.py:851-853). On outer
-cancel the shield raises but ``tx_task`` is NEVER cancelled — the handler only
+cancel the shield raises but ``tx_task`` is NEVER cancelled - the handler only
 attaches ``add_done_callback(_retrieve_detached_outcome)``
 (_consumer.py:888). With no ``start_to_close`` (settings ``None`` → timeout
 ``None``, src/taskq/settings.py:1002-1010) and a non-DB actor, the actor runs
-to completion DETACHED after ``mark_cancelled`` already landed — the row says
+to completion DETACHED after ``mark_cancelled`` already landed - the row says
 cancelled while side effects continue, and the detached transaction goes on
 to write the success terminal.
 
 The companion control test drives the IDENTICAL cancel through the
 autonomous path (no shield, _consumer.py:952) where the cancel DOES propagate
-— proving the divergence is the shield seam, not the cancel mechanics.
+- proving the divergence is the shield seam, not the cancel mechanics.
 """
 
 import asyncio
@@ -53,7 +53,7 @@ class _TxConn:
     """Duck-typed ConnLike: no-op transaction()/execute(), open tx reported.
 
     The pinned contract is the cancellation's reach into the actor attempt,
-    not database fidelity — a no-op conn keeps the transaction open forever
+    not database fidelity - a no-op conn keeps the transaction open forever
     exactly like an un-cancellable non-DB actor would observe.
     """
 
@@ -107,40 +107,40 @@ async def test_external_cancel_reaches_transactional_actor() -> None:
     actor_finished = await _cancel_mid_actor(fb, _TxConn())
 
     assert fb.mark_cancelled_calls, (
-        "the cancel terminal write must land on the external-cancel path — "
+        "the cancel terminal write must land on the external-cancel path - "
         "it does today; this is the row-state half of the divergence the next "
         "assertions attack"
     )
     assert not actor_finished.is_set(), (
-        "immediately after the cancel+mark the actor must not have completed — "
+        "immediately after the cancel+mark the actor must not have completed - "
         "it has not yet (mid-sleep); the next assertion waits past the sleep"
     )
     await asyncio.sleep(_SETTLE)
     assert not actor_finished.is_set(), (
         "CONTRACT: an external cancel of the consume task must reach the "
-        "transactional actor attempt — the row already says cancelled "
+        "transactional actor attempt - the row already says cancelled "
         "(mark_cancelled landed above), so the attempt must not keep running. "
         "VIOLATION: the transactional path awaits asyncio.shield(tx_task) and, "
         "on outer cancel, only attaches "
         "add_done_callback(_retrieve_detached_outcome) "
-        "(src/taskq/worker/_consumer.py:851-888) — tx_task is never cancelled — "
+        "(src/taskq/worker/_consumer.py:851-888) - tx_task is never cancelled - "
         "so with no start_to_close (settings None -> timeout None) the actor "
         "ran to completion DETACHED after mark_cancelled landed; the identical "
         "cancel on the autonomous path (no shield, _consumer.py:952) DOES "
-        "terminate the actor — see the control test in this file."
+        "terminate the actor - see the control test in this file."
     )
     assert not fb.mark_succeeded_calls, (
-        "CONTRACT: a cancelled attempt must not go on to commit — no success "
+        "CONTRACT: a cancelled attempt must not go on to commit - no success "
         "terminal write may land after mark_cancelled. VIOLATION: the detached "
         "transaction completed the actor and issued mark_succeeded_with_conn "
-        "AFTER the row was already marked cancelled — the row says cancelled "
+        "AFTER the row was already marked cancelled - the row says cancelled "
         "while the attempt's side effects and terminal write still landed."
     )
 
 
 async def test_external_cancel_reaches_autonomous_actor_control() -> None:
     """Control: the same external cancel DOES terminate the autonomous-path
-    actor (no shield at src/taskq/worker/_consumer.py:952) — proving the
+    actor (no shield at src/taskq/worker/_consumer.py:952) - proving the
     divergence in the sibling test is the transactional shield seam."""
     fb = FakeBackend()
     actor_finished = await _cancel_mid_actor(fb, None)
@@ -150,7 +150,7 @@ async def test_external_cancel_reaches_autonomous_actor_control() -> None:
     assert not actor_finished.is_set(), (
         "control contract: without the transactional shield the external "
         "cancel propagates through wait_for into the actor attempt "
-        "(src/taskq/worker/_consumer.py:952) — the actor sleep is interrupted "
+        "(src/taskq/worker/_consumer.py:952) - the actor sleep is interrupted "
         "and the completion event never fires. If this control fails, the "
         "cancel mechanics changed and the transactional divergence claim "
         "must be re-verified."

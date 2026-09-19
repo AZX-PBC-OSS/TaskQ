@@ -5,27 +5,27 @@ produced migration 01.00.06_01_pre_cancel_and_cascade_indexes.sql and
 the statement_timestamp()/ORDER BY sweep-bound rewrite in
 taskq.backend._sweeps / taskq.worker.cron_loop:
 
-1. Migration pins — the three audit indexes exist, are VALID, the
+1. Migration pins - the three audit indexes exist, are VALID, the
    ledger records the file as transactional (plain CREATE INDEX by
    deliberate choice: the CONCURRENTLY form deadlocks with the
-   migration advisory lock — see the migration header), and a re-run
+   migration advisory lock - see the migration header), and a re-run
    is a clean no-op.
-2. Plan pins — bulk-seeded (the same discipline as
+2. Plan pins - bulk-seeded (the same discipline as
    test_postgres_max_pending.py: plans are only stable at realistic
    volumes), each audited statement's EXPLAIN names the index it is
    supposed to be served by, and the sweep bounds appear as Index
    Conds (the property that makes them terminate at the range boundary
    instead of filtering a whole-table walk). The seeds hold the
-   steady-state shape — nothing eligible yet, realistic populations in
-   every partial index — because that is the every-second/every-30s
+   steady-state shape - nothing eligible yet, realistic populations in
+   every partial index - because that is the every-second/every-30s
    tick the audit found to be the costly one.
-3. Prune/archive selection-bound pins — the same STABLE-bound property
+3. Prune/archive selection-bound pins - the same STABLE-bound property
    for the once-a-day prune/archive/expiry candidate CTEs in
    taskq.worker._leader_shared (their VOLATILE clock_timestamp()
    selection bounds survived the first audit pass as a documented
    follow-up): the drained steady state AND the eligible backlog, the
    ad-hoc statement AND the server-prepared form a long-lived
-   connection runs after five same-statement executions (PREPARE x6 —
+   connection runs after five same-statement executions (PREPARE x6 -
    the plancache's generic-plan consideration threshold), plus a
    source-shape drift-guard for the two-clock split (selection bound
    STABLE, write stamps VOLATILE) that no plan or behavior pin can
@@ -72,16 +72,16 @@ from taskq.constants import (
     RECLAIM_OUTBOX_RETENTION_MULTIPLIER,
 )
 from taskq.worker._leader_shared import (
-    _ARCHIVE_CTE_ACTOR_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: same as above — pin the production statement, not a copy.
+    _ARCHIVE_CTE_ACTOR_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: same as above - pin the production statement, not a copy.
     _ARCHIVE_CTE_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: same.
     _CLEANUP_STALE_WORKERS_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: same.
     _EXPIRY_CTE_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: same.
-    _QUERY_QUEUE_DEPTH_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same — the queue-depth gauge's exact statement.
+    _QUERY_QUEUE_DEPTH_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same - the queue-depth gauge's exact statement.
 )
 from taskq.worker._leader_sweeps import (
-    _QUERY_ACTOR_BACKLOG_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same as above — pin the production statement, not a copy.
-    _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same as above — pin the production statement, not a copy.
-    _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same — the zombie-running gauge's exact statement.
+    _QUERY_ACTOR_BACKLOG_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same as above - pin the production statement, not a copy.
+    _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same as above - pin the production statement, not a copy.
+    _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same - the zombie-running gauge's exact statement.
 )
 from taskq.worker.cron_loop import cron_due_sql
 
@@ -146,7 +146,7 @@ async def _explain(conn: asyncpg.Connection, sql: str, *params: object) -> str:
 
 def _assert_index_cond(plan: str, index: str, cond_substring: str) -> None:
     """The plan must scan *index*, and the range bound must appear in an
-    Index Cond line — the property the audit found load-bearing: a bound
+    Index Cond line - the property the audit found critical: a bound
     that degrades to a post-scan Filter walks the table (or a whole
     partial index's population) per tick instead of stopping at the
     boundary. The cond may be combined with other conds in one line
@@ -184,7 +184,7 @@ async def test_audit_indexes_exist_and_valid(pg_dsn: str) -> None:
         found = {r["indexname"]: r["valid"] for r in rows}
         for name in _AUDIT_INDEXES:
             assert name in found, f"{name} missing after apply_pending"
-            assert found[name], f"{name} exists but is INVALID — apply_pending left broken debris"
+            assert found[name], f"{name} exists but is INVALID - apply_pending left broken debris"
     finally:
         await _drop_schema(conn, schema)
         await conn.close()
@@ -200,7 +200,7 @@ async def test_audit_migration_is_transactional_and_reapplies_cleanly(pg_dsn: st
         # The ledger must record the transactional apply: this file
         # deliberately uses plain CREATE INDEX inside the per-file
         # transaction (the no-transaction CONCURRENTLY form deadlocks
-        # with apply_pending_locked's advisory-lock serialization —
+        # with apply_pending_locked's advisory-lock serialization -
         # see the migration header), and tests/test_migrations_unit.py
         # pins that every bundled migration stays transactional.
         use_txn = await conn.fetchval(
@@ -241,7 +241,7 @@ async def audit_schema(pg_dsn: str) -> Any:
     """Throwaway schema, all migrations applied, bulk-seeded into the
     steady-state shape: sizeable terminal history, live populations in
     every partial index, and NOTHING eligible for any sweep yet (every
-    lease/stc/scheduled_at/result expiry in the future) — the shape the
+    lease/stc/scheduled_at/result expiry in the future) - the shape the
     every-second/every-30s ticks see ~always, and the one the audit
     found seq-scanning before the bound rewrite."""
     schema = f"idx_audit_plan_{new_base62()}".lower()
@@ -252,16 +252,16 @@ async def audit_schema(pg_dsn: str) -> Any:
         await migrate_mod.apply_pending(conn, schema=schema)
 
         # The shared test cluster runs with synchronous_commit=off (a
-        # throwaway container — see taskq.testing._shared_containers),
+        # throwaway container - see taskq.testing._shared_containers),
         # and an async commit's records are not WAL-flushed when the
         # client is acknowledged. The visibility-map set is gated on the
         # page's WAL being durable, so a VACUUM after async-committed
-        # COPY loads cannot mark those pages all-visible — the map
+        # COPY loads cannot mark those pages all-visible - the map
         # stalls part-covered and every candidate plan is priced as a
         # heap-fetching scan. Seeding this fixture's loads with
         # synchronous_commit=on makes every COPY commit durable by the
         # time the VACUUM below runs, so the map completes and the
-        # planner can cost index-only scans — the representative steady
+        # planner can cost index-only scans - the representative steady
         # state of a production table, whose commits are durable and
         # whose autovacuum completes the map. Session-scoped: only this
         # one seeding connection pays the flushes.
@@ -335,7 +335,7 @@ async def audit_schema(pg_dsn: str) -> Any:
             ],
             records=running,
         )
-        # Heartbeat-configured running slice (nothing eligible — every
+        # Heartbeat-configured running slice (nothing eligible - every
         # heartbeat fresh, every lease future): the steady-state
         # population of the heartbeat arm's partial index
         # (jobs_running_heartbeat_deadline_idx), whose every-tick cost
@@ -373,7 +373,7 @@ async def audit_schema(pg_dsn: str) -> Any:
             records=heartbeat_running,
         )
         await conn.execute(
-            f'UPDATE "{schema}".jobs '  # Why: fixed actor literal — no user input, nothing to $-bind.
+            f'UPDATE "{schema}".jobs '  # Why: fixed actor literal - no user input, nothing to $-bind.
             "SET heartbeat_timeout = interval '30 seconds' "
             "WHERE actor = 'live.heartbeat' AND status = 'running'"
         )
@@ -572,7 +572,7 @@ async def audit_schema(pg_dsn: str) -> Any:
         # jobs gets VACUUM (ANALYZE), not bare ANALYZE: a production jobs
         # table is constantly vacuumed (autovacuum trails every bulk
         # write), so its live pages are all-visible and the planner can
-        # cost index-only scans over them — the cost model the pins must
+        # cost index-only scans over them - the cost model the pins must
         # be evaluated at. Bare ANALYZE leaves the COPY-loaded pages'
         # visibility bits unset (ANALYZE never touches the map), which
         # forces every candidate plan into heap-fetching scans and
@@ -615,19 +615,19 @@ async def test_sweep_1_snap_is_index_bounded(audit_schema: Any, pg_dsn: str) -> 
 
 async def test_sweep_1_heartbeat_arm_is_index_bounded(audit_schema: Any, pg_dsn: str) -> None:
     """Sweep 1's heartbeat arm (the per-job ``heartbeat_timeout``
-    disjunct) must seek jobs_running_heartbeat_deadline_idx — partial on
-    ``status='running' AND heartbeat_timeout IS NOT NULL`` — with
+    disjunct) must seek jobs_running_heartbeat_deadline_idx - partial on
+    ``status='running' AND heartbeat_timeout IS NOT NULL`` - with
     ``last_heartbeat_at < statement_timestamp()`` as an Index Cond.
 
     The row-exact deadline (``last_heartbeat_at + heartbeat_timeout``)
     cannot be an index condition (the bound is row-dependent, and
     timestamptz+interval is STABLE so no expression index exists), so
-    the arm's necessary condition — a heartbeat at all in the past — is
+    the arm's necessary condition - a heartbeat at all in the past - is
     stated explicitly to give the partial index its range bound, and the
     ORDER BY last_heartbeat_at pins the scan to that index's key order
     (the ORDER-BY-pins-the-scan rule the sibling sweeps follow). Without
     the index the OR's second arm degrades every sweep tick to a filter
-    over the whole running set — the exact whole-table-walk class this
+    over the whole running set - the exact whole-table-walk class this
     audit family exists to prevent."""
     schema, _ = audit_schema
     conn = await asyncpg.connect(pg_dsn)
@@ -665,7 +665,7 @@ async def test_sweep_2_snap_is_index_bounded(audit_schema: Any, pg_dsn: str) -> 
 
 async def test_sweep_3_snap_is_index_bounded(audit_schema: Any, pg_dsn: str) -> None:
     """The every-second scheduled-wake snap: ORDER BY scheduled_at pins
-    it to jobs_scheduled_wake_idx with the due bound as an Index Cond —
+    it to jobs_scheduled_wake_idx with the due bound as an Index Cond -
     without the ORDER BY the planner can fractional-walk a different
     predicate-implied partial index (measured: a 21,000-entry walk of
     jobs_schedule_to_close_idx)."""
@@ -700,7 +700,7 @@ async def test_sweep_4_window_is_index_bounded(audit_schema: Any, pg_dsn: str) -
     """Sweep 4's candidate window must seek
     reservation_slots_lease_expires_idx with the lease-expiry range as an
     Index Cond. The window's bound is statement_timestamp() (STABLE) and
-    its ORDER BY pins the scan to the lease-keyed partial index — the
+    its ORDER BY pins the scan to the lease-keyed partial index - the
     same two-clock/ORDER-BY doctrine as every sibling sweep; a volatile
     clock_timestamp() bound (this sweep's old form) cannot be a btree
     index condition and degrades to a post-scan Filter over the whole
@@ -756,7 +756,7 @@ async def test_backlog_oldest_due_age_sampler_is_index_bounded(
     jobs_scheduled_wake_idx with the due bound as an Index Cond
     (statement_timestamp() is STABLE; a volatile clock_timestamp() bound
     degrades to a post-scan Filter walking the partial index's whole
-    scheduled population per worker, per interval — during the exact
+    scheduled population per worker, per interval - during the exact
     promotion-stall incident the gauge exists to expose)."""
     schema, _ = audit_schema
     conn = await asyncpg.connect(pg_dsn)
@@ -776,7 +776,7 @@ async def test_backlog_running_lease_expired_sampler_is_index_bounded(
 ) -> None:
     """The zombie-running detector's count must seek
     jobs_running_lock_expires_idx (partial on status='running', keyed on
-    lock_expires_at) with the expiry bound as an Index Cond — the same
+    lock_expires_at) with the expiry bound as an Index Cond - the same
     two-clock rule as every sibling sampler: a VOLATILE
     clock_timestamp() bound cannot be a btree index condition, so it
     would degrade to a post-scan Filter walking the whole running
@@ -829,7 +829,7 @@ async def test_backlog_depth_gauge_is_index_bounded(audit_schema: Any, pg_dsn: s
     columns are read from the index rather than recovered by a walk. The
     sampler runs on every leader tick, so its cost must stay independent
     of terminal history no matter how many dimensions the series
-    carries — adding actor attribution must not turn the gauge into a
+    carries - adding actor attribution must not turn the gauge into a
     sequential scan."""
     schema, _ = audit_schema
     conn = await asyncpg.connect(pg_dsn)
@@ -837,7 +837,7 @@ async def test_backlog_depth_gauge_is_index_bounded(audit_schema: Any, pg_dsn: s
         plan = await _explain(conn, _QUERY_QUEUE_DEPTH_SQL_TEMPLATE.format(schema=schema))
         assert "Seq Scan" not in plan, (
             "the backlog-depth gauge must not fall back to a sequential scan "
-            "over jobs — its cost has to stay bounded by the active "
+            "over jobs - its cost has to stay bounded by the active "
             f"pending/scheduled population, not by terminal history:\n{plan}"
         )
         assert "Index" in plan, (
@@ -874,7 +874,7 @@ async def test_cron_due_tick_is_index_bounded_without_sort(audit_schema: Any, pg
         plain_sort = re.search(r"(?m)^\s*(?:->\s*)?Sort(?! Key)", plan)
         assert plain_sort is None, (
             "ORDER BY next_fire_at, id must stay index-presorted with a "
-            "bounded Incremental Sort over the tie prefix — a plain Sort "
+            "bounded Incremental Sort over the tie prefix - a plain Sort "
             "sorts the whole scan output and the every-second tick's cost "
             f"regresses:\n{plan}"
         )
@@ -884,7 +884,7 @@ async def test_cron_due_tick_is_index_bounded_without_sort(audit_schema: Any, pg
 
 async def test_cancel_by_queue_cte_is_index_served(audit_schema: Any, pg_dsn: str) -> None:
     """cancel_where(queue=...)'s matching CTE must seek
-    jobs_queue_active_idx (queue, id) — pre-index it whole-table-walked
+    jobs_queue_active_idx (queue, id) - pre-index it whole-table-walked
     jobs' PK in id order, ~30-40 ms for the drain's final empty call."""
     schema, _ = audit_schema
     conn = await asyncpg.connect(pg_dsn)
@@ -904,13 +904,13 @@ async def test_cancel_and_deregister_by_actor_is_index_served(
     audit_schema: Any, pg_dsn: str
 ) -> None:
     """cancel_where(actor=...) and deregister_actor's force-cancel drain
-    must be served by an actor-keyed partial index — pre-index the
+    must be served by an actor-keyed partial index - pre-index the
     planner whole-table-walked jobs' PK in id order (jobs_actor_pending_idx
     cannot provide the CTE's ORDER BY id, so it lost the plan race at
     realistic volume; jobs_actor_active_id_idx (actor, id) exists to win
     that race outright). Which of the two actor indexes the planner
-    picks is a cost decision — (actor)+top-N-sort vs (actor,id) ordered
-    seek — and both are bounded actor-population scans, so this pin
+    picks is a cost decision - (actor)+top-N-sort vs (actor,id) ordered
+    seek - and both are bounded actor-population scans, so this pin
     asserts the actor-keyed seek and the absence of a whole-table walk
     rather than a specific index name."""
     schema, _ = audit_schema
@@ -993,7 +993,7 @@ async def test_cleanup_stale_workers_bound_is_index_qualified(
 #
 # The once-a-day prune/archive/expiry candidate CTEs in
 # taskq.worker._leader_shared kept VOLATILE clock_timestamp() selection
-# bounds after the sweep rewrite — bounded (LIMIT-stopped, ORDER-BY-
+# bounds after the sweep rewrite - bounded (LIMIT-stopped, ORDER-BY-
 # pinned) but paying a post-scan Filter over the partial index's whole
 # population per batch, because the planner refuses a VOLATILE
 # expression as a btree index condition. Measured on this corpus shape
@@ -1020,7 +1020,7 @@ _PREPARE_WARMUPS = 5
 
 def _assert_index_cond_line(plan: str, index: str, *cond_substrings: str) -> None:
     """The plan must carry ONE Index Cond line containing every
-    *cond_substrings* — the property that makes a selection bound
+    *cond_substrings* - the property that makes a selection bound
     index-served (the scan terminates at the range boundary or the
     LIMIT) instead of a post-scan Filter over the population. Accepts
     the cond on either a plain Index Scan or a Bitmap Index Scan node
@@ -1036,7 +1036,7 @@ def _assert_index_cond_line(plan: str, index: str, *cond_substrings: str) -> Non
 
 def _assert_bound_is_not_a_post_scan_filter(plan: str, bound_substring: str) -> None:
     """The selection bound must not ALSO (or instead) appear as a
-    post-scan Filter: the Filter form is the measured defect — the scan
+    post-scan Filter: the Filter form is the measured defect - the scan
     visits every row of the table or partial-index population and
     evaluates the comparison per row. Status/actor equality conds stay
     Filters by design (the partial index proves status membership), so
@@ -1044,7 +1044,7 @@ def _assert_bound_is_not_a_post_scan_filter(plan: str, bound_substring: str) -> 
     filter_lines = [line for line in plan.splitlines() if "Filter:" in line]
     assert not any(bound_substring in line for line in filter_lines), (
         f"the selection bound {bound_substring!r} degraded to a post-scan "
-        f"Filter — the whole-population walk these pins exist to prevent:\n{plan}"
+        f"Filter - the whole-population walk these pins exist to prevent:\n{plan}"
     )
 
 
@@ -1053,10 +1053,10 @@ async def prune_audit_schema(pg_dsn: str) -> Any:
     """Throwaway schema, all migrations applied, bulk-seeded into the two
     states the once-a-day prune/archive/expiry ticks actually see:
 
-    * drained steady state — 40k terminal 'succeeded' finished 1-29 days
+    * drained steady state - 40k terminal 'succeeded' finished 1-29 days
       ago (nothing eligible at the 30-day default retention) plus 30k
       jobs_archive rows whose expire_at is a year out;
-    * backlog — 30k terminal 'failed' finished 31-90 days ago (all
+    * backlog - 30k terminal 'failed' finished 31-90 days ago (all
       eligible at the same retention).
 
     The two states are split by STATUS so both live in one corpus: the
@@ -1222,7 +1222,7 @@ async def _explain_prepared(
     conn: asyncpg.Connection, prepare: str, warmup: str, explain: str
 ) -> str:
     """PREPARE the statement, EXECUTE it five times (the server's
-    generic-plan consideration threshold — the form a long-lived
+    generic-plan consideration threshold - the form a long-lived
     connection's server-side prepared statement settles into), then
     EXPLAIN the next execution's plan. The statement type list must
     match what production binds: asyncpg resolves ``$1::job_status`` to
@@ -1243,7 +1243,7 @@ async def test_archive_cte_drained_steady_state_is_index_bounded(
     """The once-a-day prune's archive candidate scan against the drained
     steady state (nothing eligible, 70k-entry terminal population): the
     STABLE bound must be an Index Cond on jobs_finished_at_idx so the
-    scan terminates at the range boundary — the VOLATILE form
+    scan terminates at the range boundary - the VOLATILE form
     Filter-walked all 70,000 entries (measured: 1,757 buffers, ~11 ms
     per call, per status)."""
     schema = prune_audit_schema
@@ -1268,7 +1268,7 @@ async def test_archive_cte_drained_steady_state_is_index_bounded(
 async def test_archive_cte_backlog_is_index_bounded(prune_audit_schema: Any, pg_dsn: str) -> None:
     """The same candidate scan against the eligible backlog (30k
     'failed' rows older than retention): the bound must still be an
-    Index Cond — in the backlog the VOLATILE form only "works" because
+    Index Cond - in the backlog the VOLATILE form only "works" because
     the oldest entries happen to pass its Filter, and any youngest-first
     population (recent terminal rows ahead of eligible ones in index
     order) pays the Filter over everything ahead of the eligible set."""
@@ -1322,7 +1322,7 @@ async def test_archive_cte_prepared_statement_stays_index_bounded(
     prune_audit_schema: Any, pg_dsn: str
 ) -> None:
     """PREPARE x6 with production parameter typing: after five
-    same-statement executions (the plancache's generic-plan threshold —
+    same-statement executions (the plancache's generic-plan threshold -
     a pooled connection running the daily prune), the plan the next
     execution uses must still seek jobs_finished_at_idx with the range
     as an Index Cond. Measured pre-fix: the prepared statement keeps a
@@ -1364,14 +1364,14 @@ async def test_archive_actor_cte_prepared_statement_bound_stays_stable(
 
     Measured on this corpus: past the threshold the server flips this
     prepared statement to a GENERIC plan (the actor equality makes the
-    generic seq-scan cost-competitive — the custom plan's total is
+    generic seq-scan cost-competitive - the custom plan's total is
     dominated by the INSERT/DELETE join sides, not the candidate scan),
     and no index can serve that generic form at all: ``status = $1`` /
     ``actor = $5`` as Params cannot prove the partial predicates of
     jobs_finished_at_idx or the actor partial indexes, so the generic
     plan seq-scans jobs whatever the bound's volatility. That generic
     seq-scan shape is a reported follow-up (it needs a full
-    (actor, finished_at)-style index — a DDL change), not something the
+    (actor, finished_at)-style index - a DDL change), not something the
     bound can fix; the Index-Cond property itself stays pinned by the
     actor CTE's custom-plan pins above. What the bound MUST guarantee
     here is that neither plan form ever regresses to the VOLATILE
@@ -1407,7 +1407,7 @@ async def test_archive_actor_cte_prepared_statement_bound_stays_stable(
         )
         assert "clock_timestamp()" not in plan, (
             "a VOLATILE selection bound regressed into the prepared actor CTE's "
-            "plan — it degrades every plan form this statement can run:\n{plan}"
+            "plan - it degrades every plan form this statement can run:\n{plan}"
         )
     finally:
         await conn.close()
@@ -1418,7 +1418,7 @@ async def test_archive_expiry_cte_drained_steady_state_is_index_bounded(
 ) -> None:
     """The archive-expiry sweep against the drained steady state (30k
     rows, nothing expired yet): the bound must be an Index Cond on
-    jobs_archive_expire_at_idx — the VOLATILE form Filter-walked all
+    jobs_archive_expire_at_idx - the VOLATILE form Filter-walked all
     30,000 entries (measured: 2,039 buffers, ~6.7 ms per call)."""
     schema = prune_audit_schema
     conn = await asyncpg.connect(pg_dsn)
@@ -1469,7 +1469,7 @@ async def test_archive_expiry_cte_backlog_is_index_bounded(
 async def test_archive_expiry_cte_prepared_statement_stays_index_bounded(
     prune_audit_schema: Any, pg_dsn: str
 ) -> None:
-    """PREPARE x6 for the expiry CTE — the statement whose prepared form
+    """PREPARE x6 for the expiry CTE - the statement whose prepared form
     measurably degrades WORSE than its ad-hoc form: with the VOLATILE
     bound the server flips to a generic plan that walks the whole
     jobs_archive_expire_at_idx population under a Filter on a
@@ -1495,10 +1495,10 @@ async def test_archive_expiry_cte_prepared_statement_stays_index_bounded(
 def test_prune_archive_two_clock_split_is_pinned() -> None:
     """Drift-guard for the documented two-clock split in the
     prune/archive selection CTEs: the row-SELECTION bounds must be
-    STABLE statement_timestamp() (index-servable — the plan pins above
+    STABLE statement_timestamp() (index-servable - the plan pins above
     catch a regression there), and the WRITE stamps (archived_at /
     expire_at) must stay VOLATILE clock_timestamp() (co-monotonic with
-    the other clock-domain writes in the same statement — see
+    the other clock-domain writes in the same statement - see
     _sweeps.py's module docstring). A stamp regression is invisible to
     every plan and behavior pin at microsecond granularity, so the
     split is pinned at its source here."""
@@ -1676,8 +1676,8 @@ async def test_move_queue_drain_batch_bounds_cost_on_actor_and_queue_together(
 # only at RECLAIM_OUTBOX_RETENTION_MULTIPLIER x retention), so in a fleet
 # whose reclaim consumer lags it accumulates without bound. If the age
 # bound or the carve-out is not index-served, every tick re-walks that
-# accumulating population: the drained steady-state tick — the one that
-# runs every cycle and deletes nothing — grows more expensive the longer
+# accumulating population: the drained steady-state tick - the one that
+# runs every cycle and deletes nothing - grows more expensive the longer
 # the deployment lives, until it trips its statement timeout and event
 # retention stops working silently.
 
@@ -1700,7 +1700,7 @@ async def _make_event_schema(conn: asyncpg.Connection, schema: str, *, outbox_ro
     """Migrated schema holding a realistic event corpus: a live
     ordinary-event population inside the retention window, and
     *outbox_rows* unconsumed crash-reclaim outbox events far older than
-    ordinary retention but still inside the outbox age cap — i.e. rows
+    ordinary retention but still inside the outbox age cap - i.e. rows
     the sweep must never delete and must never pay to look at.
 
     Events are spread across many jobs, as a real fleet's are: piling a
@@ -1739,7 +1739,7 @@ async def _make_event_schema(conn: asyncpg.Connection, schema: str, *, outbox_ro
                 (
                     job_ids[i % _EV_JOBS],
                     # Older than ordinary retention, far inside the outbox
-                    # cap — exempt at this age, so the sweep deletes none.
+                    # cap - exempt at this age, so the sweep deletes none.
                     now - _EV_RETENTION * 2,
                     "state_change",
                     '{"reason": "lock_expired"}',
@@ -1768,7 +1768,7 @@ async def test_event_retention_window_is_index_bounded(event_ttl_schema: str, pg
     ``job_events_occurred_at_idx`` with the age bound as an Index Cond.
 
     A bound that survives only as a post-scan Filter makes every tick
-    walk the whole event table — including the exempt crash-reclaim
+    walk the whole event table - including the exempt crash-reclaim
     outbox slice, which is immortal at this age and grows for the life of
     the deployment. The tick then gets slower forever and eventually
     times out, at which point event retention stops draining and the
@@ -1797,7 +1797,7 @@ async def test_event_retention_outbox_arm_is_index_bounded(
     the arm walk every unconsumed outbox row on every tick and discard
     them all. That population is exempt from ordinary retention by
     design, and in a fleet whose ``watch_reclaims`` consumer lags or is
-    absent it grows for the life of the deployment — so the tick that is
+    absent it grows for the life of the deployment - so the tick that is
     supposed to bound the outbox is itself unbounded in the outbox's
     size, which is the whole-population-walk class this audit family
     exists to prevent."""
@@ -1827,7 +1827,7 @@ async def test_event_retention_outbox_arm_is_index_bounded(
 async def test_event_retention_drained_tick_cost_is_flat_in_exempt_population(
     pg_dsn: str,
 ) -> None:
-    """A drained steady-state tick — nothing eligible, nothing deleted —
+    """A drained steady-state tick - nothing eligible, nothing deleted -
     must cost the same whether the fleet holds a handful of unconsumed
     crash-reclaim outbox events or tens of thousands of them.
 
@@ -1875,7 +1875,7 @@ async def test_event_retention_drained_tick_cost_is_flat_in_exempt_population(
         assert large_cost <= small_cost * 3 + 50, (
             "the drained event-retention tick's cost grows with the exempt "
             f"crash-reclaim outbox population: {small_cost} buffers at 200 "
-            f"outbox rows vs {large_cost} buffers at 60,000 — the tick is "
+            f"outbox rows vs {large_cost} buffers at 60,000 - the tick is "
             "walking the rows it is required to skip, so maintenance cost "
             "degrades over the life of the deployment"
         )
@@ -1888,7 +1888,7 @@ async def test_event_retention_drained_tick_cost_is_flat_in_exempt_population(
 # ── 6. keyed-row fleet reclaim plan pins ──────────────────────────────
 #
 # The keyed-row sweeps tick on the leader against tables whose population
-# is the fleet's live tenant/key cardinality — the one maintenance target
+# is the fleet's live tenant/key cardinality - the one maintenance target
 # that grows with customers rather than with backlog. Almost every row is
 # fresh (in use), so the every-tick shape is the drained one: nothing
 # eligible, nothing deleted. That tick must cost a seek to the age
@@ -1899,7 +1899,7 @@ async def test_event_retention_drained_tick_cost_is_flat_in_exempt_population(
 
 _KEYED_HORIZON = timedelta(hours=1)
 _KEYED_BATCH = 100
-# Fresh keyed rows for distinct keys — the steady state a multi-tenant
+# Fresh keyed rows for distinct keys - the steady state a multi-tenant
 # fleet sits in, at a volume where the planner's index choice is the one
 # a deployment would get rather than a small table's seq-scan default.
 _KEYED_LIVE_ROWS = 30_000
@@ -1950,7 +1950,7 @@ async def test_keyed_bucket_reclaim_window_is_index_bounded(
     Keyed buckets are created per rate-limit key, so their count is the
     fleet's live key cardinality. A horizon that survives only as a Filter
     makes every leader tick re-read every in-use bucket to find the
-    handful that went idle — cost that grows with tenant count and shows
+    handful that went idle - cost that grows with tenant count and shows
     up as a maintenance loop that gets slower as the product succeeds."""
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -1974,7 +1974,7 @@ async def test_keyed_slot_reclaim_window_is_index_bounded(
 ) -> None:
     """The idle keyed reservation-slot sweep's candidate window must seek
     ``reservation_slots_keyed_last_used_idx`` with the idle horizon as an
-    Index Cond — the same property as its bucket sibling, over a table
+    Index Cond - the same property as its bucket sibling, over a table
     that carries one row per slot per key and so grows faster still."""
     conn = await asyncpg.connect(pg_dsn)
     try:

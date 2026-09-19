@@ -7,7 +7,7 @@ its siblings drain, for as long as the noisy neighbour keeps producing.
 
 Starvation is uniquely hard to see from outside. Overall throughput is
 healthy, every pod reports successful rounds, and the only symptom is
-that one customer's work is old — which reads as a slow actor, not as a
+that one customer's work is old - which reads as a slow actor, not as a
 queue that has stopped considering it. These tests give the starved
 cohort a voice: they assert that every cohort is dispatched within a
 bounded number of rounds, under both queue modes, so the fleet cannot
@@ -38,7 +38,7 @@ _ROUND_LIMIT = 5
 # rest are never reached.
 #
 # The bound is deliberately not "however long the backlog takes to
-# drain" — with this much work per actor that would take hundreds of
+# drain" - with this much work per actor that would take hundreds of
 # rounds and would pass even for a queue that serves its actors strictly
 # one after another, which is the thing being caught. It is instead the
 # rounds needed to give every actor a turn if turns were taken at all:
@@ -77,7 +77,7 @@ async def test_every_actor_is_dispatched_within_a_bounded_number_of_rounds(
 
     Round-robin is included deliberately: it is the mode an operator
     picks precisely to get this property, so a starving round-robin
-    queue is worse than a starving FIFO one — the setting is doing
+    queue is worse than a starving FIFO one - the setting is doing
     nothing, and the operator believes the problem is solved.
     """
     actors = _actor_names("fair", _ACTOR_COUNT)
@@ -103,7 +103,7 @@ async def test_every_actor_is_dispatched_within_a_bounded_number_of_rounds(
             f"dispatched in {_ROUNDS} rounds of {_ROUND_LIMIT} while each held "
             f"{_JOBS_PER_ACTOR} due jobs: {starved}. Their work does not age out, it "
             "simply never runs, and the queue's overall throughput looks healthy "
-            "throughout — the only visible symptom is one tenant's jobs getting older."
+            "throughout - the only visible symptom is one tenant's jobs getting older."
         )
 
 
@@ -115,8 +115,8 @@ async def test_a_hot_actor_does_not_monopolise_the_fleet(pg_dsn: str) -> None:
     interleaves them, so the quiet actors keep draining while the flood
     drains more slowly.
 
-    The assertion is deliberately weak — the quiet actors need only be
-    dispatched at all, not equally — because the property worth pinning
+    The assertion is deliberately weak - the quiet actors need only be
+    dispatched at all, not equally - because the property worth pinning
     is the absence of starvation rather than a particular ratio, which
     would break on any legitimate change to the ranking.
     """
@@ -156,7 +156,7 @@ async def test_one_queue_does_not_starve_another(pg_dsn: str) -> None:
 
     Workers commonly subscribe to several queues, one of them much
     busier than the rest. The quiet queue is usually the one that
-    matters — an operational or interactive queue riding alongside a
+    matters - an operational or interactive queue riding alongside a
     bulk one. It must keep dispatching while the bulk queue drains.
     """
     schema = f"fleet_queues_{new_base62()}".lower()
@@ -190,7 +190,7 @@ async def test_fairness_holds_when_several_pods_dispatch_at_once(
 
     Each pod ranks cohorts independently. If they all reach the same
     conclusion, a larger fleet concentrates on the same few actors
-    rather than covering more of them — scaling out makes starvation
+    rather than covering more of them - scaling out makes starvation
     worse, which is the opposite of what an operator adding pods to a
     backlog expects.
     """

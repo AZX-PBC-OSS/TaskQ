@@ -179,7 +179,7 @@ def test_leader_template_renders_leader_info(
 def test_leader_template_renders_lease_expiry(
     monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
 ) -> None:
-    """leader.html shows the lease's expires_at — the instant the fleet
+    """leader.html shows the lease's expires_at - the instant the fleet
     will act on if the holder stops renewing; an operator reading the
     leader page needs it to reason about failover."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
@@ -204,7 +204,7 @@ def test_leader_template_renders_lease_expiry(
 def test_leader_template_renders_dash_when_holder_has_no_lease(
     monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
 ) -> None:
-    """leader.html renders the em-dash fallback when expires_at is NULL —
+    """leader.html renders the em-dash fallback when expires_at is NULL -
     a row written by a release that predates the lease column carries none,
     and the page must say so instead of rendering 'None'."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
@@ -299,7 +299,7 @@ def test_leader_watchdog_badge_comes_from_sql_not_python_clock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """D5 pin: the Healthy/Unhealthy badge is computed by the LEADER SQL
-    (``watchdog_healthy``) — the same single-arbiter shape as queues.py's
+    (``watchdog_healthy``) - the same single-arbiter shape as queues.py's
     worker-liveness predicates.  A row the SERVER calls healthy
     (watchdog_healthy=True)
     must render Healthy even when this process's Python clock would call
@@ -311,7 +311,7 @@ def test_leader_watchdog_badge_comes_from_sql_not_python_clock(
         hostname="leader-1",
         pid=9999,
         elected_at=datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC),
-        # Stale by the local Python clock — the SQL verdict is what counts.
+        # Stale by the local Python clock - the SQL verdict is what counts.
         last_seen_at=datetime.now(UTC) - timedelta(hours=1),
         worker_last_seen=datetime.now(UTC) - timedelta(hours=1),
         watchdog_healthy=True,
@@ -331,7 +331,7 @@ def test_leader_watchdog_badge_follows_an_unhealthy_verdict_on_a_fresh_looking_r
     """The mirror image, and the half a Python recomputation would get wrong
     in the other direction: a row the SERVER calls stale
     (``watchdog_healthy=False``) must render Unhealthy even though its
-    ``last_seen_at`` is seconds old by this process's Python clock — which is
+    ``last_seen_at`` is seconds old by this process's Python clock - which is
     exactly what a clock ahead of the database's produces.  Recomputing
     locally would render Healthy and hide a dead leader."""
     now = datetime.now(UTC)
@@ -340,7 +340,7 @@ def test_leader_watchdog_badge_follows_an_unhealthy_verdict_on_a_fresh_looking_r
         hostname="leader-1",
         pid=9999,
         elected_at=now - timedelta(hours=1),
-        # Fresh by the local Python clock — the SQL verdict is what counts.
+        # Fresh by the local Python clock - the SQL verdict is what counts.
         last_seen_at=now,
         worker_last_seen=now,
         watchdog_healthy=False,
@@ -402,7 +402,7 @@ def _build_workers_app(pool: object, monkeypatch: pytest.MonkeyPatch) -> TestCli
 
 
 def _leader_row(watchdog_healthy: bool | None) -> StubRecord:
-    """Leader row as the SQL returns it — the freshness verdict
+    """Leader row as the SQL returns it - the freshness verdict
     (``watchdog_healthy``) is computed server-side, so the stub carries it
     instead of the route recomputing it from last_seen_at."""
     return StubRecord(

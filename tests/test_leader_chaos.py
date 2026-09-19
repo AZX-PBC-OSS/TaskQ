@@ -25,7 +25,7 @@ Uses shortened settings (heartbeat_interval=1s, leases=4s via
 shorten_chaos_settings) so the lease horizons the SLA names are exercised
 inside the test rather than at production timings.
 
-Private-attribute access policy: Option A — direct access with
+Private-attribute access policy: Option A - direct access with
 ``# pyright: ignore[reportPrivateUsage]`` and a ``Why:`` justification.
 The test tier already sets ``reportPrivateUsage = false`` in
 pyproject.toml; the ignores serve as documentation of the access site.
@@ -107,8 +107,8 @@ async def test_tc1_kill_leader_pod_mid_sweep(pg_dsn: str) -> None:
     leader_conn is terminated server-side (so the departing pod's resign
     cannot reach the database and its lease row is left behind), then its
     task is cancelled (the process is gone, so it never re-contends). The
-    survivor must take over within the bound the lease sets —
-    ``leader_lease + heartbeat_interval + one round trip`` — because the
+    survivor must take over within the bound the lease sets -
+    ``leader_lease + heartbeat_interval + one round trip`` - because the
     row the dead pod left is all that ever gates it, and the
     maintenance_leader row must come to name the survivor.
     """
@@ -172,7 +172,7 @@ async def test_tc1_kill_leader_pod_mid_sweep(pg_dsn: str) -> None:
                 # The process dies with its link already severed: no resign
                 # can land, so the lease row outlives it and lapses on the
                 # horizon the dead pod itself wrote. Cancelling the task (the
-                # process going away) also keeps it from re-contending — the
+                # process going away) also keeps it from re-contending - the
                 # takeover below is the survivor's alone.
                 winner_task.cancel()
                 with suppress(asyncio.CancelledError, ExceptionGroup):
@@ -190,12 +190,12 @@ async def test_tc1_kill_leader_pod_mid_sweep(pg_dsn: str) -> None:
                 assert loser_deps.is_leader.is_set(), (
                     f"the survivor did not take over within leader_lease + "
                     f"heartbeat_interval + margin ({failover_bound}s) of a "
-                    "leader's ungraceful death — the bound the lease sets"
+                    "leader's ungraceful death - the bound the lease sets"
                 )
 
                 async with loser_deps.dispatcher_pool.acquire() as conn:
                     row = await conn.fetchrow(
-                        f'SELECT worker_id FROM "{loser_deps.settings.schema_name}".maintenance_leader WHERE singleton = true'  # noqa: S608 # Why: schema_name is a trusted config value validated against IDENT_RE — safe from injection; asyncpg cannot bind identifiers.
+                        f'SELECT worker_id FROM "{loser_deps.settings.schema_name}".maintenance_leader WHERE singleton = true'  # noqa: S608 # Why: schema_name is a trusted config value validated against IDENT_RE - safe from injection; asyncpg cannot bind identifiers.
                     )
                 assert row is not None
                 assert UUID(str(row["worker_id"])) == loser_wid
@@ -219,10 +219,10 @@ async def test_tc2_partition_leader_via_monitor_conn(pg_dsn: str) -> None:
     backend PID via direct attribute access (Option A per the
     private-attribute policy) and terminates it from a separate
     connection. Within WATCHDOG_INTERVAL + heartbeat_interval + 5s
-    (default 20s), asserts the watchdog demoted — latched on the
+    (default 20s), asserts the watchdog demoted - latched on the
     leadership_lost event rather than sampled on is_leader, because the
     election loop can re-claim the released lock within one heartbeat
-    and close the is_leader=False window between samples — and that
+    and close the is_leader=False window between samples - and that
     leader_conn was replaced. Then waits for re-election within another
     heartbeat_interval + 5s.
 
@@ -294,7 +294,7 @@ async def test_tc2_partition_leader_via_monitor_conn(pg_dsn: str) -> None:
                 # loop can re-claim the just-released lock within one
                 # heartbeat, so the is_leader=False window can close between
                 # 0.05s samples under load (observed under -n 4). The log
-                # entry is the demotion's own record — it latches.
+                # entry is the demotion's own record - it latches.
                 leader_deposed = False
                 with structlog.testing.capture_logs() as captured:
                     while asyncio.get_running_loop().time() < deadline:
@@ -333,7 +333,7 @@ async def _off_loop_container(
 ) -> AsyncGenerator[PostgresContainer, None]:
     """Enter/exit a testcontainers container with the blocking calls off the event loop.
 
-    Why: docker-py is requests-based — container start (+ readiness wait) and
+    Why: docker-py is requests-based - container start (+ readiness wait) and
     stop are blocking HTTP round-trips that can run for seconds; executed on
     the loop they stall it for the whole round-trip, defeating every
     client-side timeout sharing that loop. Skips the test with a reason
@@ -395,7 +395,7 @@ async def test_tc3_pg_primary_failover() -> None:
             dbname="taskq",
         ).with_kwargs(labels=creator_labels())
     ) as own_container:
-        # Why: get_connection_url resolves the mapped port via docker HTTP — off-loop.
+        # Why: get_connection_url resolves the mapped port via docker HTTP - off-loop.
         own_dsn = (await asyncio.to_thread(own_container.get_connection_url)).replace(
             "postgresql+psycopg2://", "postgresql://"
         )
@@ -434,11 +434,11 @@ async def test_tc3_pg_primary_failover() -> None:
             _leader, shutdown, task = await _start_leader_and_wait_for_win(deps, backend, worker_id)
             try:
                 # Why: docker-py stop blocks the loop for the whole HTTP round-trip
-                # (measured 2.4-3.8s continuous loop stalls) — off-loop.
+                # (measured 2.4-3.8s continuous loop stalls) - off-loop.
                 await asyncio.to_thread(own_container.stop)
                 await asyncio.sleep(5)
 
-                # Cancel the leader DURING the downtime window — after
+                # Cancel the leader DURING the downtime window - after
                 # the container stop killed its connection (releasing
                 # the advisory lock) but before the restart, so the
                 # election loop cannot reconnect and re-acquire the
@@ -451,7 +451,7 @@ async def test_tc3_pg_primary_failover() -> None:
 
                 for _attempt in range(3):
                     try:
-                        # Why: docker-py start (+ readiness wait) blocks the loop — off-loop.
+                        # Why: docker-py start (+ readiness wait) blocks the loop - off-loop.
                         await asyncio.to_thread(own_container.start)
                         break
                     except Exception:
@@ -460,7 +460,7 @@ async def test_tc3_pg_primary_failover() -> None:
                         await asyncio.sleep(2)
 
                 # Container restart may remap the port; recapture the DSN.
-                # Why: get_connection_url resolves the mapped port via docker HTTP — off-loop.
+                # Why: get_connection_url resolves the mapped port via docker HTTP - off-loop.
                 new_own_dsn = (await asyncio.to_thread(own_container.get_connection_url)).replace(
                     "postgresql+psycopg2://", "postgresql://"
                 )
@@ -547,7 +547,7 @@ async def test_tc4_advisory_lock_release_on_graceful_shutdown(
     to acquire from a separate connection (must fail). Calls
     shutdown.set() and awaits leader.run task completion. Closes
     deps.leader_conn directly. From a fresh connection, asserts
-    pg_try_advisory_lock returns True — proving the lock released on
+    pg_try_advisory_lock returns True - proving the lock released on
     connection close, not inside run().
 
     Source:.
@@ -618,11 +618,11 @@ async def test_tc4_advisory_lock_release_on_graceful_shutdown(
 @pytest.mark.asyncio
 @pytest.mark.xdist_group(name="chaos")
 async def test_tc5_lock_name_collision_never_blocks_election(pg_dsn: str) -> None:
-    """Lock-name collision — an external holder never blocks election.
+    """Lock-name collision - an external holder never blocks election.
 
     The lease row is the authority, so a session holding the schema's
-    courtesy advisory lock — a stranger on the same name, or a dead peer's
-    lingering session — must not stop a pod electing: acquires
+    courtesy advisory lock - a stranger on the same name, or a dead peer's
+    lingering session - must not stop a pod electing: acquires
     pg_try_advisory_lock on a raw connection BEFORE starting the leader,
     starts MaintenanceLeader.run, and the pod must still win within a
     heartbeat-scale window, with the courtesy miss logged rather than
@@ -652,14 +652,14 @@ async def test_tc5_lock_name_collision_never_blocks_election(pg_dsn: str) -> Non
                             timeout=deps.settings.heartbeat_interval + 2,
                         )
                         assert deps.is_leader.is_set(), (
-                            "the courtesy lock must never gate the election — "
+                            "the courtesy lock must never gate the election - "
                             "the lease row is the authority"
                         )
                         assert not task.done(), "Leader task exited unexpectedly"
 
                         async with deps.dispatcher_pool.acquire() as conn:
                             row = await conn.fetchrow(
-                                f'SELECT worker_id FROM "{schema}".maintenance_leader WHERE singleton = true'  # noqa: S608 # Why: schema_name is a trusted config value validated against IDENT_RE — safe from injection; asyncpg cannot bind identifiers.
+                                f'SELECT worker_id FROM "{schema}".maintenance_leader WHERE singleton = true'  # noqa: S608 # Why: schema_name is a trusted config value validated against IDENT_RE - safe from injection; asyncpg cannot bind identifiers.
                             )
                         assert row is not None and UUID(str(row["worker_id"])) == worker_id
                     finally:
@@ -671,7 +671,7 @@ async def test_tc5_lock_name_collision_never_blocks_election(pg_dsn: str) -> Non
                 assert any(
                     e.get("event") == "leader-advisory-lock-unavailable" for e in captured
                 ), (
-                    "the courtesy miss must be logged — an operator watching a roll "
+                    "the courtesy miss must be logged - an operator watching a roll "
                     "needs to see the lock could not be taken, even though it never "
                     "gates the role"
                 )

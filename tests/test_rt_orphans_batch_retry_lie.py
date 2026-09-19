@@ -3,15 +3,15 @@
 
 ``retry_job`` accepts any failed/crashed/cancelled member and resets it to
 pending with NO batch awareness (src/taskq/backend/_sql_templates.py:1178-1193).
-Every batch-status writer guards on ``b.status = 'active'`` —
+Every batch-status writer guards on ``b.status = 'active'`` -
 ``complete_batch`` / ``abort_batch`` (src/taskq/backend/_batch_sql.py:126-147)
 and the leader's ``complete_stale_batches``
-(src/taskq/worker/_leader_shared.py:674) — so after a batch is driven to
+(src/taskq/worker/_leader_shared.py:674) - so after a batch is driven to
 ``complete``, a retried member re-enters non-terminal membership under a row
 that still claims completion, and no writer reconciles it:
 ``wait_for_batch`` snoozes forever on the batch (src/taskq/batch.py:571-572).
 
-The contract: a batch's status must not lie about its membership — reconcile
+The contract: a batch's status must not lie about its membership - reconcile
 on retry, or refuse retry_job for completed-batch members.
 """
 
@@ -129,7 +129,7 @@ async def _member_status(conn: asyncpg.Connection, schema: str, jid: UUID) -> st
 async def test_retry_job_on_completed_batch_member_leaves_status_lying(pg_dsn: str) -> None:
     """After retry_job re-pends a failed member of a COMPLETED batch, every
     batch writer must reconcile the row (or retry_job must have refused).
-    Today the row still says 'complete' while the member is pending again —
+    Today the row still says 'complete' while the member is pending again -
     and wait_for_batch snoozes forever on it."""
     schema = f"torp_{new_base62()}".lower()
     conn = await asyncpg.connect(pg_dsn)
@@ -167,14 +167,14 @@ async def test_retry_job_on_completed_batch_member_leaves_status_lying(pg_dsn: s
         member_final = await _member_status(conn, schema, failed_id)
         assert row_final is not None
         assert not (row_final.status == "complete" and member_final == "pending"), (
-            "Contract: a batch's status must not lie about its membership — reconcile on "
+            "Contract: a batch's status must not lie about its membership - reconcile on "
             "retry, or refuse retry_job for completed-batch members. Current behavior "
             f"violates it: retry_job returned {retried} and reset the failed member to "
             f"'{member_after_retry}' while the batch row still said "
             f"{batch_after_retry!r}; after every batch "
             f"writer ran (complete_batch: no-op, its 'active' guard; complete_stale_batches: "
             f"{stale} rows, its 'active' guard at src/taskq/worker/_leader_shared.py:674) "
-            f"the row still says {row_final.status!r} with the member {member_final!r} — and "
+            f"the row still says {row_final.status!r} with the member {member_final!r} - and "
             f"wait_for_batch snoozed forever on it (snoozed={snoozed}, "
             "src/taskq/batch.py:571-572)."
         )
@@ -190,7 +190,7 @@ async def test_abort_batch_on_the_lying_row_cancels_member_but_row_still_claims_
 ) -> None:
     """Even the operator's abort cannot repair the lie: abort_batch's jobs
     arm cancels the re-pended member (no batch-status guard) but the row
-    update guards on ``status = 'active'`` — so a batch that was aborted in
+    update guards on ``status = 'active'`` - so a batch that was aborted in
     substance still claims 'complete'."""
     schema = f"torp_{new_base62()}".lower()
     conn = await asyncpg.connect(pg_dsn)
@@ -210,10 +210,10 @@ async def test_abort_batch_on_the_lying_row_cancels_member_but_row_still_claims_
         member = await _member_status(conn, schema, failed_id)
         assert row is not None
         assert row.status == "aborted", (
-            "Contract: a batch whose members were just aborted must be recorded as aborted — "
+            "Contract: a batch whose members were just aborted must be recorded as aborted - "
             "the row must not claim an outcome it did not have. Current behavior violates "
             f"it: abort_batch cancelled {cancelled} member(s) (member now {member!r}) but the "
-            f"batches row still says {row.status!r} — `_ABORT_BATCH_ROW_SQL` guards on "
+            f"batches row still says {row.status!r} - `_ABORT_BATCH_ROW_SQL` guards on "
             "status = 'active' (src/taskq/backend/_batch_sql.py:129), so the abort that "
             "actually happened is unrecorded forever."
         )

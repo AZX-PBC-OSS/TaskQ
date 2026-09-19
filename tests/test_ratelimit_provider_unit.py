@@ -104,7 +104,7 @@ class _HungRedis:
 
     def __init__(self) -> None:
         self.aclose_calls = 0
-        self.aclose_wait = asyncio.Event()  # never set — aclose() hangs forever
+        self.aclose_wait = asyncio.Event()  # never set - aclose() hangs forever
 
     async def aclose(self) -> None:
         self.aclose_calls += 1

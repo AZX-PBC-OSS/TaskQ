@@ -8,9 +8,9 @@ row per claim is exactly the unbounded-growth vector the aggregated denial
 counters on the job row (``rate_limit_blocked_count`` / ``snooze_count``)
 replaced.
 
-These tests pin the contract at the real dispatch seam — a batch of claims
+These tests pin the contract at the real dispatch seam - a batch of claims
 lands the rows ``running`` with the attempt increment and writes ZERO
-``job_events`` rows — and pin the other half of the diet with them: the
+``job_events`` rows - and pin the other half of the diet with them: the
 transitions of record survive, so the execution that follows a claim still
 leaves exactly its terminal state_change. (Rewritten from the superseded
 claim-event pins: those pinned one event row per claim, the shape the
@@ -39,7 +39,7 @@ def test_schema_is_still_validated_by_render() -> None:
 async def test_dispatch_writes_no_event_rows(clean_jobs_app: JobsApp) -> None:
     """A claim must net zero durable rows: every job dispatches to
     ``running`` with its attempt incremented, and ``job_events`` stays
-    empty — any per-claim insert, in any shape, fails here."""
+    empty - any per-claim insert, in any shape, fails here."""
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
     schema = deps.settings.schema_name
@@ -70,7 +70,7 @@ async def test_dispatch_writes_no_event_rows(clean_jobs_app: JobsApp) -> None:
             f'SELECT count(*) FROM "{schema}".job_events'  # noqa: S608  # Why: schema is a test-fixture identifier.
         )
     assert written == 0, (
-        f"a claim wrote {written} job_events rows for {len(job_ids)} dispatches — "
+        f"a claim wrote {written} job_events rows for {len(job_ids)} dispatches - "
         "a row per claim is the unbounded-growth vector under sustained "
         "admission denial; contention belongs on the row's aggregated "
         "denial counters, not in the event log"
@@ -112,7 +112,7 @@ async def test_executed_job_leaves_exactly_its_terminal_event(
             job_id,
         )
     assert len(events) == 1, (
-        "an executed job's whole event record is its terminal transition — "
+        "an executed job's whole event record is its terminal transition - "
         "no claim bookkeeping row, and the terminal row must not be lost"
     )
     assert events[0]["kind"] == "state_change"

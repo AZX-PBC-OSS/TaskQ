@@ -12,9 +12,9 @@ Postgres must detect the cycle and abort exactly one side with 40P01
 Pinned dispositions per path:
 
 * client (``_enqueue_on_conn`` used directly on a caller-owned open
-  transaction): surfaces the RAW driver error — not swallowed, not
-  converted to a TaskQ error — so the caller owns its retry policy;
-* cron / bulk-cancel: classify 40P01 as transient and retry — pinned by
+  transaction): surfaces the RAW driver error - not swallowed, not
+  converted to a TaskQ error - so the caller owns its retry policy;
+* cron / bulk-cancel: classify 40P01 as transient and retry - pinned by
   membership in ``worker/_transient.py``'s TRANSIENT_PG_ERRORS (the cron
   loops' retry classifier) and by the existing retry-loop pins
   tests/test_rt_cancel_deadlock.py and tests/test_cancel_where_pg.py
@@ -41,7 +41,7 @@ pytestmark = pytest.mark.integration
 
 
 async def test_insert_insert_abba_deadlock_resolves_exactly_one_side_40p01(pg_dsn: str) -> None:
-    """GREEN PIN: the ABBA cycle resolves — exactly one side raises the raw
+    """GREEN PIN: the ABBA cycle resolves - exactly one side raises the raw
     asyncpg.DeadlockDetectedError out of the enqueue path, its transaction
     rolls back, and the winner's transaction commits both keys.
 
@@ -95,7 +95,7 @@ async def test_insert_insert_abba_deadlock_resolves_exactly_one_side_40p01(pg_ds
             )
             assert done, (
                 "Contract: the ABBA cycle must produce a 40P01 victim within the "
-                "bounded wait — neither contested insert resolved, so deadlock "
+                "bounded wait - neither contested insert resolved, so deadlock "
                 "detection never fired"
             )
             first = next(iter(done))
@@ -121,7 +121,7 @@ async def test_insert_insert_abba_deadlock_resolves_exactly_one_side_40p01(pg_ds
                     victim_exc = exc
             assert isinstance(victim_exc, asyncpg.DeadlockDetectedError), (
                 "Contract: exactly one side must raise the RAW asyncpg."
-                "DeadlockDetectedError out of _enqueue_on_conn — the client "
+                "DeadlockDetectedError out of _enqueue_on_conn - the client "
                 "disposition surfaces the driver error unconverted so the caller "
                 f"owns its retry; got {victim_exc!r}"
             )
@@ -167,7 +167,7 @@ async def test_insert_insert_abba_deadlock_resolves_exactly_one_side_40p01(pg_ds
                 with contextlib.suppress(Exception):
                     await tx_of[victim_task].__aexit__(type(victim_exc), victim_exc, None)
         assert asyncpg.DeadlockDetectedError in TRANSIENT_PG_ERRORS, (
-            "Contract: 40P01 must stay classified transient — the cron loops retry on "
+            "Contract: 40P01 must stay classified transient - the cron loops retry on "
             "TRANSIENT_PG_ERRORS and bulk-cancel's batch retry (pinned by "
             "tests/test_rt_cancel_deadlock.py and tests/test_cancel_where_pg.py) "
             "depends on the same family"

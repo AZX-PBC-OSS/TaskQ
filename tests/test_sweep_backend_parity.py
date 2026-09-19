@@ -4,8 +4,8 @@
 LIMITed snapshot CTE: one call transitions at most ``batch_size`` rows in
 one short transaction) and the in-memory twin gains the same keyword so the
 two backends keep processing the same amount of work per call.  The Backend
-protocol signature stays unchanged — an extra defaulted keyword-only
-parameter is structurally compatible — but parity is a behaviour, not a
+protocol signature stays unchanged - an extra defaulted keyword-only
+parameter is structurally compatible - but parity is a behaviour, not a
 signature: a backend that accepts the keyword and ignores it (or clamps it
 differently) silently diverges, and every cross-backend assertion built on
 the cap then passes on one backend while meaning nothing on the other.
@@ -15,7 +15,7 @@ same cap, asserting the two properties the cap exists for:
 
 * one call promotes exactly ``batch_size`` eligible rows and leaves the
   remainder eligible (bounded per call);
-* repeated calls drain to completion — every row lands ``pending`` on both
+* repeated calls drain to completion - every row lands ``pending`` on both
   backends, and neither writes any ``job_events`` rows: promotion is
   scheduler bookkeeping, and a row per promotion is the unbounded-growth
   vector under a sustained admission-denial loop (a cap that loses work is
@@ -24,7 +24,7 @@ same cap, asserting the two properties the cap exists for:
 PG is seeded via one ``INSERT ... SELECT FROM unnest`` round trip (never
 row-by-row: a row-by-row seed would itself be the defect under test); the
 in-memory backend is seeded through its own ``enqueue`` with a future
-``scheduled_at`` and the clock advanced past it — the established pattern
+``scheduled_at`` and the clock advanced past it - the established pattern
 of the in-memory sweep tests.
 
 The file also unit-pins ``SweepBatchSizer``, the state machine that picks
@@ -149,11 +149,11 @@ async def test_both_backends_promote_at_most_batch_size_per_call(
 
     assert pg_count == _CAP, (
         f"one Postgres sweep call promoted {pg_count} of {_ELIGIBLE} eligible rows "
-        f"with a cap of {_CAP} — the batch bound is not honoured"
+        f"with a cap of {_CAP} - the batch bound is not honoured"
     )
     assert mem_count == _CAP, (
         f"one in-memory sweep call promoted {mem_count} of {_ELIGIBLE} eligible rows "
-        f"with a cap of {_CAP} — the twin does not honour the same bound the "
+        f"with a cap of {_CAP} - the twin does not honour the same bound the "
         "Postgres sweep honours, so the backends have diverged"
     )
 
@@ -230,7 +230,7 @@ async def test_capped_calls_drain_completely_without_writing_events(
         "WHERE kind = 'state_change' GROUP BY job_id",
     )
     assert pg_events == [], (
-        f"a capped promotion drain wrote {len(pg_events)} Postgres event rows — "
+        f"a capped promotion drain wrote {len(pg_events)} Postgres event rows - "
         "promotion must stay bookkeeping-only"
     )
 
@@ -239,7 +239,7 @@ async def test_capped_calls_drain_completely_without_writing_events(
         state_changes = [e for e in events if e.kind == "state_change"]
         assert len(state_changes) == 0, (
             f"job {job_id} carries {len(state_changes)} state_change events in "
-            "memory — zero per promoted row is the parity contract"
+            "memory - zero per promoted row is the parity contract"
         )
 
 
@@ -289,7 +289,7 @@ class TestSweepBatchSizer:
         sizer.on_timeout()
         sizer.on_timeout()
         assert sizer.effective_size() == 100, (
-            "a success between failures resets the consecutive count — only "
+            "a success between failures resets the consecutive count - only "
             "failures since the last success count toward the threshold"
         )
 
@@ -312,7 +312,7 @@ class TestSweepBatchSizer:
         assert sizer.effective_size() == 25
         sizer.on_success()
         assert sizer.effective_size() == 25, (
-            "on_success resets the consecutive count but must never unlatch — "
+            "on_success resets the consecutive count but must never unlatch - "
             "a database that needed smaller bites once will need them again"
         )
         for _ in range(3):

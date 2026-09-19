@@ -1,22 +1,22 @@
-"""Graceful shutdown drain e2e — SIGTERM with in-flight jobs, no lost tasks.
+"""Graceful shutdown drain e2e - SIGTERM with in-flight jobs, no lost tasks.
 
 Scenario:
 SIGTERM a worker with a running job; verify the job is interrupted
 (released back to the fleet, the spent attempt standing) and no tasks
 are lost.
 
-The ``slow_deliver_webhook`` actor (actors.py) sleeps 3 s — longer than
+The ``slow_deliver_webhook`` actor (actors.py) sleeps 3 s - longer than
 the e2e shutdown drain window (``cancellation_grace=1.0`` +
 ``cleanup_grace=1.0`` = 2.0 s).  On SIGTERM the worker's four-phase
 shutdown orchestration (DRAINING → CANCELLING → FORCING → RELEASING)
 cancels the in-flight task: the ``asyncio.sleep`` is interrupted by
 ``task.cancel()`` in the FORCING phase, so the actor never records its
 ``finished`` effect and the job is RELEASED (``pending``, the claim's
-attempt increment standing) — a deploy is an infrastructure event,
+attempt increment standing) - a deploy is an infrastructure event,
 never a verdict on the job.
 
 After the SIGTERM a replacement worker is started: it claims the released
-job and runs it to completion — the deploy cost the work nothing but
+job and runs it to completion - the deploy cost the work nothing but
 time.
 
 The autouse ``clean_e2e_state`` fixture is overridden for this module
@@ -168,7 +168,7 @@ async def test_sigterm_drains_inflight_job(
     grace window; the interrupted claim is released back to the fleet
     (``pending``, ``interrupt_count`` bumped, the attempt increment
     standing: the attempt started executing, and refunding it would
-    re-create the epoch the interrupted handler still holds) — never
+    re-create the epoch the interrupted handler still holds) - never
     terminalised by an infrastructure event.
 
     (b) A replacement worker container is started on the same schema/queue.
@@ -183,7 +183,7 @@ async def test_sigterm_drains_inflight_job(
         SlowDeliverPayload(run_id=run_id, endpoint_id="ep-drain"),
     )
 
-    # Wait until the actor has recorded "started" — the job is now in the
+    # Wait until the actor has recorded "started" - the job is now in the
     # 3 s sleep and will not finish before the SIGTERM grace window expires.
     await wait_for_effects(
         e2e_pg_pool,
@@ -195,7 +195,7 @@ async def test_sigterm_drains_inflight_job(
     )
 
     # Send SIGTERM via the Docker API (``container.kill``) rather than
-    # ``exec_run(["kill", "-TERM", "1"])`` — the Docker daemon delivers
+    # ``exec_run(["kill", "-TERM", "1"])`` - the Docker daemon delivers
     # the signal directly to PID 1, which is more reliable than spawning
     # a new process inside the container.
     wrapped = e2e_worker.container.get_wrapped_container()
@@ -203,7 +203,7 @@ async def test_sigterm_drains_inflight_job(
 
     # ── Phase 1 assertions: drain orchestration released the job ────────
     # Poll to the released state (pending/scheduled with the interruption
-    # counted and the attempt increment standing) — the test's docstring
+    # counted and the attempt increment standing) - the test's docstring
     # contract, matching mark_interrupted's merged semantics.
     # A worker with NO drain orchestration at all (hard SIGTERM death, row
     # stuck 'running') cannot satisfy it: the row would sit running until
@@ -229,7 +229,7 @@ async def test_sigterm_drains_inflight_job(
 
     finished = await fetch_effects(e2e_pg_pool, e2e_schema.schema_name, run_id, kind="finished")
     assert finished == [], (
-        "job should not have a 'finished' effect — the actor was "
+        "job should not have a 'finished' effect - the actor was "
         "interrupted mid-sleep by the SIGTERM shutdown orchestration"
     )
 
@@ -277,7 +277,7 @@ async def test_sigterm_drains_inflight_job(
         )
 
         # The interrupted job: the replacement claims the released row and
-        # runs it to completion — the deploy re-ran the work exactly once,
+        # runs it to completion - the deploy re-ran the work exactly once,
         # on its original attempt budget.
         await wait_for_effects(
             e2e_pg_pool,
@@ -367,7 +367,7 @@ async def test_second_sigterm_escalates(
     to FORCING, cancelling the in-flight job faster than the full grace
     window.
 
-    The ``slow_deliver_webhook`` actor sleeps 3.0 s — longer than the
+    The ``slow_deliver_webhook`` actor sleeps 3.0 s - longer than the
     cancellation grace (1.0 s). The first SIGTERM starts the
     orchestration (DRAINING → CANCELLING). During CANCELLING, the
     orchestration polls for job completion with a 1.0 s deadline. A
@@ -426,7 +426,7 @@ async def test_second_sigterm_escalates(
 
     finished = await fetch_effects(e2e_pg_pool, e2e_schema.schema_name, run_id, kind="finished")
     assert finished == [], (
-        "job should not have a 'finished' effect — the actor was "
+        "job should not have a 'finished' effect - the actor was "
         "cancelled mid-sleep by the escalated SIGTERM"
     )
 
@@ -435,6 +435,6 @@ async def test_second_sigterm_escalates(
     # (1.0 s) = 2.0 s minimum. Escalation should land faster; allow
     # generous slack for Docker signal delivery latency.
     assert elapsed < 5.0, (
-        f"escalated shutdown took {elapsed:.2f}s — expected faster than "
+        f"escalated shutdown took {elapsed:.2f}s - expected faster than "
         f"the full 2.0s grace window (escalation may not have fired)"
     )

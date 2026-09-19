@@ -135,7 +135,7 @@ def test_heartbeat_consecutive_failures_gauge_has_one_series_per_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The observable gauge kept a per-``worker_id`` cache and yielded one
-    Observation per key — the same explosion, one scrape at a time."""
+    Observation per key - the same explosion, one scrape at a time."""
     monkeypatch.setattr(otel_mod, "_otel_enabled", True)
     identities = [str(new_uuid()) for _ in range(3)]
     for identity in identities:

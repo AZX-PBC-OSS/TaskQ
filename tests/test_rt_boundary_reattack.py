@@ -1,34 +1,34 @@
 """Fresh red-team eyes on the boundaries of the five deployment-wave fixes.
 
 The fixing pass verified each fix's headline contract; this file re-attacks
-the shapes at the EDGE of those pins — the reverse directions, the
+the shapes at the EDGE of those pins - the reverse directions, the
 combinatorics, the orderings, and the seam-scoping the fixing pass may have
 left unpinned.  A green boundary here is release confidence; a red one is a
 defect with evidence attached.  Per fix:
 
-1. **The denial-reason boundary** — every ``mark_snoozed`` caller is
+1. **The denial-reason boundary** - every ``mark_snoozed`` caller is
    enumerated and driven: a REAL saturation (acquire- or actor-raised)
    carries ``'capacity'`` and only the store-failure synthesis carries
    ``'unavailable'``, so the two causes stay distinguishable on the row.
    Both reasons take the identical non-consuming 429 path: no reason may
-   suppress the deadline arm, and no denial — at any attempt number — may
-   invent a terminal exit — on PG and on the in-memory twin.
-2. **The depth-bounded dispatch SQL** — the combinatorics the one-actor
+   suppress the deadline arm, and no denial - at any attempt number - may
+   invent a terminal exit - on PG and on the in-memory twin.
+2. **The depth-bounded dispatch SQL** - the combinatorics the one-actor
    oracle never touched: hundreds of actors behind one queue (the
    ``per_actor_capacity`` lateral fan-out), dozens of fairness cohorts at
    depth (the ``rr_keys`` global enumeration and the per-cohort probes),
    mixed-mode queue lists in one call, identity dedup under the new lateral
    shapes, a residual-0 actor beside a NULL-cap actor, and the empty
    queue-list contract.
-3. **The mirror's batch atomicity pre-validation** — the two mixed-defect
+3. **The mirror's batch atomicity pre-validation** - the two mixed-defect
    orderings (poison id in a capped-REFUSED group vs an admitted group),
-   the three-way collision, and the fast tier's inheritance — each driven
+   the three-way collision, and the fast tier's inheritance - each driven
    on BOTH backends and diffed.
-4. **The lock-budget settings plumbing** — the edge values (0 / negative /
+4. **The lock-budget settings plumbing** - the edge values (0 / negative /
    huge) at the settings boundary and at the advisory-lock seam, and the
    honest scoping fact: the budgets bind the single-enqueue path only; the
    bulk tiers take no per-actor advisory lock at all.
-5. **The cron stored-cap resolution** — NULL-stored revert, the LOOSEN
+5. **The cron stored-cap resolution** - NULL-stored revert, the LOOSEN
    direction, the singleton flag's registry-only independence, and a stored
    cap on an actor absent from the policy map entirely.
 """
@@ -122,14 +122,14 @@ async def attack_pool(pg_dsn: str) -> AsyncIterator[asyncpg.Pool]:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Fix 1 — the denial-reason carve-out
+# Fix 1 - the denial-reason carve-out
 # ══════════════════════════════════════════════════════════════════════
 
 
 class TestDenialReasonCarveOutBoundaries:
     """The ``'unavailable'`` reason must be reachable ONLY by the
-    store-failure synthesis, and no denial — of either reason, at any
-    attempt number — may terminalise the job outside its own deadline
+    store-failure synthesis, and no denial - of either reason, at any
+    attempt number - may terminalise the job outside its own deadline
     arm."""
 
     # ── PG arms ──────────────────────────────────────────────────────
@@ -142,8 +142,8 @@ class TestDenialReasonCarveOutBoundaries:
     ) -> None:
         """The non-consuming arm must not swallow the deadline exit: an
         ``'unavailable'`` denial on a job whose reschedule point is already
-        past ``schedule_to_close`` lands the deadline arm — DeadlineExceeded,
-        terminal — not an eternally-rescheduled row whose deadline silently
+        past ``schedule_to_close`` lands the deadline arm - DeadlineExceeded,
+        terminal - not an eternally-rescheduled row whose deadline silently
         stopped meaning anything."""
         schema = module_pg_schema.schema_name
         async with clean_jobs_app.deps.worker_pool.acquire() as conn:
@@ -170,7 +170,7 @@ class TestDenialReasonCarveOutBoundaries:
 
         assert outcome == "failed", (
             "an 'unavailable' denial past its schedule_to_close deadline must "
-            f"terminalise via the deadline arm; got {outcome!r} — the "
+            f"terminalise via the deadline arm; got {outcome!r} - the "
             "non-consuming arm's retry-budget protection is about BUDGET, not "
             "about suppressing the job's own deadline exit"
         )
@@ -182,7 +182,7 @@ class TestDenialReasonCarveOutBoundaries:
         assert row.rate_limit_blocked_count == 1, (
             "the denial that ran the job out of road still happened to it, "
             "and with no per-occurrence rows the aggregate is its only record "
-            "— the terminal row must show the deadline was reached WHILE the "
+            "- the terminal row must show the deadline was reached WHILE the "
             "job was starving for admission, not make that last denial vanish"
         )
         attempts = await clean_jobs_app.backend.get_attempts(job)
@@ -196,7 +196,7 @@ class TestDenialReasonCarveOutBoundaries:
         module_pg_schema: ModulePgSchema,
     ) -> None:
         """``attempt == max_attempts`` exactly, ``'unavailable'`` reason: the
-        job stays scheduled with its claim increment refunded — the
+        job stays scheduled with its claim increment refunded - the
         max_attempts arm is unreachable for an infra denial, so a sustained
         outage keeps the job retryable with its original budget intact."""
         schema = module_pg_schema.schema_name
@@ -223,7 +223,7 @@ class TestDenialReasonCarveOutBoundaries:
 
         assert outcome == "scheduled", (
             "an 'unavailable' denial at attempt == max_attempts must stay in "
-            f"the non-consuming snooze arm; got {outcome!r} — MaxAttemptsExceeded "
+            f"the non-consuming snooze arm; got {outcome!r} - MaxAttemptsExceeded "
             "asserts the actor ran and failed max_attempts times, which a "
             "store outage can never claim"
         )
@@ -245,12 +245,12 @@ class TestDenialReasonCarveOutBoundaries:
         clean_jobs_app: JobsApp,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """A saturation denial at ``attempt == max_attempts`` reschedules —
+        """A saturation denial at ``attempt == max_attempts`` reschedules -
         the SAME non-consuming path an ``'unavailable'`` denial takes.
 
         Pinned to the 429 contract: a denial reports that the fleet had no
         slot, which says nothing about the work, so it can neither spend
-        the retry budget nor decide the outcome — whatever the reason. The
+        the retry budget nor decide the outcome - whatever the reason. The
         attempt ceiling is a bound on EXECUTIONS, and nothing executed.
         """
         schema = module_pg_schema.schema_name
@@ -277,7 +277,7 @@ class TestDenialReasonCarveOutBoundaries:
 
         assert outcome == "scheduled", (
             "a 'capacity' (saturation) denial at attempt == max_attempts must "
-            f"stay in the non-consuming snooze arm; got {outcome!r} — "
+            f"stay in the non-consuming snooze arm; got {outcome!r} - "
             "MaxAttemptsExceeded asserts the actor ran and failed "
             "max_attempts times, which a full bucket can never claim"
         )
@@ -300,7 +300,7 @@ class TestDenialReasonCarveOutBoundaries:
     async def test_mirror_matches_the_three_unavailable_boundaries(self) -> None:
         """All three arms on the in-memory twin: past-deadline terminalises,
         and exact-max stays scheduled with the refund for BOTH denial
-        reasons — observably identical to the PG arms above."""
+        reasons - observably identical to the PG arms above."""
         backend = InMemoryBackend(clock=FakeClock(_NOW))
         backend.register_actor_config(actor="mirror_actor")
 
@@ -334,14 +334,14 @@ class TestDenialReasonCarveOutBoundaries:
             denial_reason="unavailable",
         )
         assert outcome == "failed", (
-            f"mirror deadline arm: got {outcome!r} — the twin must terminalise "
+            f"mirror deadline arm: got {outcome!r} - the twin must terminalise "
             "an 'unavailable' denial past its deadline, never reschedule it"
         )
         row = await backend.get(job_id)
         assert row is not None
         assert row.status == "failed"
         assert row.error_class == "DeadlineExceeded"
-        # The deadline arm counts the denial that ran the job out of road —
+        # The deadline arm counts the denial that ran the job out of road -
         # the terminal row must show it was starving when its deadline hit.
         assert row.rate_limit_blocked_count == 1
 
@@ -372,7 +372,7 @@ class TestDenialReasonCarveOutBoundaries:
             denial_reason="unavailable",
         )
         assert outcome == "scheduled", (
-            f"mirror exact-max arm: got {outcome!r} — the twin must never "
+            f"mirror exact-max arm: got {outcome!r} - the twin must never "
             "terminalise an 'unavailable' denial at the budget bound"
         )
         row = await backend.get(cap_job)
@@ -382,7 +382,7 @@ class TestDenialReasonCarveOutBoundaries:
         assert row.rate_limit_blocked_count == 1
         assert await backend.get_attempts(cap_job) == []
 
-        # Same shape, 'capacity': the identical non-consuming path — a
+        # Same shape, 'capacity': the identical non-consuming path - a
         # saturation denial is a 429 exactly like a store outage.
         sat_job = new_uuid()
         await backend.enqueue(
@@ -409,7 +409,7 @@ class TestDenialReasonCarveOutBoundaries:
             denial_reason="capacity",
         )
         assert outcome == "scheduled", (
-            f"mirror capacity arm at the budget bound: got {outcome!r} — the "
+            f"mirror capacity arm at the budget bound: got {outcome!r} - the "
             "twin must never terminalise a denial at the budget bound either; "
             "the attempt ceiling bounds executions and nothing executed"
         )
@@ -429,11 +429,11 @@ class TestDenialReasonCarveOutBoundaries:
         its provenance demands: a REAL saturation (the limiter answered
         'full', or the actor raised the denial itself) rides ``'capacity'``
         while only the store-failure synthesis rides ``'unavailable'``.
-        Both take the identical non-consuming 429 path — the label's job is
+        Both take the identical non-consuming 429 path - the label's job is
         keeping an outage distinguishable from saturation, so an operator
         never answers a dead store with more capacity."""
         # Acquire-path saturation: a one-slot reservation whose slot is
-        # already held — the limiter's own 'full' answer.
+        # already held - the limiter's own 'full' answer.
         saturation = ConcurrencyReservation(
             name="sat_slots",
             slots=1,
@@ -489,7 +489,7 @@ def _assert_single_snooze(
 ) -> None:
     assert fake_backend.mark_failed_or_retry_calls == [], (
         "a denial-class outcome must reach mark_snoozed, never the failure "
-        "accounting of mark_failed_or_retry — that burns an attempt and "
+        "accounting of mark_failed_or_retry - that burns an attempt and "
         "persists the denial as the job's own error_class"
     )
     snoozes = fake_backend.mark_snoozed_calls
@@ -498,7 +498,7 @@ def _assert_single_snooze(
         assert snoozes[0]["outcome"] == outcome
     assert snoozes[0]["denial_reason"] == reason, (
         f"the denial's provenance rides denial_reason: got "
-        f"{snoozes[0]['denial_reason']!r}, expected {reason!r} — both reasons "
+        f"{snoozes[0]['denial_reason']!r}, expected {reason!r} - both reasons "
         "are non-consuming, so the label is how a store outage stays "
         "distinguishable from real saturation on the row; a saturation "
         "mislabelled 'unavailable' sends the operator hunting an outage "
@@ -651,7 +651,7 @@ async def _dispatch_with(
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Fix 2 — the depth-bounded dispatch SQL's combinatorics
+# Fix 2 - the depth-bounded dispatch SQL's combinatorics
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -751,7 +751,7 @@ class TestDispatchCombinatorics:
         """150 carrying actors plus 300 registered-but-idle actors behind one
         queue: the ``per_actor_capacity`` lateral fan-out probes every
         carrying actor, skips every idle one, and the round claims exactly
-        ``limit_n`` rows — the highest-priority one-per-actor set, nothing
+        ``limit_n`` rows - the highest-priority one-per-actor set, nothing
         more, nothing from an idle actor."""
         schema = module_pg_schema.schema_name
         expected: dict[int, UUID] = {}
@@ -774,7 +774,7 @@ class TestDispatchCombinatorics:
         expected_ids = {expected[p] for p in range(150, 113, -1)}
         assert claimed == expected_ids, (
             "the round must claim exactly the 37 highest-priority one-per-actor "
-            "rows under the lateral fan-out — a lost actor (probe skipped) or "
+            "rows under the lateral fan-out - a lost actor (probe skipped) or "
             "an idle actor's phantom row (probe not skipping) both break this set"
         )
         for row in rows:
@@ -785,7 +785,7 @@ class TestDispatchCombinatorics:
         self, clean_pg_conn: asyncpg.Connection, module_pg_schema: ModulePgSchema
     ) -> None:
         """``rr_keys`` enumerates cohorts GLOBALLY (the recursive term cannot
-        be correlated), and the pair filter narrows them in memory — so a
+        be correlated), and the pair filter narrows them in memory - so a
         round scoped to one queue must claim nothing from an actor's rows on
         another queue, and the same actor must be fully claimable when the
         round subscribes to both."""
@@ -827,7 +827,7 @@ class TestDispatchCombinatorics:
 
         rows = await _claim(clean_pg_conn, DISPATCH_ROUND_ROBIN_SQL, schema, ["in_round"], 10)
         assert {row["id"] for row in rows} == set(in_round_ids), (
-            "a round scoped to 'in_round' must claim only that queue's rows — "
+            "a round scoped to 'in_round' must claim only that queue's rows - "
             "a cohort from the global enumeration leaking through the pair "
             "filter claims rows a worker never subscribed to"
         )
@@ -841,7 +841,7 @@ class TestDispatchCombinatorics:
         )
         assert {row["id"] for row in rows} == set(other_ids) | set(bystander_ids), (
             "subscribing to both queues must claim every remaining pending row "
-            "of BOTH actors on those queues — the in_round rows are already "
+            "of BOTH actors on those queues - the in_round rows are already "
             "running from the round above, so this round's set is exactly the "
             "other_queue rows of both the split actor and the bystander"
         )
@@ -851,7 +851,7 @@ class TestDispatchCombinatorics:
     ) -> None:
         """30 fairness cohorts of 4 due rows each, one actor, one round-robin
         queue, ``limit_n`` 60: the per-cohort bounded probes must surface
-        every cohort's top rows — the claimed set carries exactly two rows
+        every cohort's top rows - the claimed set carries exactly two rows
         from EVERY cohort (all rank-1s then all rank-2s), the starvation
         invariant under the new probe shape."""
         schema = module_pg_schema.schema_name
@@ -879,13 +879,13 @@ class TestDispatchCombinatorics:
             claimed_by_cohort[cohort] = claimed_by_cohort.get(cohort, 0) + 1
         missing = sorted(set(by_cohort) - set(claimed_by_cohort))
         assert missing == [], (
-            f"cohorts {missing} contributed no candidates — a deep cohort "
+            f"cohorts {missing} contributed no candidates - a deep cohort "
             "crowded out a shallow one: the per-cohort probe bound exists "
             "precisely so one cohort's depth cannot silence another's rows"
         )
         wrong = {k: v for k, v in claimed_by_cohort.items() if v != 2}
         assert wrong == {}, (
-            f"cohort counts {wrong} — with 120 candidates ranked by "
+            f"cohort counts {wrong} - with 120 candidates ranked by "
             "fairness_rank first, a 60-row round is exactly every cohort's "
             "rank-1 and rank-2 rows; anything else is a ranking regression"
         )
@@ -895,7 +895,7 @@ class TestDispatchCombinatorics:
     ) -> None:
         """A 200-row cohort beside a 1-row cohort, ``limit_n`` 3: the
         shallow cohort's row is claimed in the same round as the deep
-        cohort's top rows — depth delays a cohort's tail, it never removes
+        cohort's top rows - depth delays a cohort's tail, it never removes
         another cohort's head from consideration."""
         schema = module_pg_schema.schema_name
         await _add_queue(clean_pg_conn, schema, "starve_q", "round_robin")
@@ -925,7 +925,7 @@ class TestDispatchCombinatorics:
         assert len(rows) == 3
         assert shallow_id in {row["id"] for row in rows}, (
             "the single-row cohort lost its only row to the 200-row cohort's "
-            "depth — the old starvation shape back under the new probe bound"
+            "depth - the old starvation shape back under the new probe bound"
         )
 
     async def test_mixed_mode_batch_selects_round_robin_and_claims_both_queues(
@@ -937,7 +937,7 @@ class TestDispatchCombinatorics:
         """One dispatch call over a strict_fifo queue and a round_robin
         queue: the resolver selects the round-robin CTE for the whole batch
         (the documented superset behaviour), says so observably, and the
-        strict queue's rows still claim — its unkeyed rows form one
+        strict queue's rows still claim - its unkeyed rows form one
         ``__null__`` cohort whose rank order is its priority order."""
         schema = module_pg_schema.schema_name
         await _add_queue(clean_pg_conn, schema, "mixed_strict", "strict_fifo")
@@ -980,7 +980,7 @@ class TestDispatchCombinatorics:
 
         mixed_events = [e for e in captured if e.get("event") == "dispatch-mixed-queue-modes"]
         assert mixed_events, (
-            "a mixed-mode queue list must surface the mode selection — the "
+            "a mixed-mode queue list must surface the mode selection - the "
             "selection is silent by design in the SQL, so the debug log is "
             "the only observable an operator auditing a misconfigured fleet has"
         )
@@ -991,7 +991,7 @@ class TestDispatchCombinatorics:
         assert claimed - set(rr_ids) == {strict_ids[4]}, (
             "under the round-robin CTE the strict queue's rows form one "
             "__null__ cohort, so only its rank-1 (priority 4) row survives a "
-            "5-row round beside four rr rank-1 rows — the strict variant "
+            "5-row round beside four rr rank-1 rows - the strict variant "
             "would have taken priorities 4, 3, and 2 instead"
         )
 
@@ -1059,7 +1059,7 @@ class TestDispatchCombinatorics:
         assert claimed == {k1_best, unkeyed}, (
             f"claimed {claimed}: the running k2 identity must exclude both its "
             "pending rows, the shared k1 identity must admit only its best "
-            "row, and the NULL-identity row must pass through — the DISTINCT "
+            "row, and the NULL-identity row must pass through - the DISTINCT "
             "ON arm's contract under the new per-cohort probe shapes"
         )
 
@@ -1118,7 +1118,7 @@ class TestDispatchCombinatorics:
             "an actor at max_concurrent (residual 0) must contribute no rows"
         )
         assert claimed.get("over_actor", set()) == set(), (
-            "an actor OVER max_concurrent must clamp to residual 0 — the "
+            "an actor OVER max_concurrent must clamp to residual 0 - the "
             "GREATEST arm exists so in_flight > max can never go negative "
             "and admit rows"
         )
@@ -1127,7 +1127,7 @@ class TestDispatchCombinatorics:
             "a residual-1 actor claims exactly one row, not its whole oversampled candidate set"
         )
         assert claimed.get("nullcap_actor", set()) == set(null_ids), (
-            "a NULL-cap actor's residual is limit_n — it must claim freely "
+            "a NULL-cap actor's residual is limit_n - it must claim freely "
             "beside saturated siblings"
         )
 
@@ -1148,7 +1148,7 @@ class TestDispatchCombinatorics:
         for variant in (DISPATCH_STRICT_FIFO_SQL, DISPATCH_ROUND_ROBIN_SQL):
             rows = await _claim(clean_pg_conn, variant, schema, [], 5)
             assert rows == [], (
-                "an empty queue list claims nothing on either variant — "
+                "an empty queue list claims nothing on either variant - "
                 "unnest of an empty array is no rows, never a default queue"
             )
 
@@ -1176,7 +1176,7 @@ class TestDispatchCombinatorics:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Fix 3 — the mirror's batch atomicity pre-validation
+# Fix 3 - the mirror's batch atomicity pre-validation
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -1234,7 +1234,7 @@ async def _store_mirror_row(backend: InMemoryBackend, jid: UUID, actor: str) -> 
 
 
 async def _mirror_with_pending(actor: str, *, cap: int = 1) -> InMemoryBackend:
-    """A mirror holding ONE pre-existing pending row for *actor* — the
+    """A mirror holding ONE pre-existing pending row for *actor* - the
     over-cap seed the batch partition refuses."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))
     await backend.enqueue(
@@ -1255,7 +1255,7 @@ async def _mirror_with_pending(actor: str, *, cap: int = 1) -> InMemoryBackend:
 def _mirror_pending(backend: InMemoryBackend, actor: str) -> int:
     return sum(
         1
-        for row in backend._jobs.values()  # pyright: ignore[reportPrivateUsage]  # Why: counting the mirror's stored rows per actor — the store IS the observable under test.
+        for row in backend._jobs.values()  # pyright: ignore[reportPrivateUsage]  # Why: counting the mirror's stored rows per actor - the store IS the observable under test.
         if row.actor == actor and row.status in ("pending", "scheduled")
     )
 
@@ -1273,7 +1273,7 @@ async def _pg_pending(app: JobsApp, schema: str, actor: str) -> int:
 
 class TestMirrorBatchAtomicityOrderings:
     """The two mixed-defect orderings, the three-way collision, and the fast
-    tier — each driven on the mirror AND on PG, and diffed."""
+    tier - each driven on the mirror AND on PG, and diffed."""
 
     pytestmark = pytest.mark.integration
 
@@ -1281,7 +1281,7 @@ class TestMirrorBatchAtomicityOrderings:
         self, clean_jobs_app: JobsApp, module_pg_schema: ModulePgSchema
     ) -> None:
         """A stored-colliding id among the ADMITTED actor's items: whole-call
-        abort with nothing admitted — the PG bulk tier's single-statement
+        abort with nothing admitted - the PG bulk tier's single-statement
         atomicity, mirrored exactly (exception type and stored-row state)."""
         from asyncpg.exceptions import UniqueViolationError
 
@@ -1297,7 +1297,7 @@ class TestMirrorBatchAtomicityOrderings:
             )
         assert _mirror_pending(mirror, "mem_clean") == 0, (
             "the mirror pre-validates BEFORE its first insert, so a poisoned "
-            "admitted group leaves the good prefix unstored — a stored prefix "
+            "admitted group leaves the good prefix unstored - a stored prefix "
             "certifies code that leaves phantom rows behind on PG"
         )
         assert _mirror_pending(mirror, "mem_cap") == 1
@@ -1315,7 +1315,7 @@ class TestMirrorBatchAtomicityOrderings:
                 + _batch_args([new_uuid(), new_uuid()], "pg_cap", max_pending=1)
             )
         assert await _pg_pending(clean_jobs_app, schema, "pg_clean") == 0, (
-            "PG's single unnest INSERT aborts the whole call — the admitted "
+            "PG's single unnest INSERT aborts the whole call - the admitted "
             "group's good prefix must not survive the poisoned item"
         )
         assert await _pg_pending(clean_jobs_app, schema, "pg_cap") == 1
@@ -1324,7 +1324,7 @@ class TestMirrorBatchAtomicityOrderings:
         self, clean_jobs_app: JobsApp, module_pg_schema: ModulePgSchema
     ) -> None:
         """The OTHER ordering: the poison id rides an over-cap actor's items,
-        which are refused as a group before any INSERT — so the collision is
+        which are refused as a group before any INSERT - so the collision is
         never reached, the admitted group stores, and the typed refusal
         raises after.  Both backends, same observable state."""
 
@@ -1339,7 +1339,7 @@ class TestMirrorBatchAtomicityOrderings:
             )
         assert _mirror_pending(mirror, "mem_clean") == 2, (
             "a poison id among a REFUSED group's items must not abort the "
-            "call — those items never reach the INSERT on either backend, "
+            "call - those items never reach the INSERT on either backend, "
             "and the admitted group's rows are durable"
         )
         assert _mirror_pending(mirror, "mem_cap") == 1
@@ -1359,7 +1359,7 @@ class TestMirrorBatchAtomicityOrderings:
         assert await _pg_pending(clean_jobs_app, schema, "pg_cap") == 1
         refused_actors = {r.actor for r in refusal.value.refusals}
         assert refused_actors == {"pg_cap"}, (
-            "the typed refusal names the over-cap actor's group — the "
+            "the typed refusal names the over-cap actor's group - the "
             "collision never surfaced because the group never reached the INSERT"
         )
 
@@ -1394,7 +1394,7 @@ class TestMirrorBatchAtomicityOrderings:
             await backend.enqueue_batch(_batch_args([pg_stored, pg_stored], "pg_clean"))
         assert await _pg_pending(clean_jobs_app, schema, "pg_clean") == 0
 
-        # ── PG: in-batch only — the single INSERT statement carries both rows,
+        # ── PG: in-batch only - the single INSERT statement carries both rows,
         # so the second violates the first inside the statement. ──
         pg_fresh = new_uuid()
         with pytest.raises(UniqueViolationError):
@@ -1406,7 +1406,7 @@ class TestMirrorBatchAtomicityOrderings:
     ) -> None:
         """(c) ``enqueue_batch_fast``: a poisoned admitted group aborts the
         whole COPY-batch on both backends; a poisoned REFUSED group spares
-        the admitted records — the fast tier inherits the same partition and
+        the admitted records - the fast tier inherits the same partition and
         the same whole-call atomicity as the unnest tier."""
         from asyncpg.exceptions import UniqueViolationError
 
@@ -1427,7 +1427,7 @@ class TestMirrorBatchAtomicityOrderings:
             )
         assert _mirror_pending(refused_mirror, "mem_clean") == 2
 
-        # ── PG: poison admitted — the COPY has no ON CONFLICT arbiter. ──
+        # ── PG: poison admitted - the COPY has no ON CONFLICT arbiter. ──
         schema = module_pg_schema.schema_name
         backend = clean_jobs_app.backend
         pg_poison = new_uuid()
@@ -1447,19 +1447,19 @@ class TestMirrorBatchAtomicityOrderings:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Fix 4 — the lock-budget settings plumbing
+# Fix 4 - the lock-budget settings plumbing
 # ══════════════════════════════════════════════════════════════════════
 
 
 class TestLockBudgetSettingsPlumbing:
     """The three enqueue advisory-lock budgets: edge values at the settings
     boundary, the ``<= 0`` convention at the acquire seam, and the honest
-    scoping fact — single path only."""
+    scoping fact - single path only."""
 
     async def test_zero_negative_and_huge_budgets_are_the_documented_opt_out(
         self,
     ) -> None:
-        """0, negative, and huge env values are ACCEPTED by validation — the
+        """0, negative, and huge env values are ACCEPTED by validation - the
         settings field documents ``0 or less waits indefinitely`` (the
         ``lock_timeout`` GUC convention), so the boundary's contract is
         opt-in-infinite, never a silent refusal and never a silent infinite
@@ -1485,7 +1485,7 @@ class TestLockBudgetSettingsPlumbing:
     ) -> None:
         """A 0 budget at the real seam: the enqueue on a capped actor whose
         advisory lock is held for a few hundred milliseconds WAITS and
-        succeeds — the documented indefinite branch — while a 50 ms budget
+        succeeds - the documented indefinite branch - while a 50 ms budget
         on the same contention refuses with the typed error.  The env value
         demonstrably reaches the lock use site."""
         schema = module_pg_schema.schema_name
@@ -1513,7 +1513,7 @@ class TestLockBudgetSettingsPlumbing:
             await holder.close()
         assert row.actor == "budget_actor", (
             "a 0 budget must WAIT for the holder's release and complete the "
-            "enqueue — the lock_timeout GUC convention the settings field "
+            "enqueue - the lock_timeout GUC convention the settings field "
             "documents, reachable from the env value"
         )
 
@@ -1548,11 +1548,11 @@ class TestLockBudgetSettingsPlumbing:
         module_pg_schema: ModulePgSchema,
         pg_dsn: str,
     ) -> None:
-        """The scoping boundary, pinned honestly: with the max_pending
+        """The scoping boundary, pinned explicitly: with the max_pending
         advisory lock held elsewhere and a 50 ms budget, the SINGLE enqueue
         refuses with the typed error while ``enqueue_batch`` and
         ``enqueue_batch_fast`` on the same capped actor at the same moment
-        both succeed — the bulk tiers take no per-actor advisory lock at all
+        both succeed - the bulk tiers take no per-actor advisory lock at all
         (the count-then-insert race there is documented, not silent)."""
         schema = module_pg_schema.schema_name
         settings = WorkerSettings.load_from_dict(
@@ -1590,7 +1590,7 @@ class TestLockBudgetSettingsPlumbing:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Fix 5 — the cron stored-cap resolution
+# Fix 5 - the cron stored-cap resolution
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -1633,7 +1633,7 @@ class TestCronStoredCapBoundaries:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """(a) stored NULL + literal 5: the literal applies — five due
+        """(a) stored NULL + literal 5: the literal applies - five due
         schedules admit exactly five.  A NULL stored value is 'no stored
         override', never 'no cap'."""
         schema = module_pg_schema.schema_name
@@ -1659,7 +1659,7 @@ class TestCronStoredCapBoundaries:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """(b) stored 10 + literal 2: the tick admits up to TEN — the stored
+        """(b) stored 10 + literal 2: the tick admits up to TEN - the stored
         value is authoritative in BOTH directions, loosening the code
         literal exactly as it tightens it.  Ten due schedules all fire."""
         schema = module_pg_schema.schema_name
@@ -1680,7 +1680,7 @@ class TestCronStoredCapBoundaries:
 
         assert fired == 10, (
             "a stored cap of 10 over a literal of 2 must LOOSEN the tick's "
-            "admission to 10 — resolving the stored value only when it is "
+            "admission to 10 - resolving the stored value only when it is "
             "tighter would silently strand the operator's loosening on the "
             "one admission surface that reads it"
         )
@@ -1695,7 +1695,7 @@ class TestCronStoredCapBoundaries:
         with a stored cap fires exactly ONE of three due schedules (the
         singleton gate, registry-declared, dominating the cap), while an
         actor with the same stored cap but NO singleton flag fires all
-        three — a stored max_pending never implies single-flight, and the
+        three - a stored max_pending never implies single-flight, and the
         singleton flag never consults the stored row."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
@@ -1719,12 +1719,12 @@ class TestCronStoredCapBoundaries:
         assert fired == 4, "one singleton fire plus three capped-but-unflagged fires"
         assert await count_jobs(clean_pg_conn, schema, "cron_sing") == 1, (
             "a singleton actor with a stored cap of 5 must still fire exactly "
-            "one job per tick — the singleton gate is registry-only and the "
+            "one job per tick - the singleton gate is registry-only and the "
             "stored cap must not override it"
         )
         assert await count_jobs(clean_pg_conn, schema, "cron_nosing") == 3, (
             "an actor with a stored cap but no singleton flag must fire up to "
-            "its cap — a stored max_pending must never imply single-flight"
+            "its cap - a stored max_pending must never imply single-flight"
         )
         singleton_rows = await clean_pg_conn.fetch(
             f"SELECT metadata ->> 'singleton' AS singleton FROM \"{schema}\".jobs WHERE actor = $1",
@@ -1740,7 +1740,7 @@ class TestCronStoredCapBoundaries:
     ) -> None:
         """(d) The drain shape generalized: an actor registered in
         actor_config but absent from the worker's policy map entirely (no
-        flags declared, or a worker whose registry never registered it) —
+        flags declared, or a worker whose registry never registered it) -
         the stored cap alone must still bound the tick, including the
         stored-0 emergency drain."""
         schema = module_pg_schema.schema_name
@@ -1766,13 +1766,13 @@ class TestCronStoredCapBoundaries:
 
         assert fired == 2, (
             "an actor absent from the policy map must still be bounded by its "
-            "stored actor_config.max_pending alone — the tick reads the "
+            "stored actor_config.max_pending alone - the tick reads the "
             "stored row for every schedule's actor, not only for actors the "
             "registry declared"
         )
         assert await count_jobs(clean_pg_conn, schema, "cron_absent") == 2
         assert await count_jobs(clean_pg_conn, schema, "cron_drain_absent") == 0, (
             "the stored-0 emergency drain must hold for a policy-absent actor "
-            "too — 'never accept any jobs' cannot depend on the actor also "
+            "too - 'never accept any jobs' cannot depend on the actor also "
             "being registered in this worker's code"
         )

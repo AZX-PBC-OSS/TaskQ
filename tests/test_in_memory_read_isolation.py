@@ -2,7 +2,7 @@
 
 PostgresBackend materialises a fresh ``JobRow`` from the SQL record on every
 read, so no caller-held object can ever reach stored state. InMemoryBackend
-must honour the same contract — otherwise a test that mutates a row it
+must honour the same contract - otherwise a test that mutates a row it
 obtained (or a dict it handed in) silently corrupts the backend, and code
 that is correct against PG fails only under the real engine. ``JobRow`` is
 frozen, but its ``payload`` / ``progress_state`` / ``result`` / ``metadata``
@@ -65,7 +65,7 @@ def _args(
 
 
 async def _stored_payload(backend: InMemoryBackend, job_id: JobId) -> dict[str, object]:
-    """Read the stored payload back through ``get`` — the one seam already
+    """Read the stored payload back through ``get`` - the one seam already
     guaranteed to isolate, so it reflects storage rather than the alias."""
     fresh = await backend.get(job_id)
     assert fresh is not None
@@ -177,7 +177,7 @@ async def test_list_result_from_result_bytes_does_not_alias_storage() -> None:
     reread = await backend.get(row.id)
     assert reread is not None
     assert reread.result == [1, 2], (
-        "a caller-held list result reached storage — the read copy must "
+        "a caller-held list result reached storage - the read copy must "
         "sever mutable results of every JSON shape, not only dicts"
     )
 
@@ -230,7 +230,7 @@ async def test_poll_reclaim_events_rows_do_not_alias_storage() -> None:
     """The reclaim-poll seam holds the same contract as ``get_events``:
     the crash-reclaim watcher (``TaskQ.watch_reclaims``) consumes these
     rows, and a returned event aliasing ``_events`` would let watcher-side
-    mutation corrupt the stored event log — PG materialises a fresh row
+    mutation corrupt the stored event log - PG materialises a fresh row
     per poll."""
     clock = FakeClock(_START)
     backend = InMemoryBackend(clock=clock)
@@ -241,7 +241,7 @@ async def test_poll_reclaim_events_rows_do_not_alias_storage() -> None:
     claimed = await backend.dispatch_batch(worker_id, ["default"], 10, timedelta(seconds=60))
     assert len(claimed) == 1
 
-    # Let the lock expire and reclaim it — the sweep appends the
+    # Let the lock expire and reclaim it - the sweep appends the
     # lock_expired state-change event the poll seam returns.
     clock.advance(timedelta(seconds=120))
     reclaimed = await backend.reclaim_expired_locks(timedelta(minutes=5), timedelta(minutes=5))
@@ -306,7 +306,7 @@ async def test_write_attempt_does_not_store_caller_row_by_reference() -> None:
 
 
 async def test_mark_failed_or_retry_returned_row_does_not_alias_storage() -> None:
-    """``mark_failed_or_retry`` returns a JobRow — the stored row, not a
+    """``mark_failed_or_retry`` returns a JobRow - the stored row, not a
     copy, would alias storage exactly like the read seams."""
     backend = _make_backend()
     row = await backend.enqueue(_args())

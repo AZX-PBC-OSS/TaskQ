@@ -5,7 +5,7 @@ Covers:
 require a real Postgres container and are marked
 ``@pytest.mark.integration`` individually. mocks asyncpg and is a unit
 test. is a Hypothesis property test on the in-memory subscriber registry
-— pure unit, no PG.
+- pure unit, no PG.
 
 The chaos pattern (research §"pg_terminate_backend / chaos pattern")::
 
@@ -56,7 +56,7 @@ class _Op(Enum):
 #
 # The module-global listener bookkeeping (_active_listeners /
 # _connected_lookup) is reset around every test by the conftest-level
-# _reset_notify_module_globals autouse fixture — this file's former
+# _reset_notify_module_globals autouse fixture - this file's former
 # file-local copy of that reset was promoted there (with the four other
 # identical copies across the notify suites) so every test gets it.
 
@@ -88,7 +88,7 @@ def pg_container_function_scoped() -> Iterator[PostgresContainer]:
     """Function-scoped PG whose HOST port is pinned across stop/start.
 
     ``test_tc2_pg_container_stop_start`` restarts this container and keeps
-    using host DSNs derived before the restart — including the
+    using host DSNs derived before the restart - including the
     ``open_worker_deps`` dispatcher/heartbeat/worker pools, which no
     re-derive can retarget. Docker reassigns a Docker-chosen ephemeral
     host port on start, so without an explicit binding that test fails
@@ -199,9 +199,9 @@ async def test_tc2_pg_container_stop_start(
     3 s, restarts it, asserts the listener reconnects within 30 s and a
     subsequent NOTIFY is delivered.
 
-    Marked ``@pytest.mark.slow`` — opt-in for routine CI.
+    Marked ``@pytest.mark.slow`` - opt-in for routine CI.
     """
-    # Why: get_connection_url resolves the mapped port via docker HTTP — off-loop.
+    # Why: get_connection_url resolves the mapped port via docker HTTP - off-loop.
     pg_dsn = (await asyncio.to_thread(pg_container_function_scoped.get_connection_url)).replace(
         "postgresql+psycopg2://", "postgresql://"
     )
@@ -238,13 +238,13 @@ async def test_tc2_pg_container_stop_start(
 
                 wrapped = pg_container_function_scoped.get_wrapped_container()
                 # Why: docker-py stop blocks the loop for the whole HTTP round-trip
-                # (measured 2.4-3.8s continuous loop stalls) — off-loop.
+                # (measured 2.4-3.8s continuous loop stalls) - off-loop.
                 await asyncio.to_thread(wrapped.stop)
                 await asyncio.sleep(2.0)
 
                 for _attempt in range(3):
                     try:
-                        # Why: docker-py start blocks the loop — off-loop.
+                        # Why: docker-py start blocks the loop - off-loop.
                         await asyncio.to_thread(wrapped.start)
                         break
                     except Exception:
@@ -254,9 +254,9 @@ async def test_tc2_pg_container_stop_start(
                 # Docker Desktop on macOS may assign a new port after restart;
                 # re-derive the DSN and update the reconnect factory so
                 # reconnect_notify_conn uses the current port. The factory is
-                # a closure that captured the old DSN at startup — it must be
+                # a closure that captured the old DSN at startup - it must be
                 # replaced with a new closure pointing at the new port.
-                # Why: get_connection_url resolves the mapped port via docker HTTP — off-loop.
+                # Why: get_connection_url resolves the mapped port via docker HTTP - off-loop.
                 pg_dsn = (
                     await asyncio.to_thread(pg_container_function_scoped.get_connection_url)
                 ).replace("postgresql+psycopg2://", "postgresql://")
@@ -270,7 +270,7 @@ async def test_tc2_pg_container_stop_start(
 
                 # 45s, not 30s: worst-case reconnect is health-check
                 # detection (≤1s) + backoff sequence (1+2+4+8+16=31s) + PG
-                # boot after `wrapped.start()` — already >31s unloaded, so
+                # boot after `wrapped.start()` - already >31s unloaded, so
                 # a 30s deadline is a real race under full-suite parallel
                 # Docker load, not just flake margin.
                 deadline = asyncio.get_running_loop().time() + 45.0
@@ -304,10 +304,10 @@ async def test_tc3_shutdown_mid_reconnect() -> None:
     """Shutdown arrives mid-reconnect. Mocks open_dedicated_conn
     to block on an asyncio.Event so the reconnect path suspends inside
     "open new connection". While suspended, calls shutdown.set(). Asserts
-    notify_listener_loop exits cleanly — the try/except guard catches
+    notify_listener_loop exits cleanly - the try/except guard catches
     the result.
 
-    No @pytest.mark.integration — this is a unit test using mocked asyncpg.
+    No @pytest.mark.integration - this is a unit test using mocked asyncpg.
     """
     from unittest.mock import AsyncMock, Mock
 
@@ -395,7 +395,7 @@ async def test_tc3_shutdown_mid_reconnect() -> None:
 @pytest.mark.integration
 @pytest.mark.xdist_group(name="chaos")
 async def test_tc4_notify_storm_coalescing(pg_dsn: str) -> None:
-    """NOTIFY storm — coalescing under 1000 wakes/s, no starvation.
+    """NOTIFY storm - coalescing under 1000 wakes/s, no starvation.
     Fires pg_notify 1000 times in a tight loop. Asserts the subscriber
     event is set, then verifies the listener is still responsive by
     clearing the event, firing one more NOTIFY, and asserting it is set
@@ -527,7 +527,7 @@ async def test_tc5_reconnect_delivers_missed_jobs(pg_dsn: str) -> None:
         await stack.aclose()
 
 
-# ── Property test — concurrent enter/exit/notify on the registry ─
+# ── Property test - concurrent enter/exit/notify on the registry ─
 
 
 def _op_strategy() -> st.SearchStrategy[list[_Op]]:
@@ -540,7 +540,7 @@ def _op_strategy() -> st.SearchStrategy[list[_Op]]:
 
 @given(ops=_op_strategy())
 def test_tp1_property_concurrent_enter_exit_notify(ops: list[_Op]) -> None:
-    """Property test — concurrent enter/exit/notify on the registry.
+    """Property test - concurrent enter/exit/notify on the registry.
     Generates sequences of enter/exit/notify operations. A model list
     tracks currently-open events. After each notify, every event still in
     the model's open-set must have ``is_set() == True`` in the SUT.
@@ -573,14 +573,14 @@ def test_tp1_property_concurrent_enter_exit_notify(ops: list[_Op]) -> None:
         for op in ops:
             if op is _Op.ENTER:
                 event = asyncio.Event()
-                async with backend._wake_lock:  # pyright: ignore[reportPrivateUsage] # Why: test-only — property test simulates subscribe_wake without the full async context manager to track model state
+                async with backend._wake_lock:  # pyright: ignore[reportPrivateUsage] # Why: test-only - property test simulates subscribe_wake without the full async context manager to track model state
                     backend._wake_subscribers.add(event)
                 open_set.append((event_id, event))
                 event_id += 1
             elif op is _Op.EXIT:
                 if open_set:
                     _, event = open_set.pop(0)
-                    async with backend._wake_lock:  # pyright: ignore[reportPrivateUsage] # Why: test-only — property test
+                    async with backend._wake_lock:  # pyright: ignore[reportPrivateUsage] # Why: test-only - property test
                         backend._wake_subscribers.discard(event)
             elif op is _Op.NOTIFY:
                 cb(Mock(), 0, "taskq_wake_taskq_test", "")

@@ -52,7 +52,7 @@ def _settings() -> "WorkerSettings":
     """A fully defaulted WorkerSettings.
 
     Why not ``WorkerSettings()``: the bare constructor skips ``post_load``,
-    so every field reads back ``None`` — a documented programming error that
+    so every field reads back ``None`` - a documented programming error that
     happens to work only for the knobs a given test touches.
     """
     return make_integration_settings("postgresql://taskq:taskq@127.0.0.1:1/taskq")
@@ -123,7 +123,7 @@ async def _run_consume(
 
 async def test_consume_success_calls_mark_succeeded() -> None:
     """Baseline: successful actor → mark_succeeded called with the result's
-    orjson bytes (no dict — the terminal write reuses the encoding)."""
+    orjson bytes (no dict - the terminal write reuses the encoding)."""
 
     async def actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> dict[str, object]:
         return {"value": 42}
@@ -205,7 +205,7 @@ async def test_consume_snooze_deadline_exceeded_no_mark_succeeded() -> None:
 
 
 async def test_consume_snooze_noop_returns_quietly() -> None:
-    """Snooze when backend returns 'noop' — no mark_failed_or_retry call."""
+    """Snooze when backend returns 'noop' - no mark_failed_or_retry call."""
 
     async def actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> object:
         raise Snooze(timedelta(seconds=30))
@@ -305,7 +305,7 @@ async def test_consume_shielded_writes_complete_when_task_is_cancelled() -> None
     write_completed = asyncio.Event()
     # Why an event at write entry: the cancel must land while the shielded
     # mark_succeeded is IN FLIGHT. A fixed sleep raced consumer startup
-    # under load — cancelled too early (during setup), the write never
+    # under load - cancelled too early (during setup), the write never
     # starts and the test fails at the write_completed wait below. The
     # event is set at the exact point the pin needs: inside the write,
     # before its designed delay.
@@ -509,7 +509,7 @@ async def test_consume_worker_default_start_to_close_times_out_job_without_own()
 async def test_consume_job_start_to_close_overrides_worker_default() -> None:
     """A job with its own (short) start_to_close times out even though
     the worker's default_start_to_close would have allowed far more
-    time — the job-row value always wins."""
+    time - the job-row value always wins."""
 
     async def actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> object:
         await asyncio.sleep(0.5)
@@ -551,7 +551,7 @@ async def test_consume_external_cancel_routes_to_mark_cancelled() -> None:
     """
 
     # Why an event at actor entry: the cancel must land while the actor is
-    # running — the CancelledError handler that routes to mark_cancelled
+    # running - the CancelledError handler that routes to mark_cancelled
     # wraps only the actor run. A fixed sleep raced consumer startup under
     # load; cancelled during setup, the CancelledError propagates without
     # mark_cancelled and the oracle below fails.
@@ -559,7 +559,7 @@ async def test_consume_external_cancel_routes_to_mark_cancelled() -> None:
 
     async def actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> object:
         actor_entered.set()
-        while True:  # noqa: ASYNC110 Why: cancellation test — actor loops until externally cancelled; asyncio.Event would require a separate event per test.
+        while True:  # noqa: ASYNC110 Why: cancellation test - actor loops until externally cancelled; asyncio.Event would require a separate event per test.
             await asyncio.sleep(0)
 
     backend = FakeBackend()
@@ -631,7 +631,7 @@ async def test_consume_deregister_in_finally(scenario: str) -> None:
 
         async def actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> object:
             actor_entered.set()
-            while True:  # noqa: ASYNC110 Why: cancellation test — actor loops until externally cancelled.
+            while True:  # noqa: ASYNC110 Why: cancellation test - actor loops until externally cancelled.
                 await asyncio.sleep(0)
 
         job = make_job_row()
@@ -665,7 +665,7 @@ async def test_consume_deregister_in_finally(scenario: str) -> None:
 async def test_snooze_handler_log_carries_job_context_fields() -> None:
     """snooze handler log_state_change carries job_id,
     actor, queue, attempt, identity_key, trace_id from the pre-bound
-    job_log — not from the raw module-level logger."""
+    job_log - not from the raw module-level logger."""
 
     async def actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> object:
         raise Snooze(timedelta(seconds=5))

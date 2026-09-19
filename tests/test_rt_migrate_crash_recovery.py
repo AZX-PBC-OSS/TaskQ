@@ -5,7 +5,7 @@ A migrator that dies mid-apply (container killed, DDL failure) must not
 strand the schema: the advisory-lock protocol must let the NEXT migrator
 re-acquire the lock and complete the job. For a non-transactional migration
 the failed run's earlier statements are already committed and unrecorded, so
-recovery depends on the documented idempotency contract — the second
+recovery depends on the documented idempotency contract - the second
 migrator must re-execute the file, tolerate the debris, and only then record
 it. Pinned here across two real connections through the real
 ``apply_pending_locked`` protocol (the single-connection re-run shape is
@@ -39,7 +39,7 @@ async def test_second_migrator_completes_after_first_fails_mid_no_transaction_fi
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Contract: a crashed migrator's partial, unrecorded effects must not
-    strand the schema — the next migrator under the same lock protocol
+    strand the schema - the next migrator under the same lock protocol
     re-executes the file against the debris and completes it.
 
     The ``gate`` table stands in for a transient external condition (a
@@ -81,7 +81,7 @@ async def test_second_migrator_completes_after_first_fails_mid_no_transaction_fi
         )
         assert "NOT recorded" in str(excinfo.value), (
             "the crash report must state the failed no-transaction file was not "
-            "recorded — the re-run contract the next migrator relies on"
+            "recorded - the re-run contract the next migrator relies on"
         )
         ledger_after_crash = await list_applied(winner, schema)
         assert m1.key in ledger_after_crash, (
@@ -94,7 +94,7 @@ async def test_second_migrator_completes_after_first_fails_mid_no_transaction_fi
             f"SELECT to_regclass('\"{schema}\".crash_m2') IS NOT NULL"
         )
         assert crash_m2_exists is True, (
-            "the no-transaction file's first statement must have committed — the "
+            "the no-transaction file's first statement must have committed - the "
             "debris the next migrator has to tolerate"
         )
 
@@ -102,7 +102,7 @@ async def test_second_migrator_completes_after_first_fails_mid_no_transaction_fi
 
         applied = await apply_pending_locked(conn=loser, schema=schema, lock_timeout=10.0)
         assert [m.key for m in applied] == [m2.key], (
-            "the second migrator must re-execute exactly the crashed file — "
+            "the second migrator must re-execute exactly the crashed file - "
             "neither skipping it (stranded schema) nor re-applying the recorded one"
         )
         ledger_after_recovery = await list_applied(loser, schema)

@@ -1,4 +1,4 @@
-"""Basic actors — simple long-running and deferred jobs.
+"""Basic actors - simple long-running and deferred jobs.
 
 These actors demonstrate the simplest TaskQ patterns: a cancellable
 long-running job (counter) and a deferred/scheduled job (deferred).
@@ -34,5 +34,5 @@ async def counter(payload: CounterPayload, ctx: JobContext[CounterPayload]) -> N
 
 @actor(name="deferred", queue="examples")
 async def deferred(payload: DeferredPayload) -> None:
-    """Sleeps 1s then succeeds — scheduled_at is set by the trigger app."""
+    """Sleeps 1s then succeeds - scheduled_at is set by the trigger app."""
     await asyncio.sleep(1)

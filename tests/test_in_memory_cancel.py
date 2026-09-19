@@ -290,7 +290,7 @@ class TestCancelOriginAuditability:
     actor honoured ``ctx.cancellation_requested``, a worker had to stop an
     actor that would not yield, or the work never ran at all. Operators
     triage those differently and worker logs roll off, so each terminal
-    cancel path stamps its own distinguishing ``error_class`` on the row —
+    cancel path stamps its own distinguishing ``error_class`` on the row -
     the same self-describing terminal write every failure path already
     makes.
 
@@ -313,7 +313,7 @@ class TestCancelOriginAuditability:
         assert row is not None
         assert row.status == "cancelled"
         assert row.error_class is not None, (
-            "a cooperative cancel wrote no error_class — cancel origin is "
+            "a cooperative cancel wrote no error_class - cancel origin is "
             "unauditable on the job row"
         )
 
@@ -418,7 +418,7 @@ class TestCancelOriginAuditability:
 
     async def test_cancelled_while_scheduled_leaves_terminal_timeline_entry(self) -> None:
         """The same holds for a job cancelled while scheduled for a future
-        run — the deferred-start path must not be the one that loses its
+        run - the deferred-start path must not be the one that loses its
         audit transition."""
         backend = _make_backend()
         args = EnqueueArgs(
@@ -450,7 +450,7 @@ class TestCancelOriginAuditability:
 
     async def test_phase_1_cancel_stamps_the_cooperative_marker(self) -> None:
         """A running job cancelled while still only ASKED (cancel_phase=1)
-        reads exactly ``CancelledCooperatively`` on the row — the constant,
+        reads exactly ``CancelledCooperatively`` on the row - the constant,
         not merely a non-NULL distinct value: the existing distinctness pin
         would also pass if the phase arms were swapped."""
         backend = _make_backend()
@@ -470,7 +470,7 @@ class TestCancelOriginAuditability:
 
     async def test_phase_2_cancel_stamps_the_forced_marker(self) -> None:
         """A running job cancelled after escalation (cancel_phase=2) reads
-        exactly ``CancelledForced`` on the row and the attempt — the
+        exactly ``CancelledForced`` on the row and the attempt - the
         marker says the actor had to be interrupted, which is the
         operational signal to go look at that actor."""
         backend = _make_backend()

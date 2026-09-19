@@ -1,6 +1,6 @@
 """Load-time hardening for worker-identity settings.
 
-Settings values that would crash — or hit opaque database errors — at
+Settings values that would crash - or hit opaque database errors - at
 worker registration must fail at settings load time with a clean error
 instead. Covers ``workgroup_instance`` (UUID), ``worker_label`` (NUL-free
 text), and ``queues`` items (the canonical queue-name charset).
@@ -72,7 +72,7 @@ def test_queues_item_bad_charset_rejected_at_load() -> None:
 
 def test_queues_item_nul_rejected_at_load() -> None:
     """A NUL is outside the queue-name charset, so the same per-item rule
-    rejects it — before it can reach the registration INSERT's text[]
+    rejects it - before it can reach the registration INSERT's text[]
     parameter as an opaque asyncpg 22021."""
     with pytest.raises(ValidationError, match=r"queues\[1\] must be a valid queue name"):
         _load(TASKQ_QUEUES="default,ba\x00d")
@@ -93,7 +93,7 @@ def test_queues_valid_names_load() -> None:
 
 
 def test_queues_leading_digit_names_load() -> None:
-    """A leading digit is accepted since the charset relaxation — the ban
+    """A leading digit is accepted since the charset relaxation - the ban
     was copied from ``_IDENT_RE`` (PG identifiers), and a queue name is
     never a PG identifier: it is always a ``$n``-bound parameter."""
     s = _load(TASKQ_QUEUES="default,2024-backfill,1queue")

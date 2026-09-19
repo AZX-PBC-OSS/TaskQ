@@ -125,7 +125,7 @@ def test_slot_pool_connections_add_to_the_direct_budget() -> None:
 
     A worker that registered a LOOP-scope connection carries
     max_concurrency + 1 extra direct connections; the budget model must
-    add exactly that, per worker, on both leader and non-leader pods —
+    add exactly that, per worker, on both leader and non-leader pods -
     the arithmetic docs/guides/ops.md publishes its fleet formula from.
     """
     s = _settings(TASKQ_MAX_CONCURRENCY="8")
@@ -141,7 +141,7 @@ def test_slot_pool_connections_add_to_the_direct_budget() -> None:
     assert with_slot.direct_per_worker_leader == without.direct_per_worker_leader + 9
     # 1 leader pod: total_direct = 1 * (12 + 9)
     assert with_slot.total_direct == 21
-    # The pooled budget is untouched — the slot pool is direct-only.
+    # The pooled budget is untouched - the slot pool is direct-only.
     assert with_slot.pooled_per_worker == without.pooled_per_worker
 
 

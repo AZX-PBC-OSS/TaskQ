@@ -5,7 +5,7 @@ Two seams of the snooze statement were verified live to disagree with
 their declared contract:
 
 * **Outcome admission.** The ``outcome`` parameter was typed
-  ``AttemptOutcome`` — eight values — while the SQL arms key on exactly
+  ``AttemptOutcome`` - eight values - while the SQL arms key on exactly
   three. With ``outcome='succeeded'`` on a running job, PG fired NO arm
   (the row stayed ``running``, stranded until the lease sweep, and the
   call returned ``"noop"``) while the in-memory twin silently
@@ -14,7 +14,7 @@ their declared contract:
   false-confidence failure the in-memory backend exists to prevent.
 
   The fix narrows the parameter to :data:`SnoozeOutcome` (unrepresentable
-  at the type level) and adds a runtime guard at the Python boundary —
+  at the type level) and adds a runtime guard at the Python boundary -
   PG cannot reject an unknown bind value inside the statement, so the
   boundary owns the check and the twin carries the identical guard.
   Validation precedes the ownership fence on both backends: an illegal
@@ -24,7 +24,7 @@ their declared contract:
 * **Delay floor.** A zero-delay non-consuming deferral (``Snooze(0)``,
   ``RetryAfter(0, consume_budget=False)``, a denial with
   ``retry_after=0``) used to land the job ``pending`` at
-  ``clock_timestamp()`` — first in every dispatch round, instantly
+  ``clock_timestamp()`` - first in every dispatch round, instantly
   re-claimable: a claim/refund hot loop monopolising a worker slot. The
   effective delay is now floored at
   :data:`taskq.constants.MIN_DEFERRAL_INTERVAL` in both non-consuming
@@ -49,7 +49,7 @@ pytestmark = pytest.mark.integration
 _START = datetime(2025, 1, 1, tzinfo=UTC)
 _LOCK_LEASE = timedelta(seconds=60)
 
-#: The five ``AttemptOutcome`` execution outcomes — every value the
+#: The five ``AttemptOutcome`` execution outcomes - every value the
 #: snooze arms do NOT key on.
 _ILLEGAL_OUTCOMES = ("succeeded", "failed", "cancelled", "crashed", "scheduled")
 
@@ -85,7 +85,7 @@ async def test_mark_snoozed_rejects_execution_outcome_loudly(
     backend_pair: Backend, outcome: str
 ) -> None:
     """An execution outcome raises ``ValueError`` naming the legal set on
-    BOTH backends — before the ownership fence, leaving the row
+    BOTH backends - before the ownership fence, leaving the row
     untouched.
 
     Pre-fix this was the silent disagreement: PG returned ``"noop"`` and
@@ -98,7 +98,7 @@ async def test_mark_snoozed_rejects_execution_outcome_loudly(
             job_id,
             worker_id,
             timedelta(seconds=30),
-            outcome=outcome,  # type: ignore[arg-type] # Why: deliberately outside the static contract — the runtime guard under test is what catches it; production callers cannot reach this line under pyright.
+            outcome=outcome,  # type: ignore[arg-type] # Why: deliberately outside the static contract - the runtime guard under test is what catches it; production callers cannot reach this line under pyright.
         )
 
     message = str(exc_info.value)
@@ -121,7 +121,7 @@ async def test_pg_zero_delay_snooze_is_floored_at_min_deferral_interval(
     clean_jobs_app: JobsApp,
 ) -> None:
     """A zero-delay ``Snooze`` against real PG reschedules at least
-    ``MIN_DEFERRAL_INTERVAL`` out as ``scheduled`` — never ``pending``
+    ``MIN_DEFERRAL_INTERVAL`` out as ``scheduled`` - never ``pending``
     at the head of the dispatch order. The bounds are read from PG's own
     clock (the write's arbiter), so app↔DB skew cannot false-pass the
     pin.

@@ -3,14 +3,14 @@
 Everything an operator concludes from the queue rests on these two
 claims. At-most-once is why a job may safely charge a card or send a
 message. The attempt count is how anyone decides whether a job is
-failing: if it can be raised by events that are not runs — a deploy, a
-reclaim, a capacity denial — then the number means something different
+failing: if it can be raised by events that are not runs - a deploy, a
+reclaim, a capacity denial - then the number means something different
 from what every dashboard and every runbook assumes, and the difference
 grows with how busy and how frequently deployed the fleet is.
 
-These tests drive the states a pod can be stopped in — holding a claim
+These tests drive the states a pod can be stopped in - holding a claim
 it has not started, part-way through a run, waiting on a retry, deferred
-— and in each case require that the job ends up run exactly once or back
+- and in each case require that the job ends up run exactly once or back
 with the fleet exactly once, with an attempt count that matches the
 number of times its actor actually executed.
 """
@@ -53,8 +53,8 @@ async def test_a_job_claimed_by_one_pod_is_invisible_to_every_other(
     no other pod may claim the same row, however many of them are
     polling. Three pods poll a single job, repeatedly.
 
-    A second holder means the actor runs twice concurrently — two
-    charges, two emails, two writes — and the job's history records one
+    A second holder means the actor runs twice concurrently - two
+    charges, two emails, two writes - and the job's history records one
     run, so nothing about the duplicate is visible afterwards.
     """
     schema = f"fleet_amo_hold_{new_base62()}".lower()
@@ -122,7 +122,7 @@ async def test_a_job_run_once_records_exactly_one_attempt(pg_dsn: str) -> None:
 async def test_a_job_handed_back_unrun_records_no_attempt(pg_dsn: str) -> None:
     """A claim that never became a run leaves no trace in the history.
 
-    The pod is stopped holding a claim it has not started — the most
+    The pod is stopped holding a claim it has not started - the most
     common state a SIGTERM finds work in, because a claim round fills a
     buffer that the consumers then work through. Nothing ran, so the
     history must be empty and the counter unmoved.
@@ -162,7 +162,7 @@ async def test_a_job_interrupted_mid_run_is_retried_not_duplicated(
     """Work interrupted part-way through comes back once, and runs again once.
 
     The actor starts, the pod is lost before it finishes, and the job
-    returns to the fleet. The next pod runs it again — that is what
+    returns to the fleet. The next pod runs it again - that is what
     at-least-once delivery means and why actors must be idempotent.
 
     What must not happen is the job coming back more than once. Two
@@ -213,7 +213,7 @@ async def test_a_pod_cannot_finish_a_job_it_has_already_handed_back(
     During shutdown a pod re-pends the jobs it holds and has not
     started. If it could then also run one of them, the job would be
     executed by the draining pod and by whichever pod claims the
-    re-pended row — the classic double-run a deploy produces.
+    re-pended row - the classic double-run a deploy produces.
 
     The contract is that once a job has been handed back, this pod's
     terminal write for it must not land: the row belongs to the fleet
@@ -268,8 +268,8 @@ async def test_repeated_deploys_do_not_erode_a_jobs_retry_budget(
     Where a single lost attempt is easy to overlook, this is the shape
     that reaches operators: after a busy week of deploys, jobs start
     arriving at crashed having never executed, their histories showing
-    attempts nobody can account for, and the fleet's deploy cadence —
-    not the code — is what set the limit.
+    attempts nobody can account for, and the fleet's deploy cadence -
+    not the code - is what set the limit.
     """
     schema = f"fleet_amo_budget_{new_base62()}".lower()
     async with open_fleet(
@@ -283,7 +283,7 @@ async def test_repeated_deploys_do_not_erode_a_jobs_retry_budget(
             claimed = await fleet.pod(current).claim([_QUEUE], 1)
             assert len(claimed) == 1, (
                 f"deploy {generation}: the job was not claimable. After "
-                f"{generation} hand-backs it must still be queued — none of them ran it."
+                f"{generation} hand-backs it must still be queued - none of them ran it."
             )
             await fleet.stop_pod(current, graceful=True)
             await fleet.start_pod(f"pod-{generation + 1}")

@@ -3,7 +3,7 @@
 Verifies that reload_credentials hot-swaps every factory-backed resource
 on WorkerDeps with freshly-built replacements, that old resources are
 drained in the background, and that caller-owned resources are skipped.
-Uses fakes — no real Postgres/Redis required.
+Uses fakes - no real Postgres/Redis required.
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ class _FakePool:
         self.close_wait = asyncio.Event()
         self.close_wait.set()  # close() completes instantly by default
         # Why an event alongside the flag: the flag is the assertion
-        # surface; the event is the WAIT surface — the reload's
+        # surface; the event is the WAIT surface - the reload's
         # background drain closes the pool on its own task, and a test
         # that needs "closed" can await this instead of sleeping a
         # fixed interval that races the drain under load.
@@ -102,7 +102,7 @@ class _FakeConn:
         self.terminated = False
         self.executed: list[str] = []
         # Why an event alongside the flag: the flag is the assertion
-        # surface; the event is the WAIT surface — the reload's
+        # surface; the event is the WAIT surface - the reload's
         # background drain closes the connection on its own task, and a
         # test that needs "closed" can await this instead of sleeping a
         # fixed interval that races the drain under load.
@@ -162,8 +162,8 @@ async def _wait_until_closed(resource: _FakePool | _FakeConn, *, deadline: float
     close *resource* (a pool or a dedicated connection).
 
     The drain runs on its own task; awaiting the fake's ``closed_event``
-    waits exactly as long as the work needs — never a fixed sleep that
-    races the drain under load — and the bound turns a broken drain
+    waits exactly as long as the work needs - never a fixed sleep that
+    races the drain under load - and the bound turns a broken drain
     into a loud failure instead of a hang. The mechanism is the shared
     :func:`taskq.testing.assertions.wait_for`; this wrapper only binds
     the resource's label to the failure message.
@@ -204,7 +204,7 @@ async def test_reload_swaps_factory_backed_pools() -> None:
         assert deps.heartbeat_pool is new_heartbeat
         assert deps.worker_pool is new_worker
         # Event-driven waits for the background drain to close the old
-        # pools — bounded, and never a fixed sleep racing the drain.
+        # pools - bounded, and never a fixed sleep racing the drain.
         await _wait_until_closed(old_dispatcher)
         await _wait_until_closed(old_heartbeat)
         await _wait_until_closed(old_worker)
@@ -225,7 +225,7 @@ async def test_reload_swaps_slot_pool_and_preserves_boot_time_sizing() -> None:
     A provider-backed slot pool is swapped like the role pools (old
     drained in the background, replacement registered for teardown),
     and the replacement comes from the SAME factory the boot-time pool
-    came from — the closure captured ``max_concurrency + 1`` at build
+    came from - the closure captured ``max_concurrency + 1`` at build
     time, which is what keeps the pool's size stable across rotations
     (max_concurrency is boot-only; no reload path re-reads settings).
     """
@@ -266,7 +266,7 @@ async def test_reload_swaps_slot_pool_and_preserves_boot_time_sizing() -> None:
 
 
 async def test_reload_skips_dsn_built_slot_pool() -> None:
-    """A DSN-built slot pool has no factory — nothing to rotate.
+    """A DSN-built slot pool has no factory - nothing to rotate.
 
     Same rule as the role pools: the DSN path bakes a static credential,
     so a rebuild would reopen identical connections for no credential
@@ -292,7 +292,7 @@ async def test_reload_skips_dsn_built_slot_pool() -> None:
 
     # The test created this pool outside any TaskQ-owned lifecycle (the
     # DSN-built slot pool's real close callback is registered by
-    # bootstrap, which this test bypasses) — nothing may have closed it.
+    # bootstrap, which this test bypasses) - nothing may have closed it.
     assert not dsn_slot.closed
 
 
@@ -319,7 +319,7 @@ async def test_reload_skips_caller_owned_pools() -> None:
 
 async def test_reload_continues_past_one_failed_pool_factory() -> None:
     """A factory failure for one pool (e.g. transient credential-fetch
-    error) is caught, logged, and does NOT abort the remaining resources —
+    error) is caught, logged, and does NOT abort the remaining resources -
     reload_credentials keeps going and reloads dispatcher/worker even
     though heartbeat's factory raised."""
     settings = _make_settings()
@@ -340,13 +340,13 @@ async def test_reload_continues_past_one_failed_pool_factory() -> None:
         leader_conn=_FakeConn(),  # type: ignore[arg-type]
     )
     async with open_worker_deps(settings, connections=conns) as deps:
-        # The slot pool joins the rebuild set — a failing SLOT factory
+        # The slot pool joins the rebuild set - a failing SLOT factory
         # must not abort the role pools either, so it shares the failing
         # factory here.
         deps.slot_pool = _FakePool("old-slot")  # type: ignore[assignment]
         deps.slot_pool_factory = failing_heartbeat_factory  # type: ignore[assignment]
         # Swap in a failing factory only for the reload call, after startup
-        # succeeded with the real one — isolates the failure to the reload.
+        # succeeded with the real one - isolates the failure to the reload.
         deps.heartbeat_pool_factory = failing_heartbeat_factory  # type: ignore[assignment]
 
         await reload_credentials(deps, drain_timeout=0.5)
@@ -355,9 +355,9 @@ async def test_reload_continues_past_one_failed_pool_factory() -> None:
         # slot's failures
         assert deps.dispatcher_pool is new_dispatcher
         assert deps.worker_pool is new_worker
-        # heartbeat kept its old (not-yet-expired) pool — no partial/corrupt state
+        # heartbeat kept its old (not-yet-expired) pool - no partial/corrupt state
         assert deps.heartbeat_pool is old_heartbeat
-        # Not closed by the reload's background drain — only normal
+        # Not closed by the reload's background drain - only normal
         # open_worker_deps teardown (below) will close it, since it's
         # still the live pool.
         assert not old_heartbeat.closed
@@ -392,7 +392,7 @@ async def test_reload_swaps_notify_conn_via_factory() -> None:
     async with open_worker_deps(settings, connections=conns) as deps:
         assert deps.notify_conn is old_notify
         await reload_credentials(deps, drain_timeout=0.5)
-        # notify_conn was swapped (via the factory — no listener running,
+        # notify_conn was swapped (via the factory - no listener running,
         # so the direct-swap fallback path is used)
         assert deps.notify_conn is new_notify
         # LISTEN was issued on the new connection
@@ -423,7 +423,7 @@ async def test_reload_closes_leader_conn_for_watchdog_reopen() -> None:
     async with open_worker_deps(settings, connections=conns) as deps:
         assert deps.leader_conn is old_leader
         await reload_credentials(deps, drain_timeout=0.5)
-        # leader_conn is set to None — the watchdog will reopen it
+        # leader_conn is set to None - the watchdog will reopen it
         assert deps.leader_conn is None
         await _wait_until_closed(old_leader)
 
@@ -464,7 +464,7 @@ async def test_reload_swaps_redis_client() -> None:
         assert deps.redis_client is old_redis
         await reload_credentials(deps, drain_timeout=0.5)
         assert deps.redis_client is new_redis
-        # Event-driven wait for the drain's aclose — bounded, never a
+        # Event-driven wait for the drain's aclose - bounded, never a
         # fixed sleep racing it under load.
         try:
             await asyncio.wait_for(old_redis_aclosed.wait(), timeout=5.0)
@@ -473,7 +473,7 @@ async def test_reload_swaps_redis_client() -> None:
 
     # Old Redis was drained exactly once (by the reload's background drain)…
     old_redis.aclose.assert_awaited_once()
-    # …and the LIVE client — the one in use at shutdown — was closed by
+    # …and the LIVE client - the one in use at shutdown - was closed by
     # teardown. Before the fix, teardown closed the already-drained startup
     # client and leaked the live one.
     new_redis.aclose.assert_awaited_once()
@@ -485,7 +485,7 @@ async def test_reload_swaps_redis_client() -> None:
 async def test_reload_noop_when_no_factories() -> None:
     """reload_credentials is a no-op when all resources are DSN-backed."""
     settings = _make_settings()
-    # All DSN-backed — but we need to avoid real connections. Override all
+    # All DSN-backed - but we need to avoid real connections. Override all
     # PG roles with concrete fakes so no DSN fallback is attempted.
     conns = WorkerConnections(
         dispatcher_pool=_FakePool("dp"),  # type: ignore[arg-type]
@@ -495,7 +495,7 @@ async def test_reload_noop_when_no_factories() -> None:
         leader_conn=_FakeConn(),  # type: ignore[arg-type]
     )
     async with open_worker_deps(settings, connections=conns) as deps:
-        # No factories stored — reload is a no-op
+        # No factories stored - reload is a no-op
         await reload_credentials(deps, drain_timeout=0.5)
         # Nothing changed
         assert deps.dispatcher_pool is conns.dispatcher_pool
@@ -522,7 +522,7 @@ async def test_reload_raises_when_called_outside_open_worker_deps() -> None:
 
 
 async def test_reload_raises_after_open_worker_deps_exits() -> None:
-    """deps._exit_stack must be reset to None when the context exits —
+    """deps._exit_stack must be reset to None when the context exits -
     otherwise a late reload would register new pools on a dead stack and
     they would never be closed."""
     settings = _make_settings()
@@ -595,12 +595,12 @@ async def test_reload_prefers_notify_reconnect_fn_over_direct_swap() -> None:
         reconnect_fn.assert_awaited_once()
         assert "notify_conn" in reloaded
         assert failed == []
-        # Direct swap NOT performed — conn untouched, no LISTEN re-issued
+        # Direct swap NOT performed - conn untouched, no LISTEN re-issued
         assert deps.notify_conn is old_notify
 
 
 async def test_reload_skips_caller_owned_notify_conn() -> None:
-    """A caller-owned notify_conn has no factory — reload must skip it
+    """A caller-owned notify_conn has no factory - reload must skip it
     cleanly (not record a spurious failure), even when a reconnect
     closure is registered."""
     settings = _make_settings()
@@ -683,7 +683,7 @@ async def test_reload_records_redis_factory_failure() -> None:
 
 async def test_reload_terminates_pool_when_drain_times_out() -> None:
     """A pool that never finishes close() within drain_timeout is
-    terminated — checked-out connections must not keep old credentials
+    terminated - checked-out connections must not keep old credentials
     alive indefinitely."""
     settings = _make_settings()
     stuck_pool = _FakePool("stuck")
@@ -703,7 +703,7 @@ async def test_reload_terminates_pool_when_drain_times_out() -> None:
         # Event-driven, bounded wait for the background drain to hit the
         # drain timeout and terminate the stuck pool: the fake's
         # closed_event is set in terminate() exactly where the observable
-        # flips, so this waits as long as the drain needs — never a fixed
+        # flips, so this waits as long as the drain needs - never a fixed
         # sleep racing it under load.
         await _wait_until_closed(stuck_pool)
         assert stuck_pool.terminated
@@ -711,7 +711,7 @@ async def test_reload_terminates_pool_when_drain_times_out() -> None:
 
 async def test_reload_awaited_leader_close_before_watchdog_reopen() -> None:
     """The old leader conn is closed BEFORE reload returns (bounded), so
-    the advisory lock is released before the watchdog's re-election —
+    the advisory lock is released before the watchdog's re-election -
     avoiding a guaranteed first-attempt lock conflict."""
     settings = _make_settings()
     old_leader = _FakeConn()
@@ -726,14 +726,14 @@ async def test_reload_awaited_leader_close_before_watchdog_reopen() -> None:
     async with open_worker_deps(settings, connections=conns) as deps:
         await reload_credentials(deps, drain_timeout=0.5)
         assert deps.leader_conn is None
-        # Closed synchronously by reload — not left to a background task
+        # Closed synchronously by reload - not left to a background task
         assert old_leader.closed
 
 
 async def test_reload_leader_close_does_not_null_concurrently_reopened_conn() -> None:
     """While reload awaits the old leader conn's close, the election
     watchdog can reopen via the factory and set deps.leader_conn to the
-    NEW conn. Reload must not then null it — an orphaned lock-holding
+    NEW conn. Reload must not then null it - an orphaned lock-holding
     conn would block re-election until GC."""
     settings = _make_settings()
     old_leader = _FakeConn()
@@ -770,7 +770,7 @@ async def test_reload_leader_close_does_not_null_concurrently_reopened_conn() ->
 
 async def test_concurrent_reload_calls_are_serialized() -> None:
     """A second reload while one is in flight returns immediately without
-    rebuilding anything — overlapping reloads would double-drain pools and
+    rebuilding anything - overlapping reloads would double-drain pools and
     leak the loser's replacements."""
     settings = _make_settings()
     gate = asyncio.Event()
@@ -805,7 +805,7 @@ async def test_concurrent_reload_calls_are_serialized() -> None:
 
 async def test_reload_factory_timeout_marks_resource_failed() -> None:
     """A hung factory (e.g. unresponsive token endpoint) must not wedge
-    the reload — after factory_timeout the resource is marked failed and
+    the reload - after factory_timeout the resource is marked failed and
     the remaining resources still reload."""
     settings = _make_settings()
 
@@ -865,7 +865,7 @@ async def test_sighup_sets_reload_event() -> None:
             orchestrator_holder=[],
         )
         # Send SIGHUP to self. The handler is registered via
-        # loop.add_signal_handler, so it runs as a callback on THIS loop —
+        # loop.add_signal_handler, so it runs as a callback on THIS loop -
         # awaiting the event it sets is the bounded, event-driven wait (a
         # fixed sleep here races signal delivery under load).
         os.kill(os.getpid(), _signal.SIGHUP)

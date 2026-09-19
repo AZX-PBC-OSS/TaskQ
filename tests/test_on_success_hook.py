@@ -62,7 +62,7 @@ async def test_async_hook_awaited_correctly() -> None:
 
 
 async def test_sync_hook_returning_none_works() -> None:
-    """A sync hook that returns None (not an awaitable) is handled — no
+    """A sync hook that returns None (not an awaitable) is handled - no
     attempt to await None."""
     called: list[bool] = []
 

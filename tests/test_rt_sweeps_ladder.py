@@ -1,7 +1,7 @@
 """Red-team attacks on the occurred_at ladder and mixed-writer co-monotonicity.
 
 ``job_events.occurred_at`` must be non-decreasing in ``id`` order across
-ALL rows — that is the property ``poll_reclaim_events``' trailing
+ALL rows - that is the property ``poll_reclaim_events``' trailing
 watermark (``RECLAIM_EVENT_VISIBILITY_DELAY``) reads.  The bounded sweeps
 write their batch with a microsecond ordinality ladder
 (``clock_timestamp() + (ord - 1) * 1 microsecond``, see
@@ -13,14 +13,14 @@ This file attacks the invariant at the global level:
 * interleave a bounded sweep DRAIN (three committed batches) with the
   bare single-row form ON A DIFFERENT CONNECTION (the terminal writes'
   non-laddered shape), then assert no inversion anywhere in id order;
-* pin the ladder's exact shape — within one batch, consecutive ids step
+* pin the ladder's exact shape - within one batch, consecutive ids step
   by exactly one microsecond, which is what proves the ladder (rather
   than a bare volatile stamp, which collapses ~26 rows per microsecond)
   is still there;
 * pin the clock-domain agreement inside one reclaim: the job's
   ``finished_at`` (written by the driving UPDATE) must not postdate its
   event's ``occurred_at`` (written one statement later in the same
-  transaction) — a regression to transaction-start ``now()`` on either
+  transaction) - a regression to transaction-start ``now()`` on either
   side inverts this.
 
 Honest skew analysis for the mixed-writer race this file cannot make
@@ -29,7 +29,7 @@ microseconds AHEAD of real time, so a concurrent writer that INSERTS a
 higher-id row inside that window can produce a microsecond-scale
 inversion.  That window is four-plus orders of magnitude inside the 2 s
 visibility margin, which exists precisely to absorb commit-order skew
-between concurrent writers (milliseconds to seconds in practice) — the
+between concurrent writers (milliseconds to seconds in practice) - the
 ladder's skew is strictly dominated by the skew class the margin already
 tolerates, so it is not treated as a defect here; the deterministic
 interleave below pins the invariant at the level that cannot flake.
@@ -164,7 +164,7 @@ async def test_occurred_at_stays_co_monotonic_across_mixed_writers(
     sweep_event_rows = [row for row in rows if row["job_id"] in sweep_id_set]
     assert {row["job_id"] for row in sweep_event_rows} == sweep_id_set, (
         "every reclaimed row must carry its own event across the interleaved "
-        "drain — the ladder rows are exactly the sweep's own writes"
+        "drain - the ladder rows are exactly the sweep's own writes"
     )
     assert len(sweep_event_rows) == 40, "exactly one event per reclaimed row"
 
@@ -174,7 +174,7 @@ async def test_occurred_at_stays_co_monotonic_across_mixed_writers(
         if rows[i]["occurred_at"] < rows[i - 1]["occurred_at"]
     ]
     assert not inversions, (
-        f"occurred_at inverted against ascending id at {inversions[:3]} — the "
+        f"occurred_at inverted against ascending id at {inversions[:3]} - the "
         "poll_reclaim_events trailing watermark assumes the two are co-monotonic "
         "across ALL writers, ladder-stamped and bare alike"
     )
@@ -190,7 +190,7 @@ async def test_batch_ladder_keeps_stamps_strictly_increasing_and_inside_real_tim
     The ladder's actual guarantee (see ``_sql.py``'s comment on
     ``INSERT_EVENTS_DETAIL_BATCH_SQL``): ``clock_timestamp()`` is VOLATILE,
     so PostgreSQL evaluates it once PER ROW, and each row's stamp is its
-    own evaluation instant plus ``(ordinal - 1)`` microseconds — strictly
+    own evaluation instant plus ``(ordinal - 1)`` microseconds - strictly
     increasing by construction (each step is at least the 1 µs ladder
     increment; the per-row evaluation instants can add more when they
     straddle a microsecond boundary), and at most ``batch_size - 1``
@@ -224,7 +224,7 @@ async def test_batch_ladder_keeps_stamps_strictly_increasing_and_inside_real_tim
     assert len(events) == rows_n
     # The ladder's skew budget: (rows - 1) microseconds past real time.
     # real_now is evaluated one round trip AFTER the batch committed, so
-    # every stamp must sit at or below it — a deterministic bound because
+    # every stamp must sit at or below it - a deterministic bound because
     # a round trip dwarfs 19 microseconds.
     max_ladder_skew = timedelta(microseconds=rows_n - 1)
 
@@ -232,14 +232,14 @@ async def test_batch_ladder_keeps_stamps_strictly_increasing_and_inside_real_tim
     steps = [stamps[i] - stamps[i - 1] for i in range(1, len(stamps))]
     assert all(step >= timedelta(microseconds=1) for step in steps), (
         f"occurred_at must step strictly forward (>= 1 microsecond, the ladder "
-        f"increment) per consecutive id; saw steps as small as {min(steps)} — "
+        f"increment) per consecutive id; saw steps as small as {min(steps)} - "
         "a bare clock_timestamp() collapse (0 µs) or a now() collapse (0 µs "
         "everywhere) destroys the ordering the watermark reads"
     )
     assert len(set(stamps)) == len(stamps), "stamps must be distinct per row"
     assert stamps[-1] <= events[-1]["real_now"] + max_ladder_skew, (
         f"the last row's stamp ran {stamps[-1] - events[-1]['real_now']} past "
-        "real time measured after the commit — the ladder's whole span must "
+        "real time measured after the commit - the ladder's whole span must "
         "stay inside (batch_size - 1) microseconds of real time"
     )
 
@@ -250,9 +250,9 @@ async def test_written_timestamps_agree_within_one_reclaim(
 ) -> None:
     """A reclaim's finished_at must not postdate its own event's occurred_at.
 
-    Both are written inside one sweep transaction — ``finished_at`` by
+    Both are written inside one sweep transaction - ``finished_at`` by
     the driving UPDATE, ``occurred_at`` by the event INSERT one round
-    trip later — and both must be ``clock_timestamp()``-domain so they
+    trip later - and both must be ``clock_timestamp()``-domain so they
     agree with each other and with other writers.  A regression to
     transaction-start ``now()`` on the event side stamps it BEFORE the
     finished_at the same transaction wrote; on the job side it stamps
@@ -283,6 +283,6 @@ async def test_written_timestamps_agree_within_one_reclaim(
         assert row["finished_at"] is not None
         assert row["occurred_at"] >= row["finished_at"], (
             f"job {row['id']}: event occurred_at {row['occurred_at']} predates the "
-            f"finished_at {row['finished_at']} written by the same reclaim — one "
+            f"finished_at {row['finished_at']} written by the same reclaim - one "
             "of the two stamps left the clock_timestamp() domain"
         )

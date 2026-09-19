@@ -2,7 +2,7 @@
 time is converted to PayloadValidationError (non-retryable) with sanitized,
 operator-safe diagnostics.
 
-The conversion is the shared ``taskq.validate_actor_payload`` helper — the
+The conversion is the shared ``taskq.validate_actor_payload`` helper - the
 exact call both dispatch paths make (``dispatch_one_job`` in
 ``taskq/worker/dispatch.py`` and ``consume_one_job``'s pre-acquire fallback
 in ``taskq/worker/_consumer.py``). It follows the branch's sanitization
@@ -12,7 +12,7 @@ embed the raw payload or its input values (a raw pydantic
 pre-sanitization message also rendered the whole payload dict), because the
 message is persisted to the jobs row and surfaced in the web admin via
 ``error_message``. The diagnostics that ARE preserved: the actor name and
-field-level context (loc/type/msg) — enough to identify which field failed
+field-level context (loc/type/msg) - enough to identify which field failed
 without seeing its value.
 
 Adjacent contracts owned elsewhere: the terminal-write routing of the
@@ -70,7 +70,7 @@ class TestPydanticValidationErrorNotCaught:
 
     def test_pydantic_validation_error_is_not_payload_validation_error(self) -> None:
         """pydantic.ValidationError is a different class from
-        PayloadValidationError — the classifier's isinstance check does not
+        PayloadValidationError - the classifier's isinstance check does not
         catch it."""
         assert not issubclass(ValidationError, PayloadValidationError)
         assert not issubclass(PayloadValidationError, ValidationError)
@@ -128,7 +128,7 @@ class TestPayloadValidationErrorNonRetryable:
 
 
 class TestDispatchConvertsValidationError:
-    """The dispatch-time conversion is ``taskq.validate_actor_payload`` —
+    """The dispatch-time conversion is ``taskq.validate_actor_payload`` -
     the exact call ``dispatch_one_job`` and ``consume_one_job`` make. A
     malformed payload raises PayloadValidationError whose diagnostics are
     sanitized: the raw payload and its input values appear NOWHERE (not in
@@ -141,7 +141,7 @@ class TestDispatchConvertsValidationError:
         payload: the correct exception type is raised, the actor name is
         preserved, and the payload's values ("12345", the canary) appear in
         neither the message nor the attached validation_errors. The raw
-        payload dict is not rendered either — the pre-sanitization
+        payload dict is not rendered either - the pre-sanitization
         "Raw payload: {payload}" shape is gone."""
         bad_payload = {"run_id": 12345, "batch_id": {"secret": _CANARY}}
 
@@ -149,7 +149,7 @@ class TestDispatchConvertsValidationError:
             validate_actor_payload(_test_actor.payload_type, bad_payload, _test_actor.name)
 
         exc = exc_info.value
-        # Actor context IS preserved — the piece of caller text the
+        # Actor context IS preserved - the piece of caller text the
         # message is allowed to carry.
         assert _test_actor.name in str(exc)
         assert exc.actor == _test_actor.name
@@ -194,7 +194,7 @@ class TestDispatchConvertsValidationError:
     def test_real_converted_error_is_non_retryable(self) -> None:
         """The exception the real conversion raises is classified
         non-retryable (Fail, error_class='PayloadValidationError')
-        regardless of the actor's retry policy — a deterministic validation
+        regardless of the actor's retry policy - a deterministic validation
         failure must not burn retry attempts."""
         with pytest.raises(PayloadValidationError) as exc_info:
             validate_actor_payload(_test_actor.payload_type, {"run_id": 12345}, _test_actor.name)
@@ -216,7 +216,7 @@ class TestDispatchConvertsValidationError:
 
 class TestConsumerPathUsesTheSanitizedConversion:
     """``consume_one_job``'s pre-acquire fallback (``validated_payload=None``)
-    drives the SAME sanitized ``validate_actor_payload`` conversion — this
+    drives the SAME sanitized ``validate_actor_payload`` conversion - this
     pins the wiring, not just the helper: replacing that call with an
     inline ``model_validate`` plus a message embedding the raw payload
     would fail here.
@@ -258,7 +258,7 @@ class TestConsumerPathUsesTheSanitizedConversion:
 class TestConsumerThreadsStoredSchemaVer:
     """``consume_one_job``'s pre-acquire fallback holds the job row, so its
     ``PayloadValidationError`` must carry the row's STORED
-    ``payload_schema_ver`` — not the version being validated against.
+    ``payload_schema_ver`` - not the version being validated against.
 
     This is the dispatch-time schema-drift diagnostic: a row written
     before a payload migration (stored version 0 here, older than the
@@ -266,7 +266,7 @@ class TestConsumerThreadsStoredSchemaVer:
     row's own version, so an adopter's error handler can tell "this row
     predates the migration" apart from "this caller sent garbage". The
     helper's default (the current version) would claim the row is
-    current — the exact indistinguishability the field exists to remove.
+    current - the exact indistinguishability the field exists to remove.
     """
 
     async def test_consumer_validation_error_carries_the_rows_stored_version(self) -> None:
@@ -295,7 +295,7 @@ class TestConsumerThreadsStoredSchemaVer:
 
         assert exc_info.value.payload_schema_ver == "0", (
             "the consumer's validation error must carry the row's stored "
-            "payload_schema_ver (0 — a pre-migration row), not the default "
+            "payload_schema_ver (0 - a pre-migration row), not the default "
             "current version; an adopter branching on this field to tell a "
             "pre-migration row apart from caller garbage needs the row's "
             "own version on the worker path"

@@ -70,7 +70,7 @@ def test_oidc_warns_when_any_authenticated_tenant_user_gets_admin(
     structlog_capture: list[structlog.types.EventDict],
 ) -> None:
     """``allowed_groups`` empty means completing SSO against the tenant is the
-    whole authorization check — intentional, but the operator must be told."""
+    whole authorization check - intentional, but the operator must be told."""
     pytest.importorskip("authlib")
     from taskq.web.admin.auth import create_oidc_auth
 

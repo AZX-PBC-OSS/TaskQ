@@ -173,7 +173,7 @@ class TestKeyedRateLimitRefTyped:
 
     async def test_typed_extra_forbid_rejects_dict_with_extra_keys(self) -> None:
         """A ref whose payload_type has extra='forbid' rejects dicts
-        with unexpected keys — the registry's model_validate raises
+        with unexpected keys - the registry's model_validate raises
         ValidationError, not a silent acceptance."""
         from taskq.ratelimit.registry import RateLimitRegistry
 
@@ -310,7 +310,7 @@ class TestKeyedReservationRefTyped:
         """Reservation-side twin of the key-validation sanitize contract:
         the key_fn empty/non-str ValueError propagates into persisted
         error_message (job row / web admin), so it must not embed payload
-        values — including the model_dump of a validated model payload."""
+        values - including the model_dump of a validated model payload."""
         from taskq.ratelimit.registry import RateLimitRegistry
 
         canary = "TOP-SECRET-canary-d4e5f6"

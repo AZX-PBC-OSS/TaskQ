@@ -11,7 +11,7 @@ Covers:
 - PG transport: RuntimeError when dsn is None (pool-only construction).
 - Bounded owned-LISTEN-conn closes: _stream_pg/_watch_reclaims_pg
   teardown and watch_reclaims reconnect paths bound close() via
-  close_conn_bounded — a dead PG cannot wedge the generator.
+  close_conn_bounded - a dead PG cannot wedge the generator.
 """
 
 import asyncio
@@ -519,7 +519,7 @@ async def test_stream_pg_poll_errors_never_escape_the_generator() -> None:
 # ── Bounded owned-LISTEN-conn closes ─────────────────────────────────────
 #
 # asyncpg's Connection.close() passes no timeout underneath, so against a
-# dead PG it can hang forever — contextlib.suppress(Exception) catches
+# dead PG it can hang forever - contextlib.suppress(Exception) catches
 # errors but cannot stop a call that never returns. These tests pin that
 # every TaskQ-owned LISTEN-conn close in _watch_reclaims_pg (teardown AND
 # the reconnect error paths) goes through close_conn_bounded: after the
@@ -550,7 +550,7 @@ class _FakeHungCloseWatchConn:
         self._termination_listeners: list[Any] = []
         self.listener_channels: list[str] = []
         # Why an event alongside the channel list: the list is the
-        # assertion surface; the event is the WAIT surface — the watch
+        # assertion surface; the event is the WAIT surface - the watch
         # generator registers LISTEN on its own task, and a test that
         # needs "LISTEN registered" can await this instead of sleeping a
         # fixed interval that races the generator's startup under load.
@@ -606,7 +606,7 @@ class _FakeHungCloseWatchConn:
 
 
 class _ReconnectAddListenerFailsConn(_FakeHungCloseWatchConn):
-    """Reconnect candidate whose add_listener raises — a failed reconnect."""
+    """Reconnect candidate whose add_listener raises - a failed reconnect."""
 
     async def add_listener(self, channel: str, callback: Any) -> None:
         raise asyncpg.InterfaceError("pg still down")
@@ -621,7 +621,7 @@ def _make_watch_backend() -> InMemoryBackend:
 
 async def _make_running_row(backend: InMemoryBackend) -> JobId:
     """Enqueue a job, flip it to running with an expired lock, then reclaim
-    it — leaves one crash-reclaim event in the backend's event log for
+    it - leaves one crash-reclaim event in the backend's event log for
     _watch_reclaims_pg to observe. Mirrors tests/test_watch_reclaims.py."""
     args = make_enqueue_args(
         actor="stream_watch_test_actor",
@@ -670,7 +670,7 @@ async def test_watch_reclaims_failed_reconnect_bounds_hung_new_conn_close(
 ) -> None:
     """Failed-reconnect close (mid-run): a new conn that failed LISTEN setup
     against a dead PG can hang close(); an unbounded close would wedge the
-    degraded poll loop — the only live delivery path. The bounded close
+    degraded poll loop - the only live delivery path. The bounded close
     terminates the failed conn and the loop keeps polling (failed_attempts
     increments, delivery continues)."""
     import taskq.client._taskq as taskq_mod
@@ -703,7 +703,7 @@ async def test_watch_reclaims_failed_reconnect_bounds_hung_new_conn_close(
             # Event-driven gate instead of a fixed 0.05s sleep: one
             # deterministic yield runs the generator's first step (the
             # factory call completes inline, so conns[0] exists), and the
-            # conn fires `listening` exactly at its LISTEN registration —
+            # conn fires `listening` exactly at its LISTEN registration -
             # killing before that point would take a different failure
             # path than the one under test.
             await asyncio.sleep(0)
@@ -726,7 +726,7 @@ async def test_watch_reclaims_failed_reconnect_bounds_hung_new_conn_close(
     assert len(events) == 1
     failed = conns[1:]
     assert len(failed) >= 2, (
-        "poll loop wedged after a failed reconnect — failed_attempts must "
+        "poll loop wedged after a failed reconnect - failed_attempts must "
         "increment and the loop must keep polling"
     )
     assert all(c.terminated for c in failed if c.close_calls > 0)
@@ -737,7 +737,7 @@ async def test_watch_reclaims_reconnect_swap_bounds_hung_old_conn_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Reconnect-swap close (mid-run): the OLD conn being swapped out was
-    already diagnosed dead — the sharpest close()-hang case. The bounded
+    already diagnosed dead - the sharpest close()-hang case. The bounded
     close terminates it (not leaked), the swap completes, and the generator
     logs 'watch-reclaims-listen-reconnected' and resumes LISTEN-driven
     delivery."""
@@ -767,7 +767,7 @@ async def test_watch_reclaims_reconnect_swap_bounds_hung_old_conn_close(
             # Event-driven gate instead of a fixed 0.05s sleep: one
             # deterministic yield runs the generator's first step (the
             # factory call completes inline, so conns[0] exists), and the
-            # conn fires `listening` exactly at its LISTEN registration —
+            # conn fires `listening` exactly at its LISTEN registration -
             # killing before that point would take a different failure
             # path than the one under test.
             await asyncio.sleep(0)
@@ -778,7 +778,7 @@ async def test_watch_reclaims_reconnect_swap_bounds_hung_old_conn_close(
             await _make_running_row(backend)
             # Why shield: pre-fix the generator wedges in the swap close, and
             # cancelling the collect task would re-wedge it in the generator's
-            # own finally (same hung conn) — the outer timeout would never
+            # own finally (same hung conn) - the outer timeout would never
             # return. Shield keeps the RED fail-fast (TimeoutError); the
             # finally below then releases the gates so the task unwinds.
             events = await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
@@ -801,7 +801,7 @@ async def test_watch_reclaims_finally_bounds_hung_owned_conn_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """_watch_reclaims_pg teardown: closing the generator (consumer done)
-    closes the owned conn — a hung close() against a dead PG must not wedge
+    closes the owned conn - a hung close() against a dead PG must not wedge
     finalization; the bounded close terminates the conn instead."""
     import taskq.client._taskq as taskq_mod
 
@@ -1131,13 +1131,13 @@ async def test_stream_no_duplicate_initial_snapshot_via_redis() -> None:
 
 pytest.importorskip("starlette")
 
-import json as _stdlib_json  # noqa: E402  # Why: test-only import — the byte-equality oracle for the response-class contract
+import json as _stdlib_json  # noqa: E402  # Why: test-only import - the byte-equality oracle for the response-class contract
 
 from starlette.responses import JSONResponse  # noqa: E402
 
 
 def test_orjson_response_class_is_json_response_subclass() -> None:
-    """orjson_response_class() returns a cached JSONResponse subclass — a
+    """orjson_response_class() returns a cached JSONResponse subclass - a
     drop-in replacement for starlette's stdlib-json JSONResponse in FastAPI
     routes."""
     from taskq.client._taskq import orjson_response_class
@@ -1149,8 +1149,8 @@ def test_orjson_response_class_is_json_response_subclass() -> None:
 
 def test_orjson_response_body_byte_equal_to_stdlib_for_json_safe_payloads() -> None:
     """For every JSON-representable value the orjson-backed render() is
-    byte-identical to starlette's stdlib-json render() — same body bytes,
-    same application/json content-type — so swapping the class in cannot
+    byte-identical to starlette's stdlib-json render() - same body bytes,
+    same application/json content-type - so swapping the class in cannot
     change what HTTP clients see."""
     from taskq.client._taskq import orjson_response_class
 
@@ -1173,7 +1173,7 @@ def test_orjson_response_body_byte_equal_to_stdlib_for_json_safe_payloads() -> N
 
 
 def test_orjson_response_body_matches_taskq_json_dumps() -> None:
-    """render() output is exactly taskq._json.dumps output — the project
+    """render() output is exactly taskq._json.dumps output - the project
     rule that serialization flows through the orjson-backed helper, never
     stdlib json."""
     from taskq._json import dumps as taskq_dumps
@@ -1195,7 +1195,7 @@ def test_orjson_response_renders_datetime_instead_of_raising() -> None:
     cls = orjson_response_class()
     body = cls({"at": datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)}).body
     assert body == b'{"at":"2025-01-01T12:00:00Z"}'
-    # And the stdlib baseline really cannot do this — the divergence is the point.
+    # And the stdlib baseline really cannot do this - the divergence is the point.
     with pytest.raises(TypeError):
         JSONResponse({"at": datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)})
 
@@ -1204,7 +1204,7 @@ def test_orjson_response_render_routes_through_taskq_json() -> None:
     """render() must not fall back to stdlib json: its output for a
     non-ASCII payload equals the taskq._json form (raw UTF-8, compact
     separators), which is byte-identical to stdlib's ensure_ascii=False
-    form — the contract the byte-equality test above pins."""
+    form - the contract the byte-equality test above pins."""
     import taskq.client._taskq as taskq_module
 
     content: dict[str, object] = {"k": "héllo"}

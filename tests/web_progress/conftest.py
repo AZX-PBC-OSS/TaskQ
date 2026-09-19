@@ -20,7 +20,7 @@ def _dev_env(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[report
     create_router's fail-closed auth check does not raise.
 
     These tests exercise SSE mechanics (subscribe-before-query, reconnect,
-    keepalives, teardown, connection caps) against stub pools and pubsubs —
+    keepalives, teardown, connection caps) against stub pools and pubsubs -
     none of them assert on authentication, and mounting the router is a
     prerequisite for all of them. The gate itself has its own test file
     (test_auth_gate.py), whose non-dev cases override this with their own
@@ -34,20 +34,20 @@ def _dev_env(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[report
 async def _join_sse_starlette_shutdown_watcher() -> AsyncIterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
     """Join the sse-starlette loop watcher a streaming test leaves behind.
 
-    ``EventSourceResponse`` — the progress router's SSE response class —
+    ``EventSourceResponse`` - the progress router's SSE response class -
     lazily starts ONE ``_shutdown_watcher`` task on the running loop the
     first time a response streams: a poller that parks until uvicorn sets
     ``AppStatus.should_exit``, a signal no in-process ``httpx.ASGITransport``
     test ever sends. The test cannot hold the task reference (sse-starlette
     creates it via ``loop.create_task`` and drops it), so the join targets
-    the coroutine by name — the same identification the leaked-task guard's
+    the coroutine by name - the same identification the leaked-task guard's
     report uses. Cancel-and-await, never ``AppStatus.should_exit = True``:
     that class attribute is process-global, and flipping it here would make
     every LATER module's streams see a shutdown that never happened. The
     watcher's own ``finally`` resets its per-thread ``watcher_started``
     flag, so the next streaming test mints a fresh watcher this fixture
     joins in turn. Sync TestClient tests stream on their own portal
-    thread's loop, never this one — the scan finds nothing and the fixture
+    thread's loop, never this one - the scan finds nothing and the fixture
     is a no-op for them.
     """
     try:

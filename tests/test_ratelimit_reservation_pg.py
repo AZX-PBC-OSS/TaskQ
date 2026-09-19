@@ -40,7 +40,7 @@ async def test_acquire_release_lifecycle(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """Full acquire/release lifecycle — pre-allocate 2 slots, acquire
+    """Full acquire/release lifecycle - pre-allocate 2 slots, acquire
     both, release one, acquire again; released slot is reused."""
     schema = module_pg_schema.schema_name
     bucket = _unique_name()
@@ -84,7 +84,7 @@ async def test_skip_locked_contention(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """SKIP LOCKED under contention — two concurrent asyncio.gather
+    """SKIP LOCKED under contention - two concurrent asyncio.gather
     acquires on the same bucket (2 slots); both succeed on slot_index=0 and
     slot_index=1; no deadlock."""
     schema = module_pg_schema.schema_name
@@ -109,7 +109,7 @@ async def test_expired_lease_inline_reclaim(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """Expired lease inline reclamation — acquire, manually set
+    """Expired lease inline reclamation - acquire, manually set
     lease_expires_at = now() - interval '1 second' in PG, then acquire;
     expired slot reclaimed inline."""
     schema = module_pg_schema.schema_name
@@ -140,7 +140,7 @@ async def test_heartbeat_extends_lease(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """Heartbeat extends lease — acquire a slot, run two heartbeat ticks
+    """Heartbeat extends lease - acquire a slot, run two heartbeat ticks
     (via SQL template from heartbeat.py); lease_expires_at advances on each
     tick."""
     schema = module_pg_schema.schema_name
@@ -217,7 +217,7 @@ async def test_sweep_4_reclaims_expired_slots(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """Sweep 4 reclaims expired slots — acquire, set lease_expires_at
+    """Sweep 4 reclaims expired slots - acquire, set lease_expires_at
     to the past, run Sweep 4 SQL; all expired slots freed (job_id = NULL,
     held_by_worker_id = NULL)."""
     schema = module_pg_schema.schema_name
@@ -228,7 +228,7 @@ async def test_sweep_4_reclaims_expired_slots(
     # this module-scoped table outlives any single test: earlier tests' held
     # slots expire on their own _LEASE wall clock and land in the count (and
     # did, under a full-suite ordering that ran this test more than ten
-    # seconds after a sibling). Deleting them here disturbs no sibling —
+    # seconds after a sibling). Deleting them here disturbs no sibling -
     # every test in this module builds its own uniquely named buckets.
     async with module_pg_pool.acquire() as conn:
         await conn.execute(f'DELETE FROM "{schema}".reservation_slots')
@@ -274,7 +274,7 @@ async def test_sync_slots_insertion(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """sync_slots() insertion — register slots=4, call sync_slots();
+    """sync_slots() insertion - register slots=4, call sync_slots();
     4 rows inserted; SyncResult.inserted has 4 entries."""
     schema = module_pg_schema.schema_name
     bucket = _unique_name()
@@ -303,7 +303,7 @@ async def test_sync_slots_deletion(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """sync_slots() deletion — seed 4 rows (config says 2 slots); call
+    """sync_slots() deletion - seed 4 rows (config says 2 slots); call
     sync_slots(); 2 excess free rows deleted."""
     schema = module_pg_schema.schema_name
     bucket = _unique_name()
@@ -335,7 +335,7 @@ async def test_sync_slots_skips_held(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """sync_slots() skips held slots — 4 rows in DB (config says 2),
+    """sync_slots() skips held slots - 4 rows in DB (config says 2),
     1 excess is held; 1 deleted, 1 in SyncResult.skipped_held."""
     schema = module_pg_schema.schema_name
     bucket = _unique_name()
@@ -374,7 +374,7 @@ async def test_sync_slots_all_excess_live_held_shrink_deletes_nothing_pg(
     """Shrink below current in-flight against real PG: ALL excess rows
     live-held → nothing deleted, both reported skipped_held, and the
     acquire CTE still admits the above-cap rows (the new cap takes effect
-    as holders drain — a live holder is never preempted)."""
+    as holders drain - a live holder is never preempted)."""
     schema = module_pg_schema.schema_name
     bucket = _unique_name()
 
@@ -409,12 +409,12 @@ async def test_sync_slots_deletes_expired_lease_excess_rows(
     module_pg_pool: asyncpg.Pool,
 ) -> None:
     """sync_slots() treats an excess row with an EXPIRED lease as free and
-    deletes it — regression for over-admission during shrink.
+    deletes it - regression for over-admission during shrink.
 
     The acquire CTE's free condition is ``job_id IS NULL OR
     lease_expires_at < now()``. If sync_slots instead treated every
     ``job_id IS NOT NULL`` row as held, a dead worker's leaked rows would
-    survive a shrink and remain acquirable — the old larger cap would keep
+    survive a shrink and remain acquirable - the old larger cap would keep
     being honored indefinitely. 4 rows (2 excess held by a dead worker
     with expired leases) → shrink to 2 → both excess rows deleted, nothing
     skipped, and a subsequent sync observes a clean table.
@@ -460,7 +460,7 @@ async def test_sync_slots_skips_live_held_but_deletes_expired_pg(
     module_pg_pool: asyncpg.Pool,
 ) -> None:
     """Mixed shrink against real PG: the live-held excess row is skipped
-    while the expired-lease excess row is deleted — the held/free
+    while the expired-lease excess row is deleted - the held/free
     definition matches the acquire CTE's exactly."""
     schema = module_pg_schema.schema_name
     bucket = _unique_name()
@@ -509,7 +509,7 @@ async def test_release_wrong_worker_id(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """Release with wrong worker_id — acquire with worker A, call
+    """Release with wrong worker_id - acquire with worker A, call
     release with worker B's UUID; UPDATE matches 0 rows; slot still held by
     A."""
     schema = module_pg_schema.schema_name

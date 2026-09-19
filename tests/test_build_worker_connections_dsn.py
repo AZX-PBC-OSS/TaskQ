@@ -74,7 +74,7 @@ def test_explicit_dsn_keeps_the_settings_derived_per_role_sizing(
 ) -> None:
     """The point of the override: a caller's DSN, TaskQ's connection budget.
 
-    Sizing still comes from ``WorkerSettings`` — that is exactly what a
+    Sizing still comes from ``WorkerSettings`` - that is exactly what a
     hand-rolled single factory for all three roles throws away.
     """
     settings = make_integration_settings(
@@ -90,7 +90,7 @@ def test_explicit_dsn_keeps_the_settings_derived_per_role_sizing(
     )
 
     sizes = sorted(kwargs["max_size"] for _dsn, kwargs in captured if "max_size" in kwargs)
-    # worker_pool_size is derived from concurrency, not a literal — read it off
+    # worker_pool_size is derived from concurrency, not a literal - read it off
     # settings so the assertion tracks the derivation rather than pinning it.
     assert sizes == sorted([4, 4, settings.worker_pool_size])
 

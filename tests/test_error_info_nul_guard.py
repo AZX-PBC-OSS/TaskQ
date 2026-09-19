@@ -4,8 +4,8 @@ The strand cycle this guards against: ``worker._handlers`` builds an
 :class:`~taskq.backend._protocol.ErrorInfo` from an actor exception's
 ``str()`` and formatted traceback, and the terminal-write UPDATE binds
 those as ``text``. A NUL in the value surfaces as asyncpg
-``CharacterNotInRepertoireError`` (SQLSTATE 22021) — a ``PostgresError``
-subclass — which the terminal-write infra error classification reads as
+``CharacterNotInRepertoireError`` (SQLSTATE 22021) - a ``PostgresError``
+subclass - which the terminal-write infra error classification reads as
 *transient infrastructure failure*. The job is therefore never marked
 failed: it stays ``running`` until the lease sweep reclaims it, re-runs,
 produces the same NUL-bearing text, and loops forever, re-executing the
@@ -13,10 +13,10 @@ actor's already-committed side effects each time.
 
 Two halves break the cycle, and both are pinned here:
 
-* the construction guard — ``ErrorInfo`` itself rejects a NUL, so a
+* the construction guard - ``ErrorInfo`` itself rejects a NUL, so a
   caller-supplied (unsanitized) value fails fast with a clean
   ``ValueError`` instead of an opaque infra loop;
-* the handler sanitization — text DERIVED from an uncontrolled exception
+* the handler sanitization - text DERIVED from an uncontrolled exception
   is sanitized to the visible ``\\x00`` escape before construction,
   because rejecting it would strand the very job the text describes: the
   terminal write must land with the defect visible.
@@ -70,13 +70,13 @@ def test_error_info_rejects_nul_in_error_traceback() -> None:
 
 
 def test_error_info_rejects_nul_in_error_class() -> None:
-    """Every text field is guarded — error_class is not exempt."""
+    """Every text field is guarded - error_class is not exempt."""
     with pytest.raises(ValueError, match="NUL"):
         ErrorInfo(error_class="Bad\x00Class", error_message="msg", error_traceback=None)
 
 
 def test_error_info_accepts_clean_values() -> None:
-    """Clean text constructs unchanged — the guard adds no false positives."""
+    """Clean text constructs unchanged - the guard adds no false positives."""
     info = ErrorInfo(error_class="ValueError", error_message="boom", error_traceback="tb")
     assert info.error_class == "ValueError"
     assert info.error_message == "boom"
@@ -101,13 +101,13 @@ def test_sanitize_nul_str_replaces_nul_with_visible_escape() -> None:
 # The strand cycle is only broken if the terminal write actually LANDS with
 # the escape visible: the handlers must sanitize derived text BEFORE the
 # guarded construction, so the write succeeds instead of raising. Driving
-# the real handlers against InMemoryBackend pins the stored row — the exact
+# the real handlers against InMemoryBackend pins the stored row - the exact
 # input the PG terminal write would bind.
 
 
 async def test_handle_generic_exception_sanitizes_derived_nul_text() -> None:
     """_handle_generic_exception returns normally for a NUL-bearing exception,
-    and the terminal write stores the visible escape — no raw NUL."""
+    and the terminal write stores the visible escape - no raw NUL."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))
     job = make_job_row(attempt=3, max_attempts=3)
     _seed_running_job(backend, job)

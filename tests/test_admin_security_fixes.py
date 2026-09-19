@@ -269,7 +269,7 @@ def test_payload_factory_error_redirect_uses_generic_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """POST /admin/schedules/{id}/run with an unresolvable payload_factory
-    redirects with ?error=payload+factory+error — the exception text must not
+    redirects with ?error=payload+factory+error - the exception text must not
     appear in the redirect URL."""
     monkeypatch.setenv("TASKQ_ADMIN_ACTIONS_ENABLED", "true")
     import taskq.web.admin.ops as ops_mod
@@ -389,7 +389,7 @@ def test_every_state_changing_admin_route_is_gated(monkeypatch: pytest.MonkeyPat
     Every POST route the router actually registers is called with both action
     gates off and must be refused. Enumerating the live routes rather than
     splitting the source on ``@router.post(`` means a new mutator is covered
-    the moment it is registered — including one declared through a helper, a
+    the moment it is registered - including one declared through a helper, a
     loop or an ``add_api_route`` call, none of which the text scan could see.
 
     Corrects the reported inventory in passing: ``actors/{actor}/deregister``
@@ -402,7 +402,7 @@ def test_every_state_changing_admin_route_is_gated(monkeypatch: pytest.MonkeyPat
     app, client = _mount_router(pool, backend=_make_backend())
 
     post_paths = sorted(_post_route_paths(app, prefix="/admin"))
-    assert post_paths, "no POST routes discovered — the enumeration is broken"
+    assert post_paths, "no POST routes discovered - the enumeration is broken"
 
     ungated: list[str] = []
     for path in post_paths:

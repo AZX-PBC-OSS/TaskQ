@@ -2,7 +2,7 @@
 actor-facing field of the production JobContext.
 
 The class this file guards: an actor-facing field lands on the production
-:class:`taskq.context.JobContext` and its test mirrors drift — proven
+:class:`taskq.context.JobContext` and its test mirrors drift - proven
 already: ``snooze_count`` reached all three production
 construction sites but not the in-memory runner's ``_StubContext`` or this
 mirror, so an actor written to the documented contract failed only under
@@ -11,7 +11,7 @@ its own docstring ("Field shape mirrors ``taskq.context.JobContext`` … and
 adds ``deps``"); this test makes it executable, so the next field fails
 here on arrival rather than being found by whoever's actor breaks.
 
-Precedent: ``tests/test_in_memory_seam_registry.py`` — behavioural tests
+Precedent: ``tests/test_in_memory_seam_registry.py`` - behavioural tests
 pin each known member, a guard over the walked surface catches the next
 one. The behavioural half for the deferral-cycle contract already exists
 (``tests/test_stub_context_snooze_count.py`` for the runner,
@@ -22,7 +22,7 @@ The invariant is scoped to *public* fields: the production class's
 underscore-prefixed fields are worker wiring the mirror deliberately
 replaces (``_abort_requested`` surfaces as the public ``abort_requested``),
 and the mirror's documented extras (``deps``, ``abort_requested``) are its
-own. ``_StubContext`` is not walked here — it is a declared minimal subset
+own. ``_StubContext`` is not walked here - it is a declared minimal subset
 ("the fields they read"), and its contract members are behaviour-pinned.
 """
 
@@ -48,7 +48,7 @@ def _public_field_names(cls: type) -> set[str]:
 
 def test_testing_job_context_carries_every_actor_facing_field() -> None:
     """Every public field of the production JobContext exists on the
-    testing mirror — a field an actor can read under the PG worker must be
+    testing mirror - a field an actor can read under the PG worker must be
     readable under the test harness, or the harness certifies actors that
     break in production (and vice versa)."""
     production = _public_field_names(ProductionJobContext)
@@ -57,7 +57,7 @@ def test_testing_job_context_carries_every_actor_facing_field() -> None:
     missing = production - mirror
     assert not missing, (
         "testing JobContext is missing actor-facing field(s) "
-        f"{sorted(missing)} that production JobContext carries — the "
+        f"{sorted(missing)} that production JobContext carries - the "
         "mirror-drift class: add the field to the mirror (and to "
         "_StubContext / the actor_runner fixture if actors read it), or "
         "narrow the mirror docstring's parity claim if the omission is "
@@ -68,7 +68,7 @@ def test_testing_job_context_carries_every_actor_facing_field() -> None:
 def test_testing_job_context_extras_are_the_documented_ones() -> None:
     """The mirror's additions beyond production are exactly the documented
     ``deps`` (fixture-injected collaborators) and ``abort_requested``
-    (the public spelling of production's private ``_abort_requested``) —
+    (the public spelling of production's private ``_abort_requested``) -
     a new extra is a deliberate act, not drift."""
     extras = _public_field_names(TestingJobContext) - _public_field_names(ProductionJobContext)
     assert extras == _MIRROR_EXTRAS, (

@@ -51,7 +51,7 @@ class FakePool(asyncpg.Pool):  # type: ignore[misc]
     def __init__(self, row_data: dict[str, int | None] | None) -> None:
         self._conn = FakeConn(row_data)
 
-    def acquire(self, timeout: float | None = None) -> _PoolCtx:  # pyright: ignore[reportIncompatibleMethodOverride]  # Why: stub returns a minimal context manager; real Pool.acquire returns PoolAcquireContext. The timeout kwarg is now load-bearing production surface — wait_for_batch bounds every poll's acquire with it (batch.py _POOL_ACQUIRE_TIMEOUT_S) — so the stub accepts and ignores it, mirroring conftest's _FakePool.
+    def acquire(self, timeout: float | None = None) -> _PoolCtx:  # pyright: ignore[reportIncompatibleMethodOverride]  # Why: stub returns a minimal context manager; real Pool.acquire returns PoolAcquireContext. The timeout kwarg is now critical production surface - wait_for_batch bounds every poll's acquire with it (batch.py _POOL_ACQUIRE_TIMEOUT_S) - so the stub accepts and ignores it, mirroring conftest's _FakePool.
         return _PoolCtx(self._conn)
 
 
@@ -280,7 +280,7 @@ async def test_wait_for_batch_pool_polling_path_terminates() -> None:
 
 class TestWaitForBatchFoldedStatement:
     """The poll statement carries the member counts and the batches row
-    together — the one-round-trip-per-poll contract. The FakeConn above
+    together - the one-round-trip-per-poll contract. The FakeConn above
     ignores bound arguments, so the parameter contract ($1 containment,
     $2 the batches row join, $3 the caller-only exclusion) is pinned here
     against drift a real connection would reject as an argument-count
@@ -304,6 +304,6 @@ class TestWaitForBatchFoldedStatement:
         assert ";" not in sql
         assert 'LEFT JOIN "taskq".batches b ON b.id = $2' in sql
         assert "j.id <> $3" in sql
-        # The caller exclusion replaces the finalizer exclusion — one
+        # The caller exclusion replaces the finalizer exclusion - one
         # excluded id either way.
         assert "fb.finalizer_job_id" not in sql

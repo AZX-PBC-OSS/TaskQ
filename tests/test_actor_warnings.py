@@ -6,7 +6,7 @@ Covers:
   - unique_for=None: enqueue succeeds normally
   - unique_for with identity_key present: enqueue succeeds normally
 
-The log-format details are intentionally not asserted — those are
+The log-format details are intentionally not asserted - those are
 implementation details that change independently of behaviour.
 """
 

@@ -7,7 +7,7 @@ Verifies that a worker started with TASKQ_UNTIL_IDLE=true:
 4. Waits for and processes scheduled jobs before exiting
 
 Each test enqueues jobs BEFORE starting the worker container, then
-polls the container's exit code — the worker must stop on its own
+polls the container's exit code - the worker must stop on its own
 (no SIGTERM needed).
 """
 
@@ -53,7 +53,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.timeout(900)]
 async def clean_e2e_state(request: pytest.FixtureRequest) -> AsyncIterator[None]:
     """Override that tolerates intentionally-stopped until-idle workers.
 
-    The until-idle worker exits on its own — the conftest's crash check
+    The until-idle worker exits on its own - the conftest's crash check
     would raise on the next test's setup because the container is no
     longer running.
     """
@@ -119,7 +119,7 @@ async def _wait_for_container_exit(
 ) -> int:
     """Poll container status until it exits, then return the exit code.
 
-    Calls wrapped.reload() before reading status/attrs — Docker attrs
+    Calls wrapped.reload() before reading status/attrs - Docker attrs
     are cached at fetch time and must be explicitly refreshed.
     """
 
@@ -179,7 +179,7 @@ async def test_until_idle_exits_nonzero_on_failures(
 
     Uses sync_user_profile with fail_kind='permanent': PermanentSyncError
     is in that actor's non_retryable_exceptions, so the first attempt
-    moves the job straight to terminal 'failed' — dispatch_one_job
+    moves the job straight to terminal 'failed' - dispatch_one_job
     returns 'failed', drain_failures increments, exit code becomes 3.
     """
     good = await e2e_client.enqueue(
@@ -214,7 +214,7 @@ async def test_until_idle_timeout_exit_4(
 
     Enqueues a long-running job (slow_deliver_webhook, sleeps 3s), starts
     a worker with TASKQ_IDLE_MAX_RUNTIME=2. The queue never reads as idle
-    within the cap because the job is still active (pending or running —
+    within the cap because the job is still active (pending or running -
     the specific state doesn't matter, both prevent idle). Exit code 4.
     """
     await e2e_client.enqueue(
@@ -247,7 +247,7 @@ async def test_until_idle_scheduled_jobs_drain(
 
     Enqueues a job with scheduled_at 3s in the future, starts a worker
     with TASKQ_UNTIL_IDLE=true, and verifies:
-    1. The worker waits (does not exit immediately — 'scheduled' counts
+    1. The worker waits (does not exit immediately - 'scheduled' counts
        as active under count_active_jobs)
     2. The scheduled job becomes due, is dispatched, and succeeds
     3. The worker then exits with code 0

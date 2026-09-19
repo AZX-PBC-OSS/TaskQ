@@ -4,7 +4,7 @@ are not claimed into consumer slots that can only deny them.
 The dispatch CTE (``src/taskq/backend/_dispatch_sql.py``,
 ``reservation_holdings`` / ``reservation_headroom``) folds live
 reservation-slot occupancy into per-actor admission, derived from holder
-state alone (``reservation_slots.job_id`` → ``jobs.actor`` — the database
+state alone (``reservation_slots.job_id`` → ``jobs.actor`` - the database
 carries no actor→bucket declaration mapping). The contract pinned
 here, through the production claim path:
 
@@ -15,14 +15,14 @@ here, through the production claim path:
 * the gate is a damper, not an authority: the post-claim acquire remains
   the decision of record, the first claim of a never-running actor is
   never gated (NULL headroom leaves the residual untouched), and the
-  moment capacity frees — release, or lease expiry, which the acquire
-  path treats as acquirable — the actor's rows flow again (no starvation
+  moment capacity frees - release, or lease expiry, which the acquire
+  path treats as acquirable - the actor's rows flow again (no starvation
   inversion);
 * a co-located actor sharing the queue is untouched throughout;
 * a partially free held bucket bounds the candidate window to
   headroom x oversample, never to zero.
 
-Two scoping rules (#242) extend the contract:
+Two scoping rules extend the contract:
 
 * KEYED buckets are excluded from the claim-time fold: their concrete
   names are payload-derived per job (``f"{base_name}:{key}"``), so the
@@ -111,7 +111,7 @@ async def test_full_held_bucket_excludes_actor_until_capacity_frees(pg_dsn: str)
         claimed = await pod.claim([_QUEUE], 10)
         assert {job.id for job in claimed} == healthy_ids, (
             "the saturated actor's rows must not be claimed while its only "
-            "reservation bucket is full — each would be claimed straight into "
+            "reservation bucket is full - each would be claimed straight into "
             "a denied acquire, churning a shared consumer slot per row"
         )
         # The gated rows were never touched: still pending, never claimed.
@@ -123,7 +123,7 @@ async def test_full_held_bucket_excludes_actor_until_capacity_frees(pg_dsn: str)
         await reservation.release(slot, pod.worker_id, pod.deps.worker_pool)
         claimed_after = await pod.claim([_QUEUE], 10)
         assert {job.id for job in claimed_after} == saturated_ids, (
-            "a saturated actor whose capacity freed must be claimed again — "
+            "a saturated actor whose capacity freed must be claimed again - "
             "the gate is a damper against un-runnable claims, never a "
             "starvation mechanism"
         )
@@ -131,7 +131,7 @@ async def test_full_held_bucket_excludes_actor_until_capacity_frees(pg_dsn: str)
 
 async def test_expired_lease_does_not_gate(pg_dsn: str) -> None:
     """An expired-lease slot is acquirable (the acquire CTE hands it out
-    on the spot), so it must not close the gate either — the claim's
+    on the spot), so it must not close the gate either - the claim's
     occupancy read is the acquire path's own free/held definition."""
     schema = f"headroom_expired_{new_base62()}".lower()
     async with open_fleet(
@@ -165,7 +165,7 @@ async def test_expired_lease_does_not_gate(pg_dsn: str) -> None:
 
 
 async def test_gate_covers_both_routing_arms(pg_dsn: str) -> None:
-    """A re-pended saturated-actor row (assignment_routed=true — the shape
+    """A re-pended saturated-actor row (assignment_routed=true - the shape
     a denied job returns in) is gated exactly like a producer-placed one:
     the fold sits in both capacity CTEs, so neither routing arm leaks a
     claim into a consumer slot while the bucket is full."""
@@ -180,7 +180,7 @@ async def test_gate_covers_both_routing_arms(pg_dsn: str) -> None:
         reservation = await _held_reservation(fleet, slots=1)
 
         # Holder takes the slot; one further saturated row stays
-        # producer-placed, one is re-pended (assignment_routed — the
+        # producer-placed, one is re-pended (assignment_routed - the
         # routing contract's marker for a row a re-pend path handed back).
         (holder_id,) = await fleet.enqueue(1, actor=_SATURATED, queue=_QUEUE)
         first = await pod.claim([_QUEUE], 1)
@@ -199,7 +199,7 @@ async def test_gate_covers_both_routing_arms(pg_dsn: str) -> None:
         claimed = await pod.claim([_QUEUE], 10)
         assert {job.id for job in claimed} == {healthy_id}, (
             "while the bucket is full, neither the producer-placed nor the "
-            "re-pended saturated row may be claimed — the gate lives in "
+            "re-pended saturated row may be claimed - the gate lives in "
             "per_actor_capacity AND repend_capacity"
         )
         states = await fleet.job_states()
@@ -214,7 +214,7 @@ async def test_gate_covers_both_routing_arms(pg_dsn: str) -> None:
 
 async def test_partial_headroom_bounds_the_candidate_window(pg_dsn: str) -> None:
     """A partially free held bucket admits at most headroom x oversample
-    rows of that actor per round — enough to fill the real capacity, never
+    rows of that actor per round - enough to fill the real capacity, never
     the whole round's backlog of an actor that can mostly not run."""
     schema = f"headroom_partial_{new_base62()}".lower()
     async with open_fleet(
@@ -238,7 +238,7 @@ async def test_partial_headroom_bounds_the_candidate_window(pg_dsn: str) -> None
         claimed_saturated = [job for job in claimed if job.actor == _SATURATED]
         # headroom = 1 free slot; the candidate window is residual x
         # oversample (1 x 2), the same best-effort over-admission doctrine
-        # max_concurrent keeps — the post-claim acquire stays the
+        # max_concurrent keeps - the post-claim acquire stays the
         # authority for the final slot.
         assert 0 < len(claimed_saturated) <= 2, (
             f"with one of two slots free the claim admitted "
@@ -250,7 +250,7 @@ async def test_partial_headroom_bounds_the_candidate_window(pg_dsn: str) -> None
 
 async def test_keyed_bucket_never_gates_its_holder_actor(pg_dsn: str) -> None:
     """A KEYED bucket held full by one tenant must not gate the actor's
-    other rows (#242): the claim cannot know which payload-derived key a
+    other rows: the claim cannot know which payload-derived key a
     pending row needs, so the keyed occupancy leaves the headroom fold
     entirely: the per-key cap stays with the consumer's post-claim
     acquire. A STATIC full bucket gates the same actor (the first test);
@@ -292,7 +292,7 @@ async def test_keyed_bucket_never_gates_its_holder_actor(pg_dsn: str) -> None:
             "a keyed bucket held full by one tenant gated the actor's "
             "other rows, the claim cannot know which pending row needs "
             "which payload-derived key, so keyed occupancy must leave the "
-            "headroom fold entirely (#242)"
+            "headroom fold entirely"
         )
         assert healthy_ids <= {job.id for job in claimed}
 
@@ -308,7 +308,7 @@ async def test_keyed_bucket_never_gates_its_holder_actor(pg_dsn: str) -> None:
 async def test_queue_cap_saturation_scopes_to_its_queue(pg_dsn: str) -> None:
     """A full QUEUE-CAP bucket gates its holder actors' claims on THAT
     queue only, the same actor's claims on every other queue flow
-    untouched (#242: pre-fix, the per-actor MIN fold zeroed the actor's
+    untouched (pre-fix, the per-actor MIN fold zeroed the actor's
     admission everywhere once any one queue's cap saturated)."""
     schema = f"headroom_qcap_{new_base62()}".lower()
     async with open_fleet(
@@ -451,7 +451,7 @@ async def _noop(payload: _TenantPayload, ctx: object) -> None:
 
 
 async def test_keyed_limit_enforces_post_claim_per_tenant(pg_dsn: str) -> None:
-    """#242 end-to-end: tenant A saturates its keyed session bucket (one
+    """end-to-end: tenant A saturates its keyed session bucket (one
     hog job holds the only slot); tenant B's jobs of the SAME actor
     complete (the claim never gated them on A's keyed occupancy), while
     A's further jobs are denied by the consumer's acquire, rescheduled,
@@ -568,7 +568,7 @@ async def test_keyed_limit_enforces_post_claim_per_tenant(pg_dsn: str) -> None:
             f"tenant B completed only {len(b_done)}/{_N_TENANT_B} jobs within the "
             f"{_RUN_CEILING_SECONDS}s ceiling while tenant A's keyed bucket was "
             "saturated, one tenant's keyed occupancy must not strand the "
-            "actor's other tenants (#242)"
+            "actor's other tenants"
         )
 
         # The keyed cap still bites for the saturated tenant: of A's

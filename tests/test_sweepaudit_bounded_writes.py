@@ -6,17 +6,17 @@ The class this file guards: work proportional to an unbounded backlog
 inside one transaction. Past ~2 s of open transaction the reclaim event
 watermark (``RECLAIM_EVENT_VISIBILITY_DELAY``) is silently corrupted; past
 the iteration deadline the transaction rolls back whole and the backlog
-ratchets — the failure that filed as "jobs stuck, fleet reports healthy".
+ratchets - the failure that filed as "jobs stuck, fleet reports healthy".
 Every site of that class was bounded (LIMIT inside a windowing CTE,
 per-batch commit through ``_drain_bounded``, breaker-wrapped via
 ``PostgresBackend._run_bounded_sweep``), and each fixed site has its own
 dynamic statement-count test. Those tests guard their site. This file
 guards the *surface*: it walks every module in the package, so a NEW
-unbounded write statement — the tenth site — fails here on arrival, and a
+unbounded write statement - the tenth site - fails here on arrival, and a
 cleared-by-audit statement stays cleared because this registry says so,
 not because someone once read it.
 
-Scope, stated plainly:
+Scope, stated directly:
 
 * Module-level string constants only. Function-local SQL (the
   ``_cancel_bulk.py`` batch statements, the cron tick's inline UPDATEs) is
@@ -26,12 +26,12 @@ Scope, stated plainly:
 * The statement shape, not its effectiveness. That a LIMIT is fenced
   (MATERIALIZED) and actually bounds rows is pinned per site by the
   dynamic tests; this file pins that the bound *exists* or that its
-  absence is deliberate — including, for the windowed write statements,
+  absence is deliberate - including, for the windowed write statements,
   that the MATERIALIZED fence exists: an unfenced LIMIT-ed CTE is not a
   bound on the rows the data-modifying statement touches, so the fence
   is part of "the bound exists", while that the fence actually holds
   rows stays with the per-site dynamic tests.
-* This asserts implementation surface by design — the precedent is
+* This asserts implementation surface by design - the precedent is
   ``tests/test_sweepaudit_dispatch_bound.py``: pin the production
   constant, not a copy, because a copy drifts from the SQL that actually
   runs. A rename breaking this test is the guard noticing change in the
@@ -77,7 +77,7 @@ _LIMIT_CLAUSE_RE = re.compile(r"\bLIMIT\b", re.IGNORECASE)
 # a claim with a tripwire: widen or remove the scoping predicate and the
 # substring check fails; bound the statement properly and the staleness
 # check fails until the entry is removed. Registering a new entry requires
-# writing the justification — that sentence is the review.
+# writing the justification - that sentence is the review.
 _EXEMPT: dict[str, tuple[str, str]] = {
     # ── Keyed single-row writes: the predicate names one primary key ──
     "_INCREMENT_BATCH_FAILURES_SQL": (
@@ -238,7 +238,7 @@ def _discover_write_statements() -> dict[str, str]:
     and friends) are skipped rather than failing the walk: CI legs that
     install every extra run the complete walk, so a module skipped here on
     a partial-extra leg is still audited there. An import failure is not
-    silently swallowed either — the known-guarded shapes (the extras'
+    silently swallowed either - the known-guarded shapes (the extras'
     documented ImportErrors) are skipped; anything else re-raises.
     """
     found: dict[str, str] = {}
@@ -271,13 +271,13 @@ def test_every_write_statement_is_bounded_or_registered() -> None:
     is not registered in ``_EXEMPT`` fails here.
 
     If you arrived from that failure: a write whose row count can grow
-    with the jobs backlog must go through the shared bounded machinery —
+    with the jobs backlog must go through the shared bounded machinery -
     ``PostgresBackend._run_bounded_sweep`` (breaker + SET LOCAL
-    statement_timeout) and ``_drain_bounded`` (per-batch commit) — or
+    statement_timeout) and ``_drain_bounded`` (per-batch commit) - or
     carry its own LIMIT inside a windowing CTE. If the statement truly
     cannot grow with the backlog (keyed, config-cardinality, or
     worker-scoped), register it in ``_EXEMPT`` above *with the reason*;
-    that reason is the review — maintenance and background
+    that reason is the review - maintenance and background
     work is bounded per transaction.
     """
     unregistered: list[str] = []
@@ -300,7 +300,7 @@ def test_every_write_statement_is_bounded_or_registered() -> None:
     )
     assert not wrong_scope, (
         "Registered exemptions whose scoping predicate no longer matches "
-        "— the statement was widened or rewritten; re-review the exemption:\n  "
+        "- the statement was widened or rewritten; re-review the exemption:\n  "
         + "\n  ".join(wrong_scope)
     )
 
@@ -310,7 +310,7 @@ def test_exemption_registry_has_no_stale_entries() -> None:
     """The reverse direction: every registry entry must still name a real,
     still-unbounded statement.
 
-    Bounding an exempt statement is the goal — but then the entry is
+    Bounding an exempt statement is the goal - but then the entry is
     stale, and leaving it teaches the next reader the registry is not
     maintained. Delete the entry when you land the bound; this test is the
     reminder. A renamed or deleted constant fails here too, which is how
@@ -324,7 +324,7 @@ def test_exemption_registry_has_no_stale_entries() -> None:
         if found is None:
             stale.append(f"{name}: no such statement discovered")
         elif _LIMIT_CLAUSE_RE.search(found[1]):
-            stale.append(f"{name} ({found[0]}): now carries a LIMIT — remove the entry")
+            stale.append(f"{name} ({found[0]}): now carries a LIMIT - remove the entry")
     assert not stale, "Stale _EXEMPT entries:\n  " + "\n  ".join(stale)
 
 
@@ -349,7 +349,7 @@ def test_windowed_write_ctes_carry_the_materialized_fence() -> None:
     carries ``AS MATERIALIZED``.
 
     Without the fence the planner may inline the LIMIT-ed CTE into the
-    UPDATE/INSERT/DELETE that joins it and move more rows than the LIMIT —
+    UPDATE/INSERT/DELETE that joins it and move more rows than the LIMIT -
     the LIMIT then bounds only the CTE's inlined appearances, not the
     written result, so the statement is unbounded in exactly the way this
     file exists to prevent while *looking* bounded (the LIMIT walk above
@@ -364,7 +364,7 @@ def test_windowed_write_ctes_carry_the_materialized_fence() -> None:
         if "AS MATERIALIZED" not in sql
     }
     assert not unfenced, (
-        "LIMIT-ed candidate windows without the MATERIALIZED fence — the "
+        "LIMIT-ed candidate windows without the MATERIALIZED fence - the "
         "planner may inline them into the data-modifying statement and move "
         "more rows than the LIMIT:\n  " + "\n  ".join(unfenced)
     )

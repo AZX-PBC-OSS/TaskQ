@@ -99,8 +99,8 @@ def test_prometheus_reader_accepts_the_registry_kwarg() -> None:
 # ``get_tracer()`` used to call ``importlib.metadata.version`` per span
 # (~320µs, benchmarks/ab_otel_hotspots.py); it now resolves the tracer
 # once per process. The pins below hold the two halves of that design:
-# the memo actually memoizes, and — the part that makes memoization
-# legal — a tracer resolved BEFORE an SDK registers still rebinds to the
+# the memo actually memoizes, and - the part that makes memoization
+# legal - a tracer resolved BEFORE an SDK registers still rebinds to the
 # real one afterwards (the API's ProxyTracer re-checks the global
 # provider on every span start, opentelemetry/trace/__init__.py
 # ``ProxyTracer._tracer``). Memoization must never pin the proxy/no-op
@@ -111,7 +111,7 @@ def test_get_tracer_resolves_once_and_memoizes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Two ``get_tracer()`` calls hit ``trace.get_tracer`` exactly once and
-    return the same object — the memo is the whole optimization."""
+    return the same object - the memo is the whole optimization."""
     monkeypatch.setattr(otel_mod, "_library_tracer", None)  # pyright: ignore[reportPrivateUsage]  # Why: reset the memo so this test observes its own resolution, not one an earlier test warmed.
 
     import opentelemetry.trace as trace_api
@@ -139,12 +139,12 @@ def test_memoized_tracer_rebinds_after_sdk_registration(
     non-recording spans, and the SAME memoized object yields recording
     spans once a real provider registers. If memoization ever swaps the
     ProxyTracer for something that pins the no-op behavior, a worker that
-    configures its SDK after first span goes silently dark — this pin is
+    configures its SDK after first span goes silently dark - this pin is
     what makes the memoization safe to keep."""
     import opentelemetry.trace as trace_api
 
     # Force the no-provider path for the resolution (and restore whatever
-    # the process had afterwards — never set the global for real).
+    # the process had afterwards - never set the global for real).
     monkeypatch.setattr(trace_api, "_TRACER_PROVIDER", None)  # pyright: ignore[reportPrivateUsage]
     monkeypatch.setattr(otel_mod, "_library_tracer", None)  # pyright: ignore[reportPrivateUsage]
 

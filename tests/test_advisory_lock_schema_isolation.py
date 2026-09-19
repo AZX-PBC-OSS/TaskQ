@@ -5,12 +5,12 @@ this module's history shipped (``taskq:maintenance_leader``, ``taskq:prune``,
 ``taskq:archive_expiry``, ``taskq:cron``) were shared by every schema in the
 database: two schemas' workers then contested one election lock, and the
 perpetual loser never ran its sweeps while its dispatch (not leader-gated)
-kept flowing — a fleet that reports healthy while scheduled work stops
+kept flowing - a fleet that reports healthy while scheduled work stops
 moving. ``schema_lock_name`` qualifies each lock with its schema.
 
-The tests here pin the property at the PG level — two schemas in one
+The tests here pin the property at the PG level - two schemas in one
 database both win their own lock; within one schema the lock still
-serializes — and pin the production sources against a reversion to the
+serializes - and pin the production sources against a reversion to the
 unqualified literals.
 """
 
@@ -37,7 +37,7 @@ _SOURCE_FILES: tuple[str, ...] = (
 )
 
 #: Exact-string pins for the killed unqualified literals. Each pin includes
-#: the literal's own quotes so only the exact reversion matches — a
+#: the literal's own quotes so only the exact reversion matches - a
 #: schema-qualified name (``taskq:prune:{schema}``) can never trip one.
 _UNQUALIFIED_LITERALS: tuple[str, ...] = (
     'taskq:maintenance_leader"',
@@ -55,7 +55,7 @@ async def module_pg_schema_b(
     Derives its name from the primary fixture's name (hex suffix swapped for
     ``_b``), so it stays inside the same identifier budget and can never
     collide with the primary. The advisory-lock statements under test never
-    touch these tables — the schemas are migrated so the two-schema topology
+    touch these tables - the schemas are migrated so the two-schema topology
     under test is real, not just two name strings.
     """
     schema_name = module_pg_schema.schema_name[:-2] + "_b"
@@ -113,7 +113,7 @@ async def test_maintenance_leader_locks_independent_across_schemas(
     win their own maintenance-leader election lock.
 
     Under the unqualified name both schemas contended one lock and the
-    perpetual loser never ran its sweeps — healthy-looking fleet, stalled
+    perpetual loser never ran its sweeps - healthy-looking fleet, stalled
     scheduled work.
     """
     lock_s1 = schema_lock_name("maintenance_leader", module_pg_schema.schema_name)
@@ -125,7 +125,7 @@ async def test_maintenance_leader_locks_independent_across_schemas(
         got_b = await _try_lock(conn_b, lock_s2)
         assert got_a is True, "schema 1 must win its own schema-qualified election lock"
         assert got_b is True, (
-            "schema 2 lost the election lock to schema 1 in the same database — "
+            "schema 2 lost the election lock to schema 1 in the same database - "
             "the cross-schema serialization regression"
         )
 
@@ -165,7 +165,7 @@ async def test_cron_locks_independent_across_schemas(
         got_b = await _try_lock(conn_b, lock_s2)
         assert got_a is True
         assert got_b is True, (
-            "schema 2 lost the cron lock to schema 1 in the same database — "
+            "schema 2 lost the cron lock to schema 1 in the same database - "
             "the cross-schema serialization regression"
         )
 
@@ -175,7 +175,7 @@ def test_no_unqualified_lock_name_literals_remain() -> None:
 
     Exact-string pins (each literal including its quotes) so any reversion
     to the unqualified constants fails this test instead of silently
-    reintroducing cross-schema serialization. Runs in the unit tier too —
+    reintroducing cross-schema serialization. Runs in the unit tier too -
     it reads files, no PG needed.
     """
     repo_root = Path(__file__).resolve().parents[1]

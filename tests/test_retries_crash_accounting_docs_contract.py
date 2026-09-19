@@ -23,7 +23,7 @@ def _normalized(path: Path) -> str:
 def test_retries_guide_names_crash_and_shutdown_accounting() -> None:
     text = _normalized(_DOCS / "guides" / "retries.md")
     assert "SIGKILL" in text and "crash" in text.lower(), (
-        "retries.md must say 'crash' and 'SIGKILL' plainly — the guide a "
+        "retries.md must say 'crash' and 'SIGKILL' plainly - the guide a "
         "newcomer reads cannot leave the costliest attempt-accounting "
         "surprise undiscoverable"
     )
@@ -35,7 +35,7 @@ def test_retries_guide_names_crash_and_shutdown_accounting() -> None:
     assert "spent, not refunded" in text and "interrupt_count" in text, (
         "retries.md must pin the shutdown half: the interrupted claim is "
         "spent, not refunded (no attempt row; interrupt_count carries the "
-        "aggregate) — a deploy costs one attempt, the price of never "
+        "aggregate) - a deploy costs one attempt, the price of never "
         "sharing an attempt epoch between a dying process and its re-run"
     )
     assert "heartbeat_interval" in text and "lock_lease" in text, (
@@ -49,7 +49,7 @@ def test_retries_guide_carries_the_vendor_porting_table() -> None:
     text = _normalized(_DOCS / "guides" / "retries.md")
     assert "River" in text and "25" in text, (
         "retries.md's porting table must state River's default "
-        "max_attempts=25 — an adopter porting the budget by matching the "
+        "max_attempts=25 - an adopter porting the budget by matching the "
         "number gets ~15 hours of coverage on TaskQ's default curve where "
         "River's 25 attempts span weeks"
     )
@@ -57,9 +57,9 @@ def test_retries_guide_carries_the_vendor_porting_table() -> None:
         "retries.md's porting table must state Oban's default max_attempts=20"
     )
     assert "attempt^4" in text and "2^(N-1)" in text, (
-        "retries.md's porting table must name both curves — River's "
+        "retries.md's porting table must name both curves - River's "
         "attempt^4 seconds unjittered vs TaskQ's base-2^(N-1) exponential "
-        "capped at 1h with jitter — so the wall-clock difference is "
+        "capped at 1h with jitter - so the wall-clock difference is "
         "visible, not just the attempt-count difference"
     )
 
@@ -68,7 +68,7 @@ def test_retries_guide_marks_indefinite_max_attempts_as_inert() -> None:
     text = _normalized(_DOCS / "guides" / "retries.md")
     assert "ignored entirely" in text and "inert" in text, (
         "retries.md must state that retry_kind='indefinite' ignores "
-        "max_attempts entirely — the row still carries the configured value, "
+        "max_attempts entirely - the row still carries the configured value, "
         "and it is inert"
     )
     assert "— (indefinite)" in text, (

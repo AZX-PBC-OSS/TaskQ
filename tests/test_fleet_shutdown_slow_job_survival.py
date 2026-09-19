@@ -8,21 +8,21 @@ re-dispatches the job and nothing re-computes its work.
 The job that reaches that last phase has done nothing wrong. It is not stuck,
 not looping, not failing: it is simply taking longer than the two grace periods
 allow, which at the shipped defaults is under a minute. Any job legitimately
-longer than that — a large export, a batch of remote calls, a slow migration
-step — is destroyed by every rolling deploy that lands on it, and a fleet
+longer than that - a large export, a batch of remote calls, a slow migration
+step - is destroyed by every rolling deploy that lands on it, and a fleet
 deploys constantly.
 
 What makes it expensive is that it is silent and it is biased. Nothing failed,
 so nothing alerts; the row records ``abandoned`` with no error, so an operator
 reading it cannot tell whether the work mattered. And the jobs selected for
-destruction are exactly the long ones — the expensive work, the work most
+destruction are exactly the long ones - the expensive work, the work most
 costly to lose and least likely to be re-submitted by whatever enqueued it.
 
 A worker restart is an operational event the queue chooses to have, not a
 verdict on the job. The contract pinned here is that it costs the job nothing
 permanent: after the deploy the work is back with the fleet and a surviving pod
 can run it. Whether the interrupted attempt is refunded or spent is a separate
-question — the assertions below allow either, and pin only that the work
+question - the assertions below allow either, and pin only that the work
 survives and stays runnable.
 
 These run real pods against one schema, because the defect only exists in the
@@ -73,7 +73,7 @@ async def test_a_job_slower_than_the_grace_periods_survives_a_deploy(
     """A slow job interrupted by a restart is still the fleet's to run.
 
     The pod is stopped while the actor is mid-work and stays busy past both
-    grace periods — the ordinary case of a long job meeting a rolling deploy.
+    grace periods - the ordinary case of a long job meeting a rolling deploy.
     Afterwards the job must be recoverable by the surviving fleet, not written
     off: nothing about being slow is a reason to discard work permanently.
     """
@@ -100,8 +100,8 @@ async def test_a_job_slower_than_the_grace_periods_survives_a_deploy(
         async def slow_work(_payload: FleetPayload, _ctx: JobContext[FleetPayload]) -> object:
             """Work that outlives both grace periods without misbehaving.
 
-            The sleep is the thing under test — a job legitimately longer than
-            the shutdown allows — and it is bounded by the shutdown itself.
+            The sleep is the thing under test - a job legitimately longer than
+            the shutdown allows - and it is bounded by the shutdown itself.
             """
             running.set()
             await asyncio.sleep(30)
@@ -124,7 +124,7 @@ async def test_a_job_slower_than_the_grace_periods_survives_a_deploy(
             f"a job that was merely slower than the grace periods "
             f"({_IMPATIENT_SHUTDOWN}) was left {status!r} by a routine restart. "
             f"That state is terminal and carries no retry, so the work is "
-            f"discarded and never re-dispatched — and the jobs this selects are "
+            f"discarded and never re-dispatched - and the jobs this selects are "
             f"the long ones, the expensive work an operator is least able to "
             f"afford losing. Nothing failed, so nothing alerts; the row carries "
             f"no error explaining why the work stopped. A worker restart is an "
@@ -137,7 +137,7 @@ async def test_the_surviving_fleet_can_run_the_interrupted_job(
 ) -> None:
     """The work actually completes after the deploy that interrupted it.
 
-    Surviving as a row is not enough — the point is that the work happens. A
+    Surviving as a row is not enough - the point is that the work happens. A
     pod that was not part of the deploy must be able to claim the job and run
     it to completion, which is what makes the restart cost nothing but time.
     """

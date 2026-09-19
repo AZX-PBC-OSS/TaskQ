@@ -162,7 +162,7 @@ async def test_diff_max_pending_batch_idempotency_discount(pg_dsn: str) -> None:
     mem, pg = await run_differential(_batch_idempotency_discount, pg_dsn=pg_dsn)
     assert_mirror(
         "the batch cap discounts items whose (scope, key) pair is already "
-        "stored or repeated in-batch — they dedupe instead of writing — on "
+        "stored or repeated in-batch - they dedupe instead of writing - on "
         "both backends",
         mem,
         pg,

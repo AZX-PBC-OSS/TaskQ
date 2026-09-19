@@ -2,16 +2,16 @@
 and worker boot stays consistent at every intermediate state of the rolling
 deploy that ships the matching ``@actor(queue=...)`` literal.
 
-Pre-fix failure mode these pins replace: a move took four coordinated writes —
+Pre-fix failure mode these pins replace: a move took four coordinated writes -
 the ``@actor`` literal, the stored ``actor_config.queue`` row, the worker's
-consumed-queue set, and the ``queues`` row for the target — and the first pair
+consumed-queue set, and the ``queues`` row for the target - and the first pair
 was fail-closed: whichever order the operator picked, one side of a rolling
 deploy could not boot (``ActorConfigDriftList`` from ``sync_actor_config``)
 until the other write landed, while the stranding half (a queue nobody
 consumes, a missing ``queues`` row degrading round_robin to strict_fifo) was
 silent. The move therefore is:
 
-* one operator action in two phases — the actor's pending/scheduled backlog
+* one operator action in two phases - the actor's pending/scheduled backlog
   is rewritten onto the target queue as bounded committed batches (the
   deregister force-drain doctrine: windowed CTE, per-batch
   statement_timeout, termination on the window count), then ONE final
@@ -21,7 +21,7 @@ silent. The move therefore is:
   queue is inert once claimed. The flip lands last so a crash mid-drain
   re-runs cleanly (the drain's queue predicate skips rows earlier batches
   moved);
-* boot semantics that hold across the window — the stored queue is the
+* boot semantics that hold across the window - the stored queue is the
   operator-owned assignment once a row exists (a differing literal logs
   ``actor-config-queue-override`` and boots; the startup UPSERT never
   rewrites the stored queue), so old-literal and new-literal workers both boot
@@ -75,7 +75,7 @@ _NEW_QUEUE = "tqm_new"
 _ACTOR = "tqm_actor"
 _OTHER_ACTOR = "tqm_other"
 # A fixed past instant for due rows, and a genuinely future one for the
-# scheduled row — enqueue stamps 'scheduled' only when the delay from the
+# scheduled row - enqueue stamps 'scheduled' only when the delay from the
 # server clock is positive, so a "future" date in the past would silently
 # produce another pending row.
 _DUE = datetime(2020, 1, 1, tzinfo=UTC)
@@ -158,8 +158,8 @@ def _config(actor: str, *, queue: str, metadata: dict[str, object] | None = None
 
 
 async def test_mid_transition_boot_succeeds_and_preserves_assignment() -> None:
-    """The mid-transition state — stored row already moved to the new queue,
-    worker still carrying the OLD code literal — must boot, and its startup
+    """The mid-transition state - stored row already moved to the new queue,
+    worker still carrying the OLD code literal - must boot, and its startup
     UPSERT must not flip the stored assignment back. Pre-fix this exact state
     raised ``ActorConfigDriftList`` and refused boot."""
     fake_conn = _FakeConn()
@@ -189,7 +189,7 @@ async def test_mid_transition_boot_succeeds_and_preserves_assignment() -> None:
 async def test_queue_only_mismatch_never_refuses_but_metadata_drift_still_does() -> None:
     """A queue mismatch alone never blocks boot (it is the move window, or a
     literal that has not followed the assignment yet). Metadata drift stays
-    fail-closed — no operator surface moves metadata, so a mismatch there is
+    fail-closed - no operator surface moves metadata, so a mismatch there is
     always a bug and raises exactly as before."""
     fake_conn = _FakeConn()
     fake_conn.set_select_rows([_stored_row(_ACTOR, queue=_NEW_QUEUE)])
@@ -320,7 +320,7 @@ class TestMoveActorQueue:
         conn = clean_pg_conn
 
         # Steady state: the actor (and a neighbor) live on the old queue, which
-        # is operator-configured round_robin with a cap — the config a naive
+        # is operator-configured round_robin with a cap - the config a naive
         # move silently loses.
         await sync_actor_config(
             conn,
@@ -415,7 +415,7 @@ class TestMoveActorQueue:
 
         await move_actor_queue(conn, _ACTOR, _NEW_QUEUE, schema=schema)
 
-        # Old-literal worker boots mid-window — pre-fix: ActorConfigDriftList.
+        # Old-literal worker boots mid-window - pre-fix: ActorConfigDriftList.
         await sync_actor_config(
             conn,
             [ActorConfig(actor=_ACTOR, max_concurrent=None, queue=_OLD_QUEUE)],
@@ -504,7 +504,7 @@ class TestMoveActorQueue:
         routes it by the actor's stored assignment. Operators are told to stop
         consuming the source queue once every producer ships the new literal,
         so a tail that routed by its stale label instead would be stranded
-        permanently — pending, due, and invisible to every running consumer.
+        permanently - pending, due, and invisible to every running consumer.
         """
         schema = module_pg_schema.schema_name
         conn = clean_pg_conn
@@ -561,7 +561,7 @@ class TestMoveActorQueue:
         The move deliberately does not chase every row: a stale producer keeps
         enqueueing to the source queue, and those strays stay served by the
         source queue's consumers. That trade-off is only safe if it is
-        *visible* — the operator's decision of when to stop consuming the
+        *visible* - the operator's decision of when to stop consuming the
         source queue depends on a count, not a guess. The move onto the queue
         the actor already occupies stays a refusal: it is a no-op the operator
         must be told about, and the drain is not the recovery surface for
@@ -618,7 +618,7 @@ class TestMoveActorQueue:
         earlier batches already rewrote onto the target: batch N pays for the
         (N-1) * batch_size rows already moved. Operationally that is the
         difference between a routine queue move and a drain that keeps blowing
-        its own per-batch statement timeout the deeper the backlog gets — and
+        its own per-batch statement timeout the deeper the backlog gets - and
         it only shows up on the backlogs large enough that an operator most
         needs the command to work.
 
@@ -665,7 +665,7 @@ class TestMoveActorQueue:
         assert last <= first * 3, (
             "the last drain batch touched far more buffers than the first, so "
             "each batch is re-walking the part of the backlog earlier batches "
-            "already moved onto the target queue — the quadratic-drain "
+            "already moved onto the target queue - the quadratic-drain "
             f"mechanism. Buffers per batch: {per_batch_buffers!r}"
         )
 
@@ -803,7 +803,7 @@ def test_cli_move_queue_statement_timeout_uses_documented_exit_code(
     The move's backlog drain runs as bounded batches under a per-batch
     server-side ``statement_timeout``, so a large backlog can abort a batch
     with a Postgres query cancellation. The command documents exactly three
-    exit codes — 0 moved, 2 refusal, 3 no stored row — and a raw driver
+    exit codes - 0 moved, 2 refusal, 3 no stored row - and a raw driver
     error escaping past them turns a bounded, re-runnable drain into an
     unreadable failure for the operator scripting the move.
     """
@@ -875,7 +875,7 @@ def test_cli_move_queue_client_side_timeout_uses_documented_exit_code(
 # be stored in. It is reachable under the `queue` noun with the target named
 # by an explicit `--to` option rather than positionally: the two arguments of
 # a move are an actor and a queue, and two bare positionals are exactly the
-# shape an operator gets backwards under pressure — with the consequence that
+# shape an operator gets backwards under pressure - with the consequence that
 # the backlog drains onto the wrong queue.
 
 
@@ -907,8 +907,8 @@ def test_queue_migrate_reports_pending_jobs_still_on_the_old_queue(
     """The operator's next decision after a move is when to stop consuming the
     retired queue, and the only safe answer is a count.
 
-    The move deliberately leaves producer-placed strays on the source queue —
-    a stale producer keeps enqueueing there until its deploy lands — so the
+    The move deliberately leaves producer-placed strays on the source queue -
+    a stale producer keeps enqueueing there until its deploy lands - so the
     source queue's consumers must stay up for an interval the command is the
     only thing that can measure. Printing the move without the residual makes
     the retirement a guess, and guessing wrong strands work on a queue nobody
@@ -947,7 +947,7 @@ def test_queue_migrate_with_zero_residual_omits_the_keep_consuming_advice(
     retired queue's consumers running until the count reaches zero.
 
     The advice is the operator's next action; emitting it when the count is
-    already 0 tells the operator to wait on a condition that already holds —
+    already 0 tells the operator to wait on a condition that already holds -
     and an operator who follows it keeps a retired queue's consumers running
     forever, which is the cost the move exists to retire. The residual count
     itself is still reported: the count is the contract, the advice is
@@ -983,8 +983,8 @@ def test_queue_migrate_leaves_no_partial_move_on_failure(
 ) -> None:
     """A failed migrate must not leave the deployment half-moved.
 
-    The coordinated writes of a move — the stored assignment, the target
-    ``queues`` row carrying the source's mode and cap — are what make the
+    The coordinated writes of a move - the stored assignment, the target
+    ``queues`` row carrying the source's mode and cap - are what make the
     target queue able to serve the actor at all. Landing the assignment
     without the queues row silently degrades a round_robin queue to
     strict_fifo and drops its cap; landing the queues row without the
@@ -1014,7 +1014,7 @@ def test_queue_migrate_unknown_actor_uses_the_documented_exit_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An actor with no stored row has nothing to move, and the operator
-    scripting a migration needs to tell that apart from a refusal — the
+    scripting a migration needs to tell that apart from a refusal - the
     exit codes are shared with the move surface they wrap."""
     _patch_move(monkeypatch, exc=ActorNotFoundError("tqm_ghost"))
 
@@ -1026,7 +1026,7 @@ def test_queue_migrate_unknown_actor_uses_the_documented_exit_code(
 def test_queue_migrate_requires_the_target_queue_to_be_named_explicitly() -> None:
     """Without ``--to``, the command must refuse rather than guess.
 
-    Two bare positionals — an actor and a queue, both plain strings — are
+    Two bare positionals - an actor and a queue, both plain strings - are
     the shape an operator inverts under pressure, and an inverted move
     drains the backlog onto a queue that was never the target. The explicit
     option is what makes the argument order unmistakable.

@@ -5,7 +5,7 @@ concurrent producers, identity serialization,
 sync ordering, and the lock-expiry chaos test.
 
 All tests use ``pytest.mark.integration``, the ``jobs_app`` fixture
-or ``_open_pg_backend`` helper, and assert via direct SQL — these tests
+or ``_open_pg_backend`` helper, and assert via direct SQL - these tests
 are about PG behaviour.
 """
 
@@ -89,7 +89,7 @@ async def test_full_cte_round_trip(jobs_app: JobsApp) -> None:
 
     worker_id = new_uuid()
 
-    # Insert actor_config row — required by per_actor_capacity CTE
+    # Insert actor_config row - required by per_actor_capacity CTE
     async with deps.worker_pool.acquire() as conn:
         await conn.execute(
             f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2) ON CONFLICT (actor) DO NOTHING',
@@ -145,7 +145,7 @@ async def test_concurrent_producers_bounded_overcount(pg_dsn: str) -> None:
     ``max_concurrent + (num_producers - 1) * min(limit_n, max_concurrent)``
     = ``4 + (2 - 1) * min(2, 4) = 6`` running jobs after both commit.
 
-    Runs 5 times with schema drops between iterations — flake suppression.
+    Runs 5 times with schema drops between iterations - flake suppression.
     """
     actor = "X"
     num_iterations = 5
@@ -340,16 +340,16 @@ async def test_live_capacity_change_takes_effect_without_restart(
     jobs_app: JobsApp,
 ) -> None:
     """A stored max_concurrent change is visible to the very next dispatch
-    call — no ``sync_actor_config`` re-run, no worker restart.
+    call - no ``sync_actor_config`` re-run, no worker restart.
 
-    This is the load-bearing claim behind treating max_concurrent as an
+    This is the critical claim behind treating max_concurrent as an
     operator-tunable field: the dispatch CTE joins ``actor_config`` fresh
     on every call (``taskq/backend/_dispatch_sql.py``), so an out-of-band
-    UPDATE — exactly what ``taskq actor-config set`` issues — is picked
+    UPDATE - exactly what ``taskq actor-config set`` issues - is picked
     up immediately.
 
     Oracle: sync with max_concurrent=2, dispatch once (2 running, cap
-    reached). Directly UPDATE the stored row to max_concurrent=4 —
+    reached). Directly UPDATE the stored row to max_concurrent=4 -
     simulating an operator running `taskq actor-config set` while the
     worker keeps running. Dispatch again with the same worker/backend
     and assert 2 MORE jobs start running (4 total), proving the second
@@ -383,7 +383,7 @@ async def test_live_capacity_change_takes_effect_without_restart(
     )
     assert len(first) == 2, f"expected 2 running at max_concurrent=2, got {len(first)}"
 
-    # Operator override, out of band — exactly what `taskq actor-config
+    # Operator override, out of band - exactly what `taskq actor-config
     # set S --max-concurrent 4` does under the hood. No sync_actor_config
     # call, no worker restart.
     async with deps.dispatcher_pool.acquire() as conn:
@@ -412,13 +412,13 @@ async def test_live_capacity_change_takes_effect_without_restart(
 async def test_clearing_max_concurrent_uncaps_rather_than_reverting_to_the_literal(
     jobs_app: JobsApp,
 ) -> None:
-    """Clearing a stored ``max_concurrent`` makes the actor UNLIMITED — it
+    """Clearing a stored ``max_concurrent`` makes the actor UNLIMITED - it
     does **not** revert to the ``@actor(max_concurrent=...)`` literal.
 
     This asymmetry is the sharp edge of operator-owned capacity, and it is
     documented in three places (``actor_config_ops`` module and function
     docstrings, and the upgrading guide) while nothing proved it. Its
-    sibling — clearing ``max_pending`` reverting *to* the literal — is
+    sibling - clearing ``max_pending`` reverting *to* the literal - is
     pinned by test_actor_capacity_pg.py::test_cleared_override_reverts_to_literal_pg,
     so a change that made the two fields behave alike would pass that test
     and silently uncap production here.
@@ -430,7 +430,7 @@ async def test_clearing_max_concurrent_uncaps_rather_than_reverting_to_the_liter
 
     Oracle: seed a literal of 2, dispatch (2 running, capped). Clear the
     override through the real operator API, then dispatch again and
-    require every remaining job to start — the literal 2 must NOT come
+    require every remaining job to start - the literal 2 must NOT come
     back.
     """
     deps = jobs_app.deps
@@ -456,7 +456,7 @@ async def test_clearing_max_concurrent_uncaps_rather_than_reverting_to_the_liter
     )
     assert len(first) == 2, f"expected the seeded cap of 2 to hold, got {len(first)}"
 
-    # The operator clears the override — `taskq actor-config set U
+    # The operator clears the override - `taskq actor-config set U
     # --clear-max-concurrent`, through the same function the CLI calls.
     async with deps.dispatcher_pool.acquire() as conn:
         await set_actor_config_capacity(
@@ -572,8 +572,8 @@ async def test_two_identical_dispatchers_never_claim_the_same_job(
     claim the same job, over repeated concurrent rounds.
 
     This is the safety half of running a fleet: a job claimed by two
-    dispatchers executes twice, and every side effect it has — a charge, an
-    email, an external call — happens twice with nothing in the job's own
+    dispatchers executes twice, and every side effect it has - a charge, an
+    email, an external call - happens twice with nothing in the job's own
     state to show it. The row's ``locked_by_worker`` must agree with exactly
     one dispatcher's returned claim.
     """
@@ -617,7 +617,7 @@ async def test_two_identical_dispatchers_never_claim_the_same_job(
 
     all_claims = claimed_by[worker_a] + claimed_by[worker_b]
     assert len(all_claims) == len(set(all_claims)), (
-        "a job was claimed by more than one dispatcher — duplicate execution"
+        "a job was claimed by more than one dispatcher - duplicate execution"
     )
 
     async with deps.worker_pool.acquire() as conn:
@@ -645,7 +645,7 @@ async def test_concurrent_dispatchers_both_claim_from_a_backlog_deeper_than_thei
     for either to come back empty: there is plenty of unclaimed, unlocked,
     due work for both. A round in which one dispatcher takes its full limit
     and the other takes nothing means the second worker contributed no
-    throughput at all — the fleet ran at single-worker speed while an
+    throughput at all - the fleet ran at single-worker speed while an
     operator paid for two. That failure is invisible to every single-worker
     test and, in production, looks like a healthy but permanently idle pod
     next to a saturated one.
@@ -691,7 +691,7 @@ async def test_concurrent_dispatchers_both_claim_from_a_backlog_deeper_than_thei
 
     assert counts[worker_a] > 0 and counts[worker_b] > 0, (
         "both dispatchers must claim from a backlog deeper than their combined "
-        f"windows; got A={counts[worker_a]} B={counts[worker_b]} — the empty-handed "
+        f"windows; got A={counts[worker_a]} B={counts[worker_b]} - the empty-handed "
         "dispatcher added no throughput to the fleet"
     )
 
@@ -706,8 +706,8 @@ async def statement_timeout_dispatcher_pool(
     """A real dispatcher pool whose server aborts every statement.
 
     ``statement_timeout`` is a Postgres server setting, so this is the
-    real production failure — the server cancels the dispatch query and
-    the driver raises — reproduced without a double anywhere in the
+    real production failure - the server cancels the dispatch query and
+    the driver raises - reproduced without a double anywhere in the
     dispatch path. It stands in for every way the dispatch query can
     fail against a loaded or degraded database: a statement timeout on a
     slow plan, a lock timeout, a connection reset mid-query.
@@ -771,7 +771,7 @@ async def statement_timeout_dispatcher_pool(
     finally:
         # A statement the server aborted can leave the protocol
         # mid-operation; close() waits for checked-out connections and
-        # hangs on exactly that state — the hang close_pool_bounded
+        # hangs on exactly that state - the hang close_pool_bounded
         # exists to prevent in the production teardown. Same discipline
         # here, so a forced-failure test can never hang its own fixture.
         await close_pool_bounded(pool, "statement-timeout-dispatcher-pool", 5.0)
@@ -790,7 +790,7 @@ async def test_dispatch_duration_is_recorded_when_the_dispatch_query_fails(
     ``taskq.dispatch.duration``. A round the server cancels is the
     slowest round there is: it burned the full statement budget and
     returned nothing. If only rounds that returned rows are sampled,
-    that budget-exhausting round leaves the series untouched — so a
+    that budget-exhausting round leaves the series untouched - so a
     dispatcher failing every round reads as a dispatcher with a
     perfectly healthy p99, because the only samples left are the fast
     successful ones (here, none at all, which renders as a flat line an
@@ -828,7 +828,7 @@ async def test_dispatch_duration_is_recorded_when_the_dispatch_query_fails(
 
     points = histogram_points(reader, "taskq.dispatch.duration")
     assert points, (
-        "a dispatch round the database aborted recorded no duration sample — "
+        "a dispatch round the database aborted recorded no duration sample - "
         "the histogram the dispatch-latency alert reads only ever sees rounds "
         "that succeeded, so total dispatch failure and an idle queue emit the "
         "same thing: nothing"
@@ -853,9 +853,9 @@ async def test_dispatch_failure_is_visible_in_a_metric_not_only_a_log_line(
     green; no job changes status, so no job-level counter moves; the
     pending backlog stays pending, which is exactly what an idle fleet
     also looks like. Every other failure-prone subsystem in the worker
-    has a failure counter an alert can name — sweep timeouts, election
+    has a failure counter an alert can name - sweep timeouts, election
     failures, refund failures, slot-pool acquire failures, progress
-    publish failures — and dispatch, the one loop whose failure stops all
+    publish failures - and dispatch, the one loop whose failure stops all
     work, is asserted here to be no exception. A log line is not a
     substitute: it carries no series to alert on, and an operator who is
     not already tailing that worker's logs has no way to learn that the
@@ -939,7 +939,7 @@ async def test_dispatch_failure_is_visible_in_a_metric_not_only_a_log_line(
             await task
 
     assert local_queue.qsize() == 0, (
-        "no job should have been claimed — the premise is that every round failed"
+        "no job should have been claimed - the premise is that every round failed"
     )
     async with deps.worker_pool.acquire() as conn:
         still_pending = await conn.fetchval(
@@ -953,7 +953,7 @@ async def test_dispatch_failure_is_visible_in_a_metric_not_only_a_log_line(
     emitted = sorted(metric.name for metric in collect_metrics(reader))
     assert emitted, (
         "a producer that failed every dispatch round against a degraded database "
-        "emitted no metric at all — the process stays up, its liveness probe stays "
+        "emitted no metric at all - the process stays up, its liveness probe stays "
         "green, the backlog stays pending exactly as an idle queue would, and the "
         "only trace of total dispatch failure is an untelemetered log line"
     )
@@ -1005,7 +1005,7 @@ async def test_backlog_still_dispatches_with_a_job_at_the_attempt_ceiling(
     ranks oldest-scheduled first, the offending row is selected on every
     subsequent round too, so the queue stops draining permanently: an
     operator sees a growing backlog, workers reporting healthy and idle,
-    and jobs that are never claimed — with no job in a terminal state to
+    and jobs that are never claimed - with no job in a terminal state to
     point at.
 
     ``retry_kind='indefinite'`` is the kind that reaches the ceiling:
@@ -1065,7 +1065,7 @@ async def test_backlog_still_dispatches_with_a_job_at_the_attempt_ceiling(
         )
     assert unclaimed == 0, (
         f"{unclaimed} of the 3 healthy backlogged jobs were left pending by a "
-        f"dispatch round that claimed {len(claimed)} rows — a single job at the "
+        f"dispatch round that claimed {len(claimed)} rows - a single job at the "
         f"attempt ceiling must not cost the round its healthy work"
     )
 

@@ -1,4 +1,4 @@
-"""Core lifecycle e2e — enqueue → cross-container dispatch → typed result round-trip.
+"""Core lifecycle e2e - enqueue → cross-container dispatch → typed result round-trip.
 
 Scenario:
 enqueue → ``handle.wait()`` → succeeded; typed result retrievable after
@@ -117,7 +117,7 @@ async def test_effects_written_by_actor(
     """The actor's ``send`` effect row is the ground truth for real invocation.
 
     The INSERT happens inside the actor before it returns, so it is committed
-    before the terminal write that ``handle.wait()`` observes — a one-shot
+    before the terminal write that ``handle.wait()`` observes - a one-shot
     ``fetch_effects`` (no polling) is deterministic here.
     """
     handle = await e2e_client.enqueue(send_welcome_email, _welcome_payload(run_id))
@@ -171,7 +171,7 @@ async def test_job_filter_status_and_active(
     In flight the job is visible under ``status=["pending", "running"]`` and
     ``active=True``; after a forced cancel it leaves ``active`` and appears
     under ``status=["cancelled"]``. ``status=[]`` matches nothing (documented
-    semantics — an empty sequence is not 'no filter'). The 30 s
+    semantics - an empty sequence is not 'no filter'). The 30 s
     ``long_running_job`` actor keeps the in-flight arm deterministic; the
     cancel ends the test without waiting out the actor.
     """

@@ -5,9 +5,9 @@ exists, a non-NULL stored value is authoritative and the ``@actor`` literal
 is only the seed (``taskq/client/_capacity.py``'s resolution rule,
 ``taskq/worker/startup.py``'s sync semantics, and ``docs/guides/ops.md``'s
 "NULL stored falls back to the code literal"). Every client enqueue arm
-enforces the stored cap — the single path through
+enforces the stored cap - the single path through
 :class:`ActorCapacityCache`, the batch arms through both the cache and the
-server-side ``list_actor_max_pending`` read — pinned by
+server-side ``list_actor_max_pending`` read - pinned by
 ``tests/test_actor_capacity_pg.py`` (live change without restart, an actor
 with no literal capped live, cleared override reverting, two clients
 enforcing one stored limit).
@@ -16,14 +16,14 @@ enforcing one stored limit).
 cap" as client enqueues. But the tick's policy map is built from the
 in-process registry literals (``worker/_bootstrap.py`` →
 ``ActorFirePolicy(singleton=ref.singleton, max_pending=ref.max_pending)``)
-— the one admission surface that never consults the stored row. An actor
+- the one admission surface that never consults the stored row. An actor
 declared without a literal (the default) carries ``max_pending=None`` into
 the tick no matter what the operator stores, and the batched enqueue runs
 with ``enforce_max_pending=False`` by design (the preflight owns the cap),
 so nothing downstream catches it either.
 
 The production shape under attack: a literal-``None`` actor whose operator
-stored a cap — including ``max_pending=0``, the documented emergency-drain
+stored a cap - including ``max_pending=0``, the documented emergency-drain
 configuration ("never accept any jobs", ``taskq/actor.py``).
 """
 
@@ -93,12 +93,12 @@ class TestStoredCapMatchesLiteralCap:
     ) -> None:
         """Two actors, three due schedules each, no pre-existing jobs: one
         capped by its registered literal (``ActorFirePolicy(max_pending=2)``
-        — exactly the map bootstrap builds for a ``@actor(max_pending=2)``
+        - exactly the map bootstrap builds for a ``@actor(max_pending=2)``
         declaration), the other declared without a literal (the bootstrap
         map for the default: ``max_pending=None``) with the operator's
         stored ``actor_config.max_pending = 2`` written through the real
         operator tooling. The client arms enforce both caps identically
-        (``tests/test_actor_capacity_pg.py``); the tick must too — same
+        (``tests/test_actor_capacity_pg.py``); the tick must too - same
         schema, same rows, same cap value, two spellings, one answer."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
@@ -130,15 +130,15 @@ class TestStoredCapMatchesLiteralCap:
         assert literal_count == 2, "control: the literal cap bounds its actor to two"
         assert stored_count == literal_count, (
             "the operator's stored cap must bound the tick exactly like the same "
-            "literal cap — a stored 2 admitting three while a literal 2 admits two "
+            "literal cap - a stored 2 admitting three while a literal 2 admits two "
             "is the two paths answering the same admission question differently"
         )
         late_stored = await schedule_row(clean_pg_conn, schema, stored_ids[2])
         assert late_stored["last_fired_at"] is None, (
-            "the slot past the stored cap suppresses — it does not fire"
+            "the slot past the stored cap suppresses - it does not fire"
         )
         assert late_stored["consecutive_failures"] == 0, (
-            "suppression is backpressure, not a schedule defect — no strike"
+            "suppression is backpressure, not a schedule defect - no strike"
         )
 
 
@@ -154,7 +154,7 @@ class TestStoredZeroCapEmergencyDrain:
         accept any jobs", the emergency-drain scenario ``taskq/actor.py``
         documents). Every client enqueue is refused by the stored cap; if
         the cron tick keeps firing the actor's schedules, the drain does
-        not drain — the queue keeps growing from cron while every client
+        not drain - the queue keeps growing from cron while every client
         producer is refused, and the operator's knob silently no-ops on an
         entire admission surface."""
         schema = module_pg_schema.schema_name
@@ -186,5 +186,5 @@ class TestStoredZeroCapEmergencyDrain:
             assert row["last_fired_at"] is None
             assert row["consecutive_failures"] == 0, "drain backpressure strikes nothing"
             assert row["next_fire_at"] > ten_min_floor(datetime.now(UTC)) - timedelta(minutes=30), (
-                "suppression advances the slot — no hot re-fire loop against the cap"
+                "suppression advances the slot - no hot re-fire loop against the cap"
             )

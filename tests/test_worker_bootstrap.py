@@ -1,6 +1,6 @@
 """Integration tests for worker bootstrap config sync.
 
-pytestmark = pytest.mark.integration — all tests use the real PG container
+pytestmark = pytest.mark.integration - all tests use the real PG container
 via the ``jobs_app`` fixture (session-scoped ``pg_container``).
 
 The "sync ordering" (dispatch-after-bootstrap visibility) assertion is
@@ -64,7 +64,7 @@ async def _cleanup_schema_for(pg_dsn: str, schema: str) -> None:
 
 def _settings_for(pg_dsn: str, schema: str, **overrides: str) -> WorkerSettings:
     data: dict[str, str] = {"pg_dsn": pg_dsn, "schema_name": schema}
-    # _main starts a real HealthServer — never the shared default path.
+    # _main starts a real HealthServer - never the shared default path.
     data.setdefault("health_socket_path", unique_health_sock_path("worker_bootstrap"))
     data.update(overrides)
     return WorkerSettings.load_from_dict(data)
@@ -119,7 +119,7 @@ async def _cleanup_schema(pg_dsn: str) -> None:
 
 def _settings(pg_dsn: str, **overrides: str) -> WorkerSettings:
     data: dict[str, str] = {"pg_dsn": pg_dsn, "schema_name": _SCHEMA_LABEL}
-    # _main starts a real HealthServer — never the shared default path.
+    # _main starts a real HealthServer - never the shared default path.
     data.setdefault("health_socket_path", unique_health_sock_path("worker_bootstrap"))
     data.update(overrides)
     return WorkerSettings.load_from_dict(data)
@@ -183,11 +183,11 @@ async def test_bootstrap_populates_actor_config(pg_dsn: str) -> None:
 async def test_metadata_drift_refuses_start(pg_dsn: str) -> None:
     """Metadata drift still refuses startup.
 
-    Metadata is the remaining structural field — no operator surface can
+    Metadata is the remaining structural field - no operator surface can
     move it, so any mismatch is a bug. The queue assignment is NOT the
     oracle here: it is operator-owned once a row exists (moved by
     `taskq actor-config move-queue`) and a differing literal boots with a
-    warning instead — see test_capacity_drift_does_not_block_start and
+    warning instead - see test_capacity_drift_does_not_block_start and
     tests/test_actor_queue_move.py for that contract.
     """
     await _prepare_schema(pg_dsn)
@@ -279,7 +279,7 @@ async def test_capacity_drift_does_not_block_start(pg_dsn: str) -> None:
 @pytest.mark.asyncio
 async def test_drift_force_overwrites_metadata_but_not_queue(pg_dsn: str) -> None:
     """force=True overwrites metadata drift but leaves the queue assignment
-    and capacity (max_concurrent) untouched — neither was ever gated by
+    and capacity (max_concurrent) untouched - neither was ever gated by
     force, and a force-boot rewriting the assignment from a stale literal
     is exactly the move-undo hazard the UPSERT's conflict clause forecloses.
     """
@@ -370,13 +370,13 @@ async def test_empty_registry_starts_cleanly(pg_dsn: str) -> None:
     await _cleanup_schema(pg_dsn)
 
 
-# ── Pool provider pre-registered — skip auto-registration ───────────
+# ── Pool provider pre-registered - skip auto-registration ───────────
 
 
 @pytest.mark.asyncio
 async def test_pool_provider_preregistered_skips_registration(pg_dsn: str) -> None:
     """When asyncpg.Pool is already registered, _main must NOT attempt to
-    register it again — ``register_value`` raises ``ValueError`` on a
+    register it again - ``register_value`` raises ``ValueError`` on a
     duplicate registration, so a clean bootstrap here proves the guard
     at ``if not registry.has_provider(asyncpg.Pool)`` took the skip path."""
     schema = f"twb_{new_base62()}".lower()
@@ -394,7 +394,7 @@ async def test_pool_provider_preregistered_skips_registration(pg_dsn: str) -> No
     await _cleanup_schema_for(pg_dsn, schema)
 
 
-# ── sync_rate_limit_buckets / sync_slots failures — warn and continue ──
+# ── sync_rate_limit_buckets / sync_slots failures - warn and continue ──
 
 
 @pytest.mark.asyncio
@@ -427,7 +427,7 @@ async def test_ratelimit_sync_failures_logged_and_bootstrap_continues(
     await _cleanup_schema_for(pg_dsn, schema)
 
 
-# ── Clock type guard — non-Clock value registered at PROCESS scope ───
+# ── Clock type guard - non-Clock value registered at PROCESS scope ───
 
 
 @pytest.mark.asyncio
@@ -452,7 +452,7 @@ async def test_clock_type_guard_raises_missing_provider(pg_dsn: str) -> None:
     await _cleanup_schema_for(pg_dsn, schema)
 
 
-# ── ensure_slots failure during reservation sync — warn and continue ──
+# ── ensure_slots failure during reservation sync - warn and continue ──
 
 
 @pytest.mark.asyncio
@@ -492,7 +492,7 @@ async def test_ensure_slots_failure_logged_and_bootstrap_continues(
     try:
         with structlog.testing.capture_logs() as captured:
             task = asyncio.create_task(_run())
-            # Poll for the expected log instead of a fixed sleep — under a
+            # Poll for the expected log instead of a fixed sleep - under a
             # loaded container, bootstrap may need more than a fixed window
             # to reach the ensure_slots loop.
             deadline = asyncio.get_running_loop().time() + 30.0

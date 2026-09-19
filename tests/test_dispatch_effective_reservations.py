@@ -1,7 +1,7 @@
 """Unit tests for ``dispatch._effective_reservations`` (queue-cap prepend).
 
 The helper prepends the fleet-wide queue-cap reservation name to the
-actor-declared reservations when — and only when — that queue's cap is
+actor-declared reservations when - and only when - that queue's cap is
 registered in the worker's ``RateLimitRegistry``. The end-to-end acquire
 behaviour through ``dispatch_one_job`` is pinned in
 ``tests/test_dispatch_one_job.py`` (queue-cap wiring section); these tests
@@ -45,7 +45,7 @@ def _register_cap(rl: RateLimitRegistry, queue: str) -> str:
 def test_prepends_queue_cap_and_preserves_entries_in_order() -> None:
     """With the queue cap registered, its name is prepended; the mixed
     str / KeyedReservationRef / ConcurrencyReservation entries are preserved
-    in declaration order — instances stay instances (normalization to names
+    in declaration order - instances stay instances (normalization to names
     happens in acquire_for_actor, not here)."""
     rl = RateLimitRegistry()
     cap_name = _register_cap(rl, "default")
@@ -69,7 +69,7 @@ def test_prepends_queue_cap_and_preserves_entries_in_order() -> None:
 
 def test_no_cap_registered_returns_declared_unchanged() -> None:
     """No queue cap registered for the job's queue (the common case): the
-    actor's own list is returned unchanged — same object, no per-job copy."""
+    actor's own list is returned unchanged - same object, no per-job copy."""
     rl = RateLimitRegistry()
     declared: list[str | KeyedReservationRef | ConcurrencyReservation] = ["static_name"]
 

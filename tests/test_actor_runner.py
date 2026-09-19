@@ -137,7 +137,7 @@ async def test_actor_runner_snooze_count_parameter_reaches_the_context(
 
     Without the parameter the harness silently defaulting to 0 would let
     a snooze-N-then-succeed actor test pass while only ever exercising
-    first-dispatch behaviour — false confidence, the exact silent-gap
+    first-dispatch behaviour - false confidence, the exact silent-gap
     shape the issue tracks. The actor below is the documented contract
     (keyed off ``ctx.snooze_count``, as the PG e2e pins): it must observe
     the value the caller supplied.

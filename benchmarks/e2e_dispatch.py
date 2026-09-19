@@ -273,7 +273,7 @@ async def run_e2e(backend: PostgresBackend, n_jobs: int, batch: int) -> dict[str
                 latencies.append(now - enq)
             claimed_ids.append(row.id)
             claimed += 1
-            # Sync "handler" section — small realistic CPU work.
+            # Sync "handler" section - small realistic CPU work.
             t2 = time.perf_counter()
             result = handle_job(row.payload)
             splits.split("handler_cpu(sync)").time(t2)
@@ -393,7 +393,7 @@ async def run_explain(backend: PostgresBackend, n_seed: int) -> list[str]:
         ]
         await backend.enqueue_batch_fast(args_list)
 
-        # 1) The dispatch CTE (strict_fifo — single default queue).
+        # 1) The dispatch CTE (strict_fifo - single default queue).
         out += await explain_conn(
             conn,
             f"dispatch CTE (strict_fifo) over {n_seed} pending, limit 50",
@@ -813,7 +813,7 @@ def main() -> int:
 
     print(
         f"\n[e2e_dispatch] cleanup: dynamic tables in schema '{schema}' TRUNCATED; "
-        "the migrated (empty) schema itself is left in place — drop with "
+        "the migrated (empty) schema itself is left in place - drop with "
         f"'DROP SCHEMA \"{schema}\" CASCADE' if unwanted."
     )
     return 0

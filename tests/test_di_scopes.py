@@ -323,7 +323,7 @@ async def test_log_and_continue_across_cancelled_error() -> None:
 
 async def test_loop_scope_replace_value_replaces_cached_instance() -> None:
     """replace_value swaps the cached instance so resolved_cache() and
-    get() reflect the new value — the sanctioned mid-loop swap for
+    get() reflect the new value - the sanctioned mid-loop swap for
     hot-reloaded resources (e.g. worker_pool after SIGHUP)."""
     first, second = _MockClient(), _MockClient()
     entry = ProviderEntry(
@@ -347,7 +347,7 @@ async def test_loop_scope_replace_value_replaces_cached_instance() -> None:
 
 async def test_loop_scope_replace_value_raises_for_uncached_type() -> None:
     """replace_value on a type with no cached value is a programming error
-    — fail fast rather than silently inserting a bogus entry."""
+    - fail fast rather than silently inserting a bogus entry."""
     _registry, loop_scope = _make_registry_and_loop_scope()
     with pytest.raises(KeyError, match="nothing to replace"):
         loop_scope.replace_value(_MockClient, _MockClient())
@@ -390,7 +390,7 @@ async def test_loop_scope_loop_assertion() -> None:
     await loop_scope.shutdown()
 
 
-# ── Factory shape dispatch — all six arms ──────────────────────────
+# ── Factory shape dispatch - all six arms ──────────────────────────
 
 
 def _make_sync_callable() -> _Y:
@@ -440,7 +440,7 @@ async def test_factory_shape_dispatch(shape: FactoryShape, impl: object) -> None
 
 # ── assert_never exhaustiveness compile check ──────────────────────
 
-# This is a type-only assertion — pyright-strict catches a missing arm
+# This is a type-only assertion - pyright-strict catches a missing arm
 # via assert_never in get_or_create's match statement.
 _AllShapes: tuple[FactoryShape, ...] = tuple(FactoryShape)
 
@@ -628,7 +628,7 @@ async def test_sync_gen_hung_exit_bounds_scope_teardown() -> None:
     """A sync generator whose ``__exit__`` never returns parks the pinned
     executor's only thread in unkillable user code. Scope teardown must
     bound its WAIT on that thread (``factory_timeout``), log the trip
-    loudly, and complete — the residue is one thread per hung container
+    loudly, and complete - the residue is one thread per hung container
     until the code returns, never a wedged close. Both bounded waits are
     exercised: the teardown callback's and the executor shutdown's."""
     import time
@@ -672,7 +672,7 @@ async def test_sync_gen_hung_exit_bounds_scope_teardown() -> None:
         "proves teardown survives it"
     )
     assert elapsed < 5.0, (
-        f"scope teardown took {elapsed:.1f}s against a hung __exit__ — the "
+        f"scope teardown took {elapsed:.1f}s against a hung __exit__ - the "
         "waits on the parked thread are unbounded"
     )
     assert loop_scope._sync_gen_executor is None
@@ -768,7 +768,7 @@ async def test_resolved_cache_empty_before_and_after_bootstrap_no_providers() ->
     await loop_scope.shutdown()
 
 
-# ── Plain class — no teardown callback registered ──────────
+# ── Plain class - no teardown callback registered ──────────
 
 
 class _PlainSvc:
@@ -794,7 +794,7 @@ async def test_plain_class_no_teardown() -> None:
     await container.aclose()
 
 
-# ── ACM lifecycle — __aenter__ at bootstrap, __aexit__ at shutdown ──
+# ── ACM lifecycle - __aenter__ at bootstrap, __aexit__ at shutdown ──
 
 
 class _AcmSvc:
@@ -876,7 +876,7 @@ async def test_acm_injected_value_is_aenter_return() -> None:
     await loop_scope.shutdown()
 
 
-# ── AsyncCloseable lifecycle — aclose() called at shutdown ──
+# ── AsyncCloseable lifecycle - aclose() called at shutdown ──
 
 
 class _AsyncCloseableSvc:
@@ -947,7 +947,7 @@ async def test_sync_closeable_lifecycle_to_thread() -> None:
     assert inst.closed_from_thread is not threading.main_thread()
 
 
-# ── __aenter__ raises — no teardown; prior teardowns still fire ──
+# ── __aenter__ raises - no teardown; prior teardowns still fire ──
 
 
 class _AcmOk:
@@ -1016,7 +1016,7 @@ async def test_aenter_raises_no_teardown_prior_still_fire() -> None:
     assert inst_a.exited
 
 
-# ── Async generator yields twice — RuntimeError caught by log-and-continue ──
+# ── Async generator yields twice - RuntimeError caught by log-and-continue ──
 
 
 async def test_async_gen_yields_twice_runtime_error_caught() -> None:

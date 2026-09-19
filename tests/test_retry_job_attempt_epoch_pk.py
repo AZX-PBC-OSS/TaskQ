@@ -6,9 +6,9 @@ can collide on the table's PRIMARY KEY (job_id, attempt).
 
 History (the defect this pin replaced): ``retry_job`` used to reset
 ``attempt`` to 0, so a re-dispatched job climbed back through its spent
-numbers and the next terminal write inserted at (job_id, N) again —
+numbers and the next terminal write inserted at (job_id, N) again -
 ``duplicate key value violates unique constraint "job_attempts_pkey"``
-— a revisited-primary-key violation the consumer's terminal-write infra
+- a revisited-primary-key violation the consumer's terminal-write infra
 family misclassified as transient, stranding the row ``running``. The
 correct approach: leave ``attempt`` alone and raise the ceiling
 (``GREATEST(max_attempts, attempt + 1)``) so the budget gates open on
@@ -16,7 +16,7 @@ re-run. This way a re-run climbs to fresh attempt numbers and the
 collision is unrepresentable. Every assertion here fails if anyone
 reintroduces the epoch reset. The in-memory twin mirrors the same
 semantics (its attempt store is a list, not keyed, so the PK itself is
-PG-only — the monotonic counter and ceiling are pinned for it in
+PG-only - the monotonic counter and ceiling are pinned for it in
 tests/test_in_memory_retry_job.py).
 """
 
@@ -78,7 +78,7 @@ async def test_retry_job_attempt_monotonic_no_duplicate_key_on_re_run(
         assert repended is not None and repended["status"] == "pending"
         assert repended["attempt"] == 1, (
             "MONOTONIC-ATTEMPT CONTRACT: retry_job must never reset the "
-            f"attempt counter — observed {repended['attempt']!r}. A reset "
+            f"attempt counter - observed {repended['attempt']!r}. A reset "
             "revisits the spent epoch's attempt numbers and the next "
             "terminal write collides on job_attempts_pkey (the wedge pinned "
             "in tests/test_retry_job_wedge_consequence.py)."
@@ -86,15 +86,15 @@ async def test_retry_job_attempt_monotonic_no_duplicate_key_on_re_run(
         assert repended["max_attempts"] == 2, (
             "CEILING-RAISE CONTRACT: retry_job must raise max_attempts to "
             "GREATEST(max_attempts, attempt + 1) so the budget gates open "
-            f"for the re-run — observed {repended['max_attempts']!r}."
+            f"for the re-run - observed {repended['max_attempts']!r}."
         )
 
-        # Epoch 2: dispatch claims it again — the counter climbs to the
+        # Epoch 2: dispatch claims it again - the counter climbs to the
         # fresh number 2; the spent 1 is never revisited.
         claimed = await backend.dispatch_batch(worker_id, ["default"], 1, timedelta(minutes=5))
         assert [r.id for r in claimed] == [job_id]
         assert claimed[0].attempt == 2, (
-            "the re-dispatch must climb past the spent epoch's numbers — "
+            "the re-dispatch must climb past the spent epoch's numbers - "
             f"observed attempt={claimed[0].attempt!r}; a walk back to 1 "
             "means the epoch reset is back."
         )
@@ -112,7 +112,7 @@ async def test_retry_job_attempt_monotonic_no_duplicate_key_on_re_run(
             job_id,
         )
         assert [a["attempt"] for a in attempts] == [1, 2], (
-            "the attempt history must hold one row per spent number — a "
+            "the attempt history must hold one row per spent number - a "
             "duplicate-key write would have failed the statement above, and "
             "a revisited number means the epoch reset is back."
         )

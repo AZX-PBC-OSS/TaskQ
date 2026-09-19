@@ -1,4 +1,4 @@
-"""Tests for examples package wiring — actor definitions, DI registry, and worker bootstrap.
+"""Tests for examples package wiring - actor definitions, DI registry, and worker bootstrap.
 
 Covers:
   - All example ActorRef instances have the expected name/queue
@@ -47,7 +47,7 @@ def _settings() -> WorkerSettings:
             "PG_DSN": "postgres://u:p@localhost:5432/db",
             "LOCK_LEASE": 60,
             "HEARTBEAT_INTERVAL": 10,
-            # _main starts a real HealthServer — never the shared default path.
+            # _main starts a real HealthServer - never the shared default path.
             "TASKQ_HEALTH_SOCKET_PATH": unique_health_sock_path("examples_wiring"),
         },
     )
@@ -262,7 +262,7 @@ def test_build_registry_has_db_at_transient_scope() -> None:
 
 def test_build_registry_not_yet_sealed() -> None:
     registry = build_registry()
-    # Should not raise — registry is not sealed yet
+    # Should not raise - registry is not sealed yet
     registry.register_value(WorkerSettings, Scope.PROCESS, _settings())
 
 
@@ -272,7 +272,7 @@ def test_build_registry_validates_with_di_actors() -> None:
     registry.register_value(WorkerSettings, Scope.PROCESS, settings)
     registry.register_value(Clock, Scope.PROCESS, SystemClock())
     registry.validate(actors=[fetch_actor, db_lookup_actor])
-    # validate() seals — no error means all deps resolved
+    # validate() seals - no error means all deps resolved
 
 
 # ── Bootstrap integration: di_registry flows through _main ───────────

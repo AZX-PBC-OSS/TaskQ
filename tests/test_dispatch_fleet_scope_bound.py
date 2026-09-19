@@ -9,7 +9,7 @@ Fleet scope: a worker polls a small subset of the fleet's queues. The
 cost of one dispatch round for those queues must not grow with what
 other queues and other actors have pending, nor with how deep the
 fleet's overall backlog is, nor with how many actors the rest of the
-fleet has REGISTERED — the seed below grows actor_config alongside the
+fleet has REGISTERED - the seed below grows actor_config alongside the
 jobs backlog, so a plan node that scans the registry instead of probing
 it per relevant actor is caught here the same way a node that walks
 every pending cohort fleet-wide is. Operationally this is the difference
@@ -169,7 +169,7 @@ async def _seed_fleet(conn: asyncpg.Connection, schema: str, fleet_size: int) ->
     actor_config grows with fleet_size too: the fleet actors are
     REGISTERED (one registry row each), so a dispatch CTE that scans
     actor_config instead of probing it per relevant actor shows up here
-    as cost growth along the registry dimension — not only along the
+    as cost growth along the registry dimension - not only along the
     pending-jobs dimension. (The round-robin/strict claim statement
     family read actor_config with full scans per round before the
     registry-scope fix; a fixture holding actor_config at two rows was

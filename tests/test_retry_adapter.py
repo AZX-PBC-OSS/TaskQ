@@ -80,7 +80,7 @@ async def test_hook_exception_is_swallowed() -> None:
 
 
 def test_actor_config_drift_row_authoritative() -> None:
-    """actor-config drift — row-stored max_attempts wins over live registration."""
+    """actor-config drift - row-stored max_attempts wins over live registration."""
     policy_b = RetryPolicy(kind="transient", max_attempts=2, jitter=0.0)
     cfg_b = StubActorConfig(retry=policy_b)
 
@@ -167,7 +167,7 @@ async def test_worker_ownership_mismatch_at_adapter() -> None:
 
 
 def test_clock_skew_no_panic() -> None:
-    """clock skew — no panic; the decision is a DELAY, so no skewed-clock
+    """clock skew - no panic; the decision is a DELAY, so no skewed-clock
     stamp is ever computed in Python (the backend derives scheduled_at
     from its own clock; see mark_failed_or_retry)."""
     policy = RetryPolicy(
@@ -247,7 +247,7 @@ def test_decide_after_failure_indefinite_returns_retry() -> None:
     """B-TG-14: decide_after_failure with retry_kind='indefinite',
     schedule_to_close=None returns Retry through the adapter layer.
     The indefinite tier ignores max_attempts and retries on any non-fatal
-    exception — the deadline is the SQL guard's business, not the
+    exception - the deadline is the SQL guard's business, not the
     classifier's."""
     policy = RetryPolicy(kind="indefinite", max_attempts=3, jitter=0.0)
     actor_config = StubActorConfig(retry=policy)
@@ -272,7 +272,7 @@ def test_decide_after_failure_cap_less_than_base_raises_validation_error() -> No
     """B-TG-11: decide_after_failure with a live actor config where the
     reconstructed policy has cap < base raises ValidationError (fail-loud).
     Simulates a rolling deploy where actor config changed from (base=1s, cap=60s)
-    to (base=60s, cap=1s) — the cap<base invariant is enforced at reconstruction.
+    to (base=60s, cap=1s) - the cap<base invariant is enforced at reconstruction.
 
     Uses model_construct to bypass RetryPolicy's own validation so the broken
     state is stored in the live actor config's retry field; decide_after_failure
@@ -284,7 +284,7 @@ def test_decide_after_failure_cap_less_than_base_raises_validation_error() -> No
         kind="transient",
         max_attempts=3,
         base=timedelta(seconds=60),  # base=60s
-        cap=timedelta(seconds=1),  # cap=1s — violates cap >= base
+        cap=timedelta(seconds=1),  # cap=1s - violates cap >= base
         jitter=0.0,
     )
 
@@ -317,7 +317,7 @@ def test_decide_after_failure_cap_less_than_base_raises_validation_error() -> No
 
 
 async def test_hook_coroutine_raises_before_sleep_is_swallowed() -> None:
-    """B-TG-15: hook coroutine raises before any await — exception caught
+    """B-TG-15: hook coroutine raises before any await - exception caught
     and does not propagate to caller.
     """
 
@@ -331,7 +331,7 @@ async def test_hook_coroutine_raises_before_sleep_is_swallowed() -> None:
 
 
 async def test_hook_coroutine_raises_after_await_is_swallowed() -> None:
-    """B-TG-15: hook coroutine raises after an intermediate await — exception
+    """B-TG-15: hook coroutine raises after an intermediate await - exception
     caught and does not propagate.
     """
 
@@ -348,7 +348,7 @@ async def test_hook_coroutine_raises_after_await_is_swallowed() -> None:
 # ── classifier has no clock frame ───────────────────────────────
 #
 # The two former tests here pinned the REMOVED Python deadline arbiter
-# (the classifier's clock-frame opinion of schedule_to_close) — exactly
+# (the classifier's clock-frame opinion of schedule_to_close) - exactly
 # the C2 hazard: a worker clock disagreeing with the server killed live
 # jobs or voided backoff.  classify() now takes neither a deadline nor a
 # clock; the SQL guard in mark_failed_or_retry is the single deadline

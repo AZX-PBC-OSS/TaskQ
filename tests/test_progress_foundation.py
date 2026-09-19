@@ -1,7 +1,7 @@
 """Unit tests for progress subpackage foundation: ProgressEvent, _ProgressBuffer,
 channel helpers, WorkerSettings fields, and ProgressTooLarge.
 
-Covers deliverables — no PG or Redis required.
+Covers deliverables - no PG or Redis required.
 """
 
 from dataclasses import fields

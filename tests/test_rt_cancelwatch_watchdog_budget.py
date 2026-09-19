@@ -6,8 +6,8 @@ Two attacks:
    ``watchdog_loop_lag_budget``** (settings ``post_load`` checks only
    ``budget + heartbeat_interval < lock_lease`` and ``budget >
    check_interval``).  A warn budget at or above the terminal budget
-   silently disables tier 1 — the worker is force-exited with no prior
-   lag warning — exactly the failure mode the codebase already rejects
+   silently disables tier 1 - the worker is force-exited with no prior
+   lag warning - exactly the failure mode the codebase already rejects
    for ``ShutdownWatchdog``'s ``dump_after_fraction`` ("at 1.0 the
    deadline trip always fires first, silently disabling straggler dumps").
    A budget pair the validator cannot distinguish from a healthy one is
@@ -19,7 +19,7 @@ Two attacks:
    and the cancel controller can then run an UNBOUNDED number of
    escalation UPDATE + event INSERT round trips inside that one tick
    (every active job past its cancel grace escalates in the same
-   transaction — a bulk cancel makes them all due together).  Detector
+   transaction - a bulk cancel makes them all due together).  Detector
    2's budget for the loop is ``max(interval * grace_factor,
    stale_floor)``; a healthy drain that merely takes longer than that
    (each round trip costs real seconds on a loaded PG) force-exits the
@@ -76,7 +76,7 @@ def test_warn_budget_at_or_above_lag_budget_is_rejected(warn_budget: str, lag_bu
     """A tier-1 budget that cannot fire before tier 2 must fail at load.
 
     Contract: ``watchdog_loop_lag_warn_budget`` must load only when it is
-    strictly below ``watchdog_loop_lag_budget`` — otherwise the terminal
+    strictly below ``watchdog_loop_lag_budget`` - otherwise the terminal
     lag trip force-exits with zero prior warning, the same silent-disable
     failure ``dump_after_fraction``'s (0, 1) validation exists to prevent.
     Current behavior: the pair loads cleanly, so the misconfiguration is
@@ -173,7 +173,7 @@ async def test_long_cancel_drain_does_not_read_as_stale_heartbeat_loop() -> None
     one transaction.  With the default budget arithmetic
     (``max(interval * grace_factor, stale_floor)`` = 50s at
     interval=10), 12 jobs x (escalation UPDATE + audit INSERT) x 3s of
-    per-round-trip latency = 72s of HEALTHY work — and detector 2
+    per-round-trip latency = 72s of HEALTHY work - and detector 2
     force-exits the worker for a stale "heartbeat" registration.
     """
     clock = _FakeWallClock()
@@ -198,7 +198,7 @@ async def test_long_cancel_drain_does_not_read_as_stale_heartbeat_loop() -> None
     )
     worker_id = new_uuid()
 
-    # 12 jobs all past the (zero) cancel grace — a bulk cancel's worth of
+    # 12 jobs all past the (zero) cancel grace - a bulk cancel's worth of
     # due escalations in one tick.
     poll_rows: list[dict[str, object]] = []
     tasks: list[asyncio.Task[object]] = []
@@ -227,7 +227,7 @@ async def test_long_cancel_drain_does_not_read_as_stale_heartbeat_loop() -> None
 
     assert liveness.stale() == [], (
         "Contract: a heartbeat tick that is healthily draining its cancel queue "
-        "must not read as a stale loop — detector 2's terminal trip would "
+        "must not read as a stale loop - detector 2's terminal trip would "
         "force-exit the worker mid-drain (and the mid-tick lease renewals that "
         "already happened mean the sweep cannot yet reclaim, so the exit throws "
         "away a drain that was succeeding). The leader sweep's own drain carries "

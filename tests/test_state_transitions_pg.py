@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
     type _Conn = asyncpg.Connection | PoolConnectionProxy
 else:
-    type _Conn = object  # pyright: ignore[reportInvalidTypeForm] # Why: runtime fallback — asyncpg is TYPE_CHECKING-only to avoid transitive import
+    type _Conn = object  # pyright: ignore[reportInvalidTypeForm] # Why: runtime fallback - asyncpg is TYPE_CHECKING-only to avoid transitive import
 
 pytestmark = pytest.mark.integration
 
@@ -107,7 +107,7 @@ class TestFullLifecycle:
         assert row["attempt"] == 0
 
         async with deps.worker_pool.acquire() as conn:
-            # 5s margin, not 1s — see TestPollingLifecycle's identical fix
+            # 5s margin, not 1s - see TestPollingLifecycle's identical fix
             # above for why (PG-server-clock vs. Python-client-clock skew).
             await conn.execute(
                 f"UPDATE \"{schema}\".jobs SET scheduled_at = now() - interval '5 seconds' WHERE id = $1",
@@ -426,7 +426,7 @@ class TestPollingLifecycle:
             # tests/conftest.py's startup clock-divergence check), so the
             # job must be pushed firmly into the server clock's past for
             # the sweep's server-side `scheduled_at <= clock_timestamp()`
-            # predicate to pick it up — the PG implementation ignores the
+            # predicate to pick it up - the PG implementation ignores the
             # caller-supplied now() argument entirely.
             await conn.execute(
                 f"UPDATE \"{schema}\".jobs SET scheduled_at = now() - interval '5 seconds' WHERE id = $1",
@@ -542,7 +542,7 @@ class TestIsolateSelfCrashed:
     """running → crashed via isolate_self when retries exhausted.
 
     Oracle: status='crashed', error_class='HeartbeatLost' (NOT
-    'WorkerCrashed' — forensic distinction with Sweep 1 is intentional).
+    'WorkerCrashed' - forensic distinction with Sweep 1 is intentional).
     """
 
     async def test_isolate_self_crashed(self, pg_dsn: str) -> None:
@@ -598,7 +598,7 @@ class TestIsolateSelfCrashed:
                 )
             assert row is not None
             assert row["status"] == "crashed"
-            # PR #272 (issue #238): the isolate's crashed arm now self-describes
+            # The isolate's crashed arm now self-describes
             # on the job row, the same doctrine sweep 1's crashed arm follows.
             # The old template left both fields NULL while claiming the
             # branch-for-branch mirror of the sweep's SET clause. The label is

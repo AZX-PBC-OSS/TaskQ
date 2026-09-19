@@ -6,13 +6,13 @@ CONSUMER, INTERNAL attempt.1) with correct attributes, one span link on the
 CONSUMER, and core lifecycle metric data points for instruments 1-4.
 
 Also covers:
-  End-to-end trace — spans + instruments 1-4
+  End-to-end trace - spans + instruments 1-4
   Queue depth gauge (instrument 5)
   Leader gauge + election counters (instruments 9, 14-15)
   Heartbeat metrics (instruments 6-7)
   Reservation, cancellation, and cron metrics (instruments 8, 10, 16, 17)
-  OTel exporter unavailable — no exception propagation
-  Malformed trace_id — link skipped, CONSUMER span still created
+  OTel exporter unavailable - no exception propagation
+  Malformed trace_id - link skipped, CONSUMER span still created
   Enqueue span overhead measurement
 """
 
@@ -1047,7 +1047,7 @@ class TestExporterUnavailable:
 
 
 class TestMalformedTraceId:
-    """Malformed trace_id in DB — link skipped, CONSUMER span still created."""
+    """Malformed trace_id in DB - link skipped, CONSUMER span still created."""
 
     async def test_malformed_trace_id_produces_no_link_consumer_span_still_created(
         self, pg_dsn: str, monkeypatch: pytest.MonkeyPatch

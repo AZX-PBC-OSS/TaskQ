@@ -3,9 +3,9 @@ until its auth gate is proven.
 
 The class this file guards: a ``create_router`` factory under ``taskq.web``
 that serves its routes without authentication and without raising.
-``taskq.web.admin.create_router`` has always failed closed — ``RuntimeError``
+``taskq.web.admin.create_router`` has always failed closed - ``RuntimeError``
 at factory time when ``auth_dependency`` is ``None`` outside a dev
-environment — while ``taskq.web.progress.create_router`` shipped without the
+environment - while ``taskq.web.progress.create_router`` shipped without the
 gate and exposed per-job state and an anonymously-bounded SSE surface in
 exactly the deployments that needed it closed. Both factories carry the gate
 now, with their own per-factory tests. Those tests guard their factory. This
@@ -13,7 +13,7 @@ file guards the *surface*: it walks every module under ``taskq.web``, so the
 third factory fails the registry check on arrival, and the behavioural half
 proves the gate rather than trusting the registration.
 
-Precedent: ``tests/test_sweepaudit_bounded_writes.py`` — per-site pins guard
+Precedent: ``tests/test_sweepaudit_bounded_writes.py`` - per-site pins guard
 each known site, a walked registry catches the next one.
 
 What to do when the registry check fails on a factory you added: nothing in
@@ -21,7 +21,7 @@ this file needs editing unless the factory is deliberate. If it raises
 without auth outside dev (the required shape), add its qualified name to
 ``_KNOWN_FACTORIES`` and the behavioural test covers it from then on. If you
 believe a new factory should serve anonymously in production, that is a
-security decision — take it to review before registering an exemption, and
+security decision - take it to review before registering an exemption, and
 expect the review to ask why the sibling pattern
 (``TASKQ_*_REQUIRE_AUTH=false`` opt-out, loud warning when suppressed) does
 not fit.
@@ -53,13 +53,13 @@ _KNOWN_FACTORIES: dict[str, str] = {
 
 #: Stub arguments for required factory parameters, by parameter name. A
 #: factory whose required parameter is not registered here fails the
-#: behavioural test with an instruction — the missing stub is the guard
+#: behavioural test with an instruction - the missing stub is the guard
 #: noticing a factory shape it cannot drive, not a pass.
 _STUB_ARGS: dict[str, Any] = {}
 
 
 class _StubPool:
-    """Duck-typed stand-in for asyncpg.Pool — the factories only store it."""
+    """Duck-typed stand-in for asyncpg.Pool - the factories only store it."""
 
 
 _STUB_ARGS["pg_pool"] = _StubPool()
@@ -69,7 +69,7 @@ _STUB_ARGS["redis_client"] = None
 def _discover_router_factories() -> tuple[dict[str, Callable[..., Any]], list[str]]:
     """Walk every module under ``taskq.web`` and collect functions named
     ``create_router`` at their definition site. Returns the factories keyed
-    by qualified name, plus the names of modules that failed to import — a
+    by qualified name, plus the names of modules that failed to import - a
     skipped module is a blind spot in the sweep, so the caller asserts the
     list is empty rather than letting an unimportable module hide a factory.
     """
@@ -107,7 +107,7 @@ def _invoke_without_auth(factory: Callable[..., Any], qualname: str) -> object:
 
 def test_router_factory_registry_matches_the_walked_surface() -> None:
     """The registry half: the set of discovered factories equals the
-    registered set, both ways — a new factory fails on arrival, a removed or
+    registered set, both ways - a new factory fails on arrival, a removed or
     renamed factory fails on staleness, and an unimportable module fails
     rather than silently narrowing the sweep."""
     discovered, skipped = _discover_router_factories()
@@ -118,7 +118,7 @@ def test_router_factory_registry_matches_the_walked_surface() -> None:
     assert set(discovered) == set(_KNOWN_FACTORIES), (
         f"router factory surface drifted: discovered {sorted(discovered)}, "
         f"registered {sorted(_KNOWN_FACTORIES)}. A new create_router under taskq.web "
-        "must fail closed without auth before it is registered here — see this "
+        "must fail closed without auth before it is registered here - see this "
         "file's docstring."
     )
 
@@ -128,7 +128,7 @@ def test_every_router_factory_fails_closed_without_auth_outside_dev(
 ) -> None:
     """The behavioural half: every registered factory raises RuntimeError
     naming auth when called with auth_dependency=None under a non-dev
-    environment — the gate itself, not the registration."""
+    environment - the gate itself, not the registration."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "production")
     discovered, _ = _discover_router_factories()
     for qualname in _KNOWN_FACTORIES:

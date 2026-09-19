@@ -195,7 +195,7 @@ class JobStateMachine(RuleBasedStateMachine):
 
     # ── Mark failed (terminal): running -> failed ──────────────────────
     # The status=="running" and locked_by_worker guards above make
-    # WorkerOwnershipMismatch impossible — the sequential Hypothesis
+    # WorkerOwnershipMismatch impossible - the sequential Hypothesis
     # state machine cannot mutate the row between the guard and the call.
 
     @precondition(lambda self: bool(self._running_jobs()))
@@ -406,7 +406,7 @@ class JobStateMachine(RuleBasedStateMachine):
            carries a clean cancellation slate: cancel_phase == NONE and
            cancel_requested_at is None. Retries reuse the same row, so a
            surviving escalated cancel would hand the next attempt an
-           already-FORCED phase — the cancel controller would fast-advance
+           already-FORCED phase - the cancel controller would fast-advance
            past cooperative cancel and the attempt could never be
            cancelled again.
         2. Within a single running stint, cancel_phase only escalates
@@ -474,7 +474,7 @@ class JobStateMachine(RuleBasedStateMachine):
                 if refunded is not None:
                     # A snooze ran since the last check: the attempt is
                     # either untouched (the write noop'd or terminally
-                    # failed — those arms do not refund) or refunded by
+                    # failed - those arms do not refund) or refunded by
                     # exactly the claim's increment.
                     assert row.attempt in (prev, max(refunded - 1, 0)), (
                         f"snooze moved attempt for job {jid} outside the "

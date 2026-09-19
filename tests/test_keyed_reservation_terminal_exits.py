@@ -2,25 +2,25 @@
 
 """Terminal-exit pins for keyed ``reservation_slots`` rows: every flow that
 creates rows for a ``base_name:key`` bucket must leave those rows with a
-deletion exit — the idle eviction's pending-reclaim drain.
+deletion exit - the idle eviction's pending-reclaim drain.
 
 The inventory these pins complete (each row kind against each terminal
 path of the job that caused it):
 
-* **success / failure / retry / snooze-in-actor / cancel (cooperative)** —
+* **success / failure / retry / snooze-in-actor / cancel (cooperative)** -
   the consumer's outer ``finally`` releases the held slot
   (lease-fenced), so the row is FREE and the eviction+drain reclaims it.
   Pinned by ``tests/test_keyed_reservation_slot_reclamation.py``.
-* **pre-actor denial** (the headline flow) — the acquire is denied
+* **pre-actor denial** (the headline flow) - the acquire is denied
   after the keyed bucket's rows were already materialised; nothing is
   held, the job snoozes. The rows must still reclaim: pinned here.
-* **abandon** — the holder's consumer dies without releasing; the lease
+* **abandon** - the holder's consumer dies without releasing; the lease
   lapses; the (surviving) sweeper's drain treats an expired lease as
   free. Pinned here.
-* **worker death** — the registry that tracks the key is gone with the
+* **worker death** - the registry that tracks the key is gone with the
   process, so no eviction ever records the rows: the one terminal exit
   with NO deletion path today (fleet-wide, only a row-carried staleness
-  marker + fleet sweep can close it — a batch delete of expired rows on
+  marker + fleet sweep can close it - a batch delete of expired rows on
   the next sweep cycle). NOT pinned red here; it is the documented
   residual gap.
 
@@ -98,11 +98,11 @@ async def test_denied_keyed_reservation_leaves_zero_rows_after_eviction_drain(
 
     The headline flow: an actor declares a keyed reservation plus a
     static cap; the static cap is full, so the acquire is denied after
-    the keyed bucket's slot rows were already ensured — the job snoozes
+    the keyed bucket's slot rows were already ensured - the job snoozes
     (``mark_snoozed`` with ``outcome="reservation_denied"``) having
     never run. Those denial-materialised rows are exactly the growth the
     eviction-drain exists to bound: once the key goes idle, the eviction
-    must record the bucket and the drain must leave ZERO rows — and the
+    must record the bucket and the drain must leave ZERO rows - and the
     static bucket's capacity rows must survive untouched."""
     await _fresh_schema(pg_dsn)
     pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=1, max_size=2)
@@ -139,7 +139,7 @@ async def test_denied_keyed_reservation_leaves_zero_rows_after_eviction_drain(
         denied_bucket = "denial-exit:s-denied"
 
         # The denied attempt: the keyed ref resolves FIRST (materialising
-        # its slot rows), then the full static cap denies — the rollback
+        # its slot rows), then the full static cap denies - the rollback
         # releases the keyed slot and the job snoozes with no actor run.
         with pytest.raises(ReservationUnavailable):
             await reg.acquire_for_actor(
@@ -166,12 +166,12 @@ async def test_denied_keyed_reservation_leaves_zero_rows_after_eviction_drain(
 
         assert await _slot_rows(pool, denied_bucket) == 0, (
             f"the denial-materialised bucket {denied_bucket!r} left rows behind after "
-            "its key went idle and the eviction+drain ran — the denial flow "
+            "its key went idle and the eviction+drain ran - the denial flow "
             "would accrue one bucket of rows per distinct denied key with no "
             "deletion exit"
         )
         assert await _slot_rows(pool, "denial-exit-static") == 1, (
-            "the eviction+drain must not touch a STATIC bucket's capacity rows — "
+            "the eviction+drain must not touch a STATIC bucket's capacity rows - "
             "static cardinality is config-bounded, its rows are ensured at "
             "startup, and no worker re-ensures them mid-flight"
         )
@@ -188,9 +188,9 @@ async def test_abandoned_keyed_reservation_leaves_zero_rows_after_lease_expiry(
     The abandon terminal exit: the holder's consumer dies without
     releasing (the job is reclaimed by the lock-expiry machinery, the
     slot row stays ``job_id``-held). The drain's idle guard deliberately
-    treats an expired lease as deletable — a live lease survives (the
+    treats an expired lease as deletable - a live lease survives (the
     over-admission invariant, pinned by
-    ``test_keyed_reservation_drain_rotation``), a lapsed one does not —
+    ``test_keyed_reservation_drain_rotation``), a lapsed one does not -
     so the sweeper's next drain must leave ZERO rows for the bucket."""
     await _fresh_schema(pg_dsn)
     pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=1, max_size=2)
@@ -219,7 +219,7 @@ async def test_abandoned_keyed_reservation_leaves_zero_rows_after_lease_expiry(
             "fixture broken: the acquire did not hold the slot"
         )
 
-        # Abandon: no release — the consumer is gone. The lease (60 ms,
+        # Abandon: no release - the consumer is gone. The lease (60 ms,
         # stamped server-side at acquire) lapses; the acquire CTE would
         # already hand this slot to a new job.
         await asyncio.sleep(0.4)
@@ -230,7 +230,7 @@ async def test_abandoned_keyed_reservation_leaves_zero_rows_after_lease_expiry(
 
         assert await _slot_rows(pool, bucket) == 0, (
             f"the abandoned bucket {bucket!r} left rows behind after its lease "
-            "lapsed and the eviction+drain ran — the drain's idle guard treats "
+            "lapsed and the eviction+drain ran - the drain's idle guard treats "
             "an expired lease as deletable precisely so a dead holder cannot "
             "pin its bucket's rows forever"
         )

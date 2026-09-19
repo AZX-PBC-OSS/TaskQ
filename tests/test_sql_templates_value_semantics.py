@@ -1,4 +1,4 @@
-"""``SqlTemplates`` value semantics — nothing in the suite named this type.
+"""``SqlTemplates`` value semantics - nothing in the suite named this type.
 
 The rendered templates are built once per backend and handed to every
 read, write and dispatch helper.  Immutability is what makes that sharing

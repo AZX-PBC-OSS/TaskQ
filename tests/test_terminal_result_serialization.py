@@ -61,7 +61,7 @@ class _CountingDumps:
 
 async def test_result_bytes_binds_decoded_str_and_exact_size() -> None:
     """The terminal reuses the held bytes: decoded once for the jsonb
-    binding, size taken from len(bytes) — no serialization, no re-encode."""
+    binding, size taken from len(bytes) - no serialization, no re-encode."""
     payload = {"value": 42, "nested": {"a": [1, 2, 3]}}
     data = _json_dumps(payload)
     conn = _FakeConn()
@@ -135,7 +135,7 @@ async def test_result_bytes_with_nul_raises_value_error() -> None:
 
 
 async def test_result_and_result_bytes_are_mutually_exclusive() -> None:
-    """Passing both the dict and its encoding is a caller bug — rejected
+    """Passing both the dict and its encoding is a caller bug - rejected
     loudly before anything is bound."""
     conn = _FakeConn()
 
@@ -152,7 +152,7 @@ async def test_result_and_result_bytes_are_mutually_exclusive() -> None:
     assert conn.fetchrow_args is None
 
 
-# ── Plain-dict path — unchanged for direct backend callers ─────────────
+# ── Plain-dict path - unchanged for direct backend callers ─────────────
 
 
 async def test_plain_dict_result_serializes_exactly_once(
@@ -204,7 +204,7 @@ async def test_none_result_stores_null(
 
 async def test_result_bytes_over_cap_still_raises_result_too_large() -> None:
     """The storage-boundary cap guard still applies to pre-serialized
-    bytes (defense in depth — a caller-supplied bytes blob over the cap
+    bytes (defense in depth - a caller-supplied bytes blob over the cap
     is rejected at the same site)."""
     big_payload = {"blob": "x" * 65536 + "overflow"}
     data = _json_dumps(big_payload)
@@ -217,7 +217,7 @@ async def test_result_bytes_over_cap_still_raises_result_too_large() -> None:
         )
 
 
-# ── In-memory backend — the same contract ────────────────────────────
+# ── In-memory backend - the same contract ────────────────────────────
 #
 # The consumer passes result_bytes on every success, whichever backend is
 # configured, so the testing backend must be observable-equivalent to PG
@@ -233,7 +233,7 @@ async def _in_memory_running_job(
     """Enqueue and claim one job; return (job_id, worker_id) of the
     running row the terminal write expects."""
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     if "test_actor" not in backend._actor_configs_meta:  # type: ignore[reportPrivateUsage]  # Why: test-only private access; the established fixture pattern.
         backend.register_actor_config(actor="test_actor")
     await backend.enqueue(
@@ -275,7 +275,7 @@ async def test_in_memory_result_bytes_round_trip_stores_decoded_result_and_exact
 
 
 async def test_in_memory_result_and_result_bytes_are_mutually_exclusive() -> None:
-    """Both forms at once is a caller bug — rejected loudly before any
+    """Both forms at once is a caller bug - rejected loudly before any
     state change, same as the PG terminal (the job must stay running)."""
     backend = InMemoryBackend(clock=FakeClock(_START))
     job_id, worker_id = await _in_memory_running_job(backend)
@@ -295,7 +295,7 @@ async def test_in_memory_result_and_result_bytes_are_mutually_exclusive() -> Non
 
 async def test_in_memory_result_bytes_with_nul_raises_value_error() -> None:
     """Caller-supplied bytes carrying a NUL escape would bind as invalid
-    jsonb on PG — the testing backend rejects them with the same
+    jsonb on PG - the testing backend rejects them with the same
     ValueError, at the same boundary."""
     backend = InMemoryBackend(clock=FakeClock(_START))
     job_id, worker_id = await _in_memory_running_job(backend)
@@ -305,7 +305,7 @@ async def test_in_memory_result_bytes_with_nul_raises_value_error() -> None:
 
 
 async def test_in_memory_plain_dict_result_with_nul_raises_value_error() -> None:
-    """The dict form is NUL-guarded too — PG's jsonb binding rejects the
+    """The dict form is NUL-guarded too - PG's jsonb binding rejects the
     value, so the testing backend must fail identically rather than store
     a result PG never could."""
     backend = InMemoryBackend(clock=FakeClock(_START))
@@ -336,7 +336,7 @@ async def test_in_memory_progress_state_with_nul_raises_value_error() -> None:
 
 
 async def test_in_memory_result_bytes_over_cap_raises_result_too_large() -> None:
-    """The result cap applies to the bytes form at its measured length —
+    """The result cap applies to the bytes form at its measured length -
     the same storage-boundary guard the PG terminal applies."""
     backend = InMemoryBackend(clock=FakeClock(_START), result_max_bytes=64)
     job_id, worker_id = await _in_memory_running_job(backend)
@@ -369,7 +369,7 @@ async def test_in_memory_empty_result_bytes_raises_value_error_and_job_stays_run
     """Empty bytes are never valid orjson output. The PG terminal rejects
     them with a dedicated ValueError whose rationale names this mirror
     ("same ValueError class the in-memory/testing mirrors raise for the
-    same input") — the mirror must keep that true: a ValueError-family
+    same input") - the mirror must keep that true: a ValueError-family
     rejection, before any state change, the row still running."""
     backend = InMemoryBackend(clock=FakeClock(_START))
     job_id, worker_id = await _in_memory_running_job(backend)
@@ -384,7 +384,7 @@ async def test_in_memory_empty_result_bytes_raises_value_error_and_job_stays_run
 
 async def test_in_memory_result_bytes_invalid_json_raises_value_error() -> None:
     """Bytes that are not valid JSON are rejected with the ValueError
-    family — the reference behavior the PG terminal's guard matches
+    family - the reference behavior the PG terminal's guard matches
     (bound as text and cast server-side, the jsonb rejection would arrive
     as a PostgresError the terminal-write classification reads as
     transient infra). The mirror must keep raising here or the two
@@ -424,7 +424,7 @@ async def test_in_memory_result_bytes_invalid_json_rejected_even_when_the_job_is
     None
 ):
     """Content validation, like the mutual-exclusivity check, runs before
-    the state fence — the mirror matches the PG terminal's order (its
+    the state fence - the mirror matches the PG terminal's order (its
     guards precede the fencing UPDATE). A non-running job must not turn a
     permanently-unstorable value into a silent False indistinguishable
     from an innocent fencing mismatch."""
@@ -438,11 +438,11 @@ async def test_in_memory_result_bytes_invalid_json_rejected_even_when_the_job_is
 
 async def test_in_memory_both_result_forms_rejected_even_when_the_job_is_not_running() -> None:
     """PG validates the two-form misuse at the function top, before any
-    state lookup — a caller passing both forms always gets the loud
+    state lookup - a caller passing both forms always gets the loud
     ValueError. The mirror gates the same check behind the running/lock
     fence, so the identical misuse on a job that is not running (already
-    terminal, wrong worker, never existed) returns False — the same
-    outcome as an innocent fencing mismatch — and the caller bug hides.
+    terminal, wrong worker, never existed) returns False - the same
+    outcome as an innocent fencing mismatch - and the caller bug hides.
     Observable-equivalence with PG on this path is the mirror's contract."""
     backend = InMemoryBackend(clock=FakeClock(_START))
     job_id, worker_id = await _in_memory_running_job(backend)
@@ -461,7 +461,7 @@ async def test_in_memory_over_cap_result_rejected_even_when_the_job_is_not_runni
     """The cap check is validation too: the backend contract
     (docs/architecture.md) is that ALL validation precedes the fencing
     write, so a permanently-unstorable result raises ResultTooLarge
-    whatever the job's state — never returns the False of an innocent
+    whatever the job's state - never returns the False of an innocent
     fencing mismatch. The ValueError-family guards are pinned against a
     non-running job above; this pins the one other exception family,
     raised from a different site."""
@@ -491,12 +491,12 @@ async def test_in_memory_dict_form_result_normalizes_to_pg_observable_state(
     pg_read_back: dict[str, object],
 ) -> None:
     """The mirror's dict-form write claims to "normalize to the same
-    observable state as PG" — but it stores the caller's Python objects
+    observable state as PG" - but it stores the caller's Python objects
     verbatim (``dict(result)``), while PG stores what orjson emitted and
     reads the JSON back. Every value whose orjson encoding differs from
     the object diverges on read-back: NaN and Infinity become null, UUIDs
     become their string form, tuples become arrays. The consumer's bytes
-    form round-trips through JSON on both backends and cannot diverge —
+    form round-trips through JSON on both backends and cannot diverge -
     this is the dict form's parity hole."""
     backend = InMemoryBackend(clock=FakeClock(_START))
     job_id, worker_id = await _in_memory_running_job(backend)
@@ -544,7 +544,7 @@ class TestResultBytesAgainstPostgres:
 
     async def test_size_identical_to_plain_dict_call(self, clean_jobs_app: JobsApp) -> None:
         """result_bytes and plain-dict calls store the SAME result_size_bytes
-        for the same content — semantics fully preserved."""
+        for the same content - semantics fully preserved."""
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend
         schema = deps.settings.schema_name
@@ -575,11 +575,11 @@ class TestResultBytesAgainstPostgres:
         self, clean_jobs_app: JobsApp
     ) -> None:
         """Bytes that are not valid JSON must be rejected client-side with
-        the ValueError family — the same classification its sibling guards
+        the ValueError family - the same classification its sibling guards
         (empty bytes, NUL) already apply, for the same reason: bound as
         text and cast server-side, the jsonb rejection arrives as a
         PostgresError, which the terminal-write classification reads as
-        TRANSIENT INFRASTRUCTURE failure — the job never reaches a terminal
+        TRANSIENT INFRASTRUCTURE failure - the job never reaches a terminal
         state, the lease sweep reclaims it, a re-run produces the same
         bytes, and the write loops. A permanent data defect must not wear
         an infra failure's costume; the in-memory mirror raises ValueError
@@ -611,7 +611,7 @@ class TestResultBytesAgainstPostgres:
         same ValueError family as malformed ASCII, so the boundary's own
         message ("the bytes are not decodable JSON") carries the cause and
         the decode below the guard cannot fail. Binary garbage must never
-        reach the server as a text binding — the same transient-infra
+        reach the server as a text binding - the same transient-infra
         misclassification the malformed-JSON test above guards."""
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend
@@ -633,7 +633,7 @@ class TestResultBytesAgainstPostgres:
 
     async def test_non_object_json_result_round_trips_on_pg(self, clean_jobs_app: JobsApp) -> None:
         """The mirror's non-object round-trip test asserts parity with a PG
-        behavior it only reads in code — anchor it: a JSON array result
+        behavior it only reads in code - anchor it: a JSON array result
         stores and reads back verbatim on the reference implementation
         (``jsonb_to_dict`` -> ``loads`` passes the list through), which is
         what licenses the mirror to do the same."""
@@ -658,7 +658,7 @@ class TestResultBytesAgainstPostgres:
         """The contract the in-memory mirror's fence-ordering tests pin
         parity AGAINST: on the reference implementation, invalid
         ``result_bytes`` on a job that is already terminal raises the
-        ValueError family — never returns the False of an innocent
+        ValueError family - never returns the False of an innocent
         fencing mismatch. Without this anchor, the mirror's ordering
         tests pin parity with a documented behavior nothing asserts PG
         itself keeps."""
@@ -678,7 +678,7 @@ class TestResultBytesAgainstPostgres:
     ) -> None:
         """The reference behavior the mirror's dict-form test pins parity
         against: PG stores what orjson emitted, so a UUID result reads
-        back its string form and a NaN result reads back null — the
+        back its string form and a NaN result reads back null - the
         JSON round-trip is the normalization the in-memory dict form
         skips."""
         deps = clean_jobs_app.deps

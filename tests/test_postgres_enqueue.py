@@ -113,7 +113,7 @@ class TestIdempotencyKeyDedupViaEnqueue:
 
 class TestPayloadNotOverwrittenOnConflict:
     """enqueue with a duplicate key does NOT overwrite the stored
-    payload — the original payload is preserved."""
+    payload - the original payload is preserved."""
 
     async def test_conflict_preserves_original_payload(self, clean_jobs_app: JobsApp) -> None:
 

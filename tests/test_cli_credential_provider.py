@@ -7,7 +7,7 @@ and SIGHUP rotated nothing on a stock ``taskq worker`` (and therefore on
 every workgroup-supervised child, which are ``taskq worker`` subprocesses).
 
 These tests drive the CLI and then exercise the resource the CLI actually
-handed the worker — a rotation that reaches a real provider, not a
+handed the worker - a rotation that reaches a real provider, not a
 source-text check.
 """
 
@@ -97,7 +97,7 @@ class _FakePool:
         self.kwargs = kwargs
         self.closed = False
         # Why an event alongside the flag: the flag is the assertion
-        # surface; the event is the WAIT surface — reload_credentials
+        # surface; the event is the WAIT surface - reload_credentials
         # closes OLD resources on background drain tasks, and a test that
         # needs "drained" can await this instead of sleeping a fixed
         # interval that races the drain under load.
@@ -119,7 +119,7 @@ class _FakeConn:
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
         self.closed = False
-        # Why an event alongside the flag: mirrors _FakePool — the reload
+        # Why an event alongside the flag: mirrors _FakePool - the reload
         # drains OLD dedicated connections on background tasks, and tests
         # await this event instead of sleeping a fixed interval that races
         # the drain under load.
@@ -240,7 +240,7 @@ async def test_cli_pg_provider_rotates_credentials_on_reload(
         old_worker: Any = deps.worker_pool
         old_notify: Any = deps.notify_conn
         reloaded, failed = await reload_credentials(deps, drain_timeout=0.1)
-        # Bounded, event-driven waits for the background drains — never a
+        # Bounded, event-driven waits for the background drains - never a
         # fixed sleep racing them under load.
         for old in (old_dispatcher, old_heartbeat, old_worker, old_notify):
             await wait_for(old.closed_event, timeout=5.0)
@@ -256,7 +256,7 @@ async def test_cli_pg_provider_rotates_credentials_on_reload(
     assert PROVIDER.pg_calls > calls_after_open, "reload did not fetch a fresh credential"
 
     # The rebuilt pool authenticates per physical connection through the
-    # provider — awaiting asyncpg's password callable yields a NEW token.
+    # provider - awaiting asyncpg's password callable yields a NEW token.
     newest_pool = next(p for p in reversed(fake_pg) if isinstance(p, _FakePool))
     password = newest_pool.kwargs["password"]
     token = await password()
@@ -285,7 +285,7 @@ async def test_cli_redis_provider_rotates_client_on_reload(
         old_redis: Any = deps.redis_client
         reloaded, failed = await reload_credentials(deps, drain_timeout=0.1)
         # Bounded, event-driven waits for the background drains (pools,
-        # notify conn, and the old Redis client's aclose) — never a fixed
+        # notify conn, and the old Redis client's aclose) - never a fixed
         # sleep racing them under load.
         for old in (old_dispatcher, old_heartbeat, old_worker, old_notify, old_redis):
             await wait_for(old.closed_event, timeout=5.0)
@@ -363,7 +363,7 @@ def test_worker_subprocess_fails_loudly_on_bad_provider_env() -> None:
     env = dict(os.environ)
     env["TASKQ_PG_CREDENTIAL_PROVIDER"] = "no.such.module:make_provider"
     env["TASKQ_PG_DSN"] = "postgresql://app@db.example:5432/taskq"
-    proc = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell — this is the supervisor's own spawn shape.
+    proc = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell - this is the supervisor's own spawn shape.
         [sys.executable, "-m", "taskq", "worker", "--actors", _REGISTRY_PATH],
         cwd=_REPO_ROOT,
         env=env,

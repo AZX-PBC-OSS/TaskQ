@@ -110,7 +110,7 @@ async def test_worker_startup_with_default_providers(
             "schema_name": schema,
             "lock_lease": "60",
             "heartbeat_interval": "10",
-            # _main starts a real HealthServer — never the shared default path.
+            # _main starts a real HealthServer - never the shared default path.
             "health_socket_path": unique_health_sock_path("di_integration"),
         },
     )
@@ -123,7 +123,7 @@ async def test_worker_startup_with_default_providers(
         pass
 
     actor_registry: Mapping[str, ActorRef[Any, Any]] = {
-        "no_dep_actor": no_dep_actor,  # type: ignore[dict-item] # Why: ActorRef[Any, Any] does not match the Mapping's value type at the Protocol boundary — pyright cannot verify dict covariance across heterogeneous ActorRef instances
+        "no_dep_actor": no_dep_actor,  # type: ignore[dict-item] # Why: ActorRef[Any, Any] does not match the Mapping's value type at the Protocol boundary - pyright cannot verify dict covariance across heterogeneous ActorRef instances
     }
 
     async def _runner() -> int:
@@ -218,7 +218,7 @@ async def test_acm_at_loop_scope(pg_dsn: str) -> None:
 
 async def _db_session_provider(
     pool: asyncpg.Pool,
-) -> AsyncIterator[object]:  # pyright: ignore[reportReturnType] # Why: pool.acquire() yields PoolConnectionProxy, not asyncpg.Connection; runtime delegates all Connection methods — the proxy IS the connection for callers
+) -> AsyncIterator[object]:  # pyright: ignore[reportReturnType] # Why: pool.acquire() yields PoolConnectionProxy, not asyncpg.Connection; runtime delegates all Connection methods - the proxy IS the connection for callers
     async with pool.acquire() as conn:
         yield conn
 
@@ -273,7 +273,7 @@ async def test_mixed_scope_lifecycle(pg_dsn: str) -> None:
     Register a Neo4jClient-like ACM class and an async-generator factory
     at LOOP scope. Bootstrap; perform two simulated dispatches that
     consume the resolved values; shutdown. Oracle: ACM __aexit__ called
-    exactly once; async-gen cleanup called exactly once; LIFO order —
+    exactly once; async-gen cleanup called exactly once; LIFO order -
     whichever was constructed last has its teardown called first.
     """
     settings = _settings(pg_dsn)

@@ -14,7 +14,7 @@ The acceptance criteria:
 
 Each failure-mode test routes through ``_main`` (the real worker bootstrap
 path) using the ``_registry`` test seam, so the exception is verified to
-propagate through ``open_worker_deps → registry.validate()`` — not just
+propagate through ``open_worker_deps → registry.validate()`` - not just
 ``registry.validate()`` in isolation. Because ``_main`` raises before
 reaching the ``TaskGroup``, no consumer task runs; the "assert no
 consumer task ran" gate from the DoD is satisfied by the raise itself.
@@ -126,7 +126,7 @@ async def migrated_taskq_test_schema(pg_dsn: str) -> AsyncIterator[None]:
 
     The boot path refuses on pending migrations (the schema-currency
     guard, ``_refuse_boot_on_pending_migrations``) before any DI
-    validation runs — these acceptance tests exercise the DI refusals,
+    validation runs - these acceptance tests exercise the DI refusals,
     so the schema must be current or the boot refuses on the right
     check for the wrong test. ``apply_pending`` creates or upgrades the
     schema idempotently; integration tests run serially, so the shared
@@ -264,7 +264,7 @@ async def test_acceptance_clean_bootstrap_succeeds(pg_dsn: str) -> None:
     registry.validate(actors=[clean_actor])
 
     scope_containers: dict[Scope, Any] = {}
-    resolver = make_resolver(registry, scope_containers)  # type: ignore[arg-type] # Why: make_resolver expects dict[Scope, ScopeContainerProtocol]; scope_containers holds concrete subclasses that satisfy the Protocol — pyright cannot verify dict covariance across the Protocol boundary
+    resolver = make_resolver(registry, scope_containers)  # type: ignore[arg-type] # Why: make_resolver expects dict[Scope, ScopeContainerProtocol]; scope_containers holds concrete subclasses that satisfy the Protocol - pyright cannot verify dict covariance across the Protocol boundary
 
     process_scope = ProcessScope(resolver=resolver)
     scope_containers[Scope.PROCESS] = process_scope
@@ -315,7 +315,7 @@ async def test_acceptance_actor_receives_di_kwargs_end_to_end(
     registry.validate(actors=[di_actor])
 
     scope_containers: dict[Scope, Any] = {}
-    resolver = make_resolver(registry, scope_containers)  # type: ignore[arg-type] # Why: make_resolver expects dict[Scope, ScopeContainerProtocol]; scope_containers holds concrete subclasses that satisfy the Protocol — pyright cannot verify dict covariance across the Protocol boundary
+    resolver = make_resolver(registry, scope_containers)  # type: ignore[arg-type] # Why: make_resolver expects dict[Scope, ScopeContainerProtocol]; scope_containers holds concrete subclasses that satisfy the Protocol - pyright cannot verify dict covariance across the Protocol boundary
 
     process_scope = ProcessScope(resolver=resolver)
     scope_containers[Scope.PROCESS] = process_scope

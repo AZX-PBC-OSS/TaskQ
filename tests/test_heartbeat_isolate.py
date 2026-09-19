@@ -1,4 +1,4 @@
-"""Unit tests for isolate_self — pure-Python, no PG required."""
+"""Unit tests for isolate_self - pure-Python, no PG required."""
 
 import asyncio
 
@@ -106,7 +106,7 @@ def _make_deps(
 
 
 async def test_isolate_self_opens_fresh_connect() -> None:
-    """isolate_self opens a fresh asyncpg.connect() — NOT the heartbeat pool."""
+    """isolate_self opens a fresh asyncpg.connect() - NOT the heartbeat pool."""
 
     connect_calls: list[tuple[str, float]] = []
 
@@ -257,7 +257,7 @@ async def test_isolate_self_honours_fr12_case_shape() -> None:
         # The has-budget predicate: 'indefinite' has no attempt ceiling
         # (its schedule_to_close deadline is its budget), every other
         # kind is bounded by max_attempts, and 'non_retryable' has no
-        # second attempt at all — see _sweeps._RECLAIM_HAS_BUDGET_SQL,
+        # second attempt at all - see _sweeps._RECLAIM_HAS_BUDGET_SQL,
         # which this statement shares verbatim.
         assert "j.retry_kind = 'indefinite'" in runner
         assert "j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable'" in runner
@@ -277,7 +277,7 @@ async def test_isolate_self_honours_fr12_case_shape() -> None:
         )
         assert "WHERE j.id = $1" in runner
         assert "j.locked_by_worker = $2" in runner
-        # #238 pins: operator intent outranks retry budget. The cancel
+        # pins: operator intent outranks retry budget. The cancel
         # arm is evaluated BEFORE the budget arm; the cancel columns are
         # preserved on the arm that honours them; the crashed arm
         # self-describes on the job row (shape-mirror of the sweep's

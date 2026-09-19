@@ -81,7 +81,7 @@ async def test_diff_batch_outcome_succeeded_completes(pg_dsn: str) -> None:
     assert_mirror(
         "the succeeded outcome resets consecutive_failures and the "
         "self-arbitrating complete_batch lands exactly when the last member "
-        "turns terminal — identical batch status and counters on both "
+        "turns terminal - identical batch status and counters on both "
         "backends (the member lock-bookkeeping divergence this snapshot also "
         "surfaces is pinned in tests/test_rt_diff_terminal.py)",
         mem,
@@ -118,7 +118,7 @@ async def test_diff_batch_outcome_failed_below_threshold(pg_dsn: str) -> None:
     assert_mirror(
         "the failed outcome increments consecutive_failures, attempts "
         "completion only when the member set is terminal, and a subsequent "
-        "succeeded outcome resets the counter — identical on both backends "
+        "succeeded outcome resets the counter - identical on both backends "
         "(the member lock-bookkeeping divergence this snapshot also surfaces "
         "is pinned in tests/test_rt_diff_terminal.py)",
         mem,
@@ -135,7 +135,7 @@ async def _failed_at_threshold_aborts(side: DiffSide) -> None:
     await _member(side, "victim2", "b1", scheduled_in=-1.0, max_attempts=1)
     await side.dispatch("w1", ["default"], limit=2)
     # The runner succeeds first: its completion attempt is vetoed (failures
-    # pending). Then one failure trips the threshold and ABORTS the batch —
+    # pending). Then one failure trips the threshold and ABORTS the batch -
     # abort wins over complete, and the pending member is cancelled.
     await side.mark_succeeded("runner", "w1", result={"v": 1})
     await side.apply_outcome("runner", "succeeded")
@@ -155,9 +155,9 @@ async def test_diff_batch_outcome_failed_at_threshold_aborts(pg_dsn: str) -> Non
     assert pg["jobs"]["victim2"]["error_class"] == "BatchAbortedError"
     assert pg["jobs"]["victim2"]["cancel_phase"] == 2
     assert_mirror(
-        "the failed outcome at the threshold aborts the batch — cancelling "
+        "the failed outcome at the threshold aborts the batch - cancelling "
         "pending/scheduled members with error_class BatchAbortedError, "
-        "cancel_phase 2, cancel_requested_at and finished_at set — and the "
+        "cancel_phase 2, cancel_requested_at and finished_at set - and the "
         "aborted batch is never also completed, identically on both backends "
         "(the member lock-bookkeeping divergence this snapshot also surfaces "
         "is pinned in tests/test_rt_diff_terminal.py)",
@@ -173,7 +173,7 @@ async def _terminal_batch_counter_writes(side: DiffSide) -> None:
     await side.mark_failed_or_retry("m1", "w1", retry_delay_s=None)
     await side.apply_outcome("m1", "failed")  # threshold 1 -> aborted
     # Counter writes against a non-active batch are inert on PG (the updated
-    # CTE matches nothing) — the mirror must agree.
+    # CTE matches nothing) - the mirror must agree.
     side.record("increment_on_aborted", list(await side.batch_increment("b1")))
     side.record("reset_on_aborted", await side.batch_reset("b1"))
     # And a completion attempt against the aborted batch must not complete.
@@ -193,7 +193,7 @@ async def test_diff_batch_counters_on_terminal_and_missing(pg_dsn: str) -> None:
         "batch counter writes match only active rows: increment/reset "
         "against a terminal batch return the inert shape (0, None, 0)/0, a "
         "missing batch returns the same, and complete_batch never flips an "
-        "aborted row — identically on both backends",
+        "aborted row - identically on both backends",
         mem,
         pg,
     )

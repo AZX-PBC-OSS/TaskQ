@@ -6,7 +6,7 @@ anti-patterns which have previously caused cross-test and cross-worker
 schema collisions under ``pytest-xdist``:
 
 - ``os.environ.get("PYTEST_XDIST_WORKER", ...)``-derived schema names give
-  NO real isolation — every test file within one xdist worker resolves to
+  NO real isolation - every test file within one xdist worker resolves to
   the *same* string, so files sharing a worker mutually clobber each
   other's schema state. For the PUBLISHED testing package this is worse:
   a fixed per-worker default reaches consumer suites on shared-database
@@ -20,11 +20,11 @@ New test files must not reintroduce either pattern. This file is excluded
 from its own scan (it necessarily mentions the patterns in prose/regex
 form), and it also hosts the unit tests for the run-isolation naming seam
 itself (``run_isolation_token`` / ``_module_db_name`` / the schema-name
-helpers) — those tests necessarily set and assert ``PYTEST_XDIST_WORKER``,
+helpers) - those tests necessarily set and assert ``PYTEST_XDIST_WORKER``,
 which is the second reason the self-exemption exists. ``conftest.py``
 files are excluded from the ``tests/`` scan: the conftest db-name helper
 (``_module_db_name``) and the e2e schema helper use the worker id only as
-ONE input to a per-module hash — the sanctioned worker-qualified-hash
+ONE input to a per-module hash - the sanctioned worker-qualified-hash
 pattern. ``src/taskq/testing/fixtures.py`` is allowlisted from the
 worker-id scan for the same reason (``_schema_name_from_module`` /
 ``_schema_name_from_test`` hash the worker id together with the module
@@ -47,29 +47,29 @@ production never constructs. See the section comment there.
 # behaviour finished on this branch. Recorded here so the survivors are not
 # mistaken for ones nobody looked at.
 #
-# DELIBERATELY STATIC — codebase invariants with no runtime expression. A
+# DELIBERATELY STATIC - codebase invariants with no runtime expression. A
 # running system cannot be asked "does this module import that one at import
 # time"; the property is structural, so the check is too. All are AST-based or
 # an inventory of an artifact, not substring greps:
 #   - tests/_import_discipline.py (+ its callers in web_admin/test_factory,
-#     web_admin/test_sse, test_web_health) — module-level import coupling and
+#     web_admin/test_sse, test_web_health) - module-level import coupling and
 #     `from __future__ import annotations`.
-#   - test_notify.py — ast.NodeVisitor guard on pool attribute access.
-#   - test_retry_classifier.py — taskq.retry's import boundary from
+#   - test_notify.py - ast.NodeVisitor guard on pool attribute access.
+#   - test_retry_classifier.py - taskq.retry's import boundary from
 #     taskq.backend. (Its AST walk runs in a subprocess for no reason that
 #     survives inspection; harmless, and cosmetic to unpick.)
-#   - test_leader_sweeps_coverage.py — the acquire-timeout AST invariant.
-#   - test_scheduled_writers_audit.py — inventory of `mark_*` methods.
-#   - test_sse_connection_caps.py::test_no_uncapped_sse_endpoint_remains —
+#   - test_leader_sweeps_coverage.py - the acquire-timeout AST invariant.
+#   - test_scheduled_writers_audit.py - inventory of `mark_*` methods.
+#   - test_sse_connection_caps.py::test_no_uncapped_sse_endpoint_remains -
 #     inventory over the web package; it guards endpoints not yet written.
 #   - test_max_concurrent_docs_contract.py, and the README/deployment-guide
-#     checks in test_migrate_on_start_worker.py — documentation contracts,
+#     checks in test_migrate_on_start_worker.py - documentation contracts,
 #     reading docs rather than source. Same shape as test_ci_workflow.py.
-#   - this file — greps the TEST tree for anti-patterns, which is its job.
+#   - this file - greps the TEST tree for anti-patterns, which is its job.
 #
 # The rule that settled each case: if a scanner's protection was already
 # provided by behavioural tests, it was deleted rather than rewritten, and the
-# claim was measured — revert the guarded thing, count what fails — rather than
+# claim was measured - revert the guarded thing, count what fails - rather than
 # asserted. Files where that measurement was made carry the numbers in a
 # comment at the site (test_schema_name_validator.py, test_shutdown_integration.py,
 # test_obs_exception_redaction.py, test_settings_validator_producer_scope.py,
@@ -128,7 +128,7 @@ def _stack_scanned_files() -> list[Path]:
 
 def test_no_pytest_xdist_worker_derived_schema_names() -> None:
     """No test file may derive a schema/identifier name from
-    ``PYTEST_XDIST_WORKER`` — it does not provide cross-file isolation
+    ``PYTEST_XDIST_WORKER`` - it does not provide cross-file isolation
     within a worker (see module docstring). Use ``module_pg_schema`` /
     ``clean_pg_conn`` / ``clean_jobs_app`` or a unique per-test name
     instead.
@@ -148,9 +148,9 @@ def test_no_pytest_xdist_worker_derived_schema_names() -> None:
 
 def test_testing_pkg_no_pytest_xdist_worker_derived_schema_names() -> None:
     """The PUBLISHED ``taskq.testing`` package must not derive names from
-    ``PYTEST_XDIST_WORKER`` either — a fixed per-worker default there leaks
+    ``PYTEST_XDIST_WORKER`` either - a fixed per-worker default there leaks
     into consumer suites on shared-database models. ``fixtures.py`` is
-    allowlisted (worker-qualified hashes only — see module docstring).
+    allowlisted (worker-qualified hashes only - see module docstring).
     """
     offenders = [
         str(p.relative_to(_TESTING_PKG_DIR))
@@ -187,11 +187,11 @@ def test_no_module_level_schema_constant() -> None:
 
 def test_testing_pkg_no_module_level_schema_constant() -> None:
     """Same module-level ``_SCHEMA`` / ``SCHEMA`` ban for the published
-    ``taskq.testing`` package (no allowlist — the pattern is never valid).
+    ``taskq.testing`` package (no allowlist - the pattern is never valid).
     """
     offenders = [
         str(p.relative_to(_TESTING_PKG_DIR))
-        for p in _TESTING_PKG_DIR.rglob("*.py")  # no allowlist — never valid
+        for p in _TESTING_PKG_DIR.rglob("*.py")  # no allowlist - never valid
         if _MODULE_SCHEMA_CONST_RE.search(p.read_text())
     ]
     assert not offenders, (
@@ -208,7 +208,7 @@ def test_testing_pkg_no_module_level_schema_constant() -> None:
 # Postgres container hosts every xdist worker's per-module database (see
 # the pg_dsn fixture's docstring): a lock-waiter gate that polls
 # pg_stat_activity without a database scope counts backends it has no
-# relationship with, and a statement-shape LIKE cannot fix that — every
+# relationship with, and a statement-shape LIKE cannot fix that - every
 # bulk-cancel and deregister driving statement in the suite shares the
 # ``matching AS MATERIALIZED`` shape, so another worker's parked drain
 # satisfies the gate as surely as our own. A false positive lands the
@@ -220,8 +220,8 @@ def test_testing_pkg_no_module_level_schema_constant() -> None:
 # deadlock cycle before the drain's event INSERT parked, inverting which
 # transaction's detector arms first. Every pg_stat_activity query in the
 # test tree (and in the published testing package) must therefore scope
-# to the querying connection's own database — ``datname =
-# current_database()`` — the discipline the LISTEN-pid queries in
+# to the querying connection's own database - ``datname =
+# current_database()`` - the discipline the LISTEN-pid queries in
 # test_stream.py / test_watch_reclaims.py already follow. Product-code
 # queries are not this scan's business: they isolate by relation OID
 # (regclass), which no other database's rows can match.
@@ -233,7 +233,7 @@ def _pg_stat_activity_string_constants(tree: ast.Module) -> list[str]:
     constant, so one constant is one query; an f-string folds to the
     concatenation of its literal chunks, with every chunk consumed by a
     fold suppressed from the standalone-constant pass (ast.walk yields a
-    JoinedStr before its children, but only if the fold — not the walk —
+    JoinedStr before its children, but only if the fold - not the walk -
     owns the recursion does a nested f-string avoid being re-emitted as
     a fragment). The scan therefore sees exactly the literal text of
     every query: a table name or scope predicate smuggled in through an
@@ -296,7 +296,7 @@ def _pg_stat_activity_string_constants(tree: ast.Module) -> list[str]:
 
 
 def test_pg_stat_activity_queries_are_scoped_to_the_current_database() -> None:
-    """No test may poll pg_stat_activity without a database scope — an
+    """No test may poll pg_stat_activity without a database scope - an
     unscoped query is satisfied by another xdist worker's parked backend
     on the shared cluster (see the section comment for the two failure
     modes that produced)."""
@@ -320,8 +320,8 @@ def test_pg_stat_activity_queries_are_scoped_to_the_current_database() -> None:
 
 
 # ── Two-HTTP-stack hygiene ──────────────────────────────────────────────
-# The `taskq[oidc]` extra ships ONLY httpx2 — nothing under src/taskq
-# imports httpx — but the dev group installs httpx as well, so the test
+# The `taskq[oidc]` extra ships ONLY httpx2 - nothing under src/taskq
+# imports httpx - but the dev group installs httpx as well, so the test
 # environment has two httpcore-backed stacks that cannot see each other's
 # mocks: src/taskq/web/admin/auth/oidc.py fetches discovery and JWKS over
 # httpx2, and authlib's AsyncOAuth2Client (pinned >=1.8.0, which prefers
@@ -422,7 +422,7 @@ def test_mock_http_intercepts_every_installed_stack() -> None:
 #
 # Serial bare-``pytest`` runs share ``/tmp/pytest-of-<user>`` (the shared-pair
 # state dir) across ALL invocations and checkouts, and the pre-token hash
-# inputs were only ``(worker-or-"master", module)`` — invocation-invariant.
+# inputs were only ``(worker-or-"master", module)`` - invocation-invariant.
 # Two overlapping serial runs of the same module therefore landed on the SAME
 # database on the SAME shared pair, and each run's module teardown
 # ``DROP DATABASE ... WITH (FORCE)`` killed the other run's live pools
@@ -434,7 +434,7 @@ def test_mock_http_intercepts_every_installed_stack() -> None:
 
 class _StubModuleRequest:
     """The ``request.module.__name__`` / ``request.node.nodeid`` surfaces the
-    naming helpers read — lets the tests vary hash inputs without building a
+    naming helpers read - lets the tests vary hash inputs without building a
     real ``FixtureRequest``."""
 
     def __init__(self) -> None:
@@ -443,7 +443,7 @@ class _StubModuleRequest:
 
 
 def _legacy_module_db_hash(worker: str) -> str:
-    """The pre-token hash of this module for *worker* — pins xdist inputs."""
+    """The pre-token hash of this module for *worker* - pins xdist inputs."""
     full = "tests_test_suite_hygiene"
     return "tq_db_" + hashlib.md5(f"{worker}_{full}".encode()).hexdigest()[:12]  # noqa: S324  # Why: mirrors the non-cryptographic naming hash under test.
 
@@ -452,7 +452,7 @@ def test_module_db_names_diverge_across_serial_run_tokens(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Two concurrent serial runs of this module hash to DIFFERENT databases
-    and schemas — the per-run token is part of every hash input."""
+    and schemas - the per-run token is part of every hash input."""
     monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     stub = cast(pytest.FixtureRequest, _StubModuleRequest())
     db_names: set[str] = set()
@@ -469,7 +469,7 @@ def test_module_db_names_diverge_across_serial_run_tokens(
 
 
 def test_run_isolation_token_prefers_the_published_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The published run token wins over the xdist worker id — the conftest
+    """The published run token wins over the xdist worker id - the conftest
     derives the token once at session start and the helpers read that seam."""
     monkeypatch.setenv(RUN_TOKEN_ENV_VAR, "pytest-41")
     monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw3")
@@ -479,7 +479,7 @@ def test_run_isolation_token_prefers_the_published_token(monkeypatch: pytest.Mon
 def test_xdist_hash_inputs_are_unchanged_by_the_token_seam(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Under xdist the hash inputs stay exactly the worker id — the token
+    """Under xdist the hash inputs stay exactly the worker id - the token
     seam must not perturb per-worker names (their state dir is already
     per-invocation, so there is nothing to fix there). Covers both the bare
     worker env (direct library use) and the conftest-published token=gwK
@@ -498,7 +498,7 @@ def test_session_publishes_run_isolation_token(
 ) -> None:
     """The session conftest publishes the token before any naming helper
     runs: the xdist worker id under xdist, else the invocation-unique
-    basetemp dir name (e.g. ``pytest-41``) — the value two overlapping
+    basetemp dir name (e.g. ``pytest-41``) - the value two overlapping
     serial runs can never share."""
     token = os.environ.get(RUN_TOKEN_ENV_VAR)
     assert token is not None, "session fixture did not publish the run token"
@@ -510,7 +510,7 @@ def test_session_publishes_run_isolation_token(
 # ── Asyncio task-leak guard ────────────────────────────────────────
 #
 # conftest's _fail_on_leaked_asyncio_tasks fails any test that leaves an
-# asyncio task pending on the module event loop — a live loop keeps
+# asyncio task pending on the module event loop - a live loop keeps
 # writing shared state into later tests (module-scoped loops mean the
 # task advances at every later test's await points). This pin holds the
 # guard's classification to its contract: leaks are NAMED (task name and
@@ -548,7 +548,7 @@ async def _hygiene_noop() -> None:
 
 async def test_leaked_pending_task_report_treats_inherited_tasks_as_clean() -> None:
     """Tasks already pending when the test started (a module fixture's
-    long-lived worker) are the test's inheritance, not its leak — the
+    long-lived worker) are the test's inheritance, not its leak - the
     guard is a baseline-diff, so a long-lived task inherited and left
     running reports nothing."""
     inherited = asyncio.create_task(_hygiene_leak_probe_coro(), name="hygiene-inherited")

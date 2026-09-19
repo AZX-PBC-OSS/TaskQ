@@ -16,13 +16,13 @@ backend.
 Terminating another session's backend is a privilege, and on managed Postgres it
 is commonly reserved. Where it is unavailable the recovery path cannot run and
 the lock survives until the server's own keepalive reaping eventually closes the
-session — a horizon measured in hours at stock settings. For that whole window
+session - a horizon measured in hours at stock settings. For that whole window
 no pod holds the role and none can take it: nothing sweeps, nothing promotes
 scheduled jobs, no cron fires, nothing prunes.
 
 The failure is invisible from the inside. Dispatch is not leader-gated, so
 workers keep claiming and running whatever is already pending and every pod
-reports itself healthy. What stops is everything time-based — and the first
+reports itself healthy. What stops is everything time-based - and the first
 symptom reaches an operator hours later as work that silently never ran.
 
 The contract pinned here is that recovery does not depend on that privilege. A
@@ -35,7 +35,7 @@ the worker: the deployment's own ``search_path`` resolves
 ``pg_terminate_backend`` to a function that refuses, which is what a reserved
 privilege looks like to the code that calls it. The surviving pod is started
 after that is in place, as a pod scheduled into such a deployment is, so every
-connection it opens — including the one its election loop opens for itself —
+connection it opens - including the one its election loop opens for itself -
 sees a database that will not let it terminate a peer.
 """
 
@@ -58,7 +58,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 _QUEUE = "fleet_leadrec_q"
 _ACTOR = "fleet_leadrec_actor"
 
-#: A short heartbeat so the staleness horizon — a small multiple of it — is
+#: A short heartbeat so the staleness horizon - a small multiple of it - is
 #: reached inside the test rather than at production timings.
 _LEADER_SETTINGS = {"heartbeat_interval": "0.5", "lock_lease": "4.0"}
 
@@ -82,8 +82,8 @@ async def _restrict_backend_termination(dsn: str, schema: str, database: str) ->
 
     The refusing function is installed in the deployment's schema and the
     database's ``search_path`` is set to resolve that schema first, so every
-    connection opened afterwards — including the ones the election loop opens
-    for itself — sees the restricted deployment.
+    connection opened afterwards - including the ones the election loop opens
+    for itself - sees the restricted deployment.
     """
     conn = await asyncpg.connect(dsn)
     try:
@@ -116,7 +116,7 @@ async def test_a_silent_leader_is_displaced_without_terminating_its_backend(
 
     The frozen leader is simulated exactly as the failure occurs in production:
     a live session holds the election lock and its recorded lease goes stale
-    because nothing renews it. The session is never closed — that is the point,
+    because nothing renews it. The session is never closed - that is the point,
     since a closed session would release the lock and there would be nothing to
     recover from.
     """
@@ -177,7 +177,7 @@ async def test_a_silent_leader_is_displaced_without_terminating_its_backend(
 
             # The restriction goes in before the surviving pod exists, so the
             # pod starts into an already-restricted deployment and every
-            # connection it opens carries the restriction — including the one
+            # connection it opens carries the restriction - including the one
             # its election loop opens for itself.
             await _restrict_backend_termination(dsn, schema, database)
             took_over = False
@@ -219,7 +219,7 @@ async def test_a_silent_leader_is_displaced_without_terminating_its_backend(
                 "backend termination: it raised "
                 f"{type(election_crash).__name__} and stopped. A pod that cannot "
                 "displace a silent leader should remain a healthy follower and "
-                "keep trying, not fail its maintenance task — the fleet now has "
+                "keep trying, not fail its maintenance task - the fleet now has "
                 "neither a leader nor a candidate, and every loop the role owns "
                 "is gone until the pod is restarted"
             )
@@ -229,7 +229,7 @@ async def test_a_silent_leader_is_displaced_without_terminating_its_backend(
                 "silent without closing its session, so the session-scoped "
                 "election lock is still held by a backend that will never renew "
                 "its lease, and the only recovery path available is terminating "
-                "that backend — a privilege managed Postgres commonly reserves. "
+                "that backend - a privilege managed Postgres commonly reserves. "
                 "Until the server's own keepalive reaping closes the session, "
                 "hours later, nothing sweeps, nothing promotes scheduled jobs, "
                 "no cron fires and nothing prunes. Dispatch is not leader-gated, "

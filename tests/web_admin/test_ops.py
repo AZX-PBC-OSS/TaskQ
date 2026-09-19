@@ -626,7 +626,7 @@ async def test_fetch_redis_rl_state_returns_none_on_failure() -> None:
 
     class _BrokenRedis(StubPipelinedRedis):
         # The reader raising means the pipeline's single execute() round
-        # trip raises — the transport's failure seam — so the fetch's
+        # trip raises - the transport's failure seam - so the fetch's
         # degrade-to-None guard is exercised at the round trip itself.
         async def hgetall(self, key: str) -> dict[str, str]:
             raise ConnectionError("redis down")
@@ -1201,7 +1201,7 @@ def test_rate_limits_page_shows_materialized_keyed_bucket(
 ) -> None:
     """A lazily materialized keyed bucket (registered into the registry on
     first acquisition, long after worker startup) appears on the
-    rate-limits admin page — an operator debugging a tenant throttle must
+    rate-limits admin page - an operator debugging a tenant throttle must
     see that a limiter exists."""
     import asyncio
 
@@ -1246,7 +1246,7 @@ def test_rate_limits_page_fetches_redis_state_for_pg_only_keyed_buckets(
     (absent from the admin process's registry) is included in the
     live-Redis state fetch, so its per-key token state is visible."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    # The registry stays EMPTY — the bucket exists only as a PG row.
+    # The registry stays EMPTY - the bucket exists only as a PG row.
     conn = _ScriptedConn(
         fetch_map={
             "rate_limit_buckets ORDER": [

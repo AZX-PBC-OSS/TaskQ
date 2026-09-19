@@ -2,7 +2,7 @@
 
 A rolling Kubernetes deploy hands each pod a SIGTERM. Phase DRAINING re-pends
 every row the pod claimed but never started so a surviving pod can run it.
-The claim that put the row in that buffer already incremented ``attempt`` —
+The claim that put the row in that buffer already incremented ``attempt`` -
 that increment is the cost of an execution, and the hand-back is the
 statement that no execution happened. The two must cancel, exactly as the
 snooze and admission-denial paths refund a claim whose actor never ran.
@@ -99,7 +99,7 @@ async def test_a_job_handed_back_by_shutdown_keeps_its_full_retry_budget(
     Each time it is handed back to pending untouched by any actor. An
     operator who deploys twice on a quiet afternoon has not used up two of
     the three attempts they budgeted for genuine failures, and the job's
-    recorded attempt history — which is empty, because nothing ran — must
+    recorded attempt history - which is empty, because nothing ran - must
     agree with the attempt counter.
     """
     deps = clean_jobs_app.deps
@@ -137,7 +137,7 @@ async def test_a_job_handed_back_by_shutdown_keeps_its_full_retry_budget(
 
     assert row.attempt == baseline_attempt, (
         "shutdown hand-back must refund the claim's attempt increment the way "
-        "every other release of an unexecuted job does — otherwise each "
+        "every other release of an unexecuted job does - otherwise each "
         "rolling deploy silently spends one of the retries the operator "
         f"budgeted for real failures; attempt went {baseline_attempt} -> "
         f"{row.attempt} with the actor never invoked"
@@ -153,7 +153,7 @@ async def test_first_real_failure_after_deploys_still_gets_its_retries(
     difference from an undisturbed queue is that two pods were rolled while
     the job waited in their buffers. An operator would experience this as a
     job that dies on its first error during a deploy window and retries
-    normally the rest of the week — a failure mode that looks like the
+    normally the rest of the week - a failure mode that looks like the
     actor's fault and is not.
     """
     deps = clean_jobs_app.deps
@@ -208,7 +208,7 @@ async def test_first_real_failure_after_deploys_still_gets_its_retries(
         "two identical jobs failing identically must reach the same state; "
         "the rolled job differs only in having been handed back by shutdown "
         "without ever running, which must not cost it retries. Control landed "
-        f"in {control_row.status!r}, the rolled job in {rolled_row.status!r} — "
+        f"in {control_row.status!r}, the rolled job in {rolled_row.status!r} - "
         "an operator sees jobs dying on their first error during deploy "
         "windows and nowhere else"
     )
@@ -254,7 +254,7 @@ async def test_a_job_that_never_ran_cannot_reach_a_terminal_state(
         "a job whose actor has never been invoked must still be runnable: its "
         "budget was spent entirely on rolling deploys, none of which is an "
         f"execution. The job reached terminal {row.status!r} without the actor "
-        "ever being called — work an operator enqueued is gone and nothing in "
+        "ever being called - work an operator enqueued is gone and nothing in "
         "the record says why"
     )
 

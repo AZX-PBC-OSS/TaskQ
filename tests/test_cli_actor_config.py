@@ -1,7 +1,7 @@
 """Tests for the `taskq actor-config` CLI surface.
 
 The asyncpg connection and the ops functions are monkeypatched at the
-``taskq.cli`` import boundary — these tests pin the CLI's argument
+``taskq.cli`` import boundary - these tests pin the CLI's argument
 parsing, validation, error messages, output shape, and exit-code
 contract, not Postgres behavior (covered by the integration tier in
 test_actor_config_ops.py).
@@ -82,7 +82,7 @@ def _patch_db(
 
 
 def test_set_max_pending_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
-    """--max-pending reaches set_actor_config_capacity — the flag exists and
+    """--max-pending reaches set_actor_config_capacity - the flag exists and
     drives the stored value the enqueue path now enforces."""
     captured = _patch_db(monkeypatch)
     result = runner.invoke(app, ["actor-config", "set", "diff_actor", "--max-pending", "7"])
@@ -137,7 +137,7 @@ def _patch_connect_only(monkeypatch: pytest.MonkeyPatch) -> None:
 
     Validation in set_actor_config_capacity happens before any I/O, so a
     bare fake connection is enough to exercise it end-to-end through the
-    CLI — this is how NaN/±inf (which typer's min=0 cannot see) must be
+    CLI - this is how NaN/±inf (which typer's min=0 cannot see) must be
     rejected with a clean operator-facing message instead of a traceback.
     """
 
@@ -225,8 +225,8 @@ def test_diff_shows_literal_stored_and_effective(monkeypatch: pytest.MonkeyPatch
     """The operator's debugging view: why is my change (not) taking effect.
 
     Registry literal max_pending=100 vs stored 10 → effective is the
-    stored 10, and the output says so. Only capacity drifts here — stored
-    capacity is operator-owned — so the exit code stays 0.
+    stored 10, and the output says so. Only capacity drifts here - stored
+    capacity is operator-owned - so the exit code stays 0.
     """
     _patch_db(monkeypatch, list_result=[_CAPACITY_DRIFT_ROW])
     result = runner.invoke(app, ["actor-config", "diff", "--actors", _REGISTRY_PATH])
@@ -245,7 +245,7 @@ def test_diff_flags_queue_mismatch_as_assignment_drift(
     the exit code fails the run: boot adopts the stored queue, but the
     cron leader's fires follow it while producers enqueue by their own
     literal, so the two routing halves disagree until the move or the
-    deploy completes — drift the command itself calls gate-failing must
+    deploy completes - drift the command itself calls gate-failing must
     not report success."""
     _patch_db(monkeypatch)
     result = runner.invoke(app, ["actor-config", "diff", "--actors", _REGISTRY_PATH])
@@ -260,7 +260,7 @@ def test_diff_marks_actor_without_stored_row(monkeypatch: pytest.MonkeyPatch) ->
 
     max_concurrent must NOT show the literal as effective: the dispatch
     capacity gate builds FROM actor_config (inner join), so with no row
-    the actor is never dispatched — effective is 0. max_pending /
+    the actor is never dispatched - effective is 0. max_pending /
     result_ttl enforcement can see the code literal, so those do fall
     back to it. Blocking dispatch blocks the run, so the exit is
     non-zero even though the next worker startup would seed the row.

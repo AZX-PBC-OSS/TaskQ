@@ -227,7 +227,7 @@ async def run_churn(
                 dispatched += len(rows)
                 if len(rows) < dispatch_batch:
                     break
-                # One batched job_events INSERT per dispatch call — the real
+                # One batched job_events INSERT per dispatch call - the real
                 # dispatch path's event shape (_dispatch.py).
                 await conn.execute(
                     events_batch_sql,

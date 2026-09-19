@@ -1,4 +1,4 @@
-"""Tests for RateLimitRegistry.clear() — the public test-isolation aid."""
+"""Tests for RateLimitRegistry.clear() - the public test-isolation aid."""
 
 from datetime import timedelta
 from time import monotonic

@@ -189,7 +189,7 @@ async def test_refund_redis_gcra_returns_early_without_previous_state() -> None:
         backend="redis",
         previous_state=None,
     )
-    # Should not raise — early return
+    # Should not raise - early return
     await _refund_redis_gcra(sw, decision, redis_client=None, settings=None)
 
 

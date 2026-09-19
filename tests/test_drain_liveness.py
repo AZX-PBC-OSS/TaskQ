@@ -2,15 +2,15 @@
 
 The drain monitor is an interval-driven sibling: it ticks
 ``LoopLiveness`` once per iteration and RETURNS as soon as it has
-triggered ``orchestrate_shutdown`` — while the orchestration itself (and
+triggered ``orchestrate_shutdown`` - while the orchestration itself (and
 the stale-tick watchdog sweeping alongside it) keeps running until the
 orchestrator's finally sets ``shutdown_event``. These tests pin the two
 invariants that interaction depends on:
 
 - the monitor's liveness registration is forgotten when it returns, so a
   parked orchestration cannot look like a dead loop (F1);
-- the registered tick period covers the worst-case iteration gap — the
-  ``count_active_jobs`` bound plus the trailing poll sleep — so a
+- the registered tick period covers the worst-case iteration gap - the
+  ``count_active_jobs`` bound plus the trailing poll sleep - so a
   slow-but-recovering count (a transient the monitor itself rides out)
   cannot go stale mid-iteration (F2).
 """
@@ -108,7 +108,7 @@ def _settings() -> SimpleNamespace:
 
 class _SlowRecoveringCountBackend:
     """count_active_jobs that consumes its whole wait_for bound, then
-    recovers — the degraded-PG shape the monitor itself treats as a
+    recovers - the degraded-PG shape the monitor itself treats as a
     transient (TimeoutError is in TRANSIENT_PG_ERRORS: warn, count
     unknown, keep polling). The manual liveness clock jumps by the bound
     so one iteration reads as having spent its full count budget."""
@@ -141,17 +141,17 @@ async def test_drain_trigger_parking_orchestration_does_not_trip_stale_detector(
 ) -> None:
     """F1, full reproduction: the monitor triggers, returns; the
     orchestration parks before its finally sets shutdown_event (its
-    phases — cancelling, forcing — legitimately take that long). The
+    phases - cancelling, forcing - legitimately take that long). The
     watchdog keeps sweeping the whole time. Without
     forget("drain_monitor") on the monitor's exit path, the leaked
     registration goes stale and detector 2 force-exits the worker
     mid-grace: exit code 2 instead of the drain's, in-flight terminal
     writes lost to crash reclaim."""
     # The leaked entry's budget is tick_period * grace = (max(5*poll, 10)
-    # + poll) * 5 — poll=0.05 hits count_bound's 10s floor, so the budget
+    # + poll) * 5 - poll=0.05 hits count_bound's 10s floor, so the budget
     # is 50.25s: far too long to park in wall-clock. The liveness clock is
     # manual; once the monitor has returned, the test advances it past the
-    # whole leaked budget while the orchestration is still parked — the
+    # whole leaked budget while the orchestration is still parked - the
     # watchdog's next real sweep (0.02s cadence) then sees the leak.
     clock = _ManualClock()
     liveness = LoopLiveness(grace_factor=5.0, stale_floor=0.1, clock=clock)
@@ -199,7 +199,7 @@ async def test_drain_trigger_parking_orchestration_does_not_trip_stale_detector(
             assert len(orchestrator_holder) == 1
             # The monitor has returned: a leaked registration is frozen at
             # its last tick (clock=0). Advance the liveness clock past the
-            # leaked budget — (max(5*0.05, 10) + 0.05) * 5 = 50.25s — while
+            # leaked budget - (max(5*0.05, 10) + 0.05) * 5 = 50.25s - while
             # the parked orchestration still holds shutdown_event clear, so
             # the phases legitimately outlast the budget in liveness time.
             clock.advance(51.0)
@@ -207,7 +207,7 @@ async def test_drain_trigger_parking_orchestration_does_not_trip_stale_detector(
 
             assert exit_codes == [], (
                 "detector 2 force-exited the worker while the triggered "
-                "orchestration was still in its grace budget — the monitor's "
+                "orchestration was still in its grace budget - the monitor's "
                 f"liveness registration leaked on its return path: {exit_codes}"
             )
             assert exit_code == 0
@@ -229,8 +229,8 @@ async def test_count_at_bound_keeps_drain_monitor_liveness_fresh(
     count_bound: float,
 ) -> None:
     """F2: one iteration can legitimately consume the whole count bound
-    (max(5*poll, 10)) — a slow-but-recovering count_active_jobs the
-    monitor itself treats as a transient — plus the trailing poll sleep,
+    (max(5*poll, 10)) - a slow-but-recovering count_active_jobs the
+    monitor itself treats as a transient - plus the trailing poll sleep,
     so the worst-case tick gap is bound + poll. The registered tick
     period must cover that gap: registering only the poll interval makes
     the staleness budget equal the count bound, the gap exceeds it by one
@@ -274,7 +274,7 @@ async def test_count_at_bound_keeps_drain_monitor_liveness_fresh(
         )
         assert liveness.stale() == [], (
             "a single slow-but-recovering count at its bound must not go "
-            "stale — the registered tick period must cover the worst-case "
+            "stale - the registered tick period must cover the worst-case "
             "iteration gap (count bound + trailing poll sleep)"
         )
     finally:

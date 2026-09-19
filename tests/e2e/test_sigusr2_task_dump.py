@@ -1,4 +1,4 @@
-"""SIGUSR2 task dump e2e — sending SIGUSR2 to a running worker with
+"""SIGUSR2 task dump e2e - sending SIGUSR2 to a running worker with
 in-flight jobs produces a task-stack dump in the container logs.
 
 The worker's signal handler (``shutdown.py:350-359``) registers a
@@ -11,7 +11,7 @@ live asyncio task plus a raw stderr marker line:
 The test enqueues a ``slow_deliver_webhook`` (3 s sleep), waits for the
 ``started`` effect (job is in-flight), sends SIGUSR2 via the Docker API,
 and verifies the dump marker appears in the container's stdout/stderr
-logs. The worker is NOT killed — SIGUSR2 is a diagnostic signal, not a
+logs. The worker is NOT killed - SIGUSR2 is a diagnostic signal, not a
 shutdown signal.
 """
 
@@ -47,7 +47,7 @@ async def test_sigusr2_task_dump(
     dump in the container logs.
 
     (a) Enqueue a ``slow_deliver_webhook`` job (3 s sleep) and wait for
-    the ``started`` effect — the job is now in-flight and the worker has
+    the ``started`` effect - the job is now in-flight and the worker has
     live asyncio tasks.
 
     (b) Send SIGUSR2 via the Docker API (``container.kill(signal="USR2")``).
@@ -56,7 +56,7 @@ async def test_sigusr2_task_dump(
 
     (c) Poll the container logs until the marker
     ``"=== task dump (sigusr2/sigusr2)"`` appears. The worker is NOT
-    killed — SIGUSR2 is a diagnostic signal, not a shutdown signal.
+    killed - SIGUSR2 is a diagnostic signal, not a shutdown signal.
 
     (d) Verify the worker is still running after the dump, and the job
     eventually completes (proving the dump did not interfere with
@@ -91,12 +91,12 @@ async def test_sigusr2_task_dump(
         description="SIGUSR2 task dump marker in worker container logs",
     )
 
-    # The worker should still be running — SIGUSR2 is diagnostic, not fatal.
+    # The worker should still be running - SIGUSR2 is diagnostic, not fatal.
     await asyncio.to_thread(wrapped.reload)
     assert str(wrapped.status) == "running", (
         "worker should still be running after SIGUSR2 (diagnostic signal, not shutdown)"
     )
 
-    # The in-flight job should complete normally — the dump did not
+    # The in-flight job should complete normally - the dump did not
     # interfere with execution.
     await handle.wait(timeout=60)

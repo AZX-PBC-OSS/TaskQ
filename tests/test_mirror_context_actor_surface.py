@@ -6,15 +6,15 @@ the runner's ``_StubContext`` (a declared minimal subset); this file pins
 the full testing mirror (``taskq/testing/job_context.py``), whose own
 docstring claims field-shape parity with production. Two contracts:
 
-* The members the mirror DOES carry keep working through the harness —
+* The members the mirror DOES carry keep working through the harness -
   ``cancellation_requested`` and ``should_abort()`` (its partial
   cancellation surface) and ``span`` reading ``None`` (the documented
   OTel-disabled value, ``docs/guides/observability.md``). A regression
   that drops one of these is silent today without this control.
 
-* The method surface — ``await ctx.progress(...)`` and
+* The method surface - ``await ctx.progress(...)`` and
   ``ctx.check_cancelled()`` (``docs/guides/progress.md`` teaches
-  progress reporting as a headline actor feature) — now carried by the
+  progress reporting as a headline actor feature) - now carried by the
   mirror: progress reports land observably on the
   context's ``progress_reports`` with a strictly monotone ``seq`` (the
   fixture path has no Redis/Postgres wiring, so recording, not
@@ -41,7 +41,7 @@ async def test_mirror_context_present_surface_works_through_actor_runner(
 ) -> None:
     """The surface the mirror carries today is observable through the
     fixture: ``cancellation_requested`` and ``should_abort()`` both read
-    False on a fresh dispatch, and ``span`` reads None — the documented
+    False on a fresh dispatch, and ``span`` reads None - the documented
     OTel-disabled value an uninstrumented production worker hands the
     actor. Pins the present surface so a regression dropping any of
     these goes red here, not in an adopter's actor test."""
@@ -69,7 +69,7 @@ async def test_documented_method_surface_is_exercisable_through_the_mirror(
 ) -> None:
     """An actor calling the documented ``await ctx.progress(...)`` and
     ``ctx.check_cancelled()`` through ``actor_runner`` succeeds, and the
-    progress report lands observably on the context — recorded with a
+    progress report lands observably on the context - recorded with a
     strictly monotone ``seq``, the faithful harness half of a contract
     whose production half publishes. The runner sibling
     (``tests/test_stub_context_actor_surface.py``) holds the same
@@ -102,7 +102,7 @@ async def test_mirror_context_check_cancelled_raises_on_a_cancelled_dispatch(
 ) -> None:
     """The raising half of the cancellation contract: with a pre-fired
     cancel event, ``check_cancelled()`` raises
-    :class:`asyncio.CancelledError` — matching production. The mirror
+    :class:`asyncio.CancelledError` - matching production. The mirror
     keeps production's two cancellation primitives distinct:
     ``should_abort()`` reads ``abort_requested`` (set by the cancel
     controller, not by the event), so it stays False here exactly as a

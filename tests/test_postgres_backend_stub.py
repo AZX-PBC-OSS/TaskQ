@@ -102,7 +102,7 @@ class TestStaticTypeCompatibility:
     def test_takes_backend_accepts_postgres_backend(self) -> None:
         """PostgresBackend satisfies the Backend protocol structurally.
 
-        pyright verifies this call site — no ``# type: ignore`` needed.
+        pyright verifies this call site - no ``# type: ignore`` needed.
         """
 
         def takes_backend(b: Backend) -> None:
@@ -123,10 +123,10 @@ class TestStaticTypeCompatibility:
 class TestSnoozeRetryStatusCase:
     """The pending-vs-scheduled CASE must compare the statement's delay
     parameter directly against ``interval '0'`` rather than calling
-    ``clock_timestamp()`` twice — two separate calls are non-deterministic
+    ``clock_timestamp()`` twice - two separate calls are non-deterministic
     for ``delay=0`` and could misclassify a zero-delay snooze as
     ``scheduled`` instead of ``pending``. The non-consuming arms read
-    ``effective_delay`` (the parameter floored at the deferral interval —
+    ``effective_delay`` (the parameter floored at the deferral interval -
     the arm's single delay, see MIN_DEFERRAL_INTERVAL); the consuming arm
     reads the raw parameter.
     """
@@ -143,7 +143,7 @@ class TestSnoozeRetryStatusCase:
     def test_status_case_compares_delay_to_zero_interval(self) -> None:
         # The consuming arm reads the raw parameter; the non-consuming arms
         # read effective_delay (the parameter floored at the deferral
-        # interval — the arm's single delay, see MIN_DEFERRAL_INTERVAL).
+        # interval - the arm's single delay, see MIN_DEFERRAL_INTERVAL).
         for sql, case_head in (
             (self._sqls()[0], "CASE WHEN (SELECT effective_delay FROM params) > interval '0'"),
             (self._sqls()[1], "CASE WHEN $3::interval > interval '0'"),
@@ -207,14 +207,14 @@ class TestSqlDiscipline:
             content = f.read()
 
         # Grep for f-string SQL: lines with f" or f''' containing SQL keywords
-        # This is a heuristic — the definitive check is the schema-validated
+        # This is a heuristic - the definitive check is the schema-validated
         # f-string approach documented in the module header.
         for line in content.splitlines():
             # Only check f-strings (not regular strings which are pre-rendered templates)
             if 'f"' in line or "f'" in line:
                 for kw in _SQL_KEYWORDS:
                     if f"{kw} " in line.upper() or f"{kw}\n" in line.upper():
-                        # f-string with SQL keyword — only allowed for schema
+                        # f-string with SQL keyword - only allowed for schema
                         # interpolation, not user data
                         assert (
                             "{s}" in line or "{self._schema_name}" in line or "{schema}" in line

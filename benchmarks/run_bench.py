@@ -1,4 +1,4 @@
-"""CLI runner around benchmarks/bench_hotspots.py — structured results, baselines, regression gate.
+"""CLI runner around benchmarks/bench_hotspots.py - structured results, baselines, regression gate.
 
 Wraps the A/B harness (imported directly, so results stay structured instead of
 parsed from stdout) and adds benchmark-infrastructure plumbing:
@@ -19,7 +19,7 @@ Exit codes for ``--check``: 0 clean, 1 regression or correctness mismatch,
 
 Pure stdlib, cross-platform (macOS/Linux/Windows), Python 3.12+.
 
-Regression rule (deliberate, documented — the gate compares the ratio of
+Regression rule (deliberate, documented - the gate compares the ratio of
 medians of interleaved A batches, which already cancels thermal/frequency
 drift within a run):
 
@@ -34,7 +34,7 @@ whole magnitude sits inside timer/jitter noise (sub-microsecond) from
 flip-flopping the gate on machine noise; the relative condition alone would
 flag a 300ns -> 305ns drift on a noisy box, the absolute alone would never
 fire for large benches. ``correct=False`` on the current run is reported as
-MISMATCH and also fails the gate — a variant that stopped being
+MISMATCH and also fails the gate - a variant that stopped being
 output-identical is a worse regression than a slow one.
 """
 
@@ -101,7 +101,7 @@ _STALL_LINE = re.compile(
 
 def _run(cmd: list[str]) -> str:
     try:
-        # S603: cmd is a fixed git query built in this module — no untrusted input.
+        # S603: cmd is a fixed git query built in this module - no untrusted input.
         proc = subprocess.run(cmd, capture_output=True, text=True, check=False)  # noqa: S603
     except OSError:
         return ""
@@ -236,7 +236,7 @@ def compare(
     and MISSING (bench absent from the current run). NEW is inevitable for a
     freshly added bench; MISSING keeps ``--only`` subset checks viable. A
     full run that dropped a bench therefore passes the gate with a MISSING
-    row in the table — the suite itself is code-owned, so that shows up in
+    row in the table - the suite itself is code-owned, so that shows up in
     review rather than in the exit code.
     """
     base_by_name = {r["name"]: r for r in baseline.get("results", [])}
@@ -313,7 +313,7 @@ def print_check_table(
 
 def print_run_table(doc: dict[str, Any]) -> None:
     results = doc["results"]
-    print(f"\nPython {doc['python_version']} — A/B results (interleaved, median ns/op)")
+    print(f"\nPython {doc['python_version']} - A/B results (interleaved, median ns/op)")
     print(f"{'bench':<44} {'A (current)':>14} {'B (variant)':>14} {'speedup':>9}  ok")
     print("-" * 92)
     for r in results:

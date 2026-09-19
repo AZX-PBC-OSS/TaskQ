@@ -15,7 +15,7 @@ not an accident of the fixture.
 
 The empty-batch test instead passes a dummy `worker_pool`: with the pool present
 the fallback loop runs zero iterations and returns `[]` silently, which is the
-bug being pinned — the `worker_pool=None` guard would mask it with an unrelated
+bug being pinned - the `worker_pool=None` guard would mask it with an unrelated
 `RuntimeError`.
 """
 
@@ -71,7 +71,7 @@ async def test_an_empty_batch_is_rejected() -> None:
     `JobsClient.enqueue_batch` rejects an empty batch pre-I/O; the streaming
     path raises on the first peek. Without this check the sub-job fallback
     loop (pool present, no connection) iterates zero items and returns `[]`
-    silently — an empty fan-out indistinguishable from success.
+    silently - an empty fan-out indistinguishable from success.
     """
     with pytest.raises(ValueError, match="items must not be empty"):
         await _enqueuer(worker_pool=object()).enqueue_batch([])

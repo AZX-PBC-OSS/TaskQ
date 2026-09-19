@@ -3,24 +3,24 @@
 ``_prune_loop`` (``src/taskq/worker/_leader_sweeps.py``) wakes at the once-daily
 cron fire and gates on ``is_leader`` BEFORE attempting: a wake that finds the pod
 leaderless for an instant ``continue``s back to the top of the loop, where the
-next fire is recomputed from the cron expression — TOMORROW.  A seconds-scale
+next fire is recomputed from the cron expression - TOMORROW.  A seconds-scale
 leadership flap that happens to span the fire second therefore becomes a 24-hour
 prune miss with no log, no metric, no retry: the failure half of the loop's own
-policy (``_PRUNE_RETRY_BACKOFF_INITIAL_SECS`` — "a prune that keeps failing under
+policy (``_PRUNE_RETRY_BACKOFF_INITIAL_SECS`` - "a prune that keeps failing under
 load does not wait for tomorrow") is armed only for FAILED attempts, not for
 missed ones.
 
 Contract under test (RED until fixed): a prune wake that finds itself leaderless
 at the fire second must retry within a bounded window (the shared backoff ladder
-is the obvious arm), or at minimum record the miss loudly — a 1-second leadership
+is the obvious arm), or at minimum record the miss loudly - a 1-second leadership
 gap must not silently defer retention work by 24 hours.
 
 Driven at the loop seam with fakes (no PG): the loop's own scheduling decision is
 the unit under test, so the croniter call is scripted (fire under test 3 s out;
 from a base at the just-missed fire second a daily cron's next slot is exactly
-fire+24h — what the script returns), the advisory-lock acquire is a counted fake
+fire+24h - what the script returns), the advisory-lock acquire is a counted fake
 that reports contention (the cheapest observable "attempt"), and the module-level
-backoff initial is shrunk to 1 s — the documented shrink seam
+backoff initial is shrunk to 1 s - the documented shrink seam
 ("Module-level (not settings) so tests shrink it without threading a knob through
 every loop").
 """
@@ -45,7 +45,7 @@ from taskq.worker.deps import WorkerDeps
 
 #: The bounded window the contract demands for a missed-fire retry. With the
 #: backoff initial shrunk to 1 s, a fixed loop must attempt (or log) within the
-#: first backoff rung or two — 10 s is generous to that fix and merciless to a
+#: first backoff rung or two - 10 s is generous to that fix and merciless to a
 #: 24-hour defer.
 _MISSED_FIRE_RETRY_WINDOW_SECS: float = 10.0
 
@@ -57,7 +57,7 @@ class _ScriptedCroniter:
     """Stand-in for one ``croniter(expr, base).get_next(datetime)`` call.
 
     The first call returns ``base + _FIRE_DELAY_SECS`` (the scheduled fire under
-    test); every later call returns ``fire1 + 24 h`` — exactly what a daily cron
+    test); every later call returns ``fire1 + 24 h`` - exactly what a daily cron
     expression's ``get_next`` yields from a base at the just-missed fire second
     (the next slot is tomorrow's), which is the defer the pin attacks.
     """
@@ -165,8 +165,8 @@ async def test_prune_miss_at_fire_second_must_not_silently_defer_24h(
     )
     fake_deps = _FakeDeps(settings)
     ctx = SweepContext(
-        deps=fake_deps,  # type: ignore[arg-type]  # Why: duck-typed deps — only settings/is_leader/liveness/dispatcher_pool are touched by _prune_loop.
-        backend=_FakeBackend(),  # type: ignore[arg-type]  # Why: duck-typed backend — prune_old_batches is never reached (the lock fake reports contention).
+        deps=fake_deps,  # type: ignore[arg-type]  # Why: duck-typed deps - only settings/is_leader/liveness/dispatcher_pool are touched by _prune_loop.
+        backend=_FakeBackend(),  # type: ignore[arg-type]  # Why: duck-typed backend - prune_old_batches is never reached (the lock fake reports contention).
         clock=SystemClock(),
         worker_id=new_uuid(),
     )
@@ -193,7 +193,7 @@ async def test_prune_miss_at_fire_second_must_not_silently_defer_24h(
 
             # The contract: within the bounded window of the missed fire, the
             # loop must either attempt the prune again (the counted advisory-lock
-            # acquire) or record the miss loudly (any prune-kind log event) —
+            # acquire) or record the miss loudly (any prune-kind log event) -
             # not silently sleep to tomorrow's slot.
             outcome: str | None = None
             while time.monotonic() - t_miss < _MISSED_FIRE_RETRY_WINDOW_SECS:
@@ -213,12 +213,12 @@ async def test_prune_miss_at_fire_second_must_not_silently_defer_24h(
             assert outcome is not None, (
                 "CONTRACT: a prune wake that finds the pod leaderless at the fire "
                 "second must retry within a bounded window (or at minimum record the "
-                "miss loudly) — a seconds-scale leadership flap must not cost a day "
+                "miss loudly) - a seconds-scale leadership flap must not cost a day "
                 "of retention drift. TODAY: the is_leader gate at _leader_sweeps.py "
                 "(right after the wake) `continue`s with no log, and the loop top "
                 "recomputes the next fire from the daily cron as TOMORROW"
                 + (f" ({defer_hours:.1f}h away in this run)" if defer_hours is not None else "")
-                + f" — a ~1.3 s leadership gap became a 24 h prune miss, unlogged "
+                + f" - a ~1.3 s leadership gap became a 24 h prune miss, unlogged "
                 f"(captured prune events since the miss: "
                 f"{[e.get('event') for e in captured[miss_index:]]}); the loop's own "
                 "failure policy retries failed attempts intra-day "

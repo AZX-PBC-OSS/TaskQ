@@ -150,7 +150,7 @@ async def test_capacity_divergence_max_concurrent_does_not_raise() -> None:
     """max_concurrent divergence is an expected operator override, not an error.
 
     Pre-populate SELECT with max_concurrent=5 for actor "X"; register
-    max_concurrent=3. sync_actor_config must NOT raise — the stored
+    max_concurrent=3. sync_actor_config must NOT raise - the stored
     value is authoritative and capacity divergence is never fatal,
     regardless of ``force``.
     """
@@ -177,7 +177,7 @@ async def test_multi_field_drift_only_metadata_raises() -> None:
 
     Only metadata raises; the queue assignment is operator-owned once a row
     exists (moved by `taskq actor-config move-queue`) and a differing
-    literal is the rolling-deploy window of a move, not a bug — while
+    literal is the rolling-deploy window of a move, not a bug - while
     max_concurrent divergence is silently accepted as an operator override.
     """
     fake_conn = FakeAsyncpgConnection()
@@ -257,7 +257,7 @@ async def test_empty_actor_configs_noop() -> None:
 @pytest.mark.asyncio
 async def test_metadata_structural_equality_no_drift() -> None:
     """Metadata structural equality: stored {"a": 1, "b": 2} vs
-    registered {"b": 2, "a": 1} — no drift raised, UPSERT proceeds.
+    registered {"b": 2, "a": 1} - no drift raised, UPSERT proceeds.
     """
     fake_conn = FakeAsyncpgConnection()
     fake_conn.set_select_rows(
@@ -319,7 +319,7 @@ async def test_invalid_schema_raises_value_error() -> None:
     assert fake_conn._execute_calls == []
 
 
-# ── New actor (no stored row) — no drift ─────────────────────────────────────
+# ── New actor (no stored row) - no drift ─────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -342,7 +342,7 @@ async def test_new_actor_no_stored_row_no_drift() -> None:
 async def test_metadata_nul_byte_rejected_before_upsert() -> None:
     """``@actor(metadata={...})`` is user-supplied. A NUL (U+0000) anywhere
     in it must be rejected by the jsonb NUL guard *before* the UPSERT is
-    executed — a NUL reaching Postgres' jsonb parser raises
+    executed - a NUL reaching Postgres' jsonb parser raises
     ``UntranslatableCharacterError`` (a ``PostgresError``), which is exactly
     the exception class treated as retryable infra failure elsewhere in the
     worker; the guard must fire first so this surfaces as an immediate,
@@ -408,7 +408,7 @@ async def test_capacity_divergence_max_pending_does_not_raise() -> None:
     Pre-populate SELECT with max_pending=50 for actor "X"; register
     max_pending=100. sync_actor_config must not raise, and the UPSERT
     still runs (the stored 50 is preserved by the UPSERT's SQL, not by
-    control flow — see test_upsert_sql_preserves_capacity_on_conflict).
+    control flow - see test_upsert_sql_preserves_capacity_on_conflict).
     """
     fake_conn = FakeAsyncpgConnection()
     fake_conn.set_select_rows(
@@ -429,7 +429,7 @@ async def test_capacity_divergence_result_ttl_does_not_raise() -> None:
     """result_ttl divergence is an expected operator override, not an error.
 
     Pre-populate SELECT with result_ttl=60.0 for actor "X"; register
-    result_ttl=120.0. sync_actor_config must NOT raise — the stored
+    result_ttl=120.0. sync_actor_config must NOT raise - the stored
     value is authoritative and capacity divergence is never fatal,
     regardless of ``force``.
     """
@@ -453,9 +453,9 @@ async def test_upsert_sql_preserves_operator_owned_columns_on_conflict() -> None
     """The rendered UPSERT's ON CONFLICT clause never assigns the capacity
     columns or the queue assignment.
 
-    This is what actually preserves a stored capacity value — and, across
+    This is what actually preserves a stored capacity value - and, across
     the rolling-deploy window of `taskq actor-config move-queue`, the moved
-    queue assignment — across startups: a worker still carrying the old
+    queue assignment - across startups: a worker still carrying the old
     literal boots, and its UPSERT cannot flip the row back.
     """
     fake_conn = FakeAsyncpgConnection()
@@ -529,7 +529,7 @@ async def test_integration_resync_no_changes_no_error(
     configs = [_make_config("a", max_concurrent=5, queue="default")]
     await sync_actor_config(pg_conn, configs, schema=schema)
 
-    # Re-sync same configs — no drift exception
+    # Re-sync same configs - no drift exception
     await sync_actor_config(pg_conn, configs, schema=schema)
 
     rows = await _select_configs(pg_conn, schema)
@@ -547,7 +547,7 @@ async def test_integration_queue_drift_force_false_boots_and_row_unchanged(
     pg_conn: asyncpg.Connection,
 ) -> None:
     """Re-sync with a differing queue (assignment drift) and force=False:
-    no exception — this is the rolling-deploy window of a move — and the
+    no exception - this is the rolling-deploy window of a move - and the
     stored assignment survives the boot (the UPSERT never rewrites it).
     """
     schema = f"tacs_{new_base62()}".lower()
@@ -625,7 +625,7 @@ async def test_integration_queue_drift_force_true_preserves_stored_queue(
     pg_conn: asyncpg.Connection,
 ) -> None:
     """Re-sync with a differing queue and force=True: the stored queue is
-    preserved — force governs metadata only, and a force-boot rewriting the
+    preserved - force governs metadata only, and a force-boot rewriting the
     assignment from a stale literal is exactly the move-undo hazard the
     conflict clause forecloses.
     """
@@ -677,7 +677,7 @@ async def test_integration_force_true_never_overwrites_capacity_or_queue(
     fields or the queue assignment.
 
     Registers a differing max_concurrent AND queue simultaneously with
-    force=True: neither is overwritten — both are operator-owned once the
+    force=True: neither is overwritten - both are operator-owned once the
     row exists.
     """
     schema = f"tacs_{new_base62()}".lower()
@@ -765,7 +765,7 @@ async def test_integration_result_ttl_divergence_survives_resync(
 async def test_integration_max_pending_none_round_trip(
     pg_conn: asyncpg.Connection,
 ) -> None:
-    """Register an actor with no max_pending, sync, query — column is SQL NULL."""
+    """Register an actor with no max_pending, sync, query - column is SQL NULL."""
     schema = f"tacs_{new_base62()}".lower()
     await _ensure_schema(pg_conn, schema)
 

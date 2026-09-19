@@ -1,7 +1,7 @@
 """Differential composition: admission-denied at capacity, then shutdown-interrupted.
 
 A job can meet both of the fleet's non-terminal release paths in one life:
-a worker claims it, the admission check answers 429 (no slot — a statement
+a worker claims it, the admission check answers 429 (no slot - a statement
 about capacity, never about the work), the claim's increment is refunded and
 ``rate_limit_blocked_count`` bumps; a later worker claims it again, takes
 SIGTERM mid-flight, and the shutdown release leaves the spent increment
@@ -11,8 +11,8 @@ increment is exactly what stands; and neither may pretend the
 other's bookkeeping happened.
 
 The events diet is the second half of the pin. A non-terminal deferral mints
-NO per-occurrence rows — sustained saturation must cost one counter bump per
-cycle, not a table's worth of history — while the interruption is a real
+NO per-occurrence rows - sustained saturation must cost one counter bump per
+cycle, not a table's worth of history - while the interruption is a real
 state transition the fleet must see, so it mints exactly one
 ``reason='interrupted'`` event. Through the composed chain the row's
 durable record is therefore: two counter bumps of different kinds, one
@@ -37,7 +37,7 @@ pytestmark = pytest.mark.integration
 
 async def _denied_then_interrupted(side: DiffSide) -> None:
     """Two capacity denials across two claims, then a shutdown release on
-    the third — the counters-and-timeline composition under test."""
+    the third - the counters-and-timeline composition under test."""
     enqueued = await side.enqueue("j1", scheduled_in=-1.0)
     jid = JobId(enqueued.id)
 
@@ -46,17 +46,17 @@ async def _denied_then_interrupted(side: DiffSide) -> None:
         claimed = await side.dispatch("w1", ["default"], limit=5)
         assert claimed == ["j1"], "the scenario requires each claim to land"
         # The consumer's 429 write: admission said no slot, so the claim's
-        # increment is refunded and the job reschedules — never charged
+        # increment is refunded and the job reschedules - never charged
         # against the retry budget real executions spend.
         denials.append(await side.mark_snoozed("j1", "w1", 30.0, outcome="rate_limit_denied"))
         # Make the denied row due again without waiting out the deferral,
-        # then promote it through the production scheduled→pending sweep —
+        # then promote it through the production scheduled→pending sweep -
         # a deferral lands 'scheduled' and only the sweep re-pends it.
         await side.mutate("j1", scheduled_in_s=-1.0)
         side.record("promoted", await side.sweep_promote())
     side.record("denials", denials)
 
-    # The third claim is a different pod's — and that pod takes SIGTERM
+    # The third claim is a different pod's - and that pod takes SIGTERM
     # mid-attempt: the shutdown release counts the interruption and leaves
     # the spent claim standing (the attempt started executing,.
     claimed = await side.dispatch("w2", ["default"], limit=5)
@@ -105,7 +105,7 @@ async def test_diff_denials_then_shutdown_interrupt_keep_the_counters_straight(
         f"the epoch is 1, not 0; got attempt={j1['attempt']!r}"
     )
     assert j1["rate_limit_blocked_count"] == 2, (
-        "each 429 counted itself exactly once — never as a snooze, never "
+        "each 429 counted itself exactly once - never as a snooze, never "
         f"as an interrupt; got {j1['rate_limit_blocked_count']!r}"
     )
     assert j1["snooze_count"] == 0, (
@@ -116,7 +116,7 @@ async def test_diff_denials_then_shutdown_interrupt_keep_the_counters_straight(
         f"the shutdown release counted exactly itself; got {j1['interrupt_count']!r}"
     )
     assert j1["attempts"] == [], (
-        "no attempt ever ran to a reportable outcome — the denials and the "
+        "no attempt ever ran to a reportable outcome - the denials and the "
         f"interruption write no attempt rows; got {j1['attempts']!r}"
     )
     event_kinds = [(e["kind"], e["detail"].get("reason")) for e in j1["events"]]

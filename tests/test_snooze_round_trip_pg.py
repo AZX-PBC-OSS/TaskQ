@@ -38,8 +38,8 @@ if TYPE_CHECKING:
 
     type _Conn = asyncpg.Connection | PoolConnectionProxy
 else:
-    WorkerDeps = PostgresBackend = object  # pyright: ignore[reportInvalidTypeForm] # Why: runtime fallback — asyncpg and worker modules are TYPE_CHECKING-only to avoid transitive imports in test modules
-    type _Conn = object  # pyright: ignore[reportInvalidTypeForm] # Why: runtime fallback — asyncpg is TYPE_CHECKING-only to avoid transitive imports in test modules
+    WorkerDeps = PostgresBackend = object  # pyright: ignore[reportInvalidTypeForm] # Why: runtime fallback - asyncpg and worker modules are TYPE_CHECKING-only to avoid transitive imports in test modules
+    type _Conn = object  # pyright: ignore[reportInvalidTypeForm] # Why: runtime fallback - asyncpg is TYPE_CHECKING-only to avoid transitive imports in test modules
 
 pytestmark = pytest.mark.integration
 
@@ -305,7 +305,7 @@ async def test_reservation_denial_metadata_observable(
     row2 = await backend.get(job_id)
     assert row2 is not None
     # The denial refunded the claim's attempt increment (attempt -> 0), so
-    # this second dispatch's own increment lands back on 1 — a denial never
+    # this second dispatch's own increment lands back on 1 - a denial never
     # spends retry budget, so re-dispatch after one never looks different
     # from a job's first-ever dispatch.
     assert row2.attempt == 1
@@ -328,7 +328,7 @@ async def test_reservation_denial_metadata_observable(
 async def test_shield_on_snooze_write(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """asyncio.shield on snooze write — shielded mark_snoozed completes under cancellation."""
+    """asyncio.shield on snooze write - shielded mark_snoozed completes under cancellation."""
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
     schema = deps.settings.schema_name
@@ -358,12 +358,12 @@ async def test_shield_on_snooze_write(
 
     # Why patched at the backend seam, not inside _terminal.py: the
     # mark_* terminal writes are now ONE fused statement (UPDATE + attempt
-    # + event in a single data-modifying-CTE statement — see
+    # + event in a single data-modifying-CTE statement - see
     # _terminal.py's module docstring), so there is no longer a Python
     # seam BETWEEN the job UPDATE and the attempt INSERT to inject a
-    # cancellation window into.  The property under test is unchanged —
+    # cancellation window into.  The property under test is unchanged -
     # the shield around the (whole) snooze write lets it complete under
-    # cancellation — so the window now opens in front of the whole write.
+    # cancellation - so the window now opens in front of the whole write.
     original_snooze = backend.mark_snoozed
 
     async def _delayed_snooze(*args: object, **kwargs: object) -> object:
@@ -386,7 +386,7 @@ async def test_shield_on_snooze_write(
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    # Poll for the shielded mark_snoozed to complete — the shielded
+    # Poll for the shielded mark_snoozed to complete - the shielded
     # write runs independently of the cancelled task, so we can't
     # know exactly when it finishes. Poll up to 10s.
     deadline = asyncio.get_running_loop().time() + 10.0
@@ -410,7 +410,7 @@ async def test_shield_on_snooze_write(
 async def test_concurrent_snooze_and_cancel(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """concurrent snooze and cancel — exactly one transition wins."""
+    """concurrent snooze and cancel - exactly one transition wins."""
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
     schema = deps.settings.schema_name
@@ -448,7 +448,7 @@ async def test_concurrent_snooze_and_cancel(
     snooze_task = asyncio.create_task(run_snooze())
     # Single deterministic yield: lets the snooze task take its first step
     # (head start for the intended overlap) without an arbitrary 1ms
-    # delay — no assert depends on how far it got, both tasks are awaited
+    # delay - no assert depends on how far it got, both tasks are awaited
     # below and either transition may win.
     await asyncio.sleep(0)
     cancel_task = asyncio.create_task(run_cancel())

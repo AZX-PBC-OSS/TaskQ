@@ -197,7 +197,7 @@ def test_history_nul_in_text_filters_returns_400(
 ) -> None:
     """A %00 in the actor/queue filter is a clean 400, not an asyncpg 22021 500.
 
-    Both are bound as text parameters ($2/$3) by the history SQL — the
+    Both are bound as text parameters ($2/$3) by the history SQL - the
     same driver-level NUL class the jobs list filters guard against.
     """
     client = _build_history_app(_StubPool(), monkeypatch)
@@ -510,8 +510,8 @@ def test_history_marks_max_attempts_inert_for_indefinite_retry(
 ) -> None:
     """An indefinite-kind row ignores max_attempts entirely (retries.md §2):
     the stored ceiling is inert, so the /history Attempt cell renders the
-    shared ``attempt_budget`` marker — the real attempt count with the
-    ceiling shown as inert — exactly as /jobs and /jobs/{id} already do.
+    shared ``attempt_budget`` marker - the real attempt count with the
+    ceiling shown as inert - exactly as /jobs and /jobs/{id} already do.
     A row can legitimately sit at attempt 168 over a stored 3, and
     "168/3" reads as a lie about what is enforced."""
     rows = [

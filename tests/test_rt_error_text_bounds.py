@@ -17,7 +17,7 @@ constraints or explicit truncation.
 Attack: fail a job with a 1MB exception message + 1MB traceback through
 the real terminal-write path (``PostgresBackend.mark_failed_or_retry``
 on real PG, the same call ``_handle_generic_exception`` funnels into)
-and assert the stored text is bounded (<= 100_000 chars — the point is
+and assert the stored text is bounded (<= 100_000 chars - the point is
 boundedness; the failure output shows the unbounded reality).
 """
 
@@ -37,14 +37,14 @@ from taskq.testing.pg import create_workered_running_job
 from .test_rt_cron_harness import cron_settings, pool_backend, seed_actor_config
 
 _HUGE_CHARS = 1_000_000
-"""1MB of hostile error text — well within PG's 1GB ``text`` limit, so the
+"""1MB of hostile error text - well within PG's 1GB ``text`` limit, so the
 write lands and the stored length proves boundedness instead of
 erroring at the server."""
 
 
 def _huge_error() -> ErrorInfo:
     """An ``ErrorInfo`` shaped like a hostile failure: 1MB of class,
-    message, and traceback each — every field over its bound."""
+    message, and traceback each - every field over its bound."""
     return ErrorInfo(
         error_class="C" * _HUGE_CHARS,
         error_message="M" * _HUGE_CHARS,
@@ -145,7 +145,7 @@ def test_error_info_truncates_oversized_values_at_construction() -> None:
 
 
 def test_error_info_rejects_nul_pin() -> None:
-    """Green pin: the existing NUL guard raises — proves this harness exercises the real ``ErrorInfo``."""
+    """Green pin: the existing NUL guard raises - proves this harness exercises the real ``ErrorInfo``."""
     with pytest.raises(ValueError):
         ErrorInfo(
             error_class="ValueError",

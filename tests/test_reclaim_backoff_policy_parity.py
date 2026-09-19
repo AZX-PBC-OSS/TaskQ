@@ -1,7 +1,7 @@
 """A crash reclaim must retry on the actor's configured backoff, not a flat 5s.
 
 Every other path that re-schedules a job for another attempt derives the delay
-from the actor's ``RetryPolicy`` — base, cap, backoff kind and jitter — through
+from the actor's ``RetryPolicy`` - base, cap, backoff kind and jitter - through
 ``taskq.retry.compute_backoff``. The consumer's failure path does, the
 ``Retry-After`` override does, the snooze arms do. Crash reclaim does not: a
 running job whose worker missed its lease or its heartbeat is rescheduled a
@@ -10,13 +10,13 @@ hardcoded, unjittered five seconds out, whatever the actor asked for.
 Two consequences, both operational:
 
 **The policy is silently void.** An actor configured ``base=5min, cap=1h``
-because its downstream is fragile — a rate-limited third party, a database that
-needs room to recover — gets retried five seconds after its worker crashes.
+because its downstream is fragile - a rate-limited third party, a database that
+needs room to recover - gets retried five seconds after its worker crashes.
 That configuration exists precisely to protect the thing the job talks to, and
 the crash path is where the downstream is least likely to be healthy.
 
-**No jitter means a thundering herd.** A fleet-wide event — a node drain, an
-availability-zone loss, an OOM sweep across a deployment — expires many leases
+**No jitter means a thundering herd.** A fleet-wide event - a node drain, an
+availability-zone loss, an OOM sweep across a deployment - expires many leases
 at once. Every reclaimed job in that cohort is stamped with the same
 ``clock_timestamp() + 5 seconds``, so the whole backlog becomes due in the same
 instant and lands on the recovering fleet as one synchronized wave. Jitter on
@@ -24,7 +24,7 @@ the retry curve is the mechanism that spreads exactly this, and reclaim is the
 one path that skips it.
 
 These tests hold reclaim to the delay the job's own policy produces, on both
-backends — a divergence here would mean the in-memory twin certifies a backoff
+backends - a divergence here would mean the in-memory twin certifies a backoff
 Postgres does not apply.
 
 A note on what the contract requires of the schema. The reclaim statements run
@@ -88,7 +88,7 @@ _FLAT_RECLAIM_DELAY = timedelta(seconds=5)
 
 #: A policy whose cap sits above the operator's global backoff ceiling. With
 #: ``backoff='fixed'`` the curve is flat at base, far above the ceiling, so
-#: the ceiling — not the curve — decides the stamped delay: the jitter band
+#: the ceiling - not the curve - decides the stamped delay: the jitter band
 #: is fitted under it, and the delay lands in ``[ceiling·(1-j), ceiling]``.
 _WIDE_POLICY = RetryPolicy(
     backoff="fixed",
@@ -99,7 +99,7 @@ _WIDE_POLICY = RetryPolicy(
 )
 
 #: Slack for the gap between the test's clock read and the sweep's own
-#: clock_timestamp() — orders of magnitude below the multi-day miss a
+#: clock_timestamp() - orders of magnitude below the multi-day miss a
 #: missing clamp produces, so the band stays decisive.
 _CLOCK_GAP_SLACK = timedelta(seconds=30)
 
@@ -141,7 +141,7 @@ async def _enqueue(
             retry_kind="transient",
             scheduled_at=_START,
             # The retry-curve scalars a real enqueue stamps from the
-            # actor's live ActorRef (taskq.client._args) — see this
+            # actor's live ActorRef (taskq.client._args) - see this
             # module's docstring on why the reclaim contract requires a
             # source for the curve on the row itself.
             retry_base=policy.base,
@@ -170,7 +170,7 @@ async def _claim(backend: Backend, job_id: JobId, worker_id: UUID) -> int:
 
 
 async def _expire_lease(backend: Backend, job_id: JobId) -> None:
-    """Age the job's lease into the past — the state a crashed worker leaves
+    """Age the job's lease into the past - the state a crashed worker leaves
     behind, with no terminal write ever arriving.
 
     The row's own column is moved rather than waiting out a real lease, so the
@@ -195,7 +195,7 @@ async def _expire_lease(backend: Backend, job_id: JobId) -> None:
 
 
 async def _now_of(backend: Backend) -> datetime:
-    """The backend's own clock — the arbiter that stamped ``scheduled_at``.
+    """The backend's own clock - the arbiter that stamped ``scheduled_at``.
 
     Reclaim schedules relative to the database's clock, so the delay it
     applied must be measured in that same domain; this process's clock would
@@ -232,7 +232,7 @@ async def test_reclaim_applies_the_actors_configured_backoff(
     """A reclaimed job comes back on its actor's retry curve.
 
     An actor whose policy sets a five-minute base did so to keep pressure off
-    something fragile. A worker crash is not a reason to override that — if
+    something fragile. A worker crash is not a reason to override that - if
     anything it is a reason to respect it, since the downstream is least
     likely to be healthy at that moment.
     """
@@ -254,7 +254,7 @@ async def test_reclaim_applies_the_actors_configured_backoff(
         f"backoff={_PROTECTIVE_POLICY.backoff!r}). Reclaim is stamping a flat "
         f"{_FLAT_RECLAIM_DELAY} instead of the actor's curve, so an actor "
         f"configured to protect a fragile downstream hammers it seconds after "
-        f"every worker crash — the moment that downstream is least likely to "
+        f"every worker crash - the moment that downstream is least likely to "
         f"be healthy. Every other retry path derives its delay from the same "
         f"policy (reference delay for this attempt: {lower})"
     )
@@ -307,7 +307,7 @@ async def test_reclaim_jitters_a_cohort_reclaimed_together(
     spread = max(due) - min(due)
     # The jitter band the policy configures for this attempt. The bar is a
     # fraction of it rather than the whole band because eight draws need not
-    # reach both edges — but it is far above the sub-millisecond drift a
+    # reach both edges - but it is far above the sub-millisecond drift a
     # per-row ``clock_timestamp()`` produces while stamping a flat constant,
     # which spreads nothing and protects nothing.
     band = _PROTECTIVE_POLICY.base * _PROTECTIVE_POLICY.jitter
@@ -319,7 +319,7 @@ async def test_reclaim_jitters_a_cohort_reclaimed_together(
         f"shape of a real fleet event: the entire cohort lands on the recovering "
         f"fleet as one synchronized wave. The actor's retry policy configures "
         f"jitter (±{band}) precisely to spread this, and the reclaim path is the "
-        f"one path that ignores it — it stamps a flat {_FLAT_RECLAIM_DELAY} on "
+        f"one path that ignores it - it stamps a flat {_FLAT_RECLAIM_DELAY} on "
         f"every row"
     )
 
@@ -330,11 +330,11 @@ async def test_reclaim_delay_is_capped_by_the_global_backoff_ceiling(
     """A policy cap above the operator ceiling does not carry a reclaim past it.
 
     The failure path clamps every retry delay at ``min(policy.cap,
-    max_retry_backoff)`` — 24 hours at the default
+    max_retry_backoff)`` - 24 hours at the default
     (``WorkerSettings.max_retry_backoff``). Crash/heartbeat reclaim is the
     same rescheduling decision and must clamp at the same value on both
     backends: a row stamped with a multi-day cap otherwise comes back days
-    later on Postgres while the in-memory twin says hours — the twin
+    later on Postgres while the in-memory twin says hours - the twin
     certifying a delay Postgres never applies.
     """
     worker_id = await _worker_of(backend_pair)
@@ -346,8 +346,8 @@ async def test_reclaim_delay_is_capped_by_the_global_backoff_ceiling(
     assert delay >= DEFAULT_MAX_RETRY_BACKOFF * (1 - _WIDE_POLICY.jitter), (
         f"a crash-reclaimed job was rescheduled {delay} out, below the jitter "
         f"band under the {DEFAULT_MAX_RETRY_BACKOFF} ceiling: with a policy whose "
-        "curve sits above the ceiling, the band fitted under the ceiling — not "
-        "a smaller value — must decide the delay"
+        "curve sits above the ceiling, the band fitted under the ceiling - not "
+        "a smaller value - must decide the delay"
     )
     assert delay <= DEFAULT_MAX_RETRY_BACKOFF + _CLOCK_GAP_SLACK, (
         f"a crash-reclaimed job with retry_cap={_WIDE_POLICY.cap} was "
@@ -361,8 +361,8 @@ async def test_reclaim_delay_is_capped_by_the_global_backoff_ceiling(
 async def test_reclaim_delay_honours_a_non_default_backoff_ceiling(
     backend_pair: Backend,
 ) -> None:
-    """The operator's configured ``max_retry_backoff`` — not a hardcoded
-    constant — is the ceiling reclaim applies.
+    """The operator's configured ``max_retry_backoff`` - not a hardcoded
+    constant - is the ceiling reclaim applies.
 
     A smaller operator ceiling tightens the clamp on both backends; this is
     what stops a misconfigured per-actor cap from stranding reclaimed jobs
@@ -378,7 +378,7 @@ async def test_reclaim_delay_honours_a_non_default_backoff_ceiling(
     else:
         assert isinstance(backend_pair, PostgresBackend)
         # Why: the operator knob lives on WorkerSettings inside the backend's
-        # deps, and the sweep reads it per call — the same seam the suite's
+        # deps, and the sweep reads it per call - the same seam the suite's
         # interval-shrinking tests use.
         backend_pair._deps.settings.max_retry_backoff = ceiling  # pyright: ignore[reportPrivateUsage]
     worker_id = await _worker_of(backend_pair)
@@ -390,12 +390,12 @@ async def test_reclaim_delay_honours_a_non_default_backoff_ceiling(
     assert delay >= ceiling * (1 - _WIDE_POLICY.jitter), (
         f"a crash-reclaimed job was rescheduled {delay} out, below the jitter "
         f"band under the operator's configured {ceiling} ceiling: with a policy "
-        "whose curve sits above the ceiling, the band fitted under the ceiling — "
-        "not a smaller value — must decide the delay"
+        "whose curve sits above the ceiling, the band fitted under the ceiling - "
+        "not a smaller value - must decide the delay"
     )
     assert delay <= ceiling + _CLOCK_GAP_SLACK, (
         f"a crash-reclaimed job was rescheduled {delay} out under an "
-        f"operator-configured max_retry_backoff of {ceiling} — the reclaim "
+        f"operator-configured max_retry_backoff of {ceiling} - the reclaim "
         "path kept the 24 h default (or the policy cap) instead of the "
         "configured ceiling, so the knob does not reach the sweep"
     )
@@ -404,26 +404,26 @@ async def test_reclaim_delay_honours_a_non_default_backoff_ceiling(
 # ── Deterministic jitter: the fraction and its cross-backend parity ────────
 #
 # The reclaim delay's jitter fraction is DERIVED from the row, never drawn:
-# ``md5(j.id::text || ':' || j.attempt::text)`` — first 8 hex digits as a
-# uint32 over 2**32 — computed byte-identically by ``_RECLAIM_DELAY_SQL`` in
+# ``md5(j.id::text || ':' || j.attempt::text)`` - first 8 hex digits as a
+# uint32 over 2**32 - computed byte-identically by ``_RECLAIM_DELAY_SQL`` in
 # the database and by ``taskq.retry._compute_reclaim_backoff`` in Python.
 # One row's reclaim delay is computed by more than one statement (the
 # leader's sweep and a partitioned worker's isolate_self can each transition
 # the same row within one outage window) and replayed by later sweeps; a
 # per-statement ``random()`` makes those paths disagree about one row's
 # hand-back instant, while the derived fraction makes every path stamp the
-# same delay — replay-idempotent per row — and keeps the fleet spread
+# same delay - replay-idempotent per row - and keeps the fleet spread
 # (distinct ids hash to distinct fractions).  These pins assert that parity
 # exactly: no buckets, no bands.
 
-#: Fixed (job id, attempt) inputs for the formula pin — the pin draws
+#: Fixed (job id, attempt) inputs for the formula pin - the pin draws
 #: nothing, so its inputs are fixed.  attempt=0 pins the
 #: direct-construction corner (the SQL floors the exponent with
 #: GREATEST(attempt - 1, 0) and hashes the raw attempt); attempt=1000
 #: exercises the deep-exponent arm.  attempt=1024 pins the float8-overflow
 #: corner: with the exponent clamped only at power()'s domain ceiling,
 #: ``base * power(2.0, attempt - 1)`` overflowed float8 for base > ~2 and
-#: RAISED SQLSTATE 22003 where the Python twin saturated to the cap — the
+#: RAISED SQLSTATE 22003 where the Python twin saturated to the cap - the
 #: clamp must keep the multiply itself in range (the curve has long
 #: saturated against the cap there).  attempt=32767 is the smallint
 #: ceiling, the deepest attempt the column can stamp.
@@ -471,7 +471,7 @@ _FRACTION_PROBE_SQL = (
     "FROM (VALUES ($1::uuid, $2::smallint)) AS j(id, attempt)"
 )
 _DELAY_PROBE_SQL = (
-    f"SELECT ({_RECLAIM_DELAY_SQL.replace('{max_backoff_seconds}', '$7')}) AS delay "  # noqa: S608  # Why: same — the interpolated text is the shipped fragment under test; every runtime value is $N-bound.
+    f"SELECT ({_RECLAIM_DELAY_SQL.replace('{max_backoff_seconds}', '$7')}) AS delay "  # noqa: S608  # Why: same - the interpolated text is the shipped fragment under test; every runtime value is $N-bound.
     "FROM (VALUES ($1::uuid, $2::smallint, $3::float8, $4::float8, $5::text, $6::float8)) "
     "AS j(id, attempt, retry_base_seconds, retry_cap_seconds, retry_backoff, retry_jitter)"
 )
@@ -482,11 +482,11 @@ async def test_reclaim_delay_formula_matches_the_sql_fragment_bit_for_bit(
     pg_dsn: str,
 ) -> None:
     """A given (job id, attempt, policy) yields the identical reclaim delay
-    in SQL and Python — bit for bit.
+    in SQL and Python - bit for bit.
 
     The SQL fragment and the Python twin run the same correctly-rounded
     IEEE-754 operations in the same order over the same hash-derived
-    fraction, so exact equality — not a band — is the assertable contract.
+    fraction, so exact equality - not a band - is the assertable contract.
     A per-statement ``random()`` (the old shape) makes virtually every row
     here mismatch, and a formula drift on either side (a different hash
     slice, a reordered operand, a numeric-typed intermediate) fails this
@@ -499,7 +499,7 @@ async def test_reclaim_delay_formula_matches_the_sql_fragment_bit_for_bit(
             py_fraction = _reclaim_jitter_fraction(job_id, attempt)
             assert sql_fraction == py_fraction, (
                 f"jitter fraction diverged for ({job_id}, {attempt}): "
-                f"SQL {sql_fraction!r} vs Python {py_fraction!r} — the two sides "
+                f"SQL {sql_fraction!r} vs Python {py_fraction!r} - the two sides "
                 "must derive the identical fraction from md5('<id>:<attempt>') "
                 "(first 8 hex digits as uint32, over 2**32, in float8)"
             )
@@ -524,7 +524,7 @@ async def test_reclaim_delay_formula_matches_the_sql_fragment_bit_for_bit(
                     f"reclaim delay diverged for ({job_id}, attempt={attempt}, "
                     f"backoff={policy.backoff!r}, base={policy.base}, "
                     f"cap={policy.cap}, jitter={policy.jitter}): "
-                    f"SQL {sql_delay!r} vs Python {py_delay!r} — the sweep, the "
+                    f"SQL {sql_delay!r} vs Python {py_delay!r} - the sweep, the "
                     "isolate, and the in-memory mirror must all stamp the same "
                     "delay for the same row"
                 )
@@ -533,7 +533,7 @@ async def test_reclaim_delay_formula_matches_the_sql_fragment_bit_for_bit(
 
 
 #: The fixed row identity the cross-backend sweep pin reclaims on both
-#: backends — fixed so the pin draws nothing.
+#: backends - fixed so the pin draws nothing.
 _SWEEP_PARITY_JOB_ID = JobId(UUID("01906e5a-0000-7000-8000-00000000b001"))
 
 
@@ -545,7 +545,7 @@ async def test_reclaim_delay_exponential_arm_saturates_at_cap_past_the_overflow_
 
     Postgres RAISES ``value out of range: overflow`` (SQLSTATE 22003,
     surfaced by asyncpg as ``NumericValueOutOfRangeError``) when a float8
-    multiply exceeds ~1.8e308 — it does not saturate to Infinity the way
+    multiply exceeds ~1.8e308 - it does not saturate to Infinity the way
     Python's float arithmetic does.  With the exponent clamped only at
     ``power()``'s own domain ceiling, ``base * power(2.0, attempt - 1)``
     overflowed for any base > ~2 once the attempt passed ~1021: a
@@ -554,7 +554,7 @@ async def test_reclaim_delay_exponential_arm_saturates_at_cap_past_the_overflow_
     class), on a corner the Python twin answered with the cap.  The
     shared fragment bounds the exponent so the multiply stays inside
     float8 for every timedelta-representable base while the LEAST
-    against the effective cap still decides the value — so a jitter=0
+    against the effective cap still decides the value - so a jitter=0
     policy at a saturated attempt stamps EXACTLY the cap, bit-identical
     to the twin.
     """
@@ -585,14 +585,14 @@ async def test_reclaim_delay_exponential_arm_saturates_at_cap_past_the_overflow_
             )
             assert sql_delay == policy.cap, (
                 f"attempt={attempt}: the saturated exponential arm must stamp exactly "
-                f"the cap, got {sql_delay!r} — the curve reaches the cap long before "
+                f"the cap, got {sql_delay!r} - the curve reaches the cap long before "
                 "the exponent clamp, and the multiply must not raise"
             )
             assert py_delay == policy.cap, (
                 f"attempt={attempt}: the Python twin must stamp exactly the cap, got {py_delay!r}"
             )
             assert sql_delay == py_delay, (
-                f"attempt={attempt}: SQL {sql_delay!r} vs Python {py_delay!r} — the "
+                f"attempt={attempt}: SQL {sql_delay!r} vs Python {py_delay!r} - the "
                 "overflow corner must not become a parity break"
             )
     finally:
@@ -607,8 +607,8 @@ async def test_reclaim_sweep_stamps_the_identical_delay_on_both_backends(
     sweep on each backend, is rescheduled by the same delay.
 
     The mirror's FakeClock is frozen, so its measurement is exact. PG's
-    stamp is bracketed between server-clock reads taken around the sweep —
-    the sweep's own ``clock_timestamp()`` is unobservable from outside — and
+    stamp is bracketed between server-clock reads taken around the sweep -
+    the sweep's own ``clock_timestamp()`` is unobservable from outside - and
     the bracket is milliseconds wide while the policy's jitter band here is
     [240 s, 360 s), so a freshly-drawn jitter (the old per-statement
     ``random()``) falls outside it on virtually every run. Both measurements
@@ -625,7 +625,7 @@ async def test_reclaim_sweep_stamps_the_identical_delay_on_both_backends(
     # Both backends apply the same effective ceiling here: the mirror's
     # constructor default and the PG settings default are both
     # DEFAULT_MAX_RETRY_BACKOFF (24 h), and the policy's own cap (1 h)
-    # binds first — so the expected value reads the row's curve, not the
+    # binds first - so the expected value reads the row's curve, not the
     # ceiling.
     memory = InMemoryBackend(
         clock=FakeClock(_START),
@@ -652,7 +652,7 @@ async def test_reclaim_sweep_stamps_the_identical_delay_on_both_backends(
                 f"{type(backend).__name__} stamped scheduled_at={row.scheduled_at!r}, "
                 f"outside [before + expected, after + expected] with "
                 f"before={before!r}, after={after!r}, expected delay={expected!r} "
-                f"for (job_id, attempt)=({_SWEEP_PARITY_JOB_ID}, 1) — every "
+                f"for (job_id, attempt)=({_SWEEP_PARITY_JOB_ID}, 1) - every "
                 "reclaim path must stamp the row's derived delay, not a fresh draw"
             )
         mem_row = await memory.get(_SWEEP_PARITY_JOB_ID)

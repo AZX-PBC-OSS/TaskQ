@@ -178,7 +178,7 @@ async def _enqueue_and_dispatch(
             retry_kind="transient",
             # None = immediate, in the SERVER clock domain. An absolute
             # datetime.now() races the enqueue SQL's status boundary
-            # (COALESCE($n, clock_timestamp()) > clock_timestamp()) —
+            # (COALESCE($n, clock_timestamp()) > clock_timestamp()) -
             # with the testcontainer clock a fraction of a millisecond
             # behind the host, a warm asyncpg statement cache (sub-ms
             # sample→execute latency, as in the parallel suite) lands the
@@ -413,7 +413,7 @@ async def test_ti3b_first_message_is_state_change_running(
     pg_dsn: str, redis_url: str, module_pg_schema: ModulePgSchema
 ) -> None:
     """When subscribing before the job starts, the first real message
-    received must be a kind='state_change' with status='running' — published
+    received must be a kind='state_change' with status='running' - published
     after the job is dispatched and before the actor body runs.
 
     This confirms subscribe-before-start guarantees no missed events and that
@@ -478,7 +478,7 @@ async def test_ti3b_first_message_is_state_change_running(
 class _FailingPipeline:
     """Pipeline stand-in whose ``execute`` raises.
 
-    Simulates a failed pipelined dual-channel publish round trip — the
+    Simulates a failed pipelined dual-channel publish round trip - the
     surface progress events actually go through when
     ``progress_publish_global`` is on (one pipeline, one execute, both
     channels; ``client.publish`` is never called on that path).

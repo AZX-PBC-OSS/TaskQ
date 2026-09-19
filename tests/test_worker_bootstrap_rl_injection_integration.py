@@ -125,7 +125,7 @@ async def test_actor_declared_instances_collected_and_acquirable(pg_dsn: str, sc
 
 async def test_di_value_provider_wins_over_singleton_end_to_end(pg_dsn: str, schema: str) -> None:
     """A name-ref actor validates against the DI-provided registry, not the
-    singleton (which has no ``di_bucket`` registration) — proving rule 2."""
+    singleton (which has no ``di_bucket`` registration) - proving rule 2."""
     own = RateLimitRegistry()
     own.register(TokenBucket(name="di_bucket", capacity=5, refill_per_second=1.0, backend="memory"))
 

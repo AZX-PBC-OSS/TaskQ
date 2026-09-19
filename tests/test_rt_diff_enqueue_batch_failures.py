@@ -3,13 +3,13 @@
 The bulk tier's whole-call contracts, compared across backends at the
 moment the call fails:
 
-* **Atomicity** — a statement-level failure mid-batch (an item whose id
+* **Atomicity** - a statement-level failure mid-batch (an item whose id
   collides with an already-stored job; ``jobs_pkey`` has no ON CONFLICT
   arbiter in the batch INSERT) aborts the ENTIRE call on Postgres: one
   INSERT inside one transaction, so nothing is admitted. A mirror that
   stores the good prefix before the poisoned item raises certifies code
   that leaves phantom rows behind on PG.
-* **Refusal observability** — a partitioned cap refusal must answer
+* **Refusal observability** - a partitioned cap refusal must answer
   identically on both backends: same typed error, same refusal fields,
   and the same emitted ``max-pending-exceeded`` warning per refused
   actor. An operator's backpressure dashboards read the warning; a
@@ -106,7 +106,7 @@ async def test_diff_enqueue_batch_mid_batch_duplicate_id_aborts_whole_call(pg_ds
     """A batch item whose id duplicates a stored job must abort the WHOLE
     call on both backends: PG's bulk tier is one INSERT in one transaction
     (nothing admitted on a statement error); the mirror must leave the
-    identical stored-row state — never the good prefix."""
+    identical stored-row state - never the good prefix."""
     mem, pg = await run_differential(_mid_batch_duplicate_id_poison, pg_dsn=pg_dsn)
     assert_mirror(
         "a mid-batch constraint violation aborts the entire enqueue_batch "
@@ -123,7 +123,7 @@ async def _mid_batch_singleton_collision_poison(side: DiffSide) -> None:
     """Two same-actor singleton items in ONE batch call, nothing pre-stored.
 
     PG's single unnest INSERT hits the jobs_singleton_uniq partial unique
-    index and aborts the WHOLE statement — neither item is stored. The
+    index and aborts the WHOLE statement - neither item is stored. The
     in-memory mirror's batch-level singleton preflight
     (``_check_batch_singletons`` in src/taskq/testing/_enqueue.py) refuses
     the whole call before storing its first row, so both backends leave
@@ -150,7 +150,7 @@ async def test_diff_enqueue_batch_mid_batch_singleton_collision_aborts_whole_cal
     """A batch containing two singleton items for the same actor must abort
     the WHOLE call on both backends: PG's bulk tier is one INSERT in one
     transaction (jobs_singleton_uniq aborts it, nothing admitted); the
-    mirror must leave the identical stored-row state — never the good
+    mirror must leave the identical stored-row state - never the good
     prefix.
     """
     mem, pg = await run_differential(_mid_batch_singleton_collision_poison, pg_dsn=pg_dsn)
@@ -164,7 +164,7 @@ async def test_diff_enqueue_batch_mid_batch_singleton_collision_aborts_whole_cal
     # Why the typed error: a singleton collision is a retryable admission
     # refusal, so the PG bulk tier converts the jobs_singleton_uniq
     # violation to the same typed SingletonCollisionError the
-    # single-enqueue path raises — a caller must branch on it without
+    # single-enqueue path raises - a caller must branch on it without
     # string-matching a raw driver error (the mirror's batch preflight
     # already refuses with the same typed error).
     assert pg["records"]["batch"] == "SingletonCollisionError"
@@ -215,9 +215,9 @@ async def _cap_refusal_observability(side: DiffSide) -> None:
 async def test_diff_max_pending_batch_refusal_error_and_log_contract(pg_dsn: str) -> None:
     """A partitioned batch cap refusal answers with the same typed error,
     the same fields (per-refusal actor/current_count/max_pending, refused
-    indices, admitted count), and the same emitted log contract — one
+    indices, admitted count), and the same emitted log contract - one
     ``max-pending-exceeded`` warning per refused actor carrying its
-    facts — on both backends."""
+    facts - on both backends."""
     mem, pg = await run_differential(
         _cap_refusal_observability,
         pg_dsn=pg_dsn,

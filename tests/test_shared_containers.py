@@ -10,7 +10,7 @@ around them are exercised by every integration run and by the container census.
 The sweep contract pinned here is ported from the proven sibling implementation
 (cennan): a liveness-blind sweep once force-removed a CONCURRENTLY running pytest
 session's containers on a shared Docker daemon (~98x ConnectionRefusedError), so the
-label rules below are load-bearing, not hygiene.
+label rules below are critical, not hygiene.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ _COMPOSE_FILE = Path(__file__).resolve().parents[1] / "docker-compose.yml"
 
 def _compose_images() -> list[str]:
     """Every image the docker-compose dev stack runs, read live from the
-    compose file. The sweep guard below must track THOSE tags — hardcoding
+    compose file. The sweep guard below must track THOSE tags - hardcoding
     them here is what let the postgres 18.4→18.6 and redis 8.6.3→8.10.1 bumps
     strand the guard on tags nothing runs anymore."""
     document = cast("dict[str, Any]", yaml.safe_load(_COMPOSE_FILE.read_text(encoding="utf-8")))
@@ -154,7 +154,7 @@ def test_docker_unreachable_reason_reports_daemon_connection_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The SDK's daemon-down shape (``DockerException`` from ``ping()``)
-    becomes the skip reason — exactly what a container start would hit."""
+    becomes the skip reason - exactly what a container start would hit."""
     from docker.errors import DockerException
 
     def _from_env(**_kwargs: object) -> object:
@@ -174,7 +174,7 @@ def test_docker_unreachable_reason_reports_transport_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An absent socket / refused connection (``OSError`` family) is also a
-    daemon-unreachable reason — the DOCKER_HOST-pointing-nowhere case."""
+    daemon-unreachable reason - the DOCKER_HOST-pointing-nowhere case."""
 
     def _from_env(**_kwargs: object) -> object:
         def _ping() -> None:
@@ -234,7 +234,7 @@ def test_a_container_is_swept_once_every_labeled_owner_is_dead() -> None:
 
 def test_an_ancient_labeled_container_is_swept_even_with_a_live_owner_pid() -> None:
     """Age backstop: over days a dead run's pid can be recycled by an unrelated
-    live process — liveness alone would shield the leftover forever."""
+    live process - liveness alone would shield the leftover forever."""
     labels = {sc.CREATOR_PID_LABEL: str(os.getpid())}
     assert _decide(labels=labels, created=_NOW - sc.SWEEP_AGE_LIMIT - timedelta(seconds=1)) is True
 
@@ -333,7 +333,7 @@ class _BasetempFactory:
 def test_a_serial_shaped_basetemp_resolves_to_itself(tmp_path: Path) -> None:
     """A serial run's basetemp IS the invocation dir (``pytest-N``). Resolving to
     its parent instead (the old ``basetemp.parent`` computation) landed on
-    ``/tmp/pytest-of-<user>`` — one state dir shared by EVERY serial invocation
+    ``/tmp/pytest-of-<user>`` - one state dir shared by EVERY serial invocation
     of the user, which is how two repos ended up reusing each other's pair."""
     serial = tmp_path / "pytest-41"
     serial.mkdir()
@@ -461,7 +461,7 @@ def test_a_recorded_pair_nobody_holds_and_nobody_owns_is_removed_not_reused(
     tmp_path: Path, monkeypatch: MonkeyPatch, pair_fakes: dict[str, list[object]]
 ) -> None:
     """The dead-run case, reachable within one invocation when every labeled pid
-    is dead (the creating worker exited AND the xdist controller died — e.g. the
+    is dead (the creating worker exited AND the xdist controller died - e.g. the
     controller was killed while a worker still wound down): the holders it left
     behind are dead pids, pruned on read. Blindly reusing the pair would hand a
     NEW run containers a concurrent sweep would remove mid-session, so it is
@@ -484,8 +484,8 @@ def test_a_pair_a_live_process_still_holds_survives_its_creators_exit(
     tmp_path: Path, monkeypatch: MonkeyPatch, pair_fakes: dict[str, list[object]]
 ) -> None:
     """The sibling-worker case: within one invocation the worker that created
-    the pair can exit before its siblings finish (its two labeled pids — itself
-    and the controller it recorded — both dead in the worst case), while a
+    the pair can exit before its siblings finish (its two labeled pids - itself
+    and the controller it recorded - both dead in the worst case), while a
     sibling worker's session fixtures still hold the pair. Judging "is anyone
     using this" from the CREATOR's labels alone would read that as a crashed
     run and force-remove containers a live worker's asyncpg pools are connected
@@ -493,7 +493,7 @@ def test_a_pair_a_live_process_still_holds_survives_its_creators_exit(
     keeps the pair alive."""
     live = _fake_services()
     (tmp_path / "taskq-test-services.json").write_text(json.dumps(asdict(live)))
-    # The creating worker, now exited — no labeled pid of the pair is alive any more.
+    # The creating worker, now exited - no labeled pid of the pair is alive any more.
     monkeypatch.setattr(sc, "services_have_live_owner", lambda info: False)
     # A sibling worker, still running, holding the pair.
     sibling = os.getppid()
@@ -530,7 +530,7 @@ def test_a_release_never_unlinks_another_workers_pair_record(
 ) -> None:
     """A late release must not strand a pair started meanwhile: if the state file has
     already been replaced by another worker's fresh start (same invocation, same
-    state dir), only OUR containers come down — the record stays pointing at theirs."""
+    state dir), only OUR containers come down - the record stays pointing at theirs."""
     replacement = json.dumps(
         asdict(sc.SharedServices(**{**asdict(_fake_services()), "pg_container_id": "other-pg-id"}))
     )
@@ -568,7 +568,7 @@ def test_a_corrupt_info_file_starts_fresh(
 def test_redis_db_allocation_is_unique_and_monotonic(tmp_path: Path) -> None:
     """Every consumer (module or test function) across EVERY xdist worker draws
     from one file-backed counter, so two workers can never collide on the same
-    logical DB in the shared Dragonfly — a collision would let one consumer's
+    logical DB in the shared Dragonfly - a collision would let one consumer's
     FLUSHDB wipe another's mid-run state."""
     assert [sc.next_redis_logical_db(tmp_path) for _ in range(3)] == [1, 2, 3]
 
@@ -637,7 +637,7 @@ def test_two_session_fixtures_over_one_pair_teardown_once(
 def test_e2e_worker_image_is_a_sweep_candidate() -> None:
     """The e2e worker image (pid-owned ``taskq-e2e-worker-r<pid>:sha-<hash>``
     since per-session teardown; the legacy ``taskq-e2e-worker:sha-<hash>``
-    shape used below still matches — the sweep keys on the repository
+    shape used below still matches - the sweep keys on the repository
     prefix) matches the sweep prefixes: exited leftovers are swept, labeled
     ones go by owner liveness (rule 4), and a live owner's are kept."""
     image = "taskq-e2e-worker:sha-4f2a91c0b7"
@@ -706,7 +706,7 @@ def test_non_e2e_network_names_are_never_swept() -> None:
 
 
 def test_ancient_e2e_network_is_swept_even_with_a_live_pid() -> None:
-    """Age backstop against pid recycling — mirrors the container sweep."""
+    """Age backstop against pid recycling - mirrors the container sweep."""
     assert (
         sc.should_sweep_stale_network(
             name=f"taskq-e2e-net-{os.getpid()}",
@@ -733,7 +733,7 @@ def test_e2e_network_exactly_at_the_age_limit_with_a_live_pid_is_kept() -> None:
 
 class _FakeSweepContainer:
     """The docker-sdk container surface the sweep reads (name/status/labels/
-    attrs/remove) — one stale, one live, one foreign, per the test's needs."""
+    attrs/remove) - one stale, one live, one foreign, per the test's needs."""
 
     def __init__(
         self,
@@ -854,7 +854,7 @@ def test_sweep_removes_stale_containers_and_networks_and_logs_counts(
 def test_sweep_leaves_everything_when_nothing_is_stale_but_still_logs(
     monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A clean daemon still logs the zero-count sweep line — the line's
+    """A clean daemon still logs the zero-count sweep line - the line's
     presence is the evidence the sweep RAN (its absence means a Docker error
     short-circuited it)."""
     client = _FakeSweepClient(
@@ -872,7 +872,7 @@ def test_the_sweep_never_consults_the_holder_registry(monkeypatch: MonkeyPatch) 
     """Cross-invocation sweep safety is the pid LABELS' job alone: the registry
     is per-invocation, so a sweep that consulted it could never see another
     invocation's holders anyway. Any registry access from the sweep is a defect
-    — it would mean sweep decisions again depend on visibility the per-
+    - it would mean sweep decisions again depend on visibility the per-
     invocation placement no longer guarantees. The registry seams raise if
     touched while a full sweep (with a sweepable container) runs."""
 
@@ -899,7 +899,7 @@ def test_two_invocations_state_dirs_yield_independent_pairs(
 ) -> None:
     """Per-invocation scoping, end to end over the pair machinery: invocation
     B's state dir sees neither A's recorded pair nor A's holder references, so
-    B boots its OWN pair, and A's teardown cannot touch B's — no invocation can
+    B boots its OWN pair, and A's teardown cannot touch B's - no invocation can
     find or reuse another's pair, whatever repo's suite is running next to it."""
     started: list[sc.SharedServices] = []
     stopped: list[sc.SharedServices] = []

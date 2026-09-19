@@ -37,8 +37,8 @@ _BAD_TYPE: int = 5
 
 _BAD_TYPE_PATH = "tests.test_cli_worker:_BAD_TYPE"
 
-_WATCH_PATH_ONE = "/tmp/one"  # noqa: S108 # Why: literal never touched on disk — dev_watch_loop is stubbed.
-_WATCH_PATH_TWO = "/tmp/two"  # noqa: S108 # Why: literal never touched on disk — dev_watch_loop is stubbed.
+_WATCH_PATH_ONE = "/tmp/one"  # noqa: S108 # Why: literal never touched on disk - dev_watch_loop is stubbed.
+_WATCH_PATH_TWO = "/tmp/two"  # noqa: S108 # Why: literal never touched on disk - dev_watch_loop is stubbed.
 
 
 def test_actors_resolution_passes_registry_to_worker_main(monkeypatch: Any) -> None:
@@ -124,7 +124,7 @@ def test_env_var_force_update_config(monkeypatch: Any) -> None:
 
 
 def test_drift_error_produces_exit_one_and_hint(monkeypatch: Any) -> None:
-    """ActorConfigDriftList caught at CLI — exit 1 with drift message and hint."""
+    """ActorConfigDriftList caught at CLI - exit 1 with drift message and hint."""
     drift_error = ActorConfigDriftError(
         actor="test_actor",
         field="metadata",
@@ -393,7 +393,7 @@ def test_console_script_resolves_actors_from_cwd(
     that lives only in the directory the operator ran the command from.
 
     Driven through the real console entry (``taskq.cli.main``), not the
-    Typer app directly — the insertion happens at the entry point, so a
+    Typer app directly - the insertion happens at the entry point, so a
     test that bypasses it proves nothing. The scratch module is written
     into a tmp dir and evicted from ``sys.modules`` at teardown; the
     ``sys.path`` and cwd mutations revert via monkeypatch.
@@ -453,7 +453,7 @@ def test_console_script_cwd_insertion_is_idempotent(monkeypatch: pytest.MonkeyPa
     # "cwd absent" frame under a full-suite run, because earlier tests invoke
     # ``main()`` against the real ``sys.path`` and its insertion (correct
     # production behaviour, no monkeypatch rollback) survives into this test's
-    # starting copy — the starting count there is a run-order artifact, not a
+    # starting copy - the starting count there is a run-order artifact, not a
     # property of the helper.
     monkeypatch.setattr(sys, "path", ["/does-not-exist"])
 

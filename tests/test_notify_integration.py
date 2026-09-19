@@ -27,7 +27,7 @@ _GRACE = timedelta(seconds=30)
 _WORKER_ID = new_uuid()
 
 # Maximum NOTIFY delivery latency acceptable for regression detection.
-# This is a loose guard, not a precise SLO — the 100 ms claim from the
+# This is a loose guard, not a precise SLO - the 100 ms claim from the
 # acceptance_definition is verified structurally by the synchronous-callback
 # design. CI runners add 50-200 ms of scheduling jitter; 500 ms
 # provides headroom while still catching gross regressions. A future M4 SLO
@@ -126,7 +126,7 @@ async def test_listen_active_before_loop_and_remains_after(pg_dsn: str) -> None:
 
     Phase 1: pg_listening_channels() after open_worker_deps but before
     notify_listener_loop verifies the contract.
-    Phase 2: after spawn + brief drain, channel remains present — asyncpg
+    Phase 2: after spawn + brief drain, channel remains present - asyncpg
     add_listener is idempotent at the SQL level because duplicate LISTEN
     statements are no-ops.
     """
@@ -162,7 +162,7 @@ async def test_listen_active_before_loop_and_remains_after(pg_dsn: str) -> None:
 
 
 async def test_unlisten_observable_after_shutdown(pg_dsn: str) -> None:
-    """UNLISTEN observable after shutdown — subscriber opened after
+    """UNLISTEN observable after shutdown - subscriber opened after
     shutdown does NOT receive a NOTIFY that was sent after shutdown.
 
     After notify_listener_loop exits, remove_listener has been called,
@@ -217,7 +217,7 @@ async def test_listener_does_not_consume_pool_connections(pg_dsn: str) -> None:
 
     Captures pool connection counts before and after running
     notify_listener_loop for ~1 s with several NOTIFY deliveries.
-    Asserts the counts are unchanged — the listener only uses
+    Asserts the counts are unchanged - the listener only uses
     deps.notify_conn and never acquires from any pool.
 
     The static AST guard is a fast gate; this behavioral test is

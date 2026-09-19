@@ -1,4 +1,4 @@
-"""Batch finalizer e2e — finalizer snoozes until children complete, then runs.
+"""Batch finalizer e2e - finalizer snoozes until children complete, then runs.
 
 Scenario:
 5 chunk jobs + 1 finalizer enqueued in a single ``enqueue_batch`` call with
@@ -6,7 +6,7 @@ Scenario:
 which snoozes (raises ``Snooze``) until all children reach terminal status,
 then records a ``finalized`` effect with the completion counts.
 
-The finalizer is NOT counted as a child — ``wait_for_batch`` excludes the
+The finalizer is NOT counted as a child - ``wait_for_batch`` excludes the
 finalizer job via the batch row's ``finalizer_job_id``.  So ``total == 5``
 (children only), not 6 (children + finalizer).
 
@@ -85,7 +85,7 @@ async def test_finalizer_snoozes_then_runs(
     assert batch.size == _NUM_CHILDREN
     assert batch.finalizer_handle is not None
 
-    # Wait for child jobs only — the finalizer snoozes (via wait_for_batch)
+    # Wait for child jobs only - the finalizer snoozes (via wait_for_batch)
     # until all children reach terminal status, so including it in the gather
     # would always time out and waste the full 60 s budget.  The finalizer's
     # completion is verified separately via the effects poll below.

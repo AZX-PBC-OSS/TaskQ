@@ -1,7 +1,7 @@
 """Round-trip lifecycle tests (in-memory backend).
 
 Exercises multi-transition sequences on the in-memory backend to catch
-interactions between transitions that per-transition unit tests do not —
+interactions between transitions that per-transition unit tests do not -
 e.g. attempt-counter behaviour across snooze cycles, ordering of state
 changes through the wake tick. Uses ``run_until_drained`` for clock
 auto-advance on the wake tick.
@@ -43,7 +43,7 @@ async def test_full_snooze_round_trip() -> None:
     """Full snooze round-trip: enqueue → dispatch → Snooze → scheduled_to_pending → dispatch → succeed.
 
     The snooze refunds the claim's attempt increment, so one snooze
-    cycle + one final successful dispatch leaves the attempt at 1 — the
+    cycle + one final successful dispatch leaves the attempt at 1 - the
     deferral never walks the counter. A deferred work unit that did not
     execute does not consume an attempt slot.
     """
@@ -86,7 +86,7 @@ async def test_full_snooze_round_trip() -> None:
         ("running", "succeeded"),
     ]
     assert row.snooze_count == 1
-    # The row's snooze_count column is the deferral's ONLY counter — no
+    # The row's snooze_count column is the deferral's ONLY counter - no
     # metadata mirror is merged alongside it (one source of truth).
     assert "snooze_count" not in (row.metadata or {})
 
@@ -188,7 +188,7 @@ async def test_indefinite_retry_polling_pattern() -> None:
     """(unit version). Polling pattern: enqueue → dispatch → Snooze(30s) → wake tick → dispatch → succeed.
 
     The snooze refunds the claim's increment, so the polling pattern's
-    terminal attempt is 1 — one consuming dispatch, no matter how many
+    terminal attempt is 1 - one consuming dispatch, no matter how many
     snooze cycles preceded it.
     """
     backend = _make_backend()
@@ -230,7 +230,7 @@ async def test_cancel_mid_snooze() -> None:
     """Cancel mid-snooze: enqueue → dispatch → Snooze → cancel(scheduled job) → cancelled."""
     backend = _make_backend()
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="test_actor")
 
     args = make_enqueue_args(payload={}, max_attempts=10, scheduled_at=_START)

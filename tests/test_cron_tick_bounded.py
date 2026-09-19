@@ -25,7 +25,7 @@ transaction::
 That is all-or-nothing: if a tick's statement count grew with the number
 of due schedules, the deadline would eventually trip mid-tick, roll the
 whole thing back, leave every ``next_fire_at`` in the past, and hand the
-next tick a backlog at least as large — the livelock shape.  A catch-up
+next tick a backlog at least as large - the livelock shape.  A catch-up
 burst after a leader outage is exactly the N that would trip it; the cap
 plus the batched writes foreclose it.  This is the same shape as the
 sweep-3 contract pinned in
@@ -232,7 +232,7 @@ async def _seed_due_schedules(
     boundary is <= now for every instant inside the hour), exactly one
     slot behind, and inside ``cron_catch_up_window`` (1 hour by default),
     so none of these rows takes the missed-slot recompute branch. The grid
-    alignment is load-bearing: an off-grid due time (the previous
+    alignment is critical: an off-grid due time (the previous
     ``now - 5 minutes`` seed) makes the recomputed ``next_fire_at`` depend
     on where the wall clock sits inside the hour -- run the suite in the
     first ~5 minutes of an hour and the next hourly boundary after
@@ -280,7 +280,7 @@ def _quiet_cron_logs() -> Iterator[None]:  # pyright: ignore[reportUnusedFunctio
         logger.setLevel(previous)
 
 
-# ── Layer 1 — the boundedness contract these tests enforce ─────────────
+# ── Layer 1 - the boundedness contract these tests enforce ─────────────
 
 
 class TestTickIsBounded:
@@ -297,7 +297,7 @@ class TestTickIsBounded:
         A bounded tick spends a constant handful of statements regardless
         of N: the driving ``fetch`` plus the advisory-lock and
         ``clock_timestamp()`` ``fetchval``s, a per-actor
-        ``actor_config`` ``fetchrow``, and batched writes — never three
+        ``actor_config`` ``fetchrow``, and batched writes - never three
         round trips per due schedule.
 
         The threshold below is deliberately loose: anything genuinely bounded
@@ -369,7 +369,7 @@ class TestTickIsBounded:
 
         updates = counting.matching('UPDATE "')
         assert updates <= 4, (
-            f"{updates} awaited UPDATE statements for {_DUE} due schedules — the "
+            f"{updates} awaited UPDATE statements for {_DUE} due schedules - the "
             "per-schedule `UPDATE cron_schedules ... WHERE id = $1` in "
             "fire_schedule is still one round trip and one row lock per row, "
             "both held until the tick's COMMIT"
@@ -403,7 +403,7 @@ class TestTickIsBounded:
         cap_names = ("limit", "max_fires", "max_schedules", "batch_size", "cap")
         cap_param = next((n for n in cap_names if n in params), None)
         assert cap_param is not None, (
-            "tick_cron takes no cap parameter — its SELECT over cron_schedules has "
+            "tick_cron takes no cap parameter - its SELECT over cron_schedules has "
             f"no LIMIT, so one tick fires the whole due backlog. Tried {cap_names}; "
             f"signature is {inspect.signature(tick_cron)}"
         )
@@ -434,7 +434,7 @@ class TestTickIsBounded:
         )
         assert still_due == _DUE - cap, (
             f"{still_due} schedules still due after a capped tick; expected "
-            f"{_DUE - cap} — the uncapped remainder must be left untouched, not "
+            f"{_DUE - cap} - the uncapped remainder must be left untouched, not "
             "silently advanced"
         )
 
@@ -453,11 +453,11 @@ class TestTickIsBounded:
 
         A regression to a per-schedule loop under that nesting is the
         livelock itself: when the deadline fires mid-loop the single
-        enclosing transaction rolls back — zero jobs enqueued, zero
+        enclosing transaction rolls back - zero jobs enqueued, zero
         ``next_fire_at`` advanced, every schedule still due. The next
         tick starts from a backlog no smaller than the one that just
         failed, and cron never fires again until the backlog somehow
-        shrinks — which, without a commit, it cannot.
+        shrinks - which, without a commit, it cannot.
 
         This test reproduces the caller's exact nesting and asserts the
         recovery property: after a deadline trip, *some* schedules must
@@ -480,13 +480,13 @@ class TestTickIsBounded:
         worker_id = new_uuid()
         # Small enough that a per-schedule round-trip regression (4 + 3N
         # awaited statements, N=40 → 124) would trip it at any round-trip
-        # latency above ~1.7 ms, i.e. under any parallel-suite load — and
+        # latency above ~1.7 ms, i.e. under any parallel-suite load - and
         # large enough that the bounded tick (≈7 round trips + in-memory
         # planning) completes with real headroom. Calibrated by
         # measurement, not guesswork: one bounded tick over _DUE
         # schedules measures ~25-31 ms idle and ~2x that under ``-n 4``
         # suite load, so 0.05 s (an earlier value) left only a ~1.7x
-        # margin and flaked under load — a loaded tick overran the
+        # margin and flaked under load - a loaded tick overran the
         # deadline, the single tick transaction rolled back, and the test
         # failed on machine timing rather than the property it pins. The
         # deterministic regression pins for per-schedule round trips live
@@ -498,7 +498,7 @@ class TestTickIsBounded:
         # guesswork). A constant deadline flakes in exactly one direction:
         # on a slow or loaded runner a healthy bounded tick overruns it,
         # commits nothing, and the test fails on machine timing instead of
-        # the property it pins — this happened in CI at 0.2 s. The
+        # the property it pins - this happened in CI at 0.2 s. The
         # property needs only that the deadline is far above a healthy
         # tick's duration and far below the per-schedule regression's
         # (4 + 3N awaited statements is >10x the bounded tick's ~7); 10x
@@ -565,22 +565,22 @@ class TestTickIsBounded:
 
         assert enqueued > 0, (
             f"a tick over {_DUE} due schedules cut off after {deadline}s committed "
-            "ZERO jobs — the whole-iteration deadline rolled back every fire. The "
+            "ZERO jobs - the whole-iteration deadline rolled back every fire. The "
             "backlog is unchanged, the next tick faces the same or a larger one, "
             "and cron never commits again: livelock"
         )
         assert fired > 0, (
             "zero schedules had last_fired_at stamped after a deadline-tripped "
-            "tick — no fire survived the rollback, so next_fire_at never advances "
+            "tick - no fire survived the rollback, so next_fire_at never advances "
             "and the due set can only grow"
         )
 
 
-# ── Layer 2 — PASSES TODAY; must still pass after the fix ──────────────
+# ── Layer 2 - PASSES TODAY; must still pass after the fix ──────────────
 
 
 class TestTickBehaviourPinned:
-    """Layer 2: pins existing behaviour — must pass before AND after the fix.
+    """Layer 2: pins existing behaviour - must pass before AND after the fix.
 
     The fixes rewrite the SQL that selects due schedules, enqueues their jobs
     and advances ``next_fire_at``. These tests pin the observable result of a
@@ -594,7 +594,7 @@ class TestTickBehaviourPinned:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """Pins existing behaviour — must pass before AND after the fix.
+        """Pins existing behaviour - must pass before AND after the fix.
 
         Exactly one job per due schedule, carrying the schedule's actor, the
         queue from ``actor_config`` (not the schedule row), ``max_attempts``
@@ -643,7 +643,7 @@ class TestTickBehaviourPinned:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """Pins existing behaviour — must pass before AND after the fix.
+        """Pins existing behaviour - must pass before AND after the fix.
 
         A successful fire writes four things on ``cron_schedules``:
         ``next_fire_at`` moved strictly into the future, ``last_fired_at``
@@ -690,7 +690,7 @@ class TestTickBehaviourPinned:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """Pins existing behaviour — must pass before AND after the fix.
+        """Pins existing behaviour - must pass before AND after the fix.
 
         The tick's predicate is ``enabled = true AND next_fire_at <=
         clock_timestamp()``. Rows failing either half must be left bit-for-bit
@@ -732,7 +732,7 @@ class TestTickBehaviourPinned:
         )
         assert enqueued == len(due_ids), (
             f"only the {len(due_ids)} enabled+due schedules may fire; got {enqueued} "
-            "jobs — a disabled schedule or a future-dated one was fired"
+            "jobs - a disabled schedule or a future-dated one was fired"
         )
 
         after = await clean_pg_conn.fetch(
@@ -750,7 +750,7 @@ class TestTickBehaviourPinned:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """Pins existing behaviour — must pass before AND after the fix.
+        """Pins existing behaviour - must pass before AND after the fix.
 
         Idempotency of the advance: once a schedule has fired, its recomputed
         ``next_fire_at`` is in the future, so an immediately following tick
@@ -784,7 +784,7 @@ class TestTickBehaviourPinned:
             f'SELECT count(*) FROM "{schema}".jobs'  # noqa: S608  # Why: schema is a test-fixture identifier.
         )
         assert second == count, (
-            f"a second tick enqueued {second - count} extra jobs — a fired schedule "
+            f"a second tick enqueued {second - count} extra jobs - a fired schedule "
             "must not still be due"
         )
 
@@ -800,11 +800,11 @@ class TestTickBehaviourPinned:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """Pins existing behaviour — must pass before AND after the fix.
+        """Pins existing behaviour - must pass before AND after the fix.
 
         ``tick_cron`` opens with ``pg_try_advisory_xact_lock``; when another
-        session holds it the function returns cleanly — no exception, no fire,
-        no job — after recording the contention metric. This is the
+        session holds it the function returns cleanly - no exception, no fire,
+        no job - after recording the contention metric. This is the
         leader-handover double-fire guard, and it must stay the FIRST thing a
         tick does: a fix that moved the driving SELECT ahead of the lock, or
         that batched work before checking it, would let two leaders fire the
@@ -821,7 +821,7 @@ class TestTickBehaviourPinned:
 
         # Re-pointed with the schema-qualified lock names: the holder must
         # take the lock the tick actually probes,
-        # schema_lock_name("cron", schema) — the pin now holds the real
+        # schema_lock_name("cron", schema) - the pin now holds the real
         # lock, not a name that drifted from the implementation.
         from taskq.constants import schema_lock_name
 
@@ -867,7 +867,7 @@ class TestTickBehaviourPinned:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """Pins existing behaviour — must pass before AND after the fix.
+        """Pins existing behaviour - must pass before AND after the fix.
 
         A cron tick enqueues jobs; it does not write ``job_events`` or
         ``job_attempts``. That matters for
@@ -875,7 +875,7 @@ class TestTickBehaviourPinned:
         watermark margin is violated by any ``job_events`` writer that holds a
         transaction open longer than the margin between INSERT and COMMIT, and
         a tick over a large backlog is exactly such a long transaction. Today
-        it is safe only because it inserts no events — so if a fix ever adds
+        it is safe only because it inserts no events - so if a fix ever adds
         per-fire event writes inside the same unbounded transaction, the
         watermark assumption breaks with a silently missed event as the
         consequence, and this test is where that shows up.
@@ -915,7 +915,7 @@ class TestTickBehaviourPinned:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """Pins existing behaviour — must pass before AND after the fix.
+        """Pins existing behaviour - must pass before AND after the fix.
 
         ``job_events.occurred_at`` is stamped per row by ``clock_timestamp()``
         and must stay co-monotonic with the bigserial ``id`` -- the assumption
@@ -956,7 +956,7 @@ class TestTickBehaviourPinned:
             "poll_reclaim_events watermark assumes the two are co-monotonic"
         )
         assert len(set(stamps)) == len(stamps), (
-            "occurred_at values repeat across rows — the per-row clock_timestamp() "
+            "occurred_at values repeat across rows - the per-row clock_timestamp() "
             "stamp was replaced by a transaction-scoped now(), which collapses the "
             "ordering the reclaim watermark reads"
         )

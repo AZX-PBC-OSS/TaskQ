@@ -10,7 +10,7 @@ deadline, and ``max_attempts`` is documented as ignored for its retry
 decision. These tests hold reclaim to the same contract.
 
 The operator stake: ``indefinite`` is the kind chosen for work that must
-outlive transient failure — waiting out a downstream outage, a long
+outlive transient failure - waiting out a downstream outage, a long
 retry window against a flaky third party. Terminalising such a job on a
 worker crash, while its deadline budget is still open, turns a routine
 pod restart into silent data loss with no cause recorded on the row.
@@ -100,7 +100,7 @@ async def _dispatch(backend: Backend, job_id: JobId, worker_id: UUID) -> None:
 
 
 async def _expire_lease(backend: Backend, job_id: JobId) -> None:
-    """Age the job's lease into the past — the state a crashed worker
+    """Age the job's lease into the past - the state a crashed worker
     leaves behind, with no terminal write ever arriving."""
     if isinstance(backend, InMemoryBackend):
         row = backend._jobs[job_id]  # pyright: ignore[reportPrivateUsage]  # Why: forcing the crashed-holder state the public API cannot reach directly; mirrors tests/test_cancel_state_reset_on_retry.py
@@ -137,7 +137,7 @@ async def _run_attempts_to(backend: Backend, job_id: JobId, target_attempt: int)
 
 
 async def _make_due(backend: Backend, job_id: JobId) -> None:
-    """Promote a job deferred by the retry floor back into the pending set —
+    """Promote a job deferred by the retry floor back into the pending set -
     the wake plus promotion the leader performs."""
     if isinstance(backend, InMemoryBackend):
         row = backend._jobs[job_id]  # pyright: ignore[reportPrivateUsage]  # Why: nudging scheduled_at is the deterministic twin of PG's clock-relative update below
@@ -165,7 +165,7 @@ async def test_reclaim_hands_back_an_indefinite_job_past_max_attempts(
     """An ``indefinite`` job whose worker crashed after more attempts than
     ``max_attempts`` must be handed back, not terminalised.
 
-    ``max_attempts`` does not bound an ``indefinite`` job's retries — its
+    ``max_attempts`` does not bound an ``indefinite`` job's retries - its
     ``schedule_to_close`` deadline does, and here that deadline is hours
     away. A caller who chose this kind precisely so the work would
     survive transient failure must not lose it to a worker crash.
@@ -183,7 +183,7 @@ async def test_reclaim_hands_back_an_indefinite_job_past_max_attempts(
     assert before is not None
     assert before.attempt > before.max_attempts, (
         "the scenario requires an indefinite job that has already run more "
-        "attempts than max_attempts — the state only this kind reaches"
+        "attempts than max_attempts - the state only this kind reaches"
     )
 
     await _expire_lease(backend_pair, job_id)
@@ -231,7 +231,7 @@ async def test_reclaim_leaves_the_attempt_counter_for_dispatch_to_advance(
     """A reclaimed job must come back at the attempt it was reclaimed at,
     and the next claim must advance it.
 
-    Attempt numbers are the identity of an execution — ``job_attempts`` is
+    Attempt numbers are the identity of an execution - ``job_attempts`` is
     keyed on ``(job_id, attempt)``. If reclaim advanced the counter as
     well as dispatch, a job would skip identities; if reclaim rolled it
     back, the next terminal write would land on a key the reclaim's own
@@ -266,7 +266,7 @@ async def test_reclaim_leaves_the_attempt_counter_for_dispatch_to_advance(
         job_id, worker_id, _ERROR, timedelta(0), attempt=next_row.attempt
     )
     assert written is not None, (
-        "the terminal write for the attempt following a reclaim did not land — a "
+        "the terminal write for the attempt following a reclaim did not land - a "
         "retry after a reclaim must not collide with the reclaim's own audit row"
     )
 

@@ -3,7 +3,7 @@
 Every test in this module PASSES at the time it was written. That is the
 point: each pins a property that no existing test asserts, and that sits in
 the blast radius of a *named* piece of upcoming work. A failure here is not a
-flaky test to relax — it is the upcoming change having silently altered a
+flaky test to relax - it is the upcoming change having silently altered a
 contract someone relied on.
 
 Each test docstring states WHAT is pinned and WHICH pending change could
@@ -65,20 +65,20 @@ _GRACE = timedelta(seconds=30)
 _NO_DELAY = timedelta(0)
 
 
-# ── PIN 1 — the crash-reclaim outbox slice ──────────────────────────
+# ── PIN 1 - the crash-reclaim outbox slice ──────────────────────────
 
 
 async def test_crash_reclaim_event_reaches_poll_reclaim_events(
     clean_jobs_app: JobsApp,
 ) -> None:
     """PIN: a crash-reclaim written by Sweep 1 is readable end-to-end through
-    ``PostgresBackend.poll_reclaim_events`` — the exact query that drives
+    ``PostgresBackend.poll_reclaim_events`` - the exact query that drives
     ``TaskQ.watch_reclaims()``.
 
     WHY IT MATTERS: ``poll_reclaim_events``
     (``src/taskq/backend/_sql_templates.py``) reads a single narrow slice of
-    ``job_events`` — ``kind = 'state_change' AND (detail->>'reason') =
-    'lock_expired'`` — and that table is the *only* transport for reclaim
+    ``job_events`` - ``kind = 'state_change' AND (detail->>'reason') =
+    'lock_expired'`` - and that table is the *only* transport for reclaim
     notifications. The crash-reclaim outbox is the subsystem
     ``.shipwright/initiatives/I-01/rca.md`` was written about.
 
@@ -113,13 +113,13 @@ async def test_crash_reclaim_event_reaches_poll_reclaim_events(
 
     async with deps.worker_pool.acquire() as conn:
         reclaimed = await PostgresBackend.sweep_expired_locks(conn, _GRACE, _GRACE, schema=schema)
-    assert reclaimed >= 1, "Sweep 1 reclaimed nothing — the fixture job was not eligible"
+    assert reclaimed >= 1, "Sweep 1 reclaimed nothing - the fixture job was not eligible"
 
     events = await backend.poll_reclaim_events(after_id, visibility_delay=_NO_DELAY)
     mine = [e for e in events if str(e.job_id) == str(job_id)]
 
     assert len(mine) == 1, (
-        "the crash-reclaim event did not reach poll_reclaim_events — "
+        "the crash-reclaim event did not reach poll_reclaim_events - "
         "watch_reclaims() would deliver nothing for this job. "
         f"got events for job ids {[str(e.job_id) for e in events]}"
     )
@@ -133,7 +133,7 @@ async def test_reclaim_slice_is_selected_by_kind_and_reason_only(
     clean_jobs_app: JobsApp,
 ) -> None:
     """PIN: ``poll_reclaim_events`` selects ONLY the ``lock_expired``
-    ``state_change`` slice — an unrelated ``job_events`` row of the same
+    ``state_change`` slice - an unrelated ``job_events`` row of the same
     ``kind`` but a different ``reason`` is not delivered, and its presence
     does not suppress the real reclaim behind it.
 
@@ -157,7 +157,7 @@ async def test_reclaim_slice_is_selected_by_kind_and_reason_only(
     async with deps.worker_pool.acquire() as conn:
         await create_worker(conn, schema, worker_id)
         decoy_job = await create_running_job(conn, schema, worker_id)
-        # Same kind, different reason — must NOT be in the reclaim slice.
+        # Same kind, different reason - must NOT be in the reclaim slice.
         await conn.execute(
             f'INSERT INTO "{schema}".job_events (job_id, kind, detail) '
             "VALUES ($1, 'state_change', $2::jsonb)",
@@ -182,7 +182,7 @@ async def test_reclaim_slice_is_selected_by_kind_and_reason_only(
 
     assert str(real_job) in job_ids, "the real crash-reclaim was not delivered"
     assert str(decoy_job) not in job_ids, (
-        "a non-lock_expired state_change leaked into the reclaim slice — "
+        "a non-lock_expired state_change leaked into the reclaim slice - "
         "watch_reclaims() consumers would see a phantom reclaim"
     )
     assert all(e.detail.get("reason") == "lock_expired" for e in events)
@@ -191,8 +191,8 @@ async def test_reclaim_slice_is_selected_by_kind_and_reason_only(
 async def test_watch_reclaims_delivers_a_crash_reclaim_end_to_end(
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """PIN: the public ``TaskQ.watch_reclaims()`` generator — not just the
-    SQL beneath it — yields a real crash-reclaim.
+    """PIN: the public ``TaskQ.watch_reclaims()`` generator - not just the
+    SQL beneath it - yields a real crash-reclaim.
 
     WHY IT MATTERS: the two pins above prove the query. This proves the
     wiring: settings plumbing, the visibility-delay default, the poll loop,
@@ -253,7 +253,7 @@ async def _first_reclaim_for(tq: Any, job_id: Any) -> EventRow:
     raise AssertionError("watch_reclaims() ended without delivering the reclaim")
 
 
-# ── PIN 2 — rate_limit_window_entries self-trims ────────────────────
+# ── PIN 2 - rate_limit_window_entries self-trims ────────────────────
 
 
 async def test_window_entries_table_is_bounded_by_window_not_history(
@@ -261,7 +261,7 @@ async def test_window_entries_table_is_bounded_by_window_not_history(
     module_pg_pool: asyncpg.Pool,
 ) -> None:
     """PIN: ``rate_limit_window_entries`` self-trims on every acquire, so its
-    row count is bounded by (window width x arrival rate) — NOT by cumulative
+    row count is bounded by (window width x arrival rate) - NOT by cumulative
     history.
 
     WHY IT MATTERS: ``_acquire_pg_log``
@@ -269,13 +269,13 @@ async def test_window_entries_table_is_bounded_by_window_not_history(
     older than the window immediately BEFORE its INSERT, and the refund path
     deletes the specific entry by ``request_id``. This makes the table the
     one rate-limit table that needs no external retention sweep. That
-    property is load-bearing and completely implicit: nothing today asserts
+    property is critical and completely implicit: nothing today asserts
     it, and the DELETE looks like an optimisation a reader could "hoist out
     of the hot path" into a periodic sweep.
 
     UPCOMING CHANGE THIS PROTECTS AGAINST: retention/GC work across the
-    schema. If the inline prune is moved to a sweep — or reordered after the
-    INSERT, or made conditional — this table starts growing with total
+    schema. If the inline prune is moved to a sweep - or reordered after the
+    INSERT, or made conditional - this table starts growing with total
     arrivals and the admission count itself goes wrong (the count subquery
     is window-scoped, but an unbounded table makes it a full-history scan).
     Here: three windows' worth of acquires at a limit of 3, with the table
@@ -295,8 +295,8 @@ async def test_window_entries_table_is_bounded_by_window_not_history(
     # Why the table is seeded with stale rows rather than waiting for a real
     # window to elapse: an earlier version of this pin drove three windows
     # back to back and asserted the count after each. That races wall-clock
-    # time — whether the prior window has aged out depends on how long the
-    # round trips took — and it was observed flaking between 1 and 3
+    # time - whether the prior window has aged out depends on how long the
+    # round trips took - and it was observed flaking between 1 and 3
     # failures across runs. A pin that fails intermittently is worse than no
     # pin: it trains readers to re-run rather than read. The invariant is
     # "entries older than the window are gone after an acquire", so the test
@@ -330,7 +330,7 @@ async def test_window_entries_table_is_bounded_by_window_not_history(
         rows = await _window_entry_count(module_pg_pool, schema, bucket)
         assert rows <= limit, (
             "rate_limit_window_entries grew past one window's worth "
-            f"({rows} rows > limit {limit}) — the inline DELETE-before-INSERT "
+            f"({rows} rows > limit {limit}) - the inline DELETE-before-INSERT "
             "prune in _acquire_pg_log is no longer trimming. This table has no "
             "external retention sweep; it must self-trim."
         )
@@ -343,7 +343,7 @@ async def test_window_entries_table_is_bounded_by_window_not_history(
     final = await _window_entry_count(module_pg_pool, schema, bucket)
     assert final <= limit, (
         f"{total_inserted} entries were inserted over 3 windows but "
-        f"{final} rows remain — row count must track the window, not history"
+        f"{final} rows remain - row count must track the window, not history"
     )
 
 
@@ -356,7 +356,7 @@ async def _window_entry_count(pool: asyncpg.Pool, schema: str, bucket: str) -> i
     return int(value)
 
 
-# ── PIN 4 — the admin mutating-route surface stays gated ────────────
+# ── PIN 4 - the admin mutating-route surface stays gated ────────────
 
 
 @pytest.mark.fastapi
@@ -371,23 +371,23 @@ def test_every_mutating_admin_route_is_gated_by_actions_and_csrf() -> None:
     as good as its weakest route. ``tests/test_admin_security_fixes.py`` and
     ``tests/test_web_admin_actors.py`` pin individual routes behaviourally;
     ``tests/test_web_router_factories_fail_closed.py`` pins the *auth* gate
-    on the factories. Nothing pins the mutating-route surface — the seventh
+    on the factories. Nothing pins the mutating-route surface - the seventh
     POST route can ship ungated and every existing test still passes.
 
     UPCOMING CHANGE THIS PROTECTS AGAINST: any admin-UI work that adds a
     mutating route (bulk cancel, requeue, schedule edit, rate-limit reset
-    variants). This is a static check over the handler sources — it needs no
+    variants). This is a static check over the handler sources - it needs no
     PG, no running app, and it cannot be satisfied by a route that merely
     *looks* gated, because it matches on the attribute access
     ``admin_actions_enabled`` and the ``validate_csrf`` dependency by name.
 
     WHAT TO DO IF THIS FAILS on a route you added: add both gates. If you
     believe a mutating admin route should run without the opt-in, that is a
-    security decision — take it to review, and expect to be asked why the
+    security decision - take it to review, and expect to be asked why the
     sibling pattern does not fit.
     """
     register_fns = _admin_register_functions()
-    assert register_fns, "no taskq.web.admin register() functions found — sweep is blind"
+    assert register_fns, "no taskq.web.admin register() functions found - sweep is blind"
 
     ungated: list[str] = []
     uncsrfed: list[str] = []
@@ -406,7 +406,7 @@ def test_every_mutating_admin_route_is_gated_by_actions_and_csrf() -> None:
             # invariant is "a mutating route consults SOME opt-in flag that
             # defaults off", not "every route reads one specific name".
             # Narrowing this to the shared flag would report a correctly
-            # gated route as ungated — a false positive that trains readers
+            # gated route as ungated - a false positive that trains readers
             # to ignore the guard.
             if not any(
                 gate in body
@@ -417,7 +417,7 @@ def test_every_mutating_admin_route_is_gated_by_actions_and_csrf() -> None:
                 uncsrfed.append(qualname)
 
     assert seen, (
-        "the sweep found no mutating admin routes at all — the walk is broken, "
+        "the sweep found no mutating admin routes at all - the walk is broken, "
         "not the codebase (taskq.web.admin.ops alone defines several POST routes)"
     )
     assert not ungated, (
@@ -431,7 +431,7 @@ _MUTATING_METHODS = frozenset({"post", "put", "patch", "delete"})
 
 
 def _admin_register_functions() -> list[tuple[str, Any]]:
-    """Every ``register(router)`` under ``taskq.web.admin`` — the only place
+    """Every ``register(router)`` under ``taskq.web.admin`` - the only place
     admin routes are declared."""
     import pkgutil
     from importlib import import_module
@@ -465,18 +465,18 @@ def _mutating_handlers(tree: ast.AST) -> list[tuple[ast.AsyncFunctionDef, set[st
     return out
 
 
-# ── PIN 5 — unique_for's window and the succeeded state ─────────────
+# ── PIN 5 - unique_for's window and the succeeded state ─────────────
 #
 # The default ``unique_states`` covers ``succeeded``: the window means
 # "at most one job for this identity in this period", and a succeeded
-# job is the state that says the work already happened — the precise
+# job is the state that says the work already happened - the precise
 # condition the window exists to detect (the default-side behavior is
 # pinned end to end in test_unique_for_window_covers_success.py). The
 # failure states stay out: they mean the work did NOT happen, so
 # matching them would let one transient failure suppress the identity
 # for the rest of the window. What survives from the narrower reading is
-# the explicit opt-out — spelling the three unfinished states keeps the
-# "block only concurrent execution" rule reachable — and that is what
+# the explicit opt-out - spelling the three unfinished states keeps the
+# "block only concurrent execution" rule reachable - and that is what
 # this pin guards.
 
 
@@ -484,15 +484,15 @@ async def test_unique_for_explicit_unfinished_states_do_not_dedupe_onto_a_succee
     clean_jobs_app: JobsApp,
 ) -> None:
     """PIN: an explicit ``unique_states=("pending", "scheduled", "running")``
-    keeps the narrower single-flight rule — a ``unique_for`` enqueue that
+    keeps the narrower single-flight rule - a ``unique_for`` enqueue that
     lands after the prior job SUCCEEDED creates a NEW job, even inside the
     window.
 
     WHY IT MATTERS: the narrower set is the documented opt-out for work
     whose repetition inside the window is safe and intended (e.g. a
     periodic re-enqueue of the same identity every minute). If the
-    explicit set were dropped from the preflight predicate — or the
-    opt-out silently collapsed into the widened default — that work's
+    explicit set were dropped from the preflight predicate - or the
+    opt-out silently collapsed into the widened default - that work's
     second run would be silently swallowed for the whole window, with a
     job handle that looks successful. (This pin previously asserted the
     same no-dedup outcome under the DEFAULT set; the default widened to
@@ -530,7 +530,7 @@ async def test_unique_for_explicit_unfinished_states_do_not_dedupe_onto_a_succee
     dup_args = _args()
     dup = await backend.enqueue(dup_args)
     assert dup.id == first.id, (
-        "unique_for stopped deduping a still-pending job — the single-flight "
+        "unique_for stopped deduping a still-pending job - the single-flight "
         "guard itself is broken, not just its terminal-state boundary"
     )
 
@@ -553,14 +553,14 @@ async def test_unique_for_explicit_unfinished_states_do_not_dedupe_onto_a_succee
     assert status == "succeeded", f"fixture: expected terminal 'succeeded', got {status!r}"
 
     # THE PIN: still well inside the 15-minute unique_for window, but the
-    # only prior job is terminal — and the explicit narrow set does not
-    # cover it — so this must be a NEW job.
+    # only prior job is terminal - and the explicit narrow set does not
+    # cover it - so this must be a NEW job.
     third_args = _args()
     third = await backend.enqueue(third_args)
 
     assert third.id != first.id, (
         "unique_for deduped onto a SUCCEEDED job despite an explicit "
-        "unique_states=('pending', 'scheduled', 'running') — the narrower "
+        "unique_states=('pending', 'scheduled', 'running') - the narrower "
         "single-flight opt-out collapsed into the widened default. Periodic "
         "re-enqueues of the same identity are now silently swallowed for "
         "the whole window."
@@ -582,7 +582,7 @@ def test_unique_states_default_covers_success_excludes_failures() -> None:
     WHY IT MATTERS: the behavioural pin for the runtime consequence lives
     in test_unique_for_window_covers_success.py; this pins the declaration
     itself, so a change to the default is a failure at the definition site
-    with no PG required. The set is spelled out rather than derived — the
+    with no PG required. The set is spelled out rather than derived - the
     whole point is that adding or removing a state must be a conscious,
     reviewed edit. ``succeeded`` belongs: it is the state that says the
     work already happened, the precise condition the window exists to
@@ -599,7 +599,7 @@ def test_unique_states_default_covers_success_excludes_failures() -> None:
     field = next(f for f in dataclasses.fields(EnqueueArgs) if f.name == "unique_states")
     default = field.default
     assert isinstance(default, tuple), (
-        "unique_states has no literal default — the pin cannot read the value it "
+        "unique_states has no literal default - the pin cannot read the value it "
         f"exists to guard (got {default!r})"
     )
 
@@ -612,7 +612,7 @@ def test_admin_actions_enabled_defaults_to_false() -> None:
     """PIN: ``TaskQSettings.admin_actions_enabled`` defaults to ``False``.
 
     WHY IT MATTERS: the surface sweep above proves every mutating route
-    *consults* the flag. This proves consulting it is worth something — the
+    *consults* the flag. This proves consulting it is worth something - the
     flag is opt-in, so mounting the admin UI never by itself exposes
     retry/cancel/run-now/deregister. Flip the default and every gate in the
     sweep becomes a no-op while every test still passes.

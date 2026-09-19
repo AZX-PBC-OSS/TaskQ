@@ -207,7 +207,7 @@ async def test_drain_invalid_schema_raises() -> None:
 
 async def test_drain_local_queue_uses_transient_pg_errors_not_handrolled() -> None:
     """asyncpg.InterfaceError (e.g. a closed pool) on execute must be handled
-    as transient — logged and rowcount 0 — not propagated as fatal.
+    as transient - logged and rowcount 0 - not propagated as fatal.
 
     InterfaceError is in TRANSIENT_PG_ERRORS but was missing from an earlier
     hand-rolled (TimeoutError, PostgresConnectionError) tuple; this drives an
@@ -243,14 +243,14 @@ async def test_drain_excludes_jobs_a_consumer_is_already_executing() -> None:
 
     The hand-back exists for rows this worker claimed but never started: the
     local_queue backlog. A row whose consumer is already running is the exact
-    opposite case — clearing its lock would publish it to the fleet while this
+    opposite case - clearing its lock would publish it to the fleet while this
     worker's consumer is still inside the actor body, so the job body runs a
     second time on the claimer while the first run is still in flight. The
     cancelling / forcing / abandoning phases own those rows and drive them to
     a terminal state; DRAINING must leave them alone.
 
     The discriminator is this process's own in-flight registry, because the
-    row itself carries no "a consumer took it" mark — the dispatch claim
+    row itself carries no "a consumer took it" mark - the dispatch claim
     stamps started_at at claim time for every claimed row alike.
     """
     worker_id = new_uuid()
@@ -295,7 +295,7 @@ async def test_drain_hands_back_at_most_once_across_repeated_calls() -> None:
     """A second hand-back pass re-pends nothing that the first already released.
 
     The hand-back predicate is scoped to rows still locked by this worker, so a
-    retried or re-entered DRAINING phase cannot release a row twice — the first
+    retried or re-entered DRAINING phase cannot release a row twice - the first
     pass cleared the lock, and the second matches nothing. This is what makes
     "handed back exactly once" a property of the statement rather than of
     shutdown being called exactly once: a drain-monitor trigger racing a

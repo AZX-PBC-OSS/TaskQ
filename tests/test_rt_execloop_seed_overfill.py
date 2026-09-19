@@ -1,13 +1,13 @@
 """Red-team: an oversized ``_local_queue_seed`` parks bootstrap forever (E5).
 
 Contract under attack: an oversized seed (``len(seed) > max_concurrency``)
-must fail loudly (raise) or be bounded — never park ``_main``'s bootstrap
+must fail loudly (raise) or be bounded - never park ``_main``'s bootstrap
 forever on a full ``local_queue`` with zero consumers started.
 
 Hypothesis (verified against the current tree): ``_main`` seeds the queue
 with ``for job in _local_queue_seed: await local_queue.put(job)`` BEFORE the
 consumer TaskGroup exists (src/taskq/worker/_bootstrap.py:1225-1231), and
-``local_queue`` is ``asyncio.Queue(maxsize=settings.max_concurrency)`` — so
+``local_queue`` is ``asyncio.Queue(maxsize=settings.max_concurrency)`` - so
 an oversized seed blocks on ``put`` forever, silently, with no validation
 anywhere on the path.
 
@@ -101,7 +101,7 @@ def _stub_deps(settings: WorkerSettings) -> WorkerDeps:
     pool = _StubPool()
     return WorkerDeps(
         settings=settings,
-        dispatcher_pool=pool,  # type: ignore[arg-type]  # Why: duck-typed pool stub — the harness never performs I/O; the pinned contract is the seed-put path, not pool fidelity.
+        dispatcher_pool=pool,  # type: ignore[arg-type]  # Why: duck-typed pool stub - the harness never performs I/O; the pinned contract is the seed-put path, not pool fidelity.
         heartbeat_pool=pool,  # type: ignore[arg-type]  # Why: duck-typed pool stub, same as above.
         worker_pool=pool,  # type: ignore[arg-type]  # Why: duck-typed pool stub, same as above.
         notify_conn=None,
@@ -117,7 +117,7 @@ def _fake_main_harness(
 
     Yields the shutdown_event the fake signal-install sets immediately, so
     once bootstrap gets past the seed put the fake siblings all return and
-    _main completes — making "completed within the bound" the observable for
+    _main completes - making "completed within the bound" the observable for
     a bounded/raising fix.
     """
     backend: Backend = as_backend(FakeBackend())
@@ -147,7 +147,7 @@ def _fake_main_harness(
     async def _park_until_shutdown(*args: object, **kwargs: object) -> None:
         # Accepts any sibling signature: the real siblings take positional and
         # keyword args (deps, worker_id, backend, cancel_controller, ...) that
-        # this harness discards — only the park-until-shutdown shape matters.
+        # this harness discards - only the park-until-shutdown shape matters.
         await captured_shutdown["event"].wait()
 
     async def _fake_register(pool: object, s: object) -> UUID:
@@ -186,7 +186,7 @@ def _fake_main_harness(
 
 
 async def test_fitted_seed_completes_bootstrap() -> None:
-    """Control: seed length == max_concurrency — _main completes bootstrap.
+    """Control: seed length == max_concurrency - _main completes bootstrap.
 
     Proves the harness reaches the seed-put path and that _main returns once
     the seed does not park, so the oversized attack's timeout can only be the
@@ -207,9 +207,9 @@ async def test_fitted_seed_completes_bootstrap() -> None:
 async def test_oversized_seed_fails_loudly_or_is_bounded() -> None:
     """Seed length > max_concurrency must not park bootstrap forever.
 
-    Today the second ``await local_queue.put(job)`` parks forever — the
+    Today the second ``await local_queue.put(job)`` parks forever - the
     consumers that could drain the queue are created only AFTER the seed
-    loop — so _main hangs silently (no validation, no log)."""
+    loop - so _main hangs silently (no validation, no log)."""
     settings = _settings()
     job_a = make_job_row(status="running")
     job_b = make_job_row(status="running")
@@ -230,11 +230,11 @@ async def test_oversized_seed_fails_loudly_or_is_bounded() -> None:
             outcome = f"raised {type(exc).__name__}"
     assert outcome != "hung", (
         "CONTRACT: an oversized _local_queue_seed (len > max_concurrency) must "
-        "fail loudly (raise) or be bounded — never park bootstrap forever. "
+        "fail loudly (raise) or be bounded - never park bootstrap forever. "
         "VIOLATION: _main seeds the queue with `for job in seed: "
         "await local_queue.put(job)` BEFORE any consumer exists "
         "(src/taskq/worker/_bootstrap.py:1225-1231) and the queue is "
         "asyncio.Queue(maxsize=max_concurrency), so the second put parked "
-        "forever with zero consumers running and no validation on the path — "
+        "forever with zero consumers running and no validation on the path - "
         "the wait_for timeout is the proof of the silent hang."
     )

@@ -3,20 +3,20 @@
 The flake this file pins
 ------------------------
 ``tests/test_rt_worker_metric_cardinality.py`` failed once in a full xdist
-suite (green isolated, green on the re-run) — the order-dependent signature
+suite (green isolated, green on the re-run) - the order-dependent signature
 of process-global residue.  The mechanism, source-verified:
 
 * The production prune family stamps the batch-size gauges on EVERY batch,
   including an empty one (``worker/_leader_shared.py``:
   ``_record_prune_batch_size("prune"|"archive_expiry", ...)`` runs before
   the fetch), so any test that drives the real ``prune_terminal_jobs`` /
-  ``archive_expiry_sweep`` path — or a leader whose ``_prune_loop`` /
-  ``_archive_expiry_loop`` fired — writes ``"prune"`` / ``"archive_expiry"``
+  ``archive_expiry_sweep`` path - or a leader whose ``_prune_loop`` /
+  ``_archive_expiry_loop`` fired - writes ``"prune"`` / ``"archive_expiry"``
   into the process-global ``_sweep_batch_size_cache`` and leaves it there
   forever: nothing reset that cache between tests.
 * The victim's batch-size cardinality test MERGES its eight production
   sweep names into that cache (``update_sweep_batch_size_cache`` merges,
-  never replaces) and asserts strict key-set equality — a ninth residue
+  never replaces) and asserts strict key-set equality - a ninth residue
   key fails it.  Its ``sweep_success`` sibling pins its own cache per test;
   the batch-size test relied on nothing, and under xdist only the workers
   whose schedule put a prune-writing module first ever saw the failure.
@@ -42,7 +42,7 @@ async def test_prune_family_batch_size_stamps_are_process_global() -> None:
     process-global batch-size cache.
 
     These are the exact emitter calls ``prune_terminal_jobs`` /
-    ``archive_expiry_sweep`` make via ``_record_prune_batch_size`` — a
+    ``archive_expiry_sweep`` make via ``_record_prune_batch_size`` - a
     stamp is recorded before every batch, empty or not, so a single
     prune-driving test leaves both names in the cache for the rest of the
     process.  Asserting the write landed keeps this half honest about
@@ -51,7 +51,7 @@ async def test_prune_family_batch_size_stamps_are_process_global() -> None:
     obs_mod.record_sweep_batch_size("prune", 250)
     obs_mod.record_sweep_batch_size("archive_expiry", 125)
 
-    assert otel_mod._sweep_batch_size_cache["prune"] == 250  # pyright: ignore[reportPrivateUsage]  # Why: the cache IS the state under test — same seam the cardinality tests read.
+    assert otel_mod._sweep_batch_size_cache["prune"] == 250  # pyright: ignore[reportPrivateUsage]  # Why: the cache IS the state under test - same seam the cardinality tests read.
     assert otel_mod._sweep_batch_size_cache["archive_expiry"] == 125  # pyright: ignore[reportPrivateUsage]
 
 
@@ -61,7 +61,7 @@ def test_gauge_caches_are_at_construction_state_for_each_reader() -> None:
     next test starts.
 
     This is the flaky cardinality test's precondition made explicit and
-    total — the batch-size cache specifically (the one the flake hit, via
+    total - the batch-size cache specifically (the one the flake hit, via
     a merge-then-assert-equality read) and every sibling cache the same
     writer population can dirty.  It passes only if the between-tests
     reset exists.
@@ -92,7 +92,7 @@ def test_reset_otel_gauge_caches_restores_construction_state() -> None:
     """The reset covers every process-global a gauge observer reads.
 
     Dirties each one through its public writer (the same call shape the
-    loops use), resets, and asserts construction state — so a gauge cache
+    loops use), resets, and asserts construction state - so a gauge cache
     added to ``obs/_otel.py`` without a reset entry fails here instead of
     resurfacing as the next order-dependent flake.
     """
@@ -116,7 +116,7 @@ def test_reset_otel_gauge_caches_restores_construction_state() -> None:
         _NeverPool()  # pyright: ignore[reportArgumentType]  # Why: the gauge reads the source structurally; any object with the two read methods satisfies it.
     )
     # The emitter-side process globals the cardinality tests pin per test
-    # today — the same order-dependent class (a prior test's admissions
+    # today - the same order-dependent class (a prior test's admissions
     # widen a later test's boundary), so they reset too.
     obs_mod.record_published_message("actor_a", "queue_a")
     obs_mod.record_cron_failure("actor_a", 1)

@@ -96,7 +96,7 @@ def _stub_backend(
     """Build a stub Backend where ``get`` returns successive rows.
 
     Each call to ``get`` pops from the front of *rows*. All other
-    methods raise ``NotImplementedError`` — only ``get`` is needed
+    methods raise ``NotImplementedError`` - only ``get`` is needed
     for the PG fallback path.
     """
     remaining = list(rows)
@@ -492,14 +492,14 @@ class _HungPubSub:
     """Fake redis PubSub whose aclose() hangs on a gate (dead broker).
 
     get_message always returns None (poll timeout), so the stream only
-    terminates via the caller's terminal ``on_timeout`` event — after which
+    terminates via the caller's terminal ``on_timeout`` event - after which
     the finally's pubsub close is what wedges pre-fix.
     """
 
     def __init__(self) -> None:
         self.aclose_calls = 0
         self.unsubscribed = False
-        self._aclose_wait = asyncio.Event()  # never set — aclose() hangs forever
+        self._aclose_wait = asyncio.Event()  # never set - aclose() hangs forever
 
     async def subscribe(self, channel: str) -> None:
         pass
@@ -522,7 +522,7 @@ class _HungPubSub:
 
 async def test_transport_bounds_hung_pubsub_close(monkeypatch: pytest.MonkeyPatch) -> None:
     """redis_event_stream's finally: a hung pubsub aclose() (dead broker) is
-    bounded — the stream logs ``redis-teardown-close-timeout``
+    bounded - the stream logs ``redis-teardown-close-timeout``
     (label=client-transport) and completes instead of wedging the stream
     finalizer (review N5). Docker-free fake pubsub driven through the REAL
     redis_event_stream."""

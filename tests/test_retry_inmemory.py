@@ -107,7 +107,7 @@ async def test_run_until_drained_retry_after_consume_budget_false_refunds_attemp
     """RetryAfter(consume_budget=False) refunds the claim's attempt
     increment on the scheduled row, so after one full drain cycle (one
     deferral + one re-dispatch) the attempt reflects exactly the final
-    claim's increment — 1, not 2.
+    claim's increment - 1, not 2.
     """
     clock = FakeClock(start=_START)
     backend = InMemoryBackend(clock=clock)
@@ -151,7 +151,7 @@ async def test_retry_after_consume_budget_true_no_double_increment() -> None:
     one budget consumption per dispatch cycle.
 
     Verifies that the attempt count reflects only the dispatch
-    increments — the scheduled→dispatch step increments once more
+    increments - the scheduled→dispatch step increments once more
     (normal dispatch increment), resulting in exactly attempt=2 for a
     job that started at attempt=1, then was dispatched once more.
     """
@@ -395,8 +395,8 @@ async def test_indefinite_retry_attempt_unchanged() -> None:
 async def test_indefinite_retry_exceeds_deadline() -> None:
     """indefinite actor fails; advance FakeClock past schedule_to_close.
     The classifier has no deadline opinion (it still returns Retry); the
-    deadline guard inside mark_failed_or_retry — the InMemory mirror of
-    the PG mark_retry deadline CTE — fails the row in the same write.
+    deadline guard inside mark_failed_or_retry - the InMemory mirror of
+    the PG mark_retry deadline CTE - fails the row in the same write.
 
     Dispatches the job while schedule_to_close is still in the future,
     then advances clock past the deadline."""
@@ -440,7 +440,7 @@ async def test_indefinite_retry_exceeds_deadline() -> None:
         exception=RuntimeError("fail"),
         attempt=1,
     )
-    # C2: the classifier is not a deadline arbiter — it still decides Retry.
+    # C2: the classifier is not a deadline arbiter - it still decides Retry.
     assert isinstance(decision, Retry)
 
     error_info = ErrorInfo(
@@ -526,14 +526,14 @@ async def test_indefinite_ignores_max_attempts_five_failures() -> None:
 
 async def test_remaining_time_dispatch_not_blocked_by_start_to_close() -> None:
     """Job with schedule_to_close = clock.now() + 5s and
-    start_to_close = 10min. dispatch_batch returns the job — the dispatch
+    start_to_close = 10min. dispatch_batch returns the job - the dispatch
     filter only checks schedule_to_close > now(), not start_to_close.
 
     asyncio.wait_for uses full start_to_close, NOT clamped to remaining_time."""
     clock = FakeClock(start=_START)
     backend = InMemoryBackend(clock=clock)
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="indef_u5")
 
     args = EnqueueArgs(
@@ -566,7 +566,7 @@ async def test_remaining_time_dispatch_not_blocked_by_start_to_close() -> None:
 async def test_indefinite_snooze_refunds_attempt() -> None:
     """indefinite-tier actor raises Snooze(30s): the deferral refunds the
     claim's increment, the row → scheduled, and on re-dispatch the
-    classifier fires normally — one snooze cycle + one final dispatch
+    classifier fires normally - one snooze cycle + one final dispatch
     leaves the attempt at 1."""
     clock = FakeClock(start=_START)
     backend = InMemoryBackend(clock=clock)
@@ -665,7 +665,7 @@ async def test_indefinite_no_time_budget_retries_forever() -> None:
     """kind='indefinite', time_budget=None retries forever.
     Classifier returns Retry for all 1000 attempts; no DeadlineExceeded raised.
 
-    Direct classifier test — 1000 pure calls are fast.
+    Direct classifier test - 1000 pure calls are fast.
     Verifies schedule_to_close=None is handled."""
     policy = RetryPolicy(kind="indefinite", time_budget=None, jitter=0.0)
     for attempt in range(1, 1001):
@@ -689,7 +689,7 @@ async def test_admission_denial_never_consumes_budget_or_fails_the_job() -> None
     spent, and the exhausted hook does not fire.
 
     A queue or rate-limit misconfiguration must not be able to kill work
-    that simply never got a slot — a denial's only terminal exit is the
+    that simply never got a slot - a denial's only terminal exit is the
     job's own schedule-to-close deadline. Contention stays visible
     through the aggregated denial counter on the row, so the denial
     writes no per-denial event or attempt rows.
@@ -726,7 +726,7 @@ async def test_admission_denial_never_consumes_budget_or_fails_the_job() -> None
 
     row = await backend.get(args.id)
     assert row is not None
-    # Rescheduled for a later admission attempt — never terminal, and
+    # Rescheduled for a later admission attempt - never terminal, and
     # never MaxAttemptsExceeded.
     assert row.status in ("scheduled", "pending"), f"denial terminalised the job: {row.status}"
     assert row.error_class != "MaxAttemptsExceeded"
@@ -754,7 +754,7 @@ async def test_on_retry_exhausted_sees_post_write_row_on_snooze_deadline() -> No
     """A Snooze past schedule_to_close terminally fails the job; the
     exhausted hook sees the post-write failed row (DeadlineExceeded, the
     un-refunded attempt), and the job-failed log's snooze_count field
-    reads the row column — the metadata mirror is gone."""
+    reads the row column - the metadata mirror is gone."""
     hook_calls: list[tuple[JobRow, BaseException]] = []
 
     def on_exhausted(job_row: JobRow, exc: BaseException) -> None:
@@ -793,7 +793,7 @@ async def test_on_retry_exhausted_sees_post_write_row_on_snooze_deadline() -> No
     assert row.status == "failed"
     assert row.error_class == "DeadlineExceeded"
     # The deadline arm does not refund: the attempt keeps the claim's
-    # increment, and the deferral that was rejected never landed — the
+    # increment, and the deferral that was rejected never landed - the
     # snooze counter did not move.
     assert row.attempt == 1
     assert row.snooze_count == 0
@@ -858,7 +858,7 @@ async def test_on_retry_exhausted_sees_post_write_row_on_retry_after_budget() ->
 
 
 class _AcquireDeniesRegistry:
-    """RateLimitRegistry stand-in whose acquire always denies — drives
+    """RateLimitRegistry stand-in whose acquire always denies - drives
     consume_one_job's pre-actor denial path without a real bucket."""
 
     def __init__(self, exc: ReservationUnavailable) -> None:
@@ -885,7 +885,7 @@ class _AcquireDeniesRegistry:
 
 class _SnoozeWriteInfraFails(InMemoryBackend):
     """In-memory twin whose snooze terminal write fails with an infra
-    error — the DB dropping the socket mid-write — to drive the
+    error - the DB dropping the socket mid-write - to drive the
     pre-actor denial path's infra handling."""
 
     async def mark_snoozed(
@@ -917,7 +917,7 @@ async def _enqueue_and_dispatch_running(
 ) -> tuple[JobId, UUID]:
     """Enqueue one transient job and dispatch it to a running-owned row."""
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     if actor not in backend._actor_configs_meta:  # type: ignore[reportPrivateUsage] # Why: test-only private access; the established fixture pattern.
         backend.register_actor_config(actor=actor)
     args = EnqueueArgs(
@@ -941,7 +941,7 @@ async def _enqueue_and_dispatch_running(
 async def test_pre_actor_denial_infra_failure_is_terminal_write_failure() -> None:
     """An infra failure from the denial's snooze write on the PRE-ACTOR
     path is logged as a terminal-write infra failure and the dispatch
-    reports the snooze-path outcome — the infra error is NOT re-run
+    reports the snooze-path outcome - the infra error is NOT re-run
     through the retry decision as if it were the actor's failure."""
     clock = FakeClock(start=_START)
     backend = _SnoozeWriteInfraFails(clock=clock)
@@ -988,7 +988,7 @@ def _publish_settings() -> WorkerSettings:
 
 async def test_pre_actor_denial_publishes_state_change_event() -> None:
     """A pre-actor admission denial publishes the scheduled state-change
-    event — the same Redis signal an in-actor denial publishes, so
+    event - the same Redis signal an in-actor denial publishes, so
     stream consumers see the requeue either way."""
     clock = FakeClock(start=_START)
     backend = InMemoryBackend(clock=clock)
@@ -1026,13 +1026,13 @@ async def test_pre_actor_denial_publishes_state_change_event() -> None:
 
 async def test_noop_terminal_write_publishes_no_state_change_event() -> None:
     """A noop outcome means NO transition happened (the row moved
-    underneath this dispatch) — publishing a scheduled state-change for
+    underneath this dispatch) - publishing a scheduled state-change for
     a row that did not move would be a false event.
 
     Drives the IN-ACTOR denial path (the exception routes through
     ``_run_terminal_path``); the row is not running-owned, so the
     handler's snooze write matches nothing and reports noop. The
-    pre-actor "running" announce still publishes — only the false
+    pre-actor "running" announce still publishes - only the false
     scheduled event is suppressed.
     """
     clock = FakeClock(start=_START)

@@ -4,7 +4,7 @@ enqueued job for an unregistered actor sits pending forever.
 Observed behaviour (fixed): enqueuing a job for an actor with no
 ``register_stub``/``register_actor_config`` call caused
 ``dispatch_batch`` to treat the actor as having zero capacity (the
-candidate-selection loop iterates ``self._actor_configs_meta`` only —
+candidate-selection loop iterates ``self._actor_configs_meta`` only -
 see ``taskq/testing/_dispatch.py`` around the "zero registered actors
 means zero capacity rows means zero candidates" comment). Because no
 job was ever dispatchable for that actor, ``run_until_drained`` observed
@@ -18,16 +18,16 @@ result) hangs indefinitely, because ``wait()`` with no ``timeout=``
 polls without a deadline (``taskq/client/_handle.py::wait``,
 ``deadline is None`` branch never raises TimeoutError).
 
-The pinned contract: ``run_until_drained`` raises ``RuntimeError`` —
+The pinned contract: ``run_until_drained`` raises ``RuntimeError`` -
 the same "no stub registered for actor" contract it already had for a
 *dispatched* job with a missing stub (``taskq/testing/_runner.py``,
-``run_until_drained``) — when the drain would otherwise end with
+``run_until_drained``) - when the drain would otherwise end with
 non-terminal work for an actor nothing registered. An actor that can
 never be dispatched because it has no registered stub/config is a
 strictly worse failure mode than one that dispatches and then
 immediately errors, and previously produced no signal at all. The raise
 DETECTS, it does not mutate: the stranded row stays ``pending`` (nothing
-ran it, and a fabricated terminal write would be its own lie — and would
+ran it, and a fabricated terminal write would be its own lie - and would
 corrupt retry bookkeeping if the actor is registered later).
 
 Vendor precedent for "how does a test harness handle a job whose
@@ -67,7 +67,7 @@ from taskq.backend import EnqueueArgs
 from taskq.client import JobsClient
 from taskq.exceptions import ReservationUnavailable
 from taskq.testing._runner import (
-    PassthroughPayload,  # pyright: ignore[reportPrivateUsage]  # Why: the explicit passthrough escape hatch keeps the denial stub focused on the starvation guard, not on payload fidelity — the whitebox import names the defining module.
+    PassthroughPayload,  # pyright: ignore[reportPrivateUsage]  # Why: the explicit passthrough escape hatch keeps the denial stub focused on the starvation guard, not on payload fidelity - the whitebox import names the defining module.
 )
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
@@ -119,7 +119,7 @@ async def test_run_until_drained_does_not_silently_strand_unregistered_actor_job
 
     # The raise detects, it does not mutate: nothing ran this job, so no
     # terminal state may be fabricated for it. A fabricated failure row
-    # would be its own harness lie — and would corrupt retry bookkeeping
+    # would be its own harness lie - and would corrupt retry bookkeeping
     # if the actor is registered and the job retried later.
     assert row.status == "pending", (
         "the undrainable-work raise must report the stranded job, not "
@@ -133,7 +133,7 @@ def _register_forever_denied_stub(backend: InMemoryBackend, actor_name: str) -> 
     The denial reschedules the job at the limiter's own Retry-After
     promise; the drain honors the promise once (advances the FakeClock,
     re-claims), and a second denial at/after that point marks the job
-    starved — the denial-starvation guard's exit. The actor IS
+    starved - the denial-starvation guard's exit. The actor IS
     registered, so the unregistered-actor raise must never fire for it.
     """
 
@@ -147,7 +147,7 @@ def _register_forever_denied_stub(backend: InMemoryBackend, actor_name: str) -> 
 async def test_denied_but_recoverable_job_does_not_trip_the_unregistered_raise() -> None:
     """Composition with the denial-starvation guard: a job whose actor IS
     registered but whose admission only ever answers "no" ends the drain
-    via the starved path and must return normally — denied is
+    via the starved path and must return normally - denied is
     recoverable-by-definition (the limiter promised a Retry-After), never
     "nothing registered, will never run". Only the never-registered case
     may raise.
@@ -174,7 +174,7 @@ async def test_denied_but_recoverable_job_does_not_trip_the_unregistered_raise()
 
     row = await backend.get(job_id)
     assert row is not None
-    # Denied work is never terminalised and never marked as ran — it is
+    # Denied work is never terminalised and never marked as ran - it is
     # rescheduled, with the contention visible on the denial counter.
     assert row.status in ("scheduled", "pending")
     assert row.rate_limit_blocked_count >= 1
@@ -183,7 +183,7 @@ async def test_denied_but_recoverable_job_does_not_trip_the_unregistered_raise()
 @pytest.mark.asyncio
 async def test_mixed_drain_raises_only_for_the_never_registered_actor() -> None:
     """The sharp composition pin: one drain holding BOTH a denied
-    registered job and a never-registered job must raise — and the raise
+    registered job and a never-registered job must raise - and the raise
     must name the never-registered actor only. A denied job sharing the
     drain must not be swept into the failure (a false positive would
     criminalise ordinary rate-limit saturation)."""
@@ -222,7 +222,7 @@ async def test_mixed_drain_raises_only_for_the_never_registered_actor() -> None:
     assert "ghost_actor" in str(exc_info.value)
     assert "denied_actor" not in str(exc_info.value), (
         "the denied registered job was swept into the never-registered "
-        "raise — the raise must target only actors with no registry entry"
+        "raise - the raise must target only actors with no registry entry"
     )
 
     # The raise fired before any terminal write for either job: the ghost

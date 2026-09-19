@@ -339,9 +339,9 @@ class _StubScopeContainer:
         return value
 
     async def aclose(self) -> None:
-        try:  # noqa: SIM105 — Why: log-and-continue teardown per section 7.4; contextlib.suppress does not support await; errors are intentionally swallowed to avoid masking the primary failure.
+        try:  # noqa: SIM105 - Why: log-and-continue teardown per section 7.4; contextlib.suppress does not support await; errors are intentionally swallowed to avoid masking the primary failure.
             await self._stack.aclose()
-        except Exception:  # noqa: S110 — Why: intentional log-and-continue teardown per section 7.4; swallowing here so subsequent teardowns run.
+        except Exception:  # noqa: S110 - Why: intentional log-and-continue teardown per section 7.4; swallowing here so subsequent teardowns run.
             pass
 
 
@@ -501,7 +501,7 @@ def _build_registry_and_actor(
         lines.append(") -> None: pass")
 
         ns: dict[str, object] = {tp.__name__: tp for tp in _STUB_TYPES}
-        exec("\n".join(lines), ns)  # noqa: S102 — Why: dynamically constructing actor functions with correct __annotations__ from generated DAG specs; no user input flows into the exec string.
+        exec("\n".join(lines), ns)  # noqa: S102 - Why: dynamically constructing actor functions with correct __annotations__ from generated DAG specs; no user input flows into the exec string.
         return ns["_generated_actor"]
 
     actor = _make_actor(annotations)
@@ -687,7 +687,7 @@ def _register_factories_from_graph(
             ]
             ns: dict[str, object] = {dt.__name__: dt for dt in dep_types}
             ns["_SRC_TYPE"] = src_type
-            exec("\n".join(lines), ns)  # noqa: S102 — Why: dynamically constructing factory functions from Hypothesis-generated graph specs; no user input flows into the exec string.
+            exec("\n".join(lines), ns)  # noqa: S102 - Why: dynamically constructing factory functions from Hypothesis-generated graph specs; no user input flows into the exec string.
             factory = ns["_factory"]
             registry.register_factory(
                 src_type,

@@ -1,13 +1,13 @@
 """Predicate pins for migration 01.00.06_01's three audit indexes.
 
 The migration header documents each index's partial WHERE clause as
-load-bearing: the active-status predicates keep terminal rows out of the
+critical: the active-status predicates keep terminal rows out of the
 bulk-cancel key ranges (and out of index maintenance), and the
 ``worker_id IS NOT NULL`` predicate follows the RI-trigger convention
 that lets the parameterized probe use the index. Existence and validity
 are already pinned in tests/test_index_audit.py; what nothing pins is
 that the indexes actually carry the DOCUMENTED predicates and key
-columns — an index silently created unpartial, or keyed differently,
+columns - an index silently created unpartial, or keyed differently,
 would pass the existence pin and serve none of the audited plans.
 
 The pin is normalization-independent: each migration index's
@@ -29,7 +29,7 @@ from taskq._ids import new_base62
 
 pytestmark = pytest.mark.integration
 
-#: (migration index name, table, documented definition body) — the body
+#: (migration index name, table, documented definition body) - the body
 #: is exactly what the migration header documents for each index, minus
 #: the name the CREATE statement carries.
 _AUDIT_INDEXES: tuple[tuple[str, str, str], ...] = (
@@ -68,8 +68,8 @@ async def _indexdef(conn: asyncpg.Connection, schema: str, index: str) -> str | 
     if row is None:
         return None
     assert row["partial"] is True, (
-        f"{index} is not a PARTIAL index — the documented predicate is "
-        "load-bearing (terminal rows must stay out of the key range)"
+        f"{index} is not a PARTIAL index - the documented predicate is "
+        "critical (terminal rows must stay out of the key range)"
     )
     assert row["valid"] is True, f"{index} exists but is INVALID"
     # Strip the name/schema prefix so the comparison is about the body:
@@ -118,7 +118,7 @@ async def test_audit_indexes_carry_the_documented_predicates_and_keys(
 async def test_audit_indexes_present_after_full_migration_run(pg_dsn: str) -> None:
     """Companion to the predicate pin: a FRESH schema's full migration run
     (every previous migration, then 01.00.06_01, in ledger order) leaves
-    all three indexes present, partial and valid — the apply-order path
+    all three indexes present, partial and valid - the apply-order path
     the pinned ledger test does not spell out."""
     schema = f"idx_full_{new_base62()}".lower()
     conn = await asyncpg.connect(pg_dsn)
@@ -131,8 +131,8 @@ async def test_audit_indexes_present_after_full_migration_run(pg_dsn: str) -> No
             f"applied: {applied_keys}"
         )
         # Ledger order is the runner's contract: a fresh schema's run must
-        # end on the ledger's LAST migration — the lexicographically
-        # greatest discovered version — so the audit migration's table
+        # end on the ledger's LAST migration - the lexicographically
+        # greatest discovered version - so the audit migration's table
         # dependencies (created by earlier versions) are always in place.
         # Pinned DYNAMICALLY against discover()'s own ordering so the next
         # added migration cannot stale this assert the way the hard-coded

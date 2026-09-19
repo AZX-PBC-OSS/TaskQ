@@ -1,13 +1,13 @@
 """Unit tests for worker_main, _main, register_worker, and deregister_worker.
 
-Wiring shape — all siblings called with correct args.
-Single orchestrator entry point — _main MUST NOT call orchestrate_shutdown.
+Wiring shape - all siblings called with correct args.
+Single orchestrator entry point - _main MUST NOT call orchestrate_shutdown.
 Exit code retrieval from orchestrator_holder.
 Signal handler installation order.
-Failure isolation — ExceptionGroup propagation.
+Failure isolation - ExceptionGroup propagation.
 register_worker / deregister_worker SQL shape and timeout uniformity.
 Try/finally cleanup paths.
-Test seam — _local_queue_seed injects jobs into consumer stubs.
+Test seam - _local_queue_seed injects jobs into consumer stubs.
 """
 
 import asyncio
@@ -50,7 +50,7 @@ def settings() -> WorkerSettings:
             "TASKQ_LOCK_LEASE": "45.0",
             "TASKQ_HEARTBEAT_INTERVAL": "5.0",
             "TASKQ_MAX_CONCURRENCY": "2",
-            # _main starts a real HealthServer — never the shared default path.
+            # _main starts a real HealthServer - never the shared default path.
             "TASKQ_HEALTH_SOCKET_PATH": unique_health_sock_path("worker_main"),
         }
     )
@@ -332,11 +332,11 @@ async def test_wiring_shape_siblings_called_once(settings: WorkerSettings) -> No
 
 
 async def test_maintenance_leader_unconditionally_started_regardless_of_settings() -> None:
-    """MaintenanceLeader.run is always started inside _main's TaskGroup —
+    """MaintenanceLeader.run is always started inside _main's TaskGroup -
     there is no settings flag that gates it.  This test varies several
     settings (health_enabled=False, max_concurrency=1) that might plausibly
     be suspected of short-circuiting the leader, and asserts leader_count
-    is still exactly 1 — proving the unconditional wiring in
+    is still exactly 1 - proving the unconditional wiring in
     ``src/taskq/worker/_bootstrap.py``.
     """
     varied_settings = WorkerSettings.load_from_dict(
@@ -575,7 +575,7 @@ async def test_register_worker_metadata_carries_binding_concurrency(
 
     ``settings.max_concurrency`` sizes ``local_queue`` and bounds every
     dispatch, so the registration write carries it in the row's metadata
-    next to ``notify_enabled`` — a fleet's effective parallelism stays
+    next to ``notify_enabled`` - a fleet's effective parallelism stays
     queryable from the database without introspection into worker code.
     """
     mock_conn = AsyncMock()
@@ -589,7 +589,7 @@ async def test_register_worker_metadata_carries_binding_concurrency(
     params = call_args[0][1:]
     metadata: dict[str, object] = json.loads(params[6])
     assert metadata["max_concurrency"] == settings.max_concurrency == 2, (
-        "the metadata must track settings.max_concurrency — the number that "
+        "the metadata must track settings.max_concurrency - the number that "
         f"sizes local_queue and bounds every dispatch; wrote {metadata}"
     )
     assert "notify_enabled" in metadata
@@ -758,7 +758,7 @@ def test_worker_main_runs_under_asyncio_runner_and_returns_exit_code(
 ) -> None:
     """worker_main wraps _main in an asyncio.Runner and returns its result.
 
-    _main itself is patched out — this test exercises the ``worker_main``
+    _main itself is patched out - this test exercises the ``worker_main``
     wrapper (Runner construction/teardown, cron_registry resolution,
     setup_logging call) in isolation from the real bootstrap sequence.
     """
@@ -825,7 +825,7 @@ def test_worker_main_uses_get_registered_crons_when_cron_registry_omitted(
 
 def test_worker_main_forwards_connections_to_main(settings: WorkerSettings) -> None:
     """worker_main(connections=…) forwards the exact WorkerConnections object
-    to _main — identity is the contract (managed-identity hook point)."""
+    to _main - identity is the contract (managed-identity hook point)."""
     sentinel = WorkerConnections()
     captured: dict[str, object] = {}
 
@@ -976,7 +976,7 @@ async def test_watchdogs_disarmed_only_after_taskgroup_drains(
     with _use_test_harness(settings, set_shutdown=False) as h:
 
         async def _slow_winddown(*args: object, **kwargs: object) -> None:
-            # Signal shutdown, then take time to actually wind down — the
+            # Signal shutdown, then take time to actually wind down - the
             # window in which __aexit__ is waiting and detector 1 must
             # still be armed.
             assert h.shutdown_event is not None

@@ -3,7 +3,7 @@
 Why: these contracts are carried entirely by predicates inside SQL string
 literals (``AND status = 'running'``, ``AND cancel_phase = 2``,
 ``SKIP LOCKED``).  Nothing in the Python source changes when one is
-dropped, so they execute — and count as covered — with nothing asserting
+dropped, so they execute - and count as covered - with nothing asserting
 them.  Each test here pins an outcome a queue user can observe: a
 terminal job that stays terminal, a job that is not abandoned before its
 cooperative-cancel grace has escalated, and a reclaim sweep that is not
@@ -15,7 +15,7 @@ deliberately leaves ``locked_by_worker`` and ``lock_expires_at`` in
 place (they are the audit trail of which worker was abandoned).  The
 zombie actor task that was abandoned therefore still holds a *matching*
 worker id, so the ownership fence alone does not stop it from writing a
-second terminal state — only ``AND status = 'running'`` does.
+second terminal state - only ``AND status = 'running'`` does.
 """
 
 import asyncio
@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 
     type _Conn = asyncpg.Connection | PoolConnectionProxy
 else:
-    type _Conn = object  # pyright: ignore[reportInvalidTypeForm] # Why: runtime fallback — asyncpg is TYPE_CHECKING-only to avoid transitive import
+    type _Conn = object  # pyright: ignore[reportInvalidTypeForm] # Why: runtime fallback - asyncpg is TYPE_CHECKING-only to avoid transitive import
 
 pytestmark = pytest.mark.integration
 
@@ -91,7 +91,7 @@ class TestAbandonedJobStaysTerminal:
         worker_id, job_id = await _abandon(clean_jobs_app)
 
         # mark_failed reports a non-applying write by raising; the job row
-        # is what matters — it must still be the abandoned terminal state.
+        # is what matters - it must still be the abandoned terminal state.
         with pytest.raises(WorkerOwnershipMismatch):
             await clean_jobs_app.backend.mark_failed_or_retry(job_id, worker_id, _ERROR, None)
         assert await _status(clean_jobs_app, job_id) == "abandoned"
@@ -114,7 +114,7 @@ class TestAbandonedJobStaysTerminal:
                 conn, _CANCEL_GRACE, _CLEANUP_GRACE, schema=schema
             )
 
-        assert expired is not None, "abandoned rows keep their lock — the fence is the only guard"
+        assert expired is not None, "abandoned rows keep their lock - the fence is the only guard"
         assert count == 0
         assert await _status(clean_jobs_app, job_id) == "abandoned"
 

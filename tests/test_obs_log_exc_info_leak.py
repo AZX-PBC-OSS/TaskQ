@@ -6,7 +6,7 @@
 root logger, reads ``record.exc_info`` directly, and ships ``str(exc)`` plus
 the full traceback to the App Insights ``exceptions`` table. So redaction that
 lives only in TaskQ's own ``ProcessorFormatter`` protects only TaskQ's own
-stream — every other root handler gets the record raw.
+stream - every other root handler gets the record raw.
 
 The tests below therefore assert on a **foreign** handler's view of the record,
 the way a vendor SDK sees it, not on TaskQ's rendered line. Both channels are
@@ -45,7 +45,7 @@ class _ForeignHandler(logging.Handler):
 
     Snapshots what it sees *inside* ``emit``. ``ProcessorFormatter`` mutates
     ``record.msg`` in place, so a handler that only stashed the record would
-    be asserting on whatever TaskQ's own handler happened to leave behind —
+    be asserting on whatever TaskQ's own handler happened to leave behind -
     a pass that depends on root-handler ordering rather than on redaction.
     """
 

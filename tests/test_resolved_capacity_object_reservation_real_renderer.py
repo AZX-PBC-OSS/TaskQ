@@ -3,7 +3,7 @@
 ``_emit_resolved_capacity_startup_lines`` (src/taskq/worker/run.py) extracts
 plain names/slot counts from object-shaped reservation entries
 (``ConcurrencyReservation``, ``KeyedReservationRef``) before calling
-``log.info`` — per its own docstring, because neither type is JSON
+``log.info`` - per its own docstring, because neither type is JSON
 serializable through ``taskq._json.dumps`` and structlog's JSON renderer is
 not exception-wrapped, so logging the raw object would silently drop the
 whole line.
@@ -93,7 +93,7 @@ def _stored_row(actor: str) -> ActorConfigRow:
 def test_object_shaped_reservation_survives_the_real_json_renderer() -> None:
     """A declared ``ConcurrencyReservation`` entry must reach the real
     JSON-rendered log stream, naming both its layer and the actual slot
-    count that gates admission — not silently vanish because the object
+    count that gates admission - not silently vanish because the object
     itself is not JSON-serializable."""
     settings = _make_settings(max_concurrency=8)
     reservation = ConcurrencyReservation(name="db_pool", slots=3, lease=timedelta(minutes=5))
@@ -103,7 +103,7 @@ def test_object_shaped_reservation_survives_the_real_json_renderer() -> None:
     # same serializer setup_logging wires into JSONRenderer) bound through a
     # minimal structlog pipeline, rather than mutating the process-global
     # structlog.configure() that setup_logging performs once and guards
-    # idempotently — this keeps the test isolated while still exercising the
+    # idempotently - this keeps the test isolated while still exercising the
     # exact renderer/serializer production uses.
     renderer = structlog.processors.JSONRenderer(serializer=structlog_serializer)
     records: list[str] = []

@@ -258,7 +258,7 @@ async def test_dispatch_one_job_returns_attempt_outcome() -> None:
         assert "AttemptOutcome" in ret
     else:
         # Should be the AttemptOutcome type alias, not None
-        assert ret is not type(None)  # pyright: ignore[reportUnnecessaryComparison]  # Why: belt-and-suspenders — ret is not None already guarantees this, but the explicit check documents intent.
+        assert ret is not type(None)  # pyright: ignore[reportUnnecessaryComparison]  # Why: belt-and-suspenders - ret is not None already guarantees this, but the explicit check documents intent.
 
 
 # ── di_consumer_loop increments drain_failures ─────────────────────
@@ -291,7 +291,7 @@ async def test_di_consumer_loop_no_increment_on_success() -> None:
 
 async def test_di_consumer_loop_no_increment_on_scheduled() -> None:
     """di_consumer_loop does NOT increment drain_failures on 'scheduled'
-    (snooze/retry — a retried job is not a drain failure)."""
+    (snooze/retry - a retried job is not a drain failure)."""
 
     async def _fake_dispatch(*args: object, **kwargs: object) -> AttemptOutcome:
         return "scheduled"
@@ -304,7 +304,7 @@ async def test_di_consumer_loop_no_increment_on_scheduled() -> None:
 
 async def test_di_consumer_loop_dispatches_with_the_actors_own_registration() -> None:
     """The config the consumer loop hands to dispatch is the actor's
-    registration itself — retry policy, non-retryable set and hooks — so
+    registration itself - retry policy, non-retryable set and hooks - so
     what the consumer's retry decision reads is exactly what @actor
     declared, with no per-job copy that could drift from it."""
     from taskq.retry import RetryPolicy
@@ -363,7 +363,7 @@ async def test_di_consumer_loop_does_not_count_slot_pool_acquire_failures() -> N
 
     The job is already claimed and recovers by lock-lease expiry, so
     counting it would make a drain step (Kubernetes Job, CI) report job
-    failures that never happened — the exact misclassification the
+    failures that never happened - the exact misclassification the
     dedicated exception type exists to route around. The loop continues
     to the next job; the failure was recorded and logged at the raise
     site.
@@ -482,7 +482,7 @@ async def test_di_consumer_loop_forwards_max_retry_backoff() -> None:
 def _make_mock_deps(*, active_jobs_count: int = 0, drain_failures: int = 0) -> MagicMock:
     """Build a minimal mock WorkerDeps for drain monitor tests.
 
-    shutdown_phase MUST be the real ShutdownPhase.NONE enum member —
+    shutdown_phase MUST be the real ShutdownPhase.NONE enum member -
     _trigger_drain_shutdown's double-orchestration guard is
     ``deps.shutdown_phase is not ShutdownPhase.NONE``, so a stand-in
     (string, MagicMock attribute) would trip the guard in EVERY test.
@@ -498,7 +498,7 @@ def _make_mock_deps(*, active_jobs_count: int = 0, drain_failures: int = 0) -> M
 
 @contextlib.asynccontextmanager
 async def _mock_orchestrate(
-    exit_code: int = 0,  # Why: exit_code is unused — _drain_orchestrate supplies the exit code; the mock only simulates orchestrate_shutdown's finally-block shutdown_event.set().
+    exit_code: int = 0,  # Why: exit_code is unused - _drain_orchestrate supplies the exit code; the mock only simulates orchestrate_shutdown's finally-block shutdown_event.set().
 ) -> AsyncGenerator[None, None]:
     """Patch orchestrate_shutdown to set shutdown_event and return 0.
 
@@ -627,7 +627,7 @@ async def test_drain_monitor_resets_settle_on_new_jobs() -> None:
     after the fact against the last job poll: a resetting monitor
     cannot trigger before last-job-poll + settle (its window restarts
     at the first re-idle poll), while a forgetting one fires on the
-    very first re-idle poll — one poll interval later, 20x inside the
+    very first re-idle poll - one poll interval later, 20x inside the
     margin. Index-based phases make the reset itself un-skippable: no
     scheduler stall can leap the whole job phase the way it could a
     wall-clock window, and the post-hoc timing assert needs no
@@ -695,7 +695,7 @@ async def test_drain_monitor_resets_settle_on_new_jobs() -> None:
             )
         )
         # The monitor returns right after triggering, so task completion
-        # implies the trigger — bounded, so a never-triggering regression
+        # implies the trigger - bounded, so a never-triggering regression
         # fails loudly instead of hanging.
         try:
             await asyncio.wait_for(task, timeout=5.0)
@@ -710,10 +710,10 @@ async def test_drain_monitor_resets_settle_on_new_jobs() -> None:
     assert trigger_at, "orchestrate_shutdown was invoked without recording a trigger time"
     # THE reset assertion: the trigger must postdate the last job poll by
     # at least the settle window. A monitor that carried the original
-    # idle_since fires on the first re-idle poll — one poll interval
+    # idle_since fires on the first re-idle poll - one poll interval
     # after the last job poll, 20x inside this margin.
     assert trigger_at[0] - last_job_poll_at >= 0.2, (
-        f"drain triggered {trigger_at[0] - last_job_poll_at:.3f}s after the last job poll — "
+        f"drain triggered {trigger_at[0] - last_job_poll_at:.3f}s after the last job poll - "
         "the settle window was not reset by the new job"
     )
 
@@ -723,8 +723,8 @@ async def test_drain_monitor_does_not_trigger_when_active_jobs() -> None:
 
     Negative assertion (absence of a trigger), so the window must be
     real: with settle=0.1 and poll=0.05, a monitor that ignored active
-    jobs would trigger on its THIRD poll, so the test waits — event-
-    driven, through the backend double — for the FIFTH poll (two past
+    jobs would trigger on its THIRD poll, so the test waits - event-
+    driven, through the backend double - for the FIFTH poll (two past
     the would-be trigger) and only then asserts absence. A fixed 0.3s
     sleep could observe zero or one polls under scheduler starvation
     and pass vacuously.
@@ -766,8 +766,8 @@ async def test_drain_monitor_does_not_trigger_when_active_jobs() -> None:
             await asyncio.wait_for(polled_past_would_be_trigger.wait(), timeout=5.0)
         except TimeoutError:
             pytest.fail("the drain monitor did not complete 5 polls within 5.0s")
-        # Five polls in — two past the poll a queue-only trigger would
-        # have fired on — and no trigger, no shutdown.
+        # Five polls in - two past the poll a queue-only trigger would
+        # have fired on - and no trigger, no shutdown.
         assert len(orchestrator_holder) == 0
         assert not shutdown_event.is_set()
         task.cancel()
@@ -822,7 +822,7 @@ async def test_drain_monitor_skips_when_orchestration_already_active() -> None:
         # returns the monitor right after a SKIPPED trigger, so the task
         # completing proves it; a variant that kept polling instead is
         # covered by the poll-count event. Whichever fires first, the
-        # guard decision has been made — no wall-clock sleep needed.
+        # guard decision has been made - no wall-clock sleep needed.
         poll_wait = asyncio.create_task(polled_past_would_be_trigger.wait())
         done, _pending = await asyncio.wait({task, poll_wait}, timeout=5.0)
         poll_wait.cancel()
@@ -950,7 +950,7 @@ async def test_drain_monitor_settle_window_zero() -> None:
 # ── Drain monitor liveness registration ────────────────────────────
 #
 # The monitor returns as soon as it has triggered orchestrate_shutdown,
-# but orchestrate_shutdown sets shutdown_event only in its finally —
+# but orchestrate_shutdown sets shutdown_event only in its finally -
 # after ALL phases. loop_watchdog_loop keeps sweeping until then, so a
 # lingering "drain_monitor" registration goes stale mid-grace and
 # detector 2 force-exits the worker (os._exit(2)) instead of letting the
@@ -1002,7 +1002,7 @@ async def test_drain_monitor_forgets_liveness_when_drain_triggers() -> None:
 
     assert "drain_monitor" not in liveness.ages(), (
         "drain_monitor_loop must forget its liveness registration when it "
-        "returns after triggering — the watchdog still sweeps until "
+        "returns after triggering - the watchdog still sweeps until "
         "orchestrate_shutdown's finally sets shutdown_event"
     )
     t[0] += 11.0  # past the max(0.05 * 5, 10) = 10s budget the leaked entry trips at

@@ -1,7 +1,7 @@
 """Red-team attack on the concurrent singleton race mid-tick (real PG).
 
 The tick's policy preflight and its batched INSERT are two statements in
-one transaction, so a client singleton enqueue can COMMIT between them —
+one transaction, so a client singleton enqueue can COMMIT between them -
 exactly the window the enqueue path closes with its own
 ``UniqueViolationError`` catch.  Here the batched INSERT carries the
 stamped singleton fire, so the committed client row violates
@@ -14,12 +14,12 @@ blocker, the transaction and advisory lock are open) while a second real
 connection commits the client singleton job; releasing the gate runs the
 INSERT against the now-committed blocker.
 
-The acceptable outcome — pinned here — is per-plan attribution inside a
+The acceptable outcome - pinned here - is per-plan attribution inside a
 SAVEPOINT: the tick does NOT abort (the savepoint keeps the transaction
 alive past the statement error), the racing schedule takes exactly ONE
 strike with the real constraint name, and the healthy non-singleton plan
-that shared the batch fires in the SAME tick.  The next tick — a fresh
-transaction whose preflight runs BEFORE its enqueue — sees the committed
+that shared the batch fires in the SAME tick.  The next tick - a fresh
+transaction whose preflight runs BEFORE its enqueue - sees the committed
 blocker and suppresses the singleton slot cleanly instead of re-aborting:
 self-healing in one second, the strike kept (suppression is neither
 amnesty nor a second strike), and no other schedule touched.
@@ -66,7 +66,7 @@ class TestConcurrentSingletonRace:
     ) -> None:
         """The gated race, end to end: the racing schedule takes exactly one
         strike (attributed from the violation's ``Key (actor)=…`` detail,
-        committed — the savepoint kept the transaction alive), the healthy
+        committed - the savepoint kept the transaction alive), the healthy
         plan in the same batch fires in the SAME tick, and the very next
         tick preflights FIRST, suppresses the singleton slot against the
         committed client job, and keeps the strike (no amnesty, no second
@@ -146,7 +146,7 @@ class TestConcurrentSingletonRace:
         # the racing plan was attributed from the violation's detail line,
         # and the healthy plan fired in this same tick.
         assert first == 1, (
-            "the healthy plan must fire in the racing tick — one schedule "
+            "the healthy plan must fire in the racing tick - one schedule "
             "losing a singleton race is not a defect of the batch"
         )
         # The racer's strike committed: consecutive_failures=1 with the real
@@ -163,7 +163,7 @@ class TestConcurrentSingletonRace:
         assert singleton_row["last_fired_at"] is None
         assert singleton_row["next_fire_at"] == before[singleton_schedule_id]["next_fire_at"]
         assert await count_jobs(clean_pg_conn, schema, _SINGLETON_ACTOR) == 1, (
-            "the colliding cron fire must not be enqueued — the client job won the slot"
+            "the colliding cron fire must not be enqueued - the client job won the slot"
         )
         assert await count_jobs(clean_pg_conn, schema, _HEALTHY_ACTOR) == 1, (
             "the healthy plan's fire committed in the racing tick"
@@ -171,7 +171,7 @@ class TestConcurrentSingletonRace:
         tick_logs = [e["event"] for e in captured]
         failed = [e for e in tick_logs if e == "cron fire failed"]
         assert len(failed) == 1, (
-            "exactly one per-schedule failure log — the racing plan, whose "
+            "exactly one per-schedule failure log - the racing plan, whose "
             "bookkeeping commits because the transaction survived"
         )
         assert "cron schedule auto-disabled" not in tick_logs
@@ -181,7 +181,7 @@ class TestConcurrentSingletonRace:
 
         # The next tick, in a fresh transaction: the preflight runs BEFORE
         # the enqueue, sees the committed client job, and suppresses the
-        # singleton slot cleanly — the race does not repeat.  The strike
+        # singleton slot cleanly - the race does not repeat.  The strike
         # from the racing tick STANDS (suppression is neither amnesty nor a
         # second strike), and the healthy plan, already fired, is not due.
         with structlog.testing.capture_logs() as captured:
@@ -211,7 +211,7 @@ class TestConcurrentSingletonRace:
         singleton_row = await schedule_row(clean_pg_conn, schema, singleton_schedule_id)
         assert singleton_row["next_fire_at"] > due, "the suppressed slot advanced"
         assert singleton_row["consecutive_failures"] == 1, (
-            "suppression is not amnesty — the racing tick's strike stands"
+            "suppression is not amnesty - the racing tick's strike stands"
         )
         assert singleton_row["last_fired_at"] is None
         healthy_row = await schedule_row(clean_pg_conn, schema, healthy_schedule_id)

@@ -2,12 +2,12 @@
 """Red-team storm: pool-contention GEOMETRY at full saturation.
 
 The question (distinct from the pinned per-site reds): with EVERY
-dimension of the worker's connection budget loaded at once — both
+dimension of the worker's connection budget loaded at once - both
 consumer slots holding their slot-pool transaction connections while
 their terminal writes wait on ``worker_pool``
 (``max_size = int(max_concurrency * 1.5)``), the heartbeat loop ticking
 on ``heartbeat_pool`` (4), and the leader sweep running on the
-dispatcher/notify pool (4) — does the system deadlock-livelock, or does
+dispatcher/notify pool (4) - does the system deadlock-livelock, or does
 each bounded piece time out and degrade?
 
 Geometry (from ``worker/dispatch.py`` ``dispatch_one_job``,
@@ -15,16 +15,16 @@ Geometry (from ``worker/dispatch.py`` ``dispatch_one_job``,
 
 * The slot pool (``max_concurrency + 1``) and ``worker_pool``
   (``int(max_concurrency * 1.5)``) are DISJOINT pools, and no code path
-  acquires a slot conn while holding a worker conn — the
+  acquires a slot conn while holding a worker conn - the
   slot-holds-while-worker-waits shape is a one-way edge, so no circular
   wait exists between them. Heartbeat (4) and dispatcher (4) are
   similarly disjoint from both.
 * The heartbeat loop's own acquire IS bounded
   (``heartbeat_pool.acquire(timeout=...)``, ``worker/heartbeat.py``),
-  and its timeout is classified transient — saturation there degrades
+  and its timeout is classified transient - saturation there degrades
   loudly (counted tick failure), not silently.
 * ``mark_succeeded``'s worker-pool acquire has no timeout (the
-  pinned-red class — ``test_rt_locks_terminal_write_pool_starvation``
+  pinned-red class - ``test_rt_locks_terminal_write_pool_starvation``
   covers ``mark_cancelled``/heartbeat starvation and
   ``test_rt_locks_sweep_notify_pool_unbounded`` covers the sweep
   notify-pool acquire; NOT duplicated here). This file's angle: at
@@ -34,7 +34,7 @@ Geometry (from ``worker/dispatch.py`` ``dispatch_one_job``,
 
 Pinned below at small-but-real scale (``max_concurrency=2``, every pool
 at its true default size, real asyncpg pools against real Postgres):
-(a) the full concurrent geometry completes within a bounded window —
+(a) the full concurrent geometry completes within a bounded window -
 no livelock; (b) worker_pool saturation degrades-and-resolves, not
 deadlocks; (c) heartbeat_pool saturation fails FAST and loudly inside
 its bounded acquire (the "something reports" half).
@@ -164,7 +164,7 @@ async def test_full_fleet_geometry_saturates_without_livelock(pg_dsn: str) -> No
     """max_concurrency=2, every pool at its true default size, all four
     dimensions loaded concurrently: both slots hold slot conns across
     their worker-pool terminal writes, the heartbeat tick runs, and the
-    leader sweep reclaims an expired-lock victim — everything completes
+    leader sweep reclaims an expired-lock victim - everything completes
     inside the bounded window. Then each saturation half: worker_pool
     fully held degrades-and-resolves (no deadlock); heartbeat_pool fully
     held fails fast inside its bounded acquire (loud, classified).
@@ -200,7 +200,7 @@ async def test_full_fleet_geometry_saturates_without_livelock(pg_dsn: str) -> No
             )
         # Two mid-flight slot jobs (live leases) + one more for the
         # saturation phase, all held by the LIVE worker; one expired-lock
-        # sweep victim held by the dead worker (the mass-crash shape —
+        # sweep victim held by the dead worker (the mass-crash shape -
         # the live worker's heartbeat tick must not re-lease it).
         job_a, job_b, job_c, victim = (new_job_id() for _ in range(4))
         for job_id in (job_a, job_b, job_c):
@@ -228,7 +228,7 @@ async def test_full_fleet_geometry_saturates_without_livelock(pg_dsn: str) -> No
                 worker_pool=worker_pool,
                 heartbeat_pool=heartbeat_pool,
                 dispatcher_pool=dispatcher_pool,
-            ),  # type: ignore[arg-type]  # Why: duck-typed BackendDeps — settings plus the real per-role pools, the full surface the swept/terminal/heartbeat paths touch.
+            ),  # type: ignore[arg-type]  # Why: duck-typed BackendDeps - settings plus the real per-role pools, the full surface the swept/terminal/heartbeat paths touch.
             clock=SystemClock(),
             cancellation_grace_period=timedelta(0),
             cleanup_grace_period=timedelta(0),
@@ -242,7 +242,7 @@ async def test_full_fleet_geometry_saturates_without_livelock(pg_dsn: str) -> No
             async with slot_pool.acquire() as _slot_conn:
                 # attempt=1: the rows are seeded at their first epoch and
                 # the landed attempt-epoch fence no-ops an epoch-less write
-                # — the sibling PG test presents the row's epoch the same
+                # - the sibling PG test presents the row's epoch the same
                 # way, mirroring the production caller's attempt=job.attempt.
                 return await backend.mark_succeeded(job_id, worker_id, {"ok": True}, attempt=1)
 
@@ -270,18 +270,18 @@ async def test_full_fleet_geometry_saturates_without_livelock(pg_dsn: str) -> No
             timeout=_GEOMETRY_BOUND_S,
         )
         assert results[0] is True and results[1] is True, (
-            "both slot-held terminal writes must land — at the true default "
+            "both slot-held terminal writes must land - at the true default "
             "geometry (slots 3 / worker_pool 3 / heartbeat 4 / dispatcher 4) "
             "two concurrent slot jobs + heartbeat + sweep must not livelock; "
             f"a timeout after {_GEOMETRY_BOUND_S}s would be the livelock red"
         )
         assert results[3] == 1, (
             f"the concurrent leader sweep must reclaim the one expired-lock "
-            f"victim (got {results[3]!r}) — a starved sweep is the "
+            f"victim (got {results[3]!r}) - a starved sweep is the "
             "maintenance-stops-under-load red"
         )
         assert await backend.reclaim_expired_locks(timedelta(0), timedelta(0)) == 0, (
-            "a second sweep call must find nothing left — the first "
+            "a second sweep call must find nothing left - the first "
             "concurrent call drained the eligible set"
         )
         victim_status = await admin.fetchval(
@@ -303,7 +303,7 @@ async def test_full_fleet_geometry_saturates_without_livelock(pg_dsn: str) -> No
         await asyncio.sleep(_OBSERVE_S)
         assert not queued_write.done(), (
             "with every worker_pool conn held, the queued terminal write "
-            "waits (degrade) rather than erroring — the row stays running "
+            "waits (degrade) rather than erroring - the row stays running "
             "and lock-lease expiry is its designed recovery"
         )
         saturator.release_one()
@@ -313,7 +313,7 @@ async def test_full_fleet_geometry_saturates_without_livelock(pg_dsn: str) -> No
             f'SELECT status FROM "{schema}".jobs WHERE id = $1', job_c
         )
         assert job_c_status == "succeeded", (
-            "the degraded write resolved with the real terminal state — a "
+            "the degraded write resolved with the real terminal state - a "
             "wait that never resolves would be the deadlock-livelock red"
         )
         await saturator.release_all()
@@ -329,7 +329,7 @@ async def test_full_fleet_geometry_saturates_without_livelock(pg_dsn: str) -> No
         elapsed = loop.time() - t0
         assert elapsed < _RESOLVE_BOUND_S, (
             f"the heartbeat loop's bounded acquire must fail fast under "
-            f"saturation (took {elapsed:.2f}s) — the loud, classified-"
+            f"saturation (took {elapsed:.2f}s) - the loud, classified-"
             "transient degrade is the geometry's saturation report; an "
             "unbounded wait here would starve the lease and cascade the "
             "whole worker into isolate_self"

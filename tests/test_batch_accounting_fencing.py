@@ -7,8 +7,8 @@ policy: a batch created with ``AbortBatchAfter(n)`` stops dispatching
 further members once *n* member jobs fail back to back. A ``succeeded``
 member resets that streak to zero.
 
-The streak therefore has to answer one question truthfully — *did a
-member job really reach a successful terminal state?* — and a reclaimed
+The streak therefore has to answer one question - *did a
+member job really reach a successful terminal state?* - and a reclaimed
 attempt is precisely the case where the honest answer is no. When a
 worker stalls past its lock lease, the leader's sweep re-pends the job
 and the fleet re-dispatches it at a newer attempt, the stalled worker's
@@ -19,7 +19,7 @@ decided. The attempt must not be allowed to move batch state.
 
 Two operator-visible harms follow if it does. A batch whose members are
 failing steadily never reaches its abort threshold, because every
-reclaim-fenced ghost success resets the streak — the operator configured
+reclaim-fenced ghost success resets the streak - the operator configured
 a circuit breaker and it silently never trips, so a batch that should
 have stopped keeps dispatching work against a broken downstream. And the
 same member is counted twice: once by the ghost, once by the live
@@ -116,7 +116,7 @@ async def _reclaim_to_newer_attempt(
     """What the fleet does while the stalled handler is still running.
 
     The lease expired, the leader's sweep re-pended the row, and the job
-    was re-dispatched at a newer attempt — here to a different worker.
+    was re-dispatched at a newer attempt - here to a different worker.
     This is the row state the stalled handler's late terminal write
     arrives into.
     """
@@ -143,8 +143,8 @@ def _handler_row(job_id: UUID, attempt: int, worker_id: UUID, batch_id: UUID) ->
 async def _drive_streak_to(backend: object, batch_id: UUID, failures: int) -> None:
     """Put the batch one failure short of its abort threshold.
 
-    Each failure is a distinct member reaching a real terminal failure —
-    the ordinary way a streak builds — applied through the production
+    Each failure is a distinct member reaching a real terminal failure -
+    the ordinary way a streak builds - applied through the production
     batch hook.
     """
     for _ in range(failures):
@@ -164,7 +164,7 @@ async def test_reclaimed_attempt_does_not_reset_the_batch_failure_streak(
     member's worker stalls past its lease; the row is reclaimed and
     re-dispatched at a newer attempt on another worker. The stalled
     handler finishes and issues a terminal write, which is fenced and
-    lands on no row — the member has not succeeded, and is at that moment
+    lands on no row - the member has not succeeded, and is at that moment
     still running elsewhere.
 
     If that ghost success resets the streak, the operator's abort policy
@@ -232,7 +232,7 @@ async def test_reclaimed_attempt_does_not_reset_the_batch_failure_streak(
     assert after.consecutive_failures == _FAILURE_THRESHOLD - 1, (
         "a reclaimed attempt whose terminal write matched no row reset the "
         f"batch's consecutive-failure streak to {after.consecutive_failures}: "
-        "the member never succeeded — it is still running on another worker — "
+        "the member never succeeded - it is still running on another worker - "
         "yet the operator's abort threshold was pushed back out of reach, so "
         "a batch that should stop keeps dispatching work"
     )
@@ -250,7 +250,7 @@ async def test_successful_member_still_resets_the_batch_failure_streak(
     The fencing guard must reject ghost outcomes without also swallowing
     real ones. A member that runs to completion under its own lease and
     whose terminal write lands has succeeded, and the abort streak it
-    interrupts must be cleared — otherwise a batch with one intermittent
+    interrupts must be cleared - otherwise a batch with one intermittent
     failure per run aborts on a streak that never actually occurred.
     """
     deps = clean_jobs_app.deps
@@ -288,7 +288,7 @@ async def test_successful_member_still_resets_the_batch_failure_streak(
     await apply_batch_terminal_outcome(backend, job_row, outcome)
 
     assert outcome == "succeeded", (
-        f"a member that ran under its own lease reported {outcome!r} — a "
+        f"a member that ran under its own lease reported {outcome!r} - a "
         "legitimately successful job must be reported succeeded"
     )
     row = await backend.get(job.id)

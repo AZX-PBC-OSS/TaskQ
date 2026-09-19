@@ -1,5 +1,5 @@
 """The runner's escape paths apply the batch hook, mirroring production's
-escape handlers — a batch whose last member ends through an escape
+escape handlers - a batch whose last member ends through an escape
 completes immediately.
 
 Production's ``dispatch_one_job`` applies
@@ -9,17 +9,17 @@ re-raise/return: the CancelledError handler calls the hook with
 ``cancelled`` before re-raising, and the generic-exception handler calls
 it with ``_handle_generic_exception``'s terminal outcome (a handler
 whose terminal write infra-failed leaves the row RUNNING and stays
-hook-silent — the sweep is the recovery, and no batch counter may budge
+hook-silent - the sweep is the recovery, and no batch counter may budge
 on a non-terminal write). The batch-completion check runs on ANY terminal
 member (including those that were discarded), so a batch whose last
-member ends through an escape completes immediately — never
+member ends through an escape completes immediately - never
 sweep-deferred on a normal flow.
 
 The runner's escape mirrors (``PayloadValidationError``, the
 cooperative-cancel absorb in ``run_until_drained``, and the phase-2
 force-cancel that lands on the drain task itself) hold the same
 contract: the escape sets the terminal outcome and falls through to the
-shared hook call. These pins hold it — the member's row reaches its
+shared hook call. These pins hold it - the member's row reaches its
 terminal state AND the batch row reaches ``complete``; re-skipping the
 hook on any mirror strands the batch ``active`` until the stale-batch
 sweep and turns these pins red.
@@ -40,7 +40,7 @@ _START = datetime(2025, 1, 1, tzinfo=UTC)
 
 async def test_cooperative_cancel_escape_completes_the_batch() -> None:
     """A cooperatively-cancelled batch member reaches terminal
-    ``cancelled`` and its batch completes on the escape itself — the
+    ``cancelled`` and its batch completes on the escape itself - the
     runner's absorb mirror falls through to the shared batch hook with
     ``cancelled``, exactly as production's CancelledError handler
     applies the hook best-effort before its re-raise. The
@@ -81,13 +81,13 @@ async def test_cooperative_cancel_escape_completes_the_batch() -> None:
     assert batch.status == "complete", (
         "the escape must apply the batch hook: the batch-completion check "
         "runs on any terminal member, so a batch whose last member ends "
-        f"through the escape completes immediately — got {batch.status}"
+        f"through the escape completes immediately - got {batch.status}"
     )
 
 
 async def test_payload_validation_escape_completes_the_batch() -> None:
     """A pre-actor payload-validation failure reaches terminal ``failed``
-    and its batch completes on the escape itself — the runner's
+    and its batch completes on the escape itself - the runner's
     validation mirror falls through to the shared batch hook with
     ``failed``, mirroring production's generic-exception escape, where
     the handler's terminal outcome reaches the hook. Re-skipping the
@@ -127,7 +127,7 @@ async def test_payload_validation_escape_completes_the_batch() -> None:
     assert batch.status == "complete", (
         "the escape must apply the batch hook: the batch-completion check "
         "runs on any terminal member, so a batch whose last member ends "
-        f"through the escape completes immediately — got {batch.status}"
+        f"through the escape completes immediately - got {batch.status}"
     )
 
 
@@ -144,7 +144,7 @@ async def test_force_cancelled_member_completes_the_batch_and_the_drain_continue
     drain task, so phase 2 targets the drain itself; absorbing that
     self-inflicted cancellation is what keeps the two backends
     observably equivalent. Letting it escape instead diverges twice over
-    — the batch strands ``active`` until the stale-batch sweep, and every
+    - the batch strands ``active`` until the stale-batch sweep, and every
     job queued behind the abandoned one silently never runs, which in a
     test suite reads as a passing drain over work that was dropped.
 
@@ -240,13 +240,13 @@ async def test_force_cancelled_member_completes_the_batch_and_the_drain_continue
         "the force-cancel escape must be absorbed: production cancels only "
         "the abandoned job's attempt task and its dispatch loop keeps "
         "running, so the in-memory mirror must not surface a "
-        f"CancelledError its caller never requested — got {drain_escaped!r}"
+        f"CancelledError its caller never requested - got {drain_escaped!r}"
     )
 
     follower_row = await backend.get(follower_args.id)
     assert follower_row is not None
     assert follower_row.status == "succeeded", (
-        "a job queued behind a force-cancelled job must still run — "
+        "a job queued behind a force-cancelled job must still run - "
         "production keeps dispatching after cancelling one attempt task, "
         f"so the mirror must too; got {follower_row.status}"
     )
@@ -257,5 +257,5 @@ async def test_force_cancelled_member_completes_the_batch_and_the_drain_continue
         "the force-cancel escape must apply the batch hook like the other "
         "two escapes: the batch-completion check runs on any terminal "
         "member, abandoned included, so skipping the hook here strands the "
-        f"batch active until the stale-batch sweep — got {batch.status}"
+        f"batch active until the stale-batch sweep - got {batch.status}"
     )

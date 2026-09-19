@@ -1,7 +1,7 @@
 """Throughput must come from the fleet, not from whichever pod wins the race.
 
 The queue's depth oracles vary backlog depth and cohort count against a
-single dispatcher, so they measure how much work one round does — never
+single dispatcher, so they measure how much work one round does - never
 whether a second dispatcher contributes any. That axis is the one an
 operator changes: the response to a growing backlog is to add pods.
 
@@ -11,7 +11,7 @@ claims are disjoint, so no job runs twice; a round comes back empty only
 when there is genuinely nothing left to claim, not merely because a peer
 holds this pod's first-ranked candidates; and the fleet's per-round yield
 grows when a pod joins. A fleet that fails these looks healthy on every
-per-pod metric — each pod reports successful rounds — while the backlog
+per-pod metric - each pod reports successful rounds - while the backlog
 drains at the rate of one pod no matter how many are paid for.
 """
 
@@ -102,8 +102,8 @@ async def test_a_pod_returns_empty_only_when_no_claimable_work_remains(
     window taken and reports an empty round, while the backlog behind the
     window is untouched and claimable.
 
-    Operationally the pod looks healthy — it is polling, its rounds
-    return, it logs no error — and it does no work. An operator scaling
+    Operationally the pod looks healthy - it is polling, its rounds
+    return, it logs no error - and it does no work. An operator scaling
     out to drain a backlog sees the new pods idle and the backlog fall at
     its old rate, with no signal anywhere naming the cause.
     """
@@ -122,7 +122,7 @@ async def test_a_pod_returns_empty_only_when_no_claimable_work_remains(
                 f"pod {['a', 'b'][pod_index]} returned an empty round with {remaining} "
                 f"pending jobs still unlocked and due out of a backlog of {_BACKLOG}. "
                 "An empty round tells the worker there is nothing to do, so it backs "
-                "off and waits — adding this pod bought the fleet no throughput at all."
+                "off and waits - adding this pod bought the fleet no throughput at all."
             )
 
 
@@ -133,7 +133,7 @@ async def test_fleet_round_yield_grows_when_a_pod_joins(pg_dsn: str) -> None:
     time: row counts are exact and deterministic, while timing on a
     shared container is neither. Each arm starts from its own untouched
     backlog, because the comparison is only honest if both fleets face
-    the same queue — a round run against a backlog some earlier round
+    the same queue - a round run against a backlog some earlier round
     already disturbed is measuring a different, easier question.
 
     One pod at limit 5 claims 5. Two pods claiming at the same time must

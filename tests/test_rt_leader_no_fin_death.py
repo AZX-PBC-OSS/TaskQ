@@ -4,18 +4,18 @@ horizon, to a follower holding no special privilege.
 
 The failure this file watches: the holder's TCP session dies without a FIN
 (power loss, SIGSTOP, a black-holed partition), so nothing at the server
-closes it. Leadership is the row lease in ``maintenance_leader`` — the
+closes it. Leadership is the row lease in ``maintenance_leader`` - the
 holder's own ``expires_at`` is the horizon, and takeover is an UPDATE any
-application role may run — so recovery needs neither the server's
+application role may run - so recovery needs neither the server's
 connection reaping (stock keepalives: ~2 h 11 m) nor the privilege to
 terminate another backend (commonly reserved on managed Postgres).
 
 The proof shape: pod A is frozen mid-leadership with every connection held
-open — the no-FIN shape — and pod B runs as a freshly created
+open - the no-FIN shape - and pod B runs as a freshly created
 ``NOSUPERUSER`` role whose inability to terminate a peer's backend is
 asserted against the live server before the freeze. B must promote within
 ``leader_lease + heartbeat_interval + margin``, the maintenance_leader row
-must come to name B, and no terminate-based reclaim may be issued — the
+must come to name B, and no terminate-based reclaim may be issued - the
 mechanism that needed the privilege is gone, and the promotion must not
 depend on it.
 """
@@ -57,11 +57,11 @@ _RECOVERY_SLACK_SECS: float = 3.0
 async def _election_only(
     deps: WorkerDeps, backend: PostgresBackend, worker_id: UUID
 ) -> tuple[MaintenanceLeader, asyncio.Event, asyncio.Task[None]]:
-    """Start ONLY the leader's election loop — no ``run()`` TaskGroup, no watchdog.
+    """Start ONLY the leader's election loop - no ``run()`` TaskGroup, no watchdog.
 
     Starting the election loop alone lets this file freeze a REAL elected
-    leader in place (stop the loop task, keep every connection open) — the
-    no-FIN holder shape — without tearing its session down.
+    leader in place (stop the loop task, keep every connection open) - the
+    no-FIN holder shape - without tearing its session down.
     """
     leader = MaintenanceLeader(deps, worker_id, backend, clock=SystemClock())
     shutdown = asyncio.Event()
@@ -87,16 +87,16 @@ async def _stop_election_task(
 
 async def _release_leader_conns(leader: MaintenanceLeader) -> None:
     """Close the leader-owned conns (cron/monitor/leader) the election-only
-    startup path leaves open — ``run()``'s finally normally does this."""
+    startup path leaves open - ``run()``'s finally normally does this."""
     await leader._close_leader_owned_conns(mid_run=False)  # pyright: ignore[reportPrivateUsage]  # Why: election-only startup skips run()'s teardown; this is its manual equivalent.
-    await leader._drop_leader_conn(reason="rt teardown")  # pyright: ignore[reportPrivateUsage]  # Why: same — release the session's courtesy lock for teardown.
+    await leader._drop_leader_conn(reason="rt teardown")  # pyright: ignore[reportPrivateUsage]  # Why: same - release the session's courtesy lock for teardown.
 
 
 async def _open_pod(
     pg_dsn: str, schema: str
 ) -> tuple[AsyncExitStack, WorkerDeps, PostgresBackend, UUID]:
     """Open one worker's deps + backend against an already-migrated schema,
-    on whatever DSN the caller hands in — the follower in this file connects
+    on whatever DSN the caller hands in - the follower in this file connects
     as the restricted role, so its whole connection surface inherits the
     restriction the way a deployment's pod would."""
     settings = WorkerSettings.load_from_dict({"pg_dsn": pg_dsn, "schema_name": schema})
@@ -124,7 +124,7 @@ async def test_no_fin_leader_death_leadership_must_be_recoverable_within_bounded
     schema = f"tlrt_{new_base62()}".lower()
     role = f"tqnsu_{new_base62(10)}".lower()
     # Generated per run and base62 (alphanumeric), so the DDL literal below
-    # cannot break out of its quotes; nothing secret is hardcoded — the
+    # cannot break out of its quotes; nothing secret is hardcoded - the
     # credential exists only inside the throwaway test container.
     role_password = new_base62(24)
 
@@ -202,7 +202,7 @@ async def test_no_fin_leader_death_leadership_must_be_recoverable_within_bounded
                 # -- A dies WITHOUT a FIN ----------------------------------
                 # Stopping ONLY the election-loop task exits the loop with no
                 # cleanup: deps_a.leader_conn (and the cron/monitor conns) stay
-                # OPEN and idle and is_leader stays SET — a holder gone silent
+                # OPEN and idle and is_leader stays SET - a holder gone silent
                 # with its session alive. Nothing sends a FIN; from pod B's
                 # side this is exactly a partitioned/black-holed leader.
                 shutdown_a.set()
@@ -252,7 +252,7 @@ async def test_no_fin_leader_death_leadership_must_be_recoverable_within_bounded
                     "leader-advisory-lock-unavailable" in r.getMessage() for r in caplog.records
                 ), (
                     "the frozen holder's session still holds the courtesy lock, so "
-                    "the takeover must show its miss — proof the election never "
+                    "the takeover must show its miss - proof the election never "
                     "waited on it"
                 )
             finally:

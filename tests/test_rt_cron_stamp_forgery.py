@@ -5,15 +5,15 @@ enqueued the jobs: every cron fire and twin carries
 ``metadata['cron_schedule_id']`` and
 ``_skip_already_delivered_overlap_twins`` counts only rows bearing the
 planning schedule's own id (``cron_loop.py:719``). That closes theft
-*between schedules* — but the stamp is written by a query that trusts
+*between schedules* - but the stamp is written by a query that trusts
 whatever the row carries, and the client entry point that builds those
 rows lets a caller supply the key: ``build_enqueue_args`` strips a
 caller-supplied ``batch_id`` as a "Security boundary" (``_args.py:225``)
 and nothing else. A caller can therefore self-assert membership in a
 victim schedule's delivery set with an ordinary on-demand enqueue.
 
-The three attacks below share one hypothesis — a forged stamp counts
-as coverage — pinned at each layer it crosses: the single-enqueue
+The three attacks below share one hypothesis - a forged stamp counts
+as coverage - pinned at each layer it crosses: the single-enqueue
 entry point, the batch-enqueue entry point, and a real tick driving a
 real schedule across the fold, where the forged job advances
 ``next_fire_at`` past an owed occurrence that then never fires.
@@ -81,7 +81,7 @@ def test_caller_supplied_cron_schedule_id_is_stripped_from_single_enqueue() -> N
         metadata={"cron_schedule_id": victim, "note": "user-data"},
     )
     assert "cron_schedule_id" not in args.metadata, (
-        "a caller-supplied cron_schedule_id must not reach the job row — "
+        "a caller-supplied cron_schedule_id must not reach the job row - "
         f"it lets any enqueue pose as schedule {victim}'s delivery"
     )
     assert args.metadata.get("note") == "user-data"
@@ -110,7 +110,7 @@ def test_caller_supplied_cron_schedule_id_is_stripped_from_batch_items() -> None
     assert len(built) == 2
     for args in built:
         assert "cron_schedule_id" not in args.metadata, (
-            "a caller-supplied cron_schedule_id must not reach the job row — "
+            "a caller-supplied cron_schedule_id must not reach the job row - "
             f"it lets any batch item pose as schedule {victim}'s delivery"
         )
         assert "batch_id" in args.metadata
@@ -121,7 +121,7 @@ def test_batch_stamp_param_cannot_resurrect_forged_stamps() -> None:
 
     The batch paths pass the library's batch_id into
     ``build_enqueue_args`` directly (``stamp_batch_id``) instead of
-    re-constructing args with ``replace`` after the call — one frozen
+    re-constructing args with ``replace`` after the call - one frozen
     dataclass construction per item instead of two. The pin: the strip
     must still run first, so a forged ``batch_id`` on item metadata loses
     to the library's stamp and a forged ``cron_schedule_id`` is still
@@ -149,8 +149,8 @@ class _PinnedDueConn:
     """Due-bound-pinning wrapper (same shape as the parity-DST drive's).
 
     Only the tick's driving SELECT is rewritten to the pinned instant;
-    every other statement — planning clock, preflights, batched enqueue,
-    schedule UPDATEs — runs against real PG on the same connection.
+    every other statement - planning clock, preflights, batched enqueue,
+    schedule UPDATEs - runs against real PG on the same connection.
     """
 
     def __init__(self, conn: asyncpg.Connection, due_as_of: datetime) -> None:
@@ -209,13 +209,13 @@ async def test_forged_provenance_stamp_steals_an_owed_fold_occurrence(
     after firing 01:59 fold-0 its next fire must be the pass's first
     match (06:00 UTC). The decoy is an ordinary on-demand job for the
     same actor at exactly that instant, requesting the victim's
-    schedule id in its metadata through ``build_enqueue_args`` — the
+    schedule id in its metadata through ``build_enqueue_args`` - the
     row carries whatever the public entry point preserves, so this
     test drives the exact public path rather than hand-stamping the
     row. While the boundary lets the stamp through, the tick still
-    fires honestly (one plan) but the coverage walk takes the decoy for
+    fires with one plan, but the coverage walk takes the decoy for
     the schedule's own delivery and advances ``next_fire_at`` to 06:01:
-    the 06:00 occurrence is never enqueued and never fires — one
+    the 06:00 occurrence is never enqueued and never fires - one
     occurrence silently lost per forged instant, with no error anywhere.
     Once the boundary strips the stamp, the decoy is inert and the
     schedule fires 06:00 itself.
@@ -255,14 +255,14 @@ async def test_forged_provenance_stamp_steals_an_owed_fold_occurrence(
 
     fired = await _tick(clean_pg_conn, settings, schema, {}, due_as_of=_LAST_FOLD0_TICK_UTC)
     assert fired == 1, (
-        "the last fold-0 tick owes its own fire — a failure here is setup, not the finding"
+        "the last fold-0 tick owes its own fire - a failure here is setup, not the finding"
     )
     row = await schedule_row(clean_pg_conn, schema, schedule_id)
     assert row["next_fire_at"] == _FIRST_FOLD1_SLOT_UTC, (
         "the schedule holds no twins and owes the whole fold-1 pass; its "
         "next owed occurrence is the pass's first match "
-        f"({_FIRST_FOLD1_SLOT_UTC.isoformat()}) — an on-demand job's forged "
-        f"stamp is not its delivery — got {row['next_fire_at'].isoformat()}"
+        f"({_FIRST_FOLD1_SLOT_UTC.isoformat()}) - an on-demand job's forged "
+        f"stamp is not its delivery - got {row['next_fire_at'].isoformat()}"
     )
     assert await count_jobs(clean_pg_conn, schema, _ACTOR) == 2, (
         "exactly the honest fire plus the decoy: no owed occurrence may be "

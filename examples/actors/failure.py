@@ -1,4 +1,4 @@
-"""Failure-mode actors — retry, snooze, and simulated errors.
+"""Failure-mode actors - retry, snooze, and simulated errors.
 
 These actors demonstrate TaskQ's failure-handling primitives: automatic
 retry with a configurable policy (flaky) and cooperative snooze/deferral
@@ -23,7 +23,7 @@ class SnoozePayload(BaseModel):
 
 @actor(name="flaky", queue="examples", retry=RetryPolicy(max_attempts=5))
 async def flaky(payload: FlakyPayload, ctx: JobContext[FlakyPayload]) -> None:
-    """Fails on the first N attempts, then succeeds — demonstrates retry."""
+    """Fails on the first N attempts, then succeeds - demonstrates retry."""
     if ctx.attempt <= payload.fail_count:
         raise ValueError("simulated failure")
 

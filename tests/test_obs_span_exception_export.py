@@ -17,7 +17,7 @@ three call-site shapes that exist in production:
 * a bare ``safe_start_span`` with no local exception handling at all (the
   ``attempt.N`` span in ``worker/_consumer.py``, which wraps user job code).
 
-The canary is planted in a Postgres ``DETAIL`` line — a real
+The canary is planted in a Postgres ``DETAIL`` line - a real
 ``UniqueViolationError`` whose ``str()`` quotes the offending
 ``idempotency_key`` value, which in TaskQ is always caller-supplied and
 routinely a tenant or subject identifier.
@@ -118,7 +118,7 @@ async def test_exported_span_never_carries_postgres_detail(
     assert len(spans) == 1
     span: ReadableSpan = spans[0]
 
-    # Whole exported span — status description, every event, every attribute.
+    # Whole exported span - status description, every event, every attribute.
     exported = span.to_json()
     assert CANARY not in exported, f"row value reached the exporter:\n{exported}"
 

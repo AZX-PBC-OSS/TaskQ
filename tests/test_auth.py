@@ -347,7 +347,7 @@ async def test_make_pg_pool_factory_forwards_statement_cache_defaults() -> None:
 
 
 async def test_make_pg_pool_factory_forwards_statement_cache_overrides() -> None:
-    """Explicit statement-cache kwargs beat the factory defaults — the shape
+    """Explicit statement-cache kwargs beat the factory defaults - the shape
     a settings-aware caller (statement_cache_kwargs) forwards, so
     TASKQ_STATEMENT_CACHE_SIZE / TASKQ_MAX_CACHED_STATEMENT_LIFETIME can
     reach a provider-backed pool."""
@@ -859,7 +859,7 @@ async def test_make_dedicated_conn_factory_declares_setup_as_the_inheritable_ini
     the factory DECLARES it: a worker building a shadow connection
     family (the per-slot pool, when this factory provides the LOOP-scope
     registration) reads the hook back off the factory and replays it.
-    Without a ``setup`` the factory declares nothing — the worker then
+    Without a ``setup`` the factory declares nothing - the worker then
     warns rather than guessing."""
     from taskq.connections import connection_init_hook
 

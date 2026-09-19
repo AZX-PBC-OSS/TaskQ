@@ -1,7 +1,7 @@
 """Regression tests for worker watchdog and health safety invariants.
 
 Each test validates a specific behavioral contract that was found violated
-during review. These are permanent regression tests — they describe what
+during review. These are permanent regression tests - they describe what
 the code must do, not what a PR comment said.
 """
 
@@ -60,7 +60,7 @@ async def test_producer_loop_forgets_liveness_registration_on_exit() -> None:
     """Behavioral pin for the drain fix: the REAL producer_loop must call
     liveness.forget('producer') when it exits. If the forget line in
     run.py is removed, the registration goes stale and detector 2 kills a
-    normally-draining worker — this test fails without it."""
+    normally-draining worker - this test fails without it."""
     from types import SimpleNamespace
     from typing import cast
 
@@ -96,7 +96,7 @@ async def test_producer_loop_forgets_liveness_registration_on_exit() -> None:
         SimpleNamespace(
             settings=settings,
             liveness=liveness,
-            # The producer's availability subtracts active jobs (#229).
+            # The producer's availability subtracts active jobs.
             active_jobs=SimpleNamespace(count=lambda: 0),
         ),
     )
@@ -127,7 +127,7 @@ async def test_producer_loop_forgets_liveness_registration_on_exit() -> None:
         await asyncio.wait_for(task, timeout=5.0)
 
         assert "producer" not in liveness.ages(), (
-            "producer_loop must forget its liveness registration on exit — "
+            "producer_loop must forget its liveness registration on exit - "
             "a lingering registration goes stale during the drain and trips "
             "detector 2"
         )
@@ -278,7 +278,7 @@ def test_tick_age_gauge_callback_thread_safe_against_mutation(
 #
 # os._exit skips atexit handlers and finalizers, so the OTel SDK's periodic
 # exporter never runs. The watchdog_trips_total increment is lost, meaning
-# you cannot alert on watchdog trips — the primary thing you'd alert on.
+# you cannot alert on watchdog trips - the primary thing you'd alert on.
 # trip() must call force_flush before exiting, and must still exit when the
 # provider has no flush capability.
 
@@ -442,7 +442,7 @@ async def test_lag_watchdog_flushes_metrics_before_force_exit(
 # ── _shutdown_duration histogram must actually be recorded ───────────────
 #
 # The histogram is created but .record() is never called anywhere in the
-# module, so it exports nothing — a missing series rather than a zero. The
+# module, so it exports nothing - a missing series rather than a zero. The
 # clean-teardown path (cancel) must record the anchored elapsed seconds.
 
 
@@ -518,7 +518,7 @@ async def test_shutdown_duration_skipped_when_shutdown_never_started(
 
 async def test_health_socket_secured_when_tasks_enabled(tmp_path: Path) -> None:
     """When TASKQ_HEALTH_TASKS_ENABLED=true, the socket must be created
-    owner-only from bind time — no window where it is world-accessible.
+    owner-only from bind time - no window where it is world-accessible.
     The fix uses umask before bind instead of chmod after bind.
     """
     import os
@@ -536,7 +536,7 @@ async def test_health_socket_secured_when_tasks_enabled(tmp_path: Path) -> None:
     # long-temp-dir machine renders this socket path ~128 bytes, so
     # asyncio.start_unix_server fails with "AF_UNIX path too long" before the
     # permission assertion can even run. The constraint is a property of the
-    # TEST HARNESS's path, not the code under test — production
+    # TEST HARNESS's path, not the code under test - production
     # TASKQ_HEALTH_SOCKET_PATH values (e.g. /run/taskq/health.sock) sit far
     # below the cap. Skipped only when the harness path itself cannot bind;
     # platforms with short tmp dirs (Linux CI) still execute the assertion.
@@ -797,7 +797,7 @@ async def test_shutdown_watchdog_anchors_deadline_on_first_signal(
 
     t[0] += 8.0  # 8s of drain before shutdown_event is set
     shutdown.set()
-    t[0] += 3.0  # 11s since the first signal — over the 10s deadline
+    t[0] += 3.0  # 11s since the first signal - over the 10s deadline
     await asyncio.sleep(0.05)
 
     assert exit_codes == [2], (
@@ -826,7 +826,7 @@ async def test_shutdown_watchdog_without_anchor_counts_from_event(
 
     t[0] += 8.0
     shutdown.set()
-    t[0] += 3.0  # 3s since the event — under the deadline
+    t[0] += 3.0  # 3s since the event - under the deadline
     await asyncio.sleep(0.05)
 
     assert exit_codes == [], f"Unanchored watchdog must not trip at 3s < 10s. Got {exit_codes}"
@@ -997,14 +997,14 @@ async def test_shutdown_watchdog_logs_once_when_countdown_starts() -> None:
 
 #
 # These loops tick before the is_leader check, so they keep ticking even
-# when demoted. This is correct — they don't need forget() on demotion
+# when demoted. This is correct - they don't need forget() on demotion
 # because they never stop ticking (unlike leader.watchdog, which forgets
 # on demotion because it parks until re-election).
 
 
 async def test_demoted_leader_loops_still_tick_liveness() -> None:
     """A demoted (non-leader) worker's cron and scheduled_wake loops must
-    keep registering liveness ticks — and must not touch the backend —
+    keep registering liveness ticks - and must not touch the backend -
     so detector 2 never false-trips on an ordinary leadership change."""
     from types import SimpleNamespace
     from typing import cast
@@ -1059,7 +1059,7 @@ async def test_demoted_leader_loops_still_tick_liveness() -> None:
 # ── Loop DB awaits must be bounded (detector 2 false-trip guard) ─────────
 #
 # Leader loops tick once per iteration, then await PG. Without a per-query
-# timeout, a stalled PG hangs the await indefinitely — the loop stops
+# timeout, a stalled PG hangs the await indefinitely - the loop stops
 # ticking, the staleness budget expires, and detector 2 kills a healthy
 # worker. The dispatcher pool and the leader's dedicated conns are bounded
 # by dispatcher_command_timeout.
@@ -1297,7 +1297,7 @@ async def test_open_worker_deps_leader_factory_applies_dispatcher_command_timeou
 # _run() parks on shutdown_event.wait(). shutdown_event is only set at the
 # very end of orchestrate_shutdown (finally block, line 265) or in the
 # leader_conn close path (line 254). If orchestrate_shutdown hangs during
-# drain/cancel/force phases — e.g. on an unbounded DB await — shutdown_event
+# drain/cancel/force phases - e.g. on an unbounded DB await - shutdown_event
 # is never set, the watchdog never wakes, and the termination_grace_period
 # deadline is never enforced. The watchdog exists to catch exactly this
 # scenario but is blind to it.
@@ -2334,7 +2334,7 @@ async def test_election_probe_unexpected_continues_not_falls_through(
 
     assert lock_attempts == 0, (
         f"probe failure must continue before re-election; lock attempted "
-        f"{lock_attempts} time(s) — guard.ok() would reset the streak"
+        f"{lock_attempts} time(s) - guard.ok() would reset the streak"
     )
     assert probe_calls >= 3, f"probe must be called at least 3 times: {probe_calls}"
 

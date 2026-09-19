@@ -31,7 +31,7 @@ def _make_args(
         max_attempts=3,
         retry_kind="transient",
         # None = immediate: the server stamps and decides status in the
-        # enqueue statement itself — a Python-clock stamp races the
+        # enqueue statement itself - a Python-clock stamp races the
         # app-to-DB skew and can land the row 'scheduled' under load.
         scheduled_at=None,
         idempotency_key=IdempotencyKey(idempotency_key) if idempotency_key is not None else None,
@@ -97,7 +97,7 @@ class TestSameKeyDifferentScopesInBatch:
 
 class TestSameKeySameScopeCollidesInBatch:
     """Same key+scope pair within a batch collides correctly against a
-    pre-existing row — returns the original row's data."""
+    pre-existing row - returns the original row's data."""
 
     async def test_collision_returns_pre_existing_row(self, clean_jobs_app: JobsApp) -> None:
         backend = clean_jobs_app.backend

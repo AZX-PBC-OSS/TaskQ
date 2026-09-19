@@ -5,24 +5,24 @@ The workgroup shutdown sequence (src/taskq/worker/workgroup.py:989-1031):
 forward SIGTERM to every living child under the restart lock, wait
 concurrently for up to ``shutdown_grace``, cancel the stragglers' wait
 tasks, then ``proc.kill()`` (SIGKILL) any survivor. Existing pins cover
-cooperative children — test_run_forever_graceful_shutdown_via_signal
+cooperative children - test_run_forever_graceful_shutdown_via_signal
 asserts the SIGTERM was forwarded to a FakeProcess that "exits" on it,
 and test_kill_child_timeout_then_sigkill pins the HEALTH-kill helper's
 escalation in isolation. No test drives the SHUTDOWN path's escalation
 with a child that actually refuses to leave.
 
-This file does: a real child process (short-lived by construction —
+This file does: a real child process (short-lived by construction -
 killed within ``shutdown_grace`` seconds of the test's signal) traps
 SIGTERM and SIGINT and keeps running, marking a file when SIGTERM
 arrives so the test can prove the signal reached it. The supervisor
 must still complete run_forever (bounded) and reap the child via
-SIGKILL — observable as ``returncode == -SIGKILL``.
+SIGKILL - observable as ``returncode == -SIGKILL``.
 
 The spawn is patched to substitute the defiant child for the real
 ``python -m taskq worker`` command line (the same patch surface the
-existing run_forever tests use); everything downstream of the spawn —
+existing run_forever tests use); everything downstream of the spawn -
 signal forwarding, the grace window, the force-kill loop, stream-task
-teardown — is the production shutdown path, unpatched. The child is
+teardown - is the production shutdown path, unpatched. The child is
 always reaped by the supervisor's kill; the test's finally block
 force-kills and waits again as a belt-and-braces guarantee.
 """
@@ -67,13 +67,13 @@ while True:
 _SHUTDOWN_GRACE = 1.5
 _SUPERVISOR_BOUND = 12.0
 """Bound on the whole run_forever teardown: shutdown_grace plus generous
-margins for stream-task teardown and scheduling — a regression that
+margins for stream-task teardown and scheduling - a regression that
 hangs shutdown fails the test by name instead of the suite."""
 
 
 async def test_shutdown_force_kills_a_child_that_ignores_sigterm(tmp_path: Path) -> None:
     """A SIGTERM-defiant child must be reaped by SIGKILL within the grace
-    budget, and run_forever must return — the supervisor may never
+    budget, and run_forever must return - the supervisor may never
     outlive a child that refuses to cooperate."""
     marker = tmp_path / "sigterm_marker"
     config = WorkgroupConfig(
@@ -81,7 +81,7 @@ async def test_shutdown_force_kills_a_child_that_ignores_sigterm(tmp_path: Path)
         supervisor=SupervisorConfig(shutdown_grace=_SHUTDOWN_GRACE),
         workers=[WorkerSpec(name="defiant", queues=["default"])],
     )
-    config_path = Path("/tmp/rt_cs_defiant_workgroup.toml")  # noqa: S108  # Why: same never-read config-path pattern as tests/test_workgroup.py — load_workgroup_config is patched, the path is never opened.
+    config_path = Path("/tmp/rt_cs_defiant_workgroup.toml")  # noqa: S108  # Why: same never-read config-path pattern as tests/test_workgroup.py - load_workgroup_config is patched, the path is never opened.
 
     real_exec = asyncio.create_subprocess_exec
     children: list[asyncio.subprocess.Process] = []
@@ -149,7 +149,7 @@ async def test_shutdown_force_kills_a_child_that_ignores_sigterm(tmp_path: Path)
                 pytest.fail(
                     "CONTRACT: run_forever must complete shutdown within "
                     f"{_SHUTDOWN_GRACE}s grace (bounded to {_SUPERVISOR_BOUND}s "
-                    "here) even when a child ignores SIGTERM — the force-kill "
+                    "here) even when a child ignores SIGTERM - the force-kill "
                     "loop (src/taskq/worker/workgroup.py:1014-1023) exists "
                     "precisely so a defiant child cannot wedge the supervisor."
                 )
@@ -159,10 +159,10 @@ async def test_shutdown_force_kills_a_child_that_ignores_sigterm(tmp_path: Path)
 
         # The child is dead and SIGKILL is what reaped it: returncode
         # -SIGKILL can only be set by the kernel after an uncatchable
-        # kill — a SIGTERM exit would be 1 (the script would exit on the
+        # kill - a SIGTERM exit would be 1 (the script would exit on the
         # signal if it did not trap it) or 0.
         deadline = loop.time() + 3.0
-        while proc.returncode is None and loop.time() < deadline:  # noqa: ASYNC110  # Why: intentional poll loop — a subprocess's returncode has no asyncio.Event; bounded by the deadline and 50 ms ticks.
+        while proc.returncode is None and loop.time() < deadline:  # noqa: ASYNC110  # Why: intentional poll loop - a subprocess's returncode has no asyncio.Event; bounded by the deadline and 50 ms ticks.
             await asyncio.sleep(0.05)
         assert proc.returncode == -signal.SIGKILL, (
             f"the defiant child must be reaped by SIGKILL (returncode "
@@ -172,7 +172,7 @@ async def test_shutdown_force_kills_a_child_that_ignores_sigterm(tmp_path: Path)
             "signal"
         )
 
-        # And the SIGTERM actually reached the child before escalation —
+        # And the SIGTERM actually reached the child before escalation -
         # the marker is written by the child's own SIGTERM handler.
         assert marker.exists() and marker.read_text() == "sigterm-received", (
             "the supervisor must forward SIGTERM to the child before "

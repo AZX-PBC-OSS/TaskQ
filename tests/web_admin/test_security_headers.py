@@ -4,7 +4,7 @@ Both gaps matter specifically behind a TLS-terminating edge (Azure Application
 Gateway / App Service): the app sees plain ``http`` internally, so anything
 derived from ``request.url.scheme`` is wrong there.
 
-Every assertion here is on an observable response header — never on source text.
+Every assertion here is on an observable response header - never on source text.
 """
 
 from collections.abc import Callable
@@ -89,7 +89,7 @@ def test_csrf_cookie_is_secure_over_plain_http_behind_a_tls_terminator(
     make_app: Callable[..., TestClient],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """TestClient speaks http://testserver — exactly what the app sees behind
+    """TestClient speaks http://testserver - exactly what the app sees behind
     Azure Application Gateway. Deriving ``secure`` from the observed scheme
     silently drops the flag there; the configured value must not."""
     monkeypatch.setenv("TASKQ_ADMIN_UI_SECURE_COOKIES", "true")
@@ -114,7 +114,7 @@ def test_insecure_cookie_over_https_warns(
     structlog_capture: list[structlog.types.EventDict],
 ) -> None:
     """Serving real HTTPS with secure cookies switched off is a misconfiguration
-    that costs the session on the next plaintext hop — say so loudly."""
+    that costs the session on the next plaintext hop - say so loudly."""
     monkeypatch.setenv("TASKQ_ADMIN_UI_SECURE_COOKIES", "false")
     client = make_app()
     client.get("https://testserver/queues")

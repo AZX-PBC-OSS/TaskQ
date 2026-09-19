@@ -825,7 +825,7 @@ async def test_repeated_admission_denials_reschedule_without_bound(
     # Each cycle mirrors one real claim→denial round: mark_snoozed refunds
     # the claim's attempt increment (GREATEST(attempt - 1, 0)), and the
     # raw re-claim below plays the dispatcher's own increment before the
-    # next denial — the attempt oscillates between N and N+1 and never
+    # next denial - the attempt oscillates between N and N+1 and never
     # walks toward max_attempts or the smallint ceiling, however many
     # denials occur.
     denials = 5
@@ -966,7 +966,7 @@ async def test_admission_denial_past_schedule_to_close_fails_on_the_deadline_pat
     Why it matters: "rescheduled indefinitely" needs a floor that is
     honest about why the job died. The deadline is the operator's own
     statement of how long the work stays worth doing, so a job that ran
-    out of that window reports DeadlineExceeded — never an error class
+    out of that window reports DeadlineExceeded - never an error class
     asserting the actor ran and exhausted its retries, which would send
     whoever reads it looking for a bug in code that never executed.
     """

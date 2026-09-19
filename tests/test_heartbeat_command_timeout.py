@@ -1,7 +1,7 @@
 """The heartbeat pool's per-query timeout is a setting, not a literal.
 
-Both construction paths — the DSN fallback in ``taskq.worker.deps`` and the
-credential-provider builder in ``taskq.auth`` — hardcoded ``command_timeout=2``.
+Both construction paths - the DSN fallback in ``taskq.worker.deps`` and the
+credential-provider builder in ``taskq.auth`` - hardcoded ``command_timeout=2``.
 An operator on a loaded or cross-region Postgres who raised
 ``dispatcher_command_timeout`` got no relief on the heartbeat path: beats kept
 timing out at 2 s, failures accumulated to ``max_heartbeat_failures`` and the
@@ -92,7 +92,7 @@ def test_provider_heartbeat_factory_uses_the_configured_command_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``build_worker_connections`` promises the provider path is timed out
-    exactly as the DSN path — so it must read the same setting."""
+    exactly as the DSN path - so it must read the same setting."""
     from taskq import auth as auth_mod
 
     calls: list[dict[str, Any]] = []

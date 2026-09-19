@@ -1,11 +1,11 @@
-"""Crash recovery e2e — SIGKILL worker mid-job, surviving worker reclaims.
+"""Crash recovery e2e - SIGKILL worker mid-job, surviving worker reclaims.
 
 Scenario:
 kill a worker mid-job with SIGKILL; the surviving worker's leader sweep
 reclaims the expired lock and re-dispatches the job.
 
-The ``long_running_job`` actor (actors.py) sleeps 30 s — far longer than
-the 8 s lock lease — so a SIGKILL mid-run leaves the job in ``running``
+The ``long_running_job`` actor (actors.py) sleeps 30 s - far longer than
+the 8 s lock lease - so a SIGKILL mid-run leaves the job in ``running``
 with an expired lock.  The leader sweep's ``reclaim_expired_locks``
 (``_leader_sweeps.py`` sweep 1) detects the expired lock, records the
 attempt as ``crashed``, and re-pends the job with a 5 s backoff (retry
@@ -215,7 +215,7 @@ async def test_sigkill_crash_recovery(
 
     # ── Identify which worker is running the job ──────────────────────
     # Query jobs.locked_by_worker (set at dispatch time) rather than
-    # job_attempts.worker_id (only populated at terminal write time —
+    # job_attempts.worker_id (only populated at terminal write time -
     # the attempt row does not exist while the job is still running).
     job_worker_id = await e2e_pg_pool.fetchval(
         f'SELECT locked_by_worker FROM "{schema}".jobs WHERE id = $1',
@@ -231,7 +231,7 @@ async def test_sigkill_crash_recovery(
     target_worker = e2e_worker if job_worker_id == worker_rows[0]["id"] else e2e_worker_second
 
     # ── SIGKILL the worker running the job ────────────────────────────
-    # Use the Docker API's container.kill rather than exec_run — the
+    # Use the Docker API's container.kill rather than exec_run - the
     # daemon delivers the signal directly and tears down the container's
     # network namespace, which releases PG advisory locks promptly.
     wrapped = target_worker.container.get_wrapped_container()

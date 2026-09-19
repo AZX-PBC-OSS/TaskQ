@@ -2,7 +2,7 @@
 
 Container topology: ONE Postgres + ONE Dragonfly shared across ALL xdist
 workers of ONE pytest invocation (see :mod:`taskq.testing._shared_containers`
-— the first session fixture to take the invocation's state-dir file lock
+- the first session fixture to take the invocation's state-dir file lock
 starts the pair; every other worker of the invocation reuses it; it comes
 down when the last LIVE holder of the invocation releases; no other
 invocation, of this repo or any other, can find or reuse it).
@@ -16,7 +16,7 @@ Tests that need PG are marked ``integration`` so non-integration runs (e.g.
 ``pytest -m 'not integration'``) skip them entirely.
 
 Module-scoped fixtures (``module_pg_schema``, ``module_redis_url``) provide
-per-file isolation — each test file gets its own PG schema and Redis DB.
+per-file isolation - each test file gets its own PG schema and Redis DB.
 Function-scoped cleanup fixtures (``clean_pg_conn``, ``clean_jobs_app``,
 ``clean_redis_url``, ``clean_redis_client``) truncate/drop state before
 each test for within-file isolation.
@@ -132,7 +132,7 @@ from tests.web_admin._fixtures import (
 # ── Health-socket isolation ──────────────────────────────────────────────
 # WorkerSettings.health_socket_path defaults to the shared production path
 # /tmp/taskq_health.sock, and _main starts a real HealthServer. Under xdist,
-# two workers inside _main concurrently race on that one filesystem path —
+# two workers inside _main concurrently race on that one filesystem path -
 # the loser gets EADDRINUSE (TOCTOU window in create_unix_server's stale-file
 # removal), or silently steals the socket from the live winner.
 # unique_health_sock_path() mints per-test unique module-scoped paths for
@@ -148,7 +148,7 @@ def free_host_port() -> int:
 
     Required by any test that stops and restarts a container and keeps
     using its host-mapped DSN: Docker does NOT preserve a Docker-assigned
-    ephemeral host port across stop/start — it allocates a fresh one on
+    ephemeral host port across stop/start - it allocates a fresh one on
     start (measured on Linux: 34252 → 34253), silently invalidating every
     host DSN derived before the restart. An explicitly published port is
     part of the container's declared config and is restored verbatim.
@@ -175,12 +175,12 @@ def _isolate_health_server_socket(  # pyright: ignore[reportUnusedFunction]  # W
     """Redirect HealthServer.start away from any path another server may hold.
 
     Rewrites the shared default path (the WorkerSettings default no test
-    should bind) AND any path this fixture already minted — the latter so a
+    should bind) AND any path this fixture already minted - the latter so a
     settings object reused across two start() calls (e.g. a worker-restart
     test) still yields two distinct sockets instead of the second start
     stealing the first server's live socket.
     """
-    # Why: e2e runs workers in containers — no in-process HealthServer exists to isolate.
+    # Why: e2e runs workers in containers - no in-process HealthServer exists to isolate.
     if "e2e" in request.node.keywords:
         return
     original_start = HealthServer.start
@@ -205,7 +205,7 @@ def _reset_oidc_saml_cached() -> Iterator[None]:  # pyright: ignore[reportUnused
 
     ``settings.oidc`` and ``settings.saml`` use dotenvmodel's
     ``OIDCSettings.cached()`` / ``SAMLSettings.cached()``, which returns a process-wide
-    singleton — the environment is read on first access and the same instance
+    singleton - the environment is read on first access and the same instance
     returned thereafter. Without this reset, a test that sets
     ``TASKQ_OIDC_*`` / ``TASKQ_SAML_*`` env vars and accesses the property
     would leak the cached instance into subsequent tests, silently giving them
@@ -230,13 +230,13 @@ def _reset_web_admin_caches(request: pytest.FixtureRequest) -> Iterator[None]:  
     inside that window reads the poisoned entry and renders
     "polling-degraded" for a healthy client (the
     ``test_real_time_badge_with_redis`` flake). Production caching behavior is
-    unchanged — this restores construction state between tests, the reset
+    unchanged - this restores construction state between tests, the reset
     ``tests/web_admin/test_realtime_badge.py`` applies file-locally, promoted
     here so every admin test (including ``tests/test_web_admin.py``, which
     lives outside that package's conftest) is covered. The singletons are
     mutated in place, never rebound: importers hold direct references.
     """
-    # Why: e2e runs the admin UI in containers — the in-process caches are irrelevant.
+    # Why: e2e runs the admin UI in containers - the in-process caches are irrelevant.
     if "e2e" in request.node.keywords:
         yield
         return
@@ -244,7 +244,7 @@ def _reset_web_admin_caches(request: pytest.FixtureRequest) -> Iterator[None]:  
         from taskq.web.admin import _factory as admin_factory
         from taskq.web.admin import ops as admin_ops
     except ImportError:
-        # The fastapi extra is not installed — nothing to reset.
+        # The fastapi extra is not installed - nothing to reset.
         yield
         return
 
@@ -274,19 +274,19 @@ def _reset_notify_module_globals() -> Iterator[None]:  # pyright: ignore[reportU
     """Reset the notify module's process-global listener bookkeeping around
     every test.
 
-    ``taskq.worker.notify`` keeps two module-level registries — the active
-    listener set and the per-backend connected lookup — that production
+    ``taskq.worker.notify`` keeps two module-level registries - the active
+    listener set and the per-backend connected lookup - that production
     code writes whenever a real notify listener runs, and that five test
     files read directly.  Each of those files carried an identical
     file-local copy of this reset; the copies are promoted here as ONE
     shared fixture (the same promotion ``_reset_web_admin_caches`` made
-    from tests/web_admin) so the globals are isolated for every test —
+    from tests/web_admin) so the globals are isolated for every test -
     including any future file that drives the real listener machinery
     without knowing about the bookkeeping.
 
     Cleared IN PLACE, never rebound: the test files import the two
     objects by value (``from taskq.worker.notify import _active_listeners``),
-    so they hold direct references — a rebind would leave their held
+    so they hold direct references - a rebind would leave their held
     objects stale while the module moved on.
     """
     from taskq.worker.notify import _active_listeners, _connected_lookup
@@ -307,7 +307,7 @@ def _leaked_pending_task_report(
     loop, or ``None`` when nothing leaked.
 
     Module-level (not fixture-local) so the suite-hygiene pin can exercise
-    the classification directly — the report is the guard's whole
+    the classification directly - the report is the guard's whole
     contract: a leak must be named, never silently tolerated.
     """
     leaked = sorted(
@@ -327,8 +327,8 @@ async def _fail_on_leaked_asyncio_tasks(request: pytest.FixtureRequest) -> Async
     """Fail loudly when a test leaves an asyncio task still pending.
 
     The suite's event loops are MODULE-scoped (``asyncio_default_test_loop_scope
-    = "module"``), so a loop task a test leaves uncancelled — or cancels
-    without awaiting — stays alive on the module's loop and advances at
+    = "module"``), so a loop task a test leaves uncancelled - or cancels
+    without awaiting - stays alive on the module's loop and advances at
     every later test's await points, exactly the window in which it can
     write process-global state (the obs gauge caches, registries, caches)
     into a test that never asked for it.  The leak is a defect at the
@@ -361,7 +361,7 @@ async def _fail_on_leaked_asyncio_tasks(request: pytest.FixtureRequest) -> Async
         # This fixture is itself an async generator, so the task currently
         # executing this finally block is pytest-asyncio's per-fixture
         # ``async_finalizer`` driver (created at teardown, after the
-        # baseline snapshot — plugin.py's ``_wrap_asyncgen_fixture``).
+        # baseline snapshot - plugin.py's ``_wrap_asyncgen_fixture``).
         # It is the guard's own machinery, never a leak.
         current = asyncio.current_task()
         if current is not None:
@@ -369,7 +369,7 @@ async def _fail_on_leaked_asyncio_tasks(request: pytest.FixtureRequest) -> Async
         report = _leaked_pending_task_report(before, after)
         if report is not None:
             pytest.fail(
-                "test left asyncio task(s) still pending on the module event loop — "
+                "test left asyncio task(s) still pending on the module event loop - "
                 "a live loop keeps writing shared state into later tests. "
                 "Cancel and await every task the test created:\n" + report,
                 pytrace=False,
@@ -387,7 +387,7 @@ def _no_developer_dotfiles(  # pyright: ignore[reportUnusedFunction]  # Why: aut
     rooted at ``DOTENV_DIR`` or the CWD) is written INTO ``os.environ``,
     overriding even ``monkeypatch.setenv`` values set earlier in the same
     test. ``.env.example`` tells developers to create exactly such a file with
-    ``TASKQ_PG_DSN=postgresql://taskq:taskq@localhost:5432/taskq`` — so on a
+    ``TASKQ_PG_DSN=postgresql://taskq:taskq@localhost:5432/taskq`` - so on a
     dev machine the ``settings`` fixture below would silently load the
     developer's own DSN and ``pg_conn`` would then run
     ``DROP SCHEMA … CASCADE`` against the developer's database.
@@ -401,7 +401,7 @@ def _no_developer_dotfiles(  # pyright: ignore[reportUnusedFunction]  # Why: aut
     A raw ``pytest.MonkeyPatch()`` instance is used, not the function-scoped
     ``monkeypatch`` fixture (which has no session scope): ``MonkeyPatch`` is
     the sanctioned env seam with correct undo semantics. ``DOTENV_DIR`` is the
-    one variable that CANNOT flow through ``TaskQSettings`` — it is the input
+    one variable that CANNOT flow through ``TaskQSettings`` - it is the input
     that tells dotenvmodel where to look for dotfiles BEFORE any settings
     object exists. Setting it in the test process also makes subprocess
     children spawned with ``env={**os.environ, ...}`` (e.g. the
@@ -437,7 +437,7 @@ _OTEL_EXPORTER_TRIGGER_ENVS: tuple[str, ...] = (
 @pytest.fixture(scope="session", autouse=True)
 def _no_ambient_otel_exporter_env() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
     """Make the suite hermetic w.r.t. the developer's ambient OTel exporter
-    variables — see ``_OTEL_EXPORTER_TRIGGER_ENVS``. Tests that exercise
+    variables - see ``_OTEL_EXPORTER_TRIGGER_ENVS``. Tests that exercise
     the wiring set the variables they need explicitly (and run the
     set-once provider scenarios in subprocesses)."""
     mp = pytest.MonkeyPatch()
@@ -481,10 +481,10 @@ def _publish_run_isolation_token(  # pyright: ignore[reportUnusedFunction]  # Wh
     Invocation-uniqueness of the token is defense-in-depth, not the isolation
     mechanism: the pair itself is per-invocation
     (:func:`taskq.testing._shared_containers.invocation_state_dir`), so two
-    invocations' names can never land in one cluster — if that isolation ever
+    invocations' names can never land in one cluster - if that isolation ever
     regressed, distinct tokens would keep the runs' names from colliding on
     whatever they ended up sharing. Under xdist the worker id IS the token;
-    serial runs use the invocation-unique basetemp dir name (``pytest-N``) —
+    serial runs use the invocation-unique basetemp dir name (``pytest-N``) -
     pytest allocates a fresh numbered dir per invocation, so two overlapping
     runs can never hold the same one.
     """
@@ -546,7 +546,7 @@ def _clean_rate_limit_registry(request: pytest.FixtureRequest) -> Iterator[None]
 
     Actor decorators register rate limits into the module-level
     ``RateLimitRegistry`` singleton as import-time side effects, and pytest
-    imports every collected module before running any test — so by the
+    imports every collected module before running any test - so by the
     first test, the registry already holds ALL modules' entries.
 
     The registry has seven module-level dicts plus two float timestamps that
@@ -556,7 +556,7 @@ def _clean_rate_limit_registry(request: pytest.FixtureRequest) -> Iterator[None]
     heal-failure log-once stamps. The keyed dicts are populated by lazy
     keyed-ref materialization
     (``_resolve_reservation_name`` / ``_resolve_rate_limit_name``) and
-    would leak across tests if not isolated — a test that materializes a
+    would leak across tests if not isolated - a test that materializes a
     keyed ref against the real singleton would leave tracking entries
     that a subsequent test's cap-check or eviction logic could observe.
     The two opportunistic-eviction scan timestamps
@@ -565,10 +565,10 @@ def _clean_rate_limit_registry(request: pytest.FixtureRequest) -> Iterator[None]
 
     * Unit tests: cleared outright via the public
       :meth:`RateLimitRegistry.clear` (which resets every state field,
-      including the opportunistic-eviction scan timestamps) —
+      including the opportunistic-eviction scan timestamps) -
       ``sync_rate_limit_buckets`` / ``sync_slots`` (called from ``_main``)
       would otherwise attempt pool I/O on stub-pool objects.
-    * Integration tests: snapshot-and-restore — entries a test adds (or
+    * Integration tests: snapshot-and-restore - entries a test adds (or
       removes) are reverted afterwards so nothing leaks FORWARD into
       later tests. The worker additionally filters the registry by its
       own schema at bootstrap (see ``worker/_bootstrap.py``), so leftover
@@ -685,18 +685,18 @@ class _PgContainerShim:
 def pg_container(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator[_PgContainerShim]:
-    """One shared Postgres 18 container per pytest invocation — every xdist
+    """One shared Postgres 18 container per pytest invocation - every xdist
     worker of it, and no other invocation of any repo.
 
     Backs onto :func:`taskq.testing._shared_containers.shared_service_pair`
-    (per-invocation state-dir file lock + holder registry — see
+    (per-invocation state-dir file lock + holder registry - see
     :func:`taskq.testing._shared_containers.invocation_state_dir`): the first
     worker to take the lock boots the tuned container (``max_connections=1000``
     serving ALL workers of the invocation on ONE container, plus checkpoint
-    tuning — see that module for the measured rationale), later workers reuse
+    tuning - see that module for the measured rationale), later workers reuse
     it, and the last worker to finish removes it. Tests that must
     STOP/PAUSE/MUTATE a Postgres (chaos, ALTER USER) get their own disposable
-    container instead — never this one. Skips with a reason (never errors)
+    container instead - never this one. Skips with a reason (never errors)
     when the Docker daemon is unreachable, so a Docker-less machine runs the
     non-container tiers instead.
     """
@@ -707,7 +707,7 @@ def pg_container(
             print(
                 f"[TaskQ] application and database clocks diverge by {delta:+.3f}s "
                 "(positive = database ahead). While this persists, wall-clock comparisons "
-                "across the two domains are unreliable — VM pause/resume and NTP drift "
+                "across the two domains are unreliable - VM pause/resume and NTP drift "
                 "are common causes. Same-statement single-domain comparisons (this "
                 "suite's timing tests) are unaffected."
             )
@@ -720,7 +720,7 @@ def _module_db_name(request: pytest.FixtureRequest) -> str:
     Mirrors the schema-name hashing in ``taskq.testing.fixtures`` (the run
     isolation token from :func:`run_isolation_token` is included so the same
     module gets distinct databases across parallel xdist workers of one
-    invocation — the invocation leg of the token is defense-in-depth, since
+    invocation - the invocation leg of the token is defense-in-depth, since
     the pair is per-invocation and other invocations' names live in other
     clusters), sized well under PostgreSQL's 63-char identifier limit.
     """
@@ -737,7 +737,7 @@ def _pg_admin(base_dsn: str, *statements: str) -> None:
     Uses a private event loop on a private thread: sync fixtures may be
     requested from inside an already-running loop (pytest-asyncio drives
     async fixtures/tests via ``asyncio.Runner`` in the main thread), so
-    creating a loop in the calling thread is not safe — a fresh thread
+    creating a loop in the calling thread is not safe - a fresh thread
     has no such constraint. asyncpg is the only PG driver installed.
     """
     import asyncio
@@ -778,7 +778,7 @@ def _pg_clock_delta(base_dsn: str) -> float:
 
     One-shot diagnostic, not a guard: it cannot see divergence that begins
     AFTER session start (a mid-run VM pause steps the clocks with no
-    follow-up probe) — same-statement single-domain comparisons (this
+    follow-up probe) - same-statement single-domain comparisons (this
     suite's timing tests) are unaffected either way.
     """
     import asyncio
@@ -817,13 +817,13 @@ def pg_dsn(pg_container: _PgContainerShim, request: pytest.FixtureRequest) -> It
     """Module-scoped database on the shared container; DSN pointing at it.
 
     Every test module gets its OWN database on the invocation's ONE shared
-    container — schema-level isolation in a shared database still shares
+    container - schema-level isolation in a shared database still shares
     cluster-wide state (advisory locks, pg_stat_activity, connection
     pressure), which let modules clobber each other. The database name is
     hashed with the run isolation token (see ``_publish_run_isolation_token``),
     so the same module gets distinct databases on parallel xdist workers of
     one invocation. The database is dropped (FORCE) on module teardown (cheap
-    on the tuned shared cluster — see ``taskq.testing._shared_containers``);
+    on the tuned shared cluster - see ``taskq.testing._shared_containers``);
     a drop-if-exists at setup clears stale state from crashed runs.
     """
     base_dsn = pg_container.get_connection_url()
@@ -863,7 +863,7 @@ def settings(
 @pytest_asyncio.fixture
 async def pg_conn(settings: TaskQSettings) -> AsyncIterator[asyncpg.Connection]:
     """A clean asyncpg connection on the module's PG schema (see
-    :func:`module_pg_schema`).  Drops the schema before each test — for
+    :func:`module_pg_schema`).  Drops the schema before each test - for
     isolation within a truncate/reseed cycle prefer ``clean_pg_conn``
     instead, which reuses the already-migrated module schema.
     """

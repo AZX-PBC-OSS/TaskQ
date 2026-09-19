@@ -1,6 +1,6 @@
 """``sweep_expired_results``: one call = one bounded, committed batch.
 
-The result-TTL sweep used to be an UNBOUNDED single UPDATE — one call
+The result-TTL sweep used to be an UNBOUNDED single UPDATE - one call
 nulled every expired result in the table inside one transaction, so its
 duration, lock-hold, and WAL volume scaled with whatever backlog of
 expired results had accumulated (a retention change expiring a fleet's
@@ -86,7 +86,7 @@ def test_signature_carries_batch_size() -> None:
     hope: ``sweep_expired_results`` exposes a keyword-only ``batch_size``."""
     params = inspect.signature(PostgresBackend.sweep_expired_results).parameters
     assert "batch_size" in params, (
-        "sweep_expired_results has no batch_size parameter — one call is an "
+        "sweep_expired_results has no batch_size parameter - one call is an "
         "unbounded UPDATE again; signature is "
         f"{inspect.signature(PostgresBackend.sweep_expired_results)}"
     )
@@ -126,7 +126,7 @@ async def test_one_call_expires_at_most_batch_size_and_drains(
     remaining = await clean_pg_conn.fetchval(_eligible_sql(schema))
     assert remaining == _TOTAL_EXPIRED - _BATCH, (
         f"{remaining} eligible results after a bounded call; expected "
-        f"{_TOTAL_EXPIRED - _BATCH} — the uncapped remainder must be left for "
+        f"{_TOTAL_EXPIRED - _BATCH} - the uncapped remainder must be left for "
         "later calls"
     )
 
@@ -179,7 +179,7 @@ async def test_statement_carries_the_limit(
     assert recorder.execute_calls, "sweep_expired_results must issue its statement"
     sql, args = recorder.execute_calls[0]
     assert "LIMIT $1" in sql, (
-        f"the expiry statement carries no parameterized LIMIT — one call is "
+        f"the expiry statement carries no parameterized LIMIT - one call is "
         f"unbounded again; got: {sql!r}"
     )
     assert args == (1,), f"the LIMIT parameter must bind batch_size; got {args!r}"

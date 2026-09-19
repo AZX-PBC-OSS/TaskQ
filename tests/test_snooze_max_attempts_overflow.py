@@ -3,14 +3,14 @@ snooze ceiling.
 
 ``jobs.max_attempts`` is ``smallint`` (migrations/01.00.00_01_pre_initial.sql
 :82).  ``RetryPolicy.max_attempts`` is typed ``int``, so without an
-explicit guard an operator can persist a value the column cannot hold —
+explicit guard an operator can persist a value the column cannot hold -
 unlike ``priority``, the other smallint the client accepts, which IS
 range-guarded in two places (client/_args.py:277, actor.py:605).
 
 The enqueue-time guard pins live at the top.  The snooze-arm pins below
 them pin the FIXED-CEILING contract: a snooze/denial at any
 ``max_attempts <= 32767`` reschedules the job and leaves ``max_attempts``
-exactly where it was (the ceiling is a bound, not a counter — nothing in
+exactly where it was (the ceiling is a bound, not a counter - nothing in
 the non-consuming paths raises it, and the deferral is counted on the
 row's snooze/denial counters instead).  A job already at the ceiling
 still reschedules: with no increment at all there is no overflow to
@@ -75,13 +75,13 @@ def test_enqueue_args_rejects_out_of_smallint_range_max_attempts() -> None:
 
     ``RetryPolicy`` guards the client-facing construction path, but
     ``EnqueueArgs.__post_init__`` (backend/_protocol.py) is the actual
-    boundary every enqueue path funnels through — including callers that
+    boundary every enqueue path funnels through - including callers that
     build ``EnqueueArgs`` directly from a raw DB column instead of through
     ``RetryPolicy`` (e.g. ``cron_loop.py`` reading ``actor_config.max_attempts``,
     ``web/admin/ops.py``). Today ``__post_init__`` only checks the
     schedule_to_close mutual-exclusion and NUL-byte text fields; it has no
     max_attempts bound at all, so this out-of-range construction succeeds
-    silently instead of raising — a defect this test pins as failing until
+    silently instead of raising - a defect this test pins as failing until
     fixed.
     """
     with pytest.raises((ValueError, ValidationError)) as exc_info:
@@ -130,8 +130,8 @@ def test_enqueue_args_rejects_non_integer_max_attempts() -> None:
     ``>`` against the bound; it never checks ``isinstance(value, int)``.
     A ``bool`` or ``float`` value compares fine against the smallint
     bound and sails through silently, so ``EnqueueArgs`` accepts a
-    fractional attempt count. ``RetryPolicy`` — the client-facing
-    construction path — already rejects the same value via pydantic's
+    fractional attempt count. ``RetryPolicy`` - the client-facing
+    construction path - already rejects the same value via pydantic's
     strict int coercion (``RetryPolicy(max_attempts=3.5)`` raises
     ``ValidationError``), so this is a parity gap between the two
     layers: ``EnqueueArgs`` is supposed to
@@ -158,7 +158,7 @@ def test_enqueue_args_rejects_non_integer_max_attempts() -> None:
     assert not isinstance(exc_info.value, TypeError), (
         "EnqueueArgs accepted max_attempts=3.5 outright (no exception at all "
         "if this assertion is reached, the pytest.raises above would already "
-        "have failed) — a fractional attempt count must be refused with a "
+        "have failed) - a fractional attempt count must be refused with a "
         "typed ValueError identifying the bad field, not silently stored."
     )
 
@@ -170,7 +170,7 @@ def test_enqueue_args_rejects_none_max_attempts_with_typed_error() -> None:
     ``check_max_attempts_domain`` does ``if value < 1`` with no type
     check first; handed ``None`` this raises
     ``TypeError: '<' not supported between instances of 'NoneType' and
-    'int'`` — an implementation-detail exception a caller has no reason
+    'int'`` - an implementation-detail exception a caller has no reason
     to catch, not the "max_attempts must be >= 1" ``ValueError`` every
     other bad value gets. A bare ``TypeError`` escaping the enqueue
     boundary instead of a typed domain refusal is exactly the class of
@@ -248,11 +248,11 @@ async def _read_row(app: JobsApp, schema: str, job_id: JobId) -> asyncpg.Record:
 async def test_mark_snoozed_at_smallint_ceiling_does_not_overflow(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """Increment-free arm 1 — ``mark_snoozed`` (reservation / rate-limit
+    """Increment-free arm 1 - ``mark_snoozed`` (reservation / rate-limit
     denial).
 
     A reservation-denied snooze on a job already at ``max_attempts = 32767``
-    must reschedule the job and leave the ceiling exactly where it was —
+    must reschedule the job and leave the ceiling exactly where it was -
     there is no increment to overflow, and the ceiling is a bound, not a
     counter.
     """
@@ -281,11 +281,11 @@ async def test_mark_snoozed_at_smallint_ceiling_does_not_overflow(
     row = await _read_row(clean_jobs_app, schema, job_id)
     assert row["max_attempts"] == _SMALLINT_MAX, (
         f"max_attempts moved to {row['max_attempts']}; the snooze arms must "
-        "leave the configured ceiling untouched — it is a bound, not a "
+        "leave the configured ceiling untouched - it is a bound, not a "
         "counter."
     )
     assert row["status"] == "scheduled", (
-        f"job left in status {row['status']!r} instead of 'scheduled' — the "
+        f"job left in status {row['status']!r} instead of 'scheduled' - the "
         "snooze did not take effect."
     )
 
@@ -293,7 +293,7 @@ async def test_mark_snoozed_at_smallint_ceiling_does_not_overflow(
 async def test_mark_retry_after_consume_false_at_ceiling_does_not_overflow(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """Increment-free arm 2 — ``RetryAfter(consume_budget=False)``.
+    """Increment-free arm 2 - ``RetryAfter(consume_budget=False)``.
 
     ``mark_retry_after(consume_budget=False)`` routes to
     ``mark_retry_after_consume_false``, which carries the same fixed
@@ -328,7 +328,7 @@ async def test_mark_retry_after_consume_false_at_ceiling_does_not_overflow(
         "retry must leave the configured ceiling untouched."
     )
     assert row["status"] == "scheduled", (
-        f"job left in status {row['status']!r} instead of 'scheduled' — the "
+        f"job left in status {row['status']!r} instead of 'scheduled' - the "
         "non-consuming retry did not take effect."
     )
 
@@ -340,7 +340,7 @@ async def test_snooze_below_ceiling_keeps_ceiling_fixed(
 
     Pins that the ceiling tests above are about the smallint boundary and
     the reschedule contract, not about the fixture: the snooze lands
-    ``scheduled`` and ``max_attempts`` stays at its configured value —
+    ``scheduled`` and ``max_attempts`` stays at its configured value -
     the ceiling is a bound, not a counter, and the deferral is counted on
     the row's denial counter instead.
     """
@@ -367,10 +367,10 @@ async def _in_memory_running_job_at_ceiling(
     max_attempts: int,
 ) -> tuple[InMemoryBackend, JobId, UUID]:
     """Enqueue + dispatch one running job at *max_attempts* on the
-    in-memory mirror — the same row shape ``_seed`` builds for PG.
+    in-memory mirror - the same row shape ``_seed`` builds for PG.
 
     ``EnqueueArgs`` refuses the top-of-domain value (one of defensive
-    headroom — see ``MAX_ENQUEUABLE_MAX_ATTEMPTS``), so the seed enqueues
+    headroom - see ``MAX_ENQUEUABLE_MAX_ATTEMPTS``), so the seed enqueues
     inside the enqueuable bound and then writes the ceiling onto the
     stored row directly, exactly as the PG side's ``create_running_job``
     bypasses the enqueue boundary with a direct INSERT.
@@ -389,14 +389,14 @@ async def _in_memory_running_job_at_ceiling(
     )
     await backend.enqueue(args)
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="mem_ceiling_actor")
     worker_id = new_uuid()
     dispatched = await backend.dispatch_batch(worker_id, ["default"], 1, timedelta(seconds=60))
     assert len(dispatched) == 1
     if max_attempts > 32766:
         job_id = dispatched[0].id
-        backend._jobs[job_id] = replace(  # type: ignore[reportPrivateUsage]  # Why: test-only private access — parks the stored row at the column ceiling the enqueue boundary now refuses, mirroring the PG side's direct-INSERT seed.
+        backend._jobs[job_id] = replace(  # type: ignore[reportPrivateUsage]  # Why: test-only private access - parks the stored row at the column ceiling the enqueue boundary now refuses, mirroring the PG side's direct-INSERT seed.
             backend._jobs[job_id],  # type: ignore[reportPrivateUsage]  # Why: test-only private access
             max_attempts=max_attempts,
         )

@@ -1,15 +1,15 @@
-"""Two real elections, two schemas, one database — the loop-level pin that
+"""Two real elections, two schemas, one database - the loop-level pin that
 election is schema-scoped.
 
 The lock-level property (two schema-qualified lock names both winnable)
 is pinned in tests/test_advisory_lock_schema_isolation.py. These tests
-drive the actual election code path — ``MaintenanceLeader._election_loop``
-with real connections against migrated schemas — so a regression anywhere
+drive the actual election code path - ``MaintenanceLeader._election_loop``
+with real connections against migrated schemas - so a regression anywhere
 between ``schema_lock_name`` and the lease statements (elect, dedicated
 conns, is_leader) fails here, not just at the lock name. The regression
 shape within ONE schema is pinned too: the loser records an election
-failure per lost cycle and keeps retrying — no teardown, no phantom
-leadership — and a demoted leader's row stops being renewed, so the next
+failure per lost cycle and keeps retrying - no teardown, no phantom
+leadership - and a demoted leader's row stops being renewed, so the next
 worker takes the schema over once that lease lapses.
 """
 
@@ -152,7 +152,7 @@ def _election_leader(
         settings.leader_lease = leader_lease
     deps = WorkerDeps(
         settings=settings,
-        dispatcher_pool=None,  # pyright: ignore[reportArgumentType]  # Why: the election loop touches no pool — only the factory-built dedicated conns.
+        dispatcher_pool=None,  # pyright: ignore[reportArgumentType]  # Why: the election loop touches no pool - only the factory-built dedicated conns.
         heartbeat_pool=None,  # pyright: ignore[reportArgumentType]
         worker_pool=None,  # pyright: ignore[reportArgumentType]
         notify_conn=None,
@@ -196,7 +196,7 @@ async def test_two_real_election_loops_both_win_their_own_schema(
     module_pg_schema_b: ModulePgSchema,
 ) -> None:
     """The cross-schema regression at the loop level: two MaintenanceLeaders,
-    two schemas of one database, elections running CONCURRENTLY — both must
+    two schemas of one database, elections running CONCURRENTLY - both must
     hold leadership at once, and each schema's singleton row must name
     its own worker. Under the unqualified lock the perpetual loser never
     ran its sweeps while its dispatch kept flowing: a healthy-looking
@@ -212,7 +212,7 @@ async def test_two_real_election_loops_both_win_their_own_schema(
     leader_b = _election_leader(pg_dsn, module_pg_schema_b.schema_name, ledger_b, worker_b)
 
     try:
-        # Both elections in flight at the same time — the contention the
+        # Both elections in flight at the same time - the contention the
         # unqualified lock produced, now across schemas it must not.
         task_a = asyncio.create_task(_await_election(leader_a))
         task_b = asyncio.create_task(_await_election(leader_b))
@@ -221,7 +221,7 @@ async def test_two_real_election_loops_both_win_their_own_schema(
         assert leader_a._deps.is_leader.is_set() is True  # pyright: ignore[reportPrivateUsage]  # Why: the deps the leader was constructed with.
         assert leader_b._deps.is_leader.is_set() is True, (
             "schema 2's worker lost the election to schema 1's in the same "
-            "database — the cross-schema serialization regression, at the "
+            "database - the cross-schema serialization regression, at the "
             "election loop level"
         )
 
@@ -238,7 +238,7 @@ async def test_two_real_election_loops_both_win_their_own_schema(
                 await conn.close()
             assert row is not None, f"no leader row upserted in {schema}"
             assert row["worker_id"] == worker_id, (
-                f"the singleton row in {schema} names the wrong worker — the "
+                f"the singleton row in {schema} names the wrong worker - the "
                 "election wrote to (or read from) the wrong schema"
             )
     finally:
@@ -280,7 +280,7 @@ async def test_election_loser_records_failure_and_retries(
 ) -> None:
     """Within ONE schema the lease row serializes: while a live holder holds
     it, the follower loses every cycle, records an election failure per lost
-    attempt, and RETRIES — the loop stays alive with is_leader unset, and no
+    attempt, and RETRIES - the loop stays alive with is_leader unset, and no
     leader row is written by the loser (no teardown, no phantom leadership).
     Contention is deliberately NOT recorded per lost cycle here: following a
     stable live holder is the healthy steady state, and the per-transition
@@ -314,7 +314,7 @@ async def test_election_loser_records_failure_and_retries(
                 description="the follower must record an election failure per lost cycle",
                 timeout=10.0,
             )
-            assert not task.done(), "the election loop died mid-retry — a teardown, not a retry"
+            assert not task.done(), "the election loop died mid-retry - a teardown, not a retry"
         finally:
             shutdown.set()
             task.cancel()
@@ -330,7 +330,7 @@ async def test_election_loser_records_failure_and_retries(
         finally:
             await conn.close()
         assert row is not None and row["worker_id"] == holder_id, (
-            "the loser must not write a leader row — no phantom leadership"
+            "the loser must not write a leader row - no phantom leadership"
         )
     finally:
         await follower_ledger.close_all()
@@ -357,8 +357,8 @@ async def test_stable_follower_does_not_sustain_contention_like_a_stuck_holder(
     the process; if each loss recorded contention, every fleet larger
     than one would hold the alert's rate condition forever, and the
     runbook's recovery check ("stops rising") could never be satisfied.
-    Contention is therefore recorded per distinct observed holder — the
-    transition — and this test drives a follower's loop through a
+    Contention is therefore recorded per distinct observed holder - the
+    transition - and this test drives a follower's loop through a
     settling window and an equally long steady-state window of lost
     cycles against an undisturbed leader, expecting the counter to move
     only across the first.
@@ -383,7 +383,7 @@ async def test_stable_follower_does_not_sustain_contention_like_a_stuck_holder(
         # Establish a genuinely stable fleet: worker_leader wins and its
         # written lease (resolved_leader_lease, tens of seconds at these
         # settings) far outlives this test's windows, so the row alone
-        # keeps the follower losing — no renewal machinery is needed to
+        # keeps the follower losing - no renewal machinery is needed to
         # keep the fleet stable for the measurement.
         await _await_election(leader)
         assert leader._deps.is_leader.is_set() is True  # pyright: ignore[reportPrivateUsage]  # Why: the deps the leader was constructed with.
@@ -437,7 +437,7 @@ async def test_stable_follower_does_not_sustain_contention_like_a_stuck_holder(
         assert second_window_value == first_window_value, (
             "a stable fleet (leader never demoted) must not keep "
             "accumulating lock_contention once past the initial election "
-            "settling — contention is recorded per distinct observed "
+            "settling - contention is recorded per distinct observed "
             "holder, so a follower that keeps losing to the same live "
             f"holder is the steady state, not a stuck one; the counter "
             f"grew from {first_window_value} to {second_window_value} "
@@ -456,7 +456,7 @@ async def test_demoted_leaders_lease_lapses_for_the_next_worker(
 ) -> None:
     """A full promote/demote cycle on ONE schema: the demoted leader's row
     stops being renewed, so once the lease it wrote has lapsed a second
-    worker takes the SAME schema over — a handover bounded by the lease the
+    worker takes the SAME schema over - a handover bounded by the lease the
     demoted pod itself chose, never by anything holding a connection open.
     A short leader_lease brings that horizon inside the test."""
     pg_dsn = module_pg_schema.pg_dsn
@@ -583,7 +583,7 @@ async def test_a_pinging_holder_without_a_lease_is_not_taken_over(
 
         took = await conn.fetchval(elect_sql, taker, lease_secs, slack_secs)
         assert took is None, (
-            "a holder that is still pinging last_seen_at must keep the role — "
+            "a holder that is still pinging last_seen_at must keep the role - "
             "taking it here runs two leaders through the rest of the roll"
         )
         row = await conn.fetchrow(
@@ -627,7 +627,7 @@ async def test_sustained_empty_row_records_contention_every_cycle_not_once(
     when the row is absent, ``observed`` is ``None`` on EVERY call, so the
     ``observed is None`` short-circuit fires unconditionally regardless of
     what ``self._observed_holder`` was last cycle (also ``None``, once the
-    first absent-row event has run) — this is the opposite of "recorded
+    first absent-row event has run) - this is the opposite of "recorded
     once": an absent row records EVERY cycle for as long as it stays
     absent, indistinguishable from a probe that cannot read the row at
     all (the runbook's other legitimate sustained-contention shape). That

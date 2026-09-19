@@ -6,7 +6,7 @@ behavior against a live Postgres backend.
 
 The in-process mechanism was chosen over subprocess spawn because
 orchestrate_shutdown is an async function that needs direct access
-to WorkerDeps pools opened by the fixture — subprocess spawning
+to WorkerDeps pools opened by the fixture - subprocess spawning
 would duplicate pool setup and complicate fixture sharing.
 Known limitation: pool teardown and deregister_worker cleanup are
 not exercised; those paths are covered by unit tests.
@@ -157,14 +157,14 @@ def _immediate() -> None:
 
     Why not an absolute ``datetime.now(timezone.utc)``: the enqueue SQL
     decides status as ``COALESCE($n, clock_timestamp()) >
-    clock_timestamp()`` — an absolute Python-clock timestamp races the
+    clock_timestamp()`` - an absolute Python-clock timestamp races the
     server clock at that boundary. A test-process clock even a few
     microseconds ahead of the database clock lands the row ``'scheduled'``
     instead of ``'pending'``; the ``WHERE status='pending'`` seeding
     updates in these tests then silently no-op, the job never runs, and
     the terminal-status assertions fail on clock skew rather than on
     shutdown behaviour (observed as a load-dependent flake in the parallel
-    suite). ``None`` is the canonical immediate form — the enqueue stamps
+    suite). ``None`` is the canonical immediate form - the enqueue stamps
     the server clock and decides status in the same statement, one clock
     domain.
     """
@@ -367,7 +367,7 @@ async def test_ti4_drain_to_pending(
             )
         )
 
-    # Lock 3 jobs as "dispatched but not started" — use worker_pool to simulate
+    # Lock 3 jobs as "dispatched but not started" - use worker_pool to simulate
     schema = deps.settings.schema_name
     conn = await asyncpg.connect(str(deps.settings.pg_dsn_direct))
     try:
@@ -473,7 +473,7 @@ async def test_draining_hands_back_only_jobs_no_consumer_is_running(
     registry exactly as the consumer loop registers it.
 
     The backlog row must come back to pending with its lock cleared so another
-    worker can take it — that is the hand-back, and it happens once. The
+    worker can take it - that is the hand-back, and it happens once. The
     executing row must stay locked and running: publishing it to the fleet
     while its consumer is still in the actor body is how one job becomes two
     executions. Those rows are the cancelling / forcing / abandoning phases'
@@ -505,7 +505,7 @@ async def test_draining_hands_back_only_jobs_no_consumer_is_running(
 
     # Both rows carry the shape the dispatch claim leaves behind: running,
     # locked by this worker, started_at stamped at claim, no operator cancel
-    # in flight. The database row cannot tell the two cases apart — only
+    # in flight. The database row cannot tell the two cases apart - only
     # this process's registry can.
     await _mark_jobs_running(deps, [backlog_id, executing_id], worker_id, cancel_phase=0)
 
@@ -540,12 +540,12 @@ async def test_draining_hands_back_only_jobs_no_consumer_is_running(
         )
         assert executing_row.locked_by_worker == worker_id, (
             "unlocking a job that is still executing here publishes it to the "
-            "fleet while the first run is in flight — the same job body then "
+            "fleet while the first run is in flight - the same job body then "
             f"runs twice; locked_by_worker was {executing_row.locked_by_worker!r}"
         )
 
-        # A second pass — a drain-monitor trigger racing a signal, or a retry
-        # after a transient failure — must release nothing further. Hand-back
+        # A second pass - a drain-monitor trigger racing a signal, or a retry
+        # after a transient failure - must release nothing further. Hand-back
         # is once per claim, not once per shutdown attempt.
         again = await drain_local_queue_to_pending(deps, worker_id)
         assert again == 0, (
@@ -1027,7 +1027,7 @@ async def test_tn1_signal_handler_must_not_await(
 
     # `add_signal_handler` invokes its callback synchronously, in the signal
     # context: a coroutine function would simply never run. This assertion is
-    # the whole check — a companion scan for `"await " not in getsource(...)`
+    # the whole check - a companion scan for `"await " not in getsource(...)`
     # used to follow it and could not fail. Python rejects `await` in a
     # non-async def at compile time ("SyntaxError: 'await' outside async
     # function"), so given the assertion above, the substring could only ever
@@ -1064,14 +1064,14 @@ async def test_tn2_releasing_runs_with_zero_jobs(
     assert result == 0
     assert shutdown_event.is_set()
     # Behavioral: shutdown proceeds through all phases including RELEASING
-    # even with zero active jobs — verified by shutdown_event being set
+    # even with zero active jobs - verified by shutdown_event being set
     # and result == 0 (clean exit).
 
 
 # ── Phase-0 siblings: a deploy with no operator cancel in flight ──────────
 #
 # The suite above seeds rows at ``cancel_phase = 1`` (an operator cancel in
-# flight) — those pins stand. These siblings cover the ordinary deploy:
+# flight) - those pins stand. These siblings cover the ordinary deploy:
 # rows the production claim CTE leaves at ``cancel_phase = 0``. The deploy
 # must release them back to the fleet (never ``cancelled``/``abandoned``)
 # with the interrupted claim's attempt increment standing: the attempt
@@ -1085,7 +1085,7 @@ async def test_deploy_releases_running_work_back_to_the_fleet(
     """Phase-0 rows are released (held), never terminalised, and refunded.
 
     Three jobs claimed through the production claim CTE sit mid-flight
-    when the deploy lands — no operator has asked for anything. Every one
+    when the deploy lands - no operator has asked for anything. Every one
     must come back to the fleet with its attempt refund, an interruption
     counted on the row, and an 'interrupted' transition on its timeline,
     held behind the remaining termination budget because its actor might
@@ -1117,7 +1117,7 @@ async def test_deploy_releases_running_work_back_to_the_fleet(
     attempt_at_claim = {row.id: row.attempt for row in claimed}
 
     # In-flight entries whose actors never unwind (tasks already done, so
-    # the forced cancel lands nowhere) — the rows survive to RELEASING.
+    # the forced cancel lands nowhere) - the rows survive to RELEASING.
     for jid in job_ids:
         active = _fake_active_job(job_id=jid)
         await deps.active_jobs.register(active.job_id, active.task, active.ctx)  # type: ignore[arg-type] # Why: JobContext[PassthroughPayload] is a JobContext[BaseModel]; pyright cannot widen Generic contravariance.
@@ -1165,7 +1165,7 @@ async def test_deploy_release_is_not_reclaimable_until_the_hold(
     """The held row stays out of the fleet's reach until the hold elapses.
 
     A released row whose actor may still be alive in the exiting process
-    must not be claimable elsewhere before the process is provably gone —
+    must not be claimable elsewhere before the process is provably gone -
     that ordering is the whole point of the hold (requeue before kill, and
     never both at once).
     """
@@ -1203,7 +1203,7 @@ async def test_deploy_release_is_not_reclaimable_until_the_hold(
     row = await backend.get(JobId(jid))
     assert row is not None and row.status == "scheduled"
     assert row.scheduled_at > datetime.now(UTC), (
-        "the held row's due time is in the future — the surviving fleet must "
+        "the held row's due time is in the future - the surviving fleet must "
         "not be able to claim it while the departing pod may still be alive"
     )
 
@@ -1214,6 +1214,6 @@ async def test_deploy_release_is_not_reclaimable_until_the_hold(
     batch = await backend.dispatch_batch(surviving, ["default"], 10, timedelta(seconds=60))
     assert batch == [], (
         "a row released behind the termination-budget hold was claimable "
-        "immediately — the hold exists so the row cannot be claimed while "
+        "immediately - the hold exists so the row cannot be claimed while "
         "the interrupted actor might still be alive"
     )

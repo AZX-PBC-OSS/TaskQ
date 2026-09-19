@@ -2,8 +2,8 @@
 """Red-team: DRAINING must re-pend rows the worker claimed but never started (E1).
 
 Contract under attack: ``drain_local_queue_to_pending`` must re-pend every row
-this worker CLAIMED but never started executing — the rows sitting in the
-worker's ``local_queue`` — so the DRAINING phase actually stops consumers from
+this worker CLAIMED but never started executing - the rows sitting in the
+worker's ``local_queue`` - so the DRAINING phase actually stops consumers from
 starting backlog jobs mid-shutdown.
 
 Hypothesis (verified against the current tree): the drain UPDATE requires
@@ -73,7 +73,7 @@ class _SingleConnPool:
 
 async def test_drain_re_pends_dispatch_claimed_rows(pg_dsn: str) -> None:
     """Rows claimed via the real dispatch CTE (started_at stamped at claim)
-    must be re-pended by the drain helper — today the predicate matches 0."""
+    must be re-pended by the drain helper - today the predicate matches 0."""
     schema = f"telo_{new_base62()}".lower()
     worker_id = new_uuid()
     conn = await asyncpg.connect(pg_dsn)
@@ -82,18 +82,18 @@ async def test_drain_re_pends_dispatch_claimed_rows(pg_dsn: str) -> None:
         await conn.execute(f'CREATE SCHEMA "{schema}"')
         await apply_pending(conn, schema=schema)
         await seed_actors(conn, schema)
-        # Stamp the rows due 60 s in the past — the dispatch family's clock
+        # Stamp the rows due 60 s in the past - the dispatch family's clock
         # discipline (test_dispatch_window_expansion.py seeds the same
         # margin): the claim CTE's candidacy predicate compares
         # scheduled_at against the DATABASE clock (statement_timestamp()),
         # while create_pending_job's default stamps the APPLICATION clock
-        # — a cross-domain comparison that reads not-yet-due whenever the
+        # - a cross-domain comparison that reads not-yet-due whenever the
         # container clock lags the host by more than the seed-to-claim
         # gap (observed in a coverage-weighted full run as "dispatch must
         # claim 3 rows, got 0", the widened gap letting a sub-second lag
         # flip all three rows). A 60 s past stamp keeps the row due under
         # any divergence the suite's own conftest clock diagnostic treats
-        # as plausible — time controlled at the seed, never a wait.
+        # as plausible - time controlled at the seed, never a wait.
         job_ids: list[UUID] = [
             await create_pending_job(
                 conn, schema, scheduled_at=datetime.now(UTC) - timedelta(seconds=60)
@@ -123,7 +123,7 @@ async def test_drain_re_pends_dispatch_claimed_rows(pg_dsn: str) -> None:
         )
         assert probe is not None
         assert probe["claimed_running"] == 3, (
-            "setup: all 3 dispatched rows must be running+locked by this worker — "
+            "setup: all 3 dispatched rows must be running+locked by this worker - "
             "this is exactly the claimed-but-unstarted local_queue backlog"
         )
         assert probe["started_stamped"] == 3, (
@@ -179,7 +179,7 @@ async def test_drain_re_pends_dispatch_claimed_rows(pg_dsn: str) -> None:
             assert row["status"] == "pending", (
                 f"CONTRACT: claimed-but-unstarted job {jid} must be back to "
                 f"pending after the drain; got status={row['status']!r} "
-                "(still running+locked until lock-lease expiry — consumers "
+                "(still running+locked until lock-lease expiry - consumers "
                 "gated only on shutdown_event can still start it mid-shutdown)"
             )
             assert row["locked_by_worker"] is None, (

@@ -9,7 +9,7 @@ Covers:
 - Singleton with identity; different site_id still blocked.
 - through Integration-tier PG enforcement tests.
 - Negative path integration tests.
-- Chaos test — connection failure mid-pre-flight.
+- Chaos test - connection failure mid-pre-flight.
 - Hypothesis property test against live PG backend.
 """
 
@@ -215,7 +215,7 @@ def _pg_singleton_args(
         # None = immediate: the enqueue SQL stamps the server clock and
         # decides status in the same statement. A Python-clock stamp sits
         # ahead of the database clock by the app-to-DB skew, so the status
-        # CASE can land the row 'scheduled' under load — a race this seed
+        # CASE can land the row 'scheduled' under load - a race this seed
         # has no reason to take.
         scheduled_at=None,
         metadata={"singleton": True},
@@ -240,7 +240,7 @@ def _pg_non_singleton_args(
         # None = immediate: the enqueue SQL stamps the server clock and
         # decides status in the same statement. A Python-clock stamp sits
         # ahead of the database clock by the app-to-DB skew, so the status
-        # CASE can land the row 'scheduled' under load — a race this seed
+        # CASE can land the row 'scheduled' under load - a race this seed
         # has no reason to take.
         scheduled_at=None,
         idempotency_key=IdempotencyKey(idempotency_key) if idempotency_key is not None else None,
@@ -660,7 +660,7 @@ async def test_property_singleton_invariant_pg(
     example_idx: int,
 ) -> None:
     """Hypothesis property test: for randomised enqueue/dispatch/terminal
-    sequences, the singleton invariant holds — at most one active job per actor."""
+    sequences, the singleton invariant holds - at most one active job per actor."""
     deps, backend = clean_jobs_app
     schema = deps.settings.schema_name
     actor = f"prop_{example_idx}"
@@ -692,7 +692,7 @@ async def test_property_singleton_invariant_pg(
                             # None = immediate: the enqueue SQL stamps the server clock and
                             # decides status in the same statement. A Python-clock stamp sits
                             # ahead of the database clock by the app-to-DB skew, so the status
-                            # CASE can land the row 'scheduled' under load — a race this seed
+                            # CASE can land the row 'scheduled' under load - a race this seed
                             # has no reason to take.
                             scheduled_at=None,
                             metadata={"singleton": True},

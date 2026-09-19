@@ -1,11 +1,11 @@
 """Negative integration tests for ConcurrencyReservation.
 
-``ensure_slots()`` before migration applied — the
+``ensure_slots()`` before migration applied - the
        ``reservation_slots`` table does not exist; asyncpg raises
        ``UndefinedTableError`` (or ``PostgresError``) and the error message
        mentions the missing table.
 
-       The ``held_by_worker_id`` column ships in the initial DDL — there is
+       The ``held_by_worker_id`` column ships in the initial DDL - there is
        no intermediate migration state where the table exists but the column
        doesn't. The real failure mode is deploying M3 code without running
        ``taskq migrate up``, so the ``reservation_slots`` table is entirely
@@ -43,7 +43,7 @@ async def _setup_schema_without_reservations(pg_dsn: str) -> None:
 
 
 async def test_ensure_slots_before_migration(pg_dsn: str) -> None:
-    """``ensure_slots()`` before migration applied — the
+    """``ensure_slots()`` before migration applied - the
     ``reservation_slots`` table does not exist; asyncpg raises an error
     mentioning the missing table.
 
@@ -69,7 +69,7 @@ async def test_ensure_slots_before_migration(pg_dsn: str) -> None:
 
 
 async def test_acquire_before_migration(pg_dsn: str) -> None:
-    """companion: ``acquire()`` before migration applied — same
+    """companion: ``acquire()`` before migration applied - same
     scenario, verifying ``acquire()`` also raises a clear error when the
     table is absent."""
     await _setup_schema_without_reservations(pg_dsn)

@@ -35,7 +35,7 @@ _WORKER_ID = new_uuid()
 #
 # The module-global listener bookkeeping (_active_listeners /
 # _connected_lookup) is reset around every test by the conftest-level
-# _reset_notify_module_globals autouse fixture — this file's former
+# _reset_notify_module_globals autouse fixture - this file's former
 # file-local copy of that reset was promoted there (with the four other
 # identical copies across the notify suites) so every test gets it.
 
@@ -53,7 +53,7 @@ async def _wait_for_listener_registered(
     ``notify_listener_loop`` flips ``_connected_lookup[backend]`` to True
     exactly when its initial ``add_listener`` registrations complete (the
     same flip point the health gauge reads), so this waits precisely as
-    long as listener startup needs — never a fixed sleep that races it
+    long as listener startup needs - never a fixed sleep that races it
     under load. Enqueueing (or killing the listener conn) before that
     point misses the NOTIFY path the tests exist to exercise.
     """
@@ -125,7 +125,7 @@ async def test_enqueue_wakes_subscriber_with_listener(pg_dsn: str) -> None:
 
             async with backend.subscribe_wake() as event:
                 # LISTEN registered before the enqueue: the NOTIFY fires
-                # at commit and is only caught by a registered listener —
+                # at commit and is only caught by a registered listener -
                 # a fixed 0.05s sleep raced listener startup under load
                 # and a missed NOTIFY left nothing but the 2s timeout.
                 await _wait_for_listener_registered(backend)
@@ -157,7 +157,7 @@ async def test_polling_fallback_with_dead_listener(pg_dsn: str) -> None:
 
     The latency budget for this scenario is
     ``notify_health_check_interval + reconnect_backoff + poll_interval``
-    (not just ``poll_interval``) — the reconnect path must run to
+    (not just ``poll_interval``) - the reconnect path must run to
     completion before the synthetic callback fires. With defaults
     (5 + 1*2 + 1 = 8 s), the test bounds this at 10 s for CI stability.
     """
@@ -188,8 +188,8 @@ async def test_polling_fallback_with_dead_listener(pg_dsn: str) -> None:
                     # LISTEN registered before the kill so the chaos
                     # scenario is faithful (a live listener dying
                     # mid-run, not a listener that never started); the
-                    # assert below cannot race either way — open_worker_deps
-                    # opens notify_conn during its awaited context entry —
+                    # assert below cannot race either way - open_worker_deps
+                    # opens notify_conn during its awaited context entry -
                     # but the scenario can degrade without this wait.
                     await _wait_for_listener_registered(backend)
                     notify_conn = deps.notify_conn

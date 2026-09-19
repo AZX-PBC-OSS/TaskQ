@@ -2,19 +2,19 @@
 
 ``open_worker_deps`` (src/taskq/worker/deps.py) registers a teardown
 callback (``_drain_pending_publishes``) via ``stack.push_async_callback``
-*after* the Redis client's own ``aclose`` callback — because
+*after* the Redis client's own ``aclose`` callback - because
 ``AsyncExitStack`` unwinds LIFO, the drain runs BEFORE the client closes,
 giving in-flight ``WorkerDeps.pending_publish_tasks`` up to 2 seconds to
 finish before the connection they depend on goes away.
 
-This machinery is exercised directly here for isolation — the drain
+This machinery is exercised directly here for isolation - the drain
 logic is also covered end-to-end via ``JobContext.progress()`` in
 ``tests/test_context_progress_background.py``, which verifies that
 tasks are tracked in ``pending_publish_tasks`` and self-remove on
 completion.
 
 Fully mocks ``asyncpg.create_pool`` and ``open_dedicated_conn`` so no real
-Postgres is required — mirrors the fake-pool/fake-connection conventions
+Postgres is required - mirrors the fake-pool/fake-connection conventions
 used throughout the test suite (see ``tests/conftest.py::_FakePool`` and
 ``tests/test_worker_deps.py`` for the equivalent real-PG integration
 coverage of ``open_worker_deps`` lifecycle/teardown ordering).
@@ -150,7 +150,7 @@ async def test_drain_awaits_pending_publish_task_before_redis_closes(
 async def test_drain_completes_fast_when_publish_resolves_quickly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The drain does not block the full 2s bound when the task finishes fast —
+    """The drain does not block the full 2s bound when the task finishes fast -
     it returns as soon as asyncio.wait's awaited task completes."""
     _patch_pg_and_dedicated_conns(monkeypatch)
     settings, fake_client = _settings_with_fake_redis(monkeypatch)
@@ -175,7 +175,7 @@ async def test_drain_completes_fast_when_publish_resolves_quickly(
 async def test_drain_is_noop_when_no_pending_tasks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No pending_publish_tasks — teardown proceeds without calling asyncio.wait
+    """No pending_publish_tasks - teardown proceeds without calling asyncio.wait
     on an empty set (asyncio.wait([]) raises ValueError if ever called)."""
     _patch_pg_and_dedicated_conns(monkeypatch)
     settings, fake_client = _settings_with_fake_redis(monkeypatch)
@@ -189,7 +189,7 @@ async def test_drain_is_noop_when_no_pending_tasks(
 async def test_drain_does_not_run_when_redis_not_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No redis_url configured — redis_client is None and no drain callback
+    """No redis_url configured - redis_client is None and no drain callback
     is registered at all (the whole block is guarded by `if redis_client is not None`)."""
     _patch_pg_and_dedicated_conns(monkeypatch)
     settings = make_integration_settings("postgresql://taskq:taskq@127.0.0.1:1/taskq")

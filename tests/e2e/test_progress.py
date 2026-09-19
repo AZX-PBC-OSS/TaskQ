@@ -1,10 +1,10 @@
-"""Progress e2e — progress persisted to PG and fanned out over Redis pub/sub.
+"""Progress e2e - progress persisted to PG and fanned out over Redis pub/sub.
 
 Scenario:
 ``generate_report`` 4 stages → ``progress_state``/``progress_seq`` reach 100%
 via ``e2e_pg_pool``; pub/sub verified by subscribing to the **global** progress
-channel (``progress_global_channel(schema)``) **before** enqueueing — the
-per-job channel is unknowable pre-enqueue and pub/sub drops late subscribers —
+channel (``progress_global_channel(schema)``) **before** enqueueing - the
+per-job channel is unknowable pre-enqueue and pub/sub drops late subscribers -
 then filtering events by ``job_id``.
 
 Asserted values are read from the library, not guessed:
@@ -59,7 +59,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.timeout(900)]
 
 
 def _report_payload(run_id: str) -> GenerateReportPayload:
-    """4 stages x 300 ms — long enough for mid-run observation, short for e2e."""
+    """4 stages x 300 ms - long enough for mid-run observation, short for e2e."""
     return GenerateReportPayload(
         run_id=run_id,
         report_id=f"r-{run_id[:8]}",
@@ -78,7 +78,7 @@ async def test_progress_persisted_to_pg(
     """4-stage report → ``jobs.progress_state`` at 100% with ``progress_seq == 4``.
 
     ``handle.wait()`` returns only after the terminal write commits, so the
-    post-wait read is deterministic — no polling required. asyncpg returns
+    post-wait read is deterministic - no polling required. asyncpg returns
     JSONB as ``str``, so ``progress_state`` is parsed before asserting.
     """
     handle = await e2e_client.enqueue(generate_report, _report_payload(run_id))
@@ -117,7 +117,7 @@ async def test_progress_fanout_pubsub(
 
     Resilience (F3): a dropped pub/sub socket under container resource
     pressure is retried with a fresh SUBSCRIBE inside an overall 90 s
-    deadline — pub/sub events missed during the reconnect window are lost
+    deadline - pub/sub events missed during the reconnect window are lost
     (fire-and-forget), but the fanout must still deliver the terminal event
     afterwards. A stalled listen (``TimeoutError``) FAILS the test: a fanout
     that stops delivering is a regression signal, not a skip-shaped pass.
@@ -162,7 +162,7 @@ async def test_progress_fanout_pubsub(
                             terminal_seen = True
                             break
             except redis_async.ConnectionError:
-                # F3 transport flake: dropped pub/sub socket — resubscribe
+                # F3 transport flake: dropped pub/sub socket - resubscribe
                 # and keep listening within the overall deadline.
                 continue
             finally:
@@ -188,7 +188,7 @@ async def test_progress_fanout_pubsub(
     state: dict[str, object] = json.loads(row["progress_state"])
     assert state == {"step": 4, "percent": 100.0, "detail": "stage 4 store"}
 
-    # Fanout proof — unconditional: the listen loop only exits with the
+    # Fanout proof - unconditional: the listen loop only exits with the
     # terminal event in hand (a stall raises TimeoutError and fails above).
     progress_events = [event for event in received if event.kind == "progress"]
     assert progress_events, (
@@ -355,7 +355,7 @@ async def test_progress_sse_stream(
                     "address already in use" in str(exc).lower()
                     and attempt < _SSE_MAX_BIND_ATTEMPTS
                 ):
-                    continue  # lost the bind race — fresh port, fresh child
+                    continue  # lost the bind race - fresh port, fresh child
                 raise
             break
 

@@ -3,15 +3,15 @@
 A bucket with every slot held used to deny with the flat
 ``DEFAULT_RESERVATION_BACKOFF`` (5 s) no matter when capacity actually
 frees: a bucket whose earliest lease expires in 30 s was retried every
-5 s — six claim + acquire + snooze round trips that can only ever be
+5 s - six claim + acquire + snooze round trips that can only ever be
 denied again, the denial-heavy loop measured at 12.3:1 denial:success.
 The acquire already visits the held rows; the denial branch now reports
 the earliest held lease's expiry as the ``retry_after`` hint (plus
 :data:`RESERVATION_RETRY_HINT_MARGIN`), computed against the same
 server clock that stamps the leases, folded into the SAME acquire
 statement so the round-trip count is unchanged. With no live-held rows
-to read (every row free but row-locked by a peer acquire — the SKIP
-LOCKED case — or the anomalous held-without-lease state) the hint is
+to read (every row free but row-locked by a peer acquire - the SKIP
+LOCKED case - or the anomalous held-without-lease state) the hint is
 NULL and the flat constant remains the fallback.
 
 The in-memory twin computes the same hint from its injected clock, so
@@ -45,7 +45,7 @@ _TOLERANCE = timedelta(milliseconds=250)
 
 async def test_denied_acquire_retry_after_tracks_earliest_held_lease_expiry() -> None:
     """A full bucket denies with the earliest held lease's remaining time
-    plus the safety margin — the denied job re-attempts when capacity can
+    plus the safety margin - the denied job re-attempts when capacity can
     actually free, not on a flat cadence."""
     clock = FakeClock(_START)
     table = _InMemorySlotTable(clock)
@@ -66,7 +66,7 @@ async def test_denied_acquire_retry_after_tracks_earliest_held_lease_expiry() ->
 
 async def test_denied_acquire_reports_earliest_not_latest_lease() -> None:
     """Two holders with different lease horizons: the EARLIEST expiry is
-    the hint — the slot that frees first is the one the re-attempt can
+    the hint - the slot that frees first is the one the re-attempt can
     win. Reporting the later lease (or any aggregation above the min)
     parks the job past real availability."""
     clock = FakeClock(_START)
@@ -86,7 +86,7 @@ async def test_denied_acquire_reports_earliest_not_latest_lease() -> None:
 
 class _FakeConn:
     """ConnLike stand-in returning one canned row for the acquire's
-    single statement — the new acquire shape always returns exactly one
+    single statement - the new acquire shape always returns exactly one
     row (acquired fields NULL on the denial branch), so the decode is
     what these tests pin."""
 
@@ -154,7 +154,7 @@ async def test_pg_denial_row_with_hint_decodes_to_expiry_plus_margin() -> None:
 
 
 async def test_pg_denial_row_without_hint_falls_back_to_constant() -> None:
-    """A NULL hint (no live-held rows — the SKIP LOCKED case) is the flat
+    """A NULL hint (no live-held rows - the SKIP LOCKED case) is the flat
     ``DEFAULT_RESERVATION_BACKOFF``, never a crash on the None and never
     a zero delay."""
     res = _reservation()
@@ -198,7 +198,7 @@ async def test_pg_row_none_denial_falls_back_to_constant() -> None:
 
 
 class TestReservationDenialHintPg:
-    """The capacity-aware denial against real PG — the SQL's
+    """The capacity-aware denial against real PG - the SQL's
     ``earliest_held`` computation and its clock domain only exist
     server-side."""
 
@@ -210,7 +210,7 @@ class TestReservationDenialHintPg:
         module_pg_pool: asyncpg.Pool,
     ) -> None:
         """A single-slot bucket held under a 30 s lease denies with
-        (expiry - now) + margin — computed on the server clock in the
+        (expiry - now) + margin - computed on the server clock in the
         same statement, so the tolerance is only the denial's own
         latency, not clock skew."""
         schema = module_pg_schema.schema_name
@@ -243,7 +243,7 @@ class TestReservationDenialHintPg:
         module_pg_pool: asyncpg.Pool,
     ) -> None:
         """Two holders, short and long lease: the SHORT one's expiry is
-        the hint — the earliest expiry is the capacity that frees first."""
+        the hint - the earliest expiry is the capacity that frees first."""
         schema = module_pg_schema.schema_name
         bucket = f"hint_two_{new_base62()}"
         res_short = ConcurrencyReservation(name=bucket, slots=2, lease=_SHORT_LEASE, schema=schema)

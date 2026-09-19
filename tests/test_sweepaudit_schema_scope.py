@@ -7,17 +7,17 @@ leader/cron/prune/archive locks were qualified via
 ``taskq.constants.schema_lock_name``; this file pins the two lock surfaces
 that audit found still unqualified:
 
-* the migration advisory lock (``taskq.migrate``) — a fixed bigint key
+* the migration advisory lock (``taskq.migrate``) - a fixed bigint key
   shared by ALL schemas, so deployment B's bounded startup wait
   SystemExits while deployment A runs a long migration, even when B's
   schema has nothing to migrate;
 * the PG log-window rate-limit acquire's per-bucket advisory lock
-  (``taskq.ratelimit._sliding_window_pg``) — keyed on the bare bucket
+  (``taskq.ratelimit._sliding_window_pg``) - keyed on the bare bucket
   name, so two schemas sharing one database serialize on one lock while
   operating on different ``"{schema}".rate_limit_window_entries`` tables;
 * the keyed-reservation materialization path's silent ``"taskq"`` schema
   fallback when a PG pool is supplied without settings
-  (``taskq.ratelimit.registry``) — a direct library caller would write
+  (``taskq.ratelimit.registry``) - a direct library caller would write
   slot rows into the wrong schema.
 """
 
@@ -58,7 +58,7 @@ class _RecordingConn:
 async def test_migration_lock_key_is_schema_qualified() -> None:
     """The lock must be a hashtextextended string key carrying the schema.
 
-    Pre-fix this was ``pg_advisory_lock($1)`` with a fixed bigint — one
+    Pre-fix this was ``pg_advisory_lock($1)`` with a fixed bigint - one
     lock for every schema in the database.
     """
     conn = _RecordingConn()
@@ -89,7 +89,7 @@ async def test_migration_lock_cross_schema_isolation(pg_dsn: str) -> None:
 
     Two schemas in one database are two deployments: a long migration in
     schema A (index builds run for minutes) must not consume schema B's
-    bounded startup wait — B's lock is a different key, so B proceeds even
+    bounded startup wait - B's lock is a different key, so B proceeds even
     while A holds its own migration lock. Pre-fix both schemas shared one
     bigint key and B SystemExited at the wait bound.
     """
@@ -149,8 +149,8 @@ class _RecordingPgConn:
 
     Models the two-tier acquire's contended tier: the fast-path
     ``pg_try_advisory_xact_lock`` returns False (a holder owns the lock),
-    so the savepoint-scoped blocking acquire — the statement whose key
-    this module pins — runs through ``execute`` and lands in *executed*.
+    so the savepoint-scoped blocking acquire - the statement whose key
+    this module pins - runs through ``execute`` and lands in *executed*.
     """
 
     def __init__(self) -> None:
@@ -173,7 +173,7 @@ class _RecordingPgConn:
     async def fetchrow(self, sql: str, *args: object) -> dict[str, object]:
         self.executed.append((sql, args))
         if "AS inserted" in sql:
-            # The fused log-window statement (#228) is one round trip, so
+            # The fused log-window statement is one round trip, so
             # one row carries the whole decision: the admission bit, the
             # pre-insert in-window count, and the denial retry inputs.
             # Its text contains count(*) (the in-window count CTE), so
@@ -215,7 +215,7 @@ async def test_pg_log_window_advisory_lock_key_is_schema_qualified() -> None:
 
     Advisory locks are database-scoped: keying on the bare bucket name made
     two schemas in one database serialize on one lock while operating on
-    different ``"{schema}".rate_limit_window_entries`` tables — cross-
+    different ``"{schema}".rate_limit_window_entries`` tables - cross-
     deployment lock contention with zero correctness benefit.
     """
     from taskq.ratelimit._sliding_window_pg import (  # pyright: ignore[reportPrivateUsage]  # Why: pinning the exact production lock key is the point; redefining it here would let the pin drift.
@@ -268,7 +268,7 @@ async def test_keyed_reservation_with_pool_but_no_settings_raises() -> None:
 
     A direct library caller that supplies ``pg_pool`` but no ``settings``
     used to fall back to the ``ConcurrencyReservation`` default schema
-    (``"taskq"``) — a silent wrong-schema write: the reservation's slot
+    (``"taskq"``) - a silent wrong-schema write: the reservation's slot
     rows land in whatever ``"taskq".reservation_slots`` happens to exist
     (or the write fails noisily against a schema the caller never
     configured). The in-memory path (``pg_pool=None``) stays settings-free

@@ -6,7 +6,7 @@ with mandatory fields. These are the acceptance-definition tests.
 
 The suite-wide ``_logging_configured_guard`` autouse fixture (imported into
 conftest.py from ``taskq.testing.otel``) resets structlog's configuration
-between tests — but a lazy proxy that binds while this file's production
+between tests - but a lazy proxy that binds while this file's production
 ``setup_logging`` (``cache_logger_on_first_use=True``) is active pins its
 assembled logger on the proxy instance, out of the config reset's reach, and
 then bypasses every later ``capture_logs`` window. The file-local
@@ -14,7 +14,7 @@ then bypasses every later ``capture_logs`` window. The file-local
 there for the full mechanism.
 
 These tests treat the structured log output as an observable public
-contract for downstream log-aggregation pipelines (e.g. Datadog) — not as
+contract for downstream log-aggregation pipelines (e.g. Datadog) - not as
 internal logging. The log schema (``kind``, ``from_state``, ``to_state``,
 mandatory fields) is a documented API that operators rely on for log
 aggregation queries.
@@ -80,7 +80,7 @@ def _proxy_pinned_binds() -> set[int]:
 
     A proxy that binds while ``cache_logger_on_first_use`` is True gets an
     instance-level ``bind`` shadowing the class's lazy method (structlog
-    ``_config.BoundLoggerLazyProxy.bind``) — the only observable mark of
+    ``_config.BoundLoggerLazyProxy.bind``) - the only observable mark of
     the pin, and exactly the state a teardown must undo.
     """
     pinned: set[int] = set()
@@ -97,7 +97,7 @@ def _proxy_pinned_binds() -> set[int]:
 def _scoped_logging_configuration() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
     """Snapshot and restore every piece of global state this file changes.
 
-    Each test calls ``setup_logging`` — the production configure — which
+    Each test calls ``setup_logging`` - the production configure - which
     sets four kinds of global state, and each leaks differently:
 
     * structlog's configuration: restored via ``configure(**snapshot)``.
@@ -108,8 +108,8 @@ def _scoped_logging_configuration() -> Iterator[None]:  # pyright: ignore[report
       logger ON THE PROXY INSTANCE. The suite-wide guard's
       ``structlog.reset_defaults()`` replaces the config but cannot reach
       those proxies: they keep running the frozen production processor
-      chain forever, so a later test file's ``capture_logs`` — which
-      swaps only the CURRENT config's processor list in place — captures
+      chain forever, so a later test file's ``capture_logs`` - which
+      swaps only the CURRENT config's processor list in place - captures
       none of their events (the order-dependent silent-failure-guards
       failures). Deleting the instance ``bind`` attribute restores the
       lazy class method, so the proxy rebinds against whatever config the
@@ -234,7 +234,7 @@ async def _enqueue_job(
         max_attempts=3,
         retry_kind="transient",
         # None = immediate: the server stamps and decides status in the
-        # enqueue statement itself — a Python-clock stamp races the
+        # enqueue statement itself - a Python-clock stamp races the
         # app-to-DB skew and can land the row 'scheduled' under load.
         scheduled_at=None,
     )

@@ -372,7 +372,7 @@ def test_migrate_up_transactional_failure_reports_rollback_and_rerun(
 ) -> None:
     """A failed transactional migration rolls the whole file back: the CLI
     names the migration, says nothing was applied, and prescribes
-    fix-and-re-run — never a traceback. The error line is truncated to its
+    fix-and-re-run - never a traceback. The error line is truncated to its
     first line (asyncpg messages can be multiline)."""
     _patch_connect(monkeypatch)
     failing = _make_migration("01.00.00_01", "pre", "01.00.00_01_pre_failing.sql")
@@ -488,7 +488,7 @@ def test_migrate_up_failure_report_survives_diagnosis_itself_raising(
 ) -> None:
     """Belt-and-braces: if diagnose_apply_failure itself blows up (a bug, or
     a conn failure mode its suppressions don't cover), the CLI must still
-    print the ORIGINAL error and the re-run action — a diagnostic must never
+    print the ORIGINAL error and the re-run action - a diagnostic must never
     mask the failure it diagnoses."""
     _patch_connect(monkeypatch)
     monkeypatch.setattr(
@@ -512,7 +512,7 @@ def test_migrate_up_failure_report_survives_diagnosis_itself_raising(
 
 
 def test_migrate_up_failure_report_exact_stderr_lines(monkeypatch: Any) -> None:
-    """Byte-exact pin of one full CLI failure report (content and order) —
+    """Byte-exact pin of one full CLI failure report (content and order) -
     complements the substring pins above; the renderer-level line lists are
     pinned in tests/test_migrations_unit.py."""
     _patch_connect(monkeypatch)
@@ -538,8 +538,8 @@ def test_migrate_up_connect_failure_reports_generic_and_skips_close(
     monkeypatch: Any,
 ) -> None:
     """asyncpg.connect itself can fail (PG down, bad DSN) BEFORE the apply:
-    the CLI must still print the short report — original error plus re-run
-    action, never a traceback — and must not attempt a close on a
+    the CLI must still print the short report - original error plus re-run
+    action, never a traceback - and must not attempt a close on a
     connection that was never acquired."""
     monkeypatch.setattr(
         cli_mod.asyncpg,

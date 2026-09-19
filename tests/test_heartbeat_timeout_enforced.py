@@ -1,27 +1,27 @@
 # ruff: noqa: S608  # Why: schema is fixture-derived (module_pg_schema), not user input; every value is $-bound.
 
-"""Pins for ``heartbeat_timeout`` — a public safety parameter that was
+"""Pins for ``heartbeat_timeout`` - a public safety parameter that was
 accepted, stored, and read by nothing.
 
 ``heartbeat_timeout`` is plumbed end to end: accepted on the public API
 (``client/_jobs.py``, ``client/_taskq.py``, ``client/_enqueuer.py``),
-carried on ``EnqueueArgs``/``JobRow``, written to PG, hydrated back — and
+carried on ``EnqueueArgs``/``JobRow``, written to PG, hydrated back - and
 was read by ZERO consumers: no validation, no warning, the call accepted
 and discarded. A ``timedelta`` safety knob that silently does nothing is
-a placeholder that returns a plausible value — the shape the
+a placeholder that returns a plausible value - the shape the
 deferred-work rule exists to forbid.
 
 The settled contract (enforcement direction): ``heartbeat_timeout``
 is ENFORCED. The enqueue boundary accepts a positive value (a non-positive
 one is refused with a boundary error mirroring ``start_to_close``'s), and
-the reclaim sweep's stale-holder classification reads it — a running job
+the reclaim sweep's stale-holder classification reads it - a running job
 whose holder has been silent past the job's ``heartbeat_timeout`` is
 reclaimed exactly as an expired lock is, while its lock lease is still
 valid (the lease is the per-worker global; the heartbeat timeout is the
 per-job promise, and the shorter of the two governs). The
 ``job_events``/``job_attempts`` rows land through the same crash-reclaim
-outbox channel (``reason='lock_expired'`` — the slice
-``poll_reclaim_events`` tails and the retention carve-out keeps — with a
+outbox channel (``reason='lock_expired'`` - the slice
+``poll_reclaim_events`` tails and the retention carve-out keeps - with a
 ``cause`` key naming which deadline fired).
 """
 
@@ -75,7 +75,7 @@ def _heartbeat_timeout_refused_at_enqueue() -> bool:
 def _enforcement_references() -> list[str]:
     """Files under worker/ or the sweep module that read ``heartbeat_timeout``.
 
-    Storage/hydration (``backend/_records.py``) does not count — only a
+    Storage/hydration (``backend/_records.py``) does not count - only a
     consumer that ACTS on the value is enforcement.
     """
     hits: list[str] = []
@@ -97,7 +97,7 @@ def test_heartbeat_timeout_is_enforced_or_refused() -> None:
         "heartbeat_timeout is accepted by build_enqueue_args, stored on the "
         "job row, and read by NOTHING under src/taskq/worker/ or the sweep "
         "module (verified: zero references). A job that stops heartbeating "
-        "is reclaimed only when its global lock_lease expires — the per-job "
+        "is reclaimed only when its global lock_lease expires - the per-job "
         "timeout the caller asked for is silently discarded. Enforce it (a "
         "per-job disjunct in the reclaim sweep against last_heartbeat_at) "
         "or refuse it at enqueue; a documented no-op is neither."
@@ -108,7 +108,7 @@ def test_heartbeat_timeout_is_accepted_and_validated_at_enqueue() -> None:
     """The enforcement direction's client half: a positive
     ``heartbeat_timeout`` is carried onto ``EnqueueArgs`` (the column the
     sweep reads), and a non-positive one is refused with a boundary error
-    mirroring ``start_to_close``'s — a zero-or-negative timeout would
+    mirroring ``start_to_close``'s - a zero-or-negative timeout would
     anchor the staleness deadline in the past and reclaim a healthy job
     on the first sweep tick."""
     from taskq.actor import actor as actor_decorator
@@ -140,14 +140,14 @@ async def test_stale_heartbeat_reclaims_running_job(
 ) -> None:
     """The enforcement direction's sweep half. Three holders, one sweep:
 
-    * **stale holder** — heartbeat 1 h old past a 30 s ``heartbeat_timeout``
+    * **stale holder** - heartbeat 1 h old past a 30 s ``heartbeat_timeout``
       while the lock lease is still valid for another hour. Only the
       heartbeat arm can reclaim this row; the lease arm's predicate is
       false by an hour.
-    * **fresh holder** — same ``heartbeat_timeout``, heartbeat stamped
+    * **fresh holder** - same ``heartbeat_timeout``, heartbeat stamped
       now. Its leased job must NOT be reclaimed: the sweep classifies by
       the holder's silence, not by the mere presence of the knob.
-    * **fresh heartbeat, expired lease** — the lease arm must still
+    * **fresh heartbeat, expired lease** - the lease arm must still
       reclaim a heartbeat-configured row (the new arm narrows nothing the
       lease arm owned; it only adds the earlier, per-job deadline).
 
@@ -251,7 +251,7 @@ async def test_in_memory_reclaim_enforces_heartbeat_timeout() -> None:
     directions: a holder silent past the job's ``heartbeat_timeout`` is
     reclaimed while its lease is still valid; a fresh holder's leased job
     is not; and the lease arm still reclaims a heartbeat-configured row
-    whose lease expired — the same three-way contract the PG pin above
+    whose lease expired - the same three-way contract the PG pin above
     asserts, so the twin cannot drift from the SQL."""
     backend = InMemoryBackend(
         clock=FakeClock(_TWIN_START),
@@ -314,5 +314,5 @@ async def test_in_memory_reclaim_enforces_heartbeat_timeout() -> None:
     assert detail.get("reason") == "lock_expired"
     assert detail.get("cause") == "heartbeat_timeout", (
         f"the twin's reclaim event must name the deadline that fired "
-        f"(detail={detail!r}) — the PG sweep's event does."
+        f"(detail={detail!r}) - the PG sweep's event does."
     )

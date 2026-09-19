@@ -83,7 +83,7 @@ def _cursor_at(value: datetime | None) -> str:
 
     A NULL sort value is an EMPTY parameter, never ``str(None)``: under
     NULLS LAST the unfinished rows are a real range that has to be paged
-    through, and its seams carry no value — only the id.
+    through, and its seams carry no value - only the id.
     """
     return "" if value is None else value.isoformat()
 
@@ -333,7 +333,7 @@ async def test_prev_from_the_null_range_walks_back_over_the_valued_rows(
     """Reversing the scan reverses the NULLS placement too.
 
     Going backwards from an unfinished row, every finished row precedes
-    it — reversing only the comparison directions leaves the NULL range
+    it - reversing only the comparison directions leaves the NULL range
     stranded at the wrong end and loses those rows.
     """
     deps, backend = clean_jobs_app

@@ -14,11 +14,11 @@ Model (from ``worker/_transient.py`` and ``worker/_leader_sweeps.py``
 
 * Every error a slow-DB storm produces is in ``TRANSIENT_PG_ERRORS``.
   The sweep loop catches that tuple per sweep call BEFORE its
-  ``except Exception`` backstop clause — a storm error is logged as a
+  ``except Exception`` backstop clause - a storm error is logged as a
   warning, marks the iteration unclean, and NEVER reaches
   ``guard.unexpected``. Crash-looping is NOT the designed answer to a
   slow database: the designed answer is per-tick warnings, drains that
-  pause (committed batches stay committed), and — for the prune family —
+  pause (committed batches stay committed), and - for the prune family -
   the ``SweepBatchSizer`` one-way reduced-tier latch.
 * The guard's deliberate fatality is reachable only from OUTSIDE the
   transient set (a code bug, a data error), is bounded at
@@ -27,13 +27,13 @@ Model (from ``worker/_transient.py`` and ``worker/_leader_sweeps.py``
   ORIGINAL error. One worker tears down; the leadership advisory lock
   is session-scoped (``pg_try_advisory_lock`` in ``worker/leader.py``),
   so the dead leader's lock releases with its connection and another
-  worker wins the next election — fleet-wide maintenance stops only if
+  worker wins the next election - fleet-wide maintenance stops only if
   every worker carries the same non-transient bug, which is exactly the
   fail-loud contract.
 * Interplay subtlety pinned below: a transient storm does not reset the
   streak either (``guard.ok()`` runs only on a clean iteration), so a
   storm interleaved between two bug hits does not buy the bug more
-  budget — but it also never contributes a hit of its own.
+  budget - but it also never contributes a hit of its own.
 
 Pinned at unit tier with the REAL classification tuple and the REAL
 guard object; the fleet-wide re-election sequence is design-tier
@@ -73,13 +73,13 @@ def _storm_error_family() -> list[BaseException]:
 async def test_slow_db_storm_errors_never_reach_the_fatal_guard() -> None:
     """Every storm error is transient-classified, so the sweep loop's
     per-sweep ``except TRANSIENT_PG_ERRORS`` clause absorbs it before
-    the ``except Exception`` backstop — the guard can record ZERO hits
+    the ``except Exception`` backstop - the guard can record ZERO hits
     from a storm of any length.
 
     Contract: a database that is merely slow/overloaded must never
     trip the deliberately-fatal 5-consecutive backstop; if any storm
     shape escaped the transient set, a sustained overload would
-    crash-loop the leader and stop sweeps fleet-wide — the storm
+    crash-loop the leader and stop sweeps fleet-wide - the storm
     amplified into an outage by the very backstop built for bugs.
     """
     guard = UnexpectedLoopErrorGuard("leader.sweep")
@@ -94,7 +94,7 @@ async def test_slow_db_storm_errors_never_reach_the_fatal_guard() -> None:
             raise exc
         except TRANSIENT_PG_ERRORS:
             # The per-sweep catch: warning + iteration_clean = False.
-            # guard.unexpected is NOT called — this is the load-bearing
+            # guard.unexpected is NOT called - this is the critical
             # asymmetry under test.
             pass
 
@@ -104,7 +104,7 @@ async def test_slow_db_storm_errors_never_reach_the_fatal_guard() -> None:
     # No raise: streak is 1 < 5. (If the storm had leaked into the
     # guard, this call would have raised the storm's 100th error.)
 
-    # And five consecutive REAL bugs still raise the original — the
+    # And five consecutive REAL bugs still raise the original - the
     # backstop stays reachable for what it exists for.
     with pytest.raises(RuntimeError, match="a real bug"):
         for _ in range(DEFAULT_MAX_CONSECUTIVE_UNEXPECTED - 1):
@@ -116,14 +116,14 @@ async def test_storm_shapes_are_all_transient_classified() -> None:
     ``except TRANSIENT_PG_ERRORS`` tuple.
 
     Contract: the transient set must keep covering every error a
-    degraded database emits mid-storm — one shape dropping out
+    degraded database emits mid-storm - one shape dropping out
     (e.g. a new driver version renaming a class) silently converts
     sustained overload into the deliberately-fatal path.
     """
     for exc in _storm_error_family():
         caught = isinstance(exc, TRANSIENT_PG_ERRORS)
         assert caught, (
-            f"{type(exc).__name__} is NOT in TRANSIENT_PG_ERRORS — a slow-DB "
+            f"{type(exc).__name__} is NOT in TRANSIENT_PG_ERRORS - a slow-DB "
             "storm producing it would bypass the sweep loop's transient "
             "catch and count toward the deliberately-fatal 5-consecutive "
             "backstop: the overload itself would crash-loop the leader"
@@ -133,7 +133,7 @@ async def test_storm_shapes_are_all_transient_classified() -> None:
 async def test_transient_storm_does_not_reset_the_bug_streak() -> None:
     """The interplay: ``guard.ok()`` runs only on a fully clean
     iteration, so a transient storm interleaved between two bug hits
-    neither adds budget-erasing resets nor extra strikes — the streak
+    neither adds budget-erasing resets nor extra strikes - the streak
     persists across the storm exactly as the docstring promises.
 
     Contract: only a fully successful work iteration resets the streak;
@@ -160,6 +160,6 @@ async def test_transient_storm_does_not_reset_the_bug_streak() -> None:
     guard2 = UnexpectedLoopErrorGuard("leader.sweep", max_consecutive=2)
     guard2.unexpected(RuntimeError("x"))
     guard2.ok()  # fully successful iteration: streak cleared
-    guard2.unexpected(RuntimeError("y"))  # strike 1 of 2 again — not fatal
+    guard2.unexpected(RuntimeError("y"))  # strike 1 of 2 again - not fatal
     with pytest.raises(RuntimeError, match="z"):
-        guard2.unexpected(RuntimeError("z"))  # strike 2 of 2 — fatal
+        guard2.unexpected(RuntimeError("z"))  # strike 2 of 2 - fatal

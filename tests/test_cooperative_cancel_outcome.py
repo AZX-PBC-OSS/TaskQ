@@ -1,7 +1,7 @@
 """An actor that observes cancellation and returns a value has succeeded.
 
 Cancellation in TaskQ is a request, not a kill: ``ctx.cancellation_requested``
-exists so an actor can wind down deliberately — flush what it computed, close
+exists so an actor can wind down deliberately - flush what it computed, close
 what it opened, and return whatever partial or degraded answer it managed. The
 guide teaches exactly that shape (``docs/guides/cancellation.md``: check the
 flag, ``await cleanup()``, ``return``).
@@ -10,17 +10,17 @@ The terminal state must therefore be decided by what the actor did, not by the
 fact that a cancel was requested while it ran. An actor that RETURNS a value
 completed its unit of work; an actor that raises ``CancelledError``, or that is
 force-cancelled after the grace period, did not. Collapsing both into
-``cancelled`` throws away a result the system already holds in hand — and it is
+``cancelled`` throws away a result the system already holds in hand - and it is
 not a race, but a decision taken after the value has returned.
 
 The operator stake: a cancel that arrives one millisecond before an actor's
 final ``return`` destroys completed work and, because the job is terminal, it
-is never re-run. Anything downstream that reads the result — a batch waiting on
-members, a caller polling the handle, a report assembled from partial answers —
+is never re-run. Anything downstream that reads the result - a batch waiting on
+members, a caller polling the handle, a report assembled from partial answers -
 sees nothing, and the row records no error explaining why.
 
-These tests drive the real ``consume_one_job`` on both execution paths — the
-autonomous path and the transactional (LOOP-scope) path — because the routing
+These tests drive the real ``consume_one_job`` on both execution paths - the
+autonomous path and the transactional (LOOP-scope) path - because the routing
 decision is made separately in each, and an actor's contract must not depend on
 which one its config selects.
 """
@@ -95,7 +95,7 @@ class _TransactionalBackend(FakeBackend):
     ) -> bool:
         # The consumer serializes the actor's return exactly once and hands
         # the backend ``result_bytes`` (the dict form stays None on that
-        # path) — record the bytes so the assertions decode the exact value
+        # path) - record the bytes so the assertions decode the exact value
         # the row would store.
         self.mark_succeeded_with_conn_calls.append((job_id, result, result_bytes))
         return await self.mark_succeeded(
@@ -192,7 +192,7 @@ async def test_autonomous_actor_returning_after_observing_cancel_succeeds() -> N
         "a job whose actor observed the cancel, degraded gracefully and "
         "RETURNED a result was written to the database as cancelled. The "
         "result the actor computed is discarded and the job is terminal, so "
-        "nothing will recompute it — a cancel arriving just before the "
+        "nothing will recompute it - a cancel arriving just before the "
         "actor's return silently destroys completed work. Cancellation is a "
         "request; the actor's outcome decides the terminal state, and this "
         "actor's outcome was a value."
@@ -204,7 +204,7 @@ async def test_autonomous_actor_returning_after_observing_cancel_succeeds() -> N
     )
     _job_id, _worker, _result, result_bytes = backend.mark_succeeded_calls[0]
     # The consumer serializes once and hands the backend result_bytes (the
-    # dict slot stays None on that path — tests/test_consumer_result_serialization.py
+    # dict slot stays None on that path - tests/test_consumer_result_serialization.py
     # pins the call shape); the stored value is the decode of those bytes.
     assert result_bytes is not None and loads(result_bytes) == _DEGRADED_RESULT, (
         "the degraded result the actor computed must be the result stored on "
@@ -212,7 +212,7 @@ async def test_autonomous_actor_returning_after_observing_cancel_succeeds() -> N
     )
     assert outcome == "succeeded", (
         "the outcome reported to the consumer's caller must match the state "
-        f"persisted on the job row, got {outcome!r} — a caller that acts on "
+        f"persisted on the job row, got {outcome!r} - a caller that acts on "
         "the returned outcome and an operator that reads the row must not "
         "see two different answers for the same attempt"
     )
@@ -303,7 +303,7 @@ async def test_actor_raising_cancelled_after_observing_cancel_is_cancelled() -> 
 
     assert len(backend.mark_cancelled_calls) == 1, (
         "an actor that abandoned its work by raising CancelledError must be "
-        "recorded cancelled — that is the signal an actor uses to say it did "
+        "recorded cancelled - that is the signal an actor uses to say it did "
         "not finish"
     )
     assert backend.mark_succeeded_calls == [], (

@@ -1,5 +1,5 @@
-"""Unit tests for the worker capacity gauges — ``taskq.worker.active_jobs``
-and ``taskq.worker.max_concurrency`` — the OTel twins of the health
+"""Unit tests for the worker capacity gauges - ``taskq.worker.active_jobs``
+and ``taskq.worker.max_concurrency`` - the OTel twins of the health
 socket's hand-rendered ``taskq_active_jobs`` that a real scrape never
 reached, and the per-actor ``taskq.jobs.running`` gauge's observer.
 """

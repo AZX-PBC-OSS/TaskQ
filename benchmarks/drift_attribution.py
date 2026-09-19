@@ -5,8 +5,8 @@ real TaskQ dispatch CTE / heartbeat / terminal templates), then
 EXPLAIN (ANALYZE, BUFFERS) the dispatch CTE at points:
 
   1. drifted state (dead tuples present, autovacuum cycling as it will),
-  2. after manual VACUUM (ANALYZE) — dead-tuple cleanup + stats refresh,
-  3. after pg_stat_reset + one fresh churn wave — stats-staleness control.
+  2. after manual VACUUM (ANALYZE) - dead-tuple cleanup + stats refresh,
+  3. after pg_stat_reset + one fresh churn wave - stats-staleness control.
 
 Read-only with respect to src/; writes only its own artifacts under
 results/. Scratch schema dropped on exit.

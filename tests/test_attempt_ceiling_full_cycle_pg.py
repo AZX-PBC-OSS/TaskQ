@@ -6,13 +6,13 @@ smallint-out-of-range driver error (the backlog-drain pin lives in
 tests/test_dispatch_pg.py::
 test_backlog_still_dispatches_with_a_job_at_the_attempt_ceiling). What that
 pin does not cover is what happens to the clamped job itself AFTER the claim
-— the chain a reviewer previously verified only by hand probe:
+- the chain a reviewer previously verified only by hand probe:
 
 * the clamped row is claimed at attempt 32767 (not 32768, no driver error)
   and runs;
-* its terminal write lands through the ordinary budget arms — a transient
+* its terminal write lands through the ordinary budget arms - a transient
   row at the ceiling is already past its ``max_attempts`` and terminalises
-  ``failed``; an ``indefinite`` row retries on — and the repeated attempt
+  ``failed``; an ``indefinite`` row retries on - and the repeated attempt
   number makes every terminal path's ``job_attempts`` insert land on the
   same ``(job_id, attempt)`` key twice, where the ``ON CONFLICT DO NOTHING``
   guard must keep the first record without rolling the transition back;
@@ -23,7 +23,7 @@ pin does not cover is what happens to the clamped job itself AFTER the claim
   claim would need a number the column cannot hold.
 
 The indefinite double cycle is the shape that earns the pin: claim, fail,
-reschedule, claim again at the same clamped number, fail again — the second
+reschedule, claim again at the same clamped number, fail again - the second
 cycle's attempt-row insert collides with the first's, and the row must still
 reschedule (never stranded, never a driver error, exactly one attempt row
 kept: the first cycle's record).
@@ -105,8 +105,8 @@ async def test_clamped_transient_job_terminalises_failed_through_the_budget_arm(
     jobs_app: JobsApp,
 ) -> None:
     """A transient job claimed at the ceiling terminalises ``failed`` on its
-    first failure after the clamp — the RetryAfter(consume_budget=True)
-    budget arm, which sees ``attempt >= max_attempts`` and owns the exit —
+    first failure after the clamp - the RetryAfter(consume_budget=True)
+    budget arm, which sees ``attempt >= max_attempts`` and owns the exit -
     keeping exactly one attempt row, and refusing the operator re-run whose
     re-pend the next claim could not number.
     """
@@ -185,7 +185,7 @@ async def test_clamped_indefinite_job_survives_two_full_claim_fail_cycles(
     """An ``indefinite`` job clamped at the ceiling runs, fails, and
     reschedules TWICE: both cycles claim at attempt 32767, both terminal
     writes land, the second cycle's attempt-row insert collides with the
-    first's and is absorbed — the audit trail keeps the FIRST record of the
+    first's and is absorbed - the audit trail keeps the FIRST record of the
     number, and the row is still scheduled (never stranded, never terminal,
     no driver error from any statement in either cycle).
     """
@@ -231,7 +231,7 @@ async def test_clamped_indefinite_job_survives_two_full_claim_fail_cycles(
 
         # Make the rescheduled row due again without sleeping out the
         # delay, then promote it through the production scheduled→pending
-        # sweep — the retry arm lands 'scheduled', and only the sweep's
+        # sweep - the retry arm lands 'scheduled', and only the sweep's
         # promotion makes a due row claimable again.
         async with deps.worker_pool.acquire() as conn:
             await conn.execute(
@@ -254,13 +254,13 @@ async def test_clamped_indefinite_job_survives_two_full_claim_fail_cycles(
         f"not stranded or terminal; got {row.status!r}"
     )
     assert row.scheduled_at <= datetime.now(UTC), (
-        "the promoted row is due — a third claim round would pick it up"
+        "the promoted row is due - a third claim round would pick it up"
     )
     assert row.attempt == _CEILING
 
     attempts = await backend.get_attempts(job_id)
     assert len(attempts) == 1, (
-        "two cycles at the clamped number must keep exactly one attempt row — "
+        "two cycles at the clamped number must keep exactly one attempt row - "
         "the ON CONFLICT guard absorbs the repeat rather than raising the PK "
         f"collision back through the terminal write; found "
         f"{[(a.attempt, a.outcome, a.error_message) for a in attempts]}"
@@ -278,6 +278,6 @@ async def test_clamped_indefinite_job_survives_two_full_claim_fail_cycles(
     ]
     assert len(reschedules) == 2, (
         "each cycle's retry transition is its own event (attempt rows are "
-        "deduplicated at the repeated key; transitions are not — both "
+        "deduplicated at the repeated key; transitions are not - both "
         f"happened); found {len(reschedules)}"
     )

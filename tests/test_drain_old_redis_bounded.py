@@ -118,7 +118,7 @@ async def test_drain_never_raises_into_the_background_task() -> None:
 # context for the redis fix: they answer a timed-out graceful close with
 # `terminate()`, which is immediate and non-blocking. Redis has no equivalent,
 # which is why a retry was reached for there instead. Driving them with a
-# wedged close is what proves the timeout path is actually bounded — the
+# wedged close is what proves the timeout path is actually bounded - the
 # earlier `"terminate()" in inspect.getsource(...)` check would have passed on
 # a `terminate()` call sitting in an unreachable branch.
 #
@@ -129,7 +129,7 @@ async def test_drain_never_raises_into_the_background_task() -> None:
 
 
 class _WedgedPool:
-    """A pool whose close() never returns — a stuck connection holder."""
+    """A pool whose close() never returns - a stuck connection holder."""
 
     def __init__(self) -> None:
         self.terminate_calls = 0
@@ -142,7 +142,7 @@ class _WedgedPool:
 
 
 class _WedgedConn:
-    """A connection whose close() never returns — a half-dead socket."""
+    """A connection whose close() never returns - a half-dead socket."""
 
     def __init__(self) -> None:
         self.terminate_calls = 0

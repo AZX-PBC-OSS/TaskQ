@@ -4,7 +4,7 @@
 ``schedule_to_close`` lies before the next dispatch: the retry write then
 lands the row ``failed`` with ``DeadlineExceeded`` (the backend's deadline
 arm, in SQL and in the in-memory twin). That is as terminal as an
-exhausted budget — the ``job-failed`` ERROR line, the ``on_retry_exhausted``
+exhausted budget - the ``job-failed`` ERROR line, the ``on_retry_exhausted``
 hook and the ``ErrorReporter`` are exactly the signals an operator has for
 a dead job, and every terminal failure emits each of them once.
 """
@@ -117,7 +117,7 @@ async def test_a_retry_refused_by_the_deadline_is_reported_as_a_terminal_failure
 
     failed = _events(captured, "job-failed")
     assert len(failed) == 1, (
-        f"exactly one job-failed line per terminal failure; got {len(failed)} — the "
+        f"exactly one job-failed line per terminal failure; got {len(failed)} - the "
         "deadline arm of the retry branch terminates the job without reporting it"
     )
     assert failed[0]["log_level"] == "error"

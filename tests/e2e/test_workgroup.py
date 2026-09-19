@@ -140,7 +140,7 @@ class WorkgroupSupervisor(NamedTuple):
 async def _drain_stdout(stream: asyncio.StreamReader | None, sink: deque[str]) -> None:
     """Forward subprocess output lines into *sink* until EOF.
 
-    Draining is load-bearing: an undrained PIPE buffer would eventually
+    Draining is critical: an undrained PIPE buffer would eventually
     block the supervisor's writes. The deque is bounded so a chatty child
     fleet cannot grow memory unboundedly.
     """
@@ -265,7 +265,7 @@ async def workgroup_supervisor(
         if process.returncode is None:
             # returncode stays None until the loop reaps the exit, so a
             # child that exited under a loaded runner reaches terminate()
-            # already dead — suppress like _kill_child does.
+            # already dead - suppress like _kill_child does.
             with contextlib.suppress(ProcessLookupError):
                 process.terminate()
             try:

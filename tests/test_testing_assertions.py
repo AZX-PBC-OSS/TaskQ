@@ -1,4 +1,4 @@
-"""Unit tests for taskq.testing.assertions — pure Python, no PG/OTel needed."""
+"""Unit tests for taskq.testing.assertions - pure Python, no PG/OTel needed."""
 
 from __future__ import annotations
 

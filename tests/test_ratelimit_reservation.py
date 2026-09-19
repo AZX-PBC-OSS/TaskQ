@@ -2,7 +2,7 @@
 
 Tests through plus sync_slots
 unit tests. These validate the ConcurrencyReservation class and
-_InMemorySlotTable using the in-memory backend with FakeClock — no real PG
+_InMemorySlotTable using the in-memory backend with FakeClock - no real PG
 instance required.
 """
 
@@ -204,7 +204,7 @@ def test_lease_zero_raises() -> None:
 
 
 async def test_sync_slots_insertion() -> None:
-    """sync_slots: insertion — 4 slots registered, 0 in table → 4 inserted."""
+    """sync_slots: insertion - 4 slots registered, 0 in table → 4 inserted."""
     clock = FakeClock(_START)
     table = _InMemorySlotTable(clock)
 
@@ -223,7 +223,7 @@ async def test_sync_slots_insertion() -> None:
 
 
 async def test_sync_slots_deletion() -> None:
-    """sync_slots: deletion — 2 registered, 4 in table → 2 excess free deleted."""
+    """sync_slots: deletion - 2 registered, 4 in table → 2 excess free deleted."""
     clock = FakeClock(_START)
     table = _InMemorySlotTable(clock)
     table.ensure_slots("gpu", 4)
@@ -238,7 +238,7 @@ async def test_sync_slots_deletion() -> None:
 
 
 async def test_sync_slots_skips_held() -> None:
-    """sync_slots: skips held — 2 registered, 4 in table, 1 excess held → 1 deleted, 1 skipped_held."""
+    """sync_slots: skips held - 2 registered, 4 in table, 1 excess held → 1 deleted, 1 skipped_held."""
     clock = FakeClock(_START)
     table = _InMemorySlotTable(clock)
     table.ensure_slots("gpu", 4)
@@ -265,7 +265,7 @@ async def test_sync_slots_skips_held() -> None:
 async def test_sync_slots_all_excess_live_held_shrink_deletes_nothing() -> None:
     """Shrink below current in-flight: ALL excess slots live-held → nothing
     deleted, both reported skipped_held, table stays at 4. The new cap
-    takes effect as holders drain — a live holder is never preempted, and
+    takes effect as holders drain - a live holder is never preempted, and
     the above-cap rows remain acquirable-on-release until the next sync,
     which is the documented drain semantics of a shrink."""
     clock = FakeClock(_START)
@@ -290,7 +290,7 @@ async def test_sync_slots_deletes_expired_lease_excess_slots() -> None:
     Regression: a dead worker's leaked slots (``job_id`` set, lease expired)
     are acquirable per the acquire path's free condition, so treating them
     as "held" during a shrink would let the old larger cap keep being
-    honored indefinitely — over-admission relative to the new cap.
+    honored indefinitely - over-admission relative to the new cap.
     """
     clock = FakeClock(_START)
     table = _InMemorySlotTable(clock)
@@ -315,7 +315,7 @@ async def test_sync_slots_deletes_expired_lease_excess_slots() -> None:
 
 async def test_sync_slots_skips_live_held_but_deletes_expired() -> None:
     """Mixed shrink: a live-held excess slot is still skipped while an
-    expired-lease excess slot is deleted in the same sync — the held/free
+    expired-lease excess slot is deleted in the same sync - the held/free
     definition matches the acquire path's exactly."""
     clock = FakeClock(_START)
     table = _InMemorySlotTable(clock)
@@ -325,7 +325,7 @@ async def test_sync_slots_skips_live_held_but_deletes_expired() -> None:
     dead_worker = new_uuid()
     table.acquire("gpu", new_uuid(), alive_worker, timedelta(hours=1))  # slot 0
     table.acquire("gpu", new_uuid(), alive_worker, timedelta(hours=1))  # slot 1
-    table.acquire("gpu", new_uuid(), dead_worker, _LEASE)  # slot 2 — lease expires below
+    table.acquire("gpu", new_uuid(), dead_worker, _LEASE)  # slot 2 - lease expires below
     table.acquire("gpu", new_uuid(), alive_worker, timedelta(hours=1))  # slot 3
 
     # Only slot 2's (short) lease expires; slots 0/1/3 remain genuinely held.
@@ -636,14 +636,14 @@ async def test_peek_invalid_mutated_schema_raises_value_error() -> None:
     res._schema = "bad;schema"  # type: ignore[misc] # Why: simulate corrupted post-construction state to exercise the defensive re-check
 
     with pytest.raises(ValueError, match="invalid schema identifier"):
-        await res.peek(pool=object())  # type: ignore[arg-type] # Why: pool is never touched — the schema check raises first
+        await res.peek(pool=object())  # type: ignore[arg-type] # Why: pool is never touched - the schema check raises first
 
 
 # ── sync_slots timeout bound ───────────────────────────────────────────
 
 
 class _HungAcquirePool:
-    """Fake asyncpg pool whose acquire never returns — a wedged store."""
+    """Fake asyncpg pool whose acquire never returns - a wedged store."""
 
     def acquire(self) -> "_HungAcquireContext":
         return _HungAcquireContext()

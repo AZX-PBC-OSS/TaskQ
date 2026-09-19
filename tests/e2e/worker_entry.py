@@ -1,4 +1,4 @@
-"""Worker container entrypoint — imported ONLY inside the container.
+"""Worker container entrypoint - imported ONLY inside the container.
 
 The image sets PYTHONPATH=/app, so the e2e package is imported here via
 absolute ``e2e.`` imports (mirrors ``examples/worker.py``). Migrations are
@@ -74,7 +74,7 @@ def _e2e_cron_registry() -> list[CronScheduleSpec] | None:
     """Cron schedules for the cron e2e module only.
 
     Gated on TASKQ_E2E_CRON so the schedule fires solely inside the
-    dedicated cron-test container — a once-a-minute job in every e2e
+    dedicated cron-test container - a once-a-minute job in every e2e
     worker would break the other modules' idle gates.
     """
     if os.environ.get("TASKQ_E2E_CRON") != "1":

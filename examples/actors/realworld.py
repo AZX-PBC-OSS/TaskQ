@@ -1,13 +1,13 @@
-"""Real-world scenario actors — realistic patterns you'd use in production.
+"""Real-world scenario actors - realistic patterns you'd use in production.
 
 These actors demonstrate TaskQ patterns that map to real application needs:
 
-- ``send_digest_email``: Email digest pipeline — fan-out per user with retry,
+- ``send_digest_email``: Email digest pipeline - fan-out per user with retry,
   dedup via ``identity_key``, and typed results. Uses DI for the email client.
-- ``process_csv_upload``: ETL pipeline — parse → validate → transform → load
+- ``process_csv_upload``: ETL pipeline - parse → validate → transform → load
   with progress reporting at each stage, cooperative cancellation, and
   sub-job fan-out for batch processing.
-- ``generate_thumbnail``: CPU-bound sync actor — image processing via Pillow,
+- ``generate_thumbnail``: CPU-bound sync actor - image processing via Pillow,
   demonstrates sync actors with ``ctx.should_abort()`` and ``result_ttl``.
 """
 
@@ -48,7 +48,7 @@ async def send_digest_email(
     *,
     smtp: SmtpClient,
 ) -> DigestEmailResult:
-    """Send a digest email to a user — retries on transient SMTP failures.
+    """Send a digest email to a user - retries on transient SMTP failures.
 
     Deduplicated per ``user_id`` within a 30-minute window so a double-click
     on "send digest" doesn't spam the user. Returns a typed result with the
@@ -89,9 +89,9 @@ def _render_digest(user_id: str, articles: list[dict[str, str]]) -> str:
     """Render the digest email body."""
     lines = [f"Hello {user_id},", "", f"Here are your {len(articles)} articles:", ""]
     for i, article in enumerate(articles, 1):
-        lines.append(f"{i}. {article['title']} — {article['url']}")
+        lines.append(f"{i}. {article['title']} - {article['url']}")
     lines.append("")
-    lines.append("— TaskQ Digest")
+    lines.append("- TaskQ Digest")
     return "\n".join(lines)
 
 
@@ -182,7 +182,7 @@ async def process_csv_chunk(
     payload: CsvChunkPayload,
     ctx: JobContext[CsvChunkPayload],
 ) -> None:
-    """Process a single chunk of CSV rows — a sub-job dispatched by the ETL pipeline."""
+    """Process a single chunk of CSV rows - a sub-job dispatched by the ETL pipeline."""
     row_count = payload.end_row - payload.start_row
     ctx.log.info(
         "chunk-start",
@@ -232,7 +232,7 @@ def generate_thumbnail(
     payload: ThumbnailPayload,
     ctx: JobContext[ThumbnailPayload],
 ) -> ThumbnailResult:
-    """Generate a thumbnail from an image — CPU-bound sync actor.
+    """Generate a thumbnail from an image - CPU-bound sync actor.
 
     In production this would use Pillow or wand to resize the image.
     Here we simulate CPU-bound work with periodic cancellation checks.

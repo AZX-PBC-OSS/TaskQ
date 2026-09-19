@@ -1,22 +1,22 @@
 """Wiring of the ``complete_stale_batches`` sweep inside ``_sweep_loop``.
 
 Regression: the stale-batch completion block ended
-up nested inside ``if rl.has_keyed_rate_limits:`` — a PROCESS-LOCAL
-registry condition — and lost its leader gating. Consequences:
+up nested inside ``if rl.has_keyed_rate_limits:`` - a PROCESS-LOCAL
+registry condition - and lost its leader gating. Consequences:
 
 - Deployments not using keyed rate-limit refs (the default) NEVER ran the
   sweep: batches whose completion hook was lost (consumer crash between
   the terminal write and ``complete_batch``/``abort_batch``) stayed
   ``active`` forever, ``wait_for_batch`` could snooze indefinitely, and
   ``prune_old_batches`` (which only deletes ``completed_at IS NOT NULL``
-  rows) never caught up — unbounded ``batches`` growth.
+  rows) never caught up - unbounded ``batches`` growth.
 - Non-leaders could run it while the actual leader might not.
 
 The intended wiring (per
 docs/architecture.md "``complete_stale_batches`` leader sweep" /
 docs/guides/workers.md) is: leader-gated, keyed-registry-independent, and
 gated on a PG-shaped backend (``hasattr`` on ``sweep_leaked_reservation_slots``
-— ``complete_stale_batches`` needs the dispatcher pool, which the
+- ``complete_stale_batches`` needs the dispatcher pool, which the
 in-memory backend does not provide).
 
 These tests pin that wiring while preserving the de-gating of keyed
@@ -72,7 +72,7 @@ class _FakePool:
 
 class _PgShapedBackend:
     """Backend satisfying every ``_sweep_loop`` call, including the PG-only
-    maintenance sweeps — the ``hasattr(ctx.backend, "sweep_leaked_reservation_slots")``
+    maintenance sweeps - the ``hasattr(ctx.backend, "sweep_leaked_reservation_slots")``
     gate the stale-batch sweep rides on."""
 
     async def reclaim_expired_locks(self, cg: timedelta, ug: timedelta) -> int:
@@ -201,7 +201,7 @@ def _recording_stale_batches() -> Generator[list[dict[str, Any]], None, None]:
 @contextlib.contextmanager
 def _draining_stale_batches() -> Generator[list[dict[str, Any]], None, None]:
     """Swap ``complete_stale_batches`` for a drain-shaped recorder: the
-    first call reports one full bounded batch, the next an empty window —
+    first call reports one full bounded batch, the next an empty window -
     the shape a real bounded sweep produces when the remainder fits in one
     more batch, so a drain-wired caller stops after exactly two calls."""
     import taskq.worker._leader_sweeps as sweeps_mod
@@ -241,7 +241,7 @@ async def test_stale_batch_sweep_runs_for_leader_without_keyed_rate_limits() -> 
 
 async def test_stale_batch_sweep_drains_within_one_tick() -> None:
     """A non-empty bounded batch drains to zero WITHIN the tick that first
-    saw it, through the same ``_drain_bounded`` wiring as sweeps 1/2 — not
+    saw it, through the same ``_drain_bounded`` wiring as sweeps 1/2 - not
     one bounded call per sweep_interval, which left a large stale set
     completing at one batch per tick while every sibling sweep drained to
     zero per tick.
@@ -252,7 +252,7 @@ async def test_stale_batch_sweep_drains_within_one_tick() -> None:
     drive window (the fixture's sweep interval is the default 30 s).
     """
     # The module's own _deps() pins sweep_interval to 0.01 s so negative
-    # assertions survive several ticks; THIS test needs the opposite —
+    # assertions survive several ticks; THIS test needs the opposite -
     # an interval long enough that only drain calls, not later ticks,
     # can produce the second call inside the window.
     settings_deps = _deps(is_leader=True)
@@ -270,7 +270,7 @@ async def test_stale_batch_sweep_drains_within_one_tick() -> None:
 
     assert len(calls) >= 2, (
         f"the stale-batch sweep made {len(calls)} call(s) inside one "
-        "30 s tick — a non-empty first batch must drain within the same "
+        "30 s tick - a non-empty first batch must drain within the same "
         "tick, not one bounded call per sweep_interval"
     )
 
@@ -296,7 +296,7 @@ async def test_stale_batch_sweep_skipped_when_not_leader() -> None:
 
 
 async def test_keyed_rate_limit_eviction_still_runs_when_not_leader() -> None:
-    """Semantics pin: keyed eviction is de-gated from leadership — a
+    """Semantics pin: keyed eviction is de-gated from leadership - a
     non-leader worker still evicts idle keyed rate limits from its OWN
     registry each tick. The stale-batch fix must not regress this."""
     registry = RateLimitRegistry()

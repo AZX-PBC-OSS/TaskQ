@@ -169,7 +169,7 @@ class TestPostgresBatchPaging:
             await backend.create_batch(bid, "default", 1, None, None, None)
             expected.add(bid)
 
-        collapse_sql = f'UPDATE "{schema}".batches SET created_at = $1'  # noqa: S608  # Why: test helper — schema is a validated fixture identifier, the value is $1-bound.
+        collapse_sql = f'UPDATE "{schema}".batches SET created_at = $1'  # noqa: S608  # Why: test helper - schema is a validated fixture identifier, the value is $1-bound.
         async with jobs_app.deps.worker_pool.acquire() as conn:
             await conn.execute(collapse_sql, datetime(2025, 3, 4, 5, 6, 7, tzinfo=UTC))
 

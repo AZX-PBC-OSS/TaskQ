@@ -1,7 +1,7 @@
 """Bounds on durable rows written by reservation/rate-limit denials, and
 age-based retention for ``job_events``.
 
-An admission denial — a rate-limit or reservation refusal — carries HTTP-429
+An admission denial - a rate-limit or reservation refusal - carries HTTP-429
 semantics: "come back later".  No handler ran and nothing failed, so a denial
 must never consume the job's retry budget and must never by itself terminally
 fail a job.  A denied job is rescheduled for as long as it takes, until
@@ -20,7 +20,7 @@ Three contracts are pinned here, all verified against real Postgres:
 2. Neither side of the retry budget moves across a denial loop:
    ``max_attempts`` stays at its configured ceiling and ``attempt`` returns to
    where it started, so the job stays reschedulable.  The rows of a job that
-   does reach a terminal state — via its close deadline — are reclaimable by
+   does reach a terminal state - via its close deadline - are reclaimable by
    the terminal prune.
 
 3. ``job_events`` needs its own age-based retention, independent of parent
@@ -31,12 +31,12 @@ Three contracts are pinned here, all verified against real Postgres:
 The tests below assert the DESIRABLE behaviour so they go green when the
 implementation matches it.
 
-CRITICAL — crash-reclamation outbox.  ``job_events`` rows with
+CRITICAL - crash-reclamation outbox.  ``job_events`` rows with
 ``kind = 'state_change' AND detail->>'reason' = 'lock_expired'`` are the
 outbox consumed by ``poll_reclaim_events`` driving ``TaskQ.watch_reclaims()``.
 Any age-based retention MUST exempt that slice or crash reclamation silently
 stops.  ``test_lock_expired_reclaim_outbox_is_exempt_from_retention`` pins
-that exemption and is as load-bearing as the red tests.
+that exemption and is as critical as the red tests.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -111,7 +111,7 @@ async def _relock_for_next_dispatch(
 
 
 async def _current_attempt(conn: asyncpg.Connection, schema: str, job_id: UUID) -> int:
-    """The row's current attempt epoch — the denial-cycle writes' fence bind."""
+    """The row's current attempt epoch - the denial-cycle writes' fence bind."""
     attempt: int | None = await conn.fetchval(
         f'SELECT attempt FROM "{schema}".jobs WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier, validated against _IDENT_RE upstream; job_id is $-bound.
         job_id,
@@ -161,7 +161,7 @@ async def _drive_denial_loop(
 
 
 _SEED_CARRIER_DEADLINE: Final[object] = object()
-"""Sentinel for ``_seed_denied_job``: seed with the +1-day close deadline —
+"""Sentinel for ``_seed_denied_job``: seed with the +1-day close deadline -
 the shape whose denial loop keeps rescheduling until the deadline. Pass
 ``None`` for the no-deadline shape, which has no terminal exit at all under
 denial pressure: it stays reschedulable indefinitely."""
@@ -204,15 +204,15 @@ async def test_reservation_denial_does_not_accrue_unbounded_durable_rows(
     """CONTRACT: a job denied a reservation N times must not write O(N)
     durable rows.
 
-    A denial is not work that happened — no handler ran, no attempt was
+    A denial is not work that happened - no handler ran, no attempt was
     consumed, no budget was spent.  It is backpressure.  Recording it as a
     full ``job_attempts`` row plus a full ``job_events`` row per poll turns a
     single logical unit of work into unbounded storage: a job denied by a
     saturated bucket for an hour at a one-second retry_after writes 7200 rows
     that describe nothing that happened.
 
-    The desirable behaviour is that repeated denials COALESCE — a counter on
-    the job row, or a single updated event — so the durable footprint of a
+    The desirable behaviour is that repeated denials COALESCE - a counter on
+    the job row, or a single updated event - so the durable footprint of a
     denied job is O(1) in the number of denials.
 
     The durable footprint of a denied job must therefore be O(1) in the
@@ -245,12 +245,12 @@ async def test_reservation_denial_does_not_accrue_unbounded_durable_rows(
     assert attempts_added <= _BOUNDED_ROW_BUDGET, (
         f"{_DENIAL_CYCLES} reservation denials wrote {attempts_added} job_attempts rows; "
         f"denials must coalesce to at most {_BOUNDED_ROW_BUDGET} durable rows, not grow "
-        "one-per-poll — a denial records that nothing happened."
+        "one-per-poll - a denial records that nothing happened."
     )
     assert events_added <= _BOUNDED_ROW_BUDGET, (
         f"{_DENIAL_CYCLES} reservation denials wrote {events_added} job_events rows; "
         f"denials must coalesce to at most {_BOUNDED_ROW_BUDGET} durable rows, not grow "
-        "one-per-poll — a denial records that nothing happened."
+        "one-per-poll - a denial records that nothing happened."
     )
 
 
@@ -272,7 +272,7 @@ async def test_denial_consumes_no_retry_budget(
 ) -> None:
     """CONTRACT: an admission denial never spends the job's retry budget.
 
-    A denial is HTTP-429 semantics — "come back later" — not a failed
+    A denial is HTTP-429 semantics - "come back later" - not a failed
     execution.  No handler ran, nothing failed, so nothing may be charged
     against the budget that exists to bound *failures*.  Concretely, across
     any number of deny/redispatch cycles both sides of the budget must be
@@ -285,7 +285,7 @@ async def test_denial_consumes_no_retry_budget(
     kill work.  A saturated bucket or a mis-sized rate limit is an operator
     problem; if each denial nibbles the budget, a job with ``max_attempts=3``
     dies after three polls against a full bucket having never once run its
-    handler.  Backpressure must delay work, never destroy it — a denied job
+    handler.  Backpressure must delay work, never destroy it - a denied job
     is rescheduled indefinitely until capacity frees or its
     schedule-to-close deadline ends it through the normal deadline path.
 
@@ -335,13 +335,13 @@ async def test_denial_consumes_no_retry_budget(
 
     assert max_attempts_after == max_attempts_before, (
         f"max_attempts drifted {max_attempts_before} -> {max_attempts_after} across "
-        f"{_DENIAL_CYCLES} denials; the configured ceiling must be immutable — a denial "
+        f"{_DENIAL_CYCLES} denials; the configured ceiling must be immutable - a denial "
         "is not an execution, so neither side of the budget may move."
     )
     assert attempt_after == attempt_before, (
         f"attempt drifted {attempt_before} -> {attempt_after} across {_DENIAL_CYCLES} "
         "denials; the claim that ended in a denial did no work, so its increment must be "
-        "refunded — otherwise a saturated bucket spends a budget that exists to bound "
+        "refunded - otherwise a saturated bucket spends a budget that exists to bound "
         "failures, and a job dies without its handler ever running."
     )
     assert status_after not in {"failed", "cancelled", "crashed", "abandoned"}, (
@@ -366,12 +366,12 @@ async def test_denial_rows_are_reclaimable_by_retention(
     """CONTRACT: rows written by a denial loop must be reclaimable.
 
     ``prune_terminal_jobs`` keys on ``status IN (terminal) AND finished_at
-    < cutoff`` — a standard reclaim shape (delete whole job rows keyed on
+    < cutoff`` - a standard reclaim shape (delete whole job rows keyed on
     a completion timestamp with a configurable retention window). A zero
     retention is the documented prune-terminal-now point, archiving all
     terminal jobs immediately.
 
-    A denied job must never be terminalised by the denials themselves —
+    A denied job must never be terminalised by the denials themselves -
     backpressure delays work, it does not destroy it.  The one exit a
     perpetually denied job has is its own ``schedule_to_close`` deadline:
     when the next reschedule point would fall past it, the job fails
@@ -382,7 +382,7 @@ async def test_denial_rows_are_reclaimable_by_retention(
     exit, and the prune reclaiming the aged rows via the parent cascade.
 
     Anchoring reclaimability on the deadline rather than on retry
-    exhaustion is what keeps the two halves consistent — if a denial could
+    exhaustion is what keeps the two halves consistent - if a denial could
     exhaust the budget, this test would be green for the wrong reason and
     would quietly re-license killing work that never got a slot.
     """
@@ -396,8 +396,8 @@ async def test_denial_rows_are_reclaimable_by_retention(
 
         worker_id = new_uuid()
         # A close deadline already in the past: the very next reschedule
-        # point falls beyond it, so the deadline arm — the only terminal
-        # exit a denied job has — fires on the first denial.
+        # point falls beyond it, so the deadline arm - the only terminal
+        # exit a denied job has - fires on the first denial.
         job_id = await _seed_denied_job(
             conn,
             schema,
@@ -407,8 +407,8 @@ async def test_denial_rows_are_reclaimable_by_retention(
 
         async with open_worker_deps(worker_settings) as deps:
             backend = _make_backend(deps)
-            # Drive the real denial cycle — mark_snoozed, then the
-            # dispatcher's re-claim — until the deadline exit fires.
+            # Drive the real denial cycle - mark_snoozed, then the
+            # dispatcher's re-claim - until the deadline exit fires.
             terminal_outcome: str | None = None
             for _ in range(_DENIAL_CYCLES):
                 outcome = await backend.mark_snoozed(
@@ -460,11 +460,11 @@ async def test_denial_rows_are_reclaimable_by_retention(
         )
 
         events_before = await _count(conn, schema, "job_events", job_id)
-        assert events_before > 0, "the terminal exit wrote no events — test setup is wrong"
+        assert events_before > 0, "the terminal exit wrote no events - test setup is wrong"
 
         # Retention zero is the prune family's documented immediate-archive
         # point (settings.py: "timedelta(0) means archive all terminal jobs
-        # immediately (valid)") — the corpus's prune-terminal-now form.
+        # immediately (valid)") - the corpus's prune-terminal-now form.
         _zero = timedelta(seconds=0)
         await prune_terminal_jobs(
             conn,
@@ -510,12 +510,12 @@ async def test_job_events_have_age_based_retention_for_nonterminal_parents(
     rows with no upper bound and no mechanism that can ever remove them.
 
     There must be a sweep that reclaims sufficiently old ``job_events`` rows
-    independent of parent terminality — while EXEMPTING the crash-reclaim
+    independent of parent terminality - while EXEMPTING the crash-reclaim
     outbox slice (see the companion pinning test below).
 
     Because a denial never fails a job and a worker never refuses to start
     over a capacity condition, unbounded event growth has no loud failure to
-    announce it — a bounded sweep is the only thing keeping the table from
+    announce it - a bounded sweep is the only thing keeping the table from
     being a silent growth vector.
     """
     schema = settings.schema_name
@@ -559,8 +559,8 @@ async def test_job_events_have_age_based_retention_for_nonterminal_parents(
             "retention window regardless of parent status, EXEMPTING "
             "kind='state_change' AND detail->>'reason'='lock_expired' (the crash-reclaim "
             "outbox consumed by poll_reclaim_events). Note there is also no index on "
-            "occurred_at alone — only (job_id, occurred_at) and the partial reclaim "
-            "index — so such a sweep needs a supporting index."
+            "occurred_at alone - only (job_id, occurred_at) and the partial reclaim "
+            "index - so such a sweep needs a supporting index."
         )
 
         await sweep(conn, schema=schema, retention=timedelta(days=30))
@@ -581,7 +581,7 @@ async def test_lock_expired_reclaim_outbox_is_exempt_from_retention(
     """PIN: the crash-reclaim outbox slice must NEVER be aged out.
 
     ``job_events`` rows with ``kind = 'state_change'`` and
-    ``detail->>'reason' = 'lock_expired'`` are not history — they are the
+    ``detail->>'reason' = 'lock_expired'`` are not history - they are the
     outbox ``poll_reclaim_events`` reads to drive ``TaskQ.watch_reclaims()``.
     ``poll_reclaim_events`` advances a trailing watermark over ``id``; if a
     retention sweep deletes an un-consumed row in that slice, the reclaim
@@ -652,7 +652,7 @@ async def test_lock_expired_reclaim_outbox_is_exempt_from_retention(
         "crashed worker's reclaim forever. Any job_events retention sweep MUST exempt it."
     )
     assert any(ev.job_id == job_id for ev in reclaim_events), (
-        "the aged lock_expired row is no longer visible to poll_reclaim_events — crash "
+        "the aged lock_expired row is no longer visible to poll_reclaim_events - crash "
         "reclamation is broken for this job."
     )
 

@@ -1,12 +1,12 @@
 """Adversarial pins for ``maintenance_health`` and its authority model.
 
 The degraded view reads the obs layer's module-level success/batch-size
-caches — THIS process's stamps for the sweeps ITS leader loops ran. The
+caches - THIS process's stamps for the sweeps ITS leader loops ran. The
 attacks here: the staleness boundary (three whole intervals, strictly
 greater), the reduced-tier threshold reading the PASSED settings (not a
 constant), the emitter↔reader pairing (the reader must see
 ``record_sweep_success``'s latest stamp through the live cache), and the
-demotion path —
+demotion path -
 a demoted process keeps exporting frozen success stamps it no longer has
 authority over, which is both a permanently-degraded health body and a
 permanently-firing promotion-stalled alert from every ex-leader pod.
@@ -55,7 +55,7 @@ def _patch_caches(
 def test_staleness_just_under_three_intervals_stays_healthy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """2.9x sweep_interval of staleness is jitter/slow, not a stall —
+    """2.9x sweep_interval of staleness is jitter/slow, not a stall -
     three whole intervals without a completion is the threshold, and the
     check is strictly-greater so exactly-three is still 'suspicion', not
     'stalled'. A large sweep interval (100 s) gives the boundary a 10 s
@@ -76,8 +76,8 @@ def test_staleness_just_under_three_intervals_stays_healthy(
 def test_staleness_just_over_three_intervals_degrades(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """3.1x sweep_interval: three whole missed intervals — a stall, not a
-    slow sweep — with the sweep named in the reason."""
+    """3.1x sweep_interval: three whole missed intervals - a stall, not a
+    slow sweep - with the sweep named in the reason."""
     import time
 
     settings = _settings(TASKQ_SWEEP_INTERVAL="100")
@@ -101,7 +101,7 @@ def test_reduced_tier_threshold_follows_the_configured_batch_size(
     """An operator who raises ``event_writer_batch_size`` to 250 moves the
     reduced-tier threshold WITH it: a sweep reporting 249 is the reduced
     tier (249 < 250). A hardcoded threshold (the default 100) would call
-    249 healthy — exactly the misreport this view exists to prevent."""
+    249 healthy - exactly the misreport this view exists to prevent."""
     import time
 
     settings = _settings(TASKQ_EVENT_WRITER_BATCH_SIZE="250")
@@ -115,7 +115,7 @@ def test_reduced_tier_threshold_follows_the_configured_batch_size(
     view = maintenance_health(settings)
 
     assert view["degraded"] is True, (
-        "batch size 249 against a configured 250 is the reduced tier — the "
+        "batch size 249 against a configured 250 is the reduced tier - the "
         "threshold must follow the setting, not a constant"
     )
     assert "sweep=scheduled_to_pending batch size degraded to 249" in view["reasons"]
@@ -145,12 +145,12 @@ def test_batch_size_equal_to_configured_is_not_degraded(
 
 
 def test_reader_sees_success_stamps(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The reader must observe ``record_sweep_success``'s latest stamp —
+    """The reader must observe ``record_sweep_success``'s latest stamp -
     whatever publication shape the writer uses. Guards against a refactor
     that rebinds the reader to a copy taken at import time (the stamps
     would silently stop reaching the health view and the staleness
     gauge). The writer may rebind the cache (copy-on-write, for the OTel
-    reader thread) — the contract is that the live cache, not a frozen
+    reader thread) - the contract is that the live cache, not a frozen
     snapshot, is what the reader sees."""
     import time
 
@@ -168,7 +168,7 @@ def test_reader_sees_success_stamps(monkeypatch: pytest.MonkeyPatch) -> None:
     view = maintenance_health(settings)
 
     assert view["degraded"] is True, (
-        "the health view did not see the emitter's stamp — the "
+        "the health view did not see the emitter's stamp - the "
         "reader and the writer are on different cache objects"
     )
 
@@ -179,7 +179,7 @@ def test_reader_sees_success_stamps(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_demotion_clears_sweep_health_stamps() -> None:
     """A demoted process stops running the leader sweeps, so its success
     stamps and batch sizes are numbers it no longer has any authority
-    over — the same rationale the demotion path already applies to queue
+    over - the same rationale the demotion path already applies to queue
     depth. Keeping them has two failure modes: this pod's health body
     reads ``degraded`` forever after an ordinary failover, and its frozen
     ``sweep_last_success_seconds`` series fires the promotion-stalled
@@ -195,7 +195,7 @@ async def test_demotion_clears_sweep_health_stamps() -> None:
     try:
         deps = WorkerDeps(
             settings=_settings(),
-            dispatcher_pool=None,  # pyright: ignore[reportArgumentType]  # Why: demotion touches no pool — the leader-owned conns are None.
+            dispatcher_pool=None,  # pyright: ignore[reportArgumentType]  # Why: demotion touches no pool - the leader-owned conns are None.
             heartbeat_pool=None,  # pyright: ignore[reportArgumentType]
             worker_pool=None,  # pyright: ignore[reportArgumentType]
             notify_conn=None,
@@ -215,7 +215,7 @@ async def test_demotion_clears_sweep_health_stamps() -> None:
         assert not _otel._queue_depth_cache, "queue depth already clears on demotion"  # pyright: ignore[reportPrivateUsage]  # Why: reading the singleton the demotion path clears.
         assert _otel._sweep_success_cache == {}, (  # pyright: ignore[reportPrivateUsage]  # Why: see above.
             "a demoted process keeps frozen sweep-success stamps it no longer "
-            "has authority over — its health body reads degraded forever and "
+            "has authority over - its health body reads degraded forever and "
             "its frozen last-success series pages promotion-stalled forever"
         )
         assert _otel._sweep_batch_size_cache == {}  # pyright: ignore[reportPrivateUsage]  # Why: see above.
@@ -228,7 +228,7 @@ async def test_demotion_clears_sweep_health_stamps() -> None:
 async def test_demoted_process_health_is_not_degraded() -> None:
     """The operator-facing consequence: after demotion the health body
     must report the informational not-leader state, not a permanent
-    'sweep stalled' degraded view — the stamp the demoted process kept
+    'sweep stalled' degraded view - the stamp the demoted process kept
     was never its own to keep."""
     import time
 
@@ -271,7 +271,7 @@ def test_stalled_leader_process_is_degraded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A process whose OWN stamps went stale (it holds leadership, or
-    nothing cleared them because it never demoted) stays degraded — the
+    nothing cleared them because it never demoted) stays degraded - the
     demotion authority fix must only release stamps on actual demotion,
     never mute a genuinely stalled process's view."""
     import time

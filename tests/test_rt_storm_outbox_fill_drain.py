@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team storm: the reclaim-event outbox under mass failure — fill
+"""Red-team storm: the reclaim-event outbox under mass failure - fill
 vs drain geometry.
 
 Model (from ``backend/_sweeps.py`` sweep 1, ``backend/_reads.py``
@@ -7,28 +7,28 @@ Model (from ``backend/_sweeps.py`` sweep 1, ``backend/_reads.py``
 
 * FILL: one ``reclaim_expired_locks`` call writes at most
   ``event_writer_batch_size`` (default 100) ``lock_expired`` events in
-  one short transaction — the bounded-writes class already pinned by
+  one short transaction - the bounded-writes class already pinned by
   ``test_sweepaudit_bounded_writes`` / ``test_sweep_expired_locks_bounded``
   (not re-pinned here; this file measures the RATIO side).
 * DRAIN: ``poll_reclaim_events`` returns at most ``limit`` rows per call
   (default 100, ``DEFAULT_RECLAIM_POLL_LIMIT``; ``watch_reclaims`` uses
   ``_WATCH_RECLAIMS_BATCH_LIMIT`` = 100), and the consumer re-polls
-  IMMEDIATELY after a full batch — so a crash storm larger than one
+  IMMEDIATELY after a full batch - so a crash storm larger than one
   batch drains at full poll speed, not one batch per ``poll_timeout``.
 * RATIO: at the default knobs the per-call fill bound and the per-call
-  drain bound are the SAME 100 — one committed sweep batch is exactly
+  drain bound are the SAME 100 - one committed sweep batch is exactly
   one drainable poll batch, so a tight-loop consumer cannot fall behind
   per call. Backlog accrues only when the consumer's downstream (the
   ``yield`` into the caller's handler) is slower than the fill rate;
   the outbox slice is exempt from event retention at every age
-  (immortal-until-consumed — pinned by
+  (immortal-until-consumed - pinned by
   ``test_rt_orphans_outbox_immortal_events``, not duplicated here).
 
 DESIGN ASK (dispositioned, not red): nothing bounds or alarms on outbox
 DEPTH. The default-on risk probe
 (``check_reclaim_visibility_delay_risk``, run by every ``watch_reclaims``
 consumer every 60 s) inspects long-running ``job_events`` *writer
-transactions*, not queue depth — a consumer stalled for an hour with a
+transactions*, not queue depth - a consumer stalled for an hour with a
 growing backlog produces no signal anywhere. A depth alarm would be new
 design (a gauge on the unconsumed ``lock_expired`` slice or a
 fill/drain-rate counter); this file pins the per-call bounds the alarm
@@ -37,7 +37,7 @@ would be built on.
 The 2 s ``RECLAIM_EVENT_VISIBILITY_DELAY`` trailing watermark is the
 consumer-side latency damper: freshly-committed storm events are
 withheld for the margin so a poll can never skip a lower-id row that is
-still uncommitted — pinned below from the observable side.
+still uncommitted - pinned below from the observable side.
 """
 
 from __future__ import annotations
@@ -137,10 +137,10 @@ async def test_outbox_fill_and_drain_are_both_per_call_bounded_and_parity_sized(
 ) -> None:
     """The storm's outbox geometry: fill writes ≤ 100 events per sweep
     call, drain returns ≤ 100 events per poll call, and at the default
-    knobs the bounds are EQUAL — one committed sweep batch is exactly
+    knobs the bounds are EQUAL - one committed sweep batch is exactly
     one drainable poll batch.
 
-    Contract: neither side of the outbox can amplify per call — the
+    Contract: neither side of the outbox can amplify per call - the
     sweep's batch cap and the poll's LIMIT are the paired bounds, and a
     full-batch consumer re-polls immediately (the ``watch_reclaims``
     backlog rule), so a 250-event storm fills in 3 bounded calls and
@@ -158,7 +158,7 @@ async def test_outbox_fill_and_drain_are_both_per_call_bounded_and_parity_sized(
         )
         pools.extend([worker_pool, dispatcher_pool])
         backend = PostgresBackend(
-            _PoolsDeps(settings, worker_pool=worker_pool, dispatcher_pool=dispatcher_pool),  # type: ignore[arg-type]  # Why: duck-typed BackendDeps — settings plus the pools the swept/polled paths touch.
+            _PoolsDeps(settings, worker_pool=worker_pool, dispatcher_pool=dispatcher_pool),  # type: ignore[arg-type]  # Why: duck-typed BackendDeps - settings plus the pools the swept/polled paths touch.
             clock=SystemClock(),
             cancellation_grace_period=timedelta(0),
             cleanup_grace_period=timedelta(0),
@@ -175,7 +175,7 @@ async def test_outbox_fill_and_drain_are_both_per_call_bounded_and_parity_sized(
             fill_per_call.append(depth_after - depth_before)
         assert fill_calls == [_BATCH, _BATCH, _REMAINDER], (
             f"one reclaim call must re-pend at most event_writer_batch_size "
-            f"({_BATCH}) rows; got per-call reclaim counts {fill_calls} — an "
+            f"({_BATCH}) rows; got per-call reclaim counts {fill_calls} - an "
             "unbounded or per-row fill breaks the paired-bounds contract"
         )
         assert fill_per_call == [_BATCH, _BATCH, _REMAINDER], (
@@ -196,12 +196,12 @@ async def test_outbox_fill_and_drain_are_both_per_call_bounded_and_parity_sized(
                 break
             assert len(events) <= _POLL_LIMIT, (
                 f"poll_reclaim_events must return at most limit "
-                f"({_POLL_LIMIT}) rows per call; got {len(events)} — an "
+                f"({_POLL_LIMIT}) rows per call; got {len(events)} - an "
                 "unbounded drain read is the consumer-side amplification"
             )
             for evt in events:
                 assert evt.event_id > cursor, (
-                    "the outbox cursor must advance monotonically — a "
+                    "the outbox cursor must advance monotonically - a "
                     "non-advancing cursor re-delivers the storm forever"
                 )
                 cursor = evt.event_id
@@ -213,12 +213,12 @@ async def test_outbox_fill_and_drain_are_both_per_call_bounded_and_parity_sized(
         assert cursor > 0, "the storm's events must actually have been delivered"
 
         # ── RATIO: at default knobs the fill and drain per-call bounds
-        # are the SAME number — per call, drain capacity == fill rate.
+        # are the SAME number - per call, drain capacity == fill rate.
         # (A depth alarm on top of this parity is the DESIGN ask in the
         # module docstring; it does not exist today.)
         assert _BATCH == _POLL_LIMIT == DEFAULT_RECLAIM_POLL_LIMIT, (
             "the fill bound (event_writer_batch_size) and the drain bound "
-            "(DEFAULT_RECLAIM_POLL_LIMIT) have drifted apart — when fill "
+            "(DEFAULT_RECLAIM_POLL_LIMIT) have drifted apart - when fill "
             "exceeds drain per call, a keeping-up consumer becomes an "
             "inevitably-falling-behind one and the outbox grows without "
             "any depth signal"
@@ -233,7 +233,7 @@ async def test_outbox_fill_and_drain_are_both_per_call_bounded_and_parity_sized(
 async def test_visibility_delay_withholds_fresh_storm_events(pg_dsn: str) -> None:
     """The trailing watermark is the consumer-side damper: immediately
     after a reclaim batch commits, its events are younger than the 2 s
-    ``RECLAIM_EVENT_VISIBILITY_DELAY`` margin and are withheld — a
+    ``RECLAIM_EVENT_VISIBILITY_DELAY`` margin and are withheld - a
     NOTIFY-woken poll cannot race past a still-uncommitted sibling
     writer and silently skip it.
 
@@ -253,7 +253,7 @@ async def test_visibility_delay_withholds_fresh_storm_events(pg_dsn: str) -> Non
         )
         pools.extend([worker_pool, dispatcher_pool])
         backend = PostgresBackend(
-            _PoolsDeps(settings, worker_pool=worker_pool, dispatcher_pool=dispatcher_pool),  # type: ignore[arg-type]  # Why: duck-typed BackendDeps — same shape as the fill/drain test above.
+            _PoolsDeps(settings, worker_pool=worker_pool, dispatcher_pool=dispatcher_pool),  # type: ignore[arg-type]  # Why: duck-typed BackendDeps - same shape as the fill/drain test above.
             clock=SystemClock(),
             cancellation_grace_period=timedelta(0),
             cleanup_grace_period=timedelta(0),
@@ -265,14 +265,14 @@ async def test_visibility_delay_withholds_fresh_storm_events(pg_dsn: str) -> Non
         withheld = await backend.poll_reclaim_events(0, _POLL_LIMIT)
         assert withheld == [], (
             "events younger than RECLAIM_EVENT_VISIBILITY_DELAY (2 s) must "
-            "be withheld by the default-delay poll — the trailing watermark "
+            "be withheld by the default-delay poll - the trailing watermark "
             "is what makes a NOTIFY-driven consumer safe under a concurrent "
             "storm writer"
         )
 
         visible = await backend.poll_reclaim_events(0, _POLL_LIMIT, visibility_delay=timedelta(0))
         assert len(visible) == _BATCH, (
-            "the same cursor at zero delay must return the committed batch — "
+            "the same cursor at zero delay must return the committed batch - "
             "proving the empty default-delay poll was the watermark "
             "withholding, not a lost write"
         )

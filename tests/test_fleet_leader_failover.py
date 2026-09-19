@@ -6,14 +6,14 @@ them nowhere and expired leases are never reclaimed. Election is what
 makes "exactly once" possible with every pod running identical code.
 
 Two properties matter to an operator. The first is that at any moment
-one pod holds the role — never two, because double-running maintenance
+one pod holds the role - never two, because double-running maintenance
 duplicates side effects the queue cannot undo. The second is that the
 role survives losing the pod that holds it: a leader is just a pod, and
 pods are replaced constantly, so a hand-off that requires intervention
 means maintenance silently stops at the next deploy.
 
 Losing an election is also the ordinary state of every follower. It
-must be unremarkable — a pod that treats not being leader as a failure
+must be unremarkable - a pod that treats not being leader as a failure
 fills the logs of a healthy fleet with alarming output and trains the
 operator to ignore exactly the signal that would matter.
 """
@@ -106,8 +106,8 @@ async def test_exactly_one_pod_holds_the_leader_role(pg_dsn: str) -> None:
             # that no second pod ever joins it.
             elected = await _elected_count(fleet)
             assert elected == 1, (
-                f"{elected} pods hold the leader role at once. Leader-only work — cron "
-                "fires, reclaim sweeps, pruning — is running on every one of them, so "
+                f"{elected} pods hold the leader role at once. Leader-only work - cron "
+                "fires, reclaim sweeps, pruning - is running on every one of them, so "
                 "scheduled jobs are enqueued once per leader and maintenance races "
                 "itself over the same rows."
             )
@@ -133,7 +133,7 @@ async def test_the_role_passes_on_when_the_leader_pod_goes_away(
     surviving pod must then take the role on its own.
 
     If it does not, maintenance stops at the next deploy and stays
-    stopped — and nothing reports it, because every remaining pod is
+    stopped - and nothing reports it, because every remaining pod is
     healthy and simply is not the leader. Expired leases go unreclaimed
     and cron stops firing, with the first symptom arriving hours later
     as work that never ran.
@@ -188,7 +188,7 @@ async def test_leader_only_maintenance_still_runs_after_a_failover(
 
     Holding the row is not the point; doing the maintenance is. After
     the incumbent is gone, a job orphaned by a dead pod must still be
-    reclaimed — that reclaim is the fleet's only route back for work
+    reclaimed - that reclaim is the fleet's only route back for work
     whose owner died, so a failover that hands over the title without
     the duties loses exactly that work.
     """
@@ -260,8 +260,8 @@ async def test_losing_an_election_is_not_reported_as_a_failure(
     """Followers are the normal case and must not look like broken pods.
 
     In any fleet larger than one, most pods are followers all the time.
-    If losing an election surfaced as an error — a raised exception, a
-    loop that gives up — then the bigger the fleet the noisier it is
+    If losing an election surfaced as an error - a raised exception, a
+    loop that gives up - then the bigger the fleet the noisier it is
     while perfectly healthy, and the operator learns to discount the
     signal that would tell them something real.
 

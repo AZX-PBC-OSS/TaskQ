@@ -2,7 +2,7 @@
 
 Verifies that ``conn``, ``conn_factory``, and ``dsn`` are mutually
 exclusive and that caller-owned connections are not closed. Uses a fake
-connection — no real Postgres required.
+connection - no real Postgres required.
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ async def test_no_connection_source_raises() -> None:
 
 
 async def test_dsn_and_conn_mutually_exclusive() -> None:
-    """Providing both dsn and conn is a ValueError — the dsn must not be
+    """Providing both dsn and conn is a ValueError - the dsn must not be
     silently ignored in favour of the caller-owned conn."""
     conn = _FakeConn()
     with pytest.raises(ValueError, match=r"dsn.*conn"):
@@ -169,7 +169,7 @@ async def test_advisory_lock_released_on_failure() -> None:
 
 
 async def test_conn_factory_error_raises_system_exit() -> None:
-    """A conn_factory that raises surfaces as SystemExit — the documented
+    """A conn_factory that raises surfaces as SystemExit - the documented
     abort-startup path (migration failures must abort the process, not be
     swallowed). No advisory unlock is attempted: no conn was ever produced."""
 

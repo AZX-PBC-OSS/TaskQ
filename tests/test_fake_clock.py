@@ -131,7 +131,7 @@ class TestMonotonic:
 class TestClockCompatibility:
     def test_annotated_function_accepts_fake_clock(self) -> None:
         """Demonstrates that FakeClock satisfies the Clock protocol
-        at the static-type level — pyright verifies this call site."""
+        at the static-type level - pyright verifies this call site."""
 
         def accept_clock(c: Clock) -> float:
             return c.monotonic()

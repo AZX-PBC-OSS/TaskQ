@@ -1,13 +1,13 @@
 """AST helpers for module-level import invariants.
 
-These are genuine codebase invariants with no runtime expression — "the admin
+These are genuine codebase invariants with no runtime expression - "the admin
 package must not couple to ``taskq.worker`` at import time" is not something a
 running system can be asked. So they stay static checks; what changes here is
 the TOOL.
 
 Substring greps over module source cannot see structure. They match the name in
 a comment, a docstring or a string literal, and they cannot tell a module-level
-import from one inside a function body — which is why the admin check had to
+import from one inside a function body - which is why the admin check had to
 EXCLUDE ``ops.py`` entirely, losing the guarantee for that module rather than
 expressing it. Parsing gives the real answer, so the exclusion goes away.
 """

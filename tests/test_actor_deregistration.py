@@ -1,9 +1,9 @@
-"""Integration tests for ``deregister_actor`` — the transactional
+"""Integration tests for ``deregister_actor`` - the transactional
 ``actor_config`` deletion with safety checks (force=False / force=True,
 purge_queue).
 
 These require real Postgres (marked ``integration``) because the function
-executes hand-written SQL against the fully migrated schema — a fake
+executes hand-written SQL against the fully migrated schema - a fake
 connection would only prove the query string looks right, not that
 Postgres executes it correctly with enum casts, transactional rollback,
 and the ``NOT EXISTS`` subquery for queue purging.
@@ -180,7 +180,7 @@ async def test_deregister_refuses_with_pending_jobs(
     assert exc_info.value.active_count == 1
     assert exc_info.value.status_counts == {"pending": 1}
 
-    # Row must still exist — the transaction rolled back.
+    # Row must still exist - the transaction rolled back.
     assert await get_actor_config(clean_pg_conn, "busy_actor", schema=schema) is not None
 
 
@@ -284,7 +284,7 @@ async def test_deregister_force_cancels_pending_and_disables_schedules(
     assert result.actor_config_deleted is True
     assert result.jobs_cancelled == 2
     assert result.schedules_disabled == 1
-    # The 2 cancelled jobs are now terminal — terminal_jobs_remaining
+    # The 2 cancelled jobs are now terminal - terminal_jobs_remaining
     # counts all non-pending/scheduled/running rows, including the
     # newly-cancelled ones.
     assert result.terminal_jobs_remaining == 2
@@ -312,7 +312,7 @@ async def test_deregister_force_writes_job_events_on_cancel(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """H3: force=True cancel must insert job_events state_change rows —
+    """H3: force=True cancel must insert job_events state_change rows -
     every other cancel path does, and audit consumers rely on them."""
     schema = module_pg_schema.schema_name
     await sync_actor_config(
@@ -348,7 +348,7 @@ async def test_deregister_force_cancel_events_record_real_prev_status(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """Each force-cancel state_change event must carry the job's actual
-    prior status — 'pending' vs 'scheduled' — the way every other cancel
+    prior status - 'pending' vs 'scheduled' - the way every other cancel
     path does (backend/_cancel_bulk.py captures prev_status per row), not
     a synthetic 'pending_or_scheduled' that audit consumers cannot
     distinguish."""
@@ -408,7 +408,7 @@ async def test_deregister_force_with_running_and_pending_only_reports_running(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """force=True checks only running jobs — pending jobs are not in the error
+    """force=True checks only running jobs - pending jobs are not in the error
     because they would be cancelled, not blocking."""
     schema = module_pg_schema.schema_name
     await sync_actor_config(
@@ -425,9 +425,9 @@ async def test_deregister_force_with_running_and_pending_only_reports_running(
     assert exc_info.value.active_count == 1
     assert exc_info.value.status_counts == {"running": 1}
     assert "pending" not in exc_info.value.status_counts
-    # Row still exists — transaction rolled back.
+    # Row still exists - transaction rolled back.
     assert await get_actor_config(clean_pg_conn, "mix_actor", schema=schema) is not None
-    # The pending job must still be pending — the transaction rolled back
+    # The pending job must still be pending - the transaction rolled back
     # on the raise, so the cancel UPDATE never committed.
     pending_count = await clean_pg_conn.fetchval(
         f"SELECT count(*) FROM \"{schema}\".jobs WHERE actor = $1 AND status = 'pending'",  # noqa: S608  # Why: schema validated by _IDENT_RE in apply_pending; actor/status are test constants.
@@ -440,7 +440,7 @@ async def test_deregister_force_keeps_terminal_history(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """Terminal job rows are never modified — only pending/scheduled are cancelled."""
+    """Terminal job rows are never modified - only pending/scheduled are cancelled."""
     schema = module_pg_schema.schema_name
     await sync_actor_config(
         clean_pg_conn,
@@ -545,7 +545,7 @@ async def test_deregister_purge_keeps_queue_referenced_by_active_jobs_of_other_a
         [ActorConfig(actor="owner_actor", max_concurrent=5, queue="busy_queue")],
         schema=schema,
     )
-    # An unregistered actor's pending job on the same queue — exactly the
+    # An unregistered actor's pending job on the same queue - exactly the
     # state the purge's actor_config-only guard cannot see.
     await _insert_job(
         clean_pg_conn, schema, actor="never_registered", status="pending", queue="busy_queue"
@@ -561,7 +561,7 @@ async def test_deregister_purge_still_deletes_queue_with_only_terminal_job_refer
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """Terminal history never blocks the purge — those rows are done with
+    """Terminal history never blocks the purge - those rows are done with
     the queue's cap and mode; only non-terminal jobs still depend on them."""
     schema = module_pg_schema.schema_name
     await _insert_queue(clean_pg_conn, schema, "done_queue")
@@ -590,7 +590,7 @@ async def test_double_deregister_raises_not_found(
     """A second deregister call on an already-deregistered actor raises ActorNotFoundError.
 
     This is the primary consumer pattern (cleanup loops using try/except ActorNotFoundError).
-    The idempotency guarantee must be tested — an implementation bug that silently returns
+    The idempotency guarantee must be tested - an implementation bug that silently returns
     actor_config_deleted=False instead of raising would not be caught otherwise.
     """
     schema = module_pg_schema.schema_name
@@ -614,7 +614,7 @@ async def test_deregister_force_with_purge_queue(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """force=True + purge_queue=True simultaneously — the exact pattern downstream
+    """force=True + purge_queue=True simultaneously - the exact pattern downstream
     consumers (aacrtool) use for ephemeral actor cleanup."""
     schema = module_pg_schema.schema_name
     await _insert_queue(clean_pg_conn, schema, "ephemeral_queue")
@@ -643,7 +643,7 @@ async def test_deregister_purge_queue_noop_when_queue_row_absent(
 ) -> None:
     """purge_queue=True is a safe no-op when the queues row was never created.
 
-    The queues table is metadata-only and not always populated — operator-managed
+    The queues table is metadata-only and not always populated - operator-managed
     deployments may never create a row. The DELETE returns 0 rows and
     queue_purged is False, which is correct.
     """
@@ -714,11 +714,11 @@ async def test_concurrent_force_deregister_one_succeeds_one_raises(
         assert len(not_found) == 1
 
         # The winner should have cancelled exactly 1 job and disabled 1 schedule
-        # — not double-cancelled by both transactions.
+        # - not double-cancelled by both transactions.
         assert successes[0].jobs_cancelled == 1
         assert successes[0].schedules_disabled == 1
 
-        # Verify final DB state — job cancelled, schedule disabled, actor_config gone.
+        # Verify final DB state - job cancelled, schedule disabled, actor_config gone.
         assert (
             await get_actor_config(clean_pg_conn, "concurrent_force_actor", schema=schema) is None
         )

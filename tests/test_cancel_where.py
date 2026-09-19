@@ -299,7 +299,7 @@ async def test_bulk_cancel_marks_origin_consistently_with_single_job_cancel() ->
     Bulk cancel is how an operator offboards a tenant or aborts a bad
     deploy, and it is exactly the moment monitoring needs to say *why*
     thousands of rows went terminal. If the bulk path writes a different
-    marker from the single-job path — or none at all — a cancelled-jobs
+    marker from the single-job path - or none at all - a cancelled-jobs
     dashboard splits into two populations that mean the same thing, and
     the bulk one is the population with no explanation attached.
     """

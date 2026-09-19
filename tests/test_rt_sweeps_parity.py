@@ -8,7 +8,7 @@ leave the same per-row state and audit trail on both backends.
 Sweep 1 is the richest unpinned surface: a three-way CASE
 (pending/cancelled/crashed), an attempt row, an event row, and lock
 bookkeeping.  ``_SWEEP_1_SQL`` clears ``locked_by_worker`` and
-``lock_expires_at`` on EVERY branch (one SET clause list, all rows) —
+``lock_expires_at`` on EVERY branch (one SET clause list, all rows) -
 the in-memory twin's terminal branch must match, because
 ``JobRow.locked_by_worker`` is observable through ``get()`` and a stale
 holder id on a terminal row is exactly the kind of divergence a
@@ -16,7 +16,7 @@ cross-backend test would silently bake in.
 
 The second parity attack is the parameter boundary: PG rejects invalid
 ``batch_size`` at the boundary (pinned in ``test_rt_sweeps_boundary.py``),
-so the twin must reject it identically — today it silently returns 0,
+so the twin must reject it identically - today it silently returns 0,
 which is a third behaviour for the same input.
 """
 
@@ -52,7 +52,7 @@ _CAP = 2
 _START = datetime(2025, 1, 1, tzinfo=UTC)
 
 # Per-branch corpus: (branch name, max_attempts, cancel_phase).
-# "cancel_retryable" is the #238 pin: a cancel in flight outranks the
+# "cancel_retryable" is the pin: a cancel in flight outranks the
 # retry budget on BOTH backends: the pre-fix budget-first CASE (and its
 # twin) re-pended this row 'pending' with the operator's cancel wiped.
 _BRANCHES: list[tuple[str, int, int]] = [
@@ -126,8 +126,8 @@ async def _seed_pg(conn: asyncpg.Connection, schema: str, holder: UUID) -> dict[
 async def _pg_observable(conn: asyncpg.Connection, schema: str, job_id: UUID) -> dict[str, Any]:
     """The per-job observable surface, read the way a client would.
 
-    ``detail`` arrives as a raw ``str`` — ``clean_pg_conn`` registers no
-    jsonb codec — so it is decoded here (the same defensive decode the
+    ``detail`` arrives as a raw ``str`` - ``clean_pg_conn`` registers no
+    jsonb codec - so it is decoded here (the same defensive decode the
     sweep contract files use) before comparison.
     """
     job = await conn.fetchrow(
@@ -211,7 +211,7 @@ def _normalize(obs: dict[str, Any], holder: UUID, expected_status: str) -> dict[
     """Project both backends' observables onto the parity contract.
 
     The event ``detail`` carries the holder as a string on PG (jsonb) and
-    as a UUID in memory — a representation difference, not a behavioural
+    as a UUID in memory - a representation difference, not a behavioural
     one, so the holder is compared as ``str()`` on both sides.  Each
     backend was seeded with its OWN holder id, so the holder identity is
     normalized to a sentinel: parity is about the bookkeeping being
@@ -325,13 +325,13 @@ async def test_sweep1_double_reclaim_keeps_one_attempt_row_on_both_backends(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """A reclaim firing on an already-recorded (job_id, attempt) writes ONE
-    attempt row on both backends — and it is the FIRST record.
+    attempt row on both backends - and it is the FIRST record.
 
     PG's batched sweep-1 attempt INSERT carries
     ``ON CONFLICT (job_id, attempt) DO NOTHING`` (keep-first-record): an
     attempt number can legitimately already have its row when the reclaim
-    fires — a claim-clamped repeat at the smallint ceiling, or a spent
-    attempt left behind by a re-pend — and the existing row is the
+    fires - a claim-clamped repeat at the smallint ceiling, or a spent
+    attempt left behind by a re-pend - and the existing row is the
     truthful record of what the actor actually did, so the synthetic
     crash row yields to it.  The in-memory twin must apply the same
     guard: a corpus PG audits with one row must not be audited by the
@@ -413,14 +413,14 @@ async def test_sweep1_double_reclaim_keeps_one_attempt_row_on_both_backends(
     mem_attempts = await memory.get_attempts(args.id)
 
     assert len(pg_attempts) == 1, (
-        f"PG kept {len(pg_attempts)} attempt rows — ON CONFLICT DO NOTHING keeps exactly one"
+        f"PG kept {len(pg_attempts)} attempt rows - ON CONFLICT DO NOTHING keeps exactly one"
     )
     assert len(mem_attempts) == 1, (
-        f"the twin kept {len(mem_attempts)} attempt rows for one (job_id, attempt) — "
+        f"the twin kept {len(mem_attempts)} attempt rows for one (job_id, attempt) - "
         "PG's keep-first guard must have a twin-side mirror"
     )
     assert pg_attempts[0]["error_message"] == "first record", (
-        "the pre-existing row is the truthful record — the synthetic crash row yields to it"
+        "the pre-existing row is the truthful record - the synthetic crash row yields to it"
     )
     assert mem_attempts[0].error_message == "first record", (
         "the twin must keep the same first record PG keeps"
@@ -444,7 +444,7 @@ async def test_in_memory_twins_reject_invalid_batch_size_like_pg(
 
     Today the twins return 0 silently for any non-positive cap (the
     count guard breaks immediately), while Postgres rejects the value at
-    the boundary — three behaviours for one input across two backends
+    the boundary - three behaviours for one input across two backends
     that claim parity.
     """
     memory = _make_memory_backend()
@@ -467,7 +467,7 @@ async def test_memory_sweep1_drain_leaves_no_orphan_running_jobs(
     scopes by ``locked_by_worker`` (cancel polling, heartbeat, slot
     release): a terminal row still pointing at a dead worker keeps
     matching those scopes.  This is the standalone, backend-side
-    statement of the parity attack above — it fails on the twin today.
+    statement of the parity attack above - it fails on the twin today.
     """
     memory = _make_memory_backend()
     holder = new_uuid()
@@ -491,6 +491,6 @@ async def test_memory_sweep1_drain_leaves_no_orphan_running_jobs(
             stale.append(job_id)
     assert not stale, (
         f"{len(stale)} swept job(s) still carry a lock holder/expiry after the "
-        "drain — the twin's terminal branch does not clear lock bookkeeping "
+        "drain - the twin's terminal branch does not clear lock bookkeeping "
         "the Postgres sweep clears on every branch"
     )

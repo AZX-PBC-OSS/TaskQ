@@ -311,7 +311,7 @@ async def test_running_to_running_blocked() -> None:
 
     assert_valid_transition rejects it. cancel_phase escalation
     (running/cp=0 → running/cp=1 → running/cp=2) writes a
-    cancel_phase column update, which is NOT a status transition —
+    cancel_phase column update, which is NOT a status transition -
     the status column remains 'running' throughout.
     """
     job_id = new_uuid()

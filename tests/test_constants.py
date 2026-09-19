@@ -83,8 +83,8 @@ def test_wake_channel_fmt_value() -> None:
 # locks live in a per-database namespace, so a bare taskq:{purpose} was
 # shared by every schema in the database and two schemas serialized (or one
 # silently starved the other of leadership). The pin below keeps asserting
-# the convention itself — every advisory lock TaskQ takes is named
-# taskq:{purpose}:{schema} — for each purpose that takes one.
+# the convention itself - every advisory lock TaskQ takes is named
+# taskq:{purpose}:{schema} - for each purpose that takes one.
 
 
 def test_schema_lock_name_cron() -> None:

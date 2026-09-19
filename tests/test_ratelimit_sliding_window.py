@@ -156,7 +156,7 @@ async def test_acquire_without_clock_raises() -> None:
 #
 # ``clock`` drives the memory backend only. The redis/postgres backends
 # run on the store's own clock (Redis TIME / PG clock_timestamp()), so a
-# missing clock must surface the STORE guard — never a clock error.
+# missing clock must surface the STORE guard - never a clock error.
 
 
 @pytest.mark.parametrize("backend", ["redis", "postgres"])
@@ -192,7 +192,7 @@ async def test_peek_without_clock_raises_store_guard(backend: str, style: str) -
 
 
 async def test_memory_backend_still_requires_clock() -> None:
-    """The unified contract keeps clock REQUIRED on the memory backend —
+    """The unified contract keeps clock REQUIRED on the memory backend -
     both styles, acquire and peek."""
     sw_log = _sw()
     with pytest.raises(RuntimeError, match="clock not injected for memory backend"):
@@ -275,9 +275,9 @@ async def test_no_pool_branch_raises_typed_rate_limit_dependency_unavailable(
     style: Literal["log", "gcra"],
 ) -> None:
     """The no-pool branch raises the typed dependency error the consumer's
-    dependency-failure family recognises — a ``RuntimeError`` subclass so
+    dependency-failure family recognises - a ``RuntimeError`` subclass so
     the pre-existing ``RuntimeError`` wording pins and the chaos tier's
-    ``pytest.raises(RuntimeError)`` both hold — never a bare ``RuntimeError``
+    ``pytest.raises(RuntimeError)`` both hold - never a bare ``RuntimeError``
     that escapes the family and gets misattributed to the job as a failure.
     """
     assert issubclass(RateLimitDependencyUnavailable, RuntimeError), (
@@ -424,7 +424,7 @@ async def test_gcra_sustained_rate() -> None:
     for _ in range(60):
         await sw.acquire(clock=clock)
 
-    # Requests within the window are denied — burst slots still occupied.
+    # Requests within the window are denied - burst slots still occupied.
     clock.advance(timedelta(milliseconds=1000))
     r_mid = await sw.acquire(clock=clock)
     assert r_mid.allowed is False

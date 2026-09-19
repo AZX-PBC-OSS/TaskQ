@@ -9,9 +9,9 @@ and assert that the server-side predicate no longer mixes them.
 A test that pins a C-fix must skew the Python domain *in the direction
 that made the old code misbehave* and assert the observable server-side
 outcome is unchanged. Skew direction cheat-sheet (S = python - server):
-  S > 0 (ahead): premature actions — immediate enqueues look future,
+  S > 0 (ahead): premature actions - immediate enqueues look future,
                  retry backoffs look due, ages look inflated.
-  S < 0 (behind): late actions — backoff voided, dedup/retention windows
+  S < 0 (behind): late actions - backoff voided, dedup/retention windows
                  stretched, jobs linger past deadlines.
 """
 

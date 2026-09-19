@@ -27,8 +27,8 @@ from taskq.context import JobContext
 from taskq.obs import bind_job_context
 from taskq.progress._buffer import _progress_after_flush, _ProgressBuffer, _snapshot_progress
 from taskq.progress._flush import (
-    _FLUSH_BATCH_ROWS,  # pyright: ignore[reportPrivateUsage]  # Why: the pin asserts the batch bound itself — the doctrine constant is the contract under test.
-    _FLUSH_MAX_BATCHES_PER_TICK,  # pyright: ignore[reportPrivateUsage]  # Why: the pin asserts the tick cap itself — the doctrine constant is the contract under test.
+    _FLUSH_BATCH_ROWS,  # pyright: ignore[reportPrivateUsage]  # Why: the pin asserts the batch bound itself - the doctrine constant is the contract under test.
+    _FLUSH_MAX_BATCHES_PER_TICK,  # pyright: ignore[reportPrivateUsage]  # Why: the pin asserts the tick cap itself - the doctrine constant is the contract under test.
     _flush_buffer,
     _flush_buffer_immediate,
     _flush_dirty_set,
@@ -61,7 +61,7 @@ def _make_pool_with_conn(
     ``conn.fetchrow`` answers the single-row statement (the immediate and
     crash-flush paths); ``conn.fetch`` answers the tick's batched
     statement, echoing one ``{"id", "progress_seq"}`` RETURNING row per
-    job id found in the call's unnest id array — ``returning_row=None``
+    job id found in the call's unnest id array - ``returning_row=None``
     fences every row out (empty RETURNING).
     """
     conn = AsyncMock()
@@ -192,7 +192,7 @@ async def test_progress_too_large_at_exactly_max_plus_one_byte() -> None:
 
 
 async def test_ctx_progress_out_of_range_percent_not_rejected() -> None:
-    """ctx.progress(percent=150.0) succeeds — no range validation on percent.
+    """ctx.progress(percent=150.0) succeeds - no range validation on percent.
     pending_state["percent"] == 150.0."""
     import asyncio
 
@@ -280,12 +280,12 @@ async def test_ctx_progress_unserializable_data_raises_type_error() -> None:
 
 
 async def test_flush_buffer_rejects_nul_before_touching_connection() -> None:
-    """A NUL byte in progress state — as arbitrary ``ctx.progress(**kwargs)``
-    calls can produce — must be rejected by the jsonb NUL guard
+    """A NUL byte in progress state - as arbitrary ``ctx.progress(**kwargs)``
+    calls can produce - must be rejected by the jsonb NUL guard
     (``dumps_jsonb_str``) before the connection is ever touched. Postgres
     ``jsonb_in`` rejects a stored NUL with ``UntranslatableCharacterError``
     (asyncpg.PostgresError), which is exactly the exception class the
-    terminal-write path treats as retryable infra failure — so the guard
+    terminal-write path treats as retryable infra failure - so the guard
     must fire first, deterministically, without reaching the DB at all."""
     pool, conn = _make_pool_with_conn()
     buf = _make_dirty_buffer()
@@ -339,7 +339,7 @@ async def test_flush_binds_the_data_bytes_ctx_progress_already_encoded(
     """``ctx.progress`` encodes ``data`` once to enforce the size cap; the
     flush binds those bytes rather than walking the dict a second time,
     and the document it binds is byte-identical to a fresh encode of the
-    snapshot — key order, nesting and escaping included."""
+    snapshot - key order, nesting and escaping included."""
     encoded: list[object] = []
     real_dumps = orjson.dumps
 
@@ -382,7 +382,7 @@ _json_values = st.recursive(
 @hyp_settings(max_examples=200)
 def test_embedded_data_bytes_render_the_same_document(data: dict[str, object], step: int) -> None:
     """Embedding ``dumps(data)`` in the state document is byte-identical to
-    encoding ``data`` in place, for any JSON-shaped ``data`` — a NUL
+    encoding ``data`` in place, for any JSON-shaped ``data`` - a NUL
     included, so the jsonb guard's byte scan sees the same bytes."""
     in_place = dumps({"step": step, "data": data})
     embedded = dumps({"step": step, "data": embed_encoded(dumps(data))})
@@ -446,7 +446,7 @@ async def test_flush_immediate_flushes_dirty_buffer() -> None:
 
 
 async def test_flush_loop_resolves_pool_via_getter_each_tick() -> None:
-    """The loop resolves the pool fresh on every flush — after a credential
+    """The loop resolves the pool fresh on every flush - after a credential
     hot-reload swaps the worker pool, flushes must target the new pool,
     not the (drained/closed) startup pool."""
     pool_a, conn_a = _make_pool_with_conn(returning_row={"progress_seq": 2})
@@ -560,8 +560,8 @@ async def test_flush_loop_removes_buffer_when_row_gone() -> None:
 async def test_flush_loop_fenced_out_row_dropped_while_sibling_flushes() -> None:
     """A row whose gate does not match (reclaimed, terminal, or owned by a
     later attempt epoch) is simply absent from the batch's RETURNING: it
-    does not update, its buffer is dropped, and — because there is no
-    per-buffer statement — its fence cannot fail the statement carrying
+    does not update, its buffer is dropped, and - because there is no
+    per-buffer statement - its fence cannot fail the statement carrying
     the sibling row.
     """
     reclaimed_id = UUID("bad00000-0000-0000-0000-000000000000")
@@ -608,7 +608,7 @@ async def test_flush_loop_fenced_out_row_dropped_while_sibling_flushes() -> None
     )
 
     assert reclaimed_id not in buffers, (
-        "the fenced-out row's buffer must be dropped — the gate no-op'd for that job"
+        "the fenced-out row's buffer must be dropped - the gate no-op'd for that job"
     )
     assert live_buf.dirty is False
     assert live_buf.base_seq == 5
@@ -619,7 +619,7 @@ async def test_flush_loop_fenced_out_row_dropped_while_sibling_flushes() -> None
 
 async def test_flush_tick_batches_all_dirty_buffers_into_one_statement() -> None:
     """One flush tick reaches the backend exactly once regardless of dirty
-    count: every dirty buffer's row rides ONE batched multi-row UPDATE —
+    count: every dirty buffer's row rides ONE batched multi-row UPDATE -
     columnar arrays (unnest-array form) carry both job ids with their
     per-row deltas and attempt epochs. The recorded statement's unnest
     arrays keep the fencing gate per-row over the unnest rows, and both
@@ -666,7 +666,7 @@ async def test_flush_tick_batches_all_dirty_buffers_into_one_statement() -> None
     )
 
     assert conn.fetch.await_count == 1, (
-        f"the tick issued {conn.fetch.await_count} statements for 2 dirty buffers — "
+        f"the tick issued {conn.fetch.await_count} statements for 2 dirty buffers - "
         "the contract is one batched multi-row statement per tick"
     )
     conn.fetchrow.assert_not_awaited()  # the tick path has no per-buffer statement
@@ -688,7 +688,7 @@ async def test_flush_tick_batches_all_dirty_buffers_into_one_statement() -> None
     )
     assert "j.attempt = f.attempt" in sql, "the per-row attempt-epoch gate conjunct is missing"
     assert "RETURNING j.id, j.progress_seq" in sql, (
-        "the retire protocol keys on which job ids came back — RETURNING must carry them"
+        "the retire protocol keys on which job ids came back - RETURNING must carry them"
     )
     assert set(job_ids) == {_JOB_ID, _JOB_ID_B}, (
         f"one statement must carry both dirty buffers' rows; got {job_ids!r}"
@@ -711,12 +711,12 @@ async def test_flush_tick_batches_all_dirty_buffers_into_one_statement() -> None
 async def test_flush_tick_drains_in_bounded_batches_with_a_tick_cap() -> None:
     """The bounded-batch doctrine: no flush statement ever carries more than
     ``_FLUSH_BATCH_ROWS`` rows, and no tick issues more than
-    ``_FLUSH_MAX_BATCHES_PER_TICK`` batches — an all-in-one statement
+    ``_FLUSH_MAX_BATCHES_PER_TICK`` batches - an all-in-one statement
     over the whole dirty set is the long-running-statement trap (it
     times out as a whole and stalls the tick). 70 dirty buffers drain
     as exactly ceil(70/32) = 3 bounded statements; 300 drain as the
     tick-capped 8 statements, leaving the remainder dirty for the next
-    tick — the incremental-commit discipline the leader sweeps apply."""
+    tick - the incremental-commit discipline the leader sweeps apply."""
     conn = AsyncMock()
 
     async def _fetch(*args: object) -> list[dict[str, object]]:
@@ -766,13 +766,13 @@ async def test_flush_tick_drains_in_bounded_batches_with_a_tick_cap() -> None:
     )
     for call in conn.fetch.await_args_list:
         assert len(call.args[1]) <= _FLUSH_BATCH_ROWS, (
-            f"a flush statement carried {len(call.args[1])} rows — the batch bound "
+            f"a flush statement carried {len(call.args[1])} rows - the batch bound "
             f"({_FLUSH_BATCH_ROWS}) is the doctrine's guarantee that no "
             "statement runs long"
         )
     assert all(buf.dirty is False for buf in buffers.values())
 
-    # 300 dirty buffers: the tick cap holds — 8 batches, 256 rows, the
+    # 300 dirty buffers: the tick cap holds - 8 batches, 256 rows, the
     # remainder stays dirty for the next tick.
     conn2 = AsyncMock()
     conn2.fetch.side_effect = _fetch
@@ -798,7 +798,7 @@ async def test_flush_tick_drains_in_bounded_batches_with_a_tick_cap() -> None:
 
     assert conn2.fetch.await_count == _FLUSH_MAX_BATCHES_PER_TICK, (
         f"300 dirty buffers must issue at most {_FLUSH_MAX_BATCHES_PER_TICK} batches "
-        f"in one tick; got {conn2.fetch.await_count} — the tick must not be "
+        f"in one tick; got {conn2.fetch.await_count} - the tick must not be "
         "monopolised by a huge dirty set"
     )
     still_dirty = [buf for buf in buffers2.values() if buf.dirty]
@@ -816,7 +816,7 @@ async def test_flush_tick_cost_is_flat_up_to_the_batch_bound() -> None:
     Why it matters operationally: progress reporting is the surface a
     chatty actor drives hardest, and a tick whose cost tracked the dirty
     count would turn a busy worker's own progress calls into the thing
-    that stalls its progress loop — a feedback loop that gets worse
+    that stalls its progress loop - a feedback loop that gets worse
     exactly when an operator is watching progress because jobs are slow.
     The flat shape is what makes the coalescing interval, not the
     concurrency, the thing that sizes the flush load.
@@ -883,16 +883,16 @@ async def test_flush_tick_cost_is_flat_up_to_the_batch_bound() -> None:
     assert set(per_size_costs.values()) == {(1, 1)}, (
         "a tick's cost must be one statement on one connection checkout for any "
         f"dirty count up to the batch bound ({_FLUSH_BATCH_ROWS}); measured "
-        f"(statements, acquires) per dirty count: {per_size_costs} — a cost that "
+        f"(statements, acquires) per dirty count: {per_size_costs} - a cost that "
         "scales with the dirty count makes a busy worker's own progress calls "
         "stall its flush loop"
     )
 
 
 async def test_flush_failing_batch_leaves_only_its_own_buffers_dirty() -> None:
-    """Per-batch failure isolation — the doctrine's other half: a
+    """Per-batch failure isolation - the doctrine's other half: a
     failing batch is that batch's failure alone. 70 dirty buffers in 3
-    bounded batches; the middle batch's statement fails — its 32
+    bounded batches; the middle batch's statement fails - its 32
     buffers stay dirty with deltas intact while the first and third
     batches' buffers flush in the same tick. The single-statement shape
     made every dirty job lose its flush together; the bounded shape
@@ -958,7 +958,7 @@ async def test_flush_failing_batch_leaves_only_its_own_buffers_dirty() -> None:
 async def test_flush_loop_failing_statement_leaves_both_buffers_dirty_and_survives() -> None:
     """The tick's single batched statement is one failure surface: when it
     fails, BOTH dirty buffers stay dirty with their deltas intact for the
-    next tick, and the loop survives to re-issue the batch — which then
+    next tick, and the loop survives to re-issue the batch - which then
     flushes both rows.
     """
     import asyncpg
@@ -1044,7 +1044,7 @@ async def test_flush_loop_failing_statement_leaves_both_buffers_dirty_and_surviv
 async def test_flush_loop_pool_acquire_failure_keeps_buffers_dirty_with_pool_kind() -> None:
     """A pool-stage failure (acquire raises or exhausts) loses every dirty
     job's flush that tick: both buffers stay dirty with deltas intact for
-    the next tick, and the failure is labeled with the pool event/kind —
+    the next tick, and the failure is labeled with the pool event/kind -
     the same taxonomy the loop's pool_getter handler uses.
     """
     import asyncpg

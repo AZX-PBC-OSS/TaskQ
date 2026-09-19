@@ -85,7 +85,7 @@ async def test_redis_ping_timeout_returns_degraded() -> None:
 
 
 # ---------------------------------------------------------------------------
-# cache hit — ping called exactly once across two calls within TTL
+# cache hit - ping called exactly once across two calls within TTL
 # ---------------------------------------------------------------------------
 
 
@@ -104,7 +104,7 @@ async def test_cache_hit_ping_called_once() -> None:
 
 
 # ---------------------------------------------------------------------------
-# cache expiry — ping called twice when expires_at is wound back
+# cache expiry - ping called twice when expires_at is wound back
 # ---------------------------------------------------------------------------
 
 

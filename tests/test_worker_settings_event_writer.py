@@ -3,7 +3,7 @@
 The bounded-sweep design rests on these fields being constrained at load
 time: the batch cap and per-batch statement_timeout are what keep one
 committed batch inside the reclaim-event visibility margin, so the
-degenerate values must be rejected at the settings boundary — a
+degenerate values must be rejected at the settings boundary - a
 ``batch_size`` of 0 would put ``LIMIT 0`` into every sweep (a silent
 drain stall that looks like "nothing to do" to every caller and metric),
 and a ``statement_timeout_ms`` of 0 would disable the server-side abort
@@ -38,7 +38,7 @@ def _load(**overrides: str) -> WorkerSettings:
 
 def test_event_writer_knob_defaults_track_the_documented_constants() -> None:
     """The field defaults must stay the constants the batch-size derivation
-    is written against — a drift between the two would silently change the
+    is written against - a drift between the two would silently change the
     envelope every event-writer batch is sized to fit."""
     s = _load()
     assert s.event_writer_batch_size == DEFAULT_EVENT_WRITER_BATCH_SIZE
@@ -85,7 +85,7 @@ def test_event_writer_knobs_env_plumbable() -> None:
         # forever while the backlog sits eligible.
         ("TASKQ_EVENT_WRITER_BATCH_SIZE", "0"),
         ("TASKQ_EVENT_WRITER_BATCH_SIZE", "-5"),
-        # 0 disables the server-side statement_timeout — the enforcement
+        # 0 disables the server-side statement_timeout - the enforcement
         # layer of the batch design, not a tuning nicety.
         ("TASKQ_EVENT_WRITER_STATEMENT_TIMEOUT_MS", "0"),
         ("TASKQ_EVENT_WRITER_STATEMENT_TIMEOUT_MS", "49"),
@@ -111,7 +111,7 @@ def test_degenerate_event_writer_knob_values_rejected_at_load(env_key: str, bad_
 
 
 def test_event_writer_knob_minimums_accepted() -> None:
-    """The constraint floors themselves are loadable — the rejection tests
+    """The constraint floors themselves are loadable - the rejection tests
     above pin the floor's existence, this one pins the floor's edge."""
     s = _load(
         TASKQ_EVENT_WRITER_BATCH_SIZE="1",

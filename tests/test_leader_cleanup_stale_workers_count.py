@@ -1,7 +1,7 @@
 """``cleanup_stale_workers`` return value and row selection, against real PG.
 
 The sweep's deleted-row count feeds the leader's observability and its
-callers' logging, and nothing asserted it — returning ``None`` for every
+callers' logging, and nothing asserted it - returning ``None`` for every
 call broke no test.  Neither did anything pin, on a real table, that the
 caller's own row and a live peer's row survive the DELETE.
 """
@@ -76,7 +76,7 @@ async def test_cleanup_reports_the_number_of_rows_it_deleted(
 async def test_cleanup_reports_zero_when_nothing_is_stale(
     pg_conn: asyncpg.Connection, settings: TaskQSettings
 ) -> None:
-    """A no-op sweep reports 0, not None — the count is a real measurement."""
+    """A no-op sweep reports 0, not None - the count is a real measurement."""
     await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
     schema = settings.schema_name
 

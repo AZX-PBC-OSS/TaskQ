@@ -2,7 +2,7 @@
 
 docs/guides/workers.md:214 currently reads: "``strict_fifo`` (default) |
 Jobs are dispatched in priority-then-time order (``priority DESC,
-scheduled_at, id``). Every pending job competes freely — a deep queue of
+scheduled_at, id``). Every pending job competes freely - a deep queue of
 one actor can starve others if all candidates share high priority." Read
 plainly, that sentence tells an adopter
 that ``strict_fifo`` offers NO cross-actor fairness guarantee at all, and
@@ -12,7 +12,7 @@ than one actor shares a queue.
 That is not what the dispatch SQL actually does. The claim statement's
 ``stamp`` CTE writes ``actor_config.last_claimed_at`` for every actor
 admitted in a round, and the cross-round tiebreak (after ``pending_rank``
-and ``priority``) is ``actor_claimed_at ASC NULLS FIRST`` — never-claimed
+and ``priority``) is ``actor_claimed_at ASC NULLS FIRST`` - never-claimed
 actors first, then least-recently-claimed
 (src/taskq/backend/_dispatch_sql.py lines 78-95, 460-471, 505-513). This
 rotation applies in BOTH dispatch modes; nothing in its implementation is
@@ -28,14 +28,14 @@ If that stamp is a true round-robin partition (each round admits a
 disjoint, least-recently-served cohort), the bound is TIGHT and provable:
 with ``actor_count`` equal-priority actors sharing a queue and a round
 ``limit``, every actor must be first served within
-``ceil(actor_count / limit)`` rounds — not merely "eventually," and not
+``ceil(actor_count / limit)`` rounds - not merely "eventually," and not
 only under generous slack. A single-connection probe against the raw SQL
 (tests/test_dispatch_cohort_rotation_tight_bound_scratch.py, pre-existing
 scratch work in this tree) already confirms the tight bound holds for both
 ``strict_fifo`` and ``round_robin`` at the SQL layer. This test confirms
-the SAME tight bound holds through the production fleet path — real
+the SAME tight bound holds through the production fleet path - real
 ``Pod.claim()`` calls (``backend.dispatch_batch``), real Postgres, the
-harness in ``tests/_fleet.py`` — so the contract is pinned at the layer an
+harness in ``tests/_fleet.py`` - so the contract is pinned at the layer an
 adopter actually calls, not only at the SQL layer underneath it.
 
 Framing: strict priority order explicitly provides no cross-queue bound
@@ -48,14 +48,14 @@ weight, not rotated by a provable schedule). TaskQ's actor-level rotation
 is stronger than both: it is a hard, provable, per-round
 bound, not a probabilistic approximation or a documented-as-unbounded
 "strict" order. The finding here is not that TaskQ's engineering is
-lacking — it demonstrably is not — but that workers.md:214 describes the
+lacking - it demonstrably is not - but that workers.md:214 describes the
 weaker strict-order behaviour TaskQ does NOT have, instead of the
 stronger, bounded behaviour it does. This test exists so that line can be
 rewritten against a machine-checked number instead of prose that
 undersells its own guarantee.
 
-This test currently PASSES — per the sweep's own rule ("if your test
-passes, that is coverage worth keeping — also leave it on disk"), it stays
+This test currently PASSES - per the sweep's own rule ("if your test
+passes, that is coverage worth keeping - also leave it on disk"), it stays
 in the suite as the pinned, provable contract the doc should be rewritten
 to state plainly: every actor sharing a strict_fifo queue is served within
 ceil(actor_count / round_limit) rounds, full stop, no fairness_key or
@@ -107,13 +107,13 @@ async def test_strict_fifo_serves_every_actor_within_the_provable_round_bound(
 ) -> None:
     """Every equal-priority actor on a strict_fifo queue is first served
     within ceil(actor_count / round_limit) rounds through the real fleet
-    claim path — the tight bound, not merely "eventually" within a
+    claim path - the tight bound, not merely "eventually" within a
     generous multiple of it.
 
     Contrast with tests/test_fleet_fairness_starvation.py's existing
     ``test_every_actor_is_dispatched_within_a_bounded_number_of_rounds``,
     which asserts the same property with 4x slack (``_ROUNDS = (actor_count
-    * 4 + limit - 1) // limit``) — enough to catch outright starvation but
+    * 4 + limit - 1) // limit``) - enough to catch outright starvation but
     not tight enough to state the actual guarantee an adopter can rely on.
     This test asserts the number the rotation stamp's own design promises.
     """
@@ -140,14 +140,14 @@ async def test_strict_fifo_serves_every_actor_within_the_provable_round_bound(
             f"{len(never)} of {_ACTOR_COUNT} actors were never claimed within "
             f"{_TIGHT_BOUND * 2} rounds (2x the tight bound {_TIGHT_BOUND}) through the "
             f"real fleet claim path: {never}. This is outright starvation, not merely a "
-            "loose bound — worse than the doc's own worst-case framing."
+            "loose bound - worse than the doc's own worst-case framing."
         )
         assert max_round is not None and max_round <= _TIGHT_BOUND, (
             f"strict_fifo's rotation bound is NOT tight through the fleet claim path: the "
             f"last actor was first served in round {max_round}, exceeding the provable "
             f"ceil(actor_count/round_limit) = {_TIGHT_BOUND}. Every actor was eventually "
             f"served, but the rotation stamp's own design (src/taskq/backend/_dispatch_sql.py "
-            "lines 78-95) promises a tight per-round partition — if this fails, the "
+            "lines 78-95) promises a tight per-round partition - if this fails, the "
             "guarantee that promise describes does not hold at the production dispatch "
             "path, and docs/guides/workers.md:214's cautious framing would be closer to "
             "correct than the stronger claim this test set out to pin."

@@ -1,14 +1,14 @@
 """The actor-facing surface of the in-memory runner's stub context.
 
 ``_StubContext`` is a declared minimal subset of the production
-``taskq.context.JobContext`` — the members actors read under
+``taskq.context.JobContext`` - the members actors read under
 ``run_until_drained``. Two contracts are pinned here:
 
-* ``span`` — the documented trace-correlation field
+* ``span`` - the documented trace-correlation field
   (``docs/guides/observability.md``: "``ctx.span`` is the live consumer
   span, or ``None`` when OTel is disabled"). The in-memory runner is
-  uninstrumented, so the parity-correct reading is ``None`` — exactly
-  what a production worker without a tracer hands the actor — and the
+  uninstrumented, so the parity-correct reading is ``None`` - exactly
+  what a production worker without a tracer hands the actor - and the
   read itself must not fail. This is the runner half of the stub-context
   parity contract;
   the mirror half is guarded by
@@ -16,18 +16,18 @@
   ``_StubContext`` from its field walk (declared minimal subset), so
   the runner half is behaviour-pinned here instead.
 
-* The documented method surface — ``await ctx.progress(...)``,
+* The documented method surface - ``await ctx.progress(...)``,
   ``ctx.check_cancelled()``, and ``ctx.should_abort()``
   (``docs/guides/progress.md`` teaches progress reporting as a headline
   actor feature, with a no-Redis PG fallback, so it is core, not
   optional; ``should_abort`` is the documented cooperative-cancellation
   check sync actors poll). Production carries all four actor-facing
   members (``cancellation_requested``, ``check_cancelled``,
-  ``should_abort``, ``progress`` — ``src/taskq/context.py:82-103``),
+  ``should_abort``, ``progress`` - ``src/taskq/context.py:82-103``),
   and the runner's stub context now carries them too (the mirrored
   method surface): cancellation checks read the runner's cancel event,
   and progress reports land observably on the context's
-  ``progress_reports`` with a strictly monotone ``seq`` — the runner
+  ``progress_reports`` with a strictly monotone ``seq`` - the runner
   has no Redis/Postgres wiring, so recording, not publishing, is the
   faithful harness half of the contract.
 """
@@ -45,7 +45,7 @@ _START = datetime(2025, 1, 1, tzinfo=UTC)
 
 async def test_stub_context_span_read_matches_the_documented_disabled_value() -> None:
     """An actor reading ``ctx.span`` through ``run_until_drained``
-    observes ``None`` — the documented OTel-disabled value — and the job
+    observes ``None`` - the documented OTel-disabled value - and the job
     succeeds. A failing read would be the stub-context drift class on
     the runner path: an actor written to the documented contract
     breaking only under the test backend."""
@@ -86,7 +86,7 @@ async def test_documented_method_surface_is_exercisable_through_the_runner() -> 
     """An actor calling the documented ``await ctx.progress(...)``,
     ``ctx.check_cancelled()``, and ``ctx.should_abort()`` through
     ``run_until_drained`` succeeds, and the progress report lands
-    observably on the context — recorded with a strictly monotone
+    observably on the context - recorded with a strictly monotone
     ``seq``, the faithful harness half of a contract whose production
     half publishes."""
     clock = FakeClock(start=_START)
@@ -131,7 +131,7 @@ async def test_stub_context_cancellation_methods_observe_a_requested_cancel() ->
     """The raising half of the cancellation contract: with the job's
     cancel event already set, the stub observes
     ``cancellation_requested`` and ``should_abort()`` as True and
-    ``check_cancelled()`` raises :class:`asyncio.CancelledError` — not
+    ``check_cancelled()`` raises :class:`asyncio.CancelledError` - not
     only the quiet fresh-dispatch readings the exercisability pin
     covers."""
     clock = FakeClock(start=_START)

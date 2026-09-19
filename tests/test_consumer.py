@@ -59,17 +59,17 @@ class _FakeBackend(FakeBackend):
         return make_job_row()
 
 
-class _SlowQueryTimeout(TimeoutError):  # noqa: N818  Why: the concrete class name is the assertion target — it pins that span/log error_class report the subclass name verbatim, not a hardcoded 'TimeoutError'.
+class _SlowQueryTimeout(TimeoutError):  # noqa: N818  Why: the concrete class name is the assertion target - it pins that span/log error_class report the subclass name verbatim, not a hardcoded 'TimeoutError'.
     """TimeoutError subclass: pins log/span error_class agreement."""
 
 
-# ── indefinite-tier Retry — no taskq.indefinite_retry event ────
+# ── indefinite-tier Retry - no taskq.indefinite_retry event ────
 
 
 async def test_indefinite_retry_emits_lifecycle_scheduled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """indefinite-tier Retry emits `lifecycle.scheduled` (taskq.indefinite_retry was dropped — it was a debug annotation,
+    """indefinite-tier Retry emits `lifecycle.scheduled` (taskq.indefinite_retry was dropped - it was a debug annotation,
     not a state transition)."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
@@ -118,7 +118,7 @@ async def test_indefinite_deadline_emits_lifecycle_scheduled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """indefinite-tier job failing near its deadline emits
-    `lifecycle.scheduled` and passes a retry DELAY — the classifier is not
+    `lifecycle.scheduled` and passes a retry DELAY - the classifier is not
     a deadline arbiter (C2).  Whether the deadline actually kills the
     retry is decided by the SQL guard in mark_failed_or_retry and pinned
     at the backend layer (tests/test_clock_domain_isolation.py::
@@ -174,7 +174,7 @@ async def test_transient_deadline_emits_lifecycle_scheduled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """transient-tier job failing near its deadline also emits
-    `lifecycle.scheduled` with a retry delay — same C2 contract as the
+    `lifecycle.scheduled` with a retry delay - same C2 contract as the
     indefinite tier (the deadline outcome belongs to the SQL guard)."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
@@ -220,7 +220,7 @@ async def test_transient_deadline_emits_lifecycle_scheduled(
 async def test_no_taskq_indefinite_retry_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """taskq.indefinite_retry event is dropped — it was a debug
+    """taskq.indefinite_retry event is dropped - it was a debug
     annotation, not a state transition."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
@@ -317,7 +317,7 @@ _STUB_HANDLE = object()
 
 
 async def test_actor_mid_body_exception_releases_resources() -> None:
-    """Actor raises mid-body — resources released in finally;
+    """Actor raises mid-body - resources released in finally;
     the consumer handles the exception and release_for_actor is called."""
     rl_reg = _StubRateLimitRegistry()
     backend = _FakeBackend()
@@ -574,7 +574,7 @@ async def test_rate_limit_denial_acquire_time_emits_span_and_log(
 
 
 class _StrictPayload(BaseModel):
-    """Payload that rejects empty dicts — used to trigger validation failure."""
+    """Payload that rejects empty dicts - used to trigger validation failure."""
 
     required_field: str
 
@@ -584,7 +584,7 @@ async def test_payload_validation_failure_skips_rate_limit_acquire() -> None:
     ``validate_actor_payload`` call runs BEFORE rate-limit acquisition: a
     payload that cannot even validate must not acquire (and non-refundably
     burn) a rate-limit token. The ``PayloadValidationError`` propagates to
-    the caller — the same escape contract as every other pre-actor failure
+    the caller - the same escape contract as every other pre-actor failure
     (acquire-path errors escape too); callers own the terminal write."""
     rl_reg = _StubRateLimitRegistry()
     backend = _FakeBackend()
@@ -676,7 +676,7 @@ class _KeyFnRecordingRegistry:
 
 
 class _ApiPayload(BaseModel):
-    """Payload with a wire alias — proves the validated model (not the raw
+    """Payload with a wire alias - proves the validated model (not the raw
     dict) reaches ``key_fn``."""
 
     tenant_id: str = Field(alias="tenantId")
@@ -733,7 +733,7 @@ async def test_consumer_passes_validated_model_to_key_fn() -> None:
 
 
 class _StrictTenantPayload(BaseModel):
-    """Payload with a required field and no default — triggers
+    """Payload with a required field and no default - triggers
     ``PayloadValidationError`` when the raw dict lacks the field."""
 
     tenant_id: str
@@ -742,7 +742,7 @@ class _StrictTenantPayload(BaseModel):
 async def test_consumer_validates_payload_and_fails_non_retryable_for_direct_callers() -> None:
     """When ``validated_payload`` is ``None``, the consumer validates the raw
     dict BEFORE acquiring rate limits. A ``PayloadValidationError``
-    propagates to the caller (non-retryable per the classifier) — without
+    propagates to the caller (non-retryable per the classifier) - without
     acquiring any rate-limit token, even for a keyed ref whose own
     ``payload_type`` would also reject the payload."""
     rl_reg = _StubRateLimitRegistry()
@@ -786,7 +786,7 @@ async def test_consumer_validates_payload_and_fails_non_retryable_for_direct_cal
 async def test_consumer_validates_dict_and_passes_model_to_key_fn() -> None:
     """When validated_payload is None, consume_one_job validates job.payload
     (a raw dict with wire aliases) and passes the validated model to
-    acquire_for_actor — key_fn receives the model with aliases applied."""
+    acquire_for_actor - key_fn receives the model with aliases applied."""
     from taskq.ratelimit import KeyedRateLimitRef, RateLimitRegistry
     from taskq.ratelimit.token_bucket import TokenBucket
 
@@ -838,7 +838,7 @@ async def test_consumer_validates_dict_and_passes_model_to_key_fn() -> None:
 
 
 class _OrderPayloadWithDefault(BaseModel):
-    """Actor payload model: tenant_id is defaulted — a job row stored
+    """Actor payload model: tenant_id is defaulted - a job row stored
     without tenant_id still validates, attributing to the default."""
 
     order_id: str
@@ -846,7 +846,7 @@ class _OrderPayloadWithDefault(BaseModel):
 
 
 class _RefRequiresTenant(BaseModel):
-    """Keyed-ref payload model: tenant_id is REQUIRED — a raw dict without
+    """Keyed-ref payload model: tenant_id is REQUIRED - a raw dict without
     it fails validation (the pre-fix failure mode the consumer must not
     hit, because the actor model already filled the default)."""
 
@@ -856,7 +856,7 @@ class _RefRequiresTenant(BaseModel):
 async def test_consumer_cross_model_keyed_ref_honors_actor_model_defaults() -> None:
     """The consumer hands the registry the actor's VALIDATED model, so a
     keyed ref whose payload_type is a different (stricter) model re-validates
-    the model_dump — which includes the actor model's applied defaults.
+    the model_dump - which includes the actor model's applied defaults.
     A job whose raw dict lacks ``tenant_id`` still proceeds under the
     actor model's default instead of failing non-retryably inside the
     ref's re-validation of the raw dict."""
@@ -906,7 +906,7 @@ async def test_consumer_cross_model_keyed_ref_honors_actor_model_defaults() -> N
 
 async def test_validated_payload_short_circuits_job_payload_validation() -> None:
     """When ``validated_payload`` is provided, the consumer does NOT
-    re-validate ``job.payload`` — a valid model alongside a dict that
+    re-validate ``job.payload`` - a valid model alongside a dict that
     would fail validation succeeds, proving the short-circuit works."""
     rl_reg = _StubRateLimitRegistry()
     backend = _FakeBackend()
@@ -1182,7 +1182,7 @@ async def test_timeout_logs_actual_exception_details(
 
 async def test_timeout_retry_emits_log_state_change() -> None:
     """_handle_timeout emits log_state_change running→scheduled when the
-    retry decision is Retry — mirroring _handle_generic_exception."""
+    retry decision is Retry - mirroring _handle_generic_exception."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise TimeoutError("slow query")
@@ -1218,7 +1218,7 @@ async def test_timeout_retry_emits_log_state_change() -> None:
 
 async def test_timeout_terminal_emits_log_state_change() -> None:
     """_handle_timeout emits log_state_change running→failed when retries are
-    exhausted — mirroring _handle_generic_exception."""
+    exhausted - mirroring _handle_generic_exception."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise TimeoutError("slow query")
@@ -2004,7 +2004,7 @@ async def test_timeout_subclass_span_log_agree_on_retry_path(
 ) -> None:
     """A TimeoutError subclass on the retry path reports the concrete
     class in both the lifecycle.scheduled span event and the job_timeout
-    warning — not a hardcoded 'TimeoutError'."""
+    warning - not a hardcoded 'TimeoutError'."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise _SlowQueryTimeout("query exceeded deadline")
@@ -2108,7 +2108,7 @@ async def test_generic_exception_retry_path_logs_warning_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Retryable generic exception logs job_exception at WARNING and
-    nothing at ERROR — the single job-failed ERROR is reserved for the
+    nothing at ERROR - the single job-failed ERROR is reserved for the
     terminal failure."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
@@ -2237,7 +2237,7 @@ async def test_generic_exception_terminal_ownership_mismatch_logs_no_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Terminal generic exception whose write loses the ownership race emits
-    NO job-failed ERROR — the job is not dead by our hand. The per-attempt
+    NO job-failed ERROR - the job is not dead by our hand. The per-attempt
     job_exception diagnostic and the ownership-mismatch WARNING still fire."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
@@ -2298,7 +2298,7 @@ async def test_timeout_terminal_ownership_mismatch_logs_no_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Terminal timeout whose write loses the ownership race emits NO
-    job-failed ERROR — the job is not dead by our hand. The per-attempt
+    job-failed ERROR - the job is not dead by our hand. The per-attempt
     job_timeout diagnostic and the ownership-mismatch WARNING still fire."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
@@ -2364,7 +2364,7 @@ async def test_cancelled_consumer_reraises_when_terminal_write_fails() -> None:
 
     Regression: the infra error (e.g. dead PG) escaped the shield and was
     routed into generic job-failure handling, which returned ``"failed"``
-    normally — the task's cancellation was silently eaten, so a cancelling
+    normally - the task's cancellation was silently eaten, so a cancelling
     TaskGroup (``__aexit__``) waited on the consumer forever. This is the
     hang the PG-restart chaos path exposes.
     """
@@ -2379,7 +2379,7 @@ async def test_cancelled_consumer_reraises_when_terminal_write_fails() -> None:
 
     # Why an event at actor entry: the cancel must land while the actor is
     # running (the shielded-mark_cancelled path under test). A fixed sleep
-    # raced consumer startup under load — cancelled too early, the
+    # raced consumer startup under load - cancelled too early, the
     # CancelledError propagates from setup (outside the actor-run handler)
     # and mark_cancelled never runs. The event is set at the exact point
     # the pin needs.
@@ -2496,7 +2496,7 @@ async def test_denial_on_budget_exhausted_job_never_reaches_a_terminal_write() -
 async def test_consume_one_job_uses_the_caller_bound_job_log() -> None:
     """A caller that already bound the job's logger (the dispatch path
     binds one for the interim context) hands it in as ``job_log`` and the
-    actor's ctx logs through that very logger — no second binding."""
+    actor's ctx logs through that very logger - no second binding."""
     import structlog
 
     from taskq.obs import bind_job_context

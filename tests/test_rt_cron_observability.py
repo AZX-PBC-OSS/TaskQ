@@ -4,19 +4,19 @@ C9, at real-PG level (the fake-conn pins in ``tests/test_cron_loop.py``
 cover the SQL shapes; these pin that the calls actually happen around
 committed writes, with the values a real tick produces):
 
-* ``record_cron_failure`` — ``+1`` per failed schedule, recorded under
+* ``record_cron_failure`` - ``+1`` per failed schedule, recorded under
   its actor (the metric's bounded dimension); ``-prev`` on a success
   that follows failures (the counter reset, not a bare ``-1``); and a
   mixed same-actor tick nets ``-prev`` + ``+1`` on the ONE series the
   actor's schedules share.
-* ``record_published_message`` — once per fired schedule, with the
+* ``record_published_message`` - once per fired schedule, with the
   actor and the queue from ``actor_config``.
 * the ``cron fired`` / ``cron fire failed`` / ``cron schedule
   auto-disabled`` events carry the firing ``worker_id``.
 * the ``cron fire`` span carries ``taskq.cron_schedule_id`` on both the
-  planning-loop (success) path and the write-failure strike path — the
+  planning-loop (success) path and the write-failure strike path - the
   per-schedule attribution channel since the metric's relabel.
-* the ``-> int`` return equals the number of successes — including a
+* the ``-> int`` return equals the number of successes - including a
   mixed batch where planning failures and successes share one tick.
 """
 
@@ -263,7 +263,7 @@ class TestObservabilityOnCommit:
         """One actor, two schedules, one tick: the recovering schedule
         (2 prior failures, both emitted to THIS process's counter by
         earlier ticks) fires and records ``-2``; a fresh schedule fails
-        and records ``+1``; the actor's ONE series nets to 1 — the sum
+        and records ``+1``; the actor's ONE series nets to 1 - the sum
         of the actor's DB counts after the tick. The netting was only
         ever pinned via direct emitter calls before; this drives it
         through a real tick, real instrument and all."""
@@ -334,7 +334,7 @@ class TestObservabilityOnCommit:
             )
 
         # Two failing ticks build the recovering schedule's DB count (and
-        # this process's counter) to 2 — the prior history a real -2 reset
+        # this process's counter) to 2 - the prior history a real -2 reset
         # assumes; the fresh schedule stays undelivered (next hour).
         assert await _tick() == 0
         await _make_due(recovering_id)
@@ -372,7 +372,7 @@ class TestObservabilityOnCommit:
         )
 
         # The DB is the cross-check: the series value equals the actor's
-        # summed schedule counts — the netting invariant, end to end.
+        # summed schedule counts - the netting invariant, end to end.
         recovering = await schedule_row(clean_pg_conn, schema, recovering_id)
         fresh = await schedule_row(clean_pg_conn, schema, fresh_id)
         assert recovering["consecutive_failures"] == 0
@@ -380,7 +380,7 @@ class TestObservabilityOnCommit:
 
 
 class TestCronFireSpanAttribution:
-    """``taskq.cron_schedule_id`` on the ``cron fire`` span — the
+    """``taskq.cron_schedule_id`` on the ``cron fire`` span - the
     per-schedule attribution channel since the metric's relabel.
     Both span creation sites must stamp it: the planning loop (success
     path) and the write-failure strike path."""
@@ -431,7 +431,7 @@ class TestCronFireSpanAttribution:
     ) -> None:
         """A write-failed plan gets its OWN ``cron fire`` span from
         ``_strike_plans`` (the planning-loop span for the same schedule
-        already closed OK) — that second span must carry the same
+        already closed OK) - that second span must carry the same
         ``taskq.cron_schedule_id`` stamp, or the write-failure path loses
         the per-schedule attribution the relabel moved onto spans."""
         _, exporter = setup_tracer(monkeypatch)
@@ -863,8 +863,8 @@ class TestFailureGaugeIsDerivedFromTheDatabase:
 
     A per-process running balance can only ever be right about deltas this
     process itself applied. Schedules are enabled, disabled and deleted by
-    clients, by the CLI and by the admin UI — all outside the worker that
-    emits the metric — and each of those actions clears or removes a
+    clients, by the CLI and by the admin UI - all outside the worker that
+    emits the metric - and each of those actions clears or removes a
     ``cron_schedules.consecutive_failures`` value the worker once counted
     up. A worker cannot emit another process's delta, so the balance drifts
     permanently upward: an actor whose only failing schedule was deleted a
@@ -900,7 +900,7 @@ class TestFailureGaugeIsDerivedFromTheDatabase:
     ) -> None:
         """Two failing schedules build a count; another process then clears
         one and deletes the other. The next tick's emitted value must match
-        what the database says — zero — with no residue from the strikes
+        what the database says - zero - with no residue from the strikes
         this worker counted.
         """
         schema = module_pg_schema.schema_name
@@ -962,7 +962,7 @@ class TestFailureGaugeIsDerivedFromTheDatabase:
         assert await _tick() == 0
         assert await self._cron_failure_points(reader) == [({"actor": _ACTOR}, 3)], (
             "baseline: with three failing schedules on one actor the series "
-            "must read 3 — if it does not, the rest of this test proves nothing"
+            "must read 3 - if it does not, the rest of this test proves nothing"
         )
 
         # Another process intervenes between ticks: one schedule's strike
@@ -1011,7 +1011,7 @@ class TestFailureGaugeIsDerivedFromTheDatabase:
     ) -> None:
         """The stranded-actor case: an actor fails (its series reads 1),
         another process then deletes that schedule outright, and the actor
-        has NOTHING due on the next tick — the tick's batch never touches
+        has NOTHING due on the next tick - the tick's batch never touches
         it. The reconcile must still return the actor's series to the
         database's truth (zero), because the totals it reconciles against
         cover every actor with a failing schedule, not only the batch's.
@@ -1168,7 +1168,7 @@ class TestReconciliationLeavesUntouchedActorsAlone:
 
     ``reconcile_cron_failures`` receives totals read over the whole
     ``cron_schedules`` table (``_actor_failure_totals``), not just the
-    tick's own batch — so an actor with failing schedules that simply were
+    tick's own batch - so an actor with failing schedules that simply were
     not due this tick still appears in the totals with the count the
     database holds. Zeroing it would erase an outstanding failure count
     from the exported series while the database still holds it, exactly
@@ -1397,7 +1397,7 @@ _ONE_MINUTE = timedelta(minutes=1)
 _FLAKY_FACTORY = "tests.test_rt_cron_observability.flaky_twice_then_ok"
 
 _FLAKY_STATE: dict[str, object] = {"calls": []}
-"""Call log for :func:`flaky_twice_then_ok` — module scope because the
+"""Call log for :func:`flaky_twice_then_ok` - module scope because the
 cron loop resolves the factory by dotted path inside the tick, so the
 test and the factory can only share state through the module (the
 harness ``_WEDGE_STATE`` pattern).  Reset at each using test's start."""

@@ -8,11 +8,11 @@ deadline that fired (lease or heartbeat), but the job row itself kept
 failure path (``DeadlineExceeded`` on the deadline sweep, the cancel-origin
 markers on the cancel paths) self-describes on the row. The crashed arm now
 stamps the same fields the attempt row carries, on both backends, mapped
-from the arm that fired — never the sibling arm's message.
+from the arm that fired - never the sibling arm's message.
 
 The cancel-in-flight exhausted arm is the deliberate boundary: it lands
 ``'cancelled'`` honouring the caller's in-flight request, and its row keeps
-``error_class = NULL`` on both backends — none of the four cancel-origin
+``error_class = NULL`` on both backends - none of the four cancel-origin
 markers describes "the worker crashed mid-protocol" (the actor neither
 yielded nor was interrupted), and the attempt row's ``WorkerCrashed`` plus
 the event's ``cause`` carry the explanation instead. These tests pin both
@@ -42,7 +42,7 @@ _EXPIRED_AGO = timedelta(seconds=10)
 _START = datetime(2025, 6, 1, tzinfo=UTC)
 
 # The two deadline messages, pinned verbatim as an operator reads them on
-# the row — the same strings ``_ATTEMPT_MESSAGES`` feeds the attempt rows
+# the row - the same strings ``_ATTEMPT_MESSAGES`` feeds the attempt rows
 # (test_sweep_expired_locks_bounded.py pins the attempt-row text; drift
 # between the row and the attempt would make one record contradict the
 # other).
@@ -147,7 +147,7 @@ async def test_sweep1_crashed_row_stamps_error_fields_heartbeat_arm(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """The heartbeat arm's crashed row names the heartbeat deadline, never
-    the lease arm's — the same honesty standard the attempt rows carry."""
+    the lease arm's - the same honesty standard the attempt rows carry."""
     schema = module_pg_schema.schema_name
     job_id = new_uuid()
     worker_id = new_uuid()
@@ -173,7 +173,7 @@ async def test_sweep1_cancelled_arm_keeps_error_fields_unset(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """Boundary: the cancel-in-flight exhausted arm lands 'cancelled' with
-    no error fields — the worker crashed mid-protocol, which no
+    no error fields - the worker crashed mid-protocol, which no
     cancel-origin marker describes; the attempt row and event cause carry
     the explanation."""
     schema = module_pg_schema.schema_name
@@ -237,7 +237,7 @@ async def _seed_memory_running_job(
     row = await memory.enqueue(args)
     if heartbeat_stale:
         # Lease valid an hour out; the last beat is 60s old against a 5s
-        # per-job timeout — the heartbeat arm owns this row.
+        # per-job timeout - the heartbeat arm owns this row.
         memory._jobs[args.id] = replace(  # pyright: ignore[reportPrivateUsage]  # Why: test-only seeding of the crash-reclaim shape, the established pattern from test_rt_sweeps_parity.py.
             row,
             status="running",

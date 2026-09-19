@@ -1,7 +1,7 @@
 """A transactional migration's DDL waits a bounded time for table locks.
 
 ``ALTER TABLE jobs`` takes ACCESS EXCLUSIVE, which queues behind any
-session holding so much as ACCESS SHARE on ``jobs`` — an actor's open
+session holding so much as ACCESS SHARE on ``jobs`` - an actor's open
 transaction connection mid-job, an admin snapshot, ``pg_dump``. Postgres'
 lock queue is FIFO, so once the DDL is queued every later ``jobs`` statement
 (dispatch, enqueue, heartbeat) queues behind IT. With ``lock_timeout = 0``
@@ -129,7 +129,7 @@ async def test_default_bound_is_thirty_seconds(monkeypatch: Any) -> None:
 async def test_sub_millisecond_bound_is_refused(monkeypatch: Any) -> None:
     """``lock_timeout`` is an integer number of milliseconds; a bound below
     one millisecond would render as ``0``, which Postgres reads as "wait
-    indefinitely" — the inverse of what the caller asked for, silently."""
+    indefinitely" - the inverse of what the caller asked for, silently."""
     migration = _migration("SELECT 1;", use_transaction=True)
     monkeypatch.setattr(migrate_mod, "discover", lambda: [migration])
     conn = _RecordingConn()
@@ -172,7 +172,7 @@ _LEDGER_UPGRADE = "ADD COLUMN IF NOT EXISTS use_transaction"
 
 async def test_existing_ledger_upgrade_runs_under_the_same_bound(monkeypatch: Any) -> None:
     """Before the first migration of a run, the runner adds the ledger's
-    ``use_transaction`` column with ``ALTER TABLE schema_migrations`` —
+    ``use_transaction`` column with ``ALTER TABLE schema_migrations`` -
     ACCESS EXCLUSIVE, queued behind any reader of the ledger (a worker's
     boot-time currency check, ``pg_dump``). That wait is bounded exactly
     like a migration's DDL: inside its own transaction, behind ``SET LOCAL
@@ -196,7 +196,7 @@ async def test_fresh_ledger_upgrade_after_a_no_transaction_migration_is_bounded(
     """A fresh install has no ledger until the initial migration creates
     one; when the first recorded migration is a ``-- taskq:no-transaction``
     file, the ledger upgrade runs after its statements, outside any
-    migration transaction — and still under the bound."""
+    migration transaction - and still under the bound."""
     migration = _migration(
         "-- taskq:no-transaction\nCREATE INDEX CONCURRENTLY i ON t (c);",
         use_transaction=False,
@@ -312,7 +312,7 @@ async def test_held_ledger_lock_fails_the_run_within_the_bound(
     pg_dsn: str, monkeypatch: Any
 ) -> None:
     """The runner's own ledger upgrade (``ALTER TABLE schema_migrations``)
-    queues behind any reader holding the ledger open — the shape of
+    queues behind any reader holding the ledger open - the shape of
     ``pg_dump`` or an admin session mid-transaction. It is bounded like a
     migration's DDL, fails with the same typed error naming the ledger,
     and applies nothing."""

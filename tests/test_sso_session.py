@@ -1,6 +1,6 @@
 """Tests for the shared SSO session module (_session.py).
 
-Protocol-agnostic — covers cookie issuance/verification, expiry, tampering,
+Protocol-agnostic - covers cookie issuance/verification, expiry, tampering,
 the group allowlist, and logout. Tested once here so both backends inherit the
 guarantees without duplication.
 """

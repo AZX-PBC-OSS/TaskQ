@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
     type _Conn = asyncpg.Connection | PoolConnectionProxy
 else:
-    type _Conn = object  # pyright: ignore[reportInvalidTypeForm]  # Why: runtime fallback — asyncpg is TYPE_CHECKING-only to avoid transitive import
+    type _Conn = object  # pyright: ignore[reportInvalidTypeForm]  # Why: runtime fallback - asyncpg is TYPE_CHECKING-only to avoid transitive import
 
 pytestmark = pytest.mark.integration
 
@@ -42,7 +42,7 @@ async def _insert_test_job(
     """Insert a job row directly via asyncpg with batch_id metadata."""
     job_id = new_job_id()
     await conn.execute(
-        f'INSERT INTO "{schema}".jobs '  # noqa: S608  # Why: test helper — schema is a validated constant from settings, not user input
+        f'INSERT INTO "{schema}".jobs '  # noqa: S608  # Why: test helper - schema is a validated constant from settings, not user input
         "(id, queue, actor, payload, max_attempts, retry_kind, metadata, status) "
         "VALUES ($1, 'default', 'test_actor', '{}'::jsonb, "
         "1, 'non_retryable', $2::jsonb, $3)",
@@ -198,7 +198,7 @@ class TestPostgresAbortBatch:
 
         async with deps.worker_pool.acquire() as conn:
             rows = await conn.fetch(
-                f"SELECT id, status, error_class, error_message, "  # noqa: S608  # Why: test helper — schema is a validated constant from settings, not user input
+                f"SELECT id, status, error_class, error_message, "  # noqa: S608  # Why: test helper - schema is a validated constant from settings, not user input
                 f"cancel_requested_at, cancel_phase "
                 f'FROM "{schema}".jobs '
                 f"WHERE id = ANY($1::uuid[])",
@@ -544,7 +544,7 @@ class TestPostgresEnqueueBatchAtomicRollback:
         # No jobs with this batch_id should exist (transaction rolled back).
         async with deps.worker_pool.acquire() as conn:
             count = await conn.fetchval(
-                f'SELECT count(*) FROM "{schema}".jobs '  # noqa: S608  # Why: test helper — schema is a validated constant from settings, not user input
+                f'SELECT count(*) FROM "{schema}".jobs '  # noqa: S608  # Why: test helper - schema is a validated constant from settings, not user input
                 "WHERE metadata @> $1::jsonb",
                 json.dumps({"batch_id": str(bid)}),
             )
@@ -577,7 +577,7 @@ class TestPostgresAbortBatchNoRow:
         # Verify jobs were cancelled.
         async with deps.worker_pool.acquire() as conn:
             rows = await conn.fetch(
-                f'SELECT id, status FROM "{schema}".jobs '  # noqa: S608  # Why: test helper — schema is a validated constant from settings, not user input
+                f'SELECT id, status FROM "{schema}".jobs '  # noqa: S608  # Why: test helper - schema is a validated constant from settings, not user input
                 "WHERE id = ANY($1::uuid[])",
                 [j1, j2],
             )
@@ -701,7 +701,7 @@ class TestPostgresAbortSetsCancelColumns:
 
         async with deps.worker_pool.acquire() as conn:
             rows = await conn.fetch(
-                f"SELECT id, status, error_class, error_message, "  # noqa: S608  # Why: test helper — schema is a validated constant from settings, not user input
+                f"SELECT id, status, error_class, error_message, "  # noqa: S608  # Why: test helper - schema is a validated constant from settings, not user input
                 f"cancel_requested_at, cancel_phase "
                 f'FROM "{schema}".jobs '
                 f"WHERE id = ANY($1::uuid[])",

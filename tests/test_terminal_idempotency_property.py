@@ -35,7 +35,7 @@ _LOCK_LEASE = timedelta(seconds=60)
 
 # The five terminal-write targets. mark_snoozed is non-terminal
 # (status becomes 'scheduled') but qualifies for the double-write
-# property — the second call still returns False because the
+# property - the second call still returns False because the
 # WHERE status='running' predicate misses.
 TERMINAL_STATES = ["succeeded", "failed", "cancelled", "snoozed", "abandoned"]
 
@@ -55,7 +55,7 @@ async def _enqueue_and_dispatch(
 ) -> tuple[JobId, UUID]:
     """Enqueue a job and dispatch it, returning (job_id, worker_id)."""
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     if "test_actor" not in backend._actor_configs_meta:  # type: ignore[reportPrivateUsage]  # Why: test-only private access
         backend.register_actor_config(actor="test_actor")
     args = EnqueueArgs(
@@ -182,7 +182,7 @@ async def test_terminal_idempotency_memory(terminal_state: str) -> None:
 
     # Exactly the first write's rows survive the second (no double-write):
     # one attempt row and one state_change event for every real terminal
-    # state; the snooze is a deferral, not an execution — zero rows, its
+    # state; the snooze is a deferral, not an execution - zero rows, its
     # record is the row's snooze counter.
     attempts_after = await backend.get_attempts(job_id)
     expected_rows = 0 if terminal_state == "snoozed" else 1
@@ -241,10 +241,10 @@ async def test_terminal_idempotency_pg(
     # Record attempt count before second write
     attempts_before = await backend.get_attempts(job_id)
 
-    # Second terminal write — should be a no-op
+    # Second terminal write - should be a no-op
     if terminal_state == "failed":
         # PG mark_failed_or_retry raises WorkerOwnershipMismatch on
-        # already-terminal rows — the SQL WHERE clause cannot
+        # already-terminal rows - the SQL WHERE clause cannot
         # distinguish "already terminal" from "wrong worker".
         error_info = ErrorInfo(
             error_class="TestError", error_message="terminal failure", error_traceback=None

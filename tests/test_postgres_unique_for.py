@@ -1,13 +1,13 @@
 """Integration tests for unique_for dedup behaviour against real PG.
 
 Covers:
-  — unique_for within window dedup
-  — unique_for window expiration
-  — idempotency_key concurrent enqueues
-  — unique_for preflight EXPLAIN ANALYZE index usage
-  — unique_for race window (100 concurrent enqueues)
-  — connection loss during preflight (chaos)
-  — constraint-name disambiguation on singleton path
+  - unique_for within window dedup
+  - unique_for window expiration
+  - idempotency_key concurrent enqueues
+  - unique_for preflight EXPLAIN ANALYZE index usage
+  - unique_for race window (100 concurrent enqueues)
+  - connection loss during preflight (chaos)
+  - constraint-name disambiguation on singleton path
 
 anchors: (evaluation order), (unique_for preflight),
 (dedup logging), (constraint-name disambiguation).
@@ -107,7 +107,7 @@ async def test_unique_for_window_expiration(
     assert row1.id == args1.id  # fresh insert → was_existing=False
 
     # Deterministically backdate created_at past the unique_for window
-    # instead of sleeping — avoids Python-vs-PG clock divergence flakiness.
+    # instead of sleeping - avoids Python-vs-PG clock divergence flakiness.
     async with deps.worker_pool.acquire() as conn:
         await conn.execute(
             f"UPDATE \"{schema}\".jobs SET created_at = created_at - interval '10 minutes' WHERE id = $1",
@@ -210,7 +210,7 @@ async def test_unique_for_preflight_uses_index(
     ]
 
     # Seed 100k rows: 99,999 varied rows + one exact match row.
-    # Bypass enqueue/client — bulk write via copy_records_to_table.
+    # Bypass enqueue/client - bulk write via copy_records_to_table.
     async with deps.worker_pool.acquire() as conn:
         async with conn.transaction():
             # Bulk seed with varied identities so the table is not dominated
@@ -248,7 +248,7 @@ async def test_unique_for_preflight_uses_index(
                     columns=columns,
                 )
 
-            # Insert the "exact match" row — the identity we'll search for.
+            # Insert the "exact match" row - the identity we'll search for.
             await conn.execute(
                 f"""INSERT INTO \"{schema}\".jobs
                 (id, actor, queue, identity_key, payload, max_attempts, retry_kind,
@@ -304,7 +304,7 @@ async def test_unique_for_preflight_uses_index(
     assert total_runtime < 1, f"Total runtime {total_runtime}ms >= 1ms"
 
     # Cleanup: drop the seeded rows. Dropping and re-migrating the schema
-    # would be cleaner but the fixture is per-test — just leave the schema
+    # would be cleaner but the fixture is per-test - just leave the schema
     # as-is since the next test's schema drop handles cleanup.
 
 
@@ -317,7 +317,7 @@ async def test_unique_for_race_window(
 ) -> None:
     """Launch 100 concurrent enqueue calls with the same
     (actor, identity_key) within the window. Exactly one row is
-    created — the single-flight advisory lock serializes the racers —
+    created - the single-flight advisory lock serializes the racers -
     and all callers receive a JobHandle (no exceptions)."""
     deps, pg_backend = clean_jobs_app
     schema = deps.settings.schema_name
@@ -348,13 +348,13 @@ async def test_unique_for_race_window(
 
     # The single-flight advisory lock serializes every racer: the winner
     # inserts and commits (releasing the lock), and each queued racer's
-    # preflight then sees the committed row and dedups — the same
+    # preflight then sees the committed row and dedups - the same
     # exactly-one contract tests/test_postgres_unique_for_single_flight.py
     # pins under a warmed pool. The dispatch CTE's running_identities
     # filter remains the execution-level guard behind this enqueue-level
     # one.
     assert count == 1, (
-        f"Race window allowed {count} rows; unique_for is serialized — "
+        f"Race window allowed {count} rows; unique_for is serialized - "
         f"100 concurrent enqueues of one identity must produce exactly 1"
     )
 

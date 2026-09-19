@@ -50,12 +50,12 @@ def test_dispatch_sql_documents_the_toctou_for_max_concurrent() -> None:
     """The source documents this window for `max_concurrent` -- the one
     operators actually tune. The doctrine moved with the count when the
     fleet-wide running_per_actor CTE was replaced by the cap-gated
-    correlated count (#226): the preamble that used to sit above the CTE
+    correlated count: the preamble that used to sit above the CTE
     now lives in per_actor_capacity's residual expression, still ahead
     of the first place the count is read."""
     sql = (_SRC / "backend" / "_dispatch_sql.py").read_text()
     # The doctrine block lives in per_actor_capacity's body (it moved
-    # there with the count, #226): from the CTE's declaration to the
+    # there with the count): from the CTE's declaration to the
     # repend arm that repeats the shape. Whitespace-normalized because
     # the doctrine is SQL comment prose and wraps with the comment
     # markers at its new home.

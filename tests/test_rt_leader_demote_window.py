@@ -2,8 +2,8 @@
 # (No file-level S608 noqa: none of this file's statements match the S608 SELECT-interpolation pattern.)
 """Green pin: the dual-leader overlap after a leader's session dies is bounded.
 
-``tests/test_leader_chaos.py`` TC1 pins kill+promote — the terminated leader's pod
-dies and the survivor takes over — but nothing pins WHEN the dead leader stops
+``tests/test_leader_chaos.py`` TC1 pins kill+promote - the terminated leader's pod
+dies and the survivor takes over - but nothing pins WHEN the dead leader stops
 acting as one.  The overlap window in which two pods both believe they are the
 leader opens the moment the dead holder's backend (and with it the session-scoped
 election lock) goes away and a contender can promote, and it closes when the dead
@@ -15,7 +15,7 @@ cadence) + dispatcher_command_timeout (the probe bound), per the failover SLA in
 
 Contract under test (expected GREEN): after ``pg_terminate_backend`` of the
 leader's election connection, ``is_leader`` must clear within
-heartbeat_interval + dispatcher_command_timeout (+ a small scheduling margin) —
+heartbeat_interval + dispatcher_command_timeout (+ a small scheduling margin) -
 and the freed lock must let the pod re-establish leadership, so the demote is a
 demote, not a crash.
 """
@@ -61,7 +61,7 @@ async def test_dead_leader_demotes_within_heartbeat_plus_command_timeout(
 
         leader = MaintenanceLeader(deps, worker_id, backend, clock=SystemClock())
         task = asyncio.create_task(
-            leader._election_loop(shutdown),  # pyright: ignore[reportPrivateUsage]  # Why: election loop alone is the seam under test — run()'s TaskGroup is not needed to observe the demote-on-probe-failure path.
+            leader._election_loop(shutdown),  # pyright: ignore[reportPrivateUsage]  # Why: election loop alone is the seam under test - run()'s TaskGroup is not needed to observe the demote-on-probe-failure path.
             name="rt-demote-window",
         )
         await asyncio.wait_for(deps.is_leader.wait(), timeout=2 * heartbeat + 5.0)
@@ -95,14 +95,14 @@ async def test_dead_leader_demotes_within_heartbeat_plus_command_timeout(
         assert cleared_at is not None, (
             "CONTRACT: after the leader's election connection dies, the pod must "
             "demote (clear is_leader) within heartbeat_interval + "
-            f"dispatcher_command_timeout = {heartbeat}s + {command_timeout}s — that is "
+            f"dispatcher_command_timeout = {heartbeat}s + {command_timeout}s - that is "
             "the bound on the dual-leader overlap window (the contender can only "
             "promote after the lock-holding backend died, so the overlap lasts "
             "exactly as long as the dead holder still acts as leader); the failover "
             "SLA in leader.py's docstring promises 'PG failover ≤ heartbeat_interval'"
         )
         assert cleared_at - t_kill <= demote_bound, (
-            f"demote took {cleared_at - t_kill:.2f}s, bound is {demote_bound:.2f}s — "
+            f"demote took {cleared_at - t_kill:.2f}s, bound is {demote_bound:.2f}s - "
             "the dual-leader overlap window after a leader's session death is not "
             "bounded by heartbeat + command_timeout"
         )
@@ -121,7 +121,7 @@ async def test_dead_leader_demotes_within_heartbeat_plus_command_timeout(
                     await task
         if leader is not None:
             await leader._close_leader_owned_conns(mid_run=False)  # pyright: ignore[reportPrivateUsage]  # Why: election-only startup skips run()'s teardown; this is its manual equivalent.
-            await leader._drop_leader_conn(reason="rt teardown")  # pyright: ignore[reportPrivateUsage]  # Why: same — release the session-scoped election lock for teardown.
+            await leader._drop_leader_conn(reason="rt teardown")  # pyright: ignore[reportPrivateUsage]  # Why: same - release the session-scoped election lock for teardown.
         await stack.aclose()
         cleanup = await asyncpg.connect(pg_dsn)
         try:

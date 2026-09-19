@@ -2,22 +2,22 @@
 
 Two dispatch-loop latencies these pins hold:
 
-* Slot refill under saturation — when every consumer slot is busy and the
+* Slot refill under saturation - when every consumer slot is busy and the
   local queue is full, the producer waits on the slot-freed event the
   consumer loops set at their ``local_queue.get()`` (the point a queue
-  slot actually frees — ``qsize`` drops at get, not at job completion),
+  slot actually frees - ``qsize`` drops at get, not at job completion),
   bounded by the fallback interval so a never-set event cannot park the
   producer. Waking on a slot-release event is the mechanism to remove
   latency when slots free: the producer claims the next job the instant
   a slot releases, not after waiting out a poll interval.
-* Fallback poll jitter — an idle fleet polling the same interval in
+* Fallback poll jitter - an idle fleet polling the same interval in
   phase re-synchronizes after any transient event into periodic DB load
   spikes; the empty-dispatch wait is jittered ±10% to spread the fleet's
   polls across the interval rather than ticking in unison, seeded
   per-producer like the retry RNG.
 
 Timing is deliberately NOT the gate: the wake pin asserts the producer
-needed no poll sleep at all (a sleep recorder — the event wake is
+needed no poll sleep at all (a sleep recorder - the event wake is
 µs-fast while a poll wake lands anywhere inside the interval, so a
 timing race would flake exactly on the distinction under test), and the
 jitter pins assert on seeded RNG draws, which are deterministic.
@@ -100,7 +100,7 @@ def _producer_deps(
         settings=settings,
         liveness=liveness,
         # `all` feeds the drain-path hand-back; `count` the producer's
-        # availability accounting (#229). Tests that need a live count
+        # availability accounting. Tests that need a live count
         # override it on the namespace.
         active_jobs=SimpleNamespace(all=list, count=lambda: 0),
         disowned_jobs=set(),
@@ -156,14 +156,14 @@ async def test_slot_release_wakes_the_saturated_producer_without_a_poll_sleep(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A saturated producer (all slots busy, local queue full) claims the
-    next job on the consumer's slot-release event — without any poll
+    next job on the consumer's slot-release event - without any poll
     sleep. The sleep recorder is the gate: an event wake needs no timer,
     while a poll-loop producer must sleep inside the interval to notice
     the freed slot, which is exactly the up-to-100ms claim latency this
     seam removes.
 
     The fallback bound is patched to 3600 s so a producer that missed
-    the set entirely cannot pass by waking on the old 100 ms cadence —
+    the set entirely cannot pass by waking on the old 100 ms cadence -
     it would hang and fail the prompt-wait wait, loudly.
     """
     backend = _RecordingBackend(jobs=[make_job_row(status="pending") for _ in range(3)])
@@ -176,9 +176,9 @@ async def test_slot_release_wakes_the_saturated_producer_without_a_poll_sleep(
     stop_event = asyncio.Event()
 
     # (calling task, duration): the patch is global to the asyncio module,
-    # so the test's own waits and the wait helper's polls land here too —
+    # so the test's own waits and the wait helper's polls land here too -
     # filtered by task identity, the producer's own waits are the gate.
-    # Signature mirrors asyncio.sleep(delay, result) — the signature-drift
+    # Signature mirrors asyncio.sleep(delay, result) - the signature-drift
     # guard (test_double_signature_drift.py) fails narrower doubles.
     sleeps: list[tuple[object, float]] = []
     real_sleep = asyncio.sleep
@@ -222,13 +222,13 @@ async def test_slot_release_wakes_the_saturated_producer_without_a_poll_sleep(
         )
 
         assert backend.dispatch_calls[0] - released_at < _PROMPT_WAKE_BOUND_S, (
-            "the slot-release event must wake the producer promptly — a "
+            "the slot-release event must wake the producer promptly - a "
             "producer still waiting out a poll interval after a slot freed "
             "is the latency this seam exists to remove"
         )
         producer_sleeps = [duration for caller, duration in sleeps if caller is task]
         assert producer_sleeps == [], (
-            f"the saturated producer slept {producer_sleeps} — the slot-release "
+            f"the saturated producer slept {producer_sleeps} - the slot-release "
             "wake is not working; the producer is back to timer-polling while "
             "consumers wait for the next claim"
         )
@@ -245,7 +245,7 @@ async def test_slot_release_wakes_the_saturated_producer_without_a_poll_sleep(
 async def test_saturated_producer_still_notices_stop_within_the_fallback_bound() -> None:
     """The saturation wait is bounded, not bare: with no consumer ever
     setting the event, a stop must still be noticed within the fallback
-    interval — a bare ``event.wait()`` parks the producer until a
+    interval - a bare ``event.wait()`` parks the producer until a
     consumer acts and the drain path stalls."""
     backend = _RecordingBackend()
     deps = _producer_deps(poll_interval=5.0, maxsize=1)
@@ -277,7 +277,7 @@ async def test_saturated_producer_still_notices_stop_within_the_fallback_bound()
 
 async def test_di_consumer_loop_signals_slot_release_when_it_takes_a_job() -> None:
     """The production consumer loop sets the slot-freed event at its
-    get() — driven through the actor-not-found branch, which exercises
+    get() - driven through the actor-not-found branch, which exercises
     the loop's full race/get/processing shape with no DI scaffolding:
     every iteration passes the release point regardless of how the job
     ends."""
@@ -297,7 +297,7 @@ async def test_di_consumer_loop_signals_slot_release_when_it_takes_a_job() -> No
             attempt: int | None = None,
         ) -> str:
             snoozed.append(job_id)
-            shutdown_event.set()  # one job is enough — exit after it
+            shutdown_event.set()  # one job is enough - exit after it
             return "scheduled"
 
     job = make_job_row(status="pending")
@@ -335,7 +335,7 @@ async def test_di_consumer_loop_signals_slot_release_when_it_takes_a_job() -> No
 
     assert snoozed == [job.id], "the loop must have processed the job it took"
     assert slot_freed.is_set(), (
-        "the consumer loop did not signal the slot release at its get() — "
+        "the consumer loop did not signal the slot release at its get() - "
         "a saturated producer polls on the fallback cadence instead of "
         "claiming the moment this loop freed a slot"
     )
@@ -397,7 +397,7 @@ async def test_consumer_loop_stub_signals_slot_release_when_it_takes_a_job() -> 
 
 def test_jittered_poll_interval_stays_within_the_jitter_band() -> None:
     """Every draw stays inside ±_POLL_JITTER_FRACTION of the configured
-    interval — jitter spreads the fleet, it never lengthens or shortens
+    interval - jitter spreads the fleet, it never lengthens or shortens
     the cadence beyond the band."""
     rng = random.Random(1234)
     interval = 5.0
@@ -412,7 +412,7 @@ def test_same_settings_different_producers_draw_different_waits() -> None:
     """Two producers with identical settings draw different wait
     sequences: each carries its own RNG (seeded from the OS entropy pool
     in production), so an idle fleet dephases instead of ticking in
-    unison. Seeded RNGs make the pin deterministic — fixed seeds, fixed
+    unison. Seeded RNGs make the pin deterministic - fixed seeds, fixed
     (distinct) sequences."""
     interval = 5.0
     lo = interval * (1.0 - _POLL_JITTER_FRACTION) - _EPS
@@ -423,7 +423,7 @@ def test_same_settings_different_producers_draw_different_waits() -> None:
 
     assert waits_a != waits_b, (
         "two producers with the same settings produced identical wait "
-        "sequences — the fleet polls in lockstep and any transient event "
+        "sequences - the fleet polls in lockstep and any transient event "
         "re-synchronizes it into periodic DB load spikes"
     )
     assert all(lo <= w <= hi for w in waits_a + waits_b)
@@ -446,7 +446,7 @@ async def test_producer_loop_poll_waits_are_jittered_not_fixed(
     real_sleep = asyncio.sleep
 
     async def _recording_sleep(delay: float, result: object = None) -> object:
-        # Signature mirrors asyncio.sleep(delay, result) — the
+        # Signature mirrors asyncio.sleep(delay, result) - the
         # signature-drift guard fails narrower doubles. Records, then
         # yields once without sleeping the delay so the producer keeps
         # cycling and this test's await still returns.
@@ -476,7 +476,7 @@ async def test_producer_loop_poll_waits_are_jittered_not_fixed(
         f"band around {poll_interval}s"
     )
     assert len(set(sleeps)) > 1, (
-        f"every poll wait was the same value {sleeps[0]} — the fallback poll "
+        f"every poll wait was the same value {sleeps[0]} - the fallback poll "
         "lost its jitter and an idle fleet ticks in lockstep"
     )
 

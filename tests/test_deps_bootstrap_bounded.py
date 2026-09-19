@@ -3,23 +3,23 @@
 
 The notify seam is already bounded (``tests/test_notify_bootstrap_bounded.py``).
 This file pins the remaining bootstrap opens that await a caller-supplied
-callable before any watchdog is armed — the leader connection factory, the
-redis client factory, and the role pool factories — plus the bare LISTEN
+callable before any watchdog is armed - the leader connection factory, the
+redis client factory, and the role pool factories - plus the bare LISTEN
 execute on ``reload_credentials``' no-listener fallback path. Every one of
 them runs where no detector can see a hang, so each must complete or raise
 within the configured bound instead of parking worker startup (or a SIGHUP
 reload) forever. The bounds are the SAME settings the already-bounded sibling
-paths use — ``reload_factory_timeout`` for factory calls (the notify factory
+paths use - ``reload_factory_timeout`` for factory calls (the notify factory
 open, the slot-pool open, the reload path, the notify reconnect loop) and
 ``notify_listener_setup_timeout`` for LISTEN executes (the bootstrap open,
-the listener setup, the reconnect loop) — not second mechanisms.
+the listener setup, the reconnect loop) - not second mechanisms.
 
 Docker-free: hand-rolled fakes wired through the REAL ``open_worker_deps`` /
 ``reload_credentials`` via ``WorkerConnections`` factories (asyncpg types are
-C-extensions — no MagicMock for pool/conn). Fake conventions mirror
+C-extensions - no MagicMock for pool/conn). Fake conventions mirror
 ``tests/test_notify_bootstrap_bounded.py``.
 
-No ``pytestmark`` — must run under ``pytest -m "not integration"``.
+No ``pytestmark`` - must run under ``pytest -m "not integration"``.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ from taskq.worker.deps import WorkerDeps, open_worker_deps, reload_credentials
 # below: an open that applies them raises within ~0.5s, while an open that
 # does not parks forever and the TEST budget is what fires.
 _PROD_BOUND_SECS = "0.5"
-# 10x the configured production bound — generous. This budget firing is
+# 10x the configured production bound - generous. This budget firing is
 # the red result: production never bounded the call on its own.
 _TEST_BUDGET_SECS = 5.0
 
@@ -173,9 +173,9 @@ def _all_ok_except(**overrides: Any) -> WorkerConnections:
 async def test_bootstrap_leader_factory_call_is_bounded() -> None:
     """The FIRST leader factory() call during the bootstrap open completes
     or raises within the configured bound. A credential provider that
-    accepts the call and never returns must fail the open — the notify
+    accepts the call and never returns must fail the open - the notify
     seam's identical factory call is already bounded with
-    reload_factory_timeout — not park worker startup forever before any
+    reload_factory_timeout - not park worker startup forever before any
     watchdog is armed."""
     settings = _make_settings()
     factory_entered = asyncio.Event()
@@ -218,8 +218,8 @@ async def test_bootstrap_leader_factory_call_is_bounded() -> None:
 
 async def test_bootstrap_redis_factory_call_is_bounded() -> None:
     """The redis client factory() call during the bootstrap open completes
-    or raises within the configured bound — the same reload_factory_timeout
-    treatment as the notify and leader factories — not park worker startup
+    or raises within the configured bound - the same reload_factory_timeout
+    treatment as the notify and leader factories - not park worker startup
     forever before any watchdog is armed."""
     settings = _make_settings()
     factory_entered = asyncio.Event()
@@ -257,8 +257,8 @@ async def test_bootstrap_redis_factory_call_is_bounded() -> None:
 
 async def test_bootstrap_pool_factory_call_is_bounded() -> None:
     """A user-supplied role pool factory() call during the bootstrap open
-    completes or raises within the configured bound — the same
-    reload_factory_timeout treatment the slot-pool open already applies —
+    completes or raises within the configured bound - the same
+    reload_factory_timeout treatment the slot-pool open already applies -
     not park worker startup forever. (The DSN fallback needs none of this:
     asyncpg's own connect timeout bounds create_pool.)"""
     settings = _make_settings()
@@ -301,7 +301,7 @@ async def test_bootstrap_pool_factory_call_is_bounded() -> None:
 async def test_reload_no_listener_listen_execute_is_bounded() -> None:
     """On the no-listener fallback path (listener not started / already
     stopped), the LISTEN execute on the freshly built notify conn completes
-    or raises within notify_listener_setup_timeout — the same bound the
+    or raises within notify_listener_setup_timeout - the same bound the
     bootstrap open and the reconnect loop apply to the identical execute.
     A conn that completes the factory handshake and then black-holes on
     LISTEN must be reported as a failed resource, not park the reload

@@ -1,4 +1,4 @@
-"""Batch enqueue from client e2e — enqueue_batch with explicit batch_id.
+"""Batch enqueue from client e2e - enqueue_batch with explicit batch_id.
 
 Scenario:
 client-side ``enqueue_batch`` with an explicit ``batch_id`` UUID; all jobs

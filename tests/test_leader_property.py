@@ -1,6 +1,6 @@
 """Property tests for leader invariants ().
 
-Single-leader invariant — across N pods with random startup/shutdown
+Single-leader invariant - across N pods with random startup/shutdown
   events, exactly 0 or 1 leader at a time.
 isolate_self vs sweep_expired_locks conditioned equivalence.
 """
@@ -189,7 +189,7 @@ def _scheduled_at_match(row_a: object, row_b: object, expected_delta: timedelta)
     rows, ``scheduled_at`` is unchanged, so an exact match is expected.
     """
     sa: datetime | None = row_a["scheduled_at"]  # type: ignore[index] # Why: asyncpg.Record supports dict-style access but pyright doesn't see it.
-    sb: datetime | None = row_b["scheduled_at"]  # type: ignore[index] # Why: same — asyncpg.Record dict-like access.
+    sb: datetime | None = row_b["scheduled_at"]  # type: ignore[index] # Why: same - asyncpg.Record dict-like access.
     status: str = row_a["status"]  # type: ignore[index] # Why: same.
     if status == "pending":
         return (
@@ -199,7 +199,7 @@ def _scheduled_at_match(row_a: object, row_b: object, expected_delta: timedelta)
         )
     return bool(sa == sb)
     sa: datetime | None = row_a["scheduled_at"]  # type: ignore[index] # Why: asyncpg.Record supports dict-style access but pyright doesn't see it.
-    sb: datetime | None = row_b["scheduled_at"]  # type: ignore[index] # Why: same — asyncpg.Record dict-like access.
+    sb: datetime | None = row_b["scheduled_at"]  # type: ignore[index] # Why: same - asyncpg.Record dict-like access.
     status: str = row_a["status"]  # type: ignore[index] # Why: same.
     if status == "pending":
         return sa is not None and sb is not None and abs(sa - sb) < _CROSS_STATEMENT_WINDOW
@@ -218,8 +218,8 @@ _sweep_tuple_strategy = st.tuples(
 ).filter(lambda t: t[0] < t[1])
 
 # Margin folded into the deep-expiry boundary on both sides when classifying
-# a draw. It absorbs app-to-database clock skew — the session pg_container
-# fixture reports divergence beyond 0.25s, so 1s is headroom — keeping the
+# a draw. It absorbs app-to-database clock skew - the session pg_container
+# fixture reports divergence beyond 0.25s, so 1s is headroom - keeping the
 # deterministic classification bands clear of the sweep's own decision
 # boundary (see test_property_sweep_equivalence).
 _CLASSIFY_SKEW_MARGIN = timedelta(seconds=1)
@@ -309,13 +309,13 @@ async def test_property_sweep_equivalence(
     to the sweep-to-read latency: under a parallel ``-n`` run contending on
     the shared PG container, seconds pass between the sweep's decision and
     the reading, and a draw near the boundary flips the classification
-    against the sweep's actual (correct) decision — a load flake, not a
+    against the sweep's actual (correct) decision - a load flake, not a
     regression. Instead the sweep is bracketed with server-clock readings
     taken immediately before and after it: a lock deep before the sweep
     started is deep for the sweep too (its clock is only later), and a lock
     not deep after the sweep finished was not deep for it either, both
-    modulo _CLASSIFY_SKEW_MARGIN. Draws between those two certainties — a
-    band as wide as the sweep's own duration plus the margin — are
+    modulo _CLASSIFY_SKEW_MARGIN. Draws between those two certainties - a
+    band as wide as the sweep's own duration plus the margin - are
     genuinely underdetermined from outside, and the product contract allows
     either sweep outcome there, so that band asserts the disjunction of the
     legal end states.
@@ -367,7 +367,7 @@ async def test_property_sweep_equivalence(
                 )
 
             isolate_sql = _ISOLATE_JOB_SQL_TEMPLATE.format(schema=schema)
-            # The reclaim delay's effective-cap ceiling — both statements
+            # The reclaim delay's effective-cap ceiling - both statements
             # bind the same operator knob so the equivalence comparison is
             # between the two paths, not between two ceilings.
             await conn.execute(
@@ -395,8 +395,8 @@ async def test_property_sweep_equivalence(
             assert row_b is not None
 
             # Each row's re-pend delay is derived from its own (id,
-            # attempt) — RetryPolicy()'s field defaults, which the
-            # migration's retry-curve column defaults reproduce verbatim —
+            # attempt) - RetryPolicy()'s field defaults, which the
+            # migration's retry-curve column defaults reproduce verbatim -
             # so the two rows' stamped instants differ by exactly the
             # delta of their derived delays, plus cross-statement clock
             # drift. The comparison subtracts the derived delta (the twin

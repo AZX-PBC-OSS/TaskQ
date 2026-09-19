@@ -2,7 +2,7 @@
 
 1. Explicit ``rate_limit_registry=`` argument wins.
 2. A DI *value* provider wins over the singleton.
-3. A DI factory/class provider raises TypeError (fail fast — a factory
+3. A DI factory/class provider raises TypeError (fail fast - a factory
    would split-brain bootstrap vs. LOOP-scope dispatch resolution); a value
    provider at a non-LOOP scope raises TypeError for the same reason
    (dispatch resolves from the LOOP-scope cache only).
@@ -44,7 +44,7 @@ def test_explicit_argument_wins_over_singleton() -> None:
 
 def test_explicit_arg_plus_di_provider_raises_typeerror() -> None:
     """Co-presence is ambiguous: bootstrap would use the explicit instance
-    while LOOP-scope dispatch resolved the DI one — fail fast."""
+    while LOOP-scope dispatch resolved the DI one - fail fast."""
     explicit = RateLimitRegistry()
     di = ProviderRegistry()
     di.register_value(RateLimitRegistry, Scope.LOOP, RateLimitRegistry())
@@ -85,7 +85,7 @@ def test_di_class_provider_raises_typeerror() -> None:
 def test_di_value_provider_non_loop_scope_raises_typeerror(scope: Scope) -> None:
     """Scope has the same split-brain failure mode as kind: dispatch reads
     the LOOP-scope cache only (dispatch.py), so a non-LOOP value provider
-    bootstraps against one instance while dispatch finds none — silently
+    bootstraps against one instance while dispatch finds none - silently
     disabling rate-limit acquisition. Fail fast, same as the kind guard."""
     di = ProviderRegistry()
     di.register_value(RateLimitRegistry, scope, RateLimitRegistry())
@@ -135,7 +135,7 @@ async def test_main_raises_typeerror_for_process_scope_provider_before_opening_p
 async def test_two_actors_same_name_different_config_raises_valueerror() -> None:
     """Two actors declaring same-named TokenBuckets with different configs:
     the collection pass's register() raises ValueError at bootstrap (fail
-    fast, before open_worker_deps — no PG needed)."""
+    fast, before open_worker_deps - no PG needed)."""
     from taskq.settings import WorkerSettings
     from taskq.worker.run import _main
 
@@ -169,7 +169,7 @@ async def test_same_instance_on_two_actors_idempotent_and_counts_declarations() 
     registrations).
 
     _main proceeds past the collection pass into open_worker_deps, which
-    fails on the unroutable DSN — that later failure must not surface as a
+    fails on the unroutable DSN - that later failure must not surface as a
     ValueError (the pass itself succeeded).
     """
     from taskq.settings import WorkerSettings
@@ -200,7 +200,7 @@ async def test_same_instance_on_two_actors_idempotent_and_counts_declarations() 
         except Exception as exc:
             pool_error = exc
 
-    # (1) The collection pass did NOT raise ValueError — _main failed
+    # (1) The collection pass did NOT raise ValueError - _main failed
     # later, at open_worker_deps on the unroutable DSN.
     assert pool_error is not None
     assert not isinstance(pool_error, ValueError)
@@ -220,7 +220,7 @@ async def test_same_instance_on_two_actors_idempotent_and_counts_declarations() 
 async def test_actor_declared_queue_cap_prefix_name_raises_valueerror() -> None:
     """An actor declaring a ConcurrencyReservation whose name starts with
     the reserved queue-cap prefix: the collection pass's register() raises
-    ValueError at bootstrap — reserved names must go through
+    ValueError at bootstrap - reserved names must go through
     register_queue_cap_reservation(), never actor declarations."""
     from taskq.settings import WorkerSettings
     from taskq.worker.run import _main

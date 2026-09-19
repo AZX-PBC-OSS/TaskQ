@@ -4,7 +4,7 @@
 most ``batch_size`` overdue ``pending``/``scheduled`` rows per call, in
 one short transaction: a LIMIT-ed ``FOR UPDATE SKIP LOCKED`` driving
 UPDATE, one batched ``job_attempts`` INSERT, one batched ``job_events``
-INSERT, and an aggregate (not per-row) OTel metric emission — with a
+INSERT, and an aggregate (not per-row) OTel metric emission - with a
 server-side ``statement_timeout`` over the whole batch.  Repeated calls
 drain the eligible backlog one committed batch at a time.
 
@@ -23,7 +23,7 @@ not an error --
     error raised anywhere"
 
 This sweep is exactly the writer that guarantee assumes away, so both of
-its boundedness properties are load-bearing:
+its boundedness properties are critical:
 
 1. **Statements bounded** -- the per-row awaited round trips collapse to a
    constant number of statements per sweep call (a batched ``unnest`` over
@@ -41,7 +41,7 @@ whereas the seconds are RTT-dependent and would be flaky.
 
 Layer 2 pins the observable behaviour the bounding must not change. Sweep 2
 writes genuinely **per-row-distinct** values -- ``started_at``, ``attempt``,
-``duration_ms``, and critically ``prev_status``, which is honestly two-valued
+``duration_ms``, and critically ``prev_status``, which is genuinely two-valued
 because the driving CTE filters ``status IN ('pending','scheduled')`` and
 carries the pre-UPDATE value out as ``snap.prev_status``. A careless rewrite
 that batches the event INSERT over a bare ``uuid[]`` and hardcodes a single
@@ -176,7 +176,7 @@ async def _seed(
 
 
 # ══════════════════════════════════════════════════════════════════════
-# LAYER 1 — the boundedness contract these tests enforce.
+# LAYER 1 - the boundedness contract these tests enforce.
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -211,13 +211,13 @@ async def test_sweep_issues_a_bounded_number_of_statements(
     # fix) while still being far below 2N.
     assert counting.attempt_inserts <= 2, (
         f"expected a bounded number of job_attempts INSERTs for {_SWEPT} swept "
-        f"jobs, got {counting.attempt_inserts} — the per-row loop at "
+        f"jobs, got {counting.attempt_inserts} - the per-row loop at "
         "_sweeps.py:419 is still there, taking one awaited round trip per row "
         "inside the transaction holding every swept row's lock"
     )
     assert counting.event_inserts <= 2, (
         f"expected a bounded number of job_events INSERTs for {_SWEPT} swept "
-        f"jobs, got {counting.event_inserts} — the per-row loop at "
+        f"jobs, got {counting.event_inserts} - the per-row loop at "
         "_sweeps.py:438 is still there. job_events is the table whose "
         "INSERT-to-COMMIT span RECLAIM_EVENT_VISIBILITY_DELAY "
         f"({RECLAIM_EVENT_VISIBILITY_DELAY.total_seconds():.0f}s) bounds; "
@@ -261,7 +261,7 @@ async def test_statement_count_does_not_grow_with_the_backlog(
 
     assert large.total_writes == small.total_writes, (
         f"sweeping {_SWEPT * 2} rows took {large.total_writes} statements vs "
-        f"{small.total_writes} for {_SWEPT} rows — transaction hold time scales "
+        f"{small.total_writes} for {_SWEPT} rows - transaction hold time scales "
         "with the backlog, which is precisely the trigger "
         "RECLAIM_EVENT_VISIBILITY_DELAY's docstring names ('an abnormally "
         "large batch inserted in one transaction')"
@@ -370,7 +370,7 @@ async def test_capped_calls_drain_the_whole_backlog(
 
 
 # ══════════════════════════════════════════════════════════════════════
-# LAYER 2 — CORRECTNESS PINNING. The bounded sweep rewrites SQL that
+# LAYER 2 - CORRECTNESS PINNING. The bounded sweep rewrites SQL that
 # mutates job state, so every observable effect of that SQL is nailed
 # down here.
 # ══════════════════════════════════════════════════════════════════════
@@ -380,7 +380,7 @@ async def test_pins_terminal_job_state_of_every_swept_row(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """LAYER 2 — pins the behaviour the bounded sweep must preserve.
+    """LAYER 2 - pins the behaviour the bounded sweep must preserve.
 
     Every swept job lands ``status='failed'`` with
     ``error_class='DeadlineExceeded'``, the exact ``error_message``
@@ -422,7 +422,7 @@ async def test_pins_terminal_job_state_of_every_swept_row(
         f'SELECT count(DISTINCT finished_at) FROM "{schema}".jobs'  # noqa: S608  # Why: schema is a test-fixture identifier.
     )
     assert distinct_finished > 1, (
-        "jobs.finished_at collapsed to a single value across the batch — that is "
+        "jobs.finished_at collapsed to a single value across the batch - that is "
         "transaction-start now(), not the per-row clock_timestamp() the sweep "
         "module docstring requires"
     )
@@ -432,7 +432,7 @@ async def test_pins_one_job_attempts_row_per_swept_job(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """LAYER 2 — pins the behaviour the bounded sweep must preserve.
+    """LAYER 2 - pins the behaviour the bounded sweep must preserve.
 
     Exactly one ``job_attempts`` row per swept job, with the shape
     ``_SWEEP_2_ATTEMPTS_BATCH_SQL`` (:211-215) writes today: ``outcome='failed'``,
@@ -476,7 +476,7 @@ async def test_pins_one_job_attempts_row_per_swept_job(
         assert att["finished_at"] is not None
         assert att["attempt"] == expected_attempt[att["job_id"]], (
             f"job {att['job_id']} recorded attempt {att['attempt']}, expected "
-            f"{expected_attempt[att['job_id']]} — per-row attempt was not "
+            f"{expected_attempt[att['job_id']]} - per-row attempt was not "
             "carried through"
         )
 
@@ -487,7 +487,7 @@ async def test_pins_one_job_attempts_row_per_swept_job(
         f'SELECT count(DISTINCT started_at) FROM "{schema}".job_attempts'  # noqa: S608  # Why: schema is a test-fixture identifier.
     )
     assert distinct_started > 1, (
-        "job_attempts.started_at collapsed to one value — the COALESCE's "
+        "job_attempts.started_at collapsed to one value - the COALESCE's "
         "clock_timestamp() is no longer evaluated per row"
     )
 
@@ -496,7 +496,7 @@ async def test_pins_event_from_state_matches_each_rows_actual_prior_status(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """LAYER 2 — pins the behaviour the bounded sweep must preserve.
+    """LAYER 2 - pins the behaviour the bounded sweep must preserve.
 
     **This is the invariant a careless multi-column-unnest rewrite would
     break.** ``_SWEEP_2_SQL``'s CTE filters ``status IN ('pending','scheduled')``
@@ -538,7 +538,7 @@ async def test_pins_event_from_state_matches_each_rows_actual_prior_status(
         want = expected_from[ev["job_id"]]
         assert detail["from_state"] == want, (
             f"job {ev['job_id']} was {want!r} before the sweep but its event "
-            f"records from_state={detail['from_state']!r} — per-row prev_status "
+            f"records from_state={detail['from_state']!r} - per-row prev_status "
             "was lost"
         )
         seen_from.add(detail["from_state"])
@@ -553,7 +553,7 @@ async def test_pins_event_occurred_at_is_per_row_and_co_monotonic_with_id(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """LAYER 2 — pins the behaviour the bounded sweep must preserve.
+    """LAYER 2 - pins the behaviour the bounded sweep must preserve.
 
     ``job_events.occurred_at`` (``clock_timestamp()``) and ``job_events.id``
     (bigserial) must stay co-monotonic: whichever row was inserted first has
@@ -589,14 +589,14 @@ async def test_pins_event_occurred_at_is_per_row_and_co_monotonic_with_id(
         if rows[i]["occurred_at"] < rows[i - 1]["occurred_at"]
     ]
     assert not inversions, (
-        f"job_events.occurred_at is not co-monotonic with id: {inversions[:3]} — "
+        f"job_events.occurred_at is not co-monotonic with id: {inversions[:3]} - "
         "poll_reclaim_events' trailing watermark orders on this and would "
         "silently skip the inverted rows"
     )
 
     distinct = len({r["occurred_at"] for r in rows})
     assert distinct > 1, (
-        f"all {len(rows)} job_events rows share one occurred_at — that is "
+        f"all {len(rows)} job_events rows share one occurred_at - that is "
         "transaction-start now(), not the per-row clock_timestamp() "
         "INSERT_EVENT_SQL specifies"
     )
@@ -606,7 +606,7 @@ async def test_pins_non_matching_rows_are_untouched(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """LAYER 2 — pins the behaviour the bounded sweep must preserve.
+    """LAYER 2 - pins the behaviour the bounded sweep must preserve.
 
     Rows outside the predicate must be left exactly as they were: a job whose
     ``schedule_to_close`` is still in the future, a job with no
@@ -689,12 +689,12 @@ async def test_pins_idempotency_of_a_second_sweep(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """LAYER 2 — pins the behaviour the bounded sweep must preserve.
+    """LAYER 2 - pins the behaviour the bounded sweep must preserve.
 
     Re-running the sweep over an already-swept corpus sweeps nothing extra and
     writes no further rows: the swept jobs are now ``failed``, outside the CTE's
     ``status IN ('pending','scheduled')`` predicate. This matters doubly after
-    batching, because ``job_attempts`` is keyed ``(job_id, attempt)`` — a
+    batching, because ``job_attempts`` is keyed ``(job_id, attempt)`` - a
     rewrite that re-selected an already-swept row would raise a unique violation
     inside the leader's sweep loop, where a constraint error is deliberately
     non-transient and would tear the leader down.
@@ -739,11 +739,11 @@ async def test_pins_return_value_equals_rows_actually_swept(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """LAYER 2 — pins the behaviour the bounded sweep must preserve.
+    """LAYER 2 - pins the behaviour the bounded sweep must preserve.
 
     The return value is the count the leader logs and metrics
     (``worker/_leader_sweeps.py``:145-165), so it must equal the number of rows
-    whose state actually changed — not the number of candidates scanned, and not
+    whose state actually changed - not the number of candidates scanned, and not
     a cap. An empty backlog returns 0.
     """
     schema = module_pg_schema.schema_name
@@ -775,7 +775,7 @@ async def test_pins_return_value_equals_rows_actually_swept(
 async def test_pins_rejection_of_an_invalid_schema_identifier(
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """LAYER 2 — pins the behaviour the bounded sweep must preserve.
+    """LAYER 2 - pins the behaviour the bounded sweep must preserve.
 
     The ``_IDENT_RE`` guard at ``_sweeps.py``:391 runs before any SQL is
     formatted. A batching rewrite that moves the ``.format`` calls around must

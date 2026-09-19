@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
     type _Conn = asyncpg.Connection | PoolConnectionProxy
 else:
-    type _Conn = object  # pyright: ignore[reportInvalidTypeForm] # Why: runtime fallback — asyncpg is TYPE_CHECKING-only to avoid transitive import
+    type _Conn = object  # pyright: ignore[reportInvalidTypeForm] # Why: runtime fallback - asyncpg is TYPE_CHECKING-only to avoid transitive import
 
 pytestmark = pytest.mark.integration
 

@@ -1,7 +1,7 @@
 """Red-team attack on duration_ms at DRAIN granularity.
 
 The bounded sweeps compute ``job_attempts.duration_ms`` from the driving
-UPDATE's own ``RETURNING ... clock_timestamp() AS now_ts`` — per row, per
+UPDATE's own ``RETURNING ... clock_timestamp() AS now_ts`` - per row, per
 BATCH.  The existing pins (``test_sweep_expired_locks_bounded.py``'s
 attempt-shape test) bound the value inside ONE batch.  This attack
 drains a backlog across MULTIPLE committed batches with wall-clock
@@ -14,7 +14,7 @@ against THAT batch's statement clock, not the first batch's:
   proving the clock is the statement's, not a stale transaction-start
   or first-batch hoist (a ``now()`` regression pins every row to one
   instant; a hoisted first-batch clock pins every row to the FIRST
-  batch's instant — both fail the spread assertion below).
+  batch's instant - both fail the spread assertion below).
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ _JOBS = 9
 _BATCH = 3
 _STARTED_SECONDS_AGO = 30.0
 # Separation between drain calls: two gaps of 1.1 s put the third batch's
-# clock >= 2.2 s after the first's — far above ladder/round-trip noise,
+# clock >= 2.2 s after the first's - far above ladder/round-trip noise,
 # far below anything the 1750 ms statement_timeout could abort.
 _GAP_SECONDS = 1.1
 
@@ -114,7 +114,7 @@ async def test_each_batchs_rows_are_measured_against_that_batchs_clock(
     durations: list[int] = []
     for row in attempts:
         d = row["duration_ms"]
-        assert d is not None, "started_at is seeded on every row — duration_ms must be computed"
+        assert d is not None, "started_at is seeded on every row - duration_ms must be computed"
         durations.append(d)
     seeded_ms = int(_STARTED_SECONDS_AGO * 1000)
     for d in durations:
@@ -123,10 +123,10 @@ async def test_each_batchs_rows_are_measured_against_that_batchs_clock(
             f"started {_STARTED_SECONDS_AGO} s ago"
         )
 
-    # The load-bearing assertion, at batch granularity: the LAST batch's
+    # The critical assertion, at batch granularity: the LAST batch's
     # rows were measured at least (batches - 1) * GAP later than the
     # FIRST batch's rows.  Per-row comparison inside a batch is not a
-    # stable property — both started_at (seeded per row) and now_ts (the
+    # stable property - both started_at (seeded per row) and now_ts (the
     # driving statement's per-row clock_timestamp()) jitter by
     # microseconds-to-milliseconds under load, which the 2.2 s batch
     # separation dwarfs.
@@ -137,6 +137,6 @@ async def test_each_batchs_rows_are_measured_against_that_batchs_clock(
     assert separation >= min_spread_ms, (
         f"the last batch's durations sit only {separation} ms above the first "
         f"batch's (expected >= {min_spread_ms} from {(_JOBS // _BATCH - 1)} gaps of "
-        f"{_GAP_SECONDS} s) — later batches' rows were measured against an "
+        f"{_GAP_SECONDS} s) - later batches' rows were measured against an "
         "earlier batch's clock, not each batch's own statement clock"
     )

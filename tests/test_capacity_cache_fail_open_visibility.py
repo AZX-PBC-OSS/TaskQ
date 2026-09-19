@@ -117,7 +117,7 @@ async def test_failure_bumps_the_counter_with_the_degradation_mode() -> None:
 
 
 async def test_retry_rate_is_still_bounded_by_the_ttl() -> None:
-    """The stamp-on-failure behaviour is load-bearing: without it a sick
+    """The stamp-on-failure behaviour is critical: without it a sick
     backend gets queried on every enqueue."""
     backend = _Backend()
     backend.fail = True
@@ -146,7 +146,7 @@ def test_counter_still_records_with_telemetry_disabled(
     """Same rule as record_backpressure_error: a safety-critical signal is
     counted even with telemetry off.
 
-    The distinction is real and load-bearing — most TaskQ counters no-op on
+    The distinction is real and critical - most TaskQ counters no-op on
     `_otel_enabled=False`. This one must not, because the condition it reports
     is a silently relaxed backpressure gate. Recorded through the real
     instrument rather than inferred from the function's source text, which

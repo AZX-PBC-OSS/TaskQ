@@ -49,7 +49,7 @@ def test_actor_config_is_frozen_metadata() -> None:
 
 
 def test_metadata_default_fresh_per_instance() -> None:
-    """Each instance gets its own empty dict — no shared-mutable-default bug."""
+    """Each instance gets its own empty dict - no shared-mutable-default bug."""
     a = ActorConfig(actor="a", max_concurrent=1, queue="q")
     b = ActorConfig(actor="b", max_concurrent=2, queue="q")
     a.metadata["tag"] = "x"

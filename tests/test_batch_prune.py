@@ -18,7 +18,7 @@ import pytest
 
 from taskq._ids import new_base62, new_uuid
 from taskq.backend._batch_sql import (
-    _PRUNE_OLD_BATCHES_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: pin the production statement, not a copy — a copy drifts from the SQL that runs.
+    _PRUNE_OLD_BATCHES_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: pin the production statement, not a copy - a copy drifts from the SQL that runs.
     prune_old_batches,
     render_batch_sql,
 )
@@ -145,7 +145,7 @@ def test_prune_old_batches_signature_carries_batch_size() -> None:
     ``batch_size`` (the ``complete_stale_batches`` precedent)."""
     params = inspect.signature(prune_old_batches).parameters
     assert "batch_size" in params, (
-        "prune_old_batches has no batch_size parameter — one call is an "
+        "prune_old_batches has no batch_size parameter - one call is an "
         f"unbounded DELETE again; signature is {inspect.signature(prune_old_batches)}"
     )
 
@@ -156,22 +156,22 @@ def test_prune_old_batches_sql_windows_candidates_with_limit() -> None:
     (a COUNT over the DELETE's RETURNING set)."""
     sql = _PRUNE_OLD_BATCHES_SQL.format(schema="taskq")
     assert "AS MATERIALIZED" in sql, (
-        "the candidate window is unfenced — the planner may inline the "
+        "the candidate window is unfenced - the planner may inline the "
         f"LIMIT-ed CTE into the DELETE and remove more rows than the LIMIT; got: {sql!r}"
     )
     assert "LIMIT $2" in sql, (
-        "the statement carries no parameterized LIMIT — one call is an "
+        "the statement carries no parameterized LIMIT - one call is an "
         f"unbounded DELETE again; got: {sql!r}"
     )
     assert "count(*)::int" in sql, (
-        "the statement must count without materialising ids — rows are "
+        "the statement must count without materialising ids - rows are "
         f"fetched only to be counted; got: {sql!r}"
     )
 
 
 async def test_prune_old_batches_drains_in_bounded_batches() -> None:
     """A 2 500-row eligible set at ``batch_size=1 000`` drains in three
-    bounded calls (full, full, short) and reports the total — windowed
+    bounded calls (full, full, short) and reports the total - windowed
     deletes with one committed statement per batch."""
     conn = _FetchvalScriptConn(counts=[1000, 1000, 500])
     total = await _prune_old_batches_pg(conn, cutoff=_START)
@@ -184,7 +184,7 @@ async def test_prune_old_batches_drains_in_bounded_batches() -> None:
 
 
 async def test_prune_old_batches_stops_on_empty_window() -> None:
-    """An empty first window is one call and zero — no extra round trips."""
+    """An empty first window is one call and zero - no extra round trips."""
     conn = _FetchvalScriptConn(counts=[0])
     total = await _prune_old_batches_pg(conn, cutoff=_START)
     assert total == 0
@@ -206,12 +206,12 @@ async def test_sweep_completes_stale_batch(pg_dsn: str) -> None:
 
         bid = new_uuid()
         await conn.execute(
-            f'INSERT INTO "{schema}".batches (id, queue, expected_size) '  # noqa: S608  # Why: test helper — schema is a unique test-generated constant, not user input
+            f'INSERT INTO "{schema}".batches (id, queue, expected_size) '  # noqa: S608  # Why: test helper - schema is a unique test-generated constant, not user input
             "VALUES ($1, 'default', 1)",
             bid,
         )
         await conn.execute(
-            f'INSERT INTO "{schema}".jobs '  # noqa: S608  # Why: test helper — schema is a unique test-generated constant
+            f'INSERT INTO "{schema}".jobs '  # noqa: S608  # Why: test helper - schema is a unique test-generated constant
             "(id, queue, actor, payload, max_attempts, retry_kind, metadata, status, "
             "priority, attempt, cancel_phase, progress_seq, payload_schema_ver) "
             "VALUES ($1, 'default', 'test_actor', '{}'::jsonb, "

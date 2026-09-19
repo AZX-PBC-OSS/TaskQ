@@ -60,7 +60,7 @@ def _dev_settings(monkeypatch: pytest.MonkeyPatch) -> TaskQSettings:
 
 
 def test_ui_sub_app_registered() -> None:
-    """ui_app is wired into root Typer app — 'taskq ui --help' succeeds."""
+    """ui_app is wired into root Typer app - 'taskq ui --help' succeeds."""
     result = runner.invoke(app, ["ui", "--help"])
     assert result.exit_code == 0, result.stderr
     assert "serve" in plain_cli_output(result.output).lower()
@@ -221,7 +221,7 @@ def test_ui_serve_lifespan_mounts_admin_router(
 
 
 def test_ui_serve_calls_uvicorn_run_with_correct_args(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The real _ui_serve invokes uvicorn.run(app, host, port) — no asyncio.Runner wrapping.
+    """The real _ui_serve invokes uvicorn.run(app, host, port) - no asyncio.Runner wrapping.
 
     Regression for nested-asyncio.run RuntimeError: _ui_serve must be
     synchronous so uvicorn.run() can create its own event loop.
@@ -308,7 +308,7 @@ class _FakeAsyncCM:
     """Generic async context manager yielding a fixed value.
 
     Also awaitable (returns the value), mirroring asyncpg.create_pool's
-    return — the lifespan code can either enter it as a CM or await it.
+    return - the lifespan code can either enter it as a CM or await it.
     """
 
     def __init__(self, value: object) -> None:
@@ -435,7 +435,7 @@ def test_ui_serve_lifespan_creates_pool_and_redirects_root(
 # ── Bounded pool close at lifespan exit ─────────────────────────────────
 #
 # The lifespan entered the pool on the AsyncExitStack (``Pool.__aexit__``
-# → unbounded ``close()``) — a dead PG could wedge UI shutdown. These
+# → unbounded ``close()``) - a dead PG could wedge UI shutdown. These
 # tests pin the bounded-close discipline (asyncio.wait_for + terminate on
 # timeout) applied via ``close_pool_bounded``; the shrink seam is the
 # same module-global monkeypatch convention as
@@ -536,9 +536,9 @@ async def test_ui_serve_lifespan_fast_pool_close_not_terminated(
 # ── Bounded redis close at lifespan exit ────────────────────────────────
 #
 # The lifespan entered the redis client on the AsyncExitStack
-# (``Redis.__aexit__`` → shielded, unbounded ``aclose()``) — a hung broker
+# (``Redis.__aexit__`` → shielded, unbounded ``aclose()``) - a hung broker
 # could wedge UI shutdown. These tests pin the bounded-close discipline
-# (asyncio.wait_for, log-and-continue — Redis has no terminate()) applied
+# (asyncio.wait_for, log-and-continue - Redis has no terminate()) applied
 # via ``close_redis_bounded``, and the preserved eager-initialize
 # semantics of ``Redis.__aenter__``. The shrink seam is the same
 # module-global monkeypatch convention as the pool tests above; the
@@ -551,7 +551,7 @@ async def test_ui_serve_lifespan_bounds_hung_redis_close(
 ) -> None:
     """A hung redis aclose at lifespan exit (hung broker) is bounded: the
     lifespan shutdown logs and continues instead of hanging (no terminate
-    on redis — it has none)."""
+    on redis - it has none)."""
     import structlog
 
     import taskq.cli as cli_mod
@@ -582,7 +582,7 @@ async def test_ui_serve_lifespan_bounds_hung_redis_close(
     assert len(timeout_events) == 1, (
         f"expected 1 redis-teardown-close-timeout log, got {captured!r}"
     )
-    # label= identifies WHICH client hung (review N7) — the UI admin client,
+    # label= identifies WHICH client hung (review N7) - the UI admin client,
     # matching the ui-admin pool label.
     assert timeout_events[0].get("label") == "ui-admin", (
         f"expected label=ui-admin on the timeout event, got {timeout_events[0]!r}"
@@ -634,7 +634,7 @@ async def test_ui_serve_lifespan_redis_aclose_error_does_not_abort_teardown(
 ) -> None:
     """A redis aclose() that raises at lifespan exit does not abort the
     remaining teardown: the bounded close swallows the error and the pool
-    close callback (pushed earlier, so unwound after redis — LIFO) still
+    close callback (pushed earlier, so unwound after redis - LIFO) still
     executes."""
     pool = _FakePool()
     redis_client = _FakeRedisAcloseRaises()
@@ -811,7 +811,7 @@ class _HealthFakePool:
     def acquire(self, *, timeout: float | None = None) -> _HealthFakeAcquire:
         # timeout kwarg: production's readiness probe passes the ping bound
         # through to acquire (worker/health.py's discipline); the fake
-        # mirrors asyncpg's keyword-only signature and ignores the value —
+        # mirrors asyncpg's keyword-only signature and ignores the value -
         # its acquire never blocks.
         return _HealthFakeAcquire()
 
@@ -1104,7 +1104,7 @@ def test_ui_serve_fully_opted_out_in_production(monkeypatch: pytest.MonkeyPatch)
     """Explicit, simultaneous opt-out of all three fail-closed defaults
     (TASKQ_ADMIN_UI_REQUIRE_AUTH=false, TASKQ_PROGRESS_REQUIRE_AUTH=false and
     TASKQ_HEALTH_REQUIRE_TOKEN=false) in a non-dev environment starts cleanly
-    and leaves the whole surface open — admin UI, progress, health, and
+    and leaves the whole surface open - admin UI, progress, health, and
     metrics all reachable without any auth_dependency or health_token
     configured. This is the deliberate "fully unauthenticated, BYO-auth via
     reverse proxy" deployment shape, not an accidental one."""
@@ -1117,7 +1117,7 @@ def test_ui_serve_fully_opted_out_in_production(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("TASKQ_HEALTH_REQUIRE_TOKEN", "false")
     settings = TaskQSettings.load()
     # Empty-or-unset, the None-safe shape the cli's own check uses: an unset
-    # env var can load as None and an empty default is SecretStr("") — and a
+    # env var can load as None and an empty default is SecretStr("") - and a
     # SecretStr is always truthy, so emptiness must be read through unwrap.
     assert not settings.health_token or not settings.health_token.get_secret_value()
     assert settings.sso_backend == "none"

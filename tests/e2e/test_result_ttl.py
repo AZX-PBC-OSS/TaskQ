@@ -1,4 +1,4 @@
-"""Result TTL expiry e2e — result cleared after TTL, job status preserved.
+"""Result TTL expiry e2e - result cleared after TTL, job status preserved.
 
 Scenario:
 actor with ``result_ttl=2 s``; result retrievable immediately after success;
@@ -10,7 +10,7 @@ read of ``jobs.status`` + ``jobs.result``.
 
 Sweep cadence note: ``_sweep_loop`` in ``worker/_leader_sweeps.py`` sleeps
 30 s between iterations, so the test polls for ``result IS NULL`` with
-``poll_until`` (timeout 60 s) instead of a fixed sleep — the sweep that
+``poll_until`` (timeout 60 s) instead of a fixed sleep - the sweep that
 clears the result is a background leader task whose exact timing depends on
 where in the 30 s cycle the result expired.
 
@@ -55,7 +55,7 @@ async def test_result_cleared_after_ttl(
     accommodate the 2 s sweep cycle), ``handle.refresh().result`` is NULL.
 
     (c) Status preserved: a direct SQL read confirms ``jobs.status`` is still
-    ``succeeded`` — the sweep clears only the result columns, not the
+    ``succeeded`` - the sweep clears only the result columns, not the
     terminal status.
     """
     handle = await e2e_client.enqueue(
@@ -92,7 +92,7 @@ async def test_result_cleared_after_ttl(
     row = await handle.refresh()
     assert row.result is None
 
-    # (c) Status is still "succeeded" — the sweep only clears result columns.
+    # (c) Status is still "succeeded" - the sweep only clears result columns.
     job = await e2e_pg_pool.fetchrow(
         f"""
         SELECT status, result

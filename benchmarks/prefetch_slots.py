@@ -1,27 +1,27 @@
-"""Prefetch slot accounting — peak rows locked and sub-ms throughput (#229).
+"""Prefetch slot accounting - peak rows locked and sub-ms throughput.
 
 Measures the producer's claim-sizing change end to end against a real
 Postgres: OLD sizes claims by queue emptiness alone
-(``maxsize - qsize`` — the pre-#229 producer, which locked up to 2x
+(``maxsize - qsize`` - the pre-fix producer, which locked up to 2x
 ``max_concurrency`` rows while every consumer was busy); NEW subtracts
-the active-jobs count (``maxsize - qsize - active`` — the shipped
+the active-jobs count (``maxsize - qsize - active`` - the shipped
 producer, whose behavior is pinned by
 ``tests/test_producer_slot_accounting.py``).
 
-Both sides run the SAME harness — one real ``PostgresBackend``, real
+Both sides run the SAME harness - one real ``PostgresBackend``, real
 ``consumer_loop_stub`` consumers (real terminal writes), one shared
-slot-freed event, the claim cooldown and jitter verbatim — differing
+slot-freed event, the claim cooldown and jitter verbatim - differing
 only in the availability expression, the A6 harness doctrine
 (perf-evidence-dispatch.md: the measurement isolates the one changed
 expression, everything else identical in-process).
 
 Scenarios:
 
-* **fast** — a sub-millisecond actor (the stub sentinel with
+* **fast** - a sub-millisecond actor (the stub sentinel with
   ``stub_work_timeout=0``): the dispatch round trip the old prefetch
   hid is the trade; jobs/second is the number that decides it.
-* **slow** — 3 s jobs (a fleet of long actors): throughput is identical
-  by construction (the queue never added parallelism — only consumers
+* **slow** - 3 s jobs (a fleet of long actors): throughput is identical
+  by construction (the queue never added parallelism - only consumers
   execute), and peak running-rows-locked is the reclaim-exposure and
   head-of-line number: OLD locks 2x the slot count, NEW locks at most
   the slot count.
@@ -114,7 +114,7 @@ async def build_worker(
     pool = await stack.enter_async_context(asyncpg.create_pool(dsn, min_size=4, max_size=16))
     deps = WorkerDeps(
         settings=settings,
-        dispatcher_pool=pool,  # type: ignore[arg-type]  # Why: one shared pool stands in for the three production pools — the split under measurement is the claim-sizing expression, not pool topology (e2e_dispatch.py doctrine).
+        dispatcher_pool=pool,  # type: ignore[arg-type]  # Why: one shared pool stands in for the three production pools - the split under measurement is the claim-sizing expression, not pool topology (e2e_dispatch.py doctrine).
         heartbeat_pool=pool,
         worker_pool=pool,
         notify_conn=None,
@@ -151,7 +151,7 @@ async def replica_producer(
     """
     settings = deps.settings
     poll_interval = 0.05
-    rng = random.Random(11)  # noqa: S311  # Why: timing jitter for the cooldown, never cryptography — the shipped producer's own seeding pattern.
+    rng = random.Random(11)  # noqa: S311  # Why: timing jitter for the cooldown, never cryptography - the shipped producer's own seeding pattern.
     lock_lease_td = timedelta(seconds=settings.lock_lease)
     claim_not_before = 0.0
     while not shutdown_event.is_set():

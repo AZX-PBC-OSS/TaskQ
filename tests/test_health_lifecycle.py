@@ -84,7 +84,7 @@ class _FailingHealthServer:
 
 
 class _UnixCollisionHealthServer:
-    """Fake for the #245 partial start: start() raises the collision type
+    """Fake for the partial start: start() raises the collision type
     a real server raises when a live peer owns the socket path but the TCP
     listener is already up: the server owns something, so stop() must
     still run even though start() raised."""
@@ -127,7 +127,7 @@ def _setup_lifecycle_stubs(
         connections: WorkerConnections | None = None,
     ):
         fake_pool = _FakePool()
-        deps = WorkerDeps(  # type: ignore[call-arg] # Why: WorkerDeps requires a full set of asyncpg pools; lifecycle test only needs the settings field and an is_leader Event — passing class objects as pool stubs avoids spinning up real pools.
+        deps = WorkerDeps(  # type: ignore[call-arg] # Why: WorkerDeps requires a full set of asyncpg pools; lifecycle test only needs the settings field and an is_leader Event - passing class objects as pool stubs avoids spinning up real pools.
             settings=settings,
             dispatcher_pool=fake_pool,  # type: ignore[arg-type]
             heartbeat_pool=fake_pool,  # type: ignore[arg-type]
@@ -253,7 +253,7 @@ async def test_start_failure_propagates_deps_stack_unwinds(
 async def test_unix_collision_warns_and_boots_but_still_stops_the_server(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """#245's bootstrap half: ``HealthUnixBindCollisionError`` means the server
+    """The bootstrap half: ``HealthUnixBindCollisionError`` means the server
     owns the TCP listener it managed to bind, so the boot that continues
     on the strength of that listener must still push the stop callback,
     otherwise the probe port would answer for a dead worker until the

@@ -1,4 +1,4 @@
-"""KeyedRateLimitRef e2e — per-tenant token buckets are independent.
+"""KeyedRateLimitRef e2e - per-tenant token buckets are independent.
 
 Verifies that ``KeyedRateLimitRef`` materializes an independent token
 bucket per key (tenant_id) and that draining one tenant's bucket does not
@@ -94,7 +94,7 @@ async def test_keyed_rate_limit_per_tenant_independence(
         for i in range(_DRAIN_SIZE)
     ]
 
-    # Step 2: wait for drain to complete — bucket is now fully depleted.
+    # Step 2: wait for drain to complete - bucket is now fully depleted.
     await wait_all(drain_handles, timeout=90)
 
     # Step 3: enqueue measured jobs for both tenants back-to-back.
@@ -133,13 +133,13 @@ async def test_keyed_rate_limit_per_tenant_independence(
     a_denied, a_per_job = _denied_count(tenant_a_rows, _TENANT_A)
     assert a_denied >= 1, (
         f"tenant A: {a_denied}/{_MEASURED_SIZE} measured jobs were "
-        f"rate-limit-denied (expected ≥ 1 — drained capacity-3 bucket with "
+        f"rate-limit-denied (expected ≥ 1 - drained capacity-3 bucket with "
         f"1/s refill should deny at least 1 of 2 measured jobs); "
         f"per-job (max_attempts, awaiting): "
         f"{', '.join(f'{j}:{a}/{w}' for j, (a, w) in sorted(a_per_job.items()))}"
     )
 
-    # Step 5: tenant B's jobs face a FRESH capacity-3 bucket — 0 denials.
+    # Step 5: tenant B's jobs face a FRESH capacity-3 bucket - 0 denials.
     # Tenant B's bucket is materialized lazily on first acquisition and
     # starts at full capacity (3 tokens). All 3 jobs should succeed
     # immediately. This proves per-tenant independence: tenant A's drain
@@ -151,7 +151,7 @@ async def test_keyed_rate_limit_per_tenant_independence(
     b_denied, b_per_job = _denied_count(tenant_b_rows, _TENANT_B)
     assert b_denied == 0, (
         f"tenant B: {b_denied}/{_DRAIN_SIZE} jobs were rate-limit-denied "
-        f"(expected 0 — fresh capacity-3 bucket should admit all 3 jobs; "
+        f"(expected 0 - fresh capacity-3 bucket should admit all 3 jobs; "
         f"tenant A's drain must not affect tenant B's bucket); "
         f"per-job (max_attempts, awaiting): "
         f"{', '.join(f'{j}:{a}/{w}' for j, (a, w) in sorted(b_per_job.items()))}"
@@ -166,7 +166,7 @@ async def test_keyed_rate_limit_per_tenant_independence(
     a_effects = await fetch_effects(
         e2e_pg_pool, e2e_schema.schema_name, run_id, kind="tenant_delivered"
     )
-    # detail is a JSONB column — asyncpg returns it as a str unless a codec
+    # detail is a JSONB column - asyncpg returns it as a str unless a codec
     # is registered. Parse it to access the tenant_id field.
     a_job_ids = {
         row["job_id"] for row in a_effects if json.loads(row["detail"])["tenant_id"] == _TENANT_A
@@ -178,7 +178,7 @@ async def test_keyed_rate_limit_per_tenant_independence(
     assert b_job_ids == {h.job_id for h in tenant_b_handles}
 
     # Per-tenant throttling: the denial count (≥ 1, asserted above) is the
-    # primary guard — it proves tenant A's measured jobs faced a depleted
+    # primary guard - it proves tenant A's measured jobs faced a depleted
     # bucket. A spread threshold on only 2 measured jobs with a 1/s refill
     # rate is unreliable (the bucket can fully refill during the
     # wait+enqueue cycle), so we do NOT assert tenant A's spread. Tenant
@@ -193,7 +193,7 @@ async def test_keyed_rate_limit_per_tenant_independence(
         max(r["at"] for r in b_delivered) - min(r["at"] for r in b_delivered)
     ).total_seconds()
     assert b_spread < 0.5, (
-        f"tenant B spread {b_spread:.2f}s ≥ 0.5s — fresh capacity-3 bucket should not pace 3 jobs"
+        f"tenant B spread {b_spread:.2f}s ≥ 0.5s - fresh capacity-3 bucket should not pace 3 jobs"
     )
 
 
@@ -209,7 +209,7 @@ async def test_typed_keyed_rate_limit_with_aliases(
     The payload model uses ``Field(alias="tenantId")`` with
     ``serialize_by_alias=True`` so the stored row carries the wire alias
     ``tenantId`` (not ``tenant_id``). A raw-dict ``key_fn`` would fail with
-    ``KeyError`` / ``AttributeError`` — this test proves the validated
+    ``KeyError`` / ``AttributeError`` - this test proves the validated
     ``BaseModel`` reaches ``key_fn`` at acquire time.
     """
     tenant_a = "gamma"
@@ -247,7 +247,7 @@ async def test_typed_keyed_rate_limit_with_aliases(
         e2e_pg_pool, e2e_schema.schema_name, [h.job_id for h in handles_b]
     )
 
-    # Verify the stored row carries the wire alias — proving the model
+    # Verify the stored row carries the wire alias - proving the model
     # with serialize_by_alias=True stored "tenantId", not "tenant_id"
     for row in a_rows:
         row_payload = json.loads(row["payload"])

@@ -1,4 +1,4 @@
-"""Standalone client script — enqueue jobs from a CLI or one-off script.
+"""Standalone client script - enqueue jobs from a CLI or one-off script.
 
 Demonstrates the pattern for enqueueing jobs outside of a long-running
 application: a script that opens a TaskQ client, enqueues work, waits

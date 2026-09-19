@@ -1,4 +1,4 @@
-"""Batch empty-safety e2e — wait_for_batch raises on empty/wrong batches.
+"""Batch empty-safety e2e - wait_for_batch raises on empty/wrong batches.
 
 Tests:
 1. Wrong batch_id (no jobs, no batches row) → raises ``EmptyBatchError``.

@@ -3,18 +3,18 @@
 
 The detector's entire predicate is ``status IN ('pending','scheduled') AND
 NOT EXISTS (actor_config row)`` (src/taskq/worker/_leader_sweeps.py:1228-1236)
-— it keys on actor_config presence only. Two permanently-undispatchable
+- it keys on actor_config presence only. Two permanently-undispatchable
 strand shapes are invisible to it:
 
 * (i) a pending row WITH actor_config on a queue no worker serves: dispatch's
   candidates lateral annihilates it (``j2.queue = sq.queue_name``,
   src/taskq/backend/_dispatch_sql.py:229), and with schedule_to_close NULL
-  the deadline sweep (sweep 2) cannot fail it either — the row is stranded
+  the deadline sweep (sweep 2) cannot fail it either - the row is stranded
   forever while its actor_config row exists.
 * (ii) the singleton amplifier: a pending singleton blocker whose
   actor_config was deleted blocks every later enqueue for that actor with
   SingletonCollisionError and retry_after=None (no schedule_to_close → no
-  advisory hint; src/taskq/backend/_enqueue.py:550-574) — permanently,
+  advisory hint; src/taskq/backend/_enqueue.py:550-574) - permanently,
   because the blocker itself is stranded by shape (ii)'s own rule.
 
 The contract: every strand shape the fleet can accumulate must be visible to
@@ -81,7 +81,7 @@ def _pool_free_backend(schema: str) -> PostgresBackend:
 
 class _DetectorDeps:
     """Duck-typed WorkerDeps for _stranded_jobs_loop: settings, worker_pool,
-    is_leader, liveness — the only fields the loop body touches."""
+    is_leader, liveness - the only fields the loop body touches."""
 
     def __init__(self, settings: WorkerSettings, pool: asyncpg.Pool) -> None:
         self.settings = settings
@@ -204,7 +204,7 @@ async def test_stranded_detector_sees_both_strand_shapes(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The detector must count BOTH strand shapes. Today it counts only the
-    deleted-actor_config shape — a pending row WITH actor_config on an
+    deleted-actor_config shape - a pending row WITH actor_config on an
     unserved queue is invisible to the gauge."""
     schema = f"torp_{new_base62()}".lower()
     conn = await asyncpg.connect(pg_dsn)
@@ -220,7 +220,7 @@ async def test_stranded_detector_sees_both_strand_shapes(
         assert _SHAPE_I_ACTOR in gauge and _SHAPE_II_ACTOR in gauge, (
             "Contract: the stranded-jobs detector must see every permanently-undispatchable "
             "pending row (or an equivalent signal must alarm on it). Current behavior violates "
-            f"it: the detector published {gauge!r} — shape (i) (a pending row WITH actor_config "
+            f"it: the detector published {gauge!r} - shape (i) (a pending row WITH actor_config "
             f"on queue {_NO_WORKER_QUEUE!r}, which no worker serves: dispatch's lateral "
             "annihilates it via `j2.queue = sq.queue_name`, "
             "src/taskq/backend/_dispatch_sql.py:229, and schedule_to_close NULL keeps the "
@@ -237,7 +237,7 @@ async def test_stranded_detector_sees_both_strand_shapes(
 async def test_stranded_singleton_blocker_refuses_every_enqueue_forever(pg_dsn: str) -> None:
     """Amplifier evidence: a singleton blocker stranded in the no-exit pending
     cell makes every later enqueue for that actor raise SingletonCollisionError
-    with retry_after=None — permanently, because nothing can exit the blocker.
+    with retry_after=None - permanently, because nothing can exit the blocker.
 
     Pins today's permanent refusal: two enqueues, spaced apart, both refused
     with no advisory retry hint (schedule_to_close is NULL, so
@@ -258,7 +258,7 @@ async def test_stranded_singleton_blocker_refuses_every_enqueue_forever(pg_dsn: 
             with pytest.raises(SingletonCollisionError) as excinfo:
                 await backend.enqueue_with_conn(conn, args)
             refusals.append((excinfo.value.blocking_job_id, excinfo.value.retry_after))
-            # Space the attempts: the blocker cannot exit between them — no
+            # Space the attempts: the blocker cannot exit between them - no
             # worker serves its actor (actor_config deleted), the deadline
             # sweep ignores it (schedule_to_close NULL), and it is not running.
             await asyncio.sleep(0.05)
@@ -266,10 +266,10 @@ async def test_stranded_singleton_blocker_refuses_every_enqueue_forever(pg_dsn: 
         assert all(
             blocking == shape_ii_job and retry_after is None for blocking, retry_after in refusals
         ), (
-            "Contract: a singleton refusal must not be permanent — the blocking row must be "
+            "Contract: a singleton refusal must not be permanent - the blocking row must be "
             "exitable, or the refusal must carry a retry hint. Current behavior violates it: "
             f"both enqueue attempts (spaced 50ms apart) were refused with blocking_job_id="
-            f"{shape_ii_job!r} (the stranded blocker) and retry_after=None — the blocker sits "
+            f"{shape_ii_job!r} (the stranded blocker) and retry_after=None - the blocker sits "
             f"in the no-exit pending cell (actor_config deleted, schedule_to_close NULL), so "
             "every enqueue for this actor is refused forever with no advisory hint."
         )
@@ -291,7 +291,7 @@ async def _seed_assignment_routed_strand(conn: asyncpg.Connection, schema: str) 
 
     A re-pended row (``status='pending'`` with ``started_at`` set) is
     routed by its actor's stored assignment, not by the queue label it
-    carries — the label survives only as an audit trail of where the row
+    carries - the label survives only as an audit trail of where the row
     was originally placed. So the row below is claimable by a consumer of
     ``_UNSERVED_ASSIGNMENT_QUEUE`` and by no one else, while its label
     still names a queue the fleet does serve.
@@ -351,7 +351,7 @@ async def test_repended_row_routed_to_an_unserved_queue_is_undispatchable(
     is least equipped to reason about: the row is pending, due, and
     carries a queue label the fleet visibly serves, so every surface that
     reads the label says the work is on a healthy queue. Dispatch does not
-    read the label for such a row — the assignment routes it — so the only
+    read the label for such a row - the assignment routes it - so the only
     consumer that could claim it is the one nobody is running.
 
     The control half of the pin matters as much as the failure half: a
@@ -403,7 +403,7 @@ async def test_stranded_detector_sees_the_assignment_routed_strand(
     stored assignment names a queue no worker serves.
 
     The detector is the fleet's only surface that can decide "no worker
-    anywhere serves this" — a single booting worker cannot, which is why
+    anywhere serves this" - a single booting worker cannot, which is why
     it warns instead of refusing. It answers that question by testing the
     row's queue label against the ``workers`` table. For a re-pended row
     the label is not the routing queue, so the detector asks its question
@@ -432,7 +432,7 @@ async def test_stranded_detector_sees_the_assignment_routed_strand(
             f"published {gauge!r}. The detector tests the row's queue LABEL "
             f"({_SERVED_LABEL_QUEUE!r}, which a live worker does serve) against "
             "the workers table, but a re-pended row is routed by its actor's "
-            "stored assignment — so the one surface that can see a fleet-wide "
+            "stored assignment - so the one surface that can see a fleet-wide "
             "strand reports healthy while the work can never be claimed"
         )
     finally:
@@ -458,12 +458,12 @@ async def test_repend_with_no_actor_config_reports_only_the_config_shape(
     in the config category alone.
 
     Without a config row there is no assignment to route by, so "is the
-    routing queue served" has no meaning for the row — and the row's own
+    routing queue served" has no meaning for the row - and the row's own
     label is never its routing queue once the marker is set. A detector
     that nonetheless evaluates the unserved-queue arm against the missing
     assignment (NULL) reports the row twice: once as the config strand it
     is, and once as an unserved-queue strand naming a label that a live
-    worker provably serves — an operator chasing that event hunts a queue
+    worker provably serves - an operator chasing that event hunts a queue
     problem that does not exist while the real cause (seed the actor's
     config row) goes unnamed.
     """
@@ -484,7 +484,7 @@ async def test_repend_with_no_actor_config_reports_only_the_config_shape(
             _GHOST_LABEL_QUEUE,
         )
         # A live worker serving the row's LABEL queue: the strongest form of
-        # the contrast — even with the label served, the NULL-assignment arm
+        # the contrast - even with the label served, the NULL-assignment arm
         # must not report an unserved queue.
         await conn.execute(
             f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) VALUES ($1, $2, $3, $4)',
@@ -514,7 +514,7 @@ async def test_repend_with_no_actor_config_reports_only_the_config_shape(
         ]
         assert unserved_events == [], (
             "a row stranded for a missing config row must not ALSO be reported as "
-            "an unserved-queue strand — with no config row there is no assignment "
+            "an unserved-queue strand - with no config row there is no assignment "
             f"to test, and its label ({_GHOST_LABEL_QUEUE!r}, served by a live "
             f"worker) is not its routing queue; events={unserved_events!r}"
         )
@@ -529,7 +529,7 @@ async def test_unserved_event_names_the_queue_dispatch_would_route_by(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The queue an unserved-queue warning names must be the queue dispatch
-    would actually route the row by — the queue the detector TESTED.
+    would actually route the row by - the queue the detector TESTED.
 
     Two rows, one per routing class: a producer-placed stray left on a
     retired source queue after its actor moved (label-routed: the label is
@@ -537,7 +537,7 @@ async def test_unserved_event_names_the_queue_dispatch_would_route_by(
     re-pended row whose assignment names a queue nothing serves while its
     label names a served one. Naming anything but the tested queue sends
     the operator to subscribe consumers to a queue that is already served
-    — or to retire one that is not the problem.
+    - or to retire one that is not the problem.
     """
     schema = f"tshp_{new_base62()}".lower()
     conn = await asyncpg.connect(pg_dsn)
@@ -550,7 +550,7 @@ async def test_unserved_event_names_the_queue_dispatch_would_route_by(
             [(_STRAY_ACTOR, _STRAY_SERVED_ASSIGNMENT)],
         )
         # The post-move producer stray: label-routed (never re-pended), so
-        # dispatch serves it by its own label — the retired queue.
+        # dispatch serves it by its own label - the retired queue.
         await conn.execute(
             f'INSERT INTO "{schema}".jobs '
             "(id, actor, queue, payload, max_attempts, retry_kind, status, scheduled_at) "
@@ -579,7 +579,7 @@ async def test_unserved_event_names_the_queue_dispatch_would_route_by(
         stray_event = unserved.get(_STRAY_ACTOR)
         assert stray_event is not None and stray_event.get("queues") == [_STRAY_UNSERVED_LABEL], (
             f"the label-routed stray is dispatched by its own label, so the event "
-            f"must name the unserved label {_STRAY_UNSERVED_LABEL!r} — naming the "
+            f"must name the unserved label {_STRAY_UNSERVED_LABEL!r} - naming the "
             f"actor's assignment {_STRAY_SERVED_ASSIGNMENT!r} (which a live worker "
             f"serves) reports the healthy queue as the problem; event={stray_event!r}"
         )
@@ -589,7 +589,7 @@ async def test_unserved_event_names_the_queue_dispatch_would_route_by(
         ], (
             f"the re-pended row is dispatched by its actor's assignment, so the "
             f"event must name the unserved assignment {_UNSERVED_ASSIGNMENT_QUEUE!r} "
-            f"— naming the label {_SERVED_LABEL_QUEUE!r} (served) reports the "
+            f"- naming the label {_SERVED_LABEL_QUEUE!r} (served) reports the "
             f"healthy queue as the problem; event={repend_event!r}"
         )
     finally:
@@ -668,7 +668,7 @@ async def test_queue_depth_loop_samples_live_workers_per_queue(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """taskq.queue.live_workers counts only workers inside the liveness
-    window, per subscribed queue, from the same tick as the depth — so a
+    window, per subscribed queue, from the same tick as the depth - so a
     queue with depth and no live worker is joinable on ``queue``."""
     from taskq.worker._leader_sweeps import _queue_depth_loop
 

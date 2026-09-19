@@ -38,7 +38,7 @@ async def test_diff_mark_succeeded_clears_lock_bookkeeping(pg_dsn: str) -> None:
     assert_mirror(
         "a terminal success write clears the lock holder and lease "
         "(locked_by_worker = NULL, lock_expires_at = NULL) exactly like PG's "
-        "mark_succeeded SET clause — a succeeded row must not keep matching "
+        "mark_succeeded SET clause - a succeeded row must not keep matching "
         "every locked_by_worker-scoped reader",
         mem,
         pg,
@@ -124,7 +124,7 @@ async def test_diff_mark_failed_or_retry_arms(pg_dsn: str) -> None:
         "the delay as backoff; a sub-floor delay is floored to "
         "MIN_DEFERRAL_INTERVAL and requeues scheduled; a next-retry point "
         "past schedule_to_close fails DeadlineExceeded; no delay fails "
-        "terminal — identical rows, attempts, and events on both backends",
+        "terminal - identical rows, attempts, and events on both backends",
         mem,
         pg,
     )
@@ -188,7 +188,7 @@ async def test_diff_mark_failed_or_retry_ownership_and_missing(pg_dsn: str) -> N
     mem, pg = await run_differential(_failed_or_retry_mismatch, pg_dsn=pg_dsn)
     assert_mirror(
         "mark_failed_or_retry raises WorkerOwnershipMismatch for a "
-        "wrong-worker or non-running row on both backends — and for a job id "
+        "wrong-worker or non-running row on both backends - and for a job id "
         "that was never stored, the mirror must raise the same typed error "
         "PG raises, not a different exception class",
         mem,
@@ -217,7 +217,7 @@ async def test_diff_mark_cancelled_fencing(pg_dsn: str) -> None:
     assert_mirror(
         "mark_cancelled's fencing matches only the running owner: the "
         "cancelled transition clears lock bookkeeping and writes the "
-        "cancelled attempt row — no-ops otherwise, on both backends",
+        "cancelled attempt row - no-ops otherwise, on both backends",
         mem,
         pg,
     )
@@ -252,7 +252,7 @@ async def _snoozed_arms(side: DiffSide) -> None:
         "denied_in_budget",
         await side.mark_snoozed("denied", "w1", 10.0, outcome="reservation_denied"),
     )
-    # Admission denial AT budget (no deadline): still only a deferral —
+    # Admission denial AT budget (no deadline): still only a deferral -
     # the attempt ceiling governs executions, and nothing executed.
     await side.enqueue("denied-dead", scheduled_in=-1.0, max_attempts=1)
     await side.dispatch("w1", ["default"], limit=1)
@@ -268,15 +268,15 @@ async def _snoozed_arms(side: DiffSide) -> None:
 
 async def test_diff_mark_snoozed_arms(pg_dsn: str) -> None:
     """The snooze decision table: the attempt refund, the outcome-keyed
-    counters, and the deadline arm — plus the metadata merge and the
+    counters, and the deadline arm - plus the metadata merge and the
     deferral floor."""
     mem, pg = await run_differential(_snoozed_arms, pg_dsn=pg_dsn)
     assert_mirror(
         "mark_snoozed's arms: 'snoozed' refunds the claim's attempt and "
         "counts snooze_count; a denial refunds identically and counts "
-        "rate_limit_blocked_count — within budget or AT budget alike, "
+        "rate_limit_blocked_count - within budget or AT budget alike, "
         "because a denial is admission control rather than an execution and "
-        "only the job's own schedule_to_close ends it (DeadlineExceeded) — "
+        "only the job's own schedule_to_close ends it (DeadlineExceeded) - "
         "identical on both backends, floors and metadata merges included",
         mem,
         pg,
@@ -293,7 +293,7 @@ async def test_diff_mark_snoozed_arms(pg_dsn: str) -> None:
     assert pg["jobs"]["denied"]["attempt"] == 0
     assert pg["jobs"]["denied"]["rate_limit_blocked_count"] == 1
     # The at-budget denial is the 429 contract's sharpest edge: no terminal
-    # exit, the increment refunded, the denial counted, no error label —
+    # exit, the increment refunded, the denial counted, no error label -
     # MaxAttemptsExceeded would assert the actor ran and failed, which a
     # saturated bucket can never claim.
     assert pg["jobs"]["denied-dead"]["status"] == "scheduled"
@@ -304,7 +304,7 @@ async def test_diff_mark_snoozed_arms(pg_dsn: str) -> None:
 
 
 async def _retry_after_arms(side: DiffSide) -> None:
-    # Consuming RetryAfter: a real execution — attempt stands, attempt row
+    # Consuming RetryAfter: a real execution - attempt stands, attempt row
     # written (outcome snoozed / RetryAfter).
     await side.enqueue("consume", scheduled_in=-1.0, max_attempts=3)
     await side.dispatch("w1", ["default"], limit=1)
@@ -312,7 +312,7 @@ async def _retry_after_arms(side: DiffSide) -> None:
         "consuming",
         await side.mark_retry_after("consume", "w1", 10.0, consume_budget=True),
     )
-    # Non-consuming RetryAfter: deferral — attempt refunded, snooze_count
+    # Non-consuming RetryAfter: deferral - attempt refunded, snooze_count
     # bumped, no attempt/event rows.
     await side.enqueue("defer", scheduled_in=-1.0, max_attempts=3)
     await side.dispatch("w1", ["default"], limit=1)
@@ -344,7 +344,7 @@ async def test_diff_mark_retry_after_arms(pg_dsn: str) -> None:
         "mark_retry_after: a consuming deferral is a real execution (attempt "
         "stands, attempt row written); a non-consuming one refunds the "
         "attempt and counts snooze_count with no attempt/event rows; budget "
-        "exhaustion and deadline arms fail terminal — identically on both "
+        "exhaustion and deadline arms fail terminal - identically on both "
         "backends",
         mem,
         pg,
@@ -371,7 +371,7 @@ async def _retry_job_gates(side: DiffSide) -> None:
     side.record("retry_failed", await side.retry_job("failed"))
     # A failed row carrying a still-pending cancel request: the re-run
     # opens a fresh epoch, so the whole cancel trail must go with the
-    # spent one — PG's SET clause clears cancel_requested_at alongside
+    # spent one - PG's SET clause clears cancel_requested_at alongside
     # cancel_phase (the audit columns the TERMINAL writes deliberately
     # keep become the inherited state a re-pend must not carry).
     await side.plant(
@@ -383,7 +383,7 @@ async def _retry_job_gates(side: DiffSide) -> None:
     )
     side.record("retry_failed_cancel", await side.retry_job("failed-cancel"))
     # An abandoned row IS retryable: a deploy interrupted the job, it did
-    # not fail — the operator re-run contract admits every resting state
+    # not fail - the operator re-run contract admits every resting state
     # (succeeded and abandoned included); only an actively-running or
     # already-queued row is off-limits. Planted directly: the escalation
     # path's event-detail divergence is pinned separately in
@@ -403,27 +403,27 @@ async def _retry_job_gates(side: DiffSide) -> None:
 
 
 async def test_diff_retry_job_status_gates(pg_dsn: str) -> None:
-    """retry_job revives failed/crashed/cancelled/abandoned rows — keeping
+    """retry_job revives failed/crashed/cancelled/abandoned rows - keeping
     attempt monotonic, raising the ceiling, clearing errors, result, and
-    the cancel trail — and refuses only actively-running or already-queued
+    the cancel trail - and refuses only actively-running or already-queued
     rows."""
     mem, pg = await run_differential(_retry_job_gates, pg_dsn=pg_dsn)
     assert_mirror(
         "retry_job admits failed/crashed/cancelled rows AND abandoned ones "
         "(an operator re-run is 'run this again'; only a live attempt is "
-        "off-limits), keeping attempt at its spent value (monotonic — the "
+        "off-limits), keeping attempt at its spent value (monotonic - the "
         "admin-retry precedent) and raising max_attempts to "
         "GREATEST(max_attempts, attempt + 1) so the budget gates open, "
         "clearing errors, result, and the whole cancel trail (cancel_phase "
-        "AND cancel_requested_at — the re-run is a fresh epoch), and "
-        "rescheduling at now; a live pending row refuses — identically on "
+        "AND cancel_requested_at - the re-run is a fresh epoch), and "
+        "rescheduling at now; a live pending row refuses - identically on "
         "both backends",
         mem,
         pg,
     )
     # retry_abandoned is True on both backends: the operator re-run
     # contract admits every resting state including abandoned (a deploy
-    # interrupted the job; it did not fail) — only 'running' (a live
+    # interrupted the job; it did not fail) - only 'running' (a live
     # attempt the re-pend would race) and 'pending'/'scheduled' (already
     # queued) refuse.
     assert pg["records"] == {
@@ -435,7 +435,7 @@ async def test_diff_retry_job_status_gates(pg_dsn: str) -> None:
     assert pg["jobs"]["failed"]["status"] == "pending"
     assert pg["jobs"]["failed"]["attempt"] == 1, (
         "MONOTONIC-ATTEMPT CONTRACT: retry_job must never reset the "
-        "attempt counter — a reset revisits the spent epoch's attempt "
+        "attempt counter - a reset revisits the spent epoch's attempt "
         "numbers and the next attempt-row write collides on "
         "job_attempts_pkey (pinned in tests/test_retry_job_attempt_epoch_pk.py)."
     )
@@ -448,7 +448,7 @@ async def test_diff_retry_job_status_gates(pg_dsn: str) -> None:
     assert pg["jobs"]["failed-cancel"]["cancel_phase"] == 0
     assert pg["jobs"]["failed-cancel"]["cancel_requested_at"] is None, (
         "FRESH-EPOCH CONTRACT: PG's retry_job SET clause clears "
-        "cancel_requested_at alongside cancel_phase — a re-run must not "
+        "cancel_requested_at alongside cancel_phase - a re-run must not "
         "inherit the spent epoch's cancel trail."
     )
     # The abandoned re-run gets the same fresh epoch: re-pended pending,

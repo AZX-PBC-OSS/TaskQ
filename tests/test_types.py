@@ -37,7 +37,7 @@ def test_cancel_result_rejects_bad_status() -> None:
 
 
 def test_cancel_result_frozen() -> None:
-    """CancelResult is frozen — assigning to job_id after construction raises."""
+    """CancelResult is frozen - assigning to job_id after construction raises."""
     result = CancelResult(
         job_id=new_uuid(),
         previous_status="running",

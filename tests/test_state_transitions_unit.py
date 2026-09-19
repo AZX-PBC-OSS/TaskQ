@@ -4,7 +4,7 @@ Each test asserts the post-state via ``backend.get``, the AttemptRow side
 effect via ``backend.get_attempts``, and the EventRow side effect via
 ``backend.get_events``.
 
-PG-specific isolate_self bypass paths are NOT in scope here — they are
+PG-specific isolate_self bypass paths are NOT in scope here - they are
 exercised against PG via the existing isolate_self test patterns.
 """
 
@@ -33,7 +33,7 @@ async def _enqueue_and_dispatch(
     retry_jitter: float | None = None,
 ) -> tuple[JobId, UUID]:
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     if "test_actor" not in backend._actor_configs_meta:  # type: ignore[reportPrivateUsage]  # Why: test-only private access; the established fixture pattern.
         backend.register_actor_config(actor="test_actor")
     args = make_enqueue_args(
@@ -303,7 +303,7 @@ async def test_running_to_scheduled_snooze(
     assert row.status == "scheduled"
     assert row.scheduled_at == _START + timedelta(seconds=30)
     # The refund: a running row dispatched at attempt 1 goes back to its
-    # pre-claim 0 — the snooze is budget-free and unbounded.
+    # pre-claim 0 - the snooze is budget-free and unbounded.
     assert row.attempt == 0
 
     # The row transition is real but writes no event row: the only
@@ -348,7 +348,7 @@ async def test_running_to_scheduled_retry_after_no_consume(
     memory_jobs: InMemoryBackend,
 ) -> None:
     """running → scheduled via mark_retry_after (consume_budget=False): a
-    non-consuming RetryAfter is a deferral — it refunds the claim's
+    non-consuming RetryAfter is a deferral - it refunds the claim's
     attempt increment exactly like a Snooze."""
     job_id, worker_id = await _enqueue_and_dispatch(memory_jobs)
     pre_attempt = (await memory_jobs.get(job_id)).attempt  # type: ignore[union-attr] # Why: just dispatched, row exists
@@ -364,7 +364,7 @@ async def test_running_to_scheduled_retry_after_no_consume(
     # The refund returns the pre-claim value (attempt - 1, floored at 0).
     assert row.attempt == pre_attempt - 1
     # The consume-false deferral is counted on the same row column a
-    # Snooze uses — one counter for all non-consuming deferrals.
+    # Snooze uses - one counter for all non-consuming deferrals.
     assert row.snooze_count == 1
 
 
@@ -427,8 +427,8 @@ async def test_denial_at_spent_budget_reschedules_not_fails(
     backoff until capacity frees, and only its schedule-to-close
     deadline may end it. A queue or rate-limit misconfiguration must not
     be able to kill work that simply never got a slot, so a job whose
-    attempt counter already sits at its ceiling — and which carries no
-    close deadline — is still rescheduled rather than failed with
+    attempt counter already sits at its ceiling - and which carries no
+    close deadline - is still rescheduled rather than failed with
     MaxAttemptsExceeded.
     """
     job_id, worker_id = await _enqueue_and_dispatch(
@@ -482,7 +482,7 @@ async def test_denial_terminal_exit_is_the_deadline(
     Rescheduling a denied job indefinitely is only safe because the
     schedule-to-close deadline still bounds it. When the next admission
     retry would land past that deadline the job fails terminally through
-    the normal deadline path — DeadlineExceeded, the honest cause —
+    the normal deadline path - DeadlineExceeded, the honest cause -
     never through the retry budget.
     """
     deadline = _START + timedelta(seconds=10)
@@ -524,7 +524,7 @@ async def test_running_to_scheduled_transient_retry(
             error_message="transient",
             error_traceback=None,
         ),
-        # The decision is a delay — the backend's own clock (FakeClock at
+        # The decision is a delay - the backend's own clock (FakeClock at
         # _START) derives scheduled_at = now + 30s == next_at.
         retry_delay=next_at - _START,
         attempt=1,
@@ -647,7 +647,7 @@ async def test_running_to_cancelled_cooperative(
     assert row.finished_at is not None
     assert row.cancel_phase == CancelPhase.COOPERATIVE
     assert row.error_class is not None, (
-        "a cooperative cancel wrote no cause — cancel origin is not reconstructable from the row"
+        "a cooperative cancel wrote no cause - cancel origin is not reconstructable from the row"
     )
 
     attempts = await memory_jobs.get_attempts(job_id)
@@ -667,7 +667,7 @@ async def test_running_to_cancelled_forced(
     The two paths mean different things operationally: a cooperative
     cancel is an actor that noticed the request and stopped cleanly, a
     forced one is an actor that had to be interrupted. Telling them
-    apart in the database — not only in logs — is what lets an operator
+    apart in the database - not only in logs - is what lets an operator
     see that actors are ignoring cancellation requests.
     """
     job_id, worker_id = await _enqueue_and_dispatch(memory_jobs)
@@ -688,7 +688,7 @@ async def test_running_to_cancelled_forced(
     assert row.finished_at is not None
     assert row.cancel_phase == CancelPhase.FORCED
     assert row.error_class is not None, (
-        "a forced cancel wrote no cause — cancel origin is not reconstructable from the row"
+        "a forced cancel wrote no cause - cancel origin is not reconstructable from the row"
     )
 
     # The same run through the cooperative path must land a different
@@ -699,7 +699,7 @@ async def test_running_to_cancelled_forced(
     coop_row = await memory_jobs.get(coop_id)
     assert coop_row is not None
     assert coop_row.error_class != row.error_class, (
-        "a forced cancel and a cooperative cancel wrote the same cause — "
+        "a forced cancel and a cooperative cancel wrote the same cause - "
         "the two are indistinguishable from the database"
     )
 
@@ -734,7 +734,7 @@ async def test_running_to_abandoned(
     assert len(attempts) == 1
     assert attempts[0].outcome == "cancelled"
     assert attempts[0].error_class is not None, (
-        "an abandoned job's attempt row wrote no cause — an abandon is "
+        "an abandoned job's attempt row wrote no cause - an abandon is "
         "indistinguishable from a clean cancel in the audit trail"
     )
 
@@ -763,8 +763,8 @@ async def test_running_to_crashed_reclaim(
     row = await memory_jobs.get(job_id)
     assert row is not None
     assert row.status == "crashed"
-    # The crashed terminal arm stamps the row's error fields — the same
-    # self-describing channel every other terminal failure path uses — so
+    # The crashed terminal arm stamps the row's error fields - the same
+    # self-describing channel every other terminal failure path uses - so
     # an operator reads the cause off the row without joining
     # job_attempts. Row and attempt draw from the one _ATTEMPT_MESSAGES
     # map; this is the lease arm's text.

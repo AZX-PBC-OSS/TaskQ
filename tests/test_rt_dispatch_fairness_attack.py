@@ -11,10 +11,10 @@ What was read before choosing the angles
 ``src/taskq/migrations/01.00.00_01_pre_initial.sql:124-131``):
 
 * The per-actor/per-queue seriality semantics TaskQ actually offers are
-  (a) ``identity_key`` — one running job per ``(actor, identity_key)``,
+  (a) ``identity_key`` - one running job per ``(actor, identity_key)``,
   enforced IN SQL by ``DISTINCT ON (actor, identity_key)`` in the
-  ``identity_dedup`` CTE plus the ``running_identities`` exclusion — and
-  (b) ``actor_config.max_concurrent`` — a per-round admission damper enforced
+  ``identity_dedup`` CTE plus the ``running_identities`` exclusion - and
+  (b) ``actor_config.max_concurrent`` - a per-round admission damper enforced
   IN SQL by the ``per_actor_capacity`` residual and the ``eligible``
   ``actor_rank <= max_concurrent - in_flight`` gate. Both use in-SQL
   DISTINCT-like gates to enforce one-at-a-time semantics, so angle 1 attacks
@@ -78,7 +78,7 @@ async def _dispatch(
     """One dispatch batch via the narrowest entry point: the SQL helper directly.
 
     Each call mints a fresh worker id (a separate claimant), but calls run
-    sequentially on one connection, so there is no inter-dispatcher race —
+    sequentially on one connection, so there is no inter-dispatcher race -
     whatever comes back is what a single statement admitted.
     """
     return await dispatch_batch_sql(
@@ -135,7 +135,7 @@ async def _count_by_status(
 
 class TestSerialQueueUpgrade:
     """Angle 1: a single dispatch batch must never hand out two jobs that must
-    serialize — a batch fetch must not upgrade a serial queue to concurrent.
+    serialize - a batch fetch must not upgrade a serial queue to concurrent.
     Both per-actor seriality semantics TaskQ offers are attacked: ``identity_key``
     serialization and ``max_concurrent = 1``."""
 
@@ -146,7 +146,7 @@ class TestSerialQueueUpgrade:
     ) -> None:
         """Five pending jobs sharing one ``(actor, identity_key)``: one batch
         with ``limit=10`` must admit exactly one (the ``identity_dedup``
-        ``DISTINCT ON`` in-SQL enforcement), leaving four pending — a batch
+        ``DISTINCT ON`` in-SQL enforcement), leaving four pending - a batch
         claim that handed out two would run the "serial" identity
         concurrently."""
         schema = module_pg_schema.schema_name
@@ -167,7 +167,7 @@ class TestSerialQueueUpgrade:
 
         pairs = [(row["actor"], row["identity_key"]) for row in rows]
         assert len(pairs) == len(set(pairs)), (
-            f"single batch handed out two jobs for one identity: {pairs} — "
+            f"single batch handed out two jobs for one identity: {pairs} - "
             "a batch must not upgrade a serial identity to concurrent"
         )
         assert len(rows) == 1, (
@@ -184,7 +184,7 @@ class TestSerialQueueUpgrade:
         """An actor with ``max_concurrent = 1`` is a serial queue. Five pending
         jobs, nothing running, one batch with ``limit=10`` must admit exactly
         one (the ``eligible`` ``actor_rank <= max_concurrent - in_flight``
-        gate) — admitting two would run a serial actor concurrently."""
+        gate) - admitting two would run a serial actor concurrently."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         backend = make_backend(settings)
@@ -199,7 +199,7 @@ class TestSerialQueueUpgrade:
         rows = await _dispatch(clean_pg_conn, schema, [_QUEUE], _BATCH_LIMIT)
 
         assert len(rows) == 1, (
-            f"max_concurrent=1 actor admitted {len(rows)} jobs in one batch — "
+            f"max_concurrent=1 actor admitted {len(rows)} jobs in one batch - "
             "a batch must not upgrade a serial actor to concurrent"
         )
         assert await _count_by_status(clean_pg_conn, schema, _CAPPED_ACTOR, "pending") == 4
@@ -207,7 +207,7 @@ class TestSerialQueueUpgrade:
 
 
 class TestCrossActorStarvation:
-    """Angle 2: a flooded actor must not starve a lone actor's job — the
+    """Angle 2: a flooded actor must not starve a lone actor's job - the
     ``pending_rank`` per-actor fairness must defeat naive global FIFO-by-id."""
 
     async def test_flooded_actor_does_not_starve_lone_job(
@@ -217,7 +217,7 @@ class TestCrossActorStarvation:
     ) -> None:
         """Actor A floods the shared queue with 500 pending jobs enqueued
         strictly before B's single job (A sorts ahead on ``(priority,
-        scheduled_at)`` — the order a global FIFO-by-id batch claim would
+        scheduled_at)`` - the order a global FIFO-by-id batch claim would
         serve). Repeated ``limit=10`` dispatch batches, run sequentially via
         the dispatch function directly (deterministic by seed, no timing),
         must surface B's job within 2 batches: B holds ``pending_rank = 1``
@@ -255,15 +255,15 @@ class TestCrossActorStarvation:
                 break
 
         assert first_batch_size == _BATCH_LIMIT, (
-            f"first batch dispatched {first_batch_size}, not a full {_BATCH_LIMIT} — "
+            f"first batch dispatched {first_batch_size}, not a full {_BATCH_LIMIT} - "
             "the test only means something when the batch is full yet still carries B"
         )
         assert found_at is not None, (
             f"lone job starved across 5 batches of {_BATCH_LIMIT} behind "
-            f"{_FLOOD_COUNT} flooded jobs — fairness sampling lost to FIFO-by-id"
+            f"{_FLOOD_COUNT} flooded jobs - fairness sampling lost to FIFO-by-id"
         )
         assert found_at < _STARVATION_BOUND_BATCHES, (
-            f"lone job surfaced only in batch {found_at} — beyond the "
+            f"lone job surfaced only in batch {found_at} - beyond the "
             f"{_STARVATION_BOUND_BATCHES}-batch fairness bound"
         )
         assert await _count_by_status(clean_pg_conn, schema, _LONE_ACTOR, "running") == 1

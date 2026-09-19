@@ -151,7 +151,7 @@ def test_safe_start_span_enabled_creates_real_span(
     assert len(exporter.spans) == 1
 
 
-# ── safe_start_span: — OTel exceptions are caught ────────────────
+# ── safe_start_span: - OTel exceptions are caught ────────────────
 
 
 def test_safe_start_span_catches_tracer_exception(
@@ -281,7 +281,7 @@ def test_record_slot_pool_acquire_failure_fires_on_failure_path(
 ) -> None:
     """The acquire-failure counter fires when the record helper is called
     from the acquire's exception branch, naming the failure class on the
-    ``error_type`` dimension — the per-occurrence job id lives in the log
+    ``error_type`` dimension - the per-occurrence job id lives in the log
     event, never a metric."""
     try:
         raise TimeoutError("simulated acquire timeout")
@@ -302,7 +302,7 @@ def test_record_slot_pool_acquire_failure_disabled() -> None:
 def test_slot_pool_occupancy_gauge_reads_held_connections(
     otel_reader: InMemoryMetricReader,
 ) -> None:
-    """The occupancy gauge reports size minus idle — the in-use count a
+    """The occupancy gauge reports size minus idle - the in-use count a
     saturation-pin diagnosis needs (the acquire-failure counter is silent
     below the cliff)."""
 
@@ -324,7 +324,7 @@ def test_slot_pool_occupancy_gauge_reads_held_connections(
 
 def test_slot_pool_occupancy_gauge_tolerates_a_broken_pool_source() -> None:
     """A source whose accessors raise (a pool teardown closed underneath the
-    module-level source) must produce no observation — a collection read
+    module-level source) must produce no observation - a collection read
     that raises into the SDK's export path breaks every instrument's
     export, not just this gauge's."""
     import asyncpg
@@ -346,10 +346,10 @@ def test_slot_pool_occupancy_gauge_tolerates_a_broken_pool_source() -> None:
 
 
 def test_slot_pool_occupancy_gauge_is_label_free() -> None:
-    """``taskq.worker.slot_pool.connections_in_use`` carries NO dimensions —
+    """``taskq.worker.slot_pool.connections_in_use`` carries NO dimensions -
     a single process-level number. The pool is named in the instrument and
     there is exactly one per worker process; adding a dimension here (the
-    worker_id temptation especially — a fresh UUID per process on
+    worker_id temptation especially - a fresh UUID per process on
     Kubernetes) mints unbounded time series and throttles ingestion for
     every custom metric in the subscription (see
     tests/test_obs_metric_cardinality.py)."""
@@ -378,8 +378,8 @@ def test_slot_pool_occupancy_gauge_is_label_free() -> None:
 def test_record_dispatch_failure_names_the_handled_exception_class(
     otel_reader: InMemoryMetricReader,
 ) -> None:
-    """Called from an except block with no explicit value — the production
-    call shape at every dispatch raise site — the counter's ``error_type``
+    """Called from an except block with no explicit value - the production
+    call shape at every dispatch raise site - the counter's ``error_type``
     is the caught exception's class name."""
     try:
         raise ConnectionResetError("simulated reset mid dispatch query")
@@ -588,14 +588,14 @@ def test_running_lease_expired_gauge_reads_from_cache(otel_reader: InMemoryMetri
     metrics = collect_metrics(otel_reader)
     gauge = next((m for m in metrics if m.name == "taskq.jobs.running_lease_expired"), None)
     assert gauge is not None, (
-        "taskq.jobs.running_lease_expired not emitted — running-with-expired-"
+        "taskq.jobs.running_lease_expired not emitted - running-with-expired-"
         "lease is invisible as a distinct shape without it"
     )
     points = [p for p in gauge.data.data_points if isinstance(p, NumberDataPoint)]
     assert len(points) == 1
     assert points[0].value == 4
     assert not points[0].attributes, (
-        "the gauge must carry no dimensions — the zombie shape is a fleet "
+        "the gauge must carry no dimensions - the zombie shape is a fleet "
         "total, and the per-job truth (locked_by_worker, lock_expires_at) "
         "lives on the row and the admin page, not on a label"
     )
@@ -640,7 +640,7 @@ class _CountingMeter:
 
 
 class _StubCounter:
-    """No-op counter — the pin counts creations, not recordings."""
+    """No-op counter - the pin counts creations, not recordings."""
 
     def add(self, value: int, attributes: dict[str, str] | None = None) -> None:
         pass
@@ -649,10 +649,10 @@ class _StubCounter:
 def test_get_meter_is_memoized() -> None:
     """``get_meter`` must hand back ONE meter object for the process.
 
-    With no SDK installed (the default deployment — taskq never installs
+    With no SDK installed (the default deployment - taskq never installs
     a MeterProvider), ``metrics.get_meter`` mints a fresh ``_ProxyMeter``
     on every call and the proxy provider appends each to a list with no
-    cleanup path, so an uncached accessor grows that list forever — once
+    cleanup path, so an uncached accessor grows that list forever - once
     per lazy-instrument call, which is once per denial, flush failure, and
     drain row-count.
     """
@@ -673,7 +673,7 @@ def test_lazy_recorder_memoizes_its_instrument_per_meter(
     the CURRENT meter.
 
     The lazy recorders resolve their instrument at call time (see
-    ``_lazy_counter``) so a meter swap is always honored — but with no SDK
+    ``_lazy_counter``) so a meter swap is always honored - but with no SDK
     installed, every uncached call minted a fresh proxy counter and
     appended it to the proxy meter's unbounded instruments list, growing
     it on every rate-limit denial, reservation denial, and flush failure
@@ -691,7 +691,7 @@ def test_lazy_recorder_memoizes_its_instrument_per_meter(
 
     assert meter_a.created_counters == ["taskq.reservation.denials"], (
         "each record_reservation_denial call minted a fresh instrument: "
-        f"{meter_a.created_counters} — with no SDK installed (the default "
+        f"{meter_a.created_counters} - with no SDK installed (the default "
         "deployment) every minted proxy counter is appended to a list with "
         "no cleanup path"
     )

@@ -2,7 +2,7 @@
 
 ``_batch_cap_refusals`` (PG) / ``_batch_cap_refusals`` (InMemory)
 (InMemory) refused the ENTIRE enqueue_batch / enqueue_batch_fast call
-when ANY single actor's group exceeded its cap — all-or-nothing across
+when ANY single actor's group exceeded its cap - all-or-nothing across
 actors. A parent enqueuing a mixed-actor sub-batch where ONE child actor
 is capped lost the whole call: nothing enqueued for anyone.
 
@@ -10,11 +10,11 @@ The evolved contract: multi-entrypoint admission routes items with free
 room instead of failing wholesale, and whole-batch atomicity is the
 appropriate model only where no per-actor constraint exists. Thus: an
 over-cap actor's items are refused as a
-group (never partially filled — the single path refuses a capped enqueue
+group (never partially filled - the single path refuses a capped enqueue
 outright, and filling "up to" the cap would admit items whose ordering
 the caller never chose), every other actor's items are admitted, and the
 refusal surfaces AFTER the admitted items are inserted as
-:class:`~taskq.exceptions.BatchMaxPendingExceededError` — the bulk-tier
+:class:`~taskq.exceptions.BatchMaxPendingExceededError` - the bulk-tier
 sibling of :class:`~taskq.exceptions.PartialBatchError`, which is the
 house pattern for partial batch admission (succeeded count + failed
 indices + per-failure exceptions).
@@ -121,7 +121,7 @@ async def test_backend_enqueue_batch_partitions_admission_per_actor() -> None:
 
     err = exc_info.value
     # Attribution: one refusal per over-cap actor, indices into the
-    # caller's list, and the admitted count — everything a targeted
+    # caller's list, and the admitted count - everything a targeted
     # retry of only the refused items needs.
     assert [r.actor for r in err.refusals] == [_capped_ref.name]
     assert err.refusals[0].current_count == 1
@@ -168,7 +168,7 @@ async def test_backend_enqueue_batch_multi_refusal_attribution() -> None:
     test refuses exactly one): ``refusals`` names BOTH, in group order (first
     appearance in the caller's list), each with its own per-actor
     ``refused_indices``, and ``admitted_count`` counts only the healthy
-    actor's items — everything a caller needs to retry several refused
+    actor's items - everything a caller needs to retry several refused
     groups at once."""
     backend = _make_backend()
     await _seed_one_pending(backend, _capped_ref)
@@ -189,7 +189,7 @@ async def test_backend_enqueue_batch_multi_refusal_attribution() -> None:
 
     err = exc_info.value
     # Group order = first appearance: capped (item 1) before capped_b
-    # (item 2) — the order a caller walking refusals alongside
+    # (item 2) - the order a caller walking refusals alongside
     # refused_indices relies on.
     assert [r.actor for r in err.refusals] == [_capped_ref.name, _capped_b_ref.name]
     assert err.refused_indices == {
@@ -202,7 +202,7 @@ async def test_backend_enqueue_batch_multi_refusal_attribution() -> None:
     assert _stored_count(backend, _capped_b_ref.name) == 1
     # Handler-safety rationale, pinned: the docstring's "deliberately not
     # a MaxPendingExceededError subclass" is a contract callers depend on
-    # (handlers for that type assume nothing was enqueued) — and the
+    # (handlers for that type assume nothing was enqueued) - and the
     # shared BackpressureError base still catches it for generic handlers.
     assert not isinstance(err, MaxPendingExceededError)
     assert isinstance(err, BackpressureError)
@@ -213,7 +213,7 @@ async def test_backend_enqueue_batch_refusal_includes_would_dedupe_items() -> No
     refused even when one of them would have deduped for free against a
     stored idempotency pair (the aggregate discount cannot admit PART of
     a group). The stored dedup row must be untouched, and the would-dedupe
-    item's index must appear in refused_indices — a caller retrying only
+    item's index must appear in refused_indices - a caller retrying only
     the refused indices re-sends it, and it dedupes again for free."""
     backend = _make_backend()
     seed = build_enqueue_args(
@@ -251,7 +251,7 @@ async def test_backend_enqueue_batch_refusal_includes_would_dedupe_items() -> No
 async def test_backend_enqueue_batch_discounts_stored_idempotency_pairs() -> None:
     """Pure-retry batches at a full cap are admitted: items whose
     (scope, key) pair is already stored dedupe instead of writing, so
-    the aggregate admission discounts them — parity with the PG tier's
+    the aggregate admission discounts them - parity with the PG tier's
     ON CONFLICT discount. The old in-memory mirror re-checked caps per
     item WITHOUT the discount and refused mid-batch."""
     backend = _make_backend()
@@ -433,14 +433,14 @@ async def test_pg_enqueue_batch_inserts_admitted_items_only() -> None:
     err = exc_info.value
     assert err.refused_indices == {args_list[1].actor: [1]}
     assert err.admitted_count == 2
-    # One aggregated count query for the whole (mixed-actor) batch — the
+    # One aggregated count query for the whole (mixed-actor) batch - the
     # per-actor admission never degrades to one count per actor (the
     # unit-tier pin for the aggregation TI7's integration test used to
     # cover at the client layer).
     count_calls = [c for c in conn.fetch_calls if "GROUP BY actor" in c[0]]
     assert len(count_calls) == 1
     # The INSERT statement ran exactly once and carried only the admitted
-    # items' ids — the refused actor's item never reached the statement.
+    # items' ids - the refused actor's item never reached the statement.
     insert_calls = [c for c in conn.fetch_calls if "INSERT INTO" in c[0]]
     assert len(insert_calls) == 1
     assert list(insert_calls[0][1][0]) == admitted_ids
@@ -479,7 +479,7 @@ async def test_pg_partition_refusal_logs_and_records_per_refused_actor(
 ) -> None:
     """A partitioned bulk refusal is a producer-pressure event PER refused
     actor: one ``max-pending-exceeded`` warning and one
-    ``record_backpressure_error(actor, kind="max_pending")`` call each —
+    ``record_backpressure_error(actor, kind="max_pending")`` call each -
     parity with the single-enqueue path's log+metric pair. Neither was
     pinned by the partition tests; an operator's backpressure dashboards read
     these, so a silent regression would blank them."""
@@ -552,7 +552,7 @@ async def test_pg_caller_txn_admitted_items_follow_commit_and_rollback(
     inserts the within-cap actors' items and raises the typed refusal
     with the transaction still open and valid. Commit keeps the admitted
     items; rollback discards them. The in-memory mirror cannot prove
-    durability — only real Postgres can."""
+    durability - only real Postgres can."""
     from .test_rt_cron_harness import count_jobs, cron_settings, pool_backend
 
     schema: str = module_pg_schema.schema_name
@@ -586,10 +586,10 @@ async def test_pg_caller_txn_admitted_items_follow_commit_and_rollback(
     assert await count_jobs(clean_pg_conn, schema, _capped_ref.name) == 1
 
     # Rollback scenario: the same batch shape inside a second
-    # transaction, rolled back after the refusal — the admitted items
+    # transaction, rolled back after the refusal - the admitted items
     # are discarded; the committed scenario's rows and the seed remain.
     # Why try/finally: the rollback IS the scenario, so it must run on
-    # both the pass and fail paths — without double-invocation if the
+    # both the pass and fail paths - without double-invocation if the
     # refusal assertion itself fails.
     tx = clean_pg_conn.transaction()
     await tx.start()

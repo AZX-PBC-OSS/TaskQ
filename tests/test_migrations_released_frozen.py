@@ -2,8 +2,8 @@
 
 The ledger records a SHA-256 of each migration's rendered SQL when it is
 applied, and the runner logs ``migration-checksum-drift`` on every later
-apply whose recomputed checksum differs. Any edit to a shipped file — a
-comment, whitespace, a reworded header — makes every existing deployment
+apply whose recomputed checksum differs. Any edit to a shipped file - a
+comment, whitespace, a reworded header - makes every existing deployment
 log that warning for the file forever, and a tamper warning that always
 fires is one operators learn to ignore. ``tests/data/released_migrations.sha256``
 pins the bytes of every file a release has shipped; this test fails the

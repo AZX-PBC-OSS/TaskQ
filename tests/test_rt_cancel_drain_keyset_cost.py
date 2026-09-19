@@ -84,7 +84,7 @@ async def _drain(
     Returns its result and the per-batch row visits **grouped by driving
     statement within one fixpoint round**. A bulk cancel runs two arms
     -- terminal cancel of pending/scheduled, then cooperative cancel of
-    running -- each with its own cursor, and since #237 the pair runs as
+    running -- each with its own cursor, and since the pair runs as
     bounded fixpoint ROUNDS: every round re-issues each arm's statement
     from a fresh cursor, so grouping by statement text alone would pool
     the later rounds' single probing batches into the round-1 drain and
@@ -110,7 +110,7 @@ async def _drain(
 
 
 class _RoundAwareDrainCounter(RowVisitCounter):
-    """:class:`RowVisitCounter` with the #237 fixpoint's round boundaries.
+    """:class:`RowVisitCounter` with the fixpoint's round boundaries.
 
     Measurement is the parent's verbatim (the RLS row-visit policy, the
     role switch, the per-statement deltas); this subclass additionally

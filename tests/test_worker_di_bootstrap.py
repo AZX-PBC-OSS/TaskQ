@@ -12,8 +12,8 @@ Covers:
   - Scope teardown LIFO on shutdown
   - pre-registered Clock survives bootstrap
   - fresh registry auto-registers SystemClock
-  - integration — worker bootstrap auto-registers SystemClock
-  - integration — pre-registered FakeClock survives bootstrap
+  - integration - worker bootstrap auto-registers SystemClock
+  - integration - pre-registered FakeClock survives bootstrap
 """
 
 import asyncio
@@ -81,7 +81,7 @@ def _settings(redis_url: str | None = None, **overrides: object) -> WorkerSettin
         "PG_DSN": "postgres://u:p@localhost:5432/db",
         "LOCK_LEASE": 60,
         "HEARTBEAT_INTERVAL": 10,
-        # _main starts a real HealthServer — never the shared default path.
+        # _main starts a real HealthServer - never the shared default path.
         "TASKQ_HEALTH_SOCKET_PATH": unique_health_sock_path("worker_di_bootstrap"),
     }
     if redis_url is not None:
@@ -169,7 +169,7 @@ def _integration_settings(pg_dsn: str, *, schema: str) -> WorkerSettings:
         {
             "pg_dsn": pg_dsn,
             "schema_name": schema,
-            # _main starts a real HealthServer — never the shared default path.
+            # _main starts a real HealthServer - never the shared default path.
             "health_socket_path": unique_health_sock_path("worker_di_bootstrap"),
         },
     )
@@ -532,7 +532,7 @@ async def test_bootstrap_registers_redis_pool_provider() -> None:
 async def test_bootstrap_refuses_a_transient_error_reporter_before_any_loop_starts() -> None:
     """Through the real bootstrap: a TRANSIENT-scoped ErrorReporter fails
     worker startup with the DI error naming the allowed scopes, and no
-    consumer loop is ever started — the misregistration cannot reach a
+    consumer loop is ever started - the misregistration cannot reach a
     job."""
     from taskq.obs import ErrorReporter
 
@@ -556,7 +556,7 @@ async def test_bootstrap_fails_fast_on_redis_rate_limit_without_redis_url() -> N
     registered but redis_url is None.
 
     Regression: without the startup check, the misconfiguration surfaced
-    per-dispatch as a confusing RuntimeError from get_redis_pool — after
+    per-dispatch as a confusing RuntimeError from get_redis_pool - after
     the job had already burned retries. Bootstrap must fail fast and name
     the offending limiter(s). The scan is scoped to actors this worker
     actually serves, so the actor declaring the limit must be registered.
@@ -593,15 +593,15 @@ async def test_worker_boots_without_redis_extra_installed_and_no_redis_url(
     quick-start.md and docs/index.md both say ``pip install taskq-py`` (no
     extras) is sufficient to run a worker, and docs/getting-started/
     installation.md's feature-degradation table says progress/rate-limiting
-    "degrade gracefully" without [redis] — it does not say the worker fails
+    "degrade gracefully" without [redis] - it does not say the worker fails
     to start.
 
     Root cause: ``_redis_extra_installed()`` (src/taskq/worker/_bootstrap.py)
     calls ``importlib.util.find_spec("redis.asyncio")`` to probe for the
     extra. When the *parent* package ``redis`` is not installed at all (the
-    real core-only state — not merely ``redis.asyncio`` missing under an
+    real core-only state - not merely ``redis.asyncio`` missing under an
     installed ``redis``), ``find_spec`` on a dotted submodule name raises
-    ``ModuleNotFoundError`` instead of returning ``None`` — this is
+    ``ModuleNotFoundError`` instead of returning ``None`` - this is
     documented stdlib behavior for ``importlib.util.find_spec``, not a
     platform quirk. The bug is a bare ``find_spec`` call where the standard
     idiom is ``try: importlib.import_module(name) except ImportError``:
@@ -611,7 +611,7 @@ async def test_worker_boots_without_redis_extra_installed_and_no_redis_url(
     unhandled ``ModuleNotFoundError: No module named 'redis'`` before
     reaching the intended graceful-degradation branch in
     ``_redis_configured`` (which the surrounding code comments describe as
-    "fail fast at bootstrap, naming the offending limiter(s)" — i.e. the
+    "fail fast at bootstrap, naming the offending limiter(s)" - i.e. the
     author's intent was a clean, actor-naming RuntimeError, not a raw
     ModuleNotFoundError with no actors declared at all).
 
@@ -676,7 +676,7 @@ async def test_bootstrap_fails_fast_on_keyed_redis_rate_limit_without_redis() ->
     """KeyedRateLimitRef(backend="redis") with no Redis configured fails fast.
 
     Regression: keyed refs materialize in the registry only at first
-    acquire, so scanning ``rl_registry.rate_limits`` never sees them — a
+    acquire, so scanning ``rl_registry.rate_limits`` never sees them - a
     worker serving an actor with a keyed redis ref failed per-dispatch,
     which is the exact failure class the guard exists to close. The scan
     must walk served actors' keyed refs too.
@@ -710,7 +710,7 @@ async def test_bootstrap_fails_fast_on_keyed_redis_rate_limit_without_redis() ->
 async def test_bootstrap_ignores_redis_rate_limit_of_unserved_actor() -> None:
     """A redis-backed limit no served actor references must not brick the worker.
 
-    Regression: the rate-limit registry is process-global — a shared actor
+    Regression: the rate-limit registry is process-global - a shared actor
     package can register a redis-backed limit for an actor THIS worker
     does not serve. Scanning the whole registry at bootstrap crash-loops
     an unrelated worker. The guard is scoped to served actors.
@@ -742,7 +742,7 @@ async def test_bootstrap_clear_error_when_redis_extra_missing(
     installing the extra.
 
     The absent-extra state is driven through the REAL
-    ``_redis_extra_installed`` — poisoning ``sys.modules["redis"]`` is
+    ``_redis_extra_installed`` - poisoning ``sys.modules["redis"]`` is
     byte-identical to the package never having been installed (the import
     machinery raises ``ModuleNotFoundError`` on the parent, exactly the
     state the probe exists to detect). Mocking the probe itself is how the
@@ -784,7 +784,7 @@ async def test_bootstrap_redis_url_without_extra_and_no_redis_limits_boots(
     and nothing requires the provider).
 
     The absent-extra state is real (``sys.modules`` poisoning), not a mock
-    of the probe under test — see the sibling test above.
+    of the probe under test - see the sibling test above.
     """
     import sys
 
@@ -796,8 +796,8 @@ async def test_bootstrap_redis_url_without_extra_and_no_redis_limits_boots(
 
 # ── the extra probe itself, against genuinely absent/present packages ──
 #
-# ``_redis_extra_installed`` answers one question — is the [redis] extra
-# importable HERE — and both answers are pinned against the real function:
+# ``_redis_extra_installed`` answers one question - is the [redis] extra
+# importable HERE - and both answers are pinned against the real function:
 # a probe that always answered one way would leave half the bootstrap
 # guards above untestable.
 
@@ -811,7 +811,7 @@ async def test_redis_extra_probe_false_when_redis_package_absent(
     Only the parent is poisoned: that is the genuinely-absent state, and
     the one under which ``find_spec("redis.asyncio")`` raises instead of
     returning ``None`` (poisoning ``redis.asyncio`` itself would let
-    ``find_spec`` answer ``None`` without ever walking to the parent —
+    ``find_spec`` answer ``None`` without ever walking to the parent -
     the probe's defect would survive the test).
     """
     import sys
@@ -825,7 +825,7 @@ async def test_redis_extra_probe_false_when_redis_package_absent(
 
 async def test_redis_extra_probe_true_when_redis_installed() -> None:
     """The dev suite installs the extra (sibling tests import redis.asyncio
-    unconditionally), so the probe must answer True — a probe hardwired to
+    unconditionally), so the probe must answer True - a probe hardwired to
     False would silently disable every Redis-backed limiter."""
     from taskq.worker._bootstrap import _redis_extra_installed
 
@@ -916,7 +916,7 @@ async def test_bootstrap_rejects_actor_registry_key_name_mismatch() -> None:
     Regression: a mismapped entry (e.g. ``{"quick_result": <ref named
     "enrich_order">}``) previously surfaced deep in ``sync_actor_config``
     as a raw ``ON CONFLICT DO UPDATE command cannot affect row a second
-    time`` CardinalityViolation — the batch UPSERT hits the same actor row
+    time`` CardinalityViolation - the batch UPSERT hits the same actor row
     twice when two refs share a ``.name``. The key-equals-name check also
     makes duplicate names impossible (same name means same key, so the
     dict itself dedupes at construction).
@@ -941,7 +941,7 @@ async def test_caller_registry_auto_registers_worker_settings() -> None:
     supplied ``_registry`` without it.
 
     Pins the worker_main docstring contract ("WorkerSettings and Clock are
-    registered automatically if not already present") — required by
+    registered automatically if not already present") - required by
     providers with a WorkerSettings dep edge (e.g. the Redis rate-limit
     pool factory) when di_registry carries only user providers, as in the
     e2e worker container topology.
@@ -964,7 +964,7 @@ async def test_caller_registry_auto_registers_worker_settings() -> None:
 # ── Integration tests ─────────────────────────────────────────────────
 
 
-# ── integration — worker bootstrap auto-registers SystemClock ─
+# ── integration - worker bootstrap auto-registers SystemClock ─
 
 
 @pytest.mark.integration
@@ -1028,7 +1028,7 @@ async def test_integration_worker_bootstrap_auto_registers_system_clock(
     await process_scope.shutdown()
 
 
-# ── integration — pre-registered FakeClock survives bootstrap ─
+# ── integration - pre-registered FakeClock survives bootstrap ─
 
 
 @pytest.mark.integration
@@ -1110,7 +1110,7 @@ async def test_di_consumer_loop_uses_process_scope_clock() -> None:
 
     async def _fake_dispatch(*args: object, **kwargs: object) -> None:
         nonlocal captured_clock
-        captured_clock = kwargs.get("clock")  # type: ignore[assignment] # Why: kwargs.get() returns object | None; captured_clock is Clock | None — the assertion below verifies the runtime type.
+        captured_clock = kwargs.get("clock")  # type: ignore[assignment] # Why: kwargs.get() returns object | None; captured_clock is Clock | None - the assertion below verifies the runtime type.
         dispatch_event.set()
 
     shutdown_event = asyncio.Event()
@@ -1364,7 +1364,7 @@ async def test_di_consumer_loop_releases_job_for_unknown_actor() -> None:
 async def test_bootstrap_with_watchdog_disabled_does_not_spawn_or_fail() -> None:
     """TASKQ_WATCHDOG_ENABLED=false must boot cleanly: the stale-tick loop
     is simply not spawned. An early-return loop with no shutdown in
-    progress would trip detector 3 — the master kill-switch is the one
+    progress would trip detector 3 - the master kill-switch is the one
     path that must never fail."""
     result = await _run_main_with_mocked_deps(_settings(TASKQ_WATCHDOG_ENABLED="false"))
     assert result == 0

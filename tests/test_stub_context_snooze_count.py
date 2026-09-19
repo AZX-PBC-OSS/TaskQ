@@ -2,7 +2,7 @@
 PG worker.
 
 ``JobContext.snooze_count`` (src/taskq/context.py:73) exists so
-deferral-cycled actors key off snoozes rather than ``attempt`` — every
+deferral-cycled actors key off snoozes rather than ``attempt`` - every
 production construction site populates it from the job row
 (``worker/dispatch.py:373``, ``worker/_consumer.py:425``,
 ``worker/run.py:377``), the PG path is pinned end-to-end by
@@ -28,10 +28,10 @@ _START = datetime(2025, 1, 1, tzinfo=UTC)
 
 async def test_stub_context_carries_snooze_count_like_the_pg_worker() -> None:
     """A deferral-cycled stub keyed off ``ctx.snooze_count`` snoozes twice,
-    then succeeds — the exact contract the e2e suite pins against PG. The
+    then succeeds - the exact contract the e2e suite pins against PG. The
     in-memory runner must hand the stub the same field, or unit tests
     cannot express the documented actor pattern (and an actor written to
-    the contract fails only under the test backend — the divergence the
+    the contract fails only under the test backend - the divergence the
     parity rule exists to forbid)."""
     clock = FakeClock(start=_START)
     backend = InMemoryBackend(clock=clock)

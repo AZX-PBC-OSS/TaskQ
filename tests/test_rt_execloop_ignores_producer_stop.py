@@ -5,12 +5,12 @@ Contract under attack: once DRAINING fires (``deps.producer_stop_event.set()``
 at shutdown.py:187, immediately followed by ``drain_local_queue_to_pending``
 re-pending every claimed-but-unstarted row back to 'pending' so another
 worker can reclaim it), THIS worker's own consumer loop must stop pulling
-jobs off ``local_queue`` — otherwise the re-pended row is claimable by a
+jobs off ``local_queue`` - otherwise the re-pended row is claimable by a
 second worker AND still eligible to run here, via a stale local copy.
 
 Hypothesis (verified against the current tree): ``di_consumer_loop``'s outer
 loop guard is ``while not shutdown_event.is_set()`` (src/taskq/worker/run.py,
-di_consumer_loop) — it never reads ``deps.producer_stop_event`` or
+di_consumer_loop) - it never reads ``deps.producer_stop_event`` or
 ``deps.shutdown_phase``. ``shutdown_event`` itself is only set at the very
 end of the full 4-phase orchestration (shutdown.py:313), after DRAINING,
 the entire CANCELLING grace period, FORCING, and RELEASING have all run.
@@ -23,7 +23,7 @@ This test drives ``di_consumer_loop`` directly (no Postgres): it seeds one
 job into ``local_queue``, flips ``producer_stop_event`` (mirroring
 shutdown.py:187's DRAINING entry) while leaving ``shutdown_event`` unset
 (mirroring shutdown.py:313 firing only after all later phases complete),
-and asserts the loop does NOT dispatch that job. Today it does — a fresh
+and asserts the loop does NOT dispatch that job. Today it does - a fresh
 green pin of the current, non-existent guard.
 """
 
@@ -99,7 +99,7 @@ async def test_di_consumer_loop_stops_dequeuing_once_draining_starts(
 ) -> None:
     """A job sitting in local_queue when DRAINING fires (producer_stop_event
     set, row re-pended to 'pending' in the real code path) must not also be
-    dispatched by this worker's own consumer loop — that is double execution.
+    dispatched by this worker's own consumer loop - that is double execution.
     """
     job = make_job_row(actor="rt_drain_stale_actor", status="running")
     fb = FakeBackend()
@@ -127,14 +127,14 @@ async def test_di_consumer_loop_stops_dequeuing_once_draining_starts(
 
     # Why the spy: it is the execution observable for "this worker ran the
     # stale local_queue copy of a job that DRAINING already re-pended in the
-    # DB" — di_consumer_loop calls the run-module global dispatch_one_job.
+    # DB" - di_consumer_loop calls the run-module global dispatch_one_job.
     monkeypatch.setattr(run_module, "dispatch_one_job", _spy_dispatch)
 
     local_queue: asyncio.Queue[JobRow] = asyncio.Queue(maxsize=1)
     shutdown_event = asyncio.Event()
     deps = _DepsStub()
 
-    # Seed the job into local_queue BEFORE DRAINING — this mirrors a job
+    # Seed the job into local_queue BEFORE DRAINING - this mirrors a job
     # already claimed and sitting in this worker's queue when shutdown
     # begins (the exact row drain_local_queue_to_pending re-pends).
     local_queue.put_nowait(job)
@@ -156,10 +156,10 @@ async def test_di_consumer_loop_stops_dequeuing_once_draining_starts(
     )
 
     # Simulate orchestrate_shutdown's DRAINING entry (shutdown.py:184-188):
-    # shutdown_phase -> DRAINING, producer_stop_event.set() — WITHOUT
+    # shutdown_phase -> DRAINING, producer_stop_event.set() - WITHOUT
     # setting shutdown_event, exactly as the real orchestrator does (it only
     # sets shutdown_event at the very end, after CANCELLING/FORCING/
-    # RELEASING have all completed — shutdown.py:313).
+    # RELEASING have all completed - shutdown.py:313).
     await asyncio.sleep(0)
     deps.shutdown_phase = ShutdownPhase.DRAINING
     deps.producer_stop_event.set()
@@ -181,7 +181,7 @@ async def test_di_consumer_loop_stops_dequeuing_once_draining_starts(
     assert spy_job_ids == [], (
         _DOUBLE_EXEC_MSG + f" Evidence: dispatch spy saw {spy_job_ids!r} after "
         "producer_stop_event/shutdown_phase=DRAINING were set with "
-        "shutdown_event still unset — the stale local_queue copy of a "
+        "shutdown_event still unset - the stale local_queue copy of a "
         "DRAINING-re-pended job was dispatched by this worker's own "
         "consumer loop."
     )

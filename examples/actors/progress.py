@@ -1,4 +1,4 @@
-"""Progress-reporting actor — demonstrates ctx.progress() and JobHandle.progress_stream().
+"""Progress-reporting actor - demonstrates ctx.progress() and JobHandle.progress_stream().
 
 The ``file_processor`` actor simulates multi-step file processing (parse, validate,
 transform, write).  It calls ``ctx.progress()`` at each step so clients can display

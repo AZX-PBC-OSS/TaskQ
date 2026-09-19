@@ -2,7 +2,7 @@
 
 ``BoundLogger.exception`` puts ``exc_info=True`` into the event dict; TaskQ's
 processor chain had no exception renderer, so the JSON channel shipped a
-useless ``"exc_info": true`` bool — no class, message, or traceback — while the
+useless ``"exc_info": true`` bool - no class, message, or traceback - while the
 dev console rendered tracebacks via ``ConsoleRenderer``, hiding the gap in
 development. Worse, foreign stdlib records carrying a real ``exc_info`` tuple
 hit the orjson fallback ``TypeError`` and the whole log line was DROPPED.
@@ -31,7 +31,7 @@ from .test_obs_exception_redaction import _unique_violation
 
 
 @pytest.fixture(autouse=True)
-def _reset_structlog_and_logging() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction] # Why: autouse fixture — consumed by pytest, not called directly.
+def _reset_structlog_and_logging() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction] # Why: autouse fixture - consumed by pytest, not called directly.
     """Reset structlog and logging state so each test starts clean.
 
     Same contract as the fixture in ``test_obs_logging.py``: structlog
@@ -109,7 +109,7 @@ def test_json_log_exception_renders_class_and_traceback_scrubbed() -> None:
 
     output = buf.getvalue().strip()
     parsed = json.loads(output)
-    # Existing JSON shape stays intact — extend, don't reshape.
+    # Existing JSON shape stays intact - extend, don't reshape.
     assert parsed["event"] == "dispatch-batch-error"
     assert parsed["level"] == "error"
     assert "timestamp" in parsed
@@ -148,7 +148,7 @@ def test_foreign_stdlib_exc_info_log_line_renders() -> None:
 
 def test_known_exception_string_fields_are_scrubbed_in_json_logs() -> None:
     """``error``/``error_message``/``error_traceback`` string fields must be
-    scrubbed on the rendered JSON line — the log channel ships to the same
+    scrubbed on the rendered JSON line - the log channel ships to the same
     telemetry backends as spans, so the redaction doctrine applies to it too
     (these are the exception-bearing field names actually used in src/).
 
@@ -195,8 +195,8 @@ def test_terminal_write_failure_fields_are_scrubbed_in_json_logs() -> None:
     ``infra_error_traceback`` must be scrubbed on the rendered JSON line.
 
     ``_log_terminal_write_failed`` (worker/_handlers.py) logs exactly these
-    four names: ``str(job_exc)`` is the ACTOR's exception — the payload-leak
-    vector the sanitizer exists for — and ``_format_exc`` applies no
+    four names: ``str(job_exc)`` is the ACTOR's exception - the payload-leak
+    vector the sanitizer exists for - and ``_format_exc`` applies no
     scrubbing, so a name missing from the obs scrub sets ships the raw text
     to every telemetry backend the JSON channel feeds.
     """
@@ -238,14 +238,14 @@ def test_terminal_write_failure_fields_are_scrubbed_in_json_logs() -> None:
 
 
 def test_repr_flattened_pg_detail_is_scrubbed_in_json_logs() -> None:
-    """``error=repr(exc)`` — the majority log idiom — must be scrubbed.
+    """``error=repr(exc)`` - the majority log idiom - must be scrubbed.
 
     ``repr()`` flattens the newline before asyncpg's ``DETAIL:`` line into
     the literal two characters ``\\n``, which the line-anchored scrub cannot
     see, so the row values in the DETAIL line shipped raw to the JSON
     channel. asyncpg's own ``__repr__`` renders only the primary message,
     so the leak shape is a relayed PG error: a plain exception whose
-    message IS the rendered PG text — what ``except Exception`` sites hand
+    message IS the rendered PG text - what ``except Exception`` sites hand
     to ``error=repr(exc)``.
     """
     obs_mod.setup_logging(log_format="json")
@@ -271,7 +271,7 @@ def test_repr_flattened_pg_detail_is_scrubbed_in_json_logs() -> None:
 
 def test_exception_object_field_renders_scrubbed_not_dropped() -> None:
     """An exception object passed as a field value must render as the scrubbed
-    safe message — previously the raw object hit the orjson fallback TypeError
+    safe message - previously the raw object hit the orjson fallback TypeError
     and the whole log line was dropped."""
     obs_mod.setup_logging(log_format="json")
     canary = "tenant-77-ssn-987654321"

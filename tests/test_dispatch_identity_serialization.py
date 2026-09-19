@@ -1,10 +1,10 @@
 """Tests for per-identity serialization and sub-enqueue DI shape.
 
 ``identity_key`` enforces a "one job per identity at a time" invariant:
-``identity = lambda p: f"account:{{p.account_id}}"`` — each account
+``identity = lambda p: f"account:{{p.account_id}}"`` - each account
 serialises to at most one running job at a time, in addition to
 TaskQ's own ``max_concurrent`` cap. The dispatch CTE's
-``running_identities`` NOT EXISTS clause is the load-bearing
+``running_identities`` NOT EXISTS clause is the critical
 constraint: even when ``max_concurrent`` allows more, only one job
 per ``(actor, identity_key)`` pair transitions to ``running``.
 
@@ -14,7 +14,7 @@ LOOP-scope ``asyncpg.Connection`` + LOOP-scope mock graph-database
 client + ``ctx.jobs.enqueue`` inside actor body. The stub
 ``Neo4jClientProtocol`` is a minimal Protocol (``save``, ``query``
 async methods only) intended to exercise the DI registration and
-call pattern only — it is not a full client interface.
+call pattern only - it is not a full client interface.
 
 See the dispatch CTE at ``dispatch.py:141-144`` (NOT EXISTS on
 ``running_identities``).
@@ -103,7 +103,7 @@ class Neo4jClientProtocol(Protocol):
 
     ``save`` and ``query`` are async methods matching the minimal shape
     a real client would expose. This does NOT replicate a full
-    Neo4j client interface — it exercises the DI registration and call
+    Neo4j client interface - it exercises the DI registration and call
     pattern only.
     """
 
@@ -228,7 +228,7 @@ async def test_identity_key_serialization(clean_jobs_app: JobsApp) -> None:
     with ``max_concurrent=10`` (cap not binding), then runs 2 dispatch
     rounds sequentially with ``limit=1``. After the first dispatch
     puts one identity in running, the second round sees that identity
-    in ``running_identities`` and dispatches 0 — satisfying the
+    in ``running_identities`` and dispatches 0 - satisfying the
     per-identity serialization invariant even though the actor cap
     allows 10.
     """
@@ -288,7 +288,7 @@ async def test_identity_key_serialization(clean_jobs_app: JobsApp) -> None:
 async def test_sub_enqueue_db_write_then_actor_raises(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """DB write succeeded but actor raised after — child NOT in PG, PG writes rolled back."""
+    """DB write succeeded but actor raised after - child NOT in PG, PG writes rolled back."""
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
     schema = deps.settings.schema_name
@@ -357,7 +357,7 @@ async def test_sub_enqueue_db_write_then_actor_raises(
         async with deps.worker_pool.acquire() as check_conn:
             child_count = await _count_jobs(check_conn, schema, actor="enrich_property")
 
-        assert child_count == 0, "child row should NOT exist in PG — PG writes rolled back"
+        assert child_count == 0, "child row should NOT exist in PG - PG writes rolled back"
     finally:
         await loop_scope.shutdown()
         await thread_scope.shutdown()
@@ -367,7 +367,7 @@ async def test_sub_enqueue_db_write_then_actor_raises(
 async def test_sub_enqueue_neo4j_failure(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """Neo4j-style failure — child NOT in PG, rollback clean."""
+    """Neo4j-style failure - child NOT in PG, rollback clean."""
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
     schema = deps.settings.schema_name
@@ -446,7 +446,7 @@ async def test_sub_enqueue_neo4j_failure(
 async def test_sub_enqueue_success(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """Success — Neo4j stub recorded save AND child row in PG."""
+    """Success - Neo4j stub recorded save AND child row in PG."""
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
     schema = deps.settings.schema_name

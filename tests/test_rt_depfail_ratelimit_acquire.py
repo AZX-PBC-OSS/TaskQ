@@ -3,7 +3,7 @@
 Constitution: fail closed where a check cannot complete; a degraded outcome
 must be distinguishable, never a silent wrong answer. An infrastructure
 outage (Redis unreachable) during rate-limit acquisition is NOT a job
-outcome — burning the job's retry budget and persisting the Redis error as
+outcome - burning the job's retry budget and persisting the Redis error as
 the job's ``error_message`` is the misattribution class.
 """
 
@@ -92,7 +92,7 @@ class _RaisingScript:
 def _dead_redis_client(error: Exception) -> redis_async.Redis:
     """A REAL ``redis.asyncio.Redis`` instance (dispatch resolves the client
     via ``isinstance(raw_redis, Redis)``) whose Lua script call fails with
-    *error* — no container, no socket: the command surface is duck-typed."""
+    *error* - no container, no socket: the command surface is duck-typed."""
     client = redis_async.Redis(host="127.0.0.1", port=1, decode_responses=False)
     client.register_script = lambda script: _RaisingScript(error)  # type: ignore[method-assign]  # Why: injecting the failure at the script-call seam redis-py would use; no connection exists
     return client
@@ -120,7 +120,7 @@ class _FakePgConn:
 
     async def fetchrow(self, sql: str, *args: object) -> dict[str, object]:
         self.fetched.append(sql)
-        # The fused acquire's RETURNING row (#228): the final token count
+        # The fused acquire's RETURNING row: the final token count
         # and the decision bit. 5.0 capacity, 1.0 spent -> 4.0 remaining,
         # granted.
         return {"tokens_after": 4.0, "granted": True}
@@ -249,17 +249,17 @@ async def test_redis_outage_acquire_does_not_burn_retry_budget(
 
     assert fake_backend.mark_failed_or_retry_calls == [], (
         "DEPENDENCY-FAILURE contract (fail-closed, no misattribution): a Redis outage "
-        "during rate-limit acquire must NOT be written as the job's own failure — "
+        "during rate-limit acquire must NOT be written as the job's own failure - "
         "mark_failed_or_retry burns a retry attempt and persists error_class="
         f"{type(error).__name__} on the job row for an infrastructure outage. "
-        "Verdict: FAIL-OPEN-RED — the limiter's dependency failure is misattributed "
+        "Verdict: FAIL-OPEN-RED - the limiter's dependency failure is misattributed "
         "to the job and consumes its retry budget."
     )
     job_exception_logs = [e for e in captured if e.get("event") == "job_exception"]
     assert job_exception_logs == [], (
         "DEPENDENCY-FAILURE contract (distinguishable degradation): a Redis outage "
         "during acquire must not be logged as job_exception blaming the actor. "
-        "Verdict: FAIL-OPEN-RED — the actor is blamed for its limiter's outage."
+        "Verdict: FAIL-OPEN-RED - the actor is blamed for its limiter's outage."
     )
 
     snoozes = fake_backend.mark_snoozed_calls
@@ -270,7 +270,7 @@ async def test_redis_outage_acquire_does_not_burn_retry_budget(
     assert snoozes[0]["outcome"] == "rate_limit_denied"
     assert snoozes[0]["denial_reason"] == "unavailable", (
         "DEPENDENCY-FAILURE contract (non-consuming denial): the store-outage "
-        "denial must route to the NON-consuming snooze arm — denial_reason="
+        "denial must route to the NON-consuming snooze arm - denial_reason="
         "'unavailable' is what makes mark_snoozed refund the claim's attempt "
         "increment and never take a terminal arm, so an outage the job cannot "
         "control spends none of its retry budget. A 'capacity' reason here "
@@ -305,7 +305,7 @@ async def test_redis_outage_fallback_composition_runs_actor_via_pg() -> None:
     )
     fallback_warnings = [e for e in captured if e.get("event") == "rate-limit-redis-fallback"]
     assert len(fallback_warnings) == 1, (
-        "DEGRADE-AND-REPORT contract: the degraded acquire must be distinguishable — "
+        "DEGRADE-AND-REPORT contract: the degraded acquire must be distinguishable - "
         "exactly one rate-limit-redis-fallback warning naming the redis backend and "
         f"the postgres fallback; got {[e.get('event') for e in captured]}"
     )
@@ -316,5 +316,5 @@ async def test_redis_outage_fallback_composition_runs_actor_via_pg() -> None:
         "rate_limit_buckets" in sql for sql in pool.conns[0].executed + pool.conns[0].fetched
     ), (
         "the fallback acquire must have run the token-bucket PG statements, "
-        "the fused acquire is one fetchrow (#228)"
+        "the fused acquire is one fetchrow"
     )

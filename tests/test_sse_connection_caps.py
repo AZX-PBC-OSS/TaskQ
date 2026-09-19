@@ -125,7 +125,7 @@ def _clear_semaphores() -> Iterator[None]:  # pyright: ignore[reportUnusedFuncti
     """Isolate the process-global slot registry, on BOTH sides of every test.
 
     Clearing only on the way in leaks whatever the LAST test in this module
-    acquired — these tests deliberately take slots and never release them — into
+    acquired - these tests deliberately take slots and never release them - into
     every other module sharing the worker process. `_semaphore()` returns an
     existing key's semaphore regardless of the limit asked for, so a leaked
     exhausted `progress-stream` makes the real progress route answer 429 and
@@ -135,7 +135,7 @@ def _clear_semaphores() -> Iterator[None]:  # pyright: ignore[reportUnusedFuncti
     """
     _sse_limit._SEMAPHORES.clear()  # pyright: ignore[reportPrivateUsage]  # Why: process-global registry; the only handle tests have to stop slots leaking between modules.
     yield
-    _sse_limit._SEMAPHORES.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same as above — clear on exit too.
+    _sse_limit._SEMAPHORES.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same as above - clear on exit too.
 
 
 async def test_slots_are_granted_up_to_the_limit() -> None:
@@ -176,7 +176,7 @@ async def test_a_limit_change_gets_its_own_budget_not_the_first_mounts() -> None
     test suite does; a misconfigured process could): a later mount must
     enforce the limit it was given, not silently inherit the first mount's
     budget. Keying the budget by family alone made mount order decide the
-    cap — a wide first mount silently unfenced a tight later one, and a
+    cap - a wide first mount silently unfenced a tight later one, and a
     tight first mount 429'd streams the wide one was configured to allow."""
     # First mount of family "t": wide limit, one slot held.
     await _sse_limit.acquire_sse_slot("t", 50)
@@ -187,7 +187,7 @@ async def test_a_limit_change_gets_its_own_budget_not_the_first_mounts() -> None
     with pytest.raises(HTTPException) as excinfo:
         await _sse_limit.acquire_sse_slot("t", 2)
     assert excinfo.value.status_code == 429
-    # ...while the wide budget still has room — proving the refusal came
+    # ...while the wide budget still has room - proving the refusal came
     # from the tight budget, not from a shared exhausted one.
     await _sse_limit.acquire_sse_slot("t", 50)
 
@@ -266,7 +266,7 @@ def test_missing_job_404s_do_not_exhaust_the_cap(
     second = client.get(f"/jobs/api/job/{_JOB_ID}/progress/stream")
     assert second.status_code == 404, (
         f"a 404 must release its slot: the second missing-job request got "
-        f"{second.status_code} — the cap was exhausted without a single "
+        f"{second.status_code} - the cap was exhausted without a single "
         f"stream ever opening"
     )
 
@@ -296,7 +296,7 @@ def test_subscribe_failure_503s_do_not_exhaust_the_cap(
     second = client.get(f"/jobs/api/job/{_JOB_ID}/progress/stream")
     assert second.status_code == 503, (
         f"a 503 subscribe-failure must release its slot: the second request "
-        f"got {second.status_code} — the cap was exhausted without a single "
+        f"got {second.status_code} - the cap was exhausted without a single "
         f"stream ever opening"
     )
 

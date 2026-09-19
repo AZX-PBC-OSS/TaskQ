@@ -34,7 +34,7 @@ async def test_diff_cancel_pending_scheduled_missing(pg_dsn: str) -> None:
     assert_mirror(
         "write_cancel_request on a pending/scheduled row lands 'cancelled' "
         "with the state_change and cancel_request events in that order; a "
-        "second request on the terminal row returns False — identically on "
+        "second request on the terminal row returns False - identically on "
         "both backends",
         mem,
         pg,
@@ -75,7 +75,7 @@ async def test_diff_cancel_running_phase_and_poll(pg_dsn: str) -> None:
         "write_cancel_request on a running row sets cancel_phase 1 + "
         "cancel_requested_at and writes the cancel_request event; a second "
         "request refuses; only the lock holder's poll_cancel_flags reports "
-        "the flag — identically on both backends",
+        "the flag - identically on both backends",
         mem,
         pg,
     )
@@ -173,7 +173,7 @@ async def test_diff_cancel_escalation_and_abandon_guard(pg_dsn: str) -> None:
     assert_mirror(
         "write_cancel_escalation moves phase 1 -> 2 only for the running "
         "holder, refuses re-escalation, and mark_abandoned lands only on a "
-        "phase-2 running row — preserving the last holder for audit, "
+        "phase-2 running row - preserving the last holder for audit, "
         "identically on both backends",
         mem,
         pg,
@@ -199,11 +199,11 @@ async def _cancel_missing_job_id(side: DiffSide) -> None:
 
 async def test_diff_cancel_unregistered_job_id(pg_dsn: str) -> None:
     """A cancel request for a job id that was never stored refuses (False) on
-    both backends — never raises, never writes an event."""
+    both backends - never raises, never writes an event."""
     mem, pg = await run_differential(_cancel_missing_job_id, pg_dsn=pg_dsn)
     assert_mirror(
         "write_cancel_request for an unknown job id returns False on both "
-        "backends — no exception, no event rows",
+        "backends - no exception, no event rows",
         mem,
         pg,
     )

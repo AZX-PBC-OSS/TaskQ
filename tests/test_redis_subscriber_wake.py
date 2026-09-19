@@ -9,7 +9,7 @@ Covers:
 - Two concurrent TaskQ.stream() calls both receive all terminal events
   (Redis fanout to multiple subscribers on the same channel).
 - Subscriber on job A's channel receives NO events emitted for job B
-  (Redis pub/sub per-job channel isolation — no cross-talk).
+  (Redis pub/sub per-job channel isolation - no cross-talk).
 - Redis reconnection: subscriber closes and reopens pubsub connection;
   events published after reconnect are received. PG progress_seq is
   correct (polling fallback).
@@ -74,7 +74,7 @@ async def _sub_wake_progress_actor(payload: _Empty, ctx: JobContext[_Empty]) -> 
 
 @actor(name="_sub_wake_noise")
 async def _sub_wake_noise_actor(payload: _Empty, ctx: JobContext[_Empty]) -> None:
-    """Emit 3 progress events — used as cross-talk noise on a different job."""
+    """Emit 3 progress events - used as cross-talk noise on a different job."""
     for i in range(3):
         await ctx.progress(step=i + 1, percent=float((i + 1) * 33))
         await asyncio.sleep(0.02)
@@ -93,7 +93,7 @@ async def _truncate_dynamic_tables(pg_dsn: str, schema: str) -> None:
     """Truncate all dynamic tables to ensure clean per-test state.
 
     Delegates to the canonical :func:`taskq.testing.pg.truncate_schema`:
-    the dynamic set is not just ``jobs``/``workers`` — ``actor_config``
+    the dynamic set is not just ``jobs``/``workers`` - ``actor_config``
     carries the dispatch-rotation stamp (``last_claimed_at``) that decides
     which actor's queue is claimed first, so a two-table truncate leaks the
     previous test's claims into this one's dispatch order (and the same
@@ -128,7 +128,7 @@ async def _setup_worker(
     """Open WorkerDeps + PostgresBackend against *schema* with optional Redis.
 
     Seeds actor_config rows for the subscriber-wake test actors.
-    Returns ``(stack, deps, backend)`` — caller must ``await stack.aclose()``.
+    Returns ``(stack, deps, backend)`` - caller must ``await stack.aclose()``.
     """
     settings_dict: dict[str, Any] = {
         "TASKQ_PG_DSN": pg_dsn,
@@ -205,7 +205,7 @@ async def _enqueue_only(
             # None = immediate, server-stamped: dispatch eligibility is
             # judged by clock_timestamp(), so an app-clock stamp makes the
             # job "not yet due" whenever the app clock runs ahead of the
-            # database — a load flake, not a scheduling decision.
+            # database - a load flake, not a scheduling decision.
             scheduled_at=None,
         )
     )
@@ -317,7 +317,7 @@ async def test_redis_subscriber_receives_progress_events(
         job_id = await _enqueue_only(backend, "_sub_wake_progress")
         channel = progress_channel(schema, job_id)
 
-        # Subscribe via raw Redis pubsub — proven pattern from test_progress_redis.py
+        # Subscribe via raw Redis pubsub - proven pattern from test_progress_redis.py
         redis_client = redis_async.from_url(clean_redis_url, decode_responses=False)
         received: list[dict[str, object]] = []
         try:
@@ -463,7 +463,7 @@ async def test_subscriber_filters_per_job_channel_no_cross_talk(
 
     Jobs are enqueued and dispatched one at a time to avoid dispatch_batch
     ordering ambiguity. Job B (noise) completes first while job A's
-    subscriber is listening — the subscriber must receive only job A events.
+    subscriber is listening - the subscriber must receive only job A events.
     """
     import redis.asyncio as redis_async
 
@@ -561,7 +561,7 @@ async def test_subscriber_filters_per_job_channel_no_cross_talk(
         await stack.aclose()
 
 
-# ── Redis reconnection — subscriber recovers on reconnect ───────────────────
+# ── Redis reconnection - subscriber recovers on reconnect ───────────────────
 
 
 @pytest.mark.redis
@@ -689,7 +689,7 @@ async def test_redis_unavailable_pg_still_records_progress(
     job succeeds; progress_seq is correct.
 
     WorkerDeps is opened without a Redis URL. The actor calls
-    ctx.progress() — the fire-and-forget publish is a no-op (no Redis
+    ctx.progress() - the fire-and-forget publish is a no-op (no Redis
     client), but the PG flush path still records progress.
     """
     pg_dsn: str = module_pg_schema.pg_dsn
@@ -705,7 +705,7 @@ async def test_redis_unavailable_pg_still_records_progress(
         job_id = await _enqueue_only(backend, "_sub_wake_progress")
         job_row = await _dispatch_one(backend, deps, wid)
 
-        # Consume the actor — progress is flushed to PG only (no Redis)
+        # Consume the actor - progress is flushed to PG only (no Redis)
         await _consume(deps, backend, job_row, _sub_wake_progress_actor.fn, wid)
 
         pg_row = await _get_job_by_id(deps.worker_pool, schema, job_id)

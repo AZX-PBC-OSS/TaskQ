@@ -1,6 +1,6 @@
 """A cross-actor idempotency hit is refused, never silently resolved.
 
-Uniqueness is ``(idempotency_scope, idempotency_key)`` — schema-wide, not
+Uniqueness is ``(idempotency_scope, idempotency_key)`` - schema-wide, not
 per actor, and the jobs guide tells callers to namespace keys per actor.
 When they do not, ``enqueue(send_receipt, key="order-1")`` after
 ``enqueue(refund, key="order-1")`` used to return the REFUND's handle with
@@ -110,8 +110,8 @@ async def test_cross_actor_hit_on_a_bare_caller_connection_admits_nothing(
 async def test_cross_actor_hit_on_the_fast_tier_raises_the_mismatch_error(
     backend_pair: Backend,
 ) -> None:
-    """The COPY tier has no arbiter — any duplicate pair aborts the whole
-    batch — but a pair held by ANOTHER actor is the same misuse the single
+    """The COPY tier has no arbiter - any duplicate pair aborts the whole
+    batch - but a pair held by ANOTHER actor is the same misuse the single
     and batch tiers refuse with the typed mismatch, not a same-actor
     duplicate, and is classified the same way on both backends."""
     key = f"k-{new_uuid()}"

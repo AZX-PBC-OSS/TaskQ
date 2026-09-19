@@ -1,4 +1,4 @@
-"""Retry exhaustion e2e — job fails all attempts, lands in 'failed'.
+"""Retry exhaustion e2e - job fails all attempts, lands in 'failed'.
 
 Scenario:
 transient ``fail_times=3`` with ``max_attempts=3`` → every attempt fails →

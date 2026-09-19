@@ -1,6 +1,6 @@
 """The sweep loop's ``job_events`` retention wiring.
 
-The retention seam itself (``sweep_expired_events`` — one bounded,
+The retention seam itself (``sweep_expired_events`` - one bounded,
 committed batch per call, the crash-reclaim outbox slice carved out) is
 pinned against real Postgres by ``tests/test_job_retention_sweep.py``
 and ``tests/test_denial_and_retention_bounds.py``. What those files
@@ -8,7 +8,7 @@ cannot see is the LEADER LOOP's driving of the seam: the block inside
 ``_sweep_loop`` must run one batch per tick with the operator's
 configured window and batch size, and the settings-level disable
 sentinel (``timedelta(0)``) must keep the tick from invoking the sweep
-at all — the wiring contract, the same tier as
+at all - the wiring contract, the same tier as
 ``tests/test_leader_sweep_reclaim_drain_wiring.py`` pins for the
 pending-reclaim drain.
 """
@@ -148,7 +148,7 @@ async def _run_loop_until(ctx: SweepContext, done: Callable[[], bool]) -> None:
 
 async def test_sweep_loop_drives_event_retention_with_configured_window() -> None:
     """One leader tick invokes the retention sweep once, on the dispatcher
-    pool, with the operator's configured window and batch size — the
+    pool, with the operator's configured window and batch size - the
     wiring that turns ``sweep_expired_events`` into the retention
     drain (one committed batch per tick, deliberately NOT a
     ``_drain_bounded`` drain)."""
@@ -159,7 +159,7 @@ async def test_sweep_loop_drives_event_retention_with_configured_window() -> Non
     await _run_loop_until(ctx, lambda: bool(backend.retention_calls))
 
     assert backend.retention_calls, (
-        "the leader tick did not invoke sweep_expired_events — the retention "
+        "the leader tick did not invoke sweep_expired_events - the retention "
         "seam exists but nothing drives it, so job_events rows older than the "
         "horizon are never reclaimed by the drain tick"
     )
@@ -170,7 +170,7 @@ async def test_sweep_loop_drives_event_retention_with_configured_window() -> Non
     )
     assert call["batch_size"] == deps.settings.event_retention_batch_size, (
         "the tick must drive the sweep with the configured "
-        "event_retention_batch_size — the bound that keeps one tick's DELETE "
+        "event_retention_batch_size - the bound that keeps one tick's DELETE "
         "constant-size against any backlog"
     )
     assert call["schema"] == deps.settings.schema_name
@@ -180,7 +180,7 @@ async def test_disabled_event_retention_never_invokes_the_sweep() -> None:
     """``timedelta(0)`` is the settings-level disable sentinel: the tick
     must not invoke the retention sweep at all (a disabled sweep acquires
     no connection and deletes nothing), while the rest of the leader
-    section — proven by the sibling sweep on the same gate — keeps
+    section - proven by the sibling sweep on the same gate - keeps
     running."""
     deps = _deps(event_retention_period="0")
     backend = _RetentionBackend()
@@ -196,7 +196,7 @@ async def test_disabled_event_retention_never_invokes_the_sweep() -> None:
     )
     assert not backend.retention_calls, (
         "a disabled retention sweep (event_retention_period=timedelta(0)) "
-        "must never invoke sweep_expired_events — zero is the documented "
+        "must never invoke sweep_expired_events - zero is the documented "
         "disable sentinel, and a sweep that ran anyway would delete every "
         "event older than 'now'"
     )

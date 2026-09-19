@@ -3,7 +3,7 @@
 The gap these guard: :class:`taskq.TaskQ` accepted only ``dsn=`` or ``pool=``,
 so a deployment on rotating credentials (Entra ID, AWS IAM RDS, Vault) had no
 way to swap the pool once its token expired. Real consumers reached into
-``tq._pool`` / ``tq._client._backend._deps`` from a background refresh task —
+``tq._pool`` / ``tq._client._backend._deps`` from a background refresh task -
 the exact private surface these tests replace.
 
 The proof that matters is the last one: a client built from a factory survives
@@ -98,7 +98,7 @@ def test_pg_provider_requires_a_dsn() -> None:
 
 
 def test_pool_factory_satisfies_the_dsn_or_pool_requirement() -> None:
-    """``pool_factory`` alone is a complete construction — no dsn/pool needed."""
+    """``pool_factory`` alone is a complete construction - no dsn/pool needed."""
 
     async def _factory() -> asyncpg.Pool:  # pragma: no cover - never invoked
         raise AssertionError
@@ -172,7 +172,7 @@ async def test_reload_credentials_swaps_the_pool_everywhere(pg_dsn: str) -> None
     After ``reload_credentials()`` the client must keep working, the OLD pool
     must be closed, and every subsystem that holds a pool reference (backend
     deps for enqueue/list, ActorsClient) must be on the NEW one. No private
-    attribute is touched anywhere in this test — that is the point.
+    attribute is touched anywhere in this test - that is the point.
     """
     await _prepare_schema(pg_dsn)
     stripped = _disable_ssl(pg_dsn).replace(f":{_CONTAINER_PASSWORD}@", "@")
@@ -206,7 +206,7 @@ async def test_reload_credentials_swaps_the_pool_everywhere(pg_dsn: str) -> None
 
 
 async def test_reload_credentials_rejects_a_caller_owned_pool(pg_dsn: str) -> None:
-    """Rotation is refused when TaskQ has no factory — the pool is the caller's."""
+    """Rotation is refused when TaskQ has no factory - the pool is the caller's."""
     await _prepare_schema(pg_dsn)
     pool = await asyncpg.create_pool(dsn=_disable_ssl(pg_dsn), min_size=1, max_size=2)
     assert pool is not None
@@ -231,7 +231,7 @@ async def test_reload_credentials_requires_an_open_client(pg_dsn: str) -> None:
 async def test_failed_reload_keeps_the_working_pool(pg_dsn: str) -> None:
     """A provider outage must not leave the client without a pool.
 
-    A failed rotation raises, but the still-valid pool keeps serving — the
+    A failed rotation raises, but the still-valid pool keeps serving - the
     alternative (a half-swapped client) turns a transient token-endpoint blip
     into an outage.
     """

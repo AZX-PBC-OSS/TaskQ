@@ -5,13 +5,13 @@ cells.
 classifies the raise by the job's registered cancel event: set → absorb
 and keep draining; unset or absent → propagate as the caller's
 cancellation of the drain task itself. Two cells of that classification
-are pinned by the existing suites — (event set, actor-originated) the
+are pinned by the existing suites - (event set, actor-originated) the
 bare ``check_cancelled()`` style, and (no event, caller-originated) the
 job-handle timeout suite's cancel-the-drain usage. The two *mixed* cells
 are what this file attacks, because production treats them differently
 than the discriminator does:
 
-* **Actor-originated, no event** — an actor that raises
+* **Actor-originated, no event** - an actor that raises
   :class:`asyncio.CancelledError` itself (its own cooperative exit
   without ``check_cancelled()``, or a child-task cancellation leaking
   through an await) is indistinguishable, inside
@@ -19,20 +19,20 @@ than the discriminator does:
   mark-cancelled, the same re-raise. Production's
   ``dispatch_one_job`` then sets ``outcome = "cancelled"`` and re-raises
   (``src/taskq/worker/dispatch.py``), the dispatch task boundary
-  absorbs the raise, and the worker keeps dispatching — the same
+  absorbs the raise, and the worker keeps dispatching - the same
   mechanism that absorbs the documented cooperative style. The runner's
   discriminator classifies it as the caller's cancel and kills the
   drain.
 
-* **Caller-originated, event set** — a caller that requested the cancel,
+* **Caller-originated, event set** - a caller that requested the cancel,
   watched the actor ignore it, and cancelled the drain task to give up
   has its cancellation absorbed whenever the job's cancel event is set:
   the drain keeps dispatching the jobs behind and returns normally.
   A task whose explicit ``cancel()`` is swallowed is the asyncio
-  shutdown-hang antipattern — the external-cancel pin's own docstring
+  shutdown-hang antipattern - the external-cancel pin's own docstring
   names it for the no-event arm; the mixed arm swallows exactly that.
-  In production the caller-side cancellation always wins — the worker
-  stops — so the harness must let the drain task's own cancellation
+  In production the caller-side cancellation always wins - the worker
+  stops - so the harness must let the drain task's own cancellation
   take precedence over the per-job event.
 """
 
@@ -50,13 +50,13 @@ _START = datetime(2025, 1, 1, tzinfo=UTC)
 
 
 async def test_actor_raised_cancelled_error_without_an_event_drains_the_runner() -> None:
-    """An actor ending itself with its own ``asyncio.CancelledError`` —
-    no registered cancel event, so the raise is actor-originated — must
+    """An actor ending itself with its own ``asyncio.CancelledError`` -
+    no registered cancel event, so the raise is actor-originated - must
     be exercisable through ``run_until_drained``: the job ends terminal
     ``cancelled`` (the shared consumer marks it before re-raising,
     identical to the cooperative style), the drain returns instead of
     raising, and the job queued behind it still runs. Production's
-    dispatch treats this raise exactly like the cooperative one — same
+    dispatch treats this raise exactly like the cooperative one - same
     consumer path, same task-boundary absorption, worker keeps
     dispatching."""
     clock = FakeClock(start=_START)
@@ -100,7 +100,7 @@ async def test_actor_raised_cancelled_error_without_an_event_drains_the_runner()
     cancelled_row = await backend.get(cancelled_args.id)
     assert cancelled_row is not None
     assert cancelled_row.status == "cancelled", (
-        "the actor-originated raise must end the job terminal cancelled — "
+        "the actor-originated raise must end the job terminal cancelled - "
         "the shared consumer's CancelledError path marks it before "
         "re-raising, identical to the cooperative style; "
         f"got status={cancelled_row.status}"
@@ -110,7 +110,7 @@ async def test_actor_raised_cancelled_error_without_an_event_drains_the_runner()
         "cancel event is not the caller's cancellation: production's "
         "dispatch re-raises it past the task boundary exactly like the "
         "cooperative style and the worker keeps dispatching, so the "
-        "runner must absorb it and keep draining — an escaping "
+        "runner must absorb it and keep draining - an escaping "
         "CancelledError kills the drain and the jobs behind it, the "
         "crash class the absorb was added to prevent, one trigger narrower"
     )
@@ -118,7 +118,7 @@ async def test_actor_raised_cancelled_error_without_an_event_drains_the_runner()
     assert follower_row is not None
     assert follower_row.status == "succeeded", (
         "an actor-originated cancellation of one job must not stop the "
-        "runner serving the jobs behind it — production's worker keeps "
+        "runner serving the jobs behind it - production's worker keeps "
         f"dispatching; got status={follower_row.status}"
     )
 
@@ -130,7 +130,7 @@ async def test_caller_cancellation_of_the_drain_task_wins_over_a_set_cancel_even
     drain_task``, the cancelled job's row is terminal ``cancelled`` (the
     shared consumer's shielded write completed before the re-raise), and
     the job queued behind is left undispatched. An absorb keyed only on
-    the event being set swallows the caller's cancellation — the drain
+    the event being set swallows the caller's cancellation - the drain
     keeps working past an explicit stop request and returns normally,
     which is swallowed cancellation, the asyncio antipattern the
     external-cancel pin's own docstring names for the no-event arm."""
@@ -189,7 +189,7 @@ async def test_caller_cancellation_of_the_drain_task_wins_over_a_set_cancel_even
     assert follower_row is not None
     assert follower_row.status == "scheduled", (
         "the caller's cancellation of the drain task must stop the drain "
-        "— the job queued behind the cancelled one stays undispatched; "
+        "- the job queued behind the cancelled one stays undispatched; "
         "an absorb that keeps draining after the caller said stop is "
         f"swallowed cancellation; got status={follower_row.status}"
     )

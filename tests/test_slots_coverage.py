@@ -41,7 +41,7 @@ class TestEnsureSlots:
         slot = table.acquire("bucket", job, worker, _LEASE, _NOW)
         assert slot == 0
 
-        # Re-invoke ensure_slots with the same size — slot 0 must remain held.
+        # Re-invoke ensure_slots with the same size - slot 0 must remain held.
         table.ensure_slots("bucket", 2)
         # Slot 0 is still occupied by ``job``; the next acquire takes slot 1.
         slot2 = table.acquire("bucket", new_uuid(), new_uuid(), _LEASE, _NOW)
@@ -52,7 +52,7 @@ class TestEnsureSlots:
         table = _SlotTable()
         table.ensure_slots("bucket", 1)
         table.ensure_slots("bucket", 3)
-        # Acquire three slots — all should be available.
+        # Acquire three slots - all should be available.
         results = [table.acquire("bucket", new_uuid(), new_uuid(), _LEASE, _NOW) for _ in range(3)]
         assert results == [0, 1, 2]
 
@@ -140,7 +140,7 @@ class TestExtendLeasesForJob:
 
         # The new lease (later + new_lease = _NOW + 130 s) is not expired at
         # _NOW + 31 s even though the OLD lease (_NOW + 30 s) is.  Acquiring
-        # at _NOW + 31 s must NOT reclaim slot 0 — it takes slot 1 instead.
+        # at _NOW + 31 s must NOT reclaim slot 0 - it takes slot 1 instead.
         reclaimed = table.acquire(
             "bucket", new_uuid(), new_uuid(), _LEASE, _NOW + timedelta(seconds=31)
         )

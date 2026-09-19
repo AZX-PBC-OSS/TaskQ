@@ -9,8 +9,8 @@ succeeds. The jobs genuinely run, and reclaiming locks afterwards cannot
 un-run them.
 
 That makes the setting a per-round admission damper whose slack grows
-with the fleet. An operator sizing a downstream system — a database
-connection budget, a third-party rate limit, a licence count — from this
+with the fleet. An operator sizing a downstream system - a database
+connection budget, a third-party rate limit, a licence count - from this
 number will exceed it by a factor of the pod count, and will do so only
 under the load that brought the pods up.
 
@@ -63,8 +63,8 @@ async def test_one_pod_holds_the_cap_exactly(pg_dsn: str) -> None:
     """With a single dispatcher the cap is exact.
 
     This is the reading that makes the setting misleading, so it is
-    stated first and on purpose: a test fleet of one pod — and a staging
-    environment of one pod — sees ``max_concurrent`` honoured precisely.
+    stated first and on purpose: a test fleet of one pod - and a staging
+    environment of one pod - sees ``max_concurrent`` honoured precisely.
     Anyone who validates their capacity plan that way will carry the
     conclusion into production, where it stops being true.
     """
@@ -115,8 +115,8 @@ async def test_concurrent_pods_over_admit_within_the_documented_bound(
             f"{len(_PODS)} pods dispatching at once admitted {running} jobs against a "
             f"per-actor cap of {_MAX_CONCURRENT}; the dispatch statement's documented "
             f"worst case is {worst_case}. The cap is looser than the queue says it is, "
-            "so any downstream limit sized from this setting — a connection budget, a "
-            "third-party rate limit, a licence count — is exceeded by more than the "
+            "so any downstream limit sized from this setting - a connection budget, a "
+            "third-party rate limit, a licence count - is exceeded by more than the "
             "documented margin, and only under the load that scaled the fleet up."
         )
         assert running >= _MAX_CONCURRENT, (
@@ -127,7 +127,7 @@ async def test_concurrent_pods_over_admit_within_the_documented_bound(
         )
         # The measured value sits at the cap today rather than anywhere
         # near the worst case, because a concurrent round currently
-        # yields rows to one pod only — the condition the dispatch
+        # yields rows to one pod only - the condition the dispatch
         # concurrency tests in this suite pin as a defect. Widening
         # those rounds so every pod claims is exactly what opens the
         # admission window this bound describes, so the upper assertion
@@ -144,7 +144,7 @@ async def test_an_uncapped_actor_is_not_limited_by_a_capped_sibling(
     Caps are per-actor, and the in-flight count the dispatcher reads is
     grouped by actor. If a capped actor's headroom constrained the round
     as a whole, an unrelated actor's throughput would collapse whenever
-    a capped neighbour was busy — a coupling invisible from either
+    a capped neighbour was busy - a coupling invisible from either
     actor's own configuration.
     """
     other_actor = "fleet_cap_uncapped_actor"
@@ -181,7 +181,7 @@ async def test_a_drain_mode_actor_dispatches_nothing_on_any_pod(
     """A cap of zero means zero, fleet-wide.
 
     Drain mode is how an operator stops an actor without deleting its
-    work — before a risky deploy, or while a downstream dependency is
+    work - before a risky deploy, or while a downstream dependency is
     broken. It is the one capacity setting that must be exact rather
     than best-effort, because its whole purpose is that nothing runs.
 
@@ -203,7 +203,7 @@ async def test_a_drain_mode_actor_dispatches_nothing_on_any_pod(
         assert claimed == 0, (
             f"{claimed} jobs were claimed for an actor held at max_concurrent=0 by "
             f"{len(_PODS)} pods dispatching at once. Drain mode is how an operator stops "
-            "an actor without discarding its work — if it admits anything, the actor an "
+            "an actor without discarding its work - if it admits anything, the actor an "
             "operator believes is stopped is still running, and runs more the more pods "
             "there are."
         )

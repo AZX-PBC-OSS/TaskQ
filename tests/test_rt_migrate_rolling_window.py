@@ -3,18 +3,18 @@
 
 Old-code/new-schema: the previous release's prune CTE names its columns
 explicitly and predates ``snooze_count`` / ``rate_limit_blocked_count``. The
-verbatim prior-release shape is cited from git history —
+verbatim prior-release shape is cited from git history -
 ``git show b23c921^:src/taskq/worker/_leader_shared.py`` (b23c921 is the
 commit that shipped 01.00.08) and
 ``git show b23c921^:src/taskq/backend/_sql_templates.py`` for its 38-column
 COPY_FROM_COLUMNS list. Against a fully-migrated HEAD schema both counters
 are trailing additive columns with defaults, so the old INSERT's explicit
-column list must keep working — the additive discipline the 01.00.03 header
+column list must keep working - the additive discipline the 01.00.03 header
 documents ("Forward-only ADD-only contract").
 
 New-code/old-schema: a leader upgraded before ``migrate up`` runs the current
 CTE, whose COPY_FROM_COLUMNS includes the counters, against a schema that
-lacks them — the sweep must fail LOUDLY and non-destructively (the whole
+lacks them - the sweep must fail LOUDLY and non-destructively (the whole
 batch transaction rolls back; the terminal row stays in jobs), never
 silently skip archiving.
 """
@@ -130,7 +130,7 @@ async def _drop(conn: asyncpg.Connection, schema: str) -> None:
 async def test_prior_release_prune_cte_runs_clean_on_current_schema(pg_dsn: str) -> None:
     """Old pod, new schema: the prior release's archive CTE (verbatim from
     git b23c921^) must move a terminal job on a fully-migrated schema with
-    the new counter columns filling from their defaults — the additive
+    the new counter columns filling from their defaults - the additive
     discipline that makes the rolling-deploy overlap safe for the OLD fleet.
     """
     schema = f"tmg_{new_base62()}".lower()
@@ -150,7 +150,7 @@ async def test_prior_release_prune_cte_runs_clean_on_current_schema(pg_dsn: str)
         )
         assert rows and rows[0]["cnt"] == 1, (
             "contract: the prior release's prune CTE must move exactly the one "
-            f"terminal job on a current schema — got {rows!r}"
+            f"terminal job on a current schema - got {rows!r}"
         )
         still_in_jobs = await conn.fetchval(
             f'SELECT count(*) FROM "{schema}".jobs WHERE id = $1', job_id
@@ -205,7 +205,7 @@ async def test_prune_fails_loud_and_non_destructive_on_pre_counters_schema(
         )
         assert remaining == 1, (
             "non-destructive contract: a failed prune batch must leave the terminal "
-            "row in jobs for the next (post-migrate) sweep — nothing partially moved"
+            "row in jobs for the next (post-migrate) sweep - nothing partially moved"
         )
         archived_count = await conn.fetchval(f'SELECT count(*) FROM "{schema}".jobs_archive')
         assert archived_count == 0, "a failed prune batch must archive nothing"

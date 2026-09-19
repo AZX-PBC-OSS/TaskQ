@@ -179,7 +179,7 @@ async def test_fr5_audit_only_authorised_paths_write_scheduled(
 
     # ── mark_interrupted, release arm (the fifth authorised writer): a
     # running job the worker cannot finish, interrupted with a positive
-    # hold, re-pends to 'scheduled' for a future dispatch — the same
+    # hold, re-pends to 'scheduled' for a future dispatch - the same
     # running→scheduled deferral shape as mark_snoozed/mark_retry_after.
     job = await _enqueue_running(backend)
     released = await backend.mark_interrupted(
@@ -237,7 +237,7 @@ async def test_fr5_audit_only_authorised_paths_write_scheduled(
     assert result is True
     post = _get_job(backend, job.id)
     assert post.status == "cancelled"
-    # Not a NEW transition to scheduled — it was already scheduled
+    # Not a NEW transition to scheduled - it was already scheduled
 
     # ── write_cancel_request on a running job → sets cancel_phase=1, still running ──
     job = await _enqueue_running(backend)
@@ -400,7 +400,7 @@ _AUTHORISED_METHOD_NAMES: frozenset[str] = frozenset(
 #: Every ``mark_*`` method on both backends, as reviewed against the
 #: five-authorised-writers contract. The runtime audit above exercises a
 #: hand-written sequence of calls, so it cannot notice a method nobody thought
-#: to add to it — this inventory is what forces that decision.
+#: to add to it - this inventory is what forces that decision.
 _REVIEWED_MARK_METHODS: frozenset[str] = frozenset(
     {
         "mark_abandoned",
@@ -428,7 +428,7 @@ def test_no_unreviewed_mark_method_exists(cls: type) -> None:
     This replaces a grep of each method's source for a ``'scheduled'``
     literal. That grep could not see a write routed through a constant or an
     f-string, and it passed happily on a method the runtime audit never
-    called — it was checking spelling where the risk is coverage.
+    called - it was checking spelling where the risk is coverage.
     """
     found = {
         name

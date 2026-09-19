@@ -6,7 +6,7 @@ on real Postgres; these tests pin the guards that must reject a bad value
 
 The headline case is ``max_concurrent=0``: it parses, passes a naive
 ``< 0`` guard, and only dies on the table's CHECK constraint
-(``max_concurrent IS NULL OR max_concurrent >= 1`` —
+(``max_concurrent IS NULL OR max_concurrent >= 1`` -
 01.00.04_01_pre_queue_concurrency.sql) after the round trip, surfacing a
 raw asyncpg ``CheckViolationError`` traceback to the operator. NULL is
 the uncapped state; an emergency drain to 0 belongs to
@@ -42,7 +42,7 @@ class _RecordingConn:
 
 
 async def test_rejects_zero_max_concurrent_without_writing() -> None:
-    """0 is not a queue cap — NULL is. The guard must fire before the
+    """0 is not a queue cap - NULL is. The guard must fire before the
     statement, or the DB CHECK answers with a raw CheckViolationError."""
     conn = _RecordingConn()
     with pytest.raises(ValueError, match="max_concurrent"):
@@ -58,7 +58,7 @@ async def test_rejects_negative_max_concurrent_without_writing() -> None:
 
 
 async def test_zero_via_bool_is_rejected_too() -> None:
-    """``False`` is an ``int`` and would be written as 0 — the same DB
+    """``False`` is an ``int`` and would be written as 0 - the same DB
     CHECK violation, so the ``>= 1`` guard must see it."""
     conn = _RecordingConn()
     with pytest.raises(ValueError, match="max_concurrent"):
@@ -80,7 +80,7 @@ async def test_one_and_none_pass_validation() -> None:
 # ``set_queue_mode``/``set_queue_max_concurrent`` UPSERT an operator-supplied
 # name. They validated ``schema`` and ``mode`` but never the name, making them
 # the only write path in TaskQ able to create a queue name the rest of the
-# system rejects. ":" is the load-bearing case: queue names are concatenated
+# system rejects. ":" is the critical case: queue names are concatenated
 # into the flat ``taskq:global:queue:`` reservation namespace, where "foo:eu"
 # is indistinguishable from queue "foo" in an "eu" sub-namespace, so two
 # queues could share or steal one cap's slots. The row is inert today (the
@@ -149,7 +149,7 @@ def test_cli_zero_max_concurrent_rejected_before_any_db_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`--max-concurrent 0` must die at argument parsing, before the
-    connection is even opened — not surface a DB traceback."""
+    connection is even opened - not surface a DB traceback."""
     captured = _patch_db(monkeypatch)
     result = runner.invoke(app, ["queues", "set-max-concurrent", "q", "--max-concurrent", "0"])
     assert result.exit_code != 0, f"stdout: {result.output}"
@@ -158,8 +158,8 @@ def test_cli_zero_max_concurrent_rejected_before_any_db_call(
 
 def test_cli_ops_value_error_exits_cleanly(monkeypatch: pytest.MonkeyPatch) -> None:
     """A ValueError from the ops layer (e.g. an invalid schema identifier)
-    must print the reason and exit 1 — mirroring `_queues_set_mode`'s
-    handler — not propagate as a traceback."""
+    must print the reason and exit 1 - mirroring `_queues_set_mode`'s
+    handler - not propagate as a traceback."""
 
     class _FakeConn:
         async def close(self) -> None: ...
@@ -180,7 +180,7 @@ def test_cli_ops_value_error_exits_cleanly(monkeypatch: pytest.MonkeyPatch) -> N
     assert "max_concurrent must be >= 1" in result.stderr
     # The clean path: click/typer convert the handled exit to SystemExit. If
     # the ops ValueError escaped instead, result.exception would BE that
-    # ValueError — the traceback-to-operator failure mode.
+    # ValueError - the traceback-to-operator failure mode.
     assert isinstance(result.exception, SystemExit)
     assert "Traceback" not in result.output
 

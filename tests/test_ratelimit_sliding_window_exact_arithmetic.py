@@ -1,7 +1,7 @@
 """Exact-value assertions on the in-memory sliding-window arithmetic.
 
 The GCRA ``peek()`` computation and the two ``acquire()`` denial branches
-ran under test with nothing pinning the numbers they produce — the existing
+ran under test with nothing pinning the numbers they produce - the existing
 suite asserted ``is not None`` and loose inequalities, which survive an
 arithmetic sign flip or a branch-selection flip.  Every assertion here is
 an exact equality against a constant computed by hand from ``limit`` and
@@ -72,8 +72,8 @@ async def test_gcra_denied_by_count_at_allow_at_boundary_retry_after_is_exact() 
 
     This instant is also where the twin deliberately DIVERGES from the
     deployed backends: pure GCRA (the vendored redis-gcra Lua, and the PG
-    fallback) admits here — this would be the ``limit + 1``-th admission
-    inside one window, which GCRA's delay tolerance allows — while the
+    fallback) admits here - this would be the ``limit + 1``-th admission
+    inside one window, which GCRA's delay tolerance allows - while the
     twin's timestamp-log guard denies it.  The strict direction is the
     safe one: the twin can under-admit relative to its configured
     ``limit``, never exceed it, and the deployed paths' admission is
@@ -92,7 +92,7 @@ async def test_gcra_denied_by_count_at_allow_at_boundary_retry_after_is_exact() 
     # oldest log entry is t=0: 0 + 1000 - 250 = 750 ms.
     assert denied.retry_after == timedelta(milliseconds=750)
     # The strictness property itself, on the observable state: the
-    # in-window admission count still sits at exactly ``limit`` — a
+    # in-window admission count still sits at exactly ``limit`` - a
     # pure-GCRA path would have just admitted a (limit+1)-th cell and
     # left the bucket one deeper than its configured bound.
     state = await sw.peek(clock=clock)

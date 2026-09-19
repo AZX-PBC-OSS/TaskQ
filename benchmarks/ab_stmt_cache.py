@@ -5,7 +5,7 @@ Hypothesis: asyncpg caches prepared statements keyed by SQL *text*
 ``max_cached_statement_lifetime=300``). TaskQ renders ``list_jobs`` /
 ``cancel_where`` WHERE clauses dynamically (``_filter_sql.py`` +
 ``_cursor.py``), so if filter combinations vary across calls, each new
-text is a Parse/Describe round trip — and when distinct texts exceed the
+text is a Parse/Describe round trip - and when distinct texts exceed the
 cache cap, LRU eviction turns every call into a miss ("thrash").
 
 This probe:
@@ -106,7 +106,7 @@ def build_query(filter: JobFilter) -> tuple[str, list[Any]]:
 def enumerate_filter_specs() -> list[tuple[str, JobFilter]]:
     """Every legitimate ``JobFilter`` presence pattern x ordering x seam.
 
-    Returns ``(label, filter)`` pairs deduped by the SQL text they emit —
+    Returns ``(label, filter)`` pairs deduped by the SQL text they emit -
     that deduped set is the variant cardinality asyncpg's per-connection
     statement cache sees for a fixed schema.
     """
@@ -165,7 +165,7 @@ def enumerate_filter_specs() -> list[tuple[str, JobFilter]]:
         base_label = "+".join(label_parts) or "none"
         specs.append((base_label, JobFilter(**kw)))
         # A NULL seam (empty cursor field on the nullable ordering) renders
-        # "col IS NULL" terms — a distinct text.  Only FINISHED_AT_DESC has a
+        # "col IS NULL" terms - a distinct text.  Only FINISHED_AT_DESC has a
         # nullable lead column.
         if ordering_for(ob).columns[0].nullable:
             specs.append(
@@ -282,7 +282,7 @@ async def run_backend_regimes(
 
 
 async def run_raw_regimes(pool: asyncpg.Pool, calls: int, dsn: str) -> dict[str, Any]:
-    """Raw ``conn.fetch`` with generated texts — isolates Parse/Describe cost."""
+    """Raw ``conn.fetch`` with generated texts - isolates Parse/Describe cost."""
     specs = enumerate_filter_specs()
     pair_specs = [build_query(f) for _, f in specs]
     results: dict[str, Any] = {}
@@ -295,7 +295,7 @@ async def run_raw_regimes(pool: asyncpg.Pool, calls: int, dsn: str) -> dict[str,
         """Run `passes` passes over the same sequence; one stats block per pass.
 
         Pass 1 over a rotating sequence is the cold/thrash regime; pass 2 is
-        the warm regime over an identical filter distribution — the row
+        the warm regime over an identical filter distribution - the row
         counts (and thus decode cost) are identical, isolating the cache.
         """
         seq = pair_specs if rotating else pair_specs[:1]

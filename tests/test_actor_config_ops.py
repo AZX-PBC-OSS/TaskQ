@@ -2,7 +2,7 @@
 that backs `taskq actor-config get/set/list`.
 
 These are integration-tier (real Postgres) because the whole point of the
-module is a hand-written SQL UPDATE with conditional column assignment —
+module is a hand-written SQL UPDATE with conditional column assignment -
 a fake connection would only prove the query string looks right, not that
 Postgres executes it the way we think.
 """
@@ -54,7 +54,7 @@ async def test_set_returns_none_for_unknown_actor(pg_conn: asyncpg.Connection) -
 
 
 async def test_set_rejects_negative_max_concurrent(pg_conn: asyncpg.Connection) -> None:
-    """Mirrors @actor(...)'s own decoration-time guard (taskq/actor.py) —
+    """Mirrors @actor(...)'s own decoration-time guard (taskq/actor.py) -
     a negative value here would silently floor the dispatch CTE's residual
     to zero and pause the actor with no error anywhere in the path.
     """
@@ -174,7 +174,7 @@ async def test_list_returns_all_rows_ordered_by_actor(pg_conn: asyncpg.Connectio
 
 
 async def test_get_reflects_a_prior_set(pg_conn: asyncpg.Connection) -> None:
-    """End-to-end: sync seeds the row, set changes it, get sees the change —
+    """End-to-end: sync seeds the row, set changes it, get sees the change -
     this is the exact call sequence `taskq actor-config set` / `get` drive.
     """
     schema = f"taco_{new_base62()}".lower()

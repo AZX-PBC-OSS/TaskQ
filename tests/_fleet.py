@@ -2,7 +2,7 @@
 
 Every test in the multi-pod suite needs the same thing: several
 independent workers, each with its own connection pools, its own worker
-row, and its own identity, all polling one shared schema — the shape a
+row, and its own identity, all polling one shared schema - the shape a
 Kubernetes deployment has and a single-process test never does. This
 module builds that once so the scenarios can spend their lines on the
 operational event under test rather than on bootstrap.
@@ -14,7 +14,7 @@ full ``_main``: that coroutine owns its shutdown event privately and
 installs process-global signal handlers, so N of them in one process
 would share one SIGTERM and one health socket. The pods here own their
 shutdown events, which is what lets a test stop pod A while pod B keeps
-running — the rolling deploy the fleet actually experiences.
+running - the rolling deploy the fleet actually experiences.
 
 Claiming goes through ``backend.dispatch_batch``, the production claim
 round, and execution through ``consume_one_job``, the production attempt
@@ -133,7 +133,7 @@ class Pod:
         the same call as a task: the job registers in
         ``deps.active_jobs`` (``consume_one_job``'s own registration, the
         same entry ``di_consumer_loop`` produces in production) while the
-        caller drives on — which is the only way the shutdown
+        caller drives on - which is the only way the shutdown
         orchestration's CANCELLING / FORCING / RELEASING phases ever see a
         running actor in a fleet scenario. The caller owns the task's
         lifecycle: join or cancel it once the scenario's pod is stopped.
@@ -211,8 +211,8 @@ class Fleet:
     async def stop_pod(self, name: str, *, graceful: bool = True) -> int:
         """Take a pod out of the fleet.
 
-        ``graceful`` runs the production shutdown orchestration — the
-        SIGTERM path, with its draining, cancelling and forcing phases —
+        ``graceful`` runs the production shutdown orchestration - the
+        SIGTERM path, with its draining, cancelling and forcing phases -
         and returns its exit code. Without it the pod's pools simply
         close under it with its claims still held, which is what a
         ``SIGKILL``, an OOM kill, or a node loss looks like to the rest
@@ -307,7 +307,7 @@ async def open_fleet(
     that leaves a pod deliberately abandoned still cleans up.
 
     ``migrate=False`` leaves the schema exactly as the caller prepared
-    it — for rollout scenarios that need a deliberately part-migrated
+    it - for rollout scenarios that need a deliberately part-migrated
     schema, which this helper must not quietly complete.
     """
     from taskq.migrate import apply_pending

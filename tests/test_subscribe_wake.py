@@ -1,9 +1,9 @@
 """Tests for InMemoryBackend subscribe_wake.
 
 Covers:
-- per-subscriber semantics — two concurrent subscribe_wake
+- per-subscriber semantics - two concurrent subscribe_wake
   contexts both set on enqueue; exited subscriber no longer notified.
-- subscriber cancelled mid-async with — event removed from
+- subscriber cancelled mid-async with - event removed from
   _wake_subscribers (cleanup happens in __aexit__ even on CancelledError).
 """
 
@@ -89,7 +89,7 @@ class TestCancelledSubscriber:
             nonlocal captured_event
             async with backend.subscribe_wake() as event:
                 captured_event = event
-                # Wait indefinitely — will be cancelled
+                # Wait indefinitely - will be cancelled
                 await asyncio.sleep(100)
 
         task = asyncio.create_task(subscriber_coro())
@@ -118,7 +118,7 @@ class TestSubscribeWakeScheduledToPending:
         promoted to pending via scheduled_to_pending().
 
         requires wake events whenever a job becomes dispatchable
-        — including the scheduled→pending promotion.
+        - including the scheduled→pending promotion.
         """
         from datetime import timedelta
 

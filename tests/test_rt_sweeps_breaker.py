@@ -2,10 +2,10 @@
 
 ``PostgresBackend._run_bounded_sweep`` wraps every sweep call: it records
 the batch size the call will actually use, runs the sweep, and routes
-the two timeout shapes an aborted batch produces — server-side
+the two timeout shapes an aborted batch produces - server-side
 ``statement_timeout`` cancellation (``asyncpg.QueryCanceledError``,
 SQLSTATE 57014) and client-side ``command_timeout``
-(``TimeoutError``) — into the per-sweep ``SweepBatchSizer`` breaker while
+(``TimeoutError``) - into the per-sweep ``SweepBatchSizer`` breaker while
 re-raising for the caller's transient-error handling.
 
 The sizer's state machine itself is unit-pinned in
@@ -14,15 +14,15 @@ rolling window, reduced-tier floor).  This file attacks the WIRING,
 which nothing pins:
 
 * a REAL server-side cancellation (a 50 ms statement_timeout aborting a
-  pg_sleep, on a real connection) counts — and the reduced size is what
+  pg_sleep, on a real connection) counts - and the reduced size is what
   the NEXT call actually runs with, with the gauge reporting it;
 * a non-timeout error does NOT count (the breaker must not latch on
-  ordinary sweep failures — those belong to the caller's retry policy);
+  ordinary sweep failures - those belong to the caller's retry policy);
 * a client-side ``TimeoutError`` counts;
 * an explicit ``batch_size`` override bypasses the latched tier for that
   call only, and the gauge reports the override (reality, not
   configuration);
-* concurrent failing calls sharing one sizer all count — the failure
+* concurrent failing calls sharing one sizer all count - the failure
   accounting must not lose updates when two drains overlap.
 
 The unit pins for the latch semantics live elsewhere, so every
@@ -118,8 +118,8 @@ async def test_real_server_cancellation_reduces_the_next_call_and_feeds_the_gaug
     """Three real 57014 aborts latch the breaker; the NEXT call runs at
     the reduced tier and the gauge reports it.
 
-    The gauge must report the size the call actually used — the reduced
-    tier after latching — because a worker reporting the reduced tier is
+    The gauge must report the size the call actually used - the reduced
+    tier after latching - because a worker reporting the reduced tier is
     reporting an unhealthy database and must not be silent about it.
     """
     schema = module_pg_schema.schema_name
@@ -187,7 +187,7 @@ async def test_non_timeout_errors_do_not_count_toward_the_breaker(
 
     await backend._run_bounded_sweep("deadline_exceeded", None, ok_run)  # pyright: ignore[reportPrivateUsage]  # Why: drives the private wrapper whose wiring is under attack.
     assert sizes_seen == [_DEFAULT_SIZE], (
-        "non-timeout errors must leave the breaker unlatched — the next call "
+        "non-timeout errors must leave the breaker unlatched - the next call "
         f"still runs at {_DEFAULT_SIZE}, ran with {sizes_seen}"
     )
 
@@ -235,7 +235,7 @@ async def test_explicit_batch_size_override_bypasses_the_tier_for_that_call(
 
     The override is the operator's manual escape hatch from a latched
     breaker; it must reach BOTH the sweep (the run's size argument) and
-    the gauge (which reports reality — the override — not the tier).
+    the gauge (which reports reality - the override - not the tier).
     """
     schema = module_pg_schema.schema_name
     backend = _make_backend(schema)
@@ -277,7 +277,7 @@ async def test_concurrent_failing_calls_all_count(
     _gauge_spy(monkeypatch)
     # One connection per concurrent call: asyncpg connections execute one
     # operation at a time, so two overlapping runs on one connection raise
-    # InterfaceError before any batch statement is even attempted — a
+    # InterfaceError before any batch statement is even attempted - a
     # caller bug, not the concurrency the breaker must account for.
     conn2 = await asyncpg.connect(module_pg_schema.pg_dsn)
     conn3 = await asyncpg.connect(module_pg_schema.pg_dsn)

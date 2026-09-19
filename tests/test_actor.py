@@ -78,7 +78,7 @@ def test_metadata_default_is_empty_dict() -> None:
 
 
 def test_metadata_not_shared_between_refs() -> None:
-    """Each ActorRef carries its own metadata dict — no shared mutable default."""
+    """Each ActorRef carries its own metadata dict - no shared mutable default."""
 
     @actor
     async def actor_a(payload: SimplePayload, *args: object, **kwargs: object) -> None:
@@ -214,9 +214,9 @@ def test_unique_for_default_is_none() -> None:
 def test_unique_states_default() -> None:
     """@actor() produces an ActorRef with the shipped unique_states default.
 
-    The default covers ``succeeded`` — the state that says the work
+    The default covers ``succeeded`` - the state that says the work
     already happened, which is the precise condition a ``unique_for``
-    window exists to detect — and still excludes the failure states,
+    window exists to detect - and still excludes the failure states,
     which mean the work did not happen. (This pin previously asserted
     the narrower three-state default; the window deliberately widened to
     cover success, and the explicit three-state set remains the opt-out.)

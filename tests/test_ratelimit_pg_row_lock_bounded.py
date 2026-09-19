@@ -1,32 +1,32 @@
 """Bounded-wait contract for the PG row locks on ``rate_limit_buckets``.
 
 The token-bucket and GCRA PG acquires serialise on the bucket row with a
-blocking ``SELECT … FOR UPDATE`` — with ``rate_limit_pg_fallback_enabled``
+blocking ``SELECT … FOR UPDATE`` - with ``rate_limit_pg_fallback_enabled``
 defaulting on, a Redis outage funnels ALL admission through these row
 locks, exactly when the fleet is already degraded. An unbounded wait
-there means one black-holed holder (dead TCP, no FIN — the server reaps
+there means one black-holed holder (dead TCP, no FIN - the server reaps
 it only via keepalives) stalls that bucket's admission until then: a
 silent hang, the worst failure this project ships.
 
 The log-style sliding window in the SAME package is already bounded
 (``_acquire_pg_log``: advisory two-tier, fail-closed denial on budget
-exhaustion — see ``tests/test_ratelimit_sliding_window_pg_lock.py``).
+exhaustion - see ``tests/test_ratelimit_sliding_window_pg_lock.py``).
 This module pins the same contract for the two row-lock paths:
 
 1. The row-lock WAIT is bounded: a racer whose server-side
-   ``lock_timeout`` fires gets the limiter's DENIAL outcome —
-   ``allowed=False`` with a retry hint of one more budget — never an
+   ``lock_timeout`` fires gets the limiter's DENIAL outcome -
+   ``allowed=False`` with a retry hint of one more budget - never an
    unbounded block, never an admission, never a raw driver error.
-2. Fail closed: the timed-out racer's upsert never runs — a racer that
+2. Fail closed: the timed-out racer's upsert never runs - a racer that
    could not read the bucket state can never spend or admit tokens.
-3. ``lock_timeout_ms <= 0`` waits indefinitely — the ``lock_timeout``
+3. ``lock_timeout_ms <= 0`` waits indefinitely - the ``lock_timeout``
    GUC convention shared with migrate.py and ``taskq._advisory``.
 4. The client-side ``asyncio.wait_for`` backstop bounds the network
    black hole the server-side timeout cannot see.
 
 Mechanics mirrored from ``taskq._advisory``'s contended tier:
 ``set_config('lock_timeout', ..., true)`` (``SET LOCAL`` semantics, so
-the bound dies with the acquire's own transaction — no restore needed,
+the bound dies with the acquire's own transaction - no restore needed,
 unlike the enqueue helper whose caller keeps using the transaction), a
 savepoint around the lock-taking statements so a 55P03 leaves the
 transaction committable, and the backstop outside both.
@@ -61,13 +61,13 @@ from taskq.ratelimit.token_bucket import DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS
 from taskq.settings import WorkerSettings
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.worker.deps import (
-    _admission_lock_budget_pairs,  # pyright: ignore[reportPrivateUsage]  # Why: the pair-list seam is the exact input open_worker_deps derives the dispatcher pool's bound from — pinning it pins the reconciliation's wiring, not a reimplementation of it.
+    _admission_lock_budget_pairs,  # pyright: ignore[reportPrivateUsage]  # Why: the pair-list seam is the exact input open_worker_deps derives the dispatcher pool's bound from - pinning it pins the reconciliation's wiring, not a reimplementation of it.
     open_worker_deps,
 )
 
 
 def _fake_settings() -> WorkerSettings:
-    """Settings for the fake-pool unit tests — no connection is ever made."""
+    """Settings for the fake-pool unit tests - no connection is ever made."""
     return WorkerSettings.load_from_dict(
         {"pg_dsn": "postgresql://u:p@h/d", "schema_name": "taskq_fake"},
     )
@@ -102,7 +102,7 @@ class _NullSavepoint:
 class _RowLockFakeConn:
     """ConnLike stand-in modelling a stuck row lock on the bucket row.
 
-    The fused acquires (token bucket and GCRA, #228) take the bucket
+    The fused acquires (token bucket and GCRA) take the bucket
     row's lock in the ``ON CONFLICT (bucket_name) DO UPDATE`` arm, so
     THAT fetchrow is where the bounded wait lands: it raises the raw
     55P03 (*select_times_out*: the server-side ``lock_timeout`` fired
@@ -208,8 +208,8 @@ _GCRA_ROW: dict[str, object] = {"kind": "gcra", "state": {"tat": 1000.0}, "now_s
 class TestTokenBucketRowLockBoundedWaitUnit:
     async def test_lock_timeout_returns_denial_never_admission(self) -> None:
         """A token-bucket acquire whose server-side lock_timeout fires
-        gets the limiter's denial outcome — allowed=False with a retry
-        hint of exactly one more budget — and the state-mutating upsert
+        gets the limiter's denial outcome - allowed=False with a retry
+        hint of exactly one more budget - and the state-mutating upsert
         never ran: fail closed, a racer that could not read the bucket
         never spends or admits tokens."""
         tb = _tb("tb_row_lock_unit")
@@ -239,13 +239,13 @@ class TestTokenBucketRowLockBoundedWaitUnit:
         # Fail closed: the fused acquire never RETURNED, a statement that
         # raised spent and admitted nothing (statement-level atomicity).
         assert conn.fused_results == [], (
-            "a timed-out racer wrote bucket state — the denial must be "
+            "a timed-out racer wrote bucket state - the denial must be "
             "fail closed, never an admission."
         )
 
     async def test_lock_timeout_logs_ratelimit_warning_event(self) -> None:
         """The ``ratelimit-lock-timeout`` log event carries the bucket and
-        the expired budget — the same signal the log-style path emits,
+        the expired budget - the same signal the log-style path emits,
         so an operator reads one event name for one condition."""
         tb = _tb("tb_row_lock_unit_log")
         conn = _RowLockFakeConn(select_times_out=True)
@@ -285,7 +285,7 @@ class TestTokenBucketRowLockBoundedWaitUnit:
 
     async def test_lock_timeout_budget_zero_waits_indefinitely(self) -> None:
         """``lock_timeout_ms <= 0`` disables the bound (the pre-fix
-        behavior), matching the ``lock_timeout`` GUC convention — pinned
+        behavior), matching the ``lock_timeout`` GUC convention - pinned
         by contract, not by waiting forever: the granted fake proves the
         indefinite mode takes the plain blocking read with no GUC
         statements and no savepoint of its own."""
@@ -310,7 +310,7 @@ class TestTokenBucketRowLockBoundedWaitUnit:
 
     async def test_client_backstop_bounds_black_holed_row_lock(self) -> None:
         """A network black hole (the row-lock SELECT never returns) is
-        bounded by the client-side wait_for backstop at budget + slack —
+        bounded by the client-side wait_for backstop at budget + slack -
         the server-side lock_timeout cannot fire if the server is
         unreachable, so this layer is the only bound left, and the
         outcome is still the fail-closed denial."""
@@ -364,13 +364,13 @@ class TestGcraRowLockBoundedWaitUnit:
         # Fail closed: the fused upsert never RETURNED, a statement that
         # raised advanced no TAT and admitted nothing.
         assert conn.fused_results == [], (
-            "a timed-out racer advanced the TAT — the denial must be "
+            "a timed-out racer advanced the TAT - the denial must be "
             "fail closed, never an admission."
         )
 
     async def test_lock_timeout_logs_ratelimit_warning_event(self) -> None:
         """The same ``ratelimit-lock-timeout`` warning, same keys, as the
-        token-bucket and log-style paths — one event name for one
+        token-bucket and log-style paths - one event name for one
         condition across every bounded limiter lock."""
         sw = _sw("gcra_row_lock_unit_log")
         conn = _RowLockFakeConn(select_times_out=True)
@@ -407,7 +407,7 @@ class TestGcraRowLockBoundedWaitUnit:
         assert len(conn.fused_results) == 1, "the fused upsert returned the advanced TAT"
 
     async def test_lock_timeout_budget_zero_waits_indefinitely(self) -> None:
-        """``lock_timeout_ms <= 0`` disables the bound — the GUC
+        """``lock_timeout_ms <= 0`` disables the bound - the GUC
         convention, pinned by contract: the granted fake proves the
         indefinite mode is ONE autocommit statement with no GUC
         statements and no transaction of its own."""
@@ -429,7 +429,7 @@ class TestGcraRowLockBoundedWaitUnit:
 
     async def test_client_backstop_bounds_black_holed_row_lock(self) -> None:
         """The client-side backstop bounds the GCRA path's network black
-        hole the same way — budget + slack, then the fail-closed
+        hole the same way - budget + slack, then the fail-closed
         denial."""
         sw = _sw("gcra_row_lock_unit_blackhole")
         conn = _BlackHoleRowLockConn(select_row=_GCRA_ROW)
@@ -455,16 +455,16 @@ class TestGcraRowLockBoundedWaitUnit:
 
 class TestTokenBucketRefundRowLockBoundedWaitUnit:
     """The token-bucket PG refund's ``FOR UPDATE`` wait is bounded by the
-    same discipline as the acquire — with the opposite exhaustion
+    same discipline as the acquire - with the opposite exhaustion
     semantics: a refund that could not take the row lock RAISES, because
     ``_refund_pg`` returns ``None`` on success and a silent no-op return
     on budget exhaustion would make a lost refund look like a completed
-    one (tokens stay spent — for a fixed-quota bucket, permanently)."""
+    one (tokens stay spent - for a fixed-quota bucket, permanently)."""
 
     async def test_lock_timeout_raises_never_silent_noop(self) -> None:
         """A refund whose server-side lock_timeout fires raises the
-        driver error — never returns ``None`` as though the refund
-        happened — and the state-mutating UPDATE never ran."""
+        driver error - never returns ``None`` as though the refund
+        happened - and the state-mutating UPDATE never ran."""
         tb = _tb("tb_refund_row_lock_unit")
         conn = _RowLockFakeConn(select_times_out=True)
         start = time.monotonic()
@@ -484,13 +484,13 @@ class TestTokenBucketRefundRowLockBoundedWaitUnit:
         assert conn.savepoint_opens == 2
         # Never a silent success: the refund UPDATE never executed.
         assert not any("UPDATE" in s for s in conn.executed_sql), (
-            "a timed-out refund wrote bucket state or returned quietly — a "
+            "a timed-out refund wrote bucket state or returned quietly - a "
             "refund failure must never look like a success"
         )
 
     async def test_lock_timeout_logs_ratelimit_warning_event(self) -> None:
         """The refund's lock-timeout emits the same ``ratelimit-lock-timeout``
-        event as the acquire paths — one event name for one condition —
+        event as the acquire paths - one event name for one condition -
         with ``phase="refund"`` marking the different consequence (a lost
         refund, not a denied admission)."""
         tb = _tb("tb_refund_row_lock_unit_log")
@@ -532,7 +532,7 @@ class TestTokenBucketRefundRowLockBoundedWaitUnit:
 
     async def test_lock_timeout_budget_zero_waits_indefinitely(self) -> None:
         """``lock_timeout_ms <= 0`` disables the bound (the pre-bound
-        behavior), matching the ``lock_timeout`` GUC convention — pinned
+        behavior), matching the ``lock_timeout`` GUC convention - pinned
         by contract: the granted fake proves the indefinite mode takes
         the plain blocking read with no GUC statements and no savepoint
         of its own."""
@@ -544,7 +544,7 @@ class TestTokenBucketRefundRowLockBoundedWaitUnit:
             _fake_settings(),
             lock_timeout_ms=0.0,
         )
-        # Only the refund's OWN transaction wrapper opened — indefinite
+        # Only the refund's OWN transaction wrapper opened - indefinite
         # mode adds no savepoint of its own.
         assert conn.savepoint_opens == 1, "indefinite mode must not open a savepoint"
         assert conn.set_config_values == [], "indefinite mode must not touch the GUC"
@@ -553,7 +553,7 @@ class TestTokenBucketRefundRowLockBoundedWaitUnit:
     async def test_client_backstop_bounds_black_holed_row_lock(self) -> None:
         """A network black hole (the refund's row-lock SELECT never
         returns) is bounded by the client-side wait_for backstop at
-        budget + slack, and the outcome is still a RAISE — the refund
+        budget + slack, and the outcome is still a RAISE - the refund
         never completes silently."""
         tb = _tb("tb_refund_row_lock_unit_blackhole")
         conn = _BlackHoleRowLockConn(select_row=_TB_ROW)
@@ -571,7 +571,7 @@ class TestTokenBucketRefundRowLockBoundedWaitUnit:
         assert elapsed >= 0.5, f"the backstop must outlast the 100ms budget, took {elapsed:.3f}s"
         assert elapsed < 2.0, f"the backstop must bound the black hole, took {elapsed:.3f}s"
         assert not any("UPDATE" in s for s in conn.executed_sql), (
-            "a backstopped refund must not write state — it raised instead"
+            "a backstopped refund must not write state - it raised instead"
         )
 
 
@@ -627,7 +627,7 @@ class TestRowLockBoundedWaitPg:
             assert decision.retry_after == timedelta(milliseconds=250.0)
             assert 0.2 <= elapsed < 3.0, f"budget was 250 ms but the wait took {elapsed:.3f}s"
 
-            # Fail closed: the timed-out racer consumed nothing — the
+            # Fail closed: the timed-out racer consumed nothing - the
             # holder's seeded 5 tokens are intact once it commits.
         finally:
             await holder.close()
@@ -639,7 +639,7 @@ class TestRowLockBoundedWaitPg:
         # bucket's ts at seed time, and the pinned elapsed-accrual contract
         # (test_ratelimit_token_bucket_pg.py::test_pg_burst_throttle_refill)
         # makes every real acquire fold refill since that stamp into
-        # remaining — the exact 5.0 -> 4.0 arithmetic below is only
+        # remaining - the exact 5.0 -> 4.0 arithmetic below is only
         # assertable with the window rewound to the acquire's own read
         # (the same _rewind_bucket_ts discipline the token-bucket PG
         # suite uses for time travel).
@@ -660,7 +660,7 @@ class TestRowLockBoundedWaitPg:
         assert cleared.allowed is True
         # abs tolerance, constraint named: the rewind and the acquire are
         # two separate round trips, so real wall-clock time (a few ms at
-        # 1 token/s refill) accrues between them — the pinned elapsed
+        # 1 token/s refill) accrues between them - the pinned elapsed
         # accrual contract makes that mandatory. The tolerance covers only
         # that inter-statement gap; the pre-rewind shape failed at 4.26
         # (the whole 250 ms lock budget's accrual), an order past it.
@@ -866,7 +866,7 @@ class TestRowLockBudgetsAreOperatorSettings:
         with pytest.raises(AttributeError, match=field):
             resolve(
                 None,
-                _PreKnobSettings(),  # type: ignore[arg-type]  # Why: the double deliberately lacks the field — its absence is the behaviour under test.
+                _PreKnobSettings(),  # type: ignore[arg-type]  # Why: the double deliberately lacks the field - its absence is the behaviour under test.
                 DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS,
             )
 
@@ -968,7 +968,7 @@ class TestAdmissionLockBudgetReDerivesTheDispatcherPoolBound:
     and ``_leader_sweeps.py`` / the rate-limit registry run their PG
     acquires against exactly this pool). The acquires wrap the contended
     tier in ``asyncio.wait_for(..., timeout=lock_timeout_ms / 1000 +
-    slack)`` — but that ``wait_for`` is layered OUTSIDE asyncpg's own
+    slack)`` - but that ``wait_for`` is layered OUTSIDE asyncpg's own
     per-statement ``command_timeout`` enforcement, which fires
     independently on the connection itself. Left unreconciled, a budget
     widened past the pool's bound is silently truncated by it: the
@@ -981,7 +981,7 @@ class TestAdmissionLockBudgetReDerivesTheDispatcherPoolBound:
     ``taskq.connections.lock_budget_command_timeout_secs`` from the
     ``(configured, shipped-default)`` pairs that
     ``_admission_lock_budget_pairs`` reads off the two admission budget
-    fields, with ``settings.dispatcher_command_timeout`` as the floor —
+    fields, with ``settings.dispatcher_command_timeout`` as the floor -
     the same machinery the client pool applies to the enqueue budgets
     (``taskq.client._taskq._ENQUEUE_LOCK_BUDGET_FIELDS``). At the shipped
     defaults the derived bound IS the configured value, so a deployment
@@ -995,7 +995,7 @@ class TestAdmissionLockBudgetReDerivesTheDispatcherPoolBound:
     There is deliberately NO settings-level cross-field validator here:
     refusing a valid configuration would be strictly weaker than
     honouring it. (This class previously pinned the pre-reconciliation
-    defect — a widened budget silently accepted and then truncated at
+    defect - a widened budget silently accepted and then truncated at
     run time; its negative form is ungreenable now that the derivation
     exists, and its own failure message instructed this rewrite.)
     """
@@ -1011,7 +1011,7 @@ class TestAdmissionLockBudgetReDerivesTheDispatcherPoolBound:
             (DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS, DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS),
             (DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS, DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS),
         ], (
-            "the derivation input drifted from the shipped constants — the "
+            "the derivation input drifted from the shipped constants - the "
             "pairs must carry (configured, shipped default) per admission "
             "budget, read off the settings fields, so a widened budget is "
             "detected against its own default"
@@ -1021,7 +1021,7 @@ class TestAdmissionLockBudgetReDerivesTheDispatcherPoolBound:
         )
         assert derived == settings.dispatcher_command_timeout == 5.0, (
             "at the shipped defaults the derived dispatcher pool bound must "
-            "BE the configured dispatcher_command_timeout — the "
+            "BE the configured dispatcher_command_timeout - the "
             "reconciliation exists to deliver WIDENED budgets and must not "
             "move the bound for a deployment that sets nothing"
         )
@@ -1053,20 +1053,20 @@ class TestAdmissionLockBudgetReDerivesTheDispatcherPoolBound:
         assert derived == expected_secs, (
             f"a widened {field}={widened_ms:g}ms must re-derive the "
             f"dispatcher pool's command_timeout to {expected_secs:g}s "
-            f"(budget / 0.8); got {derived:g}s — left at the "
+            f"(budget / 0.8); got {derived:g}s - left at the "
             f"{settings.dispatcher_command_timeout:g}s floor, the pool's own "
             "client-side timer would fire first and silently truncate the "
             "operator's wider server-side budget"
         )
         assert derived * 1000.0 * 0.8 == widened_ms, (
             "the widened budget occupies exactly its share of the derived "
-            "bound — the server-side refusal fires a fifth of the bound "
+            "bound - the server-side refusal fires a fifth of the bound "
             "ahead of the pool's client-side timer"
         )
         assert derived > settings.dispatcher_command_timeout
 
     def test_two_widened_budgets_raise_the_bound_to_the_wider_one(self) -> None:
-        """With both budgets widened, the bound follows the WIDER budget —
+        """With both budgets widened, the bound follows the WIDER budget -
         the narrower one then fits inside the same bound unclamped."""
         settings = _operator_settings(
             token_bucket_lock_timeout_ms="8000",
@@ -1083,7 +1083,7 @@ class TestAdmissionLockBudgetReDerivesTheDispatcherPoolBound:
         unbounded server-side wait under the ``lock_timeout`` GUC
         convention) never moves the bound off the configured floor: the
         floor already delivers a narrowed budget, and an unbounded wait
-        cannot fit inside any finite bound — dropping the pool's
+        cannot fit inside any finite bound - dropping the pool's
         per-query bound for it would remove the black-hole guard every
         other statement relies on."""
         for value in ("1000", "0", "-1"):
@@ -1106,7 +1106,7 @@ class TestAdmissionLockBudgetReDerivesTheDispatcherPoolBound:
         """The derivation is wired, not dead code: ``open_worker_deps``
         feeds the derived value into the dispatcher pool factory's
         ``command_timeout``. A refactor that stopped applying it (the
-        original defect's shape — machinery present, admission fields
+        original defect's shape - machinery present, admission fields
         never wired in) fails here even though the derivation's own unit
         tests still pass."""
         src = inspect.getsource(open_worker_deps)
@@ -1115,7 +1115,7 @@ class TestAdmissionLockBudgetReDerivesTheDispatcherPoolBound:
         )
         assert "_admission_lock_budget_pairs(settings)" in src, (
             "open_worker_deps no longer derives the dispatcher pool bound "
-            "from the admission lock budgets — a widened "
+            "from the admission lock budgets - a widened "
             "token_bucket_lock_timeout_ms / sliding_window_lock_timeout_ms "
             "is silently truncated by the pool's own command_timeout again"
         )

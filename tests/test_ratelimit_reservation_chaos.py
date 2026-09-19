@@ -1,12 +1,12 @@
 """Chaos / failure-mode integration tests for ConcurrencyReservation.
 
-Worker dies mid-job — heartbeat stops; after lease seconds, Sweep 4
+Worker dies mid-job - heartbeat stops; after lease seconds, Sweep 4
        reclaims the slot; a new acquire by another worker succeeds.
-100 concurrent acquires for 8 slots — exactly 8 succeed; 92 raise
+100 concurrent acquires for 8 slots - exactly 8 succeed; 92 raise
        ReservationUnavailable; no over-allocation; no deadlock.
-Connection loss mid-acquire — close asyncpg connection mid-transaction;
+Connection loss mid-acquire - close asyncpg connection mid-transaction;
        PG rolls back; slot not left held.
-PG dies during acquire — stop PG container mid-acquire;
+PG dies during acquire - stop PG container mid-acquire;
         PostgresConnectionError raised; no slot held (transaction rolled back).
         Uses its own function-scoped PG container so the session-scoped one
         is not affected by the stop/restart cycle.
@@ -56,7 +56,7 @@ async def test_worker_death_sweep_reclaim(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """Worker dies mid-job — heartbeat stops; after lease seconds,
+    """Worker dies mid-job - heartbeat stops; after lease seconds,
     Sweep 4 reclaims the slot; a new acquire by another worker succeeds."""
     schema = module_pg_schema.schema_name
     bucket = _unique_name()
@@ -106,7 +106,7 @@ async def test_concurrent_100_for_8_slots(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """100 concurrent acquires for 8 slots — exactly 8 succeed;
+    """100 concurrent acquires for 8 slots - exactly 8 succeed;
     92 raise ReservationUnavailable; no over-allocation; no deadlock."""
     schema = module_pg_schema.schema_name
     bucket = _unique_name()
@@ -142,7 +142,7 @@ async def test_connection_loss_mid_acquire(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """Connection loss mid-acquire — simulate by closing the asyncpg
+    """Connection loss mid-acquire - simulate by closing the asyncpg
     connection mid-transaction; PG rolls back the in-flight transaction
     automatically; slot is not left held.
 
@@ -205,14 +205,14 @@ def _chaos_pg() -> Iterator[PostgresContainer]:  # pyright: ignore[reportUnusedF
 @pytest.mark.slow
 @pytest.mark.xdist_group(name="chaos")
 async def test_pg_dies_during_acquire(_chaos_pg: PostgresContainer) -> None:
-    """PG dies during acquire — stop the PG container mid-acquire;
+    """PG dies during acquire - stop the PG container mid-acquire;
     asyncpg.PostgresConnectionError raised; no slot is held (transaction
     rolled back).
 
     Uses its own function-scoped PG container so the session-scoped one
     is not affected by the stop/restart cycle.
     """
-    # Why: get_connection_url resolves the mapped port via docker HTTP — off-loop.
+    # Why: get_connection_url resolves the mapped port via docker HTTP - off-loop.
     pg_dsn = (await asyncio.to_thread(_chaos_pg.get_connection_url)).replace(
         "postgresql+psycopg2://", "postgresql://"
     )
@@ -254,7 +254,7 @@ async def test_pg_dies_during_acquire(_chaos_pg: PostgresContainer) -> None:
             assert row is not None
 
             # Why: docker-py stop blocks the loop for the whole HTTP round-trip
-            # (measured 2.4-3.8s continuous loop stalls) — off-loop.
+            # (measured 2.4-3.8s continuous loop stalls) - off-loop.
             await asyncio.to_thread(_chaos_pg.stop)
 
             # InterfaceError: with the stop off the event loop, the loop is free to
@@ -280,14 +280,14 @@ async def test_pg_dies_during_acquire(_chaos_pg: PostgresContainer) -> None:
         # Retry up to 3 times with a brief cooldown between attempts.
         for attempt in range(3):
             try:
-                # Why: docker-py start (+ readiness wait) blocks the loop — off-loop.
+                # Why: docker-py start (+ readiness wait) blocks the loop - off-loop.
                 await asyncio.to_thread(_chaos_pg.start)
                 break
             except Exception:
                 if attempt == 2:
                     raise
                 await asyncio.sleep(2)
-        # Why: get_connection_url resolves the mapped port via docker HTTP — off-loop.
+        # Why: get_connection_url resolves the mapped port via docker HTTP - off-loop.
         fresh_dsn = (await asyncio.to_thread(_chaos_pg.get_connection_url)).replace(
             "postgresql+psycopg2://", "postgresql://"
         )

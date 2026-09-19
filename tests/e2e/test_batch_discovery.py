@@ -1,8 +1,8 @@
-"""Batch discovery e2e — list_batches finds active and completed batches.
+"""Batch discovery e2e - list_batches finds active and completed batches.
 
 Scenario:
-- Batch B: 2 long-running jobs (30s each) — stays active for test duration.
-- Batch A: 5 fast jobs — completes during test.
+- Batch B: 2 long-running jobs (30s each) - stays active for test duration.
+- Batch A: 5 fast jobs - completes during test.
 
 Assertions:
 - ``list_batches(active=True)`` → batch B present, batch A absent (while A
@@ -144,7 +144,7 @@ async def test_list_batches_active_and_completed(
     assert batch_a_summary.completion.succeeded == _BATCH_A_SIZE
     assert batch_a_summary.completion.is_complete
 
-    # Assert batch B's live completion counts — the long-running jobs
+    # Assert batch B's live completion counts - the long-running jobs
     # should still be in-flight (not terminal), so pending > 0 and
     # is_complete is False.
     active_b_summary = next((b for b in active_batches if b.batch_id == batch_b_id), None)

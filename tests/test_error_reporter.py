@@ -1,8 +1,8 @@
 """Unit tests for invoke_error_reporter: timeout guard (S4) and argument
 order (S5).
 
-The ErrorReporter.report signature is ``(job, exception)`` — job first,
-exception second — matching OnRetryExhausted's ``(JobRow, BaseException)``
+The ErrorReporter.report signature is ``(job, exception)`` - job first,
+exception second - matching OnRetryExhausted's ``(JobRow, BaseException)``
 convention.  invoke_error_reporter wraps the call in asyncio.wait_for with
 a configurable timeout, catching TimeoutError and Exception separately.
 """
@@ -21,7 +21,7 @@ from taskq.testing.jobs import make_job_row
 
 
 async def test_report_receives_job_then_exception() -> None:
-    """ErrorReporter.report is called with (job, exception) — job first,
+    """ErrorReporter.report is called with (job, exception) - job first,
     exception second."""
     received: list[tuple[JobRow, BaseException]] = []
 

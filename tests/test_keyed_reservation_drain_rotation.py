@@ -7,21 +7,21 @@ first is ``sync_slots``, which iterates only currently-registered
 reservations and is therefore blind to an evicted bucket by
 construction). Four invariants keep it safe and live:
 
-- **Fairness** — the per-schema pending set is insertion-ordered and the
+- **Fairness** - the per-schema pending set is insertion-ordered and the
   drain takes the FRONT batch, re-appending that tick's survivors (names
   whose rows were all still held by a live lease) to the BACK. A held
   bucket waits at most one full rotation; a sorted head of held buckets
   can never starve the pending tail behind it (starvation strands idle
   rows forever, fills the pending set to its cap, and vetoes every
-  later eviction — a fail-closed availability cliff).
-- **Held-row guard** — the drain's DELETE removes only free or
+  later eviction - a fail-closed availability cliff).
+- **Held-row guard** - the drain's DELETE removes only free or
   lease-expired rows. A slot genuinely held by a live lease survives
   every drain, its bucket stays pending, and the holder's release (or
   lease expiry) is what finally frees the row for the next drain.
-- **Slice bound** — one drain call's DELETE touches at most
+- **Slice bound** - one drain call's DELETE touches at most
   ``batch_names`` buckets per schema, so one tick's write set is
   constant-size against any evicted-key backlog.
-- **No lingering empty schema keys** — a drain pass that empties a
+- **No lingering empty schema keys** - a drain pass that empties a
   schema's pending set (every name re-registered, or every row
   reclaimed) pops the schema key, so a later drain with nothing pending
   acquires no connection at all.
@@ -139,7 +139,7 @@ def _seed_idle(reg: RateLimitRegistry, *buckets: str) -> None:
 async def test_held_head_does_not_starve_the_pending_tail(pg_dsn: str) -> None:
     """Three held buckets at the head of the pending queue plus one
     fully-idle bucket behind them: with ``batch_names=2``, repeated drains
-    must reclaim the IDLE bucket's rows even while every head stays held —
+    must reclaim the IDLE bucket's rows even while every head stays held -
     a held bucket waits at most one full rotation, never blocks the tail."""
     await _fresh_schema(pg_dsn)
 
@@ -191,7 +191,7 @@ async def test_held_head_does_not_starve_the_pending_tail(pg_dsn: str) -> None:
 
 async def test_held_slot_survives_drain_until_release(pg_dsn: str) -> None:
     """A slot genuinely held by a live lease survives the drain's
-    idle-guarded DELETE — the bucket stays pending, a re-acquire against
+    idle-guarded DELETE - the bucket stays pending, a re-acquire against
     the still-held row is denied, and only the holder's release lets the
     next drain reclaim the row."""
     await _fresh_schema(pg_dsn)
@@ -215,7 +215,7 @@ async def test_held_slot_survives_drain_until_release(pg_dsn: str) -> None:
         await reg.drain_pending_reservation_reclaims(pool)
 
         assert await _slot_rows(pool, bucket) == 1, (
-            "the drain's DELETE must skip a row held by a live lease — deleting "
+            "the drain's DELETE must skip a row held by a live lease - deleting "
             "it would let a second job acquire the slot the holder still owns"
         )
         assert await _held_rows(pool, bucket) == 1
@@ -223,7 +223,7 @@ async def test_held_slot_survives_drain_until_release(pg_dsn: str) -> None:
             "a held survivor must stay pending for a later drain"
         )
 
-        # The still-held row denies a second acquirer — the PG row enforces
+        # The still-held row denies a second acquirer - the PG row enforces
         # the cap regardless of the registry entry's lifecycle.
         from taskq.exceptions import ReservationUnavailable
 
@@ -245,7 +245,7 @@ async def test_held_slot_survives_drain_until_release(pg_dsn: str) -> None:
 async def test_drain_delete_is_bounded_by_batch_names(pg_dsn: str) -> None:
     """One drain call's DELETE touches at most ``batch_names`` buckets: with
     five pending idle buckets and ``batch_names=2``, one drain reclaims
-    exactly two buckets' rows, the next drain two more, the last the rest —
+    exactly two buckets' rows, the next drain two more, the last the rest -
     never the whole backlog in one statement."""
     await _fresh_schema(pg_dsn)
 
@@ -264,7 +264,7 @@ async def test_drain_delete_is_bounded_by_batch_names(pg_dsn: str) -> None:
         await reg.drain_pending_reservation_reclaims(pool, batch_names=2)
         assert [await _slot_rows(pool, b) for b in buckets] == [0, 0, 1, 1, 1], (
             "one drain must delete only the front slice of pending buckets, not "
-            "the whole backlog — an unbounded DELETE is the backlog-ricochet "
+            "the whole backlog - an unbounded DELETE is the backlog-ricochet "
             "defect the bounded-write guard exists for"
         )
 
@@ -281,7 +281,7 @@ async def test_drain_delete_is_bounded_by_batch_names(pg_dsn: str) -> None:
 
 
 class _AcquireRaisingPool:
-    """A pool whose ``acquire`` raises — proves a drain touches no connection."""
+    """A pool whose ``acquire`` raises - proves a drain touches no connection."""
 
     def acquire(self, *, timeout: float | None = None) -> Any:
         raise asyncpg.PostgresConnectionError("no drain should reach the pool")
@@ -312,7 +312,7 @@ async def test_drain_emptied_by_re_registration_pops_the_schema_key(pg_dsn: str)
         assert await _slot_rows(pool, bucket) == 1, "a re-activated key's rows must be left alone"
 
         # Nothing pending: the next drain must return before acquiring a
-        # connection — an empty-set schema key lingering after the pass
+        # connection - an empty-set schema key lingering after the pass
         # would make every later drain pay a pool acquire for nothing.
         assert await reg.drain_pending_reservation_reclaims(_AcquireRaisingPool()) == 0  # type: ignore[arg-type]  # Why: a minimal stand-in for asyncpg.Pool; only acquire() is reached, and only if the bug is present.
     finally:

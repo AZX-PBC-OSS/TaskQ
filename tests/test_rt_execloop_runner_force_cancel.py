@@ -1,14 +1,14 @@
 """Red-team: the in-memory runner has no force-cancel seam (E4).
 
 Contract under attack: after both cancel graces elapse, the in-memory test
-runner must TERMINATE a non-cooperative attempt — ``run_until_drained``
-completes — mirroring production phase 2, which hard-cancels the actor task
+runner must TERMINATE a non-cooperative attempt - ``run_until_drained``
+completes - mirroring production phase 2, which hard-cancels the actor task
 (``active.task.cancel()`` at src/taskq/worker/cancel.py:287).
 
 Hypothesis (verified against the current tree): the runner's
 ``tick_cancel_polling`` (src/taskq/testing/_runner.py:523-582) only fires the
 cooperative cancel event, escalates the row's ``cancel_phase`` to 2, and
-marks the row ``abandoned`` — no task cancellation exists anywhere under
+marks the row ``abandoned`` - no task cancellation exists anywhere under
 ``taskq/testing/``. A never-cooperative stub therefore hangs
 ``run_until_drained`` forever while the row already says abandoned.
 
@@ -40,7 +40,7 @@ async def test_runner_terminates_noncooperative_attempt_after_force_grace() -> N
 
     async def stubborn(payload: object, ctx: object) -> None:
         # ctx is the runner's duck-typed stub context; this stub pins the
-        # NON-cooperative shape — it never reads ctx.cancel_event, exactly
+        # NON-cooperative shape - it never reads ctx.cancel_event, exactly
         # like a hung actor that no cooperative signal can reach.
         await asyncio.sleep(3600.0)
 
@@ -87,14 +87,14 @@ async def test_runner_terminates_noncooperative_attempt_after_force_grace() -> N
         f"abandoned (it does today); got status={row.status!r}"
     )
 
-    # DESIRED: the runner terminates the attempt — the drain task completes
+    # DESIRED: the runner terminates the attempt - the drain task completes
     # within a bounded real-time budget.
     terminated: bool
     try:
         await asyncio.wait_for(drain_task, timeout=2.0)
         terminated = True
     except asyncio.CancelledError:
-        # The runner ended its own drain task to kill the attempt — a
+        # The runner ended its own drain task to kill the attempt - a
         # termination shape, not a hang.
         terminated = True
     except TimeoutError:
@@ -107,8 +107,8 @@ async def test_runner_terminates_noncooperative_attempt_after_force_grace() -> N
         "which hard-cancels the actor task (src/taskq/worker/cancel.py:287 "
         "`active.task.cancel()`). VIOLATION: tick_cancel_polling "
         "(src/taskq/testing/_runner.py:523-582) only sets the cooperative "
-        "event, escalates the row's cancel_phase, and marks the row abandoned — "
-        "no task cancellation exists anywhere under taskq/testing/ — so the "
+        "event, escalates the row's cancel_phase, and marks the row abandoned - "
+        "no task cancellation exists anywhere under taskq/testing/ - so the "
         "non-cooperative stub (asyncio.sleep(3600)) hangs run_until_drained "
         "forever while the row already says abandoned; this wait_for timeout "
         "is the proof of the hang."

@@ -100,7 +100,7 @@ def _pytest_version_tuple() -> tuple[int, ...]:
 
 
 def test_upstream_pytest_interleaved_conftest_behavior(tmp_path: Path) -> None:
-    """Probe the minimal upstream #14971 scenario against the installed pytest.
+    """Probe the minimal upstream scenario against the installed pytest.
 
     Once pytest carries the upstream fix the probe asserts collection is
     order-independent WITHOUT our restructuring; while the installed pytest is

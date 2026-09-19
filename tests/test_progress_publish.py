@@ -34,8 +34,8 @@ def _make_redis_mock(*, raise_on_publish: Exception | None = None) -> AsyncMock:
 class _RecordingPipeline:
     """Pipeline double: records queued publish commands and execute round trips.
 
-    Queuing is a local buffer append on a real pipeline — no await per
-    command — and the round trip happens only at ``execute``, so both
+    Queuing is a local buffer append on a real pipeline - no await per
+    command - and the round trip happens only at ``execute``, so both
     methods here are synchronous bar ``execute``.
     """
 
@@ -65,7 +65,7 @@ class _RecordingRedisClient:
 
     ``pipelines`` / ``pipeline_kwargs`` record what the dual-channel path
     built; ``direct_publishes`` records single ``client.publish`` round
-    trips — the sequential shape the dual-channel path must not use.
+    trips - the sequential shape the dual-channel path must not use.
     ``execute_error`` wires a failing round trip for failure-path tests.
     """
 
@@ -125,7 +125,7 @@ async def test_terminal_flush_before_mark_succeeded_drains_buffer() -> None:
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="test_actor")
     job_id = new_job_id()
     worker_id = new_uuid()
@@ -412,8 +412,8 @@ async def test_ctx_progress_no_publish_when_redis_client_none() -> None:
 
 async def test_publish_progress_event_global_channel_when_enabled() -> None:
     """progress_publish_global=True (the default): the per-job and global
-    publishes share ONE pipelined round trip — one pipeline, one execute,
-    both channels queued — never two sequential client.publish awaits,
+    publishes share ONE pipelined round trip - one pipeline, one execute,
+    both channels queued - never two sequential client.publish awaits,
     which doubled every progress call's round trips and worst-case
     timeout budget."""
     client = _RecordingRedisClient()
@@ -458,7 +458,7 @@ async def test_publish_progress_event_global_channel_when_enabled() -> None:
 async def test_publish_dual_channel_delivers_to_both_subscribers() -> None:
     """Behavioural delivery pin for the pipelined dual publish: real
     pub/sub subscribers on the per-job and global channels each receive
-    the identical event payload — pipelining the two PUBLISH commands
+    the identical event payload - pipelining the two PUBLISH commands
     must not change what subscribers see."""
     fakeredis = pytest.importorskip("fakeredis.aioredis")
     server = fakeredis.FakeServer()
@@ -516,7 +516,7 @@ async def test_publish_dual_channel_pipeline_failure_counts_both_channels(
 ) -> None:
     """A failed pipelined execute never raises and counts one delivery
     failure for EACH channel: one execute serves both, so both
-    channel-level counters are true statements — and a hard Redis outage
+    channel-level counters are true statements - and a hard Redis outage
     totals the same two increments the sequential shape produced."""
     import taskq.obs._otel as otel_mod
 
@@ -537,7 +537,7 @@ async def test_publish_dual_channel_pipeline_failure_counts_both_channels(
         }
     )
 
-    # Must not raise — the publish is fire-and-forget.
+    # Must not raise - the publish is fire-and-forget.
     await _publish_progress_event(
         client,  # type: ignore[arg-type]  # Why: pipeline-shape double standing in for redis.asyncio.Redis; only the failure path is exercised.
         s,
@@ -772,7 +772,7 @@ async def test_cancel_discards_buffer_no_flush_terminal_state_change() -> None:
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="test_actor")
     job_id = new_job_id()
     worker_id = new_uuid()
@@ -941,7 +941,7 @@ async def test_cancel_clean_buffer_passes_base_seq_not_zero() -> None:
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="test_actor")
     job_id = new_job_id()
     worker_id = new_uuid()

@@ -3,7 +3,7 @@ production dispatch and consumer path.
 
 An admission denial is HTTP-429 semantics: the limiter said "come back
 later", the actor body never ran, and nothing about the job failed.  The
-retry budget exists to bound *failures* — how many times a worker will
+retry budget exists to bound *failures* - how many times a worker will
 re-run an actor whose execution went wrong.  These two facts have a
 consequence that only shows up one cycle later, once capacity frees:
 
@@ -20,10 +20,10 @@ same configuration gets a different number of real retries depending on how
 busy the queue happened to be.  That is an unreproducible, load-dependent
 retry policy.
 
-The tests here drive the whole cycle — real ``dispatch_batch`` claim, real
+The tests here drive the whole cycle - real ``dispatch_batch`` claim, real
 ``RateLimitRegistry`` acquire against a real exhausted ``TokenBucket``, the
 production consumer's denial handling and terminal write, the
-scheduled-to-pending promotion — and then assert what an operator can read
+scheduled-to-pending promotion - and then assert what an operator can read
 off the job row and the attempt history at the end.  Both backends are
 exercised through ``backend_pair``, because a divergence here would mean
 production and the in-memory test double disagree about how much retry
@@ -63,7 +63,7 @@ _DENIAL_ROUNDS = 5
 
 
 class _EmptyPayload(BaseModel):
-    """The actor's payload model — the jobs here carry no meaningful input."""
+    """The actor's payload model - the jobs here carry no meaningful input."""
 
 
 # ── Backend-agnostic drivers ───────────────────────────────────────────
@@ -150,7 +150,7 @@ async def _let_the_backoff_elapse(backend: Backend) -> None:
 
 
 def _saturated_bucket_registry(name: str) -> RateLimitRegistry:
-    """A registry whose single bucket holds no tokens and never refills —
+    """A registry whose single bucket holds no tokens and never refills -
     a saturated limiter, so every acquire is a real denial raised by the
     real acquire path rather than an injected exception."""
     registry = RateLimitRegistry()
@@ -159,7 +159,7 @@ def _saturated_bucket_registry(name: str) -> RateLimitRegistry:
 
 
 def _open_bucket_registry(name: str) -> RateLimitRegistry:
-    """A registry with ample capacity — the limiter after the operator
+    """A registry with ample capacity - the limiter after the operator
     scaled the bucket, or after the burst passed."""
     registry = RateLimitRegistry()
     registry.register(
@@ -180,7 +180,7 @@ async def _claim_one(backend: Backend, worker_id: UUID) -> JobRow:
     """Claim exactly one job through the production dispatch path."""
     claimed = await backend.dispatch_batch(worker_id, [_QUEUE], 5, _LEASE)
     assert len(claimed) == 1, (
-        f"expected exactly one claimable job, got {len(claimed)} — the scenario "
+        f"expected exactly one claimable job, got {len(claimed)} - the scenario "
         "seeds a single job and promotes it before each round"
     )
     return claimed[0]
@@ -197,7 +197,7 @@ async def test_denials_do_not_spend_the_budget_the_first_real_run_needs(
 
     The operator's contract is ``max_attempts=3``: run the actor up to
     three times before giving up.  Here the job is denied five times by a
-    saturated bucket — the actor body never runs, nothing fails — and then
+    saturated bucket - the actor body never runs, nothing fails - and then
     capacity frees and the actor starts failing for real.
 
     The job must get three real executions.  If the waiting spent the
@@ -205,7 +205,7 @@ async def test_denials_do_not_spend_the_budget_the_first_real_run_needs(
     ``failed`` with the actor's error and exactly one attempt row, having
     been retried zero times.  An operator reading that row sees a job
     configured for three tries that died on its first, and nothing in the
-    row explains why — the denials left no attempt rows and no events, so
+    row explains why - the denials left no attempt rows and no events, so
     the missing retries are invisible.  Worse, the number of real retries
     the job actually gets is a function of how saturated the bucket was,
     which makes the retry policy unreproducible and load-dependent.
@@ -268,7 +268,7 @@ async def test_denials_do_not_spend_the_budget_the_first_real_run_needs(
             rate_limits=["saturated"],
         )
         assert outcome == "scheduled", (
-            f"a denial must reschedule the job, got outcome {outcome!r} — "
+            f"a denial must reschedule the job, got outcome {outcome!r} - "
             "backpressure delays work, it never ends it"
         )
 
@@ -324,7 +324,7 @@ async def test_denials_do_not_spend_the_budget_the_first_real_run_needs(
         f"{_DENIAL_ROUNDS} denials that preceded it spent the budget the real work "
         "needed: the operator asked for three runs and the job got "
         f"{executions}. How many real retries a job gets must not depend on how "
-        "saturated the bucket was while it waited — that makes the retry policy "
+        "saturated the bucket was while it waited - that makes the retry policy "
         "load-dependent and unreproducible, and nothing on the row explains the "
         "shortfall because denials write no attempt rows and no events."
     )
@@ -347,7 +347,7 @@ async def test_a_genuine_execution_failure_still_spends_the_budget(
 
     A denial is the system declining to run the job; a failure is the job
     running and going wrong.  Only the second is what ``max_attempts``
-    bounds.  This is the control for the test above — a change that stops
+    bounds.  This is the control for the test above - a change that stops
     denials from spending budget must not also stop failures from spending
     it, or ``max_attempts`` stops bounding anything and a permanently
     broken actor retries forever.

@@ -4,7 +4,7 @@ The contract these tests pin, layer by layer:
 
 * ``WorkerSpec.pg_credential_provider`` (directly or via the TOML loader)
   is forwarded to that worker's child command line as
-  ``--pg-credential-provider module:attr`` — the flag the child CLI
+  ``--pg-credential-provider module:attr`` - the flag the child CLI
   resolves. Environment inheritance (``TASKQ_PG_CREDENTIAL_PROVIDER``)
   covers a single fleet-wide provider only; the per-worker field is what
   lets a workgroup mix provider-backed and provider-less workers, which
@@ -16,7 +16,7 @@ The contract these tests pin, layer by layer:
   reason buried in its stderr stream).
 * End to end: a child spawned by the supervisor's own ``_spawn_child``
   resolves the ref IN ITS OWN PROCESS and acquires its Postgres
-  connections through the provider — the ref crosses the spawn envelope
+  connections through the provider - the ref crosses the spawn envelope
   as a resolvable string, never a serialized provider object (pinned
   against the live database by the integration test at the bottom).
 """
@@ -33,7 +33,7 @@ from taskq.worker.workgroup import WorkerSpec, WorkgroupConfig
 
 def test_worker_spec_forwards_credential_provider_to_cli_args() -> None:
     """``WorkerSpec(pg_credential_provider=...)`` must appear in the child
-    CLI args as ``--pg-credential-provider module:attr`` — the flag the
+    CLI args as ``--pg-credential-provider module:attr`` - the flag the
     child CLI already parses."""
     try:
         spec = WorkerSpec(
@@ -46,7 +46,7 @@ def test_worker_spec_forwards_credential_provider_to_cli_args() -> None:
             f"WorkerSpec has no credential-provider field: {exc}. "
             "worker_main and the worker CLI both accept a Postgres "
             "credential provider, but the workgroup supervisor has no seam "
-            "to pass one to its children — a workgroup whose workers need "
+            "to pass one to its children - a workgroup whose workers need "
             "per-worker providers (Entra/managed identity) cannot be "
             "adopted."
         )
@@ -64,7 +64,7 @@ def test_worker_spec_forwards_credential_provider_to_cli_args() -> None:
 def test_workgroup_toml_propagates_per_worker_credential_provider(
     tmp_path: Path,
 ) -> None:
-    """Two workers with DIFFERENT providers must each get their own — the
+    """Two workers with DIFFERENT providers must each get their own - the
     case environment inheritance (a single fleet-wide
     ``TASKQ_PG_CREDENTIAL_PROVIDER``) cannot express."""
     config = tmp_path / "workgroup.toml"
@@ -94,7 +94,7 @@ pg_credential_provider = "infra.identity:reports_credentials"
         args = by_name[name].cli_args()
         assert "--pg-credential-provider" in args, (
             f"worker {name!r}: pg_credential_provider from the TOML was "
-            f"silently dropped — cli_args() is {args}. The loader never "
+            f"silently dropped - cli_args() is {args}. The loader never "
             "reads the key and WorkerSpec has no field for it, so nothing "
             "reaches the child process."
         )
@@ -107,8 +107,8 @@ def test_workgroup_toml_rejects_an_empty_credential_provider(tmp_path: Path) -> 
 
     An empty string passes the loader's optional-str type check and is
     forwarded as ``--pg-credential-provider ""``, so the child dies at
-    import-ref resolution — before it can register a heartbeat or drain a
-    queue — and the supervisor restart-loops it against the burst budget,
+    import-ref resolution - before it can register a heartbeat or drain a
+    queue - and the supervisor restart-loops it against the burst budget,
     with the only diagnostic buried in the child's stderr stream.
     """
     config = tmp_path / "workgroup.toml"
@@ -141,8 +141,8 @@ async def test_spawned_child_acquires_connections_through_the_provider(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A child spawned the workgroup's way — ``--pg-credential-provider
-    module:attr`` on its command line, no ``env=`` override — must resolve
+    """A child spawned the workgroup's way - ``--pg-credential-provider
+    module:attr`` on its command line, no ``env=`` override - must resolve
     the ref IN THE CHILD and acquire its Postgres connections THROUGH the
     provider (children need the credential at connect
     time, so the Entra/managed-identity segment can adopt workgroups).
@@ -150,7 +150,7 @@ async def test_spawned_child_acquires_connections_through_the_provider(
     The child's inherited ``TASKQ_PG_DSN`` is stripped of its userinfo, so
     the provider is the ONLY route to a working credential: a child that
     silently fell back to a static DSN password could not authenticate and
-    would never register. Readiness therefore proves both halves at once —
+    would never register. Readiness therefore proves both halves at once -
     the child booted (a fresh workers-row heartbeat) AND the spy provider
     was invoked under the child's own pid (recorded to a file only the
     child process writes). The provider ref crosses the spawn envelope as
@@ -170,7 +170,7 @@ async def test_spawned_child_acquires_connections_through_the_provider(
 
     # The passwordless DSN the child inherits: same server/database, no
     # userinfo, sslmode=disable (the documented test-container opt-out of
-    # the provider path's ensure_sslmode_require — the container runs no
+    # the provider path's ensure_sslmode_require - the container runs no
     # TLS). The spy provider hands back exactly the userinfo this strip
     # removed, so authentication succeeds ONLY through it.
     parsed = urlparse(module_pg_schema.pg_dsn)
@@ -178,7 +178,7 @@ async def test_spawned_child_acquires_connections_through_the_provider(
     password = parsed.password or ""
     no_userinfo = parsed.netloc.split("@")[-1]
     # urlunparse adds the '?' separator itself, so the query carries bare
-    # params only — a leading '?' here would yield '??sslmode=...' and the
+    # params only - a leading '?' here would yield '??sslmode=...' and the
     # first '?' would become part of the parameter name.
     query = "sslmode=disable" if not parsed.query else f"{parsed.query}&sslmode=disable"
     dsn_no_credentials = urlunparse(parsed._replace(netloc=no_userinfo, query=query))
@@ -237,7 +237,7 @@ async def test_spawned_child_acquires_connections_through_the_provider(
             if proc.returncode is not None:
                 pytest.fail(
                     f"workgroup child exited rc={proc.returncode} before "
-                    "registering through the credential provider — its "
+                    "registering through the credential provider - its "
                     "output is in this test's captured logs "
                     "(workgroup.child_output lines), and with a "
                     "passwordless TASKQ_PG_DSN any boot failure means a "
@@ -265,7 +265,7 @@ async def test_spawned_child_acquires_connections_through_the_provider(
 
         assert registered, (
             "the spawned child never registered a fresh heartbeat within "
-            "45s — with a passwordless TASKQ_PG_DSN it cannot authenticate "
+            "45s - with a passwordless TASKQ_PG_DSN it cannot authenticate "
             "unless every Postgres pool is acquired through the "
             "pg_credential_provider."
         )

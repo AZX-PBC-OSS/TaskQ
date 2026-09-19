@@ -1,4 +1,4 @@
-"""Tests for taskq.aws — AWS IAM RDS credential providers.
+"""Tests for taskq.aws - AWS IAM RDS credential providers.
 
 Uses a fake boto3 client (no real AWS calls) to verify the provider
 implementation. Requires the ``[aws]`` extra (boto3); skips when the
@@ -44,7 +44,7 @@ def test_fetch_rds_iam_token_calls_generate_db_auth_token() -> None:
 
 
 def test_fetch_rds_iam_token_passes_region_none_through() -> None:
-    """When region is None, None must be passed through — botocore only
+    """When region is None, None must be passed through - botocore only
     falls back to the client's ambient region when Region is None. An
     empty string would produce a signature scoped to `date//rds-db/...`
     which RDS rejects."""
@@ -110,7 +110,7 @@ def test_rds_iam_provider_rejects_dsn_without_username() -> None:
 
 
 def test_rds_iam_provider_error_does_not_leak_dsn_credentials() -> None:
-    """The no-username error must not embed the raw DSN — a userinfo
+    """The no-username error must not embed the raw DSN - a userinfo
     password would otherwise land in tracebacks and log aggregation."""
     with pytest.raises(ValueError, match="no username") as exc_info:
         RdsIamProvider("postgresql://:secret-static-pw@host:5432/db", client=MagicMock())
@@ -126,7 +126,7 @@ def test_rds_iam_provider_username_param_rescues_userless_dsn() -> None:
 
 async def test_rds_iam_provider_percent_decodes_dsn_username() -> None:
     """A percent-encoded DSN user (user%40domain) must be decoded before
-    signing — the IAM token is scoped to the literal DB username."""
+    signing - the IAM token is scoped to the literal DB username."""
     fake_client = MagicMock()
     fake_client.generate_db_auth_token.return_value = "tok"
     provider = RdsIamProvider("postgresql://user%40domain@host:5432/db", client=fake_client)
@@ -137,7 +137,7 @@ async def test_rds_iam_provider_percent_decodes_dsn_username() -> None:
 
 async def test_rds_iam_provider_fetches_token_off_the_event_loop() -> None:
     """generate_db_auth_token may refresh STS/IMDS credentials over the
-    network (blocking) — the provider must offload it to a thread."""
+    network (blocking) - the provider must offload it to a thread."""
     import threading
 
     loop_thread = threading.get_ident()

@@ -238,7 +238,7 @@ def test_every_backend_emits_one_state_change_event_name() -> None:
     The divergence this pins spanned 18 call sites across four modules of the
     in-memory backend against one in the Postgres path, so no single runtime
     path observes it: catching it means looking at every emitter at once.
-    ``kind=`` deliberately stays snake_case — it is the persisted
+    ``kind=`` deliberately stays snake_case - it is the persisted
     ``job_events.kind`` value and part of the Backend protocol's Literal, not
     a log event name.
     """
@@ -266,7 +266,7 @@ def test_every_backend_emits_one_state_change_event_name() -> None:
                     f"{path.relative_to(src_root).as_posix()}:{node.lineno}"
                 )
 
-    assert emitters, "no state-change log emitters found — the scan is broken"
+    assert emitters, "no state-change log emitters found - the scan is broken"
     assert set(emitters) == {"state-change"}, (
         "state-change is logged under more than one event name; operators "
         "filtering on event see only some backends' transitions:\n"

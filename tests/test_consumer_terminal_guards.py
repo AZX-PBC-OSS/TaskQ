@@ -3,14 +3,14 @@
 Three conditions run on every successful attempt and none of them had an
 assertion that depended on their *shape*:
 
-* ``if entry is not None and entry.cancel_phase >= COOPERATIVE`` — the
+* ``if entry is not None and entry.cancel_phase >= COOPERATIVE`` - the
   phase threshold is pinned by existing tests, the ``entry is not None``
   half is not.  A job whose registry entry has already been removed while
   other jobs are still in flight reaches this line with ``entry is None``.
-* ``_pbuf.dirty = False`` after a successful terminal write — nothing
+* ``_pbuf.dirty = False`` after a successful terminal write - nothing
   distinguished "we flushed" from "we flushed exactly once".
 * ``progress_state=... if _cancel_buf is not None and _cancel_buf.dirty
-  else None`` on the cooperative-cancel write — every covering test had a
+  else None`` on the cooperative-cancel write - every covering test had a
   clean buffer *and* never looked at ``progress_state``.
 """
 
@@ -275,7 +275,7 @@ async def _cancelled_write(*, report_progress: bool) -> dict[str, object]:
     """Drive the consumer's cancel-write path (an actor that abandons by
     raising ``CancelledError``) and return the recorded write.
 
-    The actor signals abandonment by raising, never by returning — an actor
+    The actor signals abandonment by raising, never by returning - an actor
     that returns under a cancel request has succeeded and takes the success
     path instead (that contract lives in
     ``tests/test_cooperative_cancel_outcome.py``).
@@ -632,9 +632,9 @@ async def test_fenced_cancel_write_does_not_publish_a_terminal_event() -> None:
     ``mark_cancelled`` is fenced the same way the success write is and
     returns ``False`` on the same reclaim race. The retry and failure
     handler already gates its publish on the write's own result, refusing
-    to announce a move the row never made. The consumer's cancel branch —
+    to announce a move the row never made. The consumer's cancel branch -
     reached when the actor abandons its unit of work by raising
-    ``CancelledError`` — owes subscribers the same honesty: a
+    ``CancelledError`` - owes subscribers the same honesty: a
     ``terminal=True`` ``status="cancelled"`` event for a row that another
     worker is still running tells every progress subscriber, and anything
     downstream of the stream, that the job is finished when it is not.
@@ -688,7 +688,7 @@ async def test_fenced_transactional_success_does_not_invoke_on_success() -> None
     resolves, invokes ``on_success`` unconditionally. But
     ``mark_succeeded_with_conn`` fences its UPDATE on the job's id,
     running status, holding worker and attempt number and returns
-    ``False`` when nothing matched — the lease expired, the row was
+    ``False`` when nothing matched - the lease expired, the row was
     re-pended and re-claimed elsewhere.
 
     ``on_success`` is user code with external reach: a webhook, a
@@ -857,15 +857,15 @@ async def test_fenced_success_reports_the_outcome_batch_policy_ignores() -> None
     """A fenced-out success reports ``noop`` so no batch counter budges.
 
     ``apply_batch_terminal_outcome`` is driven purely by the outcome
-    string the consumer returns. It already treats ``"noop"`` — "a
+    string the consumer returns. It already treats ``"noop"`` - "a
     terminal write that matched nothing, the job was never this
-    dispatch's to move" — as non-terminal and returns before touching a
+    dispatch's to move" - as non-terminal and returns before touching a
     single counter. The fenced success path must produce exactly that
     value.
 
-    Any other value is load-bearing damage: ``"succeeded"`` resets the
+    Any other value is real damage: ``"succeeded"`` resets the
     consecutive-failure streak and fires a completion attempt, and
-    ``"failed"`` increments toward the abort threshold — both on behalf
+    ``"failed"`` increments toward the abort threshold - both on behalf
     of a job that is still pending or running under a later attempt. The
     batch would complete, and its on-finish hook fire, before its members
     actually finished.
@@ -940,7 +940,7 @@ class _AttemptFencedBackend(FakeBackend):
     worker claimed it again at a later attempt. ``locked_by_worker`` is
     unchanged, so the ownership half of the fence passes; only the
     attempt conjunct rejects the stale handler's write. The backend
-    reports that the way the real one does — ``False``, no exception.
+    reports that the way the real one does - ``False``, no exception.
     """
 
     def __init__(self, *, live_attempt: int) -> None:
@@ -968,7 +968,7 @@ async def test_stale_attempt_on_the_same_worker_is_not_reported_as_succeeded() -
 
     The worker fence alone cannot separate attempt N's suspended handler
     from attempt N+1's live one when the same worker re-claims the job
-    after a lease-expiry sweep — both present the same ``locked_by_worker``.
+    after a lease-expiry sweep - both present the same ``locked_by_worker``.
     Only the attempt conjunct rejects the stale write, and it reports that
     rejection as a plain ``False``.
 
@@ -1031,13 +1031,13 @@ def test_no_consumer_terminal_write_discards_its_fenced_outcome() -> None:
     moved, and restores the at-least-twice execution the fence exists to
     prevent. Behavioural tests can only cover the paths someone thought
     to write; this one closes the class by reading the source of every
-    module that calls a fenced terminal write — the consumer, the runner
+    module that calls a fenced terminal write - the consumer, the runner
     loops, the handlers, and the shutdown orchestrator.
 
     A call is considered to consume its outcome when the await is bound
     (assigned to a name, returned, or tested in a condition) rather than
     issued as a standalone expression statement. ``shield_with_retrieval``
-    wrapping is not by itself consumption — it protects the write from
+    wrapping is not by itself consumption - it protects the write from
     external cancellation and returns the same outcome, which the caller
     must still read.
 

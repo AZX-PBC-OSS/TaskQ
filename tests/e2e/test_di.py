@@ -1,4 +1,4 @@
-"""DI e2e — provider bootstrap inside a real worker container.
+"""DI e2e - provider bootstrap inside a real worker container.
 
 Scenario:
 ``enrich_order`` → effects include injected-http fetch + pool write; proves
@@ -26,7 +26,7 @@ Failure-path semantics verified against the library, not guessed:
   ``error_message='simulated enrichment fetch failure'``. Wall time to the
   terminal state ≈ 15-18s including jitter.
 - Column names come from migrations (01.00.00_01_pre_initial.sql):
-  ``jobs.error_class`` / ``error_message`` / ``error_traceback`` — there is
+  ``jobs.error_class`` / ``error_message`` / ``error_traceback`` - there is
   no single ``error`` column. The same triple exists on ``job_attempts``.
 
 Every test requests ``e2e_worker`` explicitly: the worker container fixture
@@ -106,7 +106,7 @@ async def test_di_actor_failure_propagates(
     Asserts the client-visible contract (``JobFailed`` carrying the row) and
     the persisted ground truth (``jobs.error_class`` / ``error_message``;
     three per-attempt history rows, each ``RuntimeError``). The actor raises
-    before any ``_record_effect`` call, so the run must leave zero effects —
+    before any ``_record_effect`` call, so the run must leave zero effects -
     proof the failure happened inside the actor body, not in the harness.
     """
     handle = await e2e_client.enqueue(

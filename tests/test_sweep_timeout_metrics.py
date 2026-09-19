@@ -3,10 +3,10 @@
 The original invisibility: the scheduled-wake sweep's duration histogram
 and row counter were recorded only AFTER the awaited call returned, so the
 deadline that aborted the sweep also aborted the code that would have
-recorded it — a livelocking sweep emitted NO samples at all, not zero.
+recorded it - a livelocking sweep emitted NO samples at all, not zero.
 The pins here: duration always (including the failure path), a timeout
 counter on the deadline family, and NO row sample when the call timed out
-(rows stay unbound — a 0-row sample would be indistinguishable from a
+(rows stay unbound - a 0-row sample would be indistinguishable from a
 healthy empty sweep). The success path stays fully instrumented.
 """
 
@@ -37,9 +37,9 @@ _TIMEOUTS_METRIC = "taskq.maintenance_leader.sweep_timeouts"
 def sweep_metric_reader(monkeypatch: pytest.MonkeyPatch) -> InMemoryMetricReader:
     """Per-test OTel meter isolation for the leader sweep instruments.
 
-    Replaces the module-level instruments the leader loops call through —
+    Replaces the module-level instruments the leader loops call through -
     ``taskq.worker._leader_shared``'s duration histogram and rows counter,
-    plus the obs-level sweep-timeouts counter — with fresh SDK instruments
+    plus the obs-level sweep-timeouts counter - with fresh SDK instruments
     backed by ``InMemoryMetricReader``. ``_otel_enabled`` is forced on
     because ``record_sweep_timeout`` is a no-op while it is off.
     monkeypatch auto-restores everything, including a fresh success-stamp
@@ -100,7 +100,7 @@ class _StalledBackend:
 
 
 class _InstantBackend:
-    """Backend stand-in promoting instantly — the healthy sweep shape."""
+    """Backend stand-in promoting instantly - the healthy sweep shape."""
 
     def __init__(self, promoted: int) -> None:
         self._promoted = promoted
@@ -196,13 +196,13 @@ async def test_timeout_path_records_duration_and_timeout_without_row_sample(
 ) -> None:
     """The assertion the original invisibility escaped: a sweep call cut
     short by the iteration deadline still records a duration sample and a
-    sweep_timeouts increment — and records NO row sample."""
+    sweep_timeouts increment - and records NO row sample."""
     backend = _StalledBackend(stall_secs=0.5)
     leader = _make_wake_leader(backend, command_timeout=0.05, dispatcher_pool=None)
     await _drive_one_iteration(leader, backend, sweep_metric_reader)
 
     assert _samples_for_sweep(sweep_metric_reader, "scheduled_to_pending") >= 1, (
-        "a timed-out sweep recorded no duration sample — the failure path is invisible again"
+        "a timed-out sweep recorded no duration sample - the failure path is invisible again"
     )
     timeout_points = [
         dp
@@ -218,7 +218,7 @@ async def test_timeout_path_records_duration_and_timeout_without_row_sample(
         if dp.attributes == {"sweep_name": "scheduled_to_pending"}
     ]
     assert row_points == [], (
-        "a timed-out sweep must not record a row sample — rows stayed unbound, "
+        "a timed-out sweep must not record a row sample - rows stayed unbound, "
         "and a 0-row sample would be indistinguishable from a healthy empty sweep"
     )
 
@@ -227,7 +227,7 @@ async def test_success_path_records_rows_and_success_stamp_without_timeout(
     sweep_metric_reader: InMemoryMetricReader,
 ) -> None:
     """The healthy sweep stays fully instrumented: rows=3 on the counter, a
-    success stamp, a duration sample — and no timeout."""
+    success stamp, a duration sample - and no timeout."""
     backend = _InstantBackend(promoted=3)
     leader = _make_wake_leader(backend, command_timeout=5.0, dispatcher_pool=_FakePool())
     await _drive_one_iteration(leader, backend, sweep_metric_reader)
@@ -257,7 +257,7 @@ async def test_success_path_records_rows_and_success_stamp_without_timeout(
 #
 # The three gauge samplers the leader runs (queue depth, backlog
 # detection, reservation slots) feed gauges an operator alerts on. When
-# a sampler's query fails, the gauge it feeds does not go missing — it
+# a sampler's query fails, the gauge it feeds does not go missing - it
 # keeps reporting the LAST value it was fed. A frozen depth gauge and a
 # healthy flat backlog are the same picture, so a metrics-only operator
 # (the normal case; logs and metrics are usually different systems, and
@@ -395,7 +395,7 @@ async def test_gauge_sampler_failure_is_visible_on_the_metric_plane(
 
     This is the failure that hides best in this system. The gauge the
     sampler feeds keeps serving its last value, so depth stops rising,
-    age stops growing and every dashboard flattens out — the same picture
+    age stops growing and every dashboard flattens out - the same picture
     a drained queue paints. Nothing fails, no job is affected, and the
     only trace is a WARN line in a log stream that alert rules do not
     read. The contract: the failure reaches the metric plane under the
@@ -407,7 +407,7 @@ async def test_gauge_sampler_failure_is_visible_on_the_metric_plane(
 
     assert conn.calls >= 2, "the sampler never ran its query; the setup, not the system, failed"
     assert _timeout_value(sweep_metric_reader, sweep_name) >= 1, (
-        f"the {sweep_name} sampler failed every tick and emitted no metric naming it — "
+        f"the {sweep_name} sampler failed every tick and emitted no metric naming it - "
         "the gauge it feeds keeps reporting its last value, so a stalled detector is "
         "indistinguishable from a healthy flat backlog to anyone reading metrics"
     )
@@ -440,12 +440,12 @@ async def test_failing_gauge_sampler_publishes_no_success_stamp(
     await _drive_failing_sampler(loop_name, conn, sweep_metric_reader, sweep_name)
 
     assert otel_mod._sweep_success_cache.get(sweep_name) is None, (  # pyright: ignore[reportPrivateUsage]  # Why: the stamp cache is the staleness gauge's input; the fixture installs a fresh one per test.
-        f"the {sweep_name} sampler stamped success while every one of its reads raised — "
+        f"the {sweep_name} sampler stamped success while every one of its reads raised - "
         "the staleness view now reports a dead detector as healthy"
     )
 
 
-# ── the per-actor backlog read's OWN failure arms (#249) ──────────────
+# ── the per-actor backlog read's OWN failure arms ──────────────
 #
 # Unlike the loops above, the per-actor backlog read is ISOLATED inside the
 # backlog tick: its failure must not cost the tick the fleet-wide samples,
@@ -572,7 +572,7 @@ async def test_actor_backlog_read_failure_counts_and_clears_only_its_own_gauges(
     sweep_metric_reader: InMemoryMetricReader,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """THE #249 pin: the per-actor backlog read fails while every fleet
+    """THE pin: the per-actor backlog read fails while every fleet
     read in the same tick succeeds.
 
     What the failure must produce, all at once: the per-actor series go
@@ -595,13 +595,13 @@ async def test_actor_backlog_read_failure_counts_and_clears_only_its_own_gauges(
 
     assert conn.actor_backlog_calls >= 2, "setup: the per-actor read must have failed twice"
     assert _timeout_value(sweep_metric_reader, "actor_backlog") >= 1, (
-        "the per-actor backlog read failed every tick and no metric named it — "
+        "the per-actor backlog read failed every tick and no metric named it - "
         "the cleared oldest-pending-age series resolves TaskQQueueDepthHigh "
         "under the exact incident that alert exists for, and a WARN log line "
         "is not a signal an alert rule can read"
     )
     assert _timeout_value(sweep_metric_reader, "backlog_detection") == 0, (
-        "the per-actor failure must stay contained by its own isolation — "
+        "the per-actor failure must stay contained by its own isolation - "
         "the fleet-wide handler firing means the raise escaped and the tick "
         "lost its other samples"
     )
@@ -629,8 +629,8 @@ async def test_actor_backlog_read_failure_counts_and_clears_only_its_own_gauges(
         # Both keys missing: the first comprehension (depth) raises.
         ([{"actor": "emails", "queue": "default"}], "both-keys-missing"),
         # The half-valid row: depth reads fine, oldest_age is malformed.
-        # As call arguments the comprehensions ran update #1 (a fresh depth
-        # cache) and then raised in comprehension #2, landing the fresh
+        # As call arguments the comprehensions ran update (a fresh depth
+        # cache) and then raised in comprehension , landing the fresh
         # depth beside a FROZEN age cache, the alert's operand, a mixed
         # state the fix-round review flagged; built as locals first, the
         # failure is atomic (neither cache is written).
@@ -665,7 +665,7 @@ async def test_actor_backlog_malformed_row_counts_atomically_on_the_metric_plane
     assert conn.actor_backlog_calls >= 2, "setup: the per-actor read must have returned twice"
     assert _timeout_value(sweep_metric_reader, "actor_backlog") >= 1, (
         f"a malformed per-actor row ({shape_id}) failed the rebuild every tick "
-        "and no metric named it — the per-actor gauges froze at their last "
+        "and no metric named it - the per-actor gauges froze at their last "
         "values with nothing an alert rule can read"
     )
     assert _timeout_value(sweep_metric_reader, "backlog_detection") == 0

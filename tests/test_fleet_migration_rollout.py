@@ -11,12 +11,12 @@ enqueue is an outage regardless of how briefly it lasts.
 The window is also where a rollout becomes unrecoverable. If an
 un-upgraded pod cannot dispatch against the part-migrated schema, the
 fleet's throughput falls to whatever fraction has been upgraded, and
-rolling *back* does not help — the schema has already moved. What makes
+rolling *back* does not help - the schema has already moved. What makes
 a rollout safe is that a pod of either release, at any point in the
 sequence, can still claim work, finish it, retry it and reclaim it.
 
-These tests hold the schema in the real intermediate state — pre-phase
-applied, post-phase deliberately pending — and require the full working
+These tests hold the schema in the real intermediate state - pre-phase
+applied, post-phase deliberately pending - and require the full working
 cycle from pods running against it.
 """
 
@@ -77,8 +77,8 @@ async def test_the_rollout_window_is_a_real_intermediate_schema_state(
     A rollout test asserting behaviour against a fully migrated schema
     would prove nothing while looking convincing, so the intermediate
     state is established as a fact first: pre-phase applied, post-phase
-    still pending. If this ever stops being true — because every
-    migration became pre-phase, say — the tests below would silently
+    still pending. If this ever stops being true - because every
+    migration became pre-phase, say - the tests below would silently
     become ordinary same-schema tests, and this one says so instead.
     """
     schema = f"fleet_mig_state_{new_base62()}".lower()
@@ -162,7 +162,7 @@ async def test_retry_and_reclaim_still_work_mid_rollout(pg_dsn: str) -> None:
     a rolling deploy is exactly when jobs get interrupted and pods
     disappear. If reclaim is what breaks under the part-migrated schema,
     the symptom is work stranded by the deploy that only the deploy
-    could have stranded — and it accumulates silently for the length of
+    could have stranded - and it accumulates silently for the length of
     the roll.
     """
     schema = f"fleet_mig_recover_{new_base62()}".lower()
@@ -213,7 +213,7 @@ async def test_retry_and_reclaim_still_work_mid_rollout(pg_dsn: str) -> None:
         assert reclaimed >= 1, (
             "a job orphaned by a pod lost during the rollout window was not reclaimed. "
             "Reclaim is the only route back for work whose owner died, and a deploy is "
-            "precisely when owners die — so this strands work for the length of the roll "
+            "precisely when owners die - so this strands work for the length of the roll "
             "and reports nothing."
         )
 
@@ -251,6 +251,6 @@ async def test_enqueue_keeps_working_for_every_pod_mid_rollout(
             claimed = await pod.claim([_QUEUE], 3)
             assert claimed, (
                 f"jobs enqueued during the rollout window were not claimable by pod "
-                f"{name!r}: they persist but never dispatch, which is the worst shape — "
+                f"{name!r}: they persist but never dispatch, which is the worst shape - "
                 "the backlog grows and nothing reports an error."
             )

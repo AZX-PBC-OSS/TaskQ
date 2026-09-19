@@ -1,4 +1,4 @@
-"""Unit tests for JobFilter — ordering, multi-status, and active meta-filter.
+"""Unit tests for JobFilter - ordering, multi-status, and active meta-filter.
 
 Covers the order_by option, multi-status sequence support, and the
 ``active`` meta-filter added to JobFilter. Uses the InMemoryBackend so
@@ -127,7 +127,7 @@ def test_job_filter_accepts_a_cursor_with_every_ordering() -> None:
     DESC orderings tie-broke on ``id`` in the opposite direction to their
     primary column, which no keyset comparison can express. Now that each
     ordering runs ``id`` with its primary column and carries its own
-    cursor shape, the refusal has nothing left to protect against —
+    cursor shape, the refusal has nothing left to protect against -
     ``test_backend_equivalence`` pages every ordering end to end on both
     backends.
     """
@@ -186,7 +186,7 @@ async def test_job_filter_status_tuple_returns_union() -> None:
 
 
 async def test_job_filter_active_true_returns_non_terminal() -> None:
-    """active=True returns exactly pending, scheduled, running — and
+    """active=True returns exactly pending, scheduled, running - and
     excludes all 5 terminal statuses."""
     backend = _backend()
     jobs: dict[str, JobRow] = {}
@@ -244,7 +244,7 @@ def test_job_filter_status_and_active_raises() -> None:
 
 def test_job_filter_unknown_single_status_raises() -> None:
     """An unknown single status raises ValueError at construction, before
-    any backend is involved — identical behaviour for PG (which would
+    any backend is involved - identical behaviour for PG (which would
     otherwise fail with an enum-cast DataError) and in-memory (which
     would otherwise silently return nothing)."""
     with pytest.raises(ValueError, match="unknown job status"):
@@ -275,14 +275,14 @@ def test_job_filter_all_known_statuses_accepted() -> None:
     for status in JOB_STATUS_VALUES:
         JobFilter(status=status)  # type: ignore[arg-type]  # Why: JOB_STATUS_VALUES is frozenset[str]; members are all JobStatus
     JobFilter(status=list(JOB_STATUS_VALUES))  # type: ignore[arg-type]  # Why: same
-    JobFilter(status=[])  # empty sequence is valid — matches no jobs
+    JobFilter(status=[])  # empty sequence is valid - matches no jobs
 
 
 # ── limit validation ───────────────────────────────────────────────────
 
 
 def test_job_filter_negative_limit_raises() -> None:
-    """A negative limit raises ValueError at construction — PG would raise
+    """A negative limit raises ValueError at construction - PG would raise
     "LIMIT must not be negative" mid-query while the in-memory slice would
     silently drop rows; both backends must fail identically up front."""
     with pytest.raises(ValueError, match="limit must be >= 0"):
@@ -291,7 +291,7 @@ def test_job_filter_negative_limit_raises() -> None:
 
 def test_job_filter_zero_limit_is_valid() -> None:
     """limit=0 is well-defined (returns no rows) and consistent across
-    backends — it stays allowed."""
+    backends - it stays allowed."""
     assert JobFilter(limit=0).limit == 0
 
 
@@ -351,7 +351,7 @@ async def test_list_jobs_multi_status_cursor_pagination() -> None:
 
     cursor = encode_cursor(page2[-1].priority, page2[-1].scheduled_at, page2[-1].id)
 
-    # Page 3 — only 1 job left
+    # Page 3 - only 1 job left
     page3 = await backend.list_jobs(
         JobFilter(actor="test_actor", status=["pending", "running"], limit=2, cursor=cursor)
     )
@@ -413,7 +413,7 @@ async def test_list_jobs_active_true_cursor_pagination() -> None:
 
     cursor = encode_cursor(page2[-1].priority, page2[-1].scheduled_at, page2[-1].id)
 
-    # Page 3 — only 1 job left
+    # Page 3 - only 1 job left
     page3 = await backend.list_jobs(
         JobFilter(actor="test_actor", active=True, limit=2, cursor=cursor)
     )
@@ -443,7 +443,7 @@ async def test_list_jobs_active_true_with_created_at_desc() -> None:
     middle_active = _job(status="running", created_at=_T0 + timedelta(minutes=10))
     newest_active = _job(status="scheduled", created_at=_T0 + timedelta(minutes=20))
 
-    # Terminal jobs with created_at values that interleave — they must
+    # Terminal jobs with created_at values that interleave - they must
     # be excluded entirely, not just sorted to the bottom.
     old_terminal = _job(status="succeeded", created_at=_T0 + timedelta(minutes=5))
     new_terminal = _job(status="failed", created_at=_T0 + timedelta(minutes=15))

@@ -3,21 +3,21 @@
 Two halves of one defect, pinned together because either half alone is
 wrong:
 
-* **Parity (the live gap)** — ``@actor(singleton=True)`` and
+* **Parity (the live gap)** - ``@actor(singleton=True)`` and
   ``@actor(max_pending=N)`` reach client enqueues only:
   ``client/_args.py`` stamps ``metadata["singleton"]`` and
   ``max_pending`` onto :class:`EnqueueArgs` at build time, while the cron
   tick builds its own args with neither.  A cron fire for a singleton
-  actor carries no flag — the ``jobs_singleton_uniq`` partial index keys
-  on exactly that flag, so it never protects cron fires — and no
+  actor carries no flag - the ``jobs_singleton_uniq`` partial index keys
+  on exactly that flag, so it never protects cron fires - and no
   max_pending cap applies.  The actor's own schedule happily enqueues a
   second active singleton job.
-* **The trap (arms the moment parity lands, unless classified)** — a
+* **The trap (arms the moment parity lands, unless classified)** - a
   collision that reaches the tick's generic failure path strikes its
   schedule (``consecutive_failures`` +1 per tick), and
   ``cron_auto_disable_threshold`` (default 3) collisions permanently set
   ``enabled = false``: a healthy, busy actor bricks its own schedule.
-  Suppression is therefore classified as neither failure nor fire — the
+  Suppression is therefore classified as neither failure nor fire - the
   slot advances ``next_fire_at`` alone, with no ``last_fired_at`` stamp,
   no error write, and no strike.
 
@@ -83,7 +83,7 @@ async def seed_active_job(
     singleton: bool = False,
 ) -> UUID:
     """Insert one ``jobs`` row for *actor* in *status*, optionally flagged
-    as a singleton job — exactly the rows the tick's suppression preflight
+    as a singleton job - exactly the rows the tick's suppression preflight
     and the ``jobs_singleton_uniq`` partial index key on."""
     job_id = new_uuid()
     await conn.execute(
@@ -113,7 +113,7 @@ class TestSingletonParity:
         schedule: the tick enqueues nothing, advances the schedule strictly
         into the future, and records neither a fire (``last_fired_at``
         stays NULL) nor a strike. Today the tick enqueues a second active
-        singleton job — the exact gap this file exists to close."""
+        singleton job - the exact gap this file exists to close."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _SINGLETON_ACTOR)
@@ -144,9 +144,9 @@ class TestSingletonParity:
                 )
         now_after = await server_now(clean_pg_conn)
 
-        assert fired == 0, "a suppressed slot is not a fire — the return counts fires only"
+        assert fired == 0, "a suppressed slot is not a fire - the return counts fires only"
         assert await count_jobs(clean_pg_conn, schema, _SINGLETON_ACTOR) == 1, (
-            "the tick enqueued a second active singleton job — the parity gap: "
+            "the tick enqueued a second active singleton job - the parity gap: "
             "cron fires bypass the singleton flags the client path stamps"
         )
         row = await schedule_row(clean_pg_conn, schema, schedule_id)
@@ -155,8 +155,8 @@ class TestSingletonParity:
             "future, or the schedule stays due and re-fires against the blocker"
         )
         assert row["next_fire_at"] > due_slot, "the advance must come from the plan, not a no-op"
-        assert row["last_fired_at"] is None, "nothing fired — no last_fired_at stamp"
-        assert row["consecutive_failures"] == 0, "suppression is not a failure — no strike"
+        assert row["last_fired_at"] is None, "nothing fired - no last_fired_at stamp"
+        assert row["consecutive_failures"] == 0, "suppression is not a failure - no strike"
         assert row["enabled"] is True
         assert row["last_fire_error"] is None
 
@@ -192,7 +192,7 @@ class TestSingletonParity:
         )
         row_again = await schedule_row(clean_pg_conn, schema, schedule_id)
         assert row_again["next_fire_at"] == advanced_to, (
-            "the re-due slot must advance again by its own cadence — an "
+            "the re-due slot must advance again by its own cadence - an "
             "unmoved next_fire_at is the hot re-fire loop against the blocker"
         )
         assert row_again["consecutive_failures"] == 0
@@ -205,7 +205,7 @@ class TestSingletonParity:
         module_pg_schema: ModulePgSchema,
     ) -> None:
         """No blocker: the fire lands, and the new job's metadata contains
-        ``"singleton": true`` — the exact predicate the
+        ``"singleton": true`` - the exact predicate the
         ``jobs_singleton_uniq`` partial index keys on. Without the stamp
         the index never protects cron fires at all."""
         schema = module_pg_schema.schema_name
@@ -240,7 +240,7 @@ class TestSingletonParity:
             _SINGLETON_ACTOR,
         )
         assert has_flag is True, (
-            "the cron-fired job carries no singleton flag — the partial unique "
+            "the cron-fired job carries no singleton flag - the partial unique "
             "index keys on this exact predicate, so cron fires remain "
             "unprotected by it (the client enqueue path stamps it)"
         )
@@ -256,7 +256,7 @@ class TestSingletonParity:
     ) -> None:
         """Suppression is not sticky: once the blocker goes terminal, the
         next due tick fires normally (and the new fire itself carries the
-        flag, becoming the next blocker — singleton semantics, held by the
+        flag, becoming the next blocker - singleton semantics, held by the
         schedule's own fires)."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
@@ -266,7 +266,7 @@ class TestSingletonParity:
         )
         # A catch-up seeding: the slot is 30 minutes old, so the first
         # (suppressed) advance stays in the past and the schedule is due
-        # again immediately — no clock manipulation needed for tick 2.
+        # again immediately - no clock manipulation needed for tick 2.
         slot = ten_min_floor(datetime.now(UTC)) - timedelta(minutes=30)
         schedule_id = await seed_schedule(
             clean_pg_conn,
@@ -335,7 +335,7 @@ class TestSingletonParity:
         the blocker. Both schedules carry the singleton stamp, so without
         the intra-batch gate the batched INSERT would hit
         ``jobs_singleton_uniq`` itself, abort the whole tick and strike
-        BOTH schedules — the trap, re-entered through the batch."""
+        BOTH schedules - the trap, re-entered through the batch."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _SINGLETON_ACTOR)
@@ -410,7 +410,7 @@ class TestAutoDisableTrap:
         """Three ticks with the blocker active across all of them (a
         long-running singleton job): every tick suppresses, none strikes,
         and the schedule is still enabled with ``consecutive_failures`` 0
-        after the third — the collision count that would permanently
+        after the third - the collision count that would permanently
         disable it if suppression landed in the failure path."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
@@ -420,7 +420,7 @@ class TestAutoDisableTrap:
         )
         # Catch-up seeding: each tick's advance stays one cadence behind the
         # wall clock, so all three ticks find the schedule due and suppress
-        # for real — a future-advancing seed would make ticks 2 and 3
+        # for real - a future-advancing seed would make ticks 2 and 3
         # trivially empty and prove nothing about the strike path.
         slot = ten_min_floor(datetime.now(UTC)) - timedelta(minutes=30)
         schedule_id = await seed_schedule(
@@ -454,7 +454,7 @@ class TestAutoDisableTrap:
 
         row = await schedule_row(clean_pg_conn, schema, schedule_id)
         assert row["enabled"] is True, (
-            "three collisions auto-disabled a healthy busy actor's schedule — "
+            "three collisions auto-disabled a healthy busy actor's schedule - "
             "the exact trap the suppression classification exists to foreclose"
         )
         assert row["consecutive_failures"] == 0
@@ -555,7 +555,7 @@ class TestMixedBatch:
             tick_start,
         )
         assert tick_enqueued == 1, (
-            "exactly one job may come out of this tick — the suppressed slot "
+            "exactly one job may come out of this tick - the suppressed slot "
             f"contributed {tick_enqueued - 1} extra"
         )
 
@@ -582,7 +582,7 @@ class TestMaxPendingParity:
         predicate), advances the slot, records no strike, emits
         ``max-pending-exceeded`` and bumps ``taskq.backpressure.errors``.
         When the pending job goes terminal the same schedule fires on a
-        later tick — capacity frees, the gate opens."""
+        later tick - capacity frees, the gate opens."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _CAPPED_ACTOR)
@@ -623,7 +623,7 @@ class TestMaxPendingParity:
 
         assert fired == 0
         assert await count_jobs(clean_pg_conn, schema, _CAPPED_ACTOR) == 1, (
-            "the tick enqueued past the actor's max_pending cap — cron fires "
+            "the tick enqueued past the actor's max_pending cap - cron fires "
             "bypass the backpressure the client path enforces"
         )
         row = await schedule_row(clean_pg_conn, schema, schedule_id)
@@ -685,7 +685,7 @@ class TestFailureClassification:
     ) -> None:
         """A payload factory that raises, with a policy present:
         ``consecutive_failures`` increments, the error text lands in
-        ``last_fire_error``, no job is enqueued — a real defect still
+        ``last_fire_error``, no job is enqueued - a real defect still
         strikes toward auto-disable exactly as before the classification."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
@@ -716,7 +716,7 @@ class TestFailureClassification:
         assert await count_jobs(clean_pg_conn, schema, _SINGLETON_ACTOR) == 0
         row = await schedule_row(clean_pg_conn, schema, schedule_id)
         assert row["consecutive_failures"] == 1, (
-            "a genuine payload-factory failure must still strike — the "
+            "a genuine payload-factory failure must still strike - the "
             "suppression classification may only absorb policy collisions"
         )
         assert "parity-check factory exploded" in (row["last_fire_error"] or "")
@@ -728,7 +728,7 @@ class TestFailureClassification:
 
 class TestSuppressionPreservesStreak:
     """The suppression UPDATE touches ``next_fire_at`` ONLY: a suppressed
-    slot must neither punish (no strike) nor amnesty (no reset) — a
+    slot must neither punish (no strike) nor amnesty (no reset) - a
     schedule carrying a pre-existing failure streak keeps it across a
     suppressed tick, and the streak still counts toward auto-disable."""
 
@@ -741,15 +741,15 @@ class TestSuppressionPreservesStreak:
         default 3-strike threshold) with a recorded prior error, an active
         singleton blocker, and a working payload.
 
-        Tick 1 (blocker active) suppresses: the streak must read 2 after —
+        Tick 1 (blocker active) suppresses: the streak must read 2 after -
         not 3 (suppression is not a failure) and not 0 (suppression is not
-        amnesty for earlier genuine failures) — and the prior error text
+        amnesty for earlier genuine failures) - and the prior error text
         must survive (suppression does not overwrite ``last_fire_error``).
 
         Tick 2 (blocker still active, payload factory now exploding) is a
         genuine planning failure: the streak reaches 3 and the schedule
         auto-disables.  Had the suppression amnestied the streak to 0, the
-        schedule would survive tick 2 at streak 1 — this is the assertion
+        schedule would survive tick 2 at streak 1 - this is the assertion
         that discriminates \"preserved\" from \"reset\"."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
@@ -786,14 +786,14 @@ class TestSuppressionPreservesStreak:
                 actor_policies=_SINGLETON_POLICIES,
             )
 
-        assert fired == 0, "the blocker is active — the tick must suppress"
+        assert fired == 0, "the blocker is active - the tick must suppress"
         row = await schedule_row(clean_pg_conn, schema, schedule_id)
         assert row["consecutive_failures"] == 2, (
             "suppression must neither strike nor amnesty: a pre-existing "
             "streak of 2 survives the suppressed slot verbatim"
         )
         assert row["last_fire_error"] == "prior genuine failure", (
-            "suppression writes next_fire_at ONLY — the recorded prior "
+            "suppression writes next_fire_at ONLY - the recorded prior "
             "failure must not be overwritten or cleared"
         )
         assert row["last_fired_at"] is None
@@ -801,7 +801,7 @@ class TestSuppressionPreservesStreak:
         assert row["next_fire_at"] > due_slot, "the suppressed slot still advances"
         assert await count_jobs(clean_pg_conn, schema, _SINGLETON_ACTOR) == 1
 
-        # Tick 2: same blocker, but planning now fails for real — the
+        # Tick 2: same blocker, but planning now fails for real - the
         # preserved streak reaches the threshold and disables the schedule.
         await clean_pg_conn.execute(
             f'UPDATE "{schema}".cron_schedules '  # noqa: S608  # Why: schema is a test-fixture identifier; values are $-bound.
@@ -828,5 +828,5 @@ class TestSuppressionPreservesStreak:
             "auto-disable: 2 (preserved) + 1 (genuine failure) = 3 = threshold"
         )
         assert await count_jobs(clean_pg_conn, schema, _SINGLETON_ACTOR) == 1, (
-            f"only the blocker {blocker_id} exists — neither tick enqueued"
+            f"only the blocker {blocker_id} exists - neither tick enqueued"
         )

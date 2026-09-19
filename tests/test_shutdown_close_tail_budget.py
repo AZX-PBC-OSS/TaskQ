@@ -33,7 +33,7 @@ def test_teardown_tail_counts_eight_sequential_closes_plus_publish_drain() -> No
     Eight: the three role pools plus the conditional per-slot transaction
     pool (the worst case a worker can present), plus notify_conn,
     redis_client, and the two credential providers a provider-backed
-    deployment resolves (pg and redis — each closed once, after every
+    deployment resolves (pg and redis - each closed once, after every
     resource built through it). Not nine: the leader connection is closed
     and nulled by orchestrate_shutdown concurrently with the unwind, so
     the exit stack's own leader guard skips it. Counting it would
@@ -54,14 +54,14 @@ def test_taskq_defaults_cover_the_modelled_worst_case() -> None:
     """The shipped default must cover the modelled worst case.
 
     History: the default used to be 60s while the modelled worst case at
-    the default graces was 67s — every deployment running the defaults
+    the default graces was 67s - every deployment running the defaults
     raised its own ``shutdown-budget-exceeds-termination-grace`` boot
     warning, which made the warning pure noise (a downstream redteam
     finding). The tail counts the conditional per-slot pool's close
     and the two credential-provider closes (42s), putting the modelled
     worst case at 82s; 85 keeps 3s of
     headroom over it. The ~87s sibling-crash path (nine sequential
-    closes) still exceeds the default by 2s on per-slot workers — that
+    closes) still exceeds the default by 2s on per-slot workers - that
     path is the documented caveat the model deliberately understates;
     operators running the per-slot path with tight crash budgets should
     raise ``termination_grace_period``.
@@ -101,7 +101,7 @@ def test_sufficient_budget_is_recognised() -> None:
 # that test shrinks the constant to 50ms, hands the real open_worker_deps a
 # publish that never lands, and fails if teardown outlives the bound.
 # Re-hardcoding `timeout=2.0` fails it with "teardown took 2.01s with the drain
-# bound at 0.05s" — the drift this file cares about, measured rather than
+# bound at 0.05s" - the drift this file cares about, measured rather than
 # spelled.
 
 
@@ -124,7 +124,7 @@ def test_startup_warning_names_the_numbers_and_the_remedy() -> None:
     from taskq.worker._bootstrap import _startup_log
 
     # The pre-fix default shape (60s grace, 30/10 phases): valid, and
-    # short of the modelled worst case — the exact configuration the
+    # short of the modelled worst case - the exact configuration the
     # warning exists for.
     s = _settings(
         TASKQ_TERMINATION_GRACE_PERIOD="60",
@@ -223,7 +223,7 @@ def test_release_park_lease_capped_warning_names_the_arithmetic() -> None:
     """The lease-cap warning fires exactly when the cap binds before the
     budget bound, with both numbers and the raise-the-lease remedy.
 
-    The 120/30/10/60 shape is the one the #232 review constructed: under an
+    The 120/30/10/60 shape is the one the review constructed: under an
     uncapped park its lease expires mid-park (a single failed RELEASING
     write away from a double-run). The cap makes it safe by construction,
     and the warning says the trade being made instead of staying quiet

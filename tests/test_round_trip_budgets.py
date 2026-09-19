@@ -267,7 +267,7 @@ async def test_a_plain_enqueue_is_one_statement() -> None:
 
 async def test_a_keyed_pool_enqueue_bounds_its_wait_without_a_savepoint_or_restore() -> None:
     """The bounded idempotency wait needs a transaction for SET LOCAL to
-    span the INSERT — and nothing more when the transaction is the
+    span the INSERT - and nothing more when the transaction is the
     enqueue's own: a refusal aborts it outright, and the transaction-local
     bound dies with it, so the savepoint and the read-then-restore of the
     caller's lock_timeout that a caller-owned transaction needs are pure
@@ -388,13 +388,13 @@ async def test_a_contended_cron_tick_issues_no_due_read() -> None:
     assert "cron_schedules" not in conn.wire[0]
 
 
-# ── PG rate-limit acquires (the #228 fusion) ─────────────────────────────
+# ── PG rate-limit acquires (the fusion) ─────────────────────────────
 #
 # The pre-fused token-bucket acquire spent BEGIN + set_config + SAVEPOINT
 # + preseed + SELECT FOR UPDATE + RELEASE + upsert + COMMIT (8 round
 # trips, bounded mode); the log-style sliding window spent BEGIN +
 # try-lock + DELETE + INSERT + COUNT (+ a retry SELECT on denial) +
-# COMMIT. The fused shapes (#228):
+# COMMIT. The fused shapes:
 
 # * token bucket / GCRA: ONE ``INSERT … ON CONFLICT DO UPDATE …
 #   RETURNING`` doing the arithmetic in the conflict arm; the bounded

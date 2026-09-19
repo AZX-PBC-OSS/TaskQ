@@ -5,14 +5,14 @@ started by a short-lived JobContext "outlives the context and cannot be
 garbage-collected mid-publish" (deps.py). The lifecycle contract:
 
 * every task ``ctx.progress()`` creates is added to the shared set
-  (a strong reference — the whole point of the set);
+  (a strong reference - the whole point of the set);
 * the task's done-callback discards it, so a COMPLETED publish leaves
-  no reference behind — the set is a window over in-flight publishes,
+  no reference behind - the set is a window over in-flight publishes,
   not a grow-only ledger;
 * a publish that HANGS is abandoned by the publish path's own
   ``_PUBLISH_TIMEOUT_S`` (1 s) bound, so even a black-holed Redis
   cannot keep a task (and its reference, and its coroutine frame) in
-  the set indefinitely — and shutdown's
+  the set indefinitely - and shutdown's
   ``_drain_pending_publishes`` window cannot be held open by it.
 
 Both pins below assert the set drains to empty under bounded waits, so
@@ -147,7 +147,7 @@ async def test_completed_publishes_are_discarded_from_the_shared_set() -> None:
 
     assert len(pending) == 2, (
         "each in-flight publish must be strongly referenced by "
-        "pending_publish_tasks — that reference is what stops the event "
+        "pending_publish_tasks - that reference is what stops the event "
         "loop garbage-collecting a fire-and-forget task mid-publish."
     )
     await _wait_set_empty(pending, drain_bound_s=5.0)
@@ -160,7 +160,7 @@ async def test_hung_publish_is_abandoned_bounded_and_discarded() -> None:
     The publish path bounds every round trip at ``_PUBLISH_TIMEOUT_S``
     (1 s); a pipeline that never returns must be abandoned by that
     bound, its task completing (timeout swallowed, failure recorded) and
-    its reference discarded — so the set, and shutdown's
+    its reference discarded - so the set, and shutdown's
     ``_drain_pending_publishes`` window, cannot be held open by a dead
     Redis. A regression to an unbounded publish would leave the task
     referenced past this test's 3 s drain bound.

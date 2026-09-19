@@ -2,7 +2,7 @@
 
 Tests that drive the DI-resolved dispatch path build the same three
 scope containers the worker's bootstrap does, over a registry, wired
-through :func:`taskq._di.scopes.make_resolver` — the production resolver,
+through :func:`taskq._di.scopes.make_resolver` - the production resolver,
 so nested resolution from a LOOP factory reaches PROCESS and THREAD
 providers exactly as it does in a worker. One builder here keeps every
 suite on that shape.
@@ -72,7 +72,7 @@ async def bootstrap_scopes(
 
 class BootstrappedScopes:
     """A validated registry's scope chain, bootstrapped on entry and shut
-    down LOOP-first on exit — what a test that dispatches through the
+    down LOOP-first on exit - what a test that dispatches through the
     worker's DI path needs around each dispatch."""
 
     def __init__(

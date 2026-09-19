@@ -4,18 +4,18 @@ Pre-fix, final teardown performed UNBOUNDED graceful closes: pools were
 entered on the AsyncExitStack (``pool.__aexit__`` → ``pool.close()``) and
 dedicated connections were closed with a bare ``await conn.close()``. A
 dead PG (e.g. a chaos-killed container) can block ``Pool.close()``
-indefinitely — a CI chaos run hung >300s that way. The reload path
+indefinitely - a CI chaos run hung >300s that way. The reload path
 already bounds its closes (``_drain_old_pool``/``_drain_old_conn`` with
 ``drain_timeout`` + ``terminate()``); these tests pin the same bound for
 the final teardown path via ``CLOSE_TIMEOUT_SECS``.
 
 Docker-free: hand-rolled fakes wired through the REAL ``open_worker_deps``
-via ``WorkerConnections`` factories (asyncpg types are C-extensions — no
+via ``WorkerConnections`` factories (asyncpg types are C-extensions - no
 MagicMock for pool/conn). Fake conventions mirror
 ``tests/test_reload_credentials.py`` (hang-gate ``close_wait``,
 ``terminated`` flag, ``close_calls`` counter).
 
-No ``pytestmark`` — must run under ``pytest -m "not integration"``.
+No ``pytestmark`` - must run under ``pytest -m "not integration"``.
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ class _FakePool:
         self._close_events = close_events
         # Why closed_event alongside the closed flag (and despite the
         # _close_events name-ordering list): the flag is the assertion
-        # surface; the event is the WAIT surface — reload_credentials
+        # surface; the event is the WAIT surface - reload_credentials
         # drains OLD pools on background tasks, and a test that needs
         # "drained" can await this instead of sleeping a fixed interval
         # that races the drain under load.
@@ -80,7 +80,7 @@ class _FakePool:
         if self.close_error is not None:
             # Real-semantics error path (asyncpg 0.31 Pool.close()): on ANY
             # close error the pool calls self.terminate() and sets
-            # self._closed = True in the finally before re-raising — so a
+            # self._closed = True in the finally before re-raising - so a
             # raising close still leaves the pool terminated AND closed.
             self.terminated = True
             self.closed = True
@@ -264,7 +264,7 @@ async def test_teardown_does_not_terminate_on_fast_close() -> None:
 
 
 async def test_teardown_never_closes_caller_owned_resources() -> None:
-    """Caller-owned (concrete) resources are never closed by teardown — the
+    """Caller-owned (concrete) resources are never closed by teardown - the
     ownership contract holds on the bounded path too. Guards the pre-existing
     invariant against regressions from the teardown rework."""
     settings = _make_settings()
@@ -324,7 +324,7 @@ async def test_teardown_lifo_order_conns_before_pools() -> None:
 async def test_teardown_close_error_does_not_propagate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A pool close() that raises is logged and swallowed — teardown keeps
+    """A pool close() that raises is logged and swallowed - teardown keeps
     unwinding so LIFO-later resources (dispatcher) are still closed."""
     settings = _make_settings()
     dispatcher = _FakePool("dispatcher")
@@ -346,13 +346,13 @@ async def test_teardown_close_error_does_not_propagate(
     assert heartbeat.close_calls == 1
     # Real asyncpg Pool.close() self-terminates and marks the pool closed
     # before re-raising a close error (asyncpg 0.31: except -> terminate(),
-    # finally -> _closed = True) — the fake mirrors that, so the pool IS
+    # finally -> _closed = True) - the fake mirrors that, so the pool IS
     # terminated/closed even though the HELPER never called terminate().
     assert heartbeat.terminate_calls == 0
     assert heartbeat.terminated is True
     assert heartbeat.closed is True
     assert worker.closed is True
-    # dispatcher unwinds AFTER heartbeat (LIFO) — proof the error was contained.
+    # dispatcher unwinds AFTER heartbeat (LIFO) - proof the error was contained.
     assert dispatcher.closed is True
     assert dispatcher.close_calls == 1
 
@@ -423,7 +423,7 @@ async def test_teardown_bounds_hot_swapped_pool_after_reload(
     """A pool swapped in by reload_credentials is registered for the SAME
     bounded teardown: if the NEW pool's close hangs at shutdown, it is
     terminated. Covers the reload_credentials registration site (inside the
-    pool loop — default-arg binding must capture the right pool/label)."""
+    pool loop - default-arg binding must capture the right pool/label)."""
     _shrink_teardown_timeout(monkeypatch)
     settings = _make_settings()
     old_dispatcher = _FakePool("old-dispatcher")
@@ -445,7 +445,7 @@ async def test_teardown_bounds_hot_swapped_pool_after_reload(
             await reload_credentials(deps, drain_timeout=0.05)
             assert deps.dispatcher_pool is new_dispatcher
             # Event-driven, bounded wait for the old pool's background
-            # drain — a fixed sleep here races the drain under load. The
+            # drain - a fixed sleep here races the drain under load. The
             # 2.0s bound sits under the outer 5s teardown budget so a
             # broken drain fails as this wait's AssertionError, not the
             # outer timeout.
@@ -465,9 +465,9 @@ async def test_teardown_bounds_redis_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A hung Redis aclose() is bounded: teardown logs and continues (Redis
-    has no terminate()) — no exception escapes. The timeout event carries
-    ``close_timeout=`` — NOT ``drain_timeout=``, the reload path's
-    drain-event field — so the teardown close bound stays distinguishable
+    has no terminate()) - no exception escapes. The timeout event carries
+    ``close_timeout=`` - NOT ``drain_timeout=``, the reload path's
+    drain-event field - so the teardown close bound stays distinguishable
     from the reload drain bound in log alerts (review C9)."""
     _shrink_teardown_timeout(monkeypatch)
     settings = _make_settings()
@@ -507,9 +507,9 @@ async def test_teardown_bounds_redis_close(
 
 async def test_teardown_nulls_redis_client_after_close() -> None:
     """After teardown closes a TaskQ-owned Redis client, ``deps.redis_client``
-    is None — mirroring the notify/leader conn guards (review C6). Reload
+    is None - mirroring the notify/leader conn guards (review C6). Reload
     interplay is safe: ``reload_credentials`` swaps the attr and drains the old
-    client itself, so the guard reads the attr once, closes, and nulls — the
+    client itself, so the guard reads the attr once, closes, and nulls - the
     same lifecycle as the conn siblings."""
     settings = _make_settings()
     redis_client = _FakeRedisClient()
@@ -538,7 +538,7 @@ async def test_teardown_nulls_redis_client_after_close() -> None:
 async def test_teardown_close_timeout_logs_close_timeout_field(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The bounded-close timeout event carries ``close_timeout=`` — NOT
+    """The bounded-close timeout event carries ``close_timeout=`` - NOT
     ``drain_timeout=``, which is the reload path's drain-event field
     (``pool-draining``, ``pool-drain-timeout-terminating``). Sharing the
     field name conflates the teardown close bound with the reload drain
@@ -584,7 +584,7 @@ async def test_teardown_bounds_the_publish_drain_by_the_shared_constant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A progress publish that never finishes must not hold teardown open past
-    ``PUBLISH_DRAIN_TIMEOUT_SECS``, and the bound must be THAT constant — the
+    ``PUBLISH_DRAIN_TIMEOUT_SECS``, and the bound must be THAT constant - the
     one ``worst_case_teardown_tail()`` sizes the shutdown budget with.
 
     Driving it through the real ``open_worker_deps`` rather than asserting on
@@ -625,7 +625,7 @@ async def test_teardown_bounds_the_publish_drain_by_the_shared_constant(
             "the drain must time out on an unfinished publish, not await it"
         )
         assert elapsed < 1.0, (
-            f"teardown took {elapsed:.2f}s with the drain bound at 0.05s — the "
+            f"teardown took {elapsed:.2f}s with the drain bound at 0.05s - the "
             "publish drain is not using PUBLISH_DRAIN_TIMEOUT_SECS, so "
             "worst_case_teardown_tail() no longer models the real teardown"
         )

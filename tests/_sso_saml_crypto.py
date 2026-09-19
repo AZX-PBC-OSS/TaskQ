@@ -40,7 +40,7 @@ ACS_URL: str = "http://testserver.invalid/admin/callback"
 
 
 def _format_cert_for_saml(pem: str) -> str:
-    """Strip PEM headers/footers/newlines — python3-saml wants the raw base64 body."""
+    """Strip PEM headers/footers/newlines - python3-saml wants the raw base64 body."""
     lines = [ln.strip() for ln in pem.strip().splitlines() if ln.strip() and "-----" not in ln]
     return "".join(lines)
 
@@ -89,7 +89,7 @@ def build_saml_response(
     """Build a SAML Response (base64-encoded), optionally with a signed assertion.
 
     ``in_response_to`` emits ``InResponseTo`` on the ``<samlp:Response>``
-    element — where python3-saml's ``OneLogin_Saml2_Response.get_in_response_to``
+    element - where python3-saml's ``OneLogin_Saml2_Response.get_in_response_to``
     reads it; omitted by default (the IdP-initiated shape).
     """
     from onelogin.saml2.utils import OneLogin_Saml2_Utils

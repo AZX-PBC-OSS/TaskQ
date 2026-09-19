@@ -9,20 +9,20 @@ $2`` followed by an **unconditional** ``INSERT`` into ``job_attempts``
 (``heartbeat.py``'s ``_inner``: the UPDATE's rowcount tag is discarded).
 Sweep 1 transitions the same rows through a ``FOR UPDATE SKIP LOCKED``
 snap and writes its own ``job_attempts`` row (outcome ``'crashed'``,
-error_class ``'WorkerCrashed'``) in the same transaction — and
+error_class ``'WorkerCrashed'``) in the same transaction - and
 ``job_attempts`` has ``PRIMARY KEY (job_id, attempt)``.
 
-The guards make one transitioner a no-op — but only the UPDATE is
+The guards make one transitioner a no-op - but only the UPDATE is
 guarded.  Interleaving under attack: isolate's SELECT reads rows X and Y;
 before isolate's per-row UPDATE of X, the leader's Sweep 1 reclaims X
 (lease expired), writing (X, attempt) into ``job_attempts``; isolate's
 guarded UPDATE of X then no-ops, and its unconditional attempt INSERT hits
-the primary key — a **non-transient** constraint error that aborts
+the primary key - a **non-transient** constraint error that aborts
 isolate's WHOLE transaction, so Y (still running, still locked by this
 worker, never reclaimed) is never transitioned either.
 
 Contract under test: losing the race on ONE row must not collapse the
-isolation of the OTHERS — the sweep's transition of X stands, exactly one
+isolation of the OTHERS - the sweep's transition of X stands, exactly one
 attempt row exists for X, and Y is still isolated (re-pended for retry).
 The benign ordering (sweep fully first, then isolate) is pinned green:
 the guards serialise and isolate simply no longer sees the reclaimed row.
@@ -139,7 +139,7 @@ async def test_benign_ordering_sweep_first_then_isolate_is_serialised(
     """GREEN pin: the guards serialise the non-interleaved order.
 
     Sweep 1 fully commits its reclaim of X first; isolate then SELECTs only
-    Y (X is no longer running) and transitions it — X untouched with
+    Y (X is no longer running) and transitions it - X untouched with
     exactly the sweep's one attempt row, Y isolated with exactly one.
     """
     schema, dsn = rt_schema
@@ -160,7 +160,7 @@ async def test_benign_ordering_sweep_first_then_isolate_is_serialised(
         assert shutdown.is_set()
 
         assert await _job_status(conn, schema, x_id) == "pending", (
-            "Contract: the sweep's already-committed transition of X stands — "
+            "Contract: the sweep's already-committed transition of X stands - "
             "isolate must not touch a row it no longer holds."
         )
         assert await _job_status(conn, schema, y_id) == "pending", (
@@ -170,12 +170,12 @@ async def test_benign_ordering_sweep_first_then_isolate_is_serialised(
         x_attempts = await _attempt_rows(conn, schema, x_id)
         y_attempts = await _attempt_rows(conn, schema, y_id)
         assert len(x_attempts) == 1, (
-            "Contract: exactly one attempt row for X — the sweep's. A second means "
+            "Contract: exactly one attempt row for X - the sweep's. A second means "
             "isolate wrote a phantom attempt row for a row it lost."
         )
         assert x_attempts[0]["error_class"] == "WorkerCrashed"
         assert len(y_attempts) == 1, (
-            "Contract: exactly one attempt row for Y — isolate's own write."
+            "Contract: exactly one attempt row for Y - isolate's own write."
         )
         assert y_attempts[0]["error_class"] == "HeartbeatLost"
     finally:
@@ -220,11 +220,11 @@ async def test_isolate_survives_sweep_winning_one_row_mid_flight(
     """RED: a PK conflict on the sweep-won row must not abort the whole isolate.
 
     Interleaving: isolate has SELECTed X and Y when the leader's Sweep 1
-    reclaims X (its lease was long expired) — X's guarded UPDATE no-ops,
+    reclaims X (its lease was long expired) - X's guarded UPDATE no-ops,
     but isolate's unconditional attempt INSERT collides with the sweep's
     row on ``job_attempts``' PRIMARY KEY (job_id, attempt), a non-transient
-    error that aborts isolate's entire transaction: Y — still running,
-    still this worker's, never reclaimed — is left ``running`` with the
+    error that aborts isolate's entire transaction: Y - still running,
+    still this worker's, never reclaimed - is left ``running`` with the
     worker exiting, instead of being isolated for retry.
     """
     schema, dsn = rt_schema
@@ -266,11 +266,11 @@ async def test_isolate_survives_sweep_winning_one_row_mid_flight(
         )
         x_attempts = await _attempt_rows(sweep_conn, schema, x_id)
         assert len(x_attempts) == 1, (
-            "Contract: exactly one attempt row for X — the sweep's; isolate lost "
+            "Contract: exactly one attempt row for X - the sweep's; isolate lost "
             "the race and must not contribute a phantom row."
         )
         assert await _job_status(sweep_conn, schema, y_id) == "pending", (
-            "Contract: losing the race on X must not collapse the isolation of Y — "
+            "Contract: losing the race on X must not collapse the isolation of Y - "
             "isolate's guarded UPDATE no-ops on X, so the unconditional attempt "
             "INSERT must not abort the whole transaction and leave Y running with "
             "no worker to finish it. Current behavior: the INSERT hits "

@@ -6,23 +6,23 @@ the deadline sweep, not wedge the whole sweep batch on a spent
 ``job_attempts`` key.
 
 ``retry_job`` (``_sql_templates.py``) deliberately keeps ``attempt``
-monotonic on a normal re-dispatch cycle (never reset — see
+monotonic on a normal re-dispatch cycle (never reset - see
 ``test_retry_job_attempt_epoch_pk.py``): a fresh dispatch climbs the
 counter past the spent value, so the next terminal write lands on a
 fresh ``(job_id, attempt)`` key. That contract depends on the row
 actually getting dispatched again.
 
 ``retry_job`` clears a ``schedule_to_close`` that has already elapsed at
-retry time (the retried row must be genuinely dispatchable — pinned by
+retry time (the retried row must be genuinely dispatchable - pinned by
 ``test_retry_job_stale_deadline_operator_footgun.py``), but it preserves
 a still-future deadline: the operator's original budget intent survives
 an in-window retry. Dispatch excludes any row whose ``schedule_to_close``
 has elapsed, so if that preserved deadline passes while the re-pended row
-is still waiting, the row can never climb to a fresh attempt number — it
+is still waiting, the row can never climb to a fresh attempt number - it
 sits ``pending`` at its *spent* attempt. ``sweep_deadline_exceeded``
 (``_sweeps.py``) then claims that row (``status IN ('pending','scheduled')
 AND schedule_to_close < now``) and inserts its batched ``job_attempts``
-row keyed at the job's current attempt — the same key the original failed
+row keyed at the job's current attempt - the same key the original failed
 run already wrote. The whole sweep batch's ``job_attempts`` INSERT is one
 statement over every swept row in that call, so without the
 ``ON CONFLICT (job_id, attempt) DO NOTHING`` guard this single collision
@@ -34,7 +34,7 @@ Operator impact if the guard regresses: the deadline sweep raises
 every tick it encounters the wedged row. ``UniqueViolationError`` is not
 one of the leader loop's ``TRANSIENT_PG_ERRORS``
 (``taskq/worker/_transient.py``), so it is not the "log and retry next
-tick" case — it is treated as an unexpected loop error. The admin UI's
+tick" case - it is treated as an unexpected loop error. The admin UI's
 retry endpoint returns success and redirects as if the retry worked;
 the operator sees nothing wrong until the leader's unexpected-error
 telemetry fires.
@@ -42,7 +42,7 @@ telemetry fires.
 Distinct from the footgun pin: that file pins that a retry after the
 deadline has already passed produces a row dispatch can actually claim
 (the stale deadline is cleared). This file pins that a retry *inside*
-the deadline window — where the deadline is deliberately preserved —
+the deadline window - where the deadline is deliberately preserved -
 still cannot wedge the sweep when the window later closes before the
 re-run dispatches.
 """
@@ -97,7 +97,7 @@ async def test_retry_past_deadline_does_not_wedge_the_deadline_sweep(
         assert failed is not None and failed["status"] == "failed" and failed["attempt"] == 1
 
     # The operator retries it through the escape hatch while the deadline
-    # is still in the window — retry_job preserves a still-future
+    # is still in the window - retry_job preserves a still-future
     # schedule_to_close (the operator's original budget intent); only an
     # already-elapsed one is cleared.
     assert await backend.retry_job(job_id)
@@ -110,14 +110,14 @@ async def test_retry_past_deadline_does_not_wedge_the_deadline_sweep(
         assert repended is not None and repended["status"] == "pending"
         assert repended["schedule_to_close"] is not None, (
             "a retry inside the deadline window must preserve the "
-            "operator's original schedule_to_close — clearing a "
+            "operator's original schedule_to_close - clearing a "
             "still-future deadline would silently extend a budget the "
             "operator set"
         )
 
         # The preserved deadline elapses while the re-pended row is still
         # waiting to be dispatched (no worker has capacity yet). The row
-        # now sits pending at its spent attempt with an elapsed deadline —
+        # now sits pending at its spent attempt with an elapsed deadline -
         # the collision shape this file pins.
         await conn.execute(
             f"UPDATE \"{schema}\".jobs SET schedule_to_close = now() - interval '1 second' "
@@ -147,7 +147,7 @@ async def test_retry_past_deadline_does_not_wedge_the_deadline_sweep(
         assert final["status"] != "pending", (
             "the retried row must not be left permanently pending with an "
             "elapsed schedule_to_close and unable to dispatch (dispatch "
-            "excludes rows whose deadline has already passed) — it must be "
+            "excludes rows whose deadline has already passed) - it must be "
             f"resolved to a terminal state by the sweep. observed: {final['status']!r}"
         )
 

@@ -7,7 +7,7 @@ the predicates execute (and count as covered) with nothing asserting them;
 ``tests/test_backend_fencing_invariants.py`` observes the guard's outcomes on
 live rows but only in the integration lane, and the cross-worker pin
 (``tests/test_rt_cancelwatch_cross_worker_abandon.py``) reaches the guard on
-exactly one row shape: the terminalised cancel-phase row PR #272's reclaim
+exactly one row shape: the terminalised cancel-phase row PR the reclaim
 leaves behind. This pin keeps the guard's full membership observable on every
 shape, in the fast lane, pinned against the same constant the backend renders
 (a copy would drift from the SQL that actually runs).
@@ -58,7 +58,7 @@ def test_mark_abandoned_guard_fences_on_running_and_escalation() -> None:
         "now write a second terminal state over an already-terminal row, and "
         "the abandon's audit columns (locked_by_worker, lock_expires_at kept "
         "in place) mean the zombie holder's stale abandon reaches it. This "
-        "fence is what makes a terminalised cancel-phase row (the PR #272 "
+        "fence is what makes a terminalised cancel-phase row (the PR "
         "reclaim's output) immune to a stale abandon."
     )
     assert "cancel_phase = 2" in guard, (

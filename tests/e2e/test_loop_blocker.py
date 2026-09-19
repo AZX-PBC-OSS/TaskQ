@@ -1,11 +1,11 @@
-"""Loop-lag watchdog e2e — a sync-blocking actor trips detector 4.
+"""Loop-lag watchdog e2e - a sync-blocking actor trips detector 4.
 
 The ``loop_blocker_job`` actor calls ``time.sleep`` inside an async body,
 blocking the worker's entire event loop. Heartbeats stop (stale only
 past the 10s floor), so the loop-lag watchdog (budget 5s, startup grace
 2s in this module's env) is the first detector to trip: the container
 must exit with the watchdog's non-zero code AND the dump marker in its
-log — pinning the detector, not any crash.
+log - pinning the detector, not any crash.
 
 A dedicated worker container carries the tightened watchdog knobs so the
 trip lands in seconds; no other module enqueues the blocker actor.
@@ -113,7 +113,7 @@ def _watchdog_env() -> dict[str, str]:
     sizes the lease to hold the fast budget: 5.0 + 0.5 < 8.0 satisfies
     the lag-lease invariant, and 5.0 > the 1.0s default check interval
     keeps the detector clear of its own sampling cadence. The warn budget
-    rides at 1.0s so tier 1 can fire before the 5.0s terminal tier — a
+    rides at 1.0s so tier 1 can fire before the 5.0s terminal tier - a
     warn budget at or above the terminal budget silently disables tier 1
     and fails the worker's settings validation. (The blocker fixture
     additionally tightens the startup grace; the replacement worker in
@@ -177,7 +177,7 @@ async def test_watchdog_kill_orphan_is_reclaimed_and_fleet_recovers(
     orphaned job is reclaimed by the leader sweep on lock-lease expiry
     (not left 'running' forever), and a replacement worker keeps the fleet
     functional. The poison job itself is cancelled before it can re-block
-    a worker — the assertion is the reclaim, not its completion."""
+    a worker - the assertion is the reclaim, not its completion."""
     from ._assertions import fetch_effects
     from .actors import (
         LoopBlockerPayload,
@@ -206,7 +206,7 @@ async def test_watchdog_kill_orphan_is_reclaimed_and_fleet_recovers(
     # worker's leader sweep must reclaim it within the recovery window.
     # The replacement is the only live worker, and this test's tail needs
     # the fleet to self-heal: a redispatched poison job re-blocks it, and
-    # without the lag watchdog that block is permanent — the reclaim flips
+    # without the lag watchdog that block is permanent - the reclaim flips
     # the row to pending for less than a poll interval and the fresh-work
     # assertion then starves. Run it under the same coherent watchdog knobs
     # as the blocker (re-enabled; the conftest fleet runs with it off), so

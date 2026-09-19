@@ -3,7 +3,7 @@
 The failure: an actor registered ``@actor(queue="cron")`` with a worker
 consuming only ``["default"]`` never dispatches. Enqueue succeeds, cron
 keeps firing, and the jobs sit pending forever because the dispatch CTE
-unnests ``$1::text[]`` — the worker's own ``settings.queues`` — and
+unnests ``$1::text[]`` - the worker's own ``settings.queues`` - and
 claims only jobs whose queue matches; nothing fails and nothing logs.
 Decoration-time validation checks queue NAME FORMAT only, so bootstrap,
 where a process holds both every served actor's declared queue and its
@@ -19,8 +19,8 @@ Red-team rework notes pinned by this file:
   the parallel agent's committed variant), with the distinct unconsumed
   queue names in ``queues`` and the worker's subscription in
   ``worker_queues``.
-- Empty ``settings.queues`` is a different, unambiguous failure — a
-  worker that dispatches nothing — with its own single event.
+- Empty ``settings.queues`` is a different, unambiguous failure - a
+  worker that dispatches nothing - with its own single event.
 - A wiring pin: helper-level tests stay green when the production call
   in ``_main`` is deleted, so the call itself is asserted structurally.
 
@@ -30,7 +30,7 @@ duplicated the controls above): the all-consumed multi-queue worker,
 and the two-unconsumed-queues mapping that discriminates per-actor
 filtering across multiple offending queues.
 
-Pure-Python unit tests — no PG required. Warnings are asserted as
+Pure-Python unit tests - no PG required. Warnings are asserted as
 actually emitted (event, level, fields) via ``structlog.testing.
 capture_logs``, mirroring ``tests/test_migrate_on_start_worker.py``;
 the emitter is imported through the ``taskq.worker.run`` re-export seam,
@@ -168,7 +168,7 @@ def test_two_actors_sharing_an_unconsumed_queue_aggregate_into_one_warning() -> 
 def test_mixed_registry_names_only_the_unconsumed_actors() -> None:
     """Subset discrimination: with one actor's queue consumed and another's
     not, exactly one warning fires and its fields name only the
-    unconsumed actor — the case a degenerate "if any actor is
+    unconsumed actor - the case a degenerate "if any actor is
     unconsumed, warn for every actor" implementation fails (alpha would
     appear in the event)."""
     settings = _make_settings(queues_csv="default")
@@ -192,7 +192,7 @@ def test_mixed_registry_names_only_the_unconsumed_actors() -> None:
 def test_multi_queue_worker_consuming_all_actor_queues_stays_silent() -> None:
     """Ported from the parallel agent's superseded suite: a worker
     consuming several queues with actors targeting each of them is the
-    legitimate split-queue topology on ONE worker — per-actor silence
+    legitimate split-queue topology on ONE worker - per-actor silence
     must hold, not just for the everything-on-default shape."""
     settings = _make_settings(queues_csv="default,cron")
     registry = {
@@ -210,7 +210,7 @@ def test_multi_queue_worker_consuming_all_actor_queues_stays_silent() -> None:
 
 def test_mixed_registry_two_unconsumed_queues_maps_each_actor_to_its_queue() -> None:
     """Ported from the parallel agent's superseded suite: one consumed
-    actor plus two unconsumed actors on DIFFERENT queues — the case that
+    actor plus two unconsumed actors on DIFFERENT queues - the case that
     discriminates the actor→queue mapping itself, which two parallel
     name/queue lists cannot express (who is on which queue?). The mapping
     is emitted sorted by actor name so the event is byte-stable across
@@ -238,7 +238,7 @@ def test_mixed_registry_two_unconsumed_queues_maps_each_actor_to_its_queue() -> 
 
 def test_aggregate_warning_carries_the_fleet_caveat_note() -> None:
     """The note field is the only carrier of the heterogeneous-fleet
-    legitimacy the issue demands — without it the warning reads as a hard
+    legitimacy the issue demands - without it the warning reads as a hard
     error and operators of intentionally split fleets learn to filter it.
     Dropping the note must fail this test."""
     settings = _make_settings(queues_csv="default")
@@ -255,11 +255,11 @@ def test_aggregate_warning_carries_the_fleet_caveat_note() -> None:
 
 
 def test_empty_queues_with_actors_warns_worker_consumes_nothing() -> None:
-    """TASKQ_QUEUES="" parses to queues == [] — a worker that provably
+    """TASKQ_QUEUES="" parses to queues == [] - a worker that provably
     dispatches nothing, a certain misconfiguration rather than the
     ambiguous fleet case: exactly one distinct event, and no per-actor
     aggregate whose note claims "another worker may legitimately consume
-    the queue" — wrong text for a worker that consumes nothing at all."""
+    the queue" - wrong text for a worker that consumes nothing at all."""
     settings = _make_settings(queues_csv="")
     registry = {
         "alpha": _make_actor_ref(name="alpha", queue="default"),
@@ -283,7 +283,7 @@ def test_empty_queues_with_actors_warns_worker_consumes_nothing() -> None:
 
 
 def test_empty_queues_with_empty_registry_still_warns_once() -> None:
-    """A worker consuming nothing is broken even with no served actors —
+    """A worker consuming nothing is broken even with no served actors -
     the empty-queues warning does not depend on the registry."""
     settings = _make_settings(queues_csv="")
     registry: dict[str, ActorRef[_Payload, _Result]] = {}
@@ -302,7 +302,7 @@ def test_main_wires_the_warning_after_worker_id_and_before_sync() -> None:
     pool-acquire stall would swallow a warning placed after it).
 
     Red-team motivation: deleting the production call leaves every
-    helper-level unit test green — they invoke the helper directly — so
+    helper-level unit test green - they invoke the helper directly - so
     the call itself needs its own guard. AST-based, not source-text
     matching, so it is robust to reformatting (the
     ``test_sweep_loop_acquire_calls_pass_timeout_ast`` house pattern).
@@ -505,7 +505,7 @@ async def test_boot_queue_coverage_discriminates_on_the_stored_assignment(
 ) -> None:
     """Boot's queue-coverage signal must tell apart an actor whose stored
     assignment this worker consumes from one whose stored assignment it does
-    not — the literal is the same in both cases.
+    not - the literal is the same in both cases.
 
     The stored assignment is the operator-owned one: it is what an actor move
     rewrites, what the cron leader's fires follow, and what routes every
@@ -518,7 +518,7 @@ async def test_boot_queue_coverage_discriminates_on_the_stored_assignment(
     Both parameters here run the identical registry and subscription and
     differ only in the stored assignment, so a coverage signal that cannot
     separate them is not a coverage signal. Whether *any* worker consumes the
-    queue stays a fleet-wide question this process cannot answer — hence a
+    queue stays a fleet-wide question this process cannot answer - hence a
     warning and never a refusal, which the pin also asserts.
     """
     consumed = stored_queue == "default"
@@ -612,7 +612,7 @@ async def test_boot_queue_coverage_discriminates_on_the_stored_assignment(
     assert coverage_warnings, (
         "boot emitted no queue-coverage warning although this actor's stored "
         f"assignment is {stored_queue!r}, a queue this worker does not consume "
-        "— so every re-pended row and every cron fire for it routes somewhere "
+        "- so every re-pended row and every cron fire for it routes somewhere "
         "this process cannot claim. The coverage check reads the "
         "@actor(queue=...) literal ('default', which this worker does consume) "
         "instead of the stored assignment, so the one state where the actor's "

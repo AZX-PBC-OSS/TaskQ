@@ -13,7 +13,7 @@ heartbeat/cancel/watchdog interplay's "lost race" corners:
    escalation never re-fires, ``mark_abandoned``'s ``status = 'running'``
    guard makes every stale abandon a no-op, and the terminal outcome is
    never overwritten.  The stale flag also blocks nothing at the constraint
-   level — the singleton partial unique index only covers active statuses.
+   level - the singleton partial unique index only covers active statuses.
 
 2. **Phase-2's ``task.cancel()`` landing on an already-completed task is a
    no-op and starts no re-issue storm.**  The escalation applies (row still
@@ -22,7 +22,7 @@ heartbeat/cancel/watchdog interplay's "lost race" corners:
 
 3. **Heartbeat renewal is ownership-fenced.**
    ``UPDATE_JOBS_LOCK_SQL`` carries ``WHERE locked_by_worker = $1 AND
-   status = 'running'`` — after a reclaim re-dispatches the job to another
+   status = 'running'`` - after a reclaim re-dispatches the job to another
    worker, the old holder's renewals are 0-row no-ops that leave the new
    holder's lease untouched.
 """
@@ -181,8 +181,8 @@ async def test_stale_cancel_request_on_terminal_row_is_inert(
 
     Contract: the terminal row keeps ``cancel_requested_at`` as audit
     trail, but every cancel-protocol reader fences on ``status =
-    'running'`` — the poll returns nothing, no escalation is ever issued,
-    no abandon ever applies — and the stale flag does not block a fresh
+    'running'`` - the poll returns nothing, no escalation is ever issued,
+    no abandon ever applies - and the stale flag does not block a fresh
     singleton enqueue (the partial unique index covers active statuses
     only).
     """
@@ -249,7 +249,7 @@ async def test_stale_cancel_request_on_terminal_row_is_inert(
             assert row["cancel_requested_at"] is not None, "the audit trail must stand"
             assert await _escalation_events(conn, schema, job_id) == 0, (
                 "Contract: no escalation may be issued for a row the poll does not "
-                "return (status='running' fence) — an escalation event here means the "
+                "return (status='running' fence) - an escalation event here means the "
                 "re-issue arm acted on stale local state against a terminal row."
             )
     finally:
@@ -270,7 +270,7 @@ async def test_escalation_then_terminal_write_no_reissue_storm(
 
     Interleaving: the cancel is observed, the actor task finishes on its
     own, and the phase-2 tick's ``task.cancel()`` therefore lands on a DONE
-    task (asyncio no-op — the task's result stands).  The escalation itself
+    task (asyncio no-op - the task's result stands).  The escalation itself
     applies (the row was still running), the owner's terminal write lands
     after it, and every later tick is silent: the poll fence keeps the
     re-issue arm from firing and ``mark_abandoned``'s ``status='running'``
@@ -307,7 +307,7 @@ async def test_escalation_then_terminal_write_no_reissue_storm(
         await _tick(deps, backend, dsn, worker_id)
 
         assert done_task.done() and not done_task.cancelled(), (
-            "Contract: task.cancel() on an already-completed task must be a no-op — "
+            "Contract: task.cancel() on an already-completed task must be a no-op - "
             "the completed attempt's outcome stands and no exception may escape the "
             "escalation arm."
         )
@@ -337,12 +337,12 @@ async def test_escalation_then_terminal_write_no_reissue_storm(
             assert row is not None
             assert row["status"] == "succeeded", (
                 "Contract: after the owner's terminal write, the cancel machinery "
-                "must never overwrite the outcome — mark_abandoned's status='running' "
+                "must never overwrite the outcome - mark_abandoned's status='running' "
                 "guard must make every stale abandon a no-op. Current behavior: the "
                 f"row landed on {row['status']!r}."
             )
             assert await _escalation_events(conn, schema, job_id) == 1, (
-                "Contract: exactly one escalation event per applied escalation — a "
+                "Contract: exactly one escalation event per applied escalation - a "
                 "second event here means the re-issue arm fired on a terminal row "
                 "(the poll's status='running' fence was bypassed)."
             )
@@ -350,7 +350,7 @@ async def test_escalation_then_terminal_write_no_reissue_storm(
                 f'SELECT count(*) FROM "{schema}".job_attempts WHERE job_id = $1', job_id
             )
             assert int(attempts or 0) == 1, (
-                "Contract: only the owner's mark_succeeded attempt row may exist — a "
+                "Contract: only the owner's mark_succeeded attempt row may exist - a "
                 "second row means a stale abandon applied against the terminal row."
             )
     finally:
@@ -363,7 +363,7 @@ async def test_renewal_noops_after_reclaim_and_spares_new_holder(
     """A reclaimed job's rows no longer renew for the old holder.
 
     Contract: ``UPDATE_JOBS_LOCK_SQL`` is fenced on ``locked_by_worker =
-    $1 AND status = 'running'`` — once Sweep 1 re-pends the job and another
+    $1 AND status = 'running'`` - once Sweep 1 re-pends the job and another
     worker re-dispatches it, the old holder's heartbeat renewal is a 0-row
     no-op and the new holder's ``lock_expires_at`` is untouched (no
     interference between the stale holder's ticks and the live one).
@@ -415,12 +415,12 @@ async def test_renewal_noops_after_reclaim_and_spares_new_holder(
             )
             assert tag.rsplit(" ", 1)[-1] == "0", (
                 "Contract: the old holder's renewal must be a 0-row no-op once the "
-                "job was reclaimed and re-locked by another worker — a non-zero "
+                "job was reclaimed and re-locked by another worker - a non-zero "
                 "rowcount means the stale holder extended a lease it no longer owns."
             )
             assert after == before, (
                 "Contract: the old holder's renewal must not move the new holder's "
-                "lock_expires_at — the stale holder's ticks must not interfere with "
+                "lock_expires_at - the stale holder's ticks must not interfere with "
                 "the live attempt's lease."
             )
     finally:

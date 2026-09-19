@@ -1,4 +1,4 @@
-"""Dedup e2e — ``unique_for``/``identity_key`` and scoped ``idempotency_key``.
+"""Dedup e2e - ``unique_for``/``identity_key`` and scoped ``idempotency_key``.
 
 Two distinct dedup mechanisms, both exercised through the real client:
 
@@ -10,7 +10,7 @@ Two distinct dedup mechanisms, both exercised through the real client:
 - Scoped idempotency: the ``(idempotency_scope, idempotency_key)`` unique
   index dedupes retries/duplicates within a scope. Same key in the SAME
   scope → ``was_existing``; same key in DIFFERENT scopes → two distinct
-  jobs. ``idempotency_scope`` does NOT partition ``identity_key`` dedup —
+  jobs. ``idempotency_scope`` does NOT partition ``identity_key`` dedup -
   it is orthogonal to ``unique_for``.
 
 Dedup mechanics, verified against the library (not guessed):
@@ -20,8 +20,8 @@ Dedup mechanics, verified against the library (not guessed):
   (``client/_args.py``), so the tests only supply ``identity_key``.
 - The backend preflight runs only when BOTH ``unique_for`` and
   ``identity_key`` are set (``backend/_enqueue.py._enqueue_on_conn``); the SQL
-  matches the newest active row — ``status = ANY(unique_states)``, default
-  ``pending``/``scheduled``/``running`` — within
+  matches the newest active row - ``status = ANY(unique_states)``, default
+  ``pending``/``scheduled``/``running`` - within
   ``created_at > clock_timestamp() - unique_for``
   (``backend/_sql_templates.py.enqueue_unique_for_preflight``).
 - On a preflight hit the existing row is returned and no INSERT happens; the
@@ -29,7 +29,7 @@ Dedup mechanics, verified against the library (not guessed):
   (``client/_jobs.py``).
 - The two enqueues below are back-to-back awaits: the first row is committed
   ``pending`` before the first ``enqueue()`` returns, and the worker cannot
-  complete the 50 ms actor before the second enqueue's preflight runs — the
+  complete the 50 ms actor before the second enqueue's preflight runs - the
   dedup hit is deterministic, not a race.
 
 Every test requests ``e2e_worker`` explicitly: the worker container fixture is
@@ -172,7 +172,7 @@ async def test_same_key_different_scopes_both_run(
     """Scoped idempotency: same idempotency_key in two scopes → both run.
 
     Uniqueness on idempotency_key alone (no scope column) would dedupe
-    this pair into a single job — this test fails against that behaviour.
+    this pair into a single job - this test fails against that behaviour.
     """
     key = IdempotencyKey(f"rebuild-{run_id[:12]}")
 

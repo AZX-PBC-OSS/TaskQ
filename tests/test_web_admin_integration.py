@@ -68,7 +68,7 @@ class _TestBackendSettings:
 
     The admin routes this double feeds never dispatch, write terminal
     results or run bounded sweeps, but the protocol the backend is typed
-    against declares those knobs — a double that omits them only passes
+    against declares those knobs - a double that omits them only passes
     because the tests execution environment disables argument-type
     reporting, and it breaks loudly the first time a route starts reading
     one. Defaults mirror ``WorkerSettings``'.
@@ -83,7 +83,7 @@ class _TestBackendSettings:
     event_writer_reduced_batch_divisor: int = 4
     sweep_breaker_failure_threshold: int = 3
     sweep_breaker_window_secs: float = 600.0
-    # Enqueue advisory-lock budgets declared on BackendSettings — same
+    # Enqueue advisory-lock budgets declared on BackendSettings - same
     # doctrine as every other knob above: the double must declare the
     # contract, not pass by luck. Defaults mirror WorkerSettings' (5000.0
     # each, the module constants the backend's defensive getattr
@@ -91,7 +91,7 @@ class _TestBackendSettings:
     max_pending_lock_timeout_ms: float = 5000.0
     unique_for_lock_timeout_ms: float = 5000.0
     idempotency_lock_timeout_ms: float = 5000.0
-    # Reclaim-sweep backoff ceiling declared on BackendSettings — same
+    # Reclaim-sweep backoff ceiling declared on BackendSettings - same
     # doctrine as every knob above. Default mirrors WorkerSettings'
     # (24 h, the module constant).
     max_retry_backoff: timedelta = DEFAULT_MAX_RETRY_BACKOFF
@@ -121,7 +121,7 @@ def _make_backend(pool: asyncpg.Pool) -> PostgresBackend:
 
 # ── Shared PG (session-scoped, via tests/conftest.py's pg_dsn) ────────────
 #
-# This module previously booted its OWN session Postgres — under the shared-
+# This module previously booted its OWN session Postgres - under the shared-
 # container topology that would be a second long-lived Postgres for the run
 # (and under the old per-worker topology it already was a redundant extra).
 # The module-scoped pg_dsn fixture gives this file its own database on the
@@ -133,7 +133,7 @@ def _make_backend(pool: asyncpg.Pool) -> PostgresBackend:
 #
 # Tests pass a pg_pool that was created inside the same event loop. The
 # lifespan mounts the router and populates app.state so route handlers can
-# resolve their dependencies. It does NOT create a new pool — the caller
+# resolve their dependencies. It does NOT create a new pool - the caller
 # owns the pool lifecycle.
 
 
@@ -432,7 +432,7 @@ async def test_sse_endpoint_returns_event_stream(
 
     import taskq.web.admin.sse as _sse_mod
 
-    # Signature mirrors taskq.web.admin.sse._sse_generator exactly — a double
+    # Signature mirrors taskq.web.admin.sse._sse_generator exactly - a double
     # that outlives the real signature stops standing in for anything.
     async def _finite_generator(
         semaphore: _asyncio.Semaphore, pool: Any, schema: Any
@@ -519,7 +519,7 @@ async def test_jobs_relative_time_filter_is_measured_by_the_server_clock(
 ) -> None:
     """``?time_range=1h`` keeps rows the SERVER considers recent and drops the
     rest, with the ages set relative to ``clock_timestamp()`` and never to this
-    process's clock — created_at is server-written, so an app-anchored window
+    process's clock - created_at is server-written, so an app-anchored window
     would shift by the app-to-database skew."""
     recent, stale = new_uuid(), new_uuid()
     for jid, age_secs in ((recent, 600.0), (stale, 18_000.0)):
@@ -594,7 +594,7 @@ async def test_leader_page_shows_healthy_for_a_server_fresh_heartbeat(
 async def test_leader_page_shows_unhealthy_for_a_server_stale_heartbeat(
     pool: asyncpg.Pool, conn: asyncpg.Connection
 ) -> None:
-    """A heartbeat the SERVER considers stale renders the Unhealthy badge —
+    """A heartbeat the SERVER considers stale renders the Unhealthy badge -
     the verdict flips on the server-measured age of last_seen_at alone."""
     await _seed_leader(conn, await _seed_worker(conn, hostname="leader-host"), age_secs=300)
 
@@ -634,7 +634,7 @@ async def test_taskq_ui_serve_starts(pg_dsn: str, _migrated_schema_for_ui_serve:
 
     # TASKQ_ENVIRONMENT=dev: this subprocess doesn't run under pytest, so the
     # _dev_environment autouse fixture's monkeypatch (parent-process only)
-    # doesn't reach it — without this, create_router's admin_ui_require_auth
+    # doesn't reach it - without this, create_router's admin_ui_require_auth
     # and _ui_serve's health_require_token fail-closed checks (both suppressed
     # in a dev environment) would make the process exit immediately instead
     # of binding to the port, and this test would only ever see the generic
@@ -646,18 +646,18 @@ async def test_taskq_ui_serve_starts(pg_dsn: str, _migrated_schema_for_ui_serve:
         if p.poll() is None:
             p.send_signal(signal.SIGINT)
             try:
-                # Why: proc.wait blocks for the whole shutdown handshake — off-loop.
+                # Why: proc.wait blocks for the whole shutdown handshake - off-loop.
                 await asyncio.to_thread(p.wait, timeout=15)
             except subprocess.TimeoutExpired:
                 p.kill()
-                # Why: same blocking wait after SIGKILL — off-loop.
+                # Why: same blocking wait after SIGKILL - off-loop.
                 await asyncio.to_thread(p.wait)
 
     async def _poll_until_ready(proc: subprocess.Popen[bytes], port: int, deadline: float) -> bool:
         async with httpx.AsyncClient(timeout=2.0) as client:
             while time.time() < deadline:
                 if proc.poll() is not None:
-                    return False  # early exit — the caller classifies from stderr
+                    return False  # early exit - the caller classifies from stderr
                 try:
                     resp = await client.get(f"http://127.0.0.1:{port}/admin/queues")
                     if resp.status_code == 200:
@@ -673,7 +673,7 @@ async def test_taskq_ui_serve_starts(pg_dsn: str, _migrated_schema_for_ui_serve:
             _s.bind(("127.0.0.1", 0))
             port = _s.getsockname()[1]
 
-        proc = subprocess.Popen(  # noqa: S603, ASYNC220  # Why: S603 — trusted args; ASYNC220 — Popen is intentional here, subprocess test requires a real separate process
+        proc = subprocess.Popen(  # noqa: S603, ASYNC220  # Why: S603 - trusted args; ASYNC220 - Popen is intentional here, subprocess test requires a real separate process
             [
                 sys.executable,
                 "-m",
@@ -692,7 +692,7 @@ async def test_taskq_ui_serve_starts(pg_dsn: str, _migrated_schema_for_ui_serve:
         try:
             ready = await _poll_until_ready(proc, port, time.time() + 20)
             if ready:
-                return  # server responded — test passed
+                return  # server responded - test passed
             if proc.poll() is not None:
                 # Child exited early, so its stderr is at EOF and read()
                 # cannot block.
@@ -701,7 +701,7 @@ async def test_taskq_ui_serve_starts(pg_dsn: str, _migrated_schema_for_ui_serve:
                     "address already in use" in stderr.lower()
                     and attempt < _UI_SERVE_MAX_BIND_ATTEMPTS
                 ):
-                    # Lost the bind race — close the dead child's pipes
+                    # Lost the bind race - close the dead child's pipes
                     # (stderr is drained above; stdout was never read),
                     # then retry on a fresh port with a fresh child.
                     if proc.stdout is not None:
@@ -714,10 +714,10 @@ async def test_taskq_ui_serve_starts(pg_dsn: str, _migrated_schema_for_ui_serve:
                     f"(rc={proc.returncode}).\nstderr: {stderr[:500]}"
                 )
             # Still running but not responding: terminate it FIRST so stderr
-            # reaches EOF, then attach the drained logs to the failure —
+            # reaches EOF, then attach the drained logs to the failure -
             # reading from a live child's stderr would block.
             await _stop(proc)
-            # Why: stderr.read() blocks until EOF — off-loop.
+            # Why: stderr.read() blocks until EOF - off-loop.
             stderr = (await asyncio.to_thread(proc.stderr.read)).decode() if proc.stderr else ""
             raise AssertionError(
                 f"Server did not respond on port {port} within 20s "
@@ -733,7 +733,7 @@ async def test_taskq_ui_serve_starts(pg_dsn: str, _migrated_schema_for_ui_serve:
 
 @pytest.mark.asyncio
 async def test_queue_detail_pagination(pool: asyncpg.Pool, conn: asyncpg.Connection) -> None:
-    """Queue detail paginates 150 jobs — page 1 shows 100, page 2 shows 50."""
+    """Queue detail paginates 150 jobs - page 1 shows 100, page 2 shows 50."""
     import re
     from urllib.parse import unquote
 
@@ -773,7 +773,7 @@ async def test_queue_detail_pagination(pool: asyncpg.Pool, conn: asyncpg.Connect
     ids1 = set(uuid_re.findall(html1))
     ids2 = set(uuid_re.findall(html2))
     overlap = ids1 & ids2
-    assert not overlap, f"Pages share {len(overlap)} job IDs — pagination is not disjoint"
+    assert not overlap, f"Pages share {len(overlap)} job IDs - pagination is not disjoint"
 
 
 # ── Polling badge with no Redis ───────────────────────────────────
@@ -855,7 +855,7 @@ async def test_autoescape_prevents_xss(pool: asyncpg.Pool, conn: asyncpg.Connect
     Two-layer check:
     1. The Environment object has autoescape=True (structural guarantee).
     2. A payload containing <script> is escaped to &lt;script&gt; in the HTTP response
-       (behavioral guarantee — output to the browser is safe).
+       (behavioral guarantee - output to the browser is safe).
     """
     # Structural: autoescape must be unconditionally enabled on the env.
     bundle = create_router(pool, schema=_SCHEMA_LABEL)
@@ -1063,7 +1063,7 @@ async def test_cancel_button_visibility(pool: asyncpg.Pool, conn: asyncpg.Connec
 # contract (Backend.retry_job accepts succeeded/abandoned) against both
 # PostgresBackend and InMemoryBackend directly. Nothing in this suite
 # previously drove a POST to /admin/jobs/{id}/retry against real Postgres
-# for ANY source state — not even the already-supported 'failed' case —
+# for ANY source state - not even the already-supported 'failed' case -
 # so the admin route's own precheck (job.status not in _TERMINAL_STATUSES)
 # and its delegation to backend.retry_job were only ever exercised through
 # a StubBackend in tests/web_admin/test_backend_delegation.py, which never
@@ -1485,8 +1485,8 @@ async def test_schedule_run_now_enqueues_job(pool: asyncpg.Pool, conn: asyncpg.C
     # Single-statement clock+value read (the suite's timing-test idiom): the
     # stamp's age must be non-negative (never in the server's future) and
     # bounded (stamped during this request). The bound absorbs parallel-run
-    # latency through the shared PG container — a sub-second bound assumed
-    # an unloaded request path, which is not the contract under test — while
+    # latency through the shared PG container - a sub-second bound assumed
+    # an unloaded request path, which is not the contract under test - while
     # still failing stale or future stamps (the wrong-domain regressions
     # this assertion exists for, which drift by whole seconds to minutes).
     age = (job["server_now"] - job["scheduled_at"]).total_seconds()

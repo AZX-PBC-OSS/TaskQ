@@ -1,7 +1,7 @@
 """C8: rate-limit admission state must be owned by the data-store clock.
 
 Every limiter's window predicate, TAT, and token epoch ran on the calling
-node's Python clock while the state it measured was shared across nodes —
+node's Python clock while the state it measured was shared across nodes -
 with N nodes diverging by S, combined admission exceeds the configured
 limit (over-admission up to S/window). These tests skew exactly one
 caller's Python clock (``tests._clock_skew.SkewedClock``) and assert the
@@ -50,12 +50,12 @@ async def test_sliding_window_pg_nodes_share_the_server_clock(
 ) -> None:
     """C8 pin (PG log style): limit=1/60s shared by two callers whose Python
     clocks diverge by 90s. Node A (unskewed) is admitted. Node B, whose
-    clock is 90s AHEAD, must be DENIED — the window boundary and the entry
+    clock is 90s AHEAD, must be DENIED - the window boundary and the entry
     timestamps are ``clock_timestamp()``-domain, so node B's own clock
     cannot shrink the window it is measured against.
 
     Pre-fix: node B's boundary was ``clock.now() - window`` (90s ahead of
-    the server) and node A's entry — stamped in A's domain — fell outside
+    the server) and node A's entry - stamped in A's domain - fell outside
     it; the delete even evicted A's entry outright. Node B was admitted:
     2 events inside the true 60s window (over-admission)."""
     settings = _pg_settings(module_pg_schema)
@@ -95,7 +95,7 @@ async def test_sliding_window_pg_gcra_tat_not_poisoned_by_skewed_caller(
     unskewed caller acquires immediately and must ALSO be allowed.
 
     Pre-fix: the skewed caller computed and stored its TAT in its own
-    Python epoch (server+90+1s), poisoning the shared state — the next
+    Python epoch (server+90+1s), poisoning the shared state - the next
     caller measured ``allow_at`` 32s in its future and was denied for ~90s
     (under-admission caused by another node's skew). Post-fix the TAT is
     ``EXTRACT(EPOCH FROM clock_timestamp())``-domain, so a skewed node
@@ -131,7 +131,7 @@ async def test_token_bucket_pg_refill_measured_by_server_clock(
     """C8 pin (PG token bucket): capacity=1, refill=0.02/s, a row pre-seeded
     with tokens=0.0 and a SERVER-domain ts (``EXTRACT(EPOCH FROM
     clock_timestamp())``). A caller whose clock is 90s AHEAD acquires 1
-    token and must be DENIED — the elapsed-refill step must use the server
+    token and must be DENIED - the elapsed-refill step must use the server
     epoch, so 90 seconds that never passed cannot mint a token.
 
     Pre-fix: ``elapsed = clock.now().timestamp() - ts`` read the skewed
@@ -168,7 +168,7 @@ async def test_token_bucket_pg_refill_measured_by_server_clock(
 # ── Redis: the scripts read TIME, not the caller's clock ─────────────
 #
 # D5 (approved): the documented deviation ("client-supplied now instead of
-# TIME") is reversed — every script derives now from redis.call('TIME'),
+# TIME") is reversed - every script derives now from redis.call('TIME'),
 # so multi-node fleets share the Redis clock. These are the Redis analogs
 # of the PG pins above.
 
@@ -177,10 +177,10 @@ async def test_token_bucket_pg_refill_measured_by_server_clock(
 async def test_sliding_window_redis_nodes_share_the_time_clock(redis_url: str) -> None:
     """C8 pin (Redis log style): limit=1/60s shared by two callers whose
     Python clocks diverge by 90s. Node A (unskewed) is admitted; node B,
-    whose clock is 90s AHEAD, must be DENIED — the script's window
+    whose clock is 90s AHEAD, must be DENIED - the script's window
     boundary and ZADD scores are TIME-domain.
 
-    Pre-fix: node B passed its own now_ms as ARGV — its ZREMRANGEBYSCORE
+    Pre-fix: node B passed its own now_ms as ARGV - its ZREMRANGEBYSCORE
     boundary (now-90s ahead) evicted node A's entry outright and node B
     was admitted (over-admission)."""
     settings = _redis_settings(redis_url)
@@ -218,7 +218,7 @@ async def test_sliding_window_redis_gcra_tat_not_poisoned_by_skewed_caller(
 ) -> None:
     """C8 pin (Redis GCRA): limit=60/60s. A caller whose clock is 90s AHEAD
     acquires (allowed either way), then an unskewed caller acquires
-    immediately and must ALSO be allowed — the script's TAT is TIME-domain,
+    immediately and must ALSO be allowed - the script's TAT is TIME-domain,
     so a skewed node cannot shove the shared admission boundary into
     another node's future."""
     settings = _redis_settings(redis_url)
@@ -250,10 +250,10 @@ async def test_sliding_window_redis_gcra_tat_not_poisoned_by_skewed_caller(
 async def test_token_bucket_redis_refill_measured_by_redis_time(redis_url: str) -> None:
     """C8 pin (Redis token bucket): capacity=1, refill=0.02/s. Node A
     (unskewed) consumes the only token; node B, whose clock is 90s AHEAD,
-    must be DENIED — the script's elapsed-refill step reads TIME, so 90
+    must be DENIED - the script's elapsed-refill step reads TIME, so 90
     seconds that never passed cannot mint a token.
 
-    Pre-fix: node B passed its own now as ARGV — elapsed = its skewed now
+    Pre-fix: node B passed its own now as ARGV - elapsed = its skewed now
     minus A's ts = ~90s of phantom refill → admitted (over-admission)."""
     settings = _redis_settings(redis_url)
     name = f"tb_cd_{new_base62()}"

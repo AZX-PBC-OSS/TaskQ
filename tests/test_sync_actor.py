@@ -1,4 +1,4 @@
-"""Tests for sync function support — ``def`` actors dispatched via asyncio.to_thread.
+"""Tests for sync function support - ``def`` actors dispatched via asyncio.to_thread.
 
 Covers decoration-time validation, direct invocation, integration with
 consume_one_job, cancellation, DI, retry, and error propagation.
@@ -130,7 +130,7 @@ def test_sync_actor_with_metadata() -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Helpers — JobContext construction for sync tests
+#  Helpers - JobContext construction for sync tests
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -332,7 +332,7 @@ async def test_sync_actor_retry_policy_kicks_in() -> None:
         job=make_job_row(attempt=1, max_attempts=3),
     )
     # The handler decided to retry (attempt 1 < max_attempts 3), so the
-    # outcome is "scheduled" — the job was rescheduled, not terminally failed.
+    # outcome is "scheduled" - the job was rescheduled, not terminally failed.
     # The batch hook skips non-terminal outcomes.
     assert outcome == "scheduled"
     assert len(backend.mark_failed_or_retry_calls) == 1
@@ -366,7 +366,7 @@ async def test_sync_actor_retry_after() -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Cancellation support — should_abort
+#  Cancellation support - should_abort
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -465,7 +465,7 @@ async def test_async_actor_result_type_still_works() -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Thread-safety — concurrent sync actors
+#  Thread-safety - concurrent sync actors
 # ═══════════════════════════════════════════════════════════════════════════
 
 

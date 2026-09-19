@@ -4,26 +4,26 @@ bounded.
 Two seams in ``taskq/worker/notify.py`` await the notify connection with no
 bound and no detector watching:
 
-* the health-check ``SELECT 1`` — bounded on DSN/AAD conns by the
+* the health-check ``SELECT 1`` - bounded on DSN/AAD conns by the
   connection's own command_timeout, but a hand-rolled factory or
   caller-owned conn carries none, and the health-check loop is deliberately
   exempt from the watchdog's stale-loop detector (see its docstring); an
   unbounded probe on a wedged conn parks the health check forever. The
-  bound is ``settings.notify_listener_setup_timeout`` — the SAME bound the
+  bound is ``settings.notify_listener_setup_timeout`` - the SAME bound the
   file already applies to every bounded execute/registration in this loop
-  family — and exhaustion is treated like any dead conn: the reconnect
+  family - and exhaustion is treated like any dead conn: the reconnect
   path runs.
-* the ``remove_listener`` round trips — in the health-check error path and
+* the ``remove_listener`` round trips - in the health-check error path and
   in ``notify_listener_loop``'s teardown finally. Unbounded, a wedged conn
   parks the error path's reconnect (or the teardown, which the
   ShutdownWatchdog would force-exit the process for). Best-effort by
   design: bounded with ``notify_listener_setup_timeout`` inside the
-  existing suppress — a timeout is another suppressed failure, not a
+  existing suppress - a timeout is another suppressed failure, not a
   crash.
 
 Conventions mirror ``tests/test_notify.py`` (Mock conns at the asyncpg
 listener-lifecycle surface; full integration lives in integration tests).
-No ``pytestmark`` — must run under ``pytest -m "not integration"``.
+No ``pytestmark`` - must run under ``pytest -m "not integration"``.
 """
 
 from __future__ import annotations
@@ -129,7 +129,7 @@ def _make_channels(backend: PostgresBackend) -> list[tuple[str, Any]]:
 
 # The module-global listener bookkeeping (_active_listeners /
 # _connected_lookup) is reset around every test by the conftest-level
-# _reset_notify_module_globals autouse fixture — this file's former
+# _reset_notify_module_globals autouse fixture - this file's former
 # file-local copy of that reset was promoted there (with the four other
 # identical copies across the notify suites) so every test gets it.
 
@@ -140,8 +140,8 @@ def _make_channels(backend: PostgresBackend) -> list[tuple[str, Any]]:
 async def test_health_check_probe_hang_is_treated_as_disconnected() -> None:
     """A notify conn whose SELECT 1 never returns is bounded by
     notify_listener_setup_timeout: the timeout flows into the same
-    disconnected-conn handling as any dead connection — error logged, the
-    reconnect path runs and swaps the conn — and the loop stays responsive
+    disconnected-conn handling as any dead connection - error logged, the
+    reconnect path runs and swaps the conn - and the loop stays responsive
     to shutdown instead of parking forever on the probe."""
     deps = _make_deps()
     backend = _make_backend()
@@ -178,7 +178,7 @@ async def test_health_check_probe_hang_is_treated_as_disconnected() -> None:
         try:
             await asyncio.wait_for(probe_entered.wait(), timeout=_TEST_BUDGET_SECS)
 
-            # RED pre-fix: the loop is parked inside execute("SELECT 1") —
+            # RED pre-fix: the loop is parked inside execute("SELECT 1") -
             # the reconnect path never runs and this bounded wait fails by
             # name.
             await wait_for_condition(
@@ -196,7 +196,7 @@ async def test_health_check_probe_hang_is_treated_as_disconnected() -> None:
             )
 
             # The loop must stay responsive: shutdown set between checks
-            # ends it on the next while-check — a loop still parked in the
+            # ends it on the next while-check - a loop still parked in the
             # probe would hang here.
             shutdown.set()
             await asyncio.wait_for(task, timeout=_TEST_BUDGET_SECS)
@@ -240,7 +240,7 @@ async def test_health_check_error_path_unlisten_hang_is_bounded() -> None:
     try:
         await asyncio.wait_for(remove_entered.wait(), timeout=_TEST_BUDGET_SECS)
 
-        # RED pre-fix: the error path is parked inside remove_listener() —
+        # RED pre-fix: the error path is parked inside remove_listener() -
         # the reconnect path never runs and this bounded wait fails by name.
         await wait_for_condition(
             lambda: deps.notify_conn is new_conn,
@@ -260,7 +260,7 @@ async def test_health_check_error_path_unlisten_hang_is_bounded() -> None:
 async def test_listener_teardown_unlisten_hang_is_bounded() -> None:
     """notify_listener_loop's teardown remove_listener calls are bounded:
     with a conn whose UNLISTEN never returns and shutdown already set, the
-    loop's finally completes within the bound instead of parking forever —
+    loop's finally completes within the bound instead of parking forever -
     the ShutdownWatchdog would otherwise force-exit the process for it."""
     deps = _make_deps()
     backend = _make_backend()
@@ -280,7 +280,7 @@ async def test_listener_teardown_unlisten_hang_is_bounded() -> None:
 
     try:
         # RED pre-fix: the loop parks forever inside the FIRST
-        # remove_listener — this bounded wait raises TimeoutError.
+        # remove_listener - this bounded wait raises TimeoutError.
         await asyncio.wait_for(
             notify_listener_loop(deps, backend, shutdown, _WORKER_ID),
             timeout=_TEST_BUDGET_SECS,

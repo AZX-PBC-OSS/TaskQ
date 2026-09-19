@@ -3,21 +3,21 @@
 The bounded sweeps take ``batch_size`` and ``statement_timeout_ms`` as
 typed ints at a public boundary (``PostgresBackend.sweep_*`` staticmethods
 and the in-memory twins).  Neither is validated today, and both feed
-load-bearing SQL mechanics whose degenerate values are silently wrong:
+critical SQL mechanics whose degenerate values are silently wrong:
 
-* ``LIMIT $n`` with ``n = 0`` selects ZERO rows — the sweep returns 0
+* ``LIMIT $n`` with ``n = 0`` selects ZERO rows - the sweep returns 0
   forever while a full backlog sits eligible: a silent drain stall that
   looks exactly like "nothing to do" to every caller and metric.
 * ``LIMIT $n`` with a negative ``n`` does not mean "unbounded" for a
   bound parameter (that reading holds only for a negative LIMIT
-  *literal*) — the server rejects it with SQLSTATE 2201W
+  *literal*) - the server rejects it with SQLSTATE 2201W
   (``InvalidRowCountInLimitClauseError``), a data error the leader's
   transient-error classification deliberately does NOT treat as
   transient, so it burns the unexpected-error budget and can tear the
   sweep loop down.
-* ``SET LOCAL statement_timeout = 0`` DISABLES the server-side timeout —
+* ``SET LOCAL statement_timeout = 0`` DISABLES the server-side timeout -
   the safety net that aborts a batch which cannot finish inside the
-  ``RECLAIM_EVENT_VISIBILITY_DELAY`` margin — while the call still
+  ``RECLAIM_EVENT_VISIBILITY_DELAY`` margin - while the call still
   succeeds normally.
 * a negative ``statement_timeout`` dies with SQLSTATE 22023
   (``InvalidParameterValueError``), same non-transient class.
@@ -168,7 +168,7 @@ async def test_negative_batch_size_is_rejected_at_the_boundary(
     """A negative ``batch_size`` must raise ValueError, not SQLSTATE 2201W.
 
     Today the bound parameter reaches ``LIMIT $n`` and the server rejects
-    it with ``InvalidRowCountInLimitClauseError`` — a data error the
+    it with ``InvalidRowCountInLimitClauseError`` - a data error the
     leader's transient classification deliberately excludes, so it counts
     against the unexpected-error budget instead of being caught at the
     typed boundary it belongs to.
@@ -193,9 +193,9 @@ async def test_statement_timeout_ms_out_of_range_is_rejected_at_the_boundary(
 ) -> None:
     """``statement_timeout_ms`` must be >= 1, rejected before any SQL.
 
-    ``0`` disables the server-side timeout — the mechanism that aborts a
+    ``0`` disables the server-side timeout - the mechanism that aborts a
     batch which cannot finish inside the RECLAIM_EVENT_VISIBILITY_DELAY
-    margin — so today the call silently succeeds with its safety net
+    margin - so today the call silently succeeds with its safety net
     removed.  A negative value dies with SQLSTATE 22023 from the server.
     Both belong at the typed boundary as ValueError.
     """
@@ -260,13 +260,13 @@ async def test_batch_size_one_drains_oldest_eligible_first(
     order was previously observed through the one ``job_events`` row per
     promoted row the sweep then wrote.  That per-row event is exactly
     the unbounded-growth vector the denial-events decision abolished
-    (promotion is scheduler bookkeeping — pinned green in
+    (promotion is scheduler bookkeeping - pinned green in
     tests/test_sweep_scheduled_to_pending_batching.py and
     tests/test_dispatch_claim_writes_no_event_rows.py), so the order is
     now observed through the status column itself: a size-1 call flips
     exactly one row scheduled→pending, so the per-call newly-pending id
     IS the promotion order.  The ordering assertions are unchanged; the
-    pin additionally asserts the merged event behaviour — a full drain
+    pin additionally asserts the merged event behaviour - a full drain
     writes ZERO event rows.
     """
     schema = module_pg_schema.schema_name
@@ -318,7 +318,7 @@ async def test_batch_size_one_drains_oldest_eligible_first(
         f'SELECT count(*) FROM "{schema}".job_events',  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() upstream.
     )
     assert written_events == 0, (
-        f"a size-1 promotion drain wrote {written_events} job_events rows — "
+        f"a size-1 promotion drain wrote {written_events} job_events rows - "
         "promotion is scheduler bookkeeping and writes no durable event rows "
         "(the unbounded-growth vector the denial-events decision abolished)"
     )
@@ -330,7 +330,7 @@ async def _seed_scheduled_spread(
     """Seed scheduled jobs with strictly distinct past due instants.
 
     ``unnest`` pairs each id with its own back-dated ``scheduled_at``
-    (i * 10 s ago, i descending so array order ≠ scheduled_at order — a
+    (i * 10 s ago, i descending so array order ≠ scheduled_at order - a
     drain that followed insertion order instead of the ORDER BY fails the
     determinism assertion).
     """
@@ -351,7 +351,7 @@ async def test_batch_size_above_the_backlog_drains_in_one_call(
 ) -> None:
     """A cap larger than the backlog is not an error: one call takes all.
 
-    The cap is a ceiling, not a target — a caller tuning it up must not
+    The cap is a ceiling, not a target - a caller tuning it up must not
     see truncated calls or extra round trips.
     """
     schema = module_pg_schema.schema_name
@@ -379,7 +379,7 @@ async def test_backlog_exactly_batch_size_terminates(
 
     The short-batch edge: a caller cannot distinguish "exactly one full
     batch remains" from "more remains" by the return value alone, so the
-    drain contract is a subsequent 0 — the loop must terminate, not spin.
+    drain contract is a subsequent 0 - the loop must terminate, not spin.
     """
     schema = module_pg_schema.schema_name
     await _seed_due_scheduled_bulk(clean_pg_conn, schema, 10)

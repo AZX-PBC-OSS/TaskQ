@@ -106,7 +106,7 @@ async def test_open_pg_backend_cleans_up_on_constructor_failure(
     with pytest.raises(RuntimeError, match="simulated constructor failure"):
         await _open_pg_backend(pg_dsn, schema_name=f"tja_{new_base62()}".lower())
 
-    assert aexit_called, "WorkerDeps.__aexit__ was not called — pool leak!"
+    assert aexit_called, "WorkerDeps.__aexit__ was not called - pool leak!"
 
 
 # ── round-trip ────────────────────────────────────────────────
@@ -158,7 +158,7 @@ async def test_jobs_app_enqueue_dispatch_round_trip(
     assert len(dispatched) == 1
     assert dispatched[0].status == "running"
 
-    # Mark succeeded — reuse the same worker_id that acquired the lock
+    # Mark succeeded - reuse the same worker_id that acquired the lock
     ok = await backend.mark_succeeded(job_id, worker_id, {"result": True}, attempt=1)
     assert ok is True
 

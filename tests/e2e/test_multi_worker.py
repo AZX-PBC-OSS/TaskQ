@@ -1,4 +1,4 @@
-"""Multi-worker e2e — two worker containers share one queue with no double execution.
+"""Multi-worker e2e - two worker containers share one queue with no double execution.
 
 Scenario:
 second worker container on the same queue; 30 jobs with small latency → all
@@ -9,7 +9,7 @@ worker attribution.
 Worker attribution is asserted on ``{schema}.job_attempts.worker_id``, NOT
 ``{schema}.jobs.locked_by_worker``: every terminal write clears the lock
 column (``locked_by_worker = NULL`` in ``mark_succeeded`` / ``mark_failed``
-— backend/_sql_templates.py), while the terminal paths persist the executing
+- backend/_sql_templates.py), while the terminal paths persist the executing
 worker into ``job_attempts`` via ``_insert_attempt``
 (backend/_terminal.py). ``job_attempts.worker_id`` has FK
 ``ON DELETE SET NULL`` to ``workers(id)``; worker rows live for the module's
@@ -17,14 +17,14 @@ lifetime, so the column is non-NULL for this run's attempts.
 
 Why a single-worker sweep cannot legitimately happen here: each jobs INSERT
 fires a NOTIFY that wakes BOTH workers; every dispatch CTE claims at most
-``max_concurrency`` (settings default 8 — e2e env does not override) rows
+``max_concurrency`` (settings default 8 - e2e env does not override) rows
 via ``FOR UPDATE SKIP LOCKED``; one worker sweeping all 30 jobs needs ≥4
 sequential claim rounds at ≥0.1s of in-actor latency each (~0.4s+), while
 the second worker's first claim lands within milliseconds of the first
 enqueue. Both workers claiming a disjoint subset is therefore near-certain.
 ``_JOB_COUNT`` was raised from 20 to 30 for more sweep margin under extreme
 Docker CPU starvation (F8); if this is ever observed flaky, raise it
-further — do NOT weaken the assertion.
+further - do NOT weaken the assertion.
 
 Every test requests ``e2e_worker`` explicitly: the worker container fixture
 is not autouse, so no worker (and no dispatch) exists unless a test pulls it
@@ -75,7 +75,7 @@ async def e2e_worker_second(
     same ``TASKQ_*`` env dict, same readiness-gate pattern) with network
     alias ``worker2-<schema>``. Depends on ``e2e_worker`` so the readiness
     gate is meaningful: poll ``{schema}.workers`` for ≥2 rows with a fresh
-    ``last_seen_at`` — the single-worker gate (``wait_for_worker_ready``)
+    ``last_seen_at`` - the single-worker gate (``wait_for_worker_ready``)
     would pass trivially on the primary worker's heartbeat.
 
     The gate additionally requires a **post-register** heartbeat
@@ -83,7 +83,7 @@ async def e2e_worker_second(
     columns at the same ``now()`` default, so strict inequality proves the
     worker's heartbeat loop ticked at least once after registering
     (``UPDATE ... SET last_seen_at = clock_timestamp()``, heartbeat interval
-    0.5s in the e2e env) — i.e. the worker is fully live, not merely
+    0.5s in the e2e env) - i.e. the worker is fully live, not merely
     inserted. A worker stuck between register and the first heartbeat can
     never satisfy this gate.
     """
@@ -145,7 +145,7 @@ async def test_two_workers_share_queue_no_double_execution(
     (a) Exactly-once: ``handle.wait()`` raises on any non-success terminal
     state, so a clean ``gather`` proves all 30 succeeded; 30 "send" effects
     whose job_ids equal the enqueued set proves no job ran twice (SKIP
-    LOCKED across the container boundary — a duplicate execution would show
+    LOCKED across the container boundary - a duplicate execution would show
     as either 31 rows or 30 rows over 29 distinct job_ids).
 
     (b) Distribution: ``SELECT DISTINCT worker_id`` over this run's

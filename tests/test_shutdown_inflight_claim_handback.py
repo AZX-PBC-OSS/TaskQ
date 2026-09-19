@@ -12,7 +12,7 @@ never see them either, and the orchestration reports a clean exit with them
 still marked running. For a Kubernetes rolling deploy that is up to one
 concurrency window of work per pod that stops moving the moment the pod goes
 away, invisible in the queue's own accounting until a lock lease expires far
-later — and the reclaim that eventually frees it counts the wait as a
+later - and the reclaim that eventually frees it counts the wait as a
 crashed attempt against a job that never ran.
 """
 
@@ -45,7 +45,7 @@ def _assert_a_claim_round_actually_happened(
     this worker's hands.
 
     ``producer_loop`` catches a dispatch error per round, logs
-    ``dispatch-batch-error``, and retries on the next tick — deliberate
+    ``dispatch-batch-error``, and retries on the next tick - deliberate
     resilience to transient faults, and never silent in the fleet: the
     dispatch internals bump the ``taskq.dispatch.failures`` counter and set
     an ERROR span status before the raise (``backend/_dispatch_sql.py``,
@@ -62,11 +62,11 @@ def _assert_a_claim_round_actually_happened(
     ]
     assert not dispatch_errors, (
         "the producer's dispatch round errored, so the shutdown assertions "
-        "below are vacuous — nothing was ever claimed, so nothing could be "
+        "below are vacuous - nothing was ever claimed, so nothing could be "
         f"left locked: {[r.getMessage() for r in dispatch_errors]}"
     )
     assert local_queue.qsize() > 0, (
-        "the producer never claimed a row — with a backlog deeper than one "
+        "the producer never claimed a row - with a backlog deeper than one "
         "claim round, a working dispatch fills the local queue; an empty "
         "queue means the scenario this test pins (SIGTERM with a claim in "
         "hand) never happened"
@@ -146,7 +146,7 @@ async def test_sigterm_during_a_claim_round_leaves_no_job_locked_to_the_dead_pod
     )
     # One yield, not a timed wait: it hands the loop to the producer, which
     # runs until it parks on its claim. The signal then lands with that round
-    # in flight — the state a pod is in when a deploy rolls it under load.
+    # in flight - the state a pod is in when a deploy rolls it under load.
     await asyncio.sleep(0)
 
     with caplog.at_level(logging.ERROR):
@@ -168,7 +168,7 @@ async def test_sigterm_during_a_claim_round_leaves_no_job_locked_to_the_dead_pod
         f"{len(stranded)} job(s) are still marked running and locked to it. "
         "A claim round that was in flight when the signal arrived commits "
         "after the one hand-back pass and is never released by any later "
-        "phase, so the work stops dead until a lock lease expires — a rolling "
+        "phase, so the work stops dead until a lock lease expires - a rolling "
         "deploy quietly parks a concurrency window of jobs per pod"
     )
 
@@ -222,7 +222,7 @@ async def test_work_claimed_during_shutdown_returns_to_the_fleet(
 
     # The premise, asserted before the fleet-side claim below: the departing
     # pod must actually have held work. A producer whose dispatch errored
-    # every round hands the assertion an empty backlog to "recover" — the
+    # every round hands the assertion an empty backlog to "recover" - the
     # surviving worker then claims all of it trivially, and the test would
     # pass having exercised nothing.
     _assert_a_claim_round_actually_happened(local_queue, caplog)

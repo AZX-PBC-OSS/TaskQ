@@ -3,8 +3,8 @@
 ``taskq.web.admin.create_router`` raises ``RuntimeError`` when
 ``auth_dependency`` is ``None`` outside a dev environment (unless the
 operator explicitly suppresses the check). ``taskq.web.progress.create_router``
-exposes the same shape of surface — per-job status and progress state, plus
-an SSE endpoint that holds a Redis subscription per anonymous connection —
+exposes the same shape of surface - per-job status and progress state, plus
+an SSE endpoint that holds a Redis subscription per anonymous connection -
 and is documented for standalone mounting, so it must apply the same
 fail-closed gate: no auth dependency outside a dev environment is a startup
 error, never a silently open router.
@@ -21,7 +21,7 @@ pytestmark = [pytest.mark.fastapi]
 
 
 class _StubPool:
-    """Duck-typed stand-in for asyncpg.Pool — the factory only stores it."""
+    """Duck-typed stand-in for asyncpg.Pool - the factory only stores it."""
 
 
 def test_create_router_raises_without_auth_outside_dev(
@@ -58,7 +58,7 @@ def test_create_router_warns_when_serving_without_auth(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Unauthenticated serving always logs a warning naming what
-    suppressed the fail-closed check — the documented shipped behavior
+    suppressed the fail-closed check - the documented shipped behavior
     (progress.md), and the operator's signal that an unauthenticated
     SSE/state surface is live."""
     import structlog
@@ -74,7 +74,7 @@ def test_create_router_warns_when_serving_without_auth(
 
     entries = [log for log in logs if log.get("event") == "progress-router-no-auth"]
     assert len(entries) == 1
-    # The suppression reason names the dev carve-out — the same
+    # The suppression reason names the dev carve-out - the same
     # detail-embedded shape the admin factory's warning uses.
     assert "dev environment" in entries[0]["detail"]
 
@@ -84,7 +84,7 @@ def test_create_router_warns_when_check_explicitly_disabled(
 ) -> None:
     """The opt-out is explicit and loud: TASKQ_PROGRESS_REQUIRE_AUTH=false
     in a non-dev environment serves the router without auth, but the
-    warning names the flag that suppressed the fail-closed check — an
+    warning names the flag that suppressed the fail-closed check - an
     ingress-authenticated deployment stays distinguishable in the logs
     from a misconfigured one."""
     import structlog

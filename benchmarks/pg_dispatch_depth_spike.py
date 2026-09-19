@@ -3,7 +3,7 @@
 Campaign finding under test (src/taskq/backend/_dispatch_sql.py:131-139): the
 ``locked`` CTE re-joins ``ranked`` (a windowed, small candidate set) back to
 ``jobs`` with ``WHERE j.status = 'pending'``, and the planner serves that join
-as a Bitmap Heap Scan over the *whole pending backlog* — O(backlog-depth) per
+as a Bitmap Heap Scan over the *whole pending backlog* - O(backlog-depth) per
 dispatch round (~2.2 ms at 2k deep, worse deeper) instead of O(limit).
 
 This probe:
@@ -19,14 +19,14 @@ This probe:
   (house rule: a bench that cannot prove output-identity must not report
   timings).
 
-Alternatives (raw SQL here, NOT src — design-spike deliverables):
+Alternatives (raw SQL here, NOT src - design-spike deliverables):
 
 - ``v1_top_ids``: same candidate/dedup/rank body, but the LIMIT-ed id set is
   finalized in a ``top_ids`` CTE BEFORE touching ``jobs``, and ``locked``
-  drives ``jobs`` by PK from that small set — the planner gets a
+  drives ``jobs`` by PK from that small set - the planner gets a
   structurally-bounded driven side instead of re-resolving
   ``j.status = 'pending'`` over the backlog.
-- ``v2_lock_first``: skip the candidate/rank prelude for locking entirely —
+- ``v2_lock_first``: skip the candidate/rank prelude for locking entirely -
   take FOR UPDATE SKIP LOCKED rows index-ordered straight off
   ``jobs_dispatch_idx`` (LIMIT = limit*oversample), then apply
   actor-capacity admission after the lock. Semantic delta (documented
@@ -35,7 +35,7 @@ Alternatives (raw SQL here, NOT src — design-spike deliverables):
   identical, and the bench asserts that.
 - ``v3_covering``: v1's SQL executed while a covering variant of the
   dispatch index (INCLUDE columns for the lateral's non-key references)
-  exists, so the candidates lateral is an index-ONLY scan — the heap is
+  exists, so the candidates lateral is an index-ONLY scan - the heap is
   touched only for the rows actually locked. The index is created/dropped
   around v3's rounds so v0-v2 plan against the stock index set.
 
@@ -92,7 +92,7 @@ def _preamble() -> str:
     # Plain string (not f-string): fragments carry literal "{schema}" tokens
     # and are .format(schema=...)-ed at render time, matching the
     # _dispatch_sql.py template convention. NEVER mix f-string {{schema}}
-    # escaping into these — .format() would strip the escape and leave the
+    # escaping into these - .format() would strip the escape and leave the
     # literal unreplaced.
     return """\
 WITH params AS (
@@ -238,7 +238,7 @@ def _v1_top_ids_sql(*, literal_limits: bool = False) -> str:
     sql = _preamble()
     # literal variant drops the residual multiply entirely (exact only for
     # NULL-cap actors, where residual == limit_n): the planner estimates a
-    # Limit node as the LIMIT value ONLY when it is a literal — any
+    # Limit node as the LIMIT value ONLY when it is a literal - any
     # data-dependent expression keeps the child's (range-sized) estimate.
     # __LAT_LIMIT__/__TOP_LIMIT__ tokens + .replace, the same substitution
     # style as _render_dispatch_sql (ovr/lim are module constants, never
@@ -285,7 +285,7 @@ def _v2_lock_first_sql() -> str:
     dedup apply AFTER the row locks, so rows admitted-against are held locked
     only for the remainder of this statement and released untouched at
     commit; (b) the candidates bound is global (limit*oversample) rather
-    than per-actor — with multiple capped actors a per-actor LATERAL over
+    than per-actor - with multiple capped actors a per-actor LATERAL over
     the same queue-keyed index reproduces the per-actor bound without the
     backlog re-join (the winning design keeps per-actor laterals and only
     restructures the lock step, i.e. converges to v1's shape).
@@ -408,7 +408,7 @@ async def seed_jobs_copy(conn: asyncpg.Connection, schema: str, depth: int) -> N
     # what lets the covering-index variant run its candidates lateral
     # index-only). actor_config is analyzed too: unanalyzed, the planner
     # guesses ~440 rows for it and the candidates estimate cascades into
-    # 30M+ through the CTE chain — which alone flips every downstream join
+    # 30M+ through the CTE chain - which alone flips every downstream join
     # to the O(backlog) plan this spike is trying to fix.
     await conn.execute(
         f'VACUUM (ANALYZE) "{schema}".jobs'
@@ -680,12 +680,12 @@ async def _go(args: argparse.Namespace) -> list[dict[str, object]]:
         # is exactly why the JIT-compile-per-round defect stayed invisible
         # here while production connections (which carried no guard) paid
         # ~1s of Optimization+Emission per dispatch round at depth. The
-        # default now measures the statement's own planner behavior —
-        # JIT included — so an estimate-cascade regression shows up in
+        # default now measures the statement's own planner behavior -
+        # JIT included - so an estimate-cascade regression shows up in
         # these numbers the way tests/test_dispatch_backlog_depth_bound.py's
         # JIT oracle pins it. Production no longer sets jit client-side
         # (the dispatcher pool's server_settings entry rode the startup
-        # packet and broke boot behind poolers, #247); the server-side
+        # packet and broke boot behind poolers); the server-side
         # channels (ALTER ROLE ... SET jit = off, DSN ?options=) are
         # documented in docs/guides/ops.md §"Database performance knobs",
         # and --jit-off reproduces that guarded shape to isolate scan
@@ -735,7 +735,7 @@ def main() -> int:
         help="SET jit = off on the bench connection: the guarded shape an "
         "operator configures server-side (ALTER ROLE ... SET jit = off or DSN "
         "?options=-c jit=off; docs/guides/ops.md, whose TaskQ-built pools set "
-        "nothing client-side, #247). "
+        "nothing client-side). "
         "Default leaves the server default (jit on): the bench measures the "
         "statement's own estimate health, and a default jit=off here is what "
         "hid the JIT-compile-per-round defect at depth from the design "

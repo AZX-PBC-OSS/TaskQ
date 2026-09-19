@@ -203,7 +203,7 @@ def test_process_cannot_depend_on_loop() -> None:
     assert exc_info.value.to_scope == Scope.LOOP
 
 
-# ── Validation timing — validate-only ────────────────────────────────
+# ── Validation timing - validate-only ────────────────────────────────
 
 
 def test_validate_only_timing() -> None:
@@ -465,7 +465,7 @@ def test_validate_with_actors_seals_registry() -> None:
     assert registry._sealed is True
 
 
-# ── Defensive invariant (G5) — re-entrant validate() ───────────────────────────
+# ── Defensive invariant (G5) - re-entrant validate() ───────────────────────────
 
 
 def test_reentrant_validate_raises() -> None:
@@ -479,7 +479,7 @@ def test_reentrant_validate_raises() -> None:
         registry._validating = False
 
 
-# ── Actor with ctx parameter — ctx excluded from edges ──────────────────────────
+# ── Actor with ctx parameter - ctx excluded from edges ──────────────────────────
 
 
 def test_actor_ctx_excluded_from_edges() -> None:
@@ -646,12 +646,12 @@ def test_validate_without_rate_limit_registry_skips_name_check() -> None:
 # TypeError on unhashable pydantic BaseModel ref instances.  These tests
 # exercise the real ``@actor`` decoration → ``ProviderRegistry.validate()``
 # end-to-end path (the same path ``_bootstrap.py`` calls at every worker
-# startup) with keyed refs present — the gap that let the bug ship.
+# startup) with keyed refs present - the gap that let the bug ship.
 
 
 def test_keyed_reservation_ref_through_validate_does_not_raise_typeerror() -> None:
     """A real @actor with reservations=[KeyedReservationRef(...)] must survive
-    ProviderRegistry.validate() without TypeError — the ref is unhashable, so
+    ProviderRegistry.validate() without TypeError - the ref is unhashable, so
     the Phase 2b membership test must be guarded by isinstance(x, str)."""
     ref = KeyedReservationRef.typed(
         _Payload,
@@ -674,7 +674,7 @@ def test_keyed_reservation_ref_through_validate_does_not_raise_typeerror() -> No
 
 def test_keyed_rate_limit_ref_through_validate_does_not_raise_typeerror() -> None:
     """A real @actor with rate_limits=[KeyedRateLimitRef(...)] must survive
-    ProviderRegistry.validate() without TypeError — same reason as the
+    ProviderRegistry.validate() without TypeError - same reason as the
     reservation equivalent above."""
     ref = KeyedRateLimitRef.typed(
         _Payload,
@@ -697,7 +697,7 @@ def test_keyed_rate_limit_ref_through_validate_does_not_raise_typeerror() -> Non
 
 def test_static_unregistered_name_alongside_keyed_ref_still_raises_missing_provider() -> None:
     """The isinstance(x, str) guard must not silence real MissingProvider
-    errors for co-declared static names — only ref instances are skipped."""
+    errors for co-declared static names - only ref instances are skipped."""
     res_ref = KeyedReservationRef.typed(
         _Payload,
         base_name="geocode-session",
@@ -730,7 +730,7 @@ def test_worker_startup_shaped_validate_with_keyed_refs_succeeds() -> None:
     """Mirror _bootstrap.py's actual ``registry.validate(actors=actors_list,
     rate_limit_registry=rl_registry)`` call shape with keyed refs present.
 
-    validate() itself is pure Python (no PG/Redis needed — the asyncpg
+    validate() itself is pure Python (no PG/Redis needed - the asyncpg
     scaffolding in _bootstrap.py wraps this call but is not required to
     exercise the validation path), so a focused unit test using
     ProviderRegistry.validate directly satisfies the end-to-end-through-

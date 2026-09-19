@@ -3,28 +3,28 @@
 Every bounded sweep opens its own ``conn.transaction()`` and issues
 ``SET LOCAL statement_timeout = <ms>`` inside it.  When the caller
 already has a transaction open on that connection (the embedder shape
-pinned by ``test_clock_domain_isolation.py``'s D12 — the sweep runs as a
+pinned by ``test_clock_domain_isolation.py``'s D12 - the sweep runs as a
 nested SAVEPOINT), ``SET LOCAL``'s scope is the *transaction*, not the
 savepoint: a savepoint RELEASE keeps the setting, so the sweep's timeout
 outlives the sweep and bounds the caller's subsequent statements in the
 same transaction.  Measured live: a nested sweep with a 300 ms timeout
 leaves the outer transaction at ``'300ms'``, and a following
-``pg_sleep(1)`` is cancelled with SQLSTATE 57014 — the caller's own
+``pg_sleep(1)`` is cancelled with SQLSTATE 57014 - the caller's own
 execution environment was changed underneath it.
 
 The asymmetry is real and worth pinning both ways:
 
 * RELEASE (sweep success): the timeout LEAKS unless the sweep restores
-  the previous value — the red finding this file exists to prove;
+  the previous value - the red finding this file exists to prove;
 * ROLLBACK TO SAVEPOINT (sweep failure): PostgreSQL's subtransaction
-  GUC stack restores the previous value automatically — pinned here as
+  GUC stack restores the previous value automatically - pinned here as
   existing behaviour so a future refactor away from savepoints (or to a
   plain ``SET``) cannot silently regress it.
 
 The companion attack proves the timeout genuinely applies to the batch's
 own statements while nested: the sweep-1 attempt INSERT's
 ``FOR KEY SHARE`` probe of ``workers`` blocks on a competing ``FOR
-UPDATE`` holder, and the nested sweep's timeout cancels it — a
+UPDATE`` holder, and the nested sweep's timeout cancels it - a
 deterministic, sleep-free way to hold a batch statement open past its
 bound.
 """
@@ -137,11 +137,11 @@ async def test_nested_sweep_does_not_leak_its_timeout_past_the_savepoint(
     """A nested sweep must leave the caller's transaction timeout alone.
 
     The sweep promises "one short transaction with a server-side
-    statement_timeout included" — the timeout bounds the sweep's OWN
+    statement_timeout included" - the timeout bounds the sweep's OWN
     batch, not the caller's remaining statements.  Today the savepoint
     RELEASE keeps the SET LOCAL, so after the sweep returns, the outer
     transaction runs under the sweep's 300 ms bound and the caller's
-    next moderately slow statement is cancelled with 57014 — an error
+    next moderately slow statement is cancelled with 57014 - an error
     the caller has no way to attribute to the sweep it called.
     """
     schema = module_pg_schema.schema_name
@@ -155,7 +155,7 @@ async def test_nested_sweep_does_not_leak_its_timeout_past_the_savepoint(
         assert after == before, (
             f"the sweep leaked its statement_timeout into the caller's "
             f"transaction: {before!r} before the sweep, {after!r} after the "
-            "savepoint RELEASE — the caller's subsequent statements now run "
+            "savepoint RELEASE - the caller's subsequent statements now run "
             f"under the sweep's {_SWEEP_TIMEOUT_MS} ms bound"
         )
         # Behavioural confirmation: a caller statement longer than the
@@ -173,7 +173,7 @@ async def test_nested_sweep_timeout_bounds_the_batch_itself(
     SHARE``; a competing ``FOR UPDATE`` holder on the same workers row
     blocks that probe deterministically (no sleeps, no timing races).
     With the sweep's timeout at 400 ms the blocked batch must be
-    cancelled with ``QueryCanceledError`` — proving the SET LOCAL takes
+    cancelled with ``QueryCanceledError`` - proving the SET LOCAL takes
     effect for the batch statements themselves in the nested case, not
     only after it.
     """

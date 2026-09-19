@@ -1,27 +1,27 @@
 # ruff: noqa: S608  # Why: schema is fixture-derived (module_pg_schema), not user input; every value is $-bound.
 
 """InMemoryBackend must be observably equivalent to PostgresBackend at the
-dispatch seam — same inputs, same rows, same order.
+dispatch seam - same inputs, same rows, same order.
 
 The existing equivalence guards (``test_in_memory_read_isolation`` /
 ``test_in_memory_seam_registry``) only pin ALIASING and method presence:
 they check that a returned row is a fresh object and that every protocol
 method exists. Neither observes what ``dispatch_batch`` actually SELECTS.
-Three semantic divergences were found that way — all silent, because the
-in-memory mirror was the greener of the two — and all three are now fixed
+Three semantic divergences were found that way - all silent, because the
+in-memory mirror was the greener of the two - and all three are now fixed
 and behaviourally pinned by the tests in this file:
 
 1. An EMPTY ``queues`` list. InMemory filtered with ``not queues or
    row.queue in queues``, so ``[]`` meant "match ALL". PG builds the
    candidate set with ``CROSS JOIN LATERAL unnest(queues)``, and an empty
-   array yields zero rows — the CROSS JOIN annihilates every candidate, so
+   array yields zero rows - the CROSS JOIN annihilates every candidate, so
    ``[]`` means "match NOTHING". A suite that dispatched with ``[]`` saw
    work flow in memory while a real worker polls forever claiming nothing.
 
 2. A NULL ``fairness_key`` under ``round_robin``. InMemory synthesised a
    SINGLETON partition per unkeyed job (``f"__null__{r.id}"``), so every
    unkeyed job ranked 1 and crowded to the front of the interleave. PG uses
-   ``PARTITION BY COALESCE(j2.fairness_key, '__null__')`` — ONE shared
+   ``PARTITION BY COALESCE(j2.fairness_key, '__null__')`` - ONE shared
    partition, ranking 1, 2, 3…, which deliberately de-prioritises the
    unkeyed cohort behind the keyed ones. ``fairness_key`` is None by
    default, so this was the common case, and the in-memory shape was
@@ -36,8 +36,8 @@ the backend that diverged. The dispatch pins drive the SAME job set (same
 ids, same ``fairness_key``s, same ``scheduled_at``) through both backends
 and compare WHICH jobs a bounded ``dispatch_batch`` claims. The comparison
 is on the claimed SET, not on the RETURNING sequence: ``UPDATE … RETURNING``
-gives no row order guarantee, so selection — which jobs a limited batch
-admits and which it defers — is the observable both backends owe each
+gives no row order guarantee, so selection - which jobs a limited batch
+admits and which it defers - is the observable both backends owe each
 other, and it is exactly what each divergence changed. The registry in
 ``tests/test_backend_semantic_parity_registry.py`` walks the two backends'
 shared surface so the next divergence fails on arrival.
@@ -77,7 +77,7 @@ def _args(
     queue: str,
     fairness_key: str | None = None,
 ) -> EnqueueArgs:
-    """Identical enqueue input for both backends — the same explicit id is
+    """Identical enqueue input for both backends - the same explicit id is
     the join key the parity comparison is built on."""
     return EnqueueArgs(
         id=job_id,
@@ -124,7 +124,7 @@ def _ids(rows: list[JobRow]) -> list[JobId]:
 
 def _claimed(rows: list[JobRow], names: dict[JobId, str]) -> set[str]:
     """The SET of jobs a bounded dispatch claimed. ``UPDATE … RETURNING``
-    has no row-order guarantee, so selection — not sequence — is the
+    has no row-order guarantee, so selection - not sequence - is the
     observable both backends must agree on."""
     return {names.get(r.id, str(r.id)) for r in rows}
 
@@ -136,10 +136,10 @@ async def _make_in_memory(
 ) -> InMemoryBackend:
     backend = InMemoryBackend(clock=FakeClock(_IN_MEMORY_NOW))
     # Dispatch candidates come FROM the actor_config registry on BOTH
-    # backends (PG's per_actor_capacity CTE — every caller of this helper
+    # backends (PG's per_actor_capacity CTE - every caller of this helper
     # seeds the PG side's actor_config via _ensure_pg_actor): the twin's
     # registry must carry the same actors, or "no actors registered" would
-    # read as "no filter" — the exact mirror-greener-than-production shape
+    # read as "no filter" - the exact mirror-greener-than-production shape
     # the dispatch-parity pins police.
     for actor in {args.actor for args in args_list}:
         backend.register_actor_config(actor=actor)
@@ -164,7 +164,7 @@ async def test_empty_queues_list_dispatches_identically_in_both_backends(
     produces zero rows for an empty array, annihilating the candidate set:
     an empty queue list claims NOTHING. InMemory's ``not queues or
     row.queue in queues`` reads the same input as "no filter" and claims
-    EVERYTHING — so the mirror dispatches work a real worker never would.
+    EVERYTHING - so the mirror dispatches work a real worker never would.
     """
     schema = module_pg_schema.schema_name
     pg_backend = clean_jobs_app.backend
@@ -214,7 +214,7 @@ async def test_null_fairness_key_round_robin_selection_matches_pg(
     jobs with the oldest ``scheduled_at``, then one job each for keys "a"
     and "b". PG's ``PARTITION BY COALESCE(fairness_key, '__null__')`` gives
     fairness_rank 1, 2, 3 to the unkeyed cohort, so a ``limit=3`` batch
-    admits one job per cohort — null-1, key-a, key-b — and defers null-2 /
+    admits one job per cohort - null-1, key-a, key-b - and defers null-2 /
     null-3 to a later round. InMemory's per-job synthetic partition
     (``f"__null__{r.id}"``) ranks ALL THREE unkeyed jobs at 1, so the same
     bounded batch is consumed entirely by the unkeyed cohort and the keyed
@@ -275,7 +275,7 @@ async def test_null_fairness_key_round_robin_selection_matches_pg(
     assert pg_claimed == {"null-1", "key-a", "key-b"}, (
         "PostgresBackend (production) did not produce the documented "
         "COALESCE(fairness_key, '__null__') single-partition selection; "
-        f"claimed {sorted(pg_claimed)}. The parity oracle itself is wrong — "
+        f"claimed {sorted(pg_claimed)}. The parity oracle itself is wrong - "
         "re-derive it before trusting the InMemory comparison below."
     )
     assert mem_claimed == pg_claimed, (
@@ -319,13 +319,13 @@ async def test_cancel_where_id_ordering_matches_pg(
     """``cancel_where`` must return ``cancelled_ids`` in the same order on
     both backends: job-id ascending.
 
-    Unlike ``dispatch_batch`` — whose ``UPDATE … RETURNING`` carries no
+    Unlike ``dispatch_batch`` - whose ``UPDATE … RETURNING`` carries no
     row-order guarantee, which is why the two pins above compare claimed
-    SETS — the PG bulk cancel returns ids from ``array_agg(id ORDER BY
+    SETS - the PG bulk cancel returns ids from ``array_agg(id ORDER BY
     id)`` over driving windows that are themselves ``ORDER BY id``
     (src/taskq/backend/_cancel_bulk.py:206), so the tuple's ORDER is the
     contract. InMemory delegates to ``_list_jobs(order_by=None)``, whose
-    default ordering is ``priority DESC, scheduled_at, id`` — so whenever
+    default ordering is ``priority DESC, scheduled_at, id`` - so whenever
     priority order and id order disagree, the mirror returns the same ids
     in a different order.
 
@@ -339,7 +339,7 @@ async def test_cancel_where_id_ordering_matches_pg(
 
     b_id, a_id = _anti_correlated_pending_pair()
     # Precondition: priority order (A first, 9 > 1) and id order (B
-    # first) disagree — without it both backends return equal tuples and
+    # first) disagree - without it both backends return equal tuples and
     # the pin proves nothing.
     assert b_id < a_id
 
@@ -378,18 +378,18 @@ async def test_cancel_where_id_ordering_matches_pg(
     mem_result = await mem_backend.cancel_where(JobFilter(actor=actor), reason="parity")
 
     # PG is the production oracle: both seeded jobs come back, smaller id
-    # first — the UUID-ascending order array_agg(id ORDER BY id) owes.
+    # first - the UUID-ascending order array_agg(id ORDER BY id) owes.
     assert pg_result.cancelled_ids == (b_id, a_id), (
         "PostgresBackend (production) did not produce the documented "
         "array_agg(id ORDER BY id) UUID-ascending cancel result: expected "
         f"({b_id}, {a_id}), got {list(pg_result.cancelled_ids)}. The "
-        "parity oracle itself is wrong — re-derive it before trusting "
+        "parity oracle itself is wrong - re-derive it before trusting "
         "the InMemory comparison below."
     )
     assert mem_result.cancelled_ids == pg_result.cancelled_ids, (
         "InMemoryBackend diverged from PostgresBackend at the cancel_where "
         f"id-order seam: PG returned {list(pg_result.cancelled_ids)} "
-        "(UUID-ascending — array_agg(id ORDER BY id) over ORDER BY id "
+        "(UUID-ascending - array_agg(id ORDER BY id) over ORDER BY id "
         "windows, src/taskq/backend/_cancel_bulk.py:206) and InMemory "
         f"returned {list(mem_result.cancelled_ids)} (the default "
         "priority-first _list_jobs ordering, src/taskq/testing/"
@@ -408,13 +408,13 @@ async def test_handback_of_a_never_claimed_row_switches_to_assignment_routing_on
     clean_jobs_app: JobsApp,
 ) -> None:
     """A re-pended row must switch from label routing to assignment routing
-    on BOTH backends — and the switch must be visible even for a row that
+    on BOTH backends - and the switch must be visible even for a row that
     was never claimed.
 
     The row below is cancelled while pending and handed back by an operator
     retry, so ``started_at`` stays NULL forever: a discriminator built on
     the started_at proxy still reads it as producer-placed and routes it by
-    its (stale) label — the exact strand the ``assignment_routed`` marker
+    its (stale) label - the exact strand the ``assignment_routed`` marker
     exists to close. The observable contract, on each backend: before the
     hand-back a consumer of the actor's assignment queue claims nothing
     (producer placement governs the never-claimed row); after it, a
@@ -448,7 +448,7 @@ async def test_handback_of_a_never_claimed_row_switches_to_assignment_routing_on
     assert pg_before == [], (
         "PostgresBackend (production) claimed a producer-placed row via the "
         f"actor's assignment queue before any re-pend: {_ids(pg_before)}. "
-        "The parity oracle itself is wrong — re-derive it before trusting "
+        "The parity oracle itself is wrong - re-derive it before trusting "
         "the InMemory comparison."
     )
     assert _ids(mem_before) == _ids(pg_before), (
@@ -459,7 +459,7 @@ async def test_handback_of_a_never_claimed_row_switches_to_assignment_routing_on
     )
 
     # The hand-back: cancelled while pending, then re-pended by an operator
-    # retry. started_at stays NULL on both backends — only the marker can
+    # retry. started_at stays NULL on both backends - only the marker can
     # tell this row's origin apart from a producer placement.
     pg_cancel = await pg_backend.cancel_where(JobFilter(actor=actor), reason="parity")
     mem_cancel = await mem_backend.cancel_where(JobFilter(actor=actor), reason="parity")
@@ -473,12 +473,12 @@ async def test_handback_of_a_never_claimed_row_switches_to_assignment_routing_on
     mem_by_label = await mem_backend.dispatch_batch(new_uuid(), [label_queue], 10, _LEASE)
     assert pg_by_label == [], (
         "PostgresBackend (production) routed a re-pended row by its stale "
-        f"label: {_ids(pg_by_label)}. The parity oracle itself is wrong — "
+        f"label: {_ids(pg_by_label)}. The parity oracle itself is wrong - "
         "re-derive it before trusting the InMemory comparison."
     )
     assert _ids(mem_by_label) == _ids(pg_by_label), (
         "InMemoryBackend diverged at the discriminator: a re-pended row must "
-        "NOT be claimable by its label queue's consumers — PG claimed "
+        "NOT be claimable by its label queue's consumers - PG claimed "
         f"{_ids(pg_by_label)} on the label queue, InMemory claimed "
         f"{_ids(mem_by_label)}. This row was never claimed, so started_at "
         "is NULL: a started_at-proxy discriminator routes it by the label "
@@ -492,12 +492,12 @@ async def test_handback_of_a_never_claimed_row_switches_to_assignment_routing_on
     assert _ids(pg_by_assignment) == [job_id], (
         "PostgresBackend (production) must route the re-pended row to the "
         f"actor's current assignment queue; claimed {_ids(pg_by_assignment)}. "
-        "The parity oracle itself is wrong — re-derive it before trusting "
+        "The parity oracle itself is wrong - re-derive it before trusting "
         "the InMemory comparison."
     )
     assert _ids(mem_by_assignment) == _ids(pg_by_assignment), (
         "InMemoryBackend diverged at the assignment-routed arm: the re-pended "
-        f"row must be claimable by the assignment queue's consumers — PG "
+        f"row must be claimable by the assignment queue's consumers - PG "
         f"claimed {_ids(pg_by_assignment)}, InMemory claimed "
         f"{_ids(mem_by_assignment)}."
     )

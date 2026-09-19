@@ -3,7 +3,7 @@
 Drives the REAL ``RateLimitRegistry`` keyed-ref machinery
 (``_resolve_rate_limit_name`` / ``_resolve_reservation_name`` /
 ``evict_idle_keyed_*`` / the opportunistic-eviction gate) entirely
-in memory — the materialization path with ``pg_pool=None`` never touches a
+in memory - the materialization path with ``pg_pool=None`` never touches a
 backend, so the tracking-dict + eviction mechanics can be soaked directly.
 
 Wall clock is COMPRESSED: the registry module's ``monotonic`` is patched
@@ -24,7 +24,7 @@ Worker-faithful mechanics replicated here:
   - sweep cadence 30s, calling BOTH ``evict_idle_keyed_reservations`` and
     ``evict_idle_keyed_rate_limits`` with the production 1-hour idle threshold;
   - opportunistic eviction on the acquire path when a cap would be exceeded
-    (registry-gated to once per 30s — the gate under test).
+    (registry-gated to once per 30s - the gate under test).
 
 Measured: peak tracking-dict sizes vs the 10k caps, eviction scan cost over
 time, denial-path latency (the O(1)-amortized claim), post-eviction steady
@@ -169,7 +169,7 @@ async def _run_soak(
     # opportunistic (cap-pressure) path actually executes, by wrapping the
     # eviction methods on the instance. The per-worker sweep below calls the
     # captured originals directly, so the counters see ONLY opportunistic
-    # scans — the gate lets through at most one per 30s if it holds.
+    # scans - the gate lets through at most one per 30s if it holds.
     counters = {"res": 0, "rl": 0}
     orig_sweep_res = reg.evict_idle_keyed_reservations
     orig_sweep_rl = reg.evict_idle_keyed_rate_limits
@@ -391,7 +391,7 @@ def main(argv: list[str] | None = None) -> int:
     clock = VirtualClock()
     # Benchmark-side virtual-time patch: every stamp/cutoff/gate inside the
     # registry module now reads the compressed clock. Patch the MODULE (via
-    # sys.modules — see _registry_module), not the name-shadowed singleton.
+    # sys.modules - see _registry_module), not the name-shadowed singleton.
     _registry_module().monotonic = clock  # type: ignore[assignment]
 
     settings = WorkerSettings.load()

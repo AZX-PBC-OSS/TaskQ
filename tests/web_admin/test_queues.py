@@ -146,7 +146,7 @@ def test_queue_detail_first_page_no_cursor_params(
 def test_queue_detail_default_status_is_pending(
     monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
 ) -> None:
-    """Default status filter is 'pending' — the pending tab carries the active class."""
+    """Default status filter is 'pending' - the pending tab carries the active class."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     client = make_app()
     response = client.get("/queues/default")  # pyright: ignore[reportUnknownVariableType]  # Why: TestClient.get return type is Any.
@@ -320,7 +320,7 @@ def test_queue_detail_marks_max_attempts_inert_for_indefinite_retry(
 ) -> None:
     """An indefinite-kind row ignores max_attempts entirely (retries.md §2):
     the stored ceiling is inert, so the queue-detail Attempt cell renders
-    the shared ``attempt_budget`` marker — a live row can sit at attempt
+    the shared ``attempt_budget`` marker - a live row can sit at attempt
     168 over a stored 3, and "168/3" reads as a lie about what is enforced."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     html = _render_queue_detail(

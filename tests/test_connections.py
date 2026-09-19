@@ -1,6 +1,6 @@
 """Unit tests for connection hook points (taskq.connections, worker deps).
 
-These tests do not require a running Postgres/Redis — they use fakes and
+These tests do not require a running Postgres/Redis - they use fakes and
 mocks to verify the ownership, teardown, and fallback semantics of the
 WorkerConnections hook points. Integration tests against real PG live in
 test_worker_deps.py (marked ``integration``).
@@ -24,7 +24,7 @@ from taskq.connections import (
     DEFAULT_STATEMENT_CACHE_SIZE,
     WorkerConnections,
     _RetryGuard,  # pyright: ignore[reportPrivateUsage]  # Why: the guard handed to the op is the unit under test: pinning it directly keeps this contract off the intermittent full-stack race test.
-    _with_fresh_connection_retry,  # pyright: ignore[reportPrivateUsage]  # Why: the shared dead-on-acquire guard is the unit under test — pinning it directly keeps this contract off the intermittent full-stack race test.
+    _with_fresh_connection_retry,  # pyright: ignore[reportPrivateUsage]  # Why: the shared dead-on-acquire guard is the unit under test - pinning it directly keeps this contract off the intermittent full-stack race test.
     bounded_lock_budget_ms,
     connection_init_hook,
     lock_budget_command_timeout_secs,
@@ -130,8 +130,8 @@ async def test_dsn_built_pool_passes_statement_cache_defaults(
 ) -> None:
     """TaskQ-built pools forward the statement-cache kwargs to create_pool.
 
-    Drives the per-slot pool factory — a representative TaskQ
-    pool-construction site — against a fake create_pool and asserts both
+    Drives the per-slot pool factory - a representative TaskQ
+    pool-construction site - against a fake create_pool and asserts both
     kwargs arrive, so a call site cannot silently drop them.
     """
     captured: dict[str, Any] = {}
@@ -233,7 +233,7 @@ def test_statement_cache_kwargs_fallback_without_settings() -> None:
 
 
 def test_statement_cache_kwargs_unconfigured_settings_yield_constants() -> None:
-    """Settings loaded without the env vars set resolve to the same pair —
+    """Settings loaded without the env vars set resolve to the same pair -
     the settings defaults are wired to the constants, not re-hardcoded."""
     settings = TaskQSettings.load_from_dict({"TASKQ_SCHEMA_NAME": "taskq"})
     assert statement_cache_kwargs(settings) == statement_cache_kwargs()
@@ -246,7 +246,7 @@ async def test_statement_cache_kwargs_env_round_trip(
 
     The settings-aware resolution path: an operator setting the env vars
     changes what a settings-consuming pool builder passes to create_pool,
-    without any code change. (TaskQSettings.load — not load_from_dict —
+    without any code change. (TaskQSettings.load - not load_from_dict -
     so the process environment is actually read; read_dotfiles=False
     keeps the test hermetic against a developer's .env.)
     """
@@ -266,14 +266,14 @@ async def test_statement_cache_kwargs_env_round_trip(
 
 
 def test_bounded_lock_budget_stands_when_the_pool_has_no_bound() -> None:
-    """A caller-owned pool carries no client-side bound TaskQ can know —
+    """A caller-owned pool carries no client-side bound TaskQ can know -
     the budget must stand as configured, never clamped against a guess."""
     assert bounded_lock_budget_ms(5000.0, None) == 5000.0
 
 
 def test_bounded_lock_budget_stands_for_an_unbounded_budget() -> None:
     """A non-positive budget is the operator asking for an unbounded
-    server-side wait (the lock_timeout GUC convention) — the clamp never
+    server-side wait (the lock_timeout GUC convention) - the clamp never
     invents a bound for it."""
     assert bounded_lock_budget_ms(0.0, 5.0) == 0.0
     assert bounded_lock_budget_ms(-1.0, 5.0) == -1.0
@@ -281,7 +281,7 @@ def test_bounded_lock_budget_stands_for_an_unbounded_budget() -> None:
 
 def test_bounded_lock_budget_clamps_to_the_share_of_the_bound() -> None:
     """The delivered budget fits inside the connection's per-query bound
-    with the share of headroom the refusal needs to unwind first — so the
+    with the share of headroom the refusal needs to unwind first - so the
     server-side lock_timeout (typed error) fires before the client-side
     timer (bare TimeoutError)."""
     assert bounded_lock_budget_ms(5000.0, 5.0) == 4000.0
@@ -290,14 +290,14 @@ def test_bounded_lock_budget_clamps_to_the_share_of_the_bound() -> None:
 
 
 def test_lock_budget_command_timeout_floor_at_the_shipped_defaults() -> None:
-    """At the shipped defaults the pool bound IS the floor — a deployment
+    """At the shipped defaults the pool bound IS the floor - a deployment
     that sets nothing keeps the pre-knob 5 s bound exactly."""
     assert lock_budget_command_timeout_secs([(5000.0, 5000.0)] * 3, floor_secs=5.0) == 5.0
 
 
 def test_lock_budget_command_timeout_follows_a_widened_budget() -> None:
     """A budget widened past its shipped default re-derives the bound so
-    the budget occupies the same share of it — the widening is delivered
+    the budget occupies the same share of it - the widening is delivered
     end to end instead of being silently clamped back to the floor."""
     bound = lock_budget_command_timeout_secs(
         [(5000.0, 5000.0), (30000.0, 5000.0), (0.0, 5000.0)], floor_secs=5.0
@@ -330,7 +330,7 @@ def test_lock_budget_command_timeout_ignores_narrowed_and_unbounded_budgets() ->
 
 async def test_with_connection_init_applies_the_hook_to_every_produced_connection() -> None:
     """The hook runs exactly once per produced connection, on the
-    connection itself — the ``setup=`` hook position, so the LOOP-scope
+    connection itself - the ``setup=`` hook position, so the LOOP-scope
     connection and the slot connections carry identical setup."""
     applied: list[Any] = []
 
@@ -345,7 +345,7 @@ async def test_with_connection_init_applies_the_hook_to_every_produced_connectio
 
 
 async def test_with_connection_init_declares_the_hook_for_the_worker_to_read() -> None:
-    """The wrapped factory exposes the very callable it applies — the
+    """The wrapped factory exposes the very callable it applies - the
     worker installs THAT hook as the slot pool's ``init``, never a copy
     or a wrapper, so what the registered connection got is what slot
     connections get."""
@@ -358,7 +358,7 @@ async def test_with_connection_init_declares_the_hook_for_the_worker_to_read() -
 
 
 def test_unwrapped_factories_declare_no_init_hook() -> None:
-    """A bare factory (or anything else) exposes nothing — the read must
+    """A bare factory (or anything else) exposes nothing - the read must
     be a clean None, never a guess, so the worker warns instead of
     inventing a hook."""
     assert connection_init_hook(_fake_conn_factory) is None
@@ -369,7 +369,7 @@ def test_unwrapped_factories_declare_no_init_hook() -> None:
 async def test_with_connection_init_closes_the_connection_when_the_hook_fails() -> None:
     """A failed hook means no usable connection: the produced connection
     is closed (bounded, never raising over the hook's own error) before
-    the error propagates — asyncpg's own hook contract, so a boot-time
+    the error propagates - asyncpg's own hook contract, so a boot-time
     codec failure fails boot without leaking the connection."""
     produced = MagicMock(spec=asyncpg.Connection)
 
@@ -391,14 +391,14 @@ async def test_with_connection_init_closes_the_connection_when_the_hook_fails() 
 #
 # The shared guard behind every "acquire from the pool, use immediately"
 # call site (the enqueue paths and the bulk-cancel drain). The full-stack
-# race it exists for — a server FATAL parking asyncpg's protocol before
-# ``connection_lost`` lands — is pinned against a real interrupted
+# race it exists for - a server FATAL parking asyncpg's protocol before
+# ``connection_lost`` lands - is pinned against a real interrupted
 # Postgres in tests/test_fleet_pg_transient_failure.py, which is
 # intermittent by nature; these unit pins hold the wrapper's own contract
 # so the coverage does not rest on that race reproducing: when the retry
-# runs, when it is REFUSED (a write already acknowledged, #236's
+# runs, when it is REFUSED (a write already acknowledged, the
 # duplication half), and what the guard's bounded checkout does with a
-# release that fails or hangs after the op's work is done (#236's
+# release that fails or hangs after the op's work is done (the
 # release/hang half).
 
 
@@ -424,7 +424,7 @@ class _FakePool:
     at the budget and TERMINATES the connection (asyncpg's timeout handler
     does exactly this), freeing the holder either way; with no budget it
     simply parks: the unbounded shape that wedged the caller's task and
-    ``pool.close()`` (#236's hang half, reproduced live against a
+    ``pool.close()`` (the hang half, reproduced live against a
     SIGSTOP-frozen backend)."""
 
     def __init__(
@@ -551,7 +551,7 @@ async def test_fresh_connection_retry_logs_the_retry_with_the_operation_name() -
 
 
 async def test_fresh_connection_retry_refuses_the_retry_once_a_write_is_acknowledged() -> None:
-    """#236's refusal half: an ``InternalClientError`` raised AFTER the
+    """The refusal half: an ``InternalClientError`` raised AFTER the
     op marked its write durable (the connection died between the INSERT's
     acknowledgement and a LATER statement of the same attempt: a
     post-INSERT read, a savepoint RELEASE) must NOT re-run the op. The
@@ -581,7 +581,7 @@ async def test_fresh_connection_retry_refuses_the_retry_once_a_write_is_acknowle
     assert calls == 1, (
         "a retry after an acknowledged write re-issues it with the same id: "
         "a UniqueViolationError for work that succeeded, and the invitation "
-        "for the caller's fresh-id re-enqueue that runs the job twice (#236)"
+        "for the caller's fresh-id re-enqueue that runs the job twice"
     )
 
 
@@ -609,7 +609,7 @@ async def test_retry_guard_checkout_passes_the_release_bound_to_the_pool() -> No
     """The checkout replaces the acquire context manager precisely so the
     RELEASE can carry a timeout: asyncpg's context release falls back to
     the (unbounded) acquire timeout, which parks the reset against a
-    silently-dead server forever: #236's hang half."""
+    silently-dead server forever: the hang half."""
 
     pool = _FakePool()
     guard = _RetryGuard(pool, "unit-probe")
@@ -624,7 +624,7 @@ async def test_retry_guard_checkout_passes_the_release_bound_to_the_pool() -> No
 async def test_retry_guard_checkout_bounds_a_parked_release_and_frees_the_pool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """#236's hang half as a committed end-to-end pin: the live SIGSTOP
+    """The hang half as a committed end-to-end pin: the live SIGSTOP
     experiment's shape (a release whose reset is sent into a server that
     never answers), driven through the guard's own checkout against a
     miniature that models what asyncpg's holder.release does at source
@@ -663,7 +663,7 @@ async def test_retry_guard_checkout_bounds_a_parked_release_and_frees_the_pool(
     assert result == "committed", "a parked release must not fail the op's committed work"
     assert not budget.expired(), (
         "the checkout parked past the 2 s test budget: the release bound "
-        "never reached the pool: the unbounded #236 hang shape"
+        "never reached the pool: the unbounded hang shape"
     )
     assert elapsed < 1.0, (
         f"the parked release cost {elapsed:.2f}s; the bound is {shrunk_bound}s; "
@@ -690,7 +690,7 @@ async def test_retry_guard_checkout_swallows_a_failed_release_after_a_committed_
     """A release whose reset fails (the parked-error-consume connection:
     asyncpg terminates it and re-raises) must not hand the caller an
     error for work that committed: that error invited the caller-side
-    retry that duplicates the row, which is #236's other duplication
+    retry that duplicates the row, which is the other duplication
     route. The op's result stands; the failure is observable as one
     WARNING."""
     pool = _FakePool(release_exc=asyncpg.InterfaceError("pool release: reset failed"))

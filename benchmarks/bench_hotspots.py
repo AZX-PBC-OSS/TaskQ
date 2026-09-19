@@ -243,7 +243,7 @@ def bench_di_solver() -> ABResult:
 
     # NOTE: solve_dependencies is async; for timing we time the coroutine
     # creation + a fresh loop run per call would dominate. Instead time
-    # N solves in one loop and divide — batch semantics.
+    # N solves in one loop and divide - batch semantics.
     def make_batch_runner(fn: Callable[[], Any], n: int) -> Callable[[], object]:
         async def one() -> object:
             await fn()
@@ -331,7 +331,7 @@ def _payloads() -> dict[str, dict[str, object]]:
         "blob": "x" * 32768,
         "rows": [{"i": i, "v": i * 1.5, "s": f"row-{i}"} for i in range(700)],
     }
-    nul_literal = {  # literal backslash-u-0000 TEXT — prefilter hits, but legal
+    nul_literal = {  # literal backslash-u-0000 TEXT - prefilter hits, but legal
         "text": "safe \\u0000 literal",
         "rows": [{"i": i, "s": f"row-{i} \\u0000 text"} for i in range(40)],
     }
@@ -342,7 +342,7 @@ def bench_jsonb() -> list[ABResult]:
     """A: dumps_jsonb_str current (decode + prefilter, re-parse + walk on hit).
     B1: bytes-out fused (no decode; byte prefilter; backslash-count confirm).
     B2: str-out with byte prefilter + confirm (keeps asyncpg str contract).
-    B3: fused size (str, len) — kills terminal double-encode."""
+    B3: fused size (str, len) - kills terminal double-encode."""
     from taskq._json import dumps, dumps_jsonb_str
 
     payloads = _payloads()
@@ -790,7 +790,7 @@ def bench_evict_keyed() -> list[ABResult]:
         return len(stale)
 
     # B: maintain a heap of (last_used, key); pop while min < cutoff.
-    # Rebuild amortized — here we simulate the steady-state pop path.
+    # Rebuild amortized - here we simulate the steady-state pop path.
     heap: list[tuple[float, str]] = [(ts, k) for k, ts in last_used.items()]
     heapq.heapify(heap)
 
@@ -972,7 +972,7 @@ def main() -> None:
     if "evict" in wanted:
         results.extend(bench_evict_keyed())
 
-    print(f"\nPython {sys.version.split()[0]} — A/B results (interleaved, median ns/op)")
+    print(f"\nPython {sys.version.split()[0]} - A/B results (interleaved, median ns/op)")
     report(results)
 
 

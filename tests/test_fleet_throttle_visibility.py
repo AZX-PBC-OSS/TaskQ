@@ -2,8 +2,8 @@
 
 The most common queue misconfiguration is an arrival rate above a
 throttle: work is submitted at five a second and a concurrency or rate
-limit lets one a second through. Nothing is broken — every component is
-doing exactly what it was configured to do — and the backlog grows
+limit lets one a second through. Nothing is broken - every component is
+doing exactly what it was configured to do - and the backlog grows
 without bound. The only defect is the configuration, and the only way an
 operator finds it is if the queue can say *which* actor is accumulating.
 
@@ -11,7 +11,7 @@ That is the whole difficulty. Total queue depth does not answer it: the
 throttled actor usually shares a queue with healthy ones, so the queue's
 depth grows while every actor on it looks equally plausible as the
 cause. An operator who can see only the queue is reduced to guessing,
-and the usual guess — add more pods — cannot help, because the limit is
+and the usual guess - add more pods - cannot help, because the limit is
 per-actor and the fleet is already respecting it.
 
 These tests drive the real shape: sustained arrivals, a capacity gate
@@ -66,7 +66,7 @@ async def _drive_throttled_load(fleet: Fleet) -> None:
     actor and lets ``_ADMITTED_PER_ROUND`` of them through, which is the
     misconfiguration under test. The healthy actor's work is submitted
     and fully drained in the same rounds, so the queue carries both a
-    growing and a healthy cohort at once — the condition that makes the
+    growing and a healthy cohort at once - the condition that makes the
     diagnosis hard.
     """
 
@@ -106,7 +106,7 @@ async def test_a_throttled_actors_backlog_is_visible_as_its_own(
     and its healthy neighbour on the same queue does not. The counting
     surface must distinguish them.
 
-    If it cannot — if the only available number is the queue's total —
+    If it cannot - if the only available number is the queue's total -
     then every actor on a deep queue is equally suspect, and the
     operator's fastest available action, adding pods, cannot fix a
     per-actor limit the fleet is already honouring.
@@ -127,7 +127,7 @@ async def test_a_throttled_actors_backlog_is_visible_as_its_own(
         assert throttled_depth > 0, (
             f"after {_ROUNDS} rounds of {_ARRIVALS_PER_ROUND} arrivals against "
             f"{_ADMITTED_PER_ROUND} admitted, the throttled actor's pending count reads "
-            f"{throttled_depth}. The backlog is real — the jobs exist and are waiting — "
+            f"{throttled_depth}. The backlog is real - the jobs exist and are waiting - "
             "so a count that does not show it leaves the operator with no evidence of "
             "the condition at all."
         )
@@ -248,7 +248,7 @@ async def test_the_fleet_respects_the_limit_rather_than_the_arrival_rate(
         }
         assert lost == {}, (
             f"jobs held back by a capacity limit reached terminal states: {lost}. The "
-            "limit is a misconfiguration, not a failure of the work — an operator who "
+            "limit is a misconfiguration, not a failure of the work - an operator who "
             "corrects it must find the backlog intact and drainable, not destroyed by "
             "the wait."
         )

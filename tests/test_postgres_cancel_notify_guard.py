@@ -2,8 +2,8 @@
 
 The cancel flag commits in the transaction block; the pg_notify fan-out
 fires afterwards on a second pooled connection. A NOTIFY failure there
-must NOT surface to the caller as a failed cancel — the request IS
-recorded — so it is swallowed with a warning, the same contract as
+must NOT surface to the caller as a failed cancel - the request IS
+recorded - so it is swallowed with a warning, the same contract as
 ``cancel_where``'s notify block. These tests pin that contract at the
 connection-mock level (no real PG needed); the happy-path SQL behaviour
 lives in the integration tests (test_postgres_cancel_paths.py).
@@ -109,7 +109,7 @@ class TestWriteCancelRequestNotifyGuard:
         assert await backend.write_cancel_request(new_job_id(), None) is True
 
     async def test_notify_failure_logs_warning(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The swallow is a WARN (not silent) with the job id on the event —
+        """The swallow is a WARN (not silent) with the job id on the event -
         the heartbeat poll remains authoritative for signal delivery.
         """
         import taskq.backend.postgres as postgres_mod

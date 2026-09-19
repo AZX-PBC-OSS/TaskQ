@@ -4,7 +4,7 @@ The observability guide promises that a reporter registered on the
 ``ProviderRegistry`` (PROCESS or LOOP scope) is resolved at dispatch time
 and invoked when a job reaches a terminal ``failed`` state. These tests
 drive the production dispatch seam (``dispatch_one_job`` over the
-in-memory backend twin) and observe the reporter's ``report()`` calls —
+in-memory backend twin) and observe the reporter's ``report()`` calls -
 the only thing an operator wiring Sentry or a DLQ can see.
 """
 
@@ -120,7 +120,7 @@ async def _dispatch(
     deps = _FakeWorkerDeps()
     return await dispatch_one_job(
         backend=backend,
-        deps=deps,  # type: ignore[arg-type]  # Why: the established dispatch_one_job unit pattern — a namespace with the fields dispatch reads.
+        deps=deps,  # type: ignore[arg-type]  # Why: the established dispatch_one_job unit pattern - a namespace with the fields dispatch reads.
         job=job,
         worker_id=worker_id,
         registry=scopes.registry,
@@ -150,7 +150,7 @@ async def test_process_scoped_reporter_receives_the_terminal_failure() -> None:
     assert outcome == "failed"
     assert len(reporter.calls) == 1, (
         "the registered ErrorReporter was never invoked for a terminal failure "
-        f"(calls={reporter.calls!r}) — the reporter is not wired at dispatch"
+        f"(calls={reporter.calls!r}) - the reporter is not wired at dispatch"
     )
     reported_row, reported_exc = reporter.calls[0]
     assert reported_row.id == job.id
@@ -195,7 +195,7 @@ async def test_reporter_is_silent_while_retries_remain() -> None:
 
 async def test_no_registered_reporter_dispatches_normally() -> None:
     """Without a registration the dispatch path runs the same terminal
-    write and reports the same outcome — the reporter is optional."""
+    write and reports the same outcome - the reporter is optional."""
     backend = InMemoryBackend(clock=FakeClock(start=_START))
     job, worker_id = await _running_job(backend, retry_kind="non_retryable", max_attempts=1)
 

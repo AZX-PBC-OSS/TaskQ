@@ -3,18 +3,18 @@
 Two independent bindings keep a response that was never solicited by *this*
 browser's login from being accepted as a fresh authentication:
 
-**OIDC — the ID token carries a ``nonce``.**  ``state`` + PKCE bind the
-*code*; only the nonce binds the *ID token* — the credential the session
+**OIDC - the ID token carries a ``nonce``.**  ``state`` + PKCE bind the
+*code*; only the nonce binds the *ID token* - the credential the session
 is minted from. authlib's ``validate_nonce()`` is a no-op unless
 ``params["nonce"]`` is truthy, so ``oidc.py`` mints a per-login ``nonce``
 into the authorization URL and the signed state cookie and threads it into
-``CodeIDToken``'s ``params``; an ID token carrying no nonce — or another
-login's nonce — fails validation.
+``CodeIDToken``'s ``params``; an ID token carrying no nonce - or another
+login's nonce - fails validation.
 
-**SAML — the binding holds for the IdP-initiated shape too.**
+**SAML - the binding holds for the IdP-initiated shape too.**
 ``saml.py`` passes ``request_id`` into ``process_response`` and keeps a
 consumed-assertion-ID cache, but inside python3-saml the comparison is
-guarded by ``if in_response_to is not None and request_id is not None:`` —
+guarded by ``if in_response_to is not None and request_id is not None:`` -
 a response carrying no ``InResponseTo`` at all would pass that comparison
 untouched, so with a live request cookie any IdP-initiated assertion for
 this SP's audience could mint a session without answering any
@@ -138,7 +138,7 @@ def test_oidc_callback_passes_the_nonce_into_id_token_validation(
     """authlib only enforces the nonce when ``params["nonce"]`` is truthy.
 
     ``CodeIDToken.validate_nonce()`` returns immediately when the param is
-    absent or falsy, and ``nonce`` is not in ``ESSENTIAL_CLAIMS`` — so unless
+    absent or falsy, and ``nonce`` is not in ``ESSENTIAL_CLAIMS`` - so unless
     the callback threads the login's nonce into ``params`` the check is dead
     code. Spy on the construction and assert the nonce arrives.
     """
@@ -150,7 +150,7 @@ def test_oidc_callback_passes_the_nonce_into_id_token_validation(
     # Signature mirrors authlib's CodeIDToken.__init__ exactly rather than
     # collapsing the tail into **kwargs: tests/test_double_signature_drift.py
     # guards against doubles narrower than what they replace, because a
-    # narrow double keeps passing after the real signature changes — and the
+    # narrow double keeps passing after the real signature changes - and the
     # whole point of this spy is to observe the `params` argument.
     def spy_init(
         self: Any,
@@ -179,7 +179,7 @@ def test_oidc_callback_passes_the_nonce_into_id_token_validation(
                 follow_redirects=False,
             )
 
-    assert seen_params, "CodeIDToken was never constructed — the callback did not validate"
+    assert seen_params, "CodeIDToken was never constructed - the callback did not validate"
     assert seen_params[-1].get("nonce"), (
         "no nonce in the ID-token validation params, so authlib's validate_nonce() "
         f"is a no-op: params={seen_params[-1]!r}"
@@ -194,7 +194,7 @@ def test_oidc_callback_passes_the_nonce_into_id_token_validation(
 def test_oidc_rejects_an_id_token_with_no_nonce() -> None:
     """End-to-end: an ID token carrying no nonce must not mint a session.
 
-    This is the injection primitive — an ID token obtained through any other
+    This is the injection primitive - an ID token obtained through any other
     flow (another RP, an IdP-initiated login, a captured token) has no nonce
     tying it to this browser, so the callback must refuse it rather than
     mint a session.
@@ -340,7 +340,7 @@ def test_saml_callback_passes_a_request_id_to_process_response(
 
     assert calls, "process_response was never called"
     assert calls[-1] is not None, (
-        "process_response called with request_id=None — the InResponseTo check "
+        "process_response called with request_id=None - the InResponseTo check "
         "is a dead branch and unsolicited assertions are accepted"
     )
 
@@ -380,7 +380,7 @@ def test_saml_login_stores_the_authn_request_id_for_the_callback(
     assert issued, "/login did not generate an AuthnRequest ID"
     assert calls, "process_response was never called"
     assert calls[-1] == issued[-1], (
-        f"callback enforced {calls[-1]!r}, but /login issued {issued[-1]!r} — "
+        f"callback enforced {calls[-1]!r}, but /login issued {issued[-1]!r} - "
         "the AuthnRequest ID is not carried across the login"
     )
 
@@ -428,7 +428,7 @@ def test_saml_rejects_an_assertion_that_answers_no_authn_request(
     assert issued, "/login did not issue an AuthnRequest ID"
     assert client.cookies.get("taskq_saml_request"), "no live AuthnRequest cookie"
 
-    # build_saml_response emits no InResponseTo unless given one — exactly
+    # build_saml_response emits no InResponseTo unless given one - exactly
     # the IdP-initiated shape.
     resp = _post_assertion(client, build_saml_response(nameid="user-forced-login"))
 
@@ -442,7 +442,7 @@ def test_saml_rejects_an_assertion_that_answers_no_authn_request(
 def test_saml_rejects_an_assertion_answering_a_foreign_authn_request() -> None:
     """A mismatched InResponseTo with a live cookie must not mint a session.
 
-    Pins python3-saml's own comparison — the branch that is live when both
+    Pins python3-saml's own comparison - the branch that is live when both
     sides are present: an assertion naming a request this browser never
     issued must be refused.
     """
@@ -479,7 +479,7 @@ def test_saml_rejects_a_replayed_assertion_id() -> None:
     is consulted on every accepted assertion: a byte-identical assertion that
     succeeded once must be refused on its second presentation. The assertion
     is still inside its NotOnOrAfter window, so signature and time checks both
-    still pass — only the replay cache can reject it.
+    still pass - only the replay cache can reject it.
     """
     pytest.importorskip("onelogin.saml2.auth")
     from tests._sso_saml_crypto import build_saml_response
@@ -493,7 +493,7 @@ def test_saml_rejects_a_replayed_assertion_id() -> None:
     second = _post_assertion(client, assertion)
 
     assert "error=authentication+failed" in second.headers["location"], (
-        "a byte-identical assertion authenticated twice — no replay cache is "
+        "a byte-identical assertion authenticated twice - no replay cache is "
         f"consulted; first={first.headers['location']!r} "
         f"second={second.headers['location']!r}"
     )
@@ -508,15 +508,15 @@ def test_saml_replay_rejection_happens_even_when_every_other_check_passes(
     The test above can go green at the request-binding gate: with no
     ``/login`` at all, BOTH presentations are refused for "no pending SAML
     AuthnRequest" and the replay cache is never reached. This pin first
-    drives two fully accepted logins — asserting each acceptance and its
-    minted session so it cannot pass vacuously — then re-presents assertion
+    drives two fully accepted logins - asserting each acceptance and its
+    minted session so it cannot pass vacuously - then re-presents assertion
     B byte-identically while its 1h NotOnOrAfter window is live and the
     request binding is one the ACS still accepts: the browser's login-2
     cookie value, captured before B's first acceptance and restored after
     the callback dropped it (the AuthnRequest ID is single-use, so the
     request cookie is cleared on every outcome). That is the state in which
     the signature, timestamps, and InResponseTo binding all still pass,
-    leaving a consumed-assertion-ID record as the only possible rejector —
+    leaving a consumed-assertion-ID record as the only possible rejector -
     a spy on ``process_response`` proves the replayed POST got that far by
     arriving with login-2's request ID.
     """
@@ -546,7 +546,7 @@ def test_saml_replay_rejection_happens_even_when_every_other_check_passes(
         assert cookie_b, "login 2 set no AuthnRequest cookie"
         assertion_b = build_saml_response(nameid="user-replay-e2e-b", in_response_to=request_b)
         assert _assertion_id(assertion_a) != _assertion_id(assertion_b), (
-            "assertions A and B share an assertion ID — B's first presentation "
+            "assertions A and B share an assertion ID - B's first presentation "
             "would already be a replay"
         )
         _assert_accepted(_post_assertion(client, assertion_b), "assertion B")
@@ -563,7 +563,7 @@ def test_saml_replay_rejection_happens_even_when_every_other_check_passes(
 
     assert calls == [request_b], (
         f"the replayed POST did not reach process_response with login-2's "
-        f"request ID {request_b!r} (calls={calls!r}) — the rejection below "
+        f"request ID {request_b!r} (calls={calls!r}) - the rejection below "
         "came from the cookie or binding gate, not the replay cache"
     )
 

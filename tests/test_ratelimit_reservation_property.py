@@ -7,7 +7,7 @@ the held-count invariant is checked:
     ``COUNT(*) WHERE job_id IS NOT NULL <= N``
 
 Uses the in-memory ``_InMemorySlotTable`` with ``FakeClock`` so the test
-is deterministic and fast — no real PG required.
+is deterministic and fast - no real PG required.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -48,7 +48,7 @@ def _count_held(table: _InMemorySlotTable, bucket_name: str) -> int:
 async def test_reservation_invariant(
     operations: list[tuple[str, int, float]],
 ) -> None:
-    """Reservation invariant — for N slots, at most N slots held
+    """Reservation invariant - for N slots, at most N slots held
     simultaneously across any acquire/release sequence."""
     clock = FakeClock(_START)
     table = _InMemorySlotTable(clock)

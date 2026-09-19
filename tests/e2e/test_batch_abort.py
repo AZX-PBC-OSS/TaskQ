@@ -1,4 +1,4 @@
-"""Batch abort policy e2e — AbortBatchAfter(3) stops a 10-job all-fail batch.
+"""Batch abort policy e2e - AbortBatchAfter(3) stops a 10-job all-fail batch.
 
 Scenario:
 10 jobs that always fail, enqueued as a batch with ``failure_policy=
@@ -8,7 +8,7 @@ deterministic dispatch ordering so the abort threshold is hit predictably.
 After abort:
 - 3-4 jobs reach ``failed`` (bounded: the dispatch/write-hook race means one
   extra job may be in-flight when the abort fires), the rest are ``cancelled``.
-- Only dispatched jobs record ``attempt`` effects — cancelled jobs never ran.
+- Only dispatched jobs record ``attempt`` effects - cancelled jobs never ran.
 - The ``batches`` row shows ``status = 'aborted'``.
 
 Uses ``e2e_worker_serial`` for serialized dispatch.
@@ -165,7 +165,7 @@ async def test_batch_abort_with_finalizer(
     ]
     finalizer_id = batch.finalizer_handle.job_id
 
-    # Wait for child jobs only — the finalizer snoozes (via wait_for_batch)
+    # Wait for child jobs only - the finalizer snoozes (via wait_for_batch)
     # until all children reach terminal status, so including it in the gather
     # would always time out and waste the full 60 s budget.  The finalizer's
     # terminal status is verified separately via the poll below.
@@ -186,7 +186,7 @@ async def test_batch_abort_with_finalizer(
     batch_status = await fetch_batch_status(e2e_pg_pool, e2e_schema.schema_name, batch_id)
     assert batch_status == "aborted", f"batch row status={batch_status!r}, expected 'aborted'"
 
-    # Finalizer should NOT be cancelled by the abort — it's not stamped
+    # Finalizer should NOT be cancelled by the abort - it's not stamped
     # with batch_id. It should reach a terminal *succeeded* state (it
     # catches BatchAbortedError inside the actor).
     async def _finalizer_terminal() -> bool:

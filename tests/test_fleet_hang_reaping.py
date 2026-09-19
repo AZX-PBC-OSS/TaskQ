@@ -11,11 +11,11 @@ Two deadlines answer it, and they answer different questions. A
 heartbeat timeout catches a job that has stopped reporting progress
 while its pod is otherwise alive. A schedule-to-close deadline bounds
 the total time a job may occupy, however many attempts or pods it takes.
-Both must end in the work being either retried or failed visibly —
+Both must end in the work being either retried or failed visibly -
 never left running for ever, and never quietly discarded.
 
 Recovery also has to be honest about what it costs the job. A reaped
-attempt did happen — the actor ran, it simply did not finish — so it is
+attempt did happen - the actor ran, it simply did not finish - so it is
 right that it is recorded and right that it counts. That is the exact
 opposite of a hand-back, where nothing ran, and the two must not be
 confused: one is the system telling the truth about a stuck run, the
@@ -59,7 +59,7 @@ async def test_a_job_that_stops_heartbeating_is_reclaimed(pg_dsn: str) -> None:
     """A stalled job is taken back even though its pod is alive.
 
     The job declares a heartbeat timeout, is claimed, and then stops
-    reporting — the shape of an actor blocked on something that will
+    reporting - the shape of an actor blocked on something that will
     never return, inside a pod that is otherwise healthy and whose lock
     lease keeps renewing.
 
@@ -116,7 +116,7 @@ async def test_a_job_that_stops_heartbeating_is_reclaimed(pg_dsn: str) -> None:
 async def test_a_reaped_attempt_is_recorded_and_counted(pg_dsn: str) -> None:
     """Reaping records the attempt that really happened.
 
-    The actor did run — it started and then stalled — so the attempt is
+    The actor did run - it started and then stalled - so the attempt is
     real and belongs in the history, and it is right that it counts
     against the retry budget. Otherwise a job that hangs every time it
     runs would be retried for ever, occupying a slot in every pod it
@@ -124,7 +124,7 @@ async def test_a_reaped_attempt_is_recorded_and_counted(pg_dsn: str) -> None:
 
     This is the deliberate counterpart to the hand-back contract: there
     the actor never ran and the budget must be refunded. Confusing the
-    two in either direction is a defect — inventing failures that did not
+    two in either direction is a defect - inventing failures that did not
     happen, or letting a genuinely stuck job retry without limit.
     """
     schema = f"fleet_hang_count_{new_base62()}".lower()
@@ -156,7 +156,7 @@ async def test_a_reaped_attempt_is_recorded_and_counted(pg_dsn: str) -> None:
         outcomes = await _attempt_outcomes(fleet, job_id)
         assert outcomes, (
             "reaping a stalled job left no record of the attempt. The actor ran and "
-            "stalled, and the job's history shows nothing — so an operator seeing the "
+            "stalled, and the job's history shows nothing - so an operator seeing the "
             "job retry has no way to learn that a previous run hung."
         )
         row = await _job(fleet, job_id)
@@ -208,7 +208,7 @@ async def test_a_reaped_job_is_redispatched_to_a_healthy_pod(pg_dsn: str) -> Non
         assert [JobId(job.id) for job in retaken] == [job_id], (
             "a job reaped from a stalled pod was not claimable by a healthy one. The "
             "reclaim moved it out of running and no further, so it is now stuck pending "
-            "— which no stuck-job alert built around running jobs will ever show."
+            "- which no stuck-job alert built around running jobs will ever show."
         )
 
         async def _work(_payload: FleetPayload, _ctx: object) -> str:

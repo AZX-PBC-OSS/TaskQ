@@ -1,7 +1,7 @@
 """Integration tests for heartbeat_loop and isolate_self against real PG18.
 
-Each test asserts the behavioral contract — leases are renewed to live
-future values, liveness timestamps stay fresh, jobs transition correctly —
+Each test asserts the behavioral contract - leases are renewed to live
+future values, liveness timestamps stay fresh, jobs transition correctly -
 using single-domain comparisons: one statement reads the server clock and
 the row together, so the assertion cannot be corrupted by divergence
 between the application and database clocks (VM pause/resume and NTP
@@ -59,7 +59,7 @@ async def _setup_fast(
     Uses the module-scoped PG schema (migrated once per test file) and
     truncates all tables for per-test isolation.
 
-    Returns (stack, deps, schema) — the caller MUST ``await stack.aclose()``.
+    Returns (stack, deps, schema) - the caller MUST ``await stack.aclose()``.
     """
     import asyncpg
 
@@ -101,11 +101,11 @@ async def test_last_seen_at_and_heartbeat_advance(module_pg_schema: ModulePgSche
     observes the clock and the value atomically: cross-moment clock
     comparisons (pairwise progress, first-vs-last) couple the assertion to
     the application and database clocks staying aligned across the whole
-    window — they are separate clocks, and divergence or a step between
+    window - they are separate clocks, and divergence or a step between
     them (VM pause/resume, NTP drift) produces false regressions, which is
     exactly how the previous pairwise form failed. A stalled heartbeat
     shows up here as a stale value against the clock read in the same
-    statement — the failure mode the contract actually cares about.
+    statement - the failure mode the contract actually cares about.
 
     The freshness loop starts only after the first tick has landed: the
     loop ticks immediately on start, but under a parallel ``-n`` run
@@ -189,7 +189,7 @@ async def test_multi_job_lock_extension(module_pg_schema: ModulePgSchema) -> Non
     than every setup-time lease (a tick stamps ``clock_timestamp() +
     lock_lease`` and runs after setup, so a rewrite always lands later than
     the originals) instead of assuming a tick lands within a fixed ~1s
-    window — under a parallel ``-n`` run contending on the shared PG
+    window - under a parallel ``-n`` run contending on the shared PG
     container the first tick can land seconds late, and reading un-renewed
     setup stamps would test the setup, not the renewal."""
     stack, deps, schema = await _setup_fast(module_pg_schema)
@@ -277,17 +277,17 @@ async def test_reservation_lease_extension(module_pg_schema: ModulePgSchema) -> 
     """Heartbeat ticks renew reservation leases to live future values.
 
     The reservation is inserted with a 1s lease; once a heartbeat tick has
-    run, the lease must be live — dated in the future of the server clock
+    run, the lease must be live - dated in the future of the server clock
     observed in the same statement that reads it. An unrenewed lease
     (inserted 1s ahead) is already in the past by read time, so a live
     lease proves a tick renewed it. The read polls until the lease is live
     instead of assuming the first tick lands within a fixed ~1s window:
     under a parallel ``-n`` run contending on the shared PG container, the
-    loop's first tick can land seconds late — waiting only strengthens the
+    loop's first tick can land seconds late - waiting only strengthens the
     unrenewed-lease-is-past proof, and a renewal still shows up as a live
     lease. Comparing against the initial lease instead (the old form)
     coupled the assertion to the application and database clocks staying
-    aligned across the whole test window — they are separate clocks and
+    aligned across the whole test window - they are separate clocks and
     can diverge or step (VM pause/resume, NTP drift).
     """
     stack, deps, schema = await _setup_fast(module_pg_schema)
@@ -410,7 +410,7 @@ async def test_isolate_self_transitions_cancel_phase_gt_zero(
     """isolate_self transitions jobs with cancel_phase > 0 to
     terminal 'cancelled', whatever the retry budget, mirroring
     _SWEEP_1_SQL's operator-intent-first CASE ordering (see
-    tests/test_leader_property.py's isolate≡sweep invariant and #238).
+    tests/test_leader_property.py's isolate≡sweep invariant).
     A departing worker is the only writer that could have honoured the
     request cooperatively, so the honest resolution is the caller's
     explicit terminal label, with the cancel columns preserved as the
@@ -460,10 +460,10 @@ async def test_isolate_self_cancel_in_flight_exhausted_lands_cancelled(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """Mirror of the sweep's exhausted branch: a job with an in-flight
-    cancel request and no retries remaining lands on 'cancelled' — the
+    cancel request and no retries remaining lands on 'cancelled' - the
     caller's explicit request is the honest terminal label.  The cancel
     columns are PRESERVED as the audit trail of the honored request
-    (#238: the same doctrine mark_cancelled carries), the attempt row
+    (the same doctrine mark_cancelled carries), the attempt row
     still records outcome='crashed'/
     error_class='HeartbeatLost' (that IS what happened to the attempt),
     and isolate-self-complete telemetry counts the job as cancelled, not
@@ -525,7 +525,7 @@ async def test_isolate_self_hands_back_an_indefinite_job_past_max_attempts(
     job whose attempt count has passed ``max_attempts``.
 
     ``max_attempts`` is documented as ignored for the retry decision of an
-    ``indefinite`` job — its budget is the ``schedule_to_close`` deadline,
+    ``indefinite`` job - its budget is the ``schedule_to_close`` deadline,
     and the consumer's own failure path reschedules such a job whatever
     its attempt number. Isolation happens on the least conclusive events
     there are (a lost heartbeat pool, a rolling deploy), so it must hand
@@ -642,7 +642,7 @@ async def test_isolate_self_non_retryable_mirrors_sweep1(
     """isolate_self non_retryable + budget-remaining mirrors Sweep 1 exactly.
     For a non_retryable job with attempt < max_attempts: status='crashed',
     finished_at IS NOT NULL, scheduled_at unchanged, AttemptRow written,
-    and the crashed arm self-describes on the JOB row too (#238): the
+    and the crashed arm self-describes on the JOB row too: the
     pre-fix template left error_class/error_message NULL there while the
     sweep stamped its own, despite the branch-for-branch mirror claim."""
     stack, deps, schema = await _setup_fast(module_pg_schema)
@@ -757,7 +757,7 @@ async def test_acceptance_definition_heartbeat_extension(
         await stack.aclose()
 
 
-# ── Threshold-gated renewal (#227): which rows a beat rewrites ──────
+# ── Threshold-gated renewal: which rows a beat rewrites ──────
 
 
 async def test_threshold_gated_renewal_selects_rows_by_remaining_lease(
@@ -768,16 +768,16 @@ async def test_threshold_gated_renewal_selects_rows_by_remaining_lease(
     Row-level contract of ``UPDATE_JOBS_LOCK_RENEWAL_SQL_TEMPLATE``, driven
     directly (the loop's threshold math is pinned separately in
     tests/test_heartbeat.py) with a lease of 60s and the SHIPPED
-    default-config threshold — 56s, the enforced-bound floor
+    default-config threshold - 56s, the enforced-bound floor
     ``(F+1) * (interval + 2 * command_timeout)`` at 10s/3/2s:
 
     * a row with 58s of lease remaining (above the threshold) is left
-      entirely alone — its ``lock_expires_at`` AND ``last_heartbeat_at``
+      entirely alone - its ``lock_expires_at`` AND ``last_heartbeat_at``
       keep their exact prior values, which is the point of the change: a
       healthy beat no longer pays a non-HOT update per running row;
-    * a row with 50s remaining — inside the (30, 56] band that
+    * a row with 50s remaining - inside the (30, 56] band that
       discriminates the shipped floor from the issue's naive half-lease
-      (30s) — RENEWS: a naive-threshold build of this statement would
+      (30s) - RENEWS: a naive-threshold build of this statement would
       leave it alone (rowcount 3, not 4), so this pin fails green-only
       on the shipped sizing, not on the naive one (the fix-round
       false-green finding: the round-1 seeding had no row in this band,
@@ -785,12 +785,12 @@ async def test_threshold_gated_renewal_selects_rows_by_remaining_lease(
     * a row with 25s remaining (at/under any sane threshold) renews to a
       live future lease;
     * a row carrying a per-job ``heartbeat_timeout`` renews even with a
-      fresh lease — the reclaim sweep's heartbeat arm reclaims such rows
+      fresh lease - the reclaim sweep's heartbeat arm reclaims such rows
       on a stale ``last_heartbeat_at`` while the lease is still valid, so
       their beats must stay per-tick fresh (a naive policy without the
       heartbeat_timeout arm would falsely crash-reclaim them);
     * a row with no lease stamp (direct-SQL shape) renews;
-    * a disowned row renews nothing — its lease must lapse for the
+    * a disowned row renews nothing - its lease must lapse for the
       reclaim sweep;
     * another worker's row is never touched.
     """
@@ -887,7 +887,7 @@ async def test_threshold_gated_renewal_selects_rows_by_remaining_lease(
             assert parse_rowcount(tag) == 4, (
                 "the gated renewal must renew exactly the (30, 56]-band row, "
                 "the under-threshold row, the heartbeat_timeout row, and the "
-                "NULL-lease row — not the fresh row, not the disowned row, "
+                "NULL-lease row - not the fresh row, not the disowned row, "
                 "not another worker's row. A rowcount of 3 here means the "
                 "naive half-lease threshold is what this build carries"
             )
@@ -903,11 +903,11 @@ async def test_threshold_gated_renewal_selects_rows_by_remaining_lease(
                     worker_id,
                 )
             }
-            # The fresh row was not rewritten at all — byte-identical
+            # The fresh row was not rewritten at all - byte-identical
             # stamps, the non-HOT update it no longer pays.
             assert rows[fresh_id]["lock_expires_at"] == before["lock_expires_at"]
             assert rows[fresh_id]["last_heartbeat_at"] == before["last_heartbeat_at"]
-            # The renewed rows carry a live full lease and a fresh beat —
+            # The renewed rows carry a live full lease and a fresh beat -
             # the discriminating row included (the naive policy would
             # have left its stamps byte-identical like the fresh row's).
             for job_id in (discriminating_id, due_id, promise_id, no_lease_id):

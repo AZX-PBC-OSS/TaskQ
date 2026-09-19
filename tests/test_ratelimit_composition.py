@@ -2,7 +2,7 @@
 
 Tests through and.
 All tests use in-memory backends (``backend="memory"``) with ``FakeClock``
-— no Redis or PG instance required.
+- no Redis or PG instance required.
 """
 
 import contextlib
@@ -52,11 +52,11 @@ def _setup_registry(
     return RateLimitRegistry(), clock
 
 
-# ── All succeed — reservations + rate limits acquired in order ──
+# ── All succeed - reservations + rate limits acquired in order ──
 
 
 async def test_all_succeed() -> None:
-    """All succeed — handles have M+N entries in acquisition order."""
+    """All succeed - handles have M+N entries in acquisition order."""
     clock = FakeClock(_START)
     reg, _ = _setup_registry(clock)
     res = _reservation("r", slots=2, clock=clock)
@@ -85,11 +85,11 @@ async def test_all_succeed() -> None:
     assert acquired[2].name == "b"
 
 
-# ── Reservation fails — no rate limits attempted ────────────────
+# ── Reservation fails - no rate limits attempted ────────────────
 
 
 async def test_reservation_fails_no_rate_limits() -> None:
-    """Reservation fails — no rate limits attempted (spy verification)."""
+    """Reservation fails - no rate limits attempted (spy verification)."""
     clock = FakeClock(_START)
     reg, _ = _setup_registry(clock)
 
@@ -114,11 +114,11 @@ async def test_reservation_fails_no_rate_limits() -> None:
         )
 
 
-# ── First rate limit succeeds, second fails — rollback ──────────
+# ── First rate limit succeeds, second fails - rollback ──────────
 
 
 async def test_rate_limit_failure_triggers_rollback() -> None:
-    """First RL succeeds, second fails — rollback refunds first RL and releases reservation."""
+    """First RL succeeds, second fails - rollback refunds first RL and releases reservation."""
     clock = FakeClock(_START)
     reg, _ = _setup_registry(clock)
 
@@ -154,11 +154,11 @@ async def test_rate_limit_failure_triggers_rollback() -> None:
     assert slot.job_id is None
 
 
-# ── Rollback failure — one release raises; ERROR logged ─────────
+# ── Rollback failure - one release raises; ERROR logged ─────────
 
 
 async def test_rollback_failure_error_logged() -> None:
-    """Rollback failure — ERROR logged; remaining handles still released."""
+    """Rollback failure - ERROR logged; remaining handles still released."""
     clock = FakeClock(_START)
     reg, _ = _setup_registry(clock)
 

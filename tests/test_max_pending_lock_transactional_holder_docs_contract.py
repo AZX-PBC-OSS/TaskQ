@@ -4,17 +4,17 @@ duration of a contended enqueue".
 
 `_enqueue_on_conn` (`src/taskq/backend/_enqueue.py`) documents, in its own
 docstring, that "[a] caller who already holds a transaction owns the
-scope — the advisory locks then span that caller's transaction, so
+scope - the advisory locks then span that caller's transaction, so
 single-flight and cap exactness hold until its commit/rollback." That is
 exactly the shape a transactional actor creates: `worker/_consumer.py`
 runs the actor body inside an open transaction
 (`async with transaction_conn.transaction():`), `default_start_to_close`
-is `None` by default (unbounded actor runtime — see
+is `None` by default (unbounded actor runtime - see
 `settings.py`), and a sub-enqueue made through `ctx.jobs` to a capped
 actor joins that same open transaction. The `max_pending` advisory lock
 it takes (`_advisory.acquire_advisory_xact_lock_bounded`,
 `pg_advisory_xact_lock`) is therefore held until the *actor's* commit or
-rollback — which can be the actor's entire (unbounded) runtime — not
+rollback - which can be the actor's entire (unbounded) runtime - not
 just "the duration of a contended enqueue". Any OTHER producer to that
 same capped actor queues behind the whole parent transaction and gets
 the typed `MaxPendingLockTimeoutError` after the lock-timeout budget,
@@ -55,7 +55,7 @@ def test_max_pending_lock_docs_disclose_transactional_holder_duration() -> None:
         "docs still claim the lock is scoped to a single contended enqueue; this is "
         "false when the enqueue runs on a caller-owned open transaction (e.g. a "
         "transactional actor's ctx.jobs sub-enqueue), where the lock is held until "
-        "that caller's commit/rollback — which can be the actor's entire runtime"
+        "that caller's commit/rollback - which can be the actor's entire runtime"
     )
     # The correction must be actionable: it must name the actual holder
     # (a caller-supplied/open transaction) and that its duration is not
@@ -69,7 +69,7 @@ def test_max_pending_lock_docs_disclose_transactional_holder_duration() -> None:
 
 def test_max_pending_lock_timeout_error_table_names_transactional_holder_cause() -> None:
     """The `MaxPendingLockTimeoutError` error-table row must not attribute
-    the timeout ONLY to "too many concurrent producers" — a single
+    the timeout ONLY to "too many concurrent producers" - a single
     long-running transactional holder (e.g. an unbounded actor sub-enqueuing
     via ctx.jobs) is a distinct, currently-undocumented cause."""
     text = (_DOCS / "guides" / "jobs-clients.md").read_text()
@@ -155,7 +155,7 @@ def test_in_memory_backend_max_pending_lacks_lock_semantics_is_documented() -> N
         "no docs guide discloses, near a mention of the in-memory backend, that "
         "InMemoryBackend's max_pending enforcement takes no advisory lock at all "
         "(plain in-process count), so it cannot reproduce the transactional-holder "
-        "lock-duration cost real Postgres enqueues pay — a reader relying on "
+        "lock-duration cost real Postgres enqueues pay - a reader relying on "
         "InMemoryBackend-based tests to catch this class of regression has no "
         "warning that it won't"
     )

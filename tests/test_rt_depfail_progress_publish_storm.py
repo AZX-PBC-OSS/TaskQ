@@ -2,9 +2,9 @@
 
 The bounded-never-raise contract of the publish helpers is pinned elsewhere
 (tests/test_progress_publish.py). This file hunts the two unpinned sides of
-sustained Redis death: (1) the failure-emission VOLUME — one WARNING per
+sustained Redis death: (1) the failure-emission VOLUME - one WARNING per
 publish attempt forever is the storm-of-logs class; (2) the fire-and-forget
-publish task's lifetime — every round trip is bounded by
+publish task's lifetime - every round trip is bounded by
 ``_PUBLISH_TIMEOUT_S`` even against a black-holed Redis, so the pending
 task set drains instead of parking.
 """
@@ -54,7 +54,7 @@ class _DeadPipeline:
 
 
 class _DeadRedisClient:
-    """Client double whose every publish round trip raises immediately —
+    """Client double whose every publish round trip raises immediately -
     the sustained-outage shape with no timeout wait to slow the test."""
 
     def __init__(self, error: Exception) -> None:
@@ -96,7 +96,7 @@ async def test_publish_failure_log_emission_is_bounded_under_sustained_outage(
     """Under sustained Redis death the failure WARNING must be rate-limited:
     the first failure reports the outage, subsequent failures inside a
     window are counted (the OTel counter aggregates every attempt) but must
-    not emit one warning line per publish attempt forever — the same
+    not emit one warning line per publish attempt forever - the same
     window-gated emission the registry already applies to heal failures
     (``_keyed_reservation_heal_failure_logged``).
 
@@ -185,7 +185,7 @@ async def test_publish_task_lifetime_bounded_under_hanging_redis(
     elapsed = monotonic() - t0
     assert not pending, (
         "DEPENDENCY-FAILURE contract (bounded task lifetime): a black-holed Redis "
-        "must not park the fire-and-forget progress publish task — the round trip "
+        "must not park the fire-and-forget progress publish task - the round trip "
         f"is bounded by _PUBLISH_TIMEOUT_S and the task must drain from "
         f"pending_publish_tasks within that bound; still pending after "
         f"{elapsed:.2f}s. Verdict: FAIL-CLOSED never-park (bounded)."

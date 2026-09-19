@@ -112,7 +112,7 @@ def _make_fake_active_job(
 
 
 class FakeActiveJobRegistry:
-    """Test double for ActiveJobRegistry — mutable list of fake jobs."""
+    """Test double for ActiveJobRegistry - mutable list of fake jobs."""
 
     def __init__(self, jobs: list[_ActiveJob] | None = None) -> None:
         self._jobs: list[_ActiveJob] = list(jobs or [])
@@ -168,11 +168,11 @@ def _make_deps(
 
 
 async def test_phase_ordering_and_backend_calls(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Phases transition in order; the release — never abandonment — ends each job.
+    """Phases transition in order; the release - never abandonment - ends each job.
 
     Two jobs still registered past both graces belong to actors that never
     unwound. The orchestration must: stamp the shutdown origin at
-    CANCELLING, force-cancel at FORCING (the escalation probe declines —
+    CANCELLING, force-cancel at FORCING (the escalation probe declines -
     these rows carry no operator cancel), and RELEASE each at RELEASING via
     ``mark_interrupted`` with the remaining termination budget as the hold.
     ``mark_abandoned`` is the operator ladder's terminal and has no work
@@ -225,14 +225,14 @@ async def test_phase_ordering_and_backend_calls(monkeypatch: pytest.MonkeyPatch)
     # The probe reads each row once at FORCING; neither matched (no
     # operator cancel in flight), so nothing is escalated to phase 2.
     assert backend.write_cancel_escalation.call_count == 2
-    # Both jobs are released back to the fleet at RELEASING — the shutdown
+    # Both jobs are released back to the fleet at RELEASING - the shutdown
     # never terminalises them.
     assert backend.mark_interrupted.call_count == 2
     # The exit tail the hold must cover past the deadline itself: the
     # watchdog checks the deadline once per dump interval and then dumps
     # stacks + flushes metrics (bounded) before os._exit, so a hold ending
     # at the bare deadline leaves the row claimable while the dying process
-    # can still touch it (#232).
+    # can still touch it.
     expected_tail = _watchdog_exit_tail(settings)
     assert expected_tail == pytest.approx(
         settings.watchdog_dump_interval + _METRICS_FLUSH_TIMEOUT_SECS + 1.0
@@ -259,7 +259,7 @@ async def test_consumers_are_stopped_before_claimed_work_is_handed_back(
     The hand-back is a single statement over the rows this worker currently
     holds. If the producer were still claiming while it ran, a row claimed a
     moment later would be missed by the sweep and left running and locked to a
-    worker that is exiting — stranded until its lock lease expires, minutes of
+    worker that is exiting - stranded until its lock lease expires, minutes of
     dead latency on a job nobody is running.
 
     Stopping dispatch first closes that window: after the stop event, no new
@@ -321,7 +321,7 @@ async def test_consumers_are_stopped_before_claimed_work_is_handed_back(
     assert producer_stopped_at_drain == [True]
     assert observed_phase == [ShutdownPhase.DRAINING], (
         "the draining phase marker must already be readable when the "
-        "hand-back runs — health endpoints and consumer loops read it to "
+        "hand-back runs - health endpoints and consumer loops read it to "
         f"decide they are draining. Observed: {observed_phase!r}"
     )
 
@@ -431,7 +431,7 @@ async def test_forcing_failure_isolation(monkeypatch: pytest.MonkeyPatch) -> Non
     """Single PG write failure isolates that job; others proceed.
 
     The job whose escalation write failed is still force-cancelled locally
-    (#233): the row-side probe failing must not keep the process-side
+: the row-side probe failing must not keep the process-side
     ``task.cancel()`` from being delivered: a cancellable actor that never
     gets the cancel runs untouched into RELEASING and is released-with-hold
     while still alive. Its registry phase advances to FORCED like every
@@ -480,16 +480,16 @@ async def test_forcing_failure_isolation(monkeypatch: pytest.MonkeyPatch) -> Non
 
     assert job1.cancel_phase == CancelPhase.FORCED, (
         "a failed escalation write must not keep the local force-cancel "
-        "from advancing the entry — the process-side half of FORCING is "
-        "delivered regardless of the row-side probe's outcome (#233)"
+        "from advancing the entry - the process-side half of FORCING is "
+        "delivered regardless of the row-side probe's outcome"
     )
     job1_task = cast(
         MagicMock, job1.task
     )  # Why: _make_fake_active_job registered a MagicMock task; the dataclass field is typed asyncio.Task, so the mock's call record needs the cast.
     assert job1_task.cancel.called, (
         "the entry whose escalation write failed must still have its task "
-        "cancelled — skipping it let a cancellable actor run into RELEASING "
-        "untouched (#233)"
+        "cancelled - skipping it let a cancellable actor run into RELEASING "
+        "untouched"
     )
     assert job2.cancel_phase == CancelPhase.FORCED
     assert job3.cancel_phase == CancelPhase.FORCED
@@ -505,8 +505,8 @@ async def test_forcing_write_failure_still_cancels_a_real_task(
     The isolation test above pins the registry fields with a MagicMock
     task; this one pins the actual delivery: a cancellable asyncio task
     registered in-flight must END cancelled when FORCING's row-side write
-    raises, not keep running into RELEASING. That is the overlap #233
-    names: an actor alive past both graces because the one cancel that
+    raises, not keep running into RELEASING. That is the overlap the
+    doctrine names: an actor alive past both graces because the one cancel that
     could reach it was skipped after a PG blip.
     """
     import taskq.worker.shutdown as shutdown_mod
@@ -560,9 +560,9 @@ async def test_forcing_write_failure_still_cancels_a_real_task(
 
     assert actor_cancelled.is_set(), (
         "the forced cancel must be delivered to a cancellable actor even "
-        "when the escalation PG write fails — the actor running into "
+        "when the escalation PG write fails - the actor running into "
         "RELEASING untouched is the double-execution overlap the shutdown "
-        "contract forbids (#233)"
+        "contract forbids"
     )
     with contextlib.suppress(asyncio.CancelledError):
         await actor_task
@@ -572,7 +572,7 @@ async def test_forcing_write_failure_still_cancels_a_real_task(
 
 
 async def test_release_hold_pads_the_remaining_budget_by_the_exit_tail() -> None:
-    """The RELEASING hold ends past the deadline, not at it (#232).
+    """The RELEASING hold ends past the deadline, not at it.
 
     The watchdog checks the deadline once per ``watchdog_dump_interval``
     sleep and then dumps stacks and joins the bounded metrics flush before
@@ -635,7 +635,7 @@ async def test_releasing_failure_isolation(monkeypatch: pytest.MonkeyPatch) -> N
     """RELEASING variant. One failed release write isolates that job.
 
     A PG error releasing job1 must not stop job2 and job3 from being
-    handed back to the fleet — the phase releases what it can and lets the
+    handed back to the fleet - the phase releases what it can and lets the
     lease-expiry sweep backstop the one whose write failed.
     """
     import taskq.worker.shutdown as shutdown_mod
@@ -726,7 +726,7 @@ async def test_race_winner_not_released(monkeypatch: pytest.MonkeyPatch) -> None
     """A job that deregisters mid-CANCELLING is not released either.
 
     The job's own consumer terminalised it (that is what deregistering
-    means), so by RELEASING there is no entry — the phase must not write
+    means), so by RELEASING there is no entry - the phase must not write
     against a row it can no longer see. Neither the release nor the
     operator ladder's terminal write may fire.
     """
@@ -1027,7 +1027,7 @@ async def test_leader_conn_os_error_suppressed(monkeypatch: pytest.MonkeyPatch) 
 
 
 async def test_leader_conn_none_skips_close(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No leader_conn — close is skipped without error."""
+    """No leader_conn - close is skipped without error."""
     import taskq.worker.shutdown as shutdown_mod
 
     registry = FakeActiveJobRegistry([])
@@ -1060,7 +1060,7 @@ async def test_orchestrate_shutdown_terminates_hung_leader_close(
     pool = MagicMock()
     leader_conn = MagicMock(spec=asyncpg.Connection)
 
-    hang_forever = asyncio.Event()  # never set — close() blocks indefinitely
+    hang_forever = asyncio.Event()  # never set - close() blocks indefinitely
 
     async def _hung_close() -> None:
         await hang_forever.wait()
@@ -1185,7 +1185,7 @@ async def test_orchestrate_shutdown_sets_shutdown_event_before_leader_close(
 
     The conn records shutdown_event.is_set() at the moment its close() is
     entered; on unfixed code the event fires only in the finally, leaving
-    the election loop live for the whole close park — the swap window.
+    the election loop live for the whole close park - the swap window.
     """
     import taskq.worker.shutdown as shutdown_mod
 
@@ -1271,7 +1271,7 @@ class _GatedLeaderConn:
     """Fake leader conn whose close() blocks on a gate.
 
     Counts close() entries and the maximum number of concurrently in-flight
-    closes — the double-close oracle. terminate() opens the gate, aborting
+    closes - the double-close oracle. terminate() opens the gate, aborting
     any in-flight close the way a real conn abort unblocks _protocol.close().
     """
 
@@ -1321,7 +1321,7 @@ async def test_orchestrate_shutdown_does_not_double_close_leader_conn(
     _bootstrap wiring: ``await shutdown_event.wait()`` runs INSIDE
     ``async with open_worker_deps(...)``; the orchestrator task is awaited
     only AFTER the context exits. The early ``shutdown_event.set()`` (round-2
-    fix — stops the election loop before the close park) therefore releases
+    fix - stops the election loop before the close park) therefore releases
     the exit-stack unwind CONCURRENTLY with the parked close, and the
     guard's ``_close_leader_conn`` enters a second ``close_conn_bounded`` on
     the same conn unless ``deps.leader_conn`` is nulled BEFORE the park. On
@@ -1356,7 +1356,7 @@ async def test_orchestrate_shutdown_does_not_double_close_leader_conn(
     shut_event = asyncio.Event()
 
     # Why the outer timeout: on the race the second close parks on the same
-    # gate — the fail-fast bound keeps a broken state from hanging the suite;
+    # gate - the fail-fast bound keeps a broken state from hanging the suite;
     # the shrunk CLOSE_TIMEOUT_SECS resolves the parked close(s) in ~0.05s.
     async with asyncio.timeout(5):
         async with open_worker_deps(settings, connections=conns) as deps:
@@ -1372,7 +1372,7 @@ async def test_orchestrate_shutdown_does_not_double_close_leader_conn(
                     backend=backend,
                 )
             )
-            # Wait until the orchestrator is parked in its bounded close —
+            # Wait until the orchestrator is parked in its bounded close -
             # shutdown_event is already set by then, and leaving the
             # with-body below releases the exit-stack unwind.
             await leader.close_entered.wait()
@@ -1501,8 +1501,8 @@ async def test_adversarial_actor_invariant(
 ) -> None:
     """Every job is either deregistered by its own consumer or released.
 
-    The invariant a deploy owes the fleet: whatever the actor did —
-    unwound cooperatively, ignored the cancel, or swallowed it — the
+    The invariant a deploy owes the fleet: whatever the actor did -
+    unwound cooperatively, ignored the cancel, or swallowed it - the
     shutdown accounts for the row exactly once. Jobs still registered at
     RELEASING are interrupted (released back to the fleet with the attempt
     refunded); jobs that deregistered mid-flight are their consumers' own
@@ -1568,7 +1568,7 @@ async def test_adversarial_actor_invariant(
     assert covered == total_ids, (
         "every in-flight job must be accounted for exactly once at shutdown: "
         f"deregistered by its consumer {sorted(deregs)} or released "
-        f"{sorted(released_ids)} — uncovered: {sorted(total_ids - covered)}"
+        f"{sorted(released_ids)} - uncovered: {sorted(total_ids - covered)}"
     )
 
     for job_id, behaviour in setups:

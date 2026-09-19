@@ -581,7 +581,7 @@ class TestSpanExceptionSafety:
         assert handle.job_id is not None
 
 
-# ── Property test — every enqueue produces exactly one PRODUCER span ──
+# ── Property test - every enqueue produces exactly one PRODUCER span ──
 
 
 class TestProperty:

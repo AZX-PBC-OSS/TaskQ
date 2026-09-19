@@ -1,9 +1,9 @@
 """Tests for the SIGHUP reload coordinator loop (taskq.worker._bootstrap).
 
-The coordinator is the only production caller of reload_credentials — it
+The coordinator is the only production caller of reload_credentials - it
 watches deps.reload_event (set by the SIGHUP handler) and an optional
 interval timer, invokes the reload, refreshes the DI LOOP-scope pool,
-and handles failure/shutdown semantics. Uses fakes — no real
+and handles failure/shutdown semantics. Uses fakes - no real
 Postgres/Redis required.
 """
 
@@ -51,7 +51,7 @@ class _FakePool:
         self.name = name
         self.closed = False
         # Why an event alongside the flag: the flag is the assertion
-        # surface; the event is the WAIT surface — the coordinator's
+        # surface; the event is the WAIT surface - the coordinator's
         # reload closes the OLD pool on a background drain task spawned
         # strictly AFTER the swap, so awaiting this event is a bounded
         # wait that cannot observe a half-applied reload (and never a
@@ -183,7 +183,7 @@ async def test_coordinator_reloads_exactly_once_per_trigger(
 
         def _on_reload_call(*_args: object, **_kwargs: object) -> tuple[list[str], list[str]]:
             # Why a side_effect: the observable is "the coordinator made
-            # its Nth reload_credentials call" — the event fires at the
+            # its Nth reload_credentials call" - the event fires at the
             # exact point that flips, so the waits below never race the
             # coordinator's loop under load. Accepts (and ignores) the
             # call args mock passes through, and returns the mock's
@@ -205,7 +205,7 @@ async def test_coordinator_reloads_exactly_once_per_trigger(
         # Exact-once is safe to assert here without further settling: the
         # event fires inside the coordinator's own step, and a buggy
         # back-to-back second call would run in that same continuation
-        # (before the coordinator suspends) — i.e. before this test task
+        # (before the coordinator suspends) - i.e. before this test task
         # can resume.
         assert mock_reload.await_count == 1
 
@@ -219,7 +219,7 @@ async def test_coordinator_reloads_exactly_once_per_trigger(
 async def test_coordinator_honors_sighup_arriving_during_failed_reload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A SIGHUP arriving while a reload is FAILING must not be discarded —
+    """A SIGHUP arriving while a reload is FAILING must not be discarded -
     the operator's retry signal is the only recovery path when credentials
     are expiring."""
     settings = _make_settings()
@@ -239,7 +239,7 @@ async def test_coordinator_honors_sighup_arriving_during_failed_reload(
                 raise RuntimeError("simulated reload failure")
             # Why an event at the point reached: "the coordinator honored
             # the mid-failure SIGHUP with a follow-up reload" is exactly
-            # "the second call started" — awaiting it is bounded and never
+            # "the second call started" - awaiting it is bounded and never
             # a fixed sleep racing the coordinator under load.
             second_call_seen.set()
             return ([], [])
@@ -260,7 +260,7 @@ async def test_coordinator_honors_sighup_arriving_during_failed_reload(
 async def test_coordinator_skips_reload_during_shutdown_orchestration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A SIGHUP arriving while the worker is draining must be a no-op —
+    """A SIGHUP arriving while the worker is draining must be a no-op -
     reloading would churn pools and let the leader watchdog re-acquire
     leadership mid-shutdown."""
     settings = _make_settings()
@@ -286,7 +286,7 @@ async def test_coordinator_skips_reload_during_shutdown_orchestration(
 async def test_coordinator_interval_triggers_reload_without_signal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With reload_interval set, reloads fire on the timer alone — the
+    """With reload_interval set, reloads fire on the timer alone - the
     rotation path for Windows and for hands-off scheduled rotation."""
     settings = _make_settings(TASKQ_RELOAD_INTERVAL="0.05")
     async with open_worker_deps(settings, connections=_basic_conns()) as deps:
@@ -295,7 +295,7 @@ async def test_coordinator_interval_triggers_reload_without_signal(
 
         def _on_reload_call(*_args: object, **_kwargs: object) -> tuple[list[str], list[str]]:
             # Why a side_effect: "the interval timer fired a reload" is
-            # exactly "reload_credentials was called" — the event fires at
+            # exactly "reload_credentials was called" - the event fires at
             # that point, so the wait below never races the timer or the
             # coordinator's loop under load. Accepts (and ignores) the
             # call args mock passes through, and returns the mock's
@@ -420,7 +420,7 @@ async def _bootstrap_loop_scope_with_pool(pool: object) -> LoopScope:
 
 async def test_coordinator_refreshes_di_pool_after_worker_reload() -> None:
     """After a successful worker-pool reload, DI consumers must resolve
-    the NEW pool — otherwise actors injected with db: asyncpg.Pool hold a
+    the NEW pool - otherwise actors injected with db: asyncpg.Pool hold a
     closed pool 5s after SIGHUP."""
     settings = _make_settings()
     old_worker = _FakePool("old-worker")
@@ -436,7 +436,7 @@ async def test_coordinator_refreshes_di_pool_after_worker_reload() -> None:
         deps.reload_event.set()
         # The old pool's background drain is spawned strictly AFTER the
         # worker-pool swap, and the DI cache refresh happens before the
-        # coordinator suspends again — so the old pool's closed event is a
+        # coordinator suspends again - so the old pool's closed event is a
         # bounded wait that cannot resume before both have landed.
         await wait_for(old_worker.closed_event, timeout=5.0)
         assert loop_scope.get(asyncpg.Pool) is cast(object, new_worker)

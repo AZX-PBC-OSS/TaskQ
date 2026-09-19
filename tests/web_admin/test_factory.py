@@ -263,9 +263,9 @@ def test_no_worker_import() -> None:
     """The admin package must not couple to ``taskq.worker`` at import time.
 
     Parsed, not grepped. The previous substring check could not tell a
-    module-level import from one inside a handler body, so ``ops.py`` — which
+    module-level import from one inside a handler body, so ``ops.py`` - which
     legitimately imports ``WorkerSettings`` lazily inside ``rate_limits_page``
-    — had to be excluded outright, losing the guarantee for the one module
+    - had to be excluded outright, losing the guarantee for the one module
     that actually imports from taskq.worker. It is checked here like every
     other module.
     """
@@ -382,7 +382,7 @@ def test_time_ago_naive_datetime_adds_utc() -> None:
 
 
 def test_time_ago_renders_a_non_timestamp_verbatim() -> None:
-    """The filter reads a timestamp. Anything else — a number included — is
+    """The filter reads a timestamp. Anything else - a number included - is
     stringified rather than reinterpreted: no template passes a number, and
     "an int means seconds of age" is not readable from the filter's name."""
     from taskq.web.admin._factory import _time_ago

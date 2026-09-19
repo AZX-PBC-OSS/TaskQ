@@ -2,7 +2,7 @@
 
 Covers success, not-found, UndefinedTableError, and validation-error branches
 for schedule enable/disable/skip/run, rate-limit reset, and the rate-limits /
-reservations pages — using a scripted asyncpg pool/connection stub so we can
+reservations pages - using a scripted asyncpg pool/connection stub so we can
 control fetch/fetchrow/execute results and force errors on demand.
 """
 
@@ -253,7 +253,7 @@ class _RecordingConn(_ScriptedConnection):
 
 def test_schedule_skip_uses_the_rows_dst_strategy(monkeypatch: pytest.MonkeyPatch) -> None:
     """An 'allof' schedule's skip target must be computed with the row's
-    stored dst_strategy — the same defect class the cron loop had
+    stored dst_strategy - the same defect class the cron loop had
     (7d7e01c): defaulting to 'skip' whatever the schedule stores makes
     the admin-computed target diverge from what the cron loop itself
     computes for allof/firstof at a DST overlap."""
@@ -293,7 +293,7 @@ def test_schedule_skip_uses_the_rows_dst_strategy(monkeypatch: pytest.MonkeyPatc
     assert resp.status_code == 303  # pyright: ignore[reportUnknownMemberType]
     # The stored strategy was forwarded, not defaulted to 'skip'.
     assert compute_calls and set(compute_calls) == {"allof"}, compute_calls
-    # The fetch must list the column — a stub row always carries the key,
+    # The fetch must list the column - a stub row always carries the key,
     # but only the SELECT makes real Postgres provide it.
     assert "dst_strategy" in conn.fetched_query, conn.fetched_query
     # And the written target is the row-strategy computation's result.
@@ -449,11 +449,11 @@ def test_rate_limit_reset_succeeds_when_enabled(monkeypatch: pytest.MonkeyPatch)
 def test_rate_limit_reset_pg_only_bucket_is_not_a_500(monkeypatch: pytest.MonkeyPatch) -> None:
     """A keyed bucket a worker published to PG renders on the rate-limits
     page (with its reset button) even in a standalone admin process whose
-    registry is empty — clicking reset on such a row must answer with a
+    registry is empty - clicking reset on such a row must answer with a
     clean, explanatory error, not the registry's raw KeyError as a 500."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     monkeypatch.setenv("TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET", "true")
-    # The registry stays EMPTY — the bucket exists only as a PG row.
+    # The registry stays EMPTY - the bucket exists only as a PG row.
     monkeypatch.setattr(rl_registry, "_rate_limits", {})
     conn = _ScriptedConnection()
     client = _make_app(_ScriptedPool(conn))
@@ -468,7 +468,7 @@ def test_rate_limit_reset_timeout_is_a_503_with_retry_after(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A reset whose backend round trip outlives admin_acquire_timeout
-    answers 503 with Retry-After — the same shape the pool checkout uses —
+    answers 503 with Retry-After - the same shape the pool checkout uses -
     never a parked request and never a raw TimeoutError 500."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     monkeypatch.setenv("TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET", "true")
@@ -623,7 +623,7 @@ def test_reservations_page_excludes_foreign_schema_reservations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A registry reservation declared for a DIFFERENT schema is neither
-    displayed nor passed to sync_slots — the process-global registry may
+    displayed nor passed to sync_slots - the process-global registry may
     carry foreign-schema reservations (the worker bootstrap filters for
     the same reason), and syncing one here would insert/delete rows in the
     local schema's reservation_slots table for a name it does not own."""
@@ -674,7 +674,7 @@ def test_schedules_page_not_installed(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_schedule_skip_400_when_no_future_fire_time(monkeypatch: pytest.MonkeyPatch) -> None:
     """The for/else 400 branch fires when compute_next_fire_after never
-    advances past the database clock's now — and the skip UPDATE never runs
+    advances past the database clock's now - and the skip UPDATE never runs
     (the 400 is raised before the write)."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     stale = datetime(2000, 1, 1, tzinfo=UTC)
@@ -754,7 +754,7 @@ async def test_fetch_redis_rl_state_unknown_kind_raises_value_error() -> None:
     The validation runs while the pipeline's commands are built, before
     any Redis round trip, and outside the fetch's degrade-to-None guard:
     that guard exists for the transport being down, and an unknown kind
-    is a caller bug (the registry only emits the three kinds) —
+    is a caller bug (the registry only emits the three kinds) -
     swallowing it would convert a loud validation failure into a silent
     whole-page degrade. A mis-kind bucket must not masquerade as a
     bucket with no state either.

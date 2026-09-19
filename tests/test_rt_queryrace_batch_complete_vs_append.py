@@ -18,10 +18,10 @@ Hunted interleavings, worked out on paper from ``_batch_sql.py`` first:
    "a complete batch has no non-terminal members" is violated, and every
    ``wait_for_batch``-style reader that sees 'complete' stops waiting
    while M2 is still pending.  ``complete_batch``'s docstring promises it
-   "can delay completion but never complete prematurely" — this is
+   "can delay completion but never complete prematurely" - this is
    precisely a premature completion, and nothing documents it.
 
-2. Concurrent member-terminal vs threshold-abort (GREEN pin — the
+2. Concurrent member-terminal vs threshold-abort (GREEN pin - the
    integration-lane race ``tests/test_batch_complete_guard.py``'s
    docstring says "lives in the integration lane" but no test occupies).
    Both hook transactions serialize on the batches-row lock; for a
@@ -29,7 +29,7 @@ Hunted interleavings, worked out on paper from ``_batch_sql.py`` first:
    commit order ends 'aborted': the succeed path's complete is either
    vetoed by the still-running failing member (uncommitted) or no-ops on
    the already-'aborted' row, and the fail path's abort only no-ops if the
-   row already went terminal — which the same fail-path transaction is the
+   row already went terminal - which the same fail-path transaction is the
    last writer of.  One terminal status, abort wins, both members terminal.
 
 The ``increment_batch_failures`` count-vs-write race (counts CTE snapshot
@@ -128,7 +128,7 @@ async def test_complete_batch_lands_while_member_append_is_uncommitted(
 ) -> None:
     """RED: the complete CAS cannot see an in-flight member INSERT, so it
     completes the batch; once the append commits, a 'complete' batch holds a
-    pending member — the premature completion complete_batch's docstring
+    pending member - the premature completion complete_batch's docstring
     promises can never happen."""
     schema = f"tqr_{new_base62()}".lower()
     stack, deps, backend = await _open_pg_backend(pg_dsn, schema_name=schema)
@@ -177,13 +177,13 @@ async def test_complete_batch_lands_while_member_append_is_uncommitted(
             non_terminal = await _non_terminal_members(conn_w, schema, bid)
             assert not (batch.status == "complete" and non_terminal > 0), (
                 f"CONTRACT: a batch that reached status='complete' must have NO "
-                f"non-terminal members — complete_batch's docstring promises it 'can "
+                f"non-terminal members - complete_batch's docstring promises it 'can "
                 f"delay completion but never complete prematurely', and every "
                 f"wait_for_batch-style reader treats 'complete' as done. Violated: "
                 f"status={batch.status!r} with {non_terminal} non-terminal member(s). "
                 f"The NOT EXISTS guard arbitrated in the completer's READ COMMITTED "
                 f"snapshot, which cannot see the appender's still-uncommitted member "
-                f"INSERT (enqueue_batch on a caller connection — the streaming chunk "
+                f"INSERT (enqueue_batch on a caller connection - the streaming chunk "
                 f"path); the append then committed into an already-terminal batch."
             )
         finally:
@@ -197,7 +197,7 @@ async def test_concurrent_member_terminal_vs_threshold_abort_ends_aborted_once(
     pg_dsn: str,
 ) -> None:
     """GREEN pin: the abort-vs-complete CAS under two genuinely concurrent
-    member-terminal hook transactions — exactly one terminal batch status,
+    member-terminal hook transactions - exactly one terminal batch status,
     abort wins, no member left non-terminal."""
     schema = f"tqr_{new_base62()}".lower()
     stack, deps, backend = await _open_pg_backend(pg_dsn, schema_name=schema)
@@ -272,14 +272,14 @@ async def test_concurrent_member_terminal_vs_threshold_abort_ends_aborted_once(
             assert batch is not None, "fixture broken: batch row vanished"
             assert batch.status == "aborted", (
                 f"CONTRACT: with failure_threshold=1 reached by a failing member, the "
-                f"abort-vs-complete CAS must end 'aborted' under ANY commit order — the "
+                f"abort-vs-complete CAS must end 'aborted' under ANY commit order - the "
                 f"succeed path's complete is vetoed by the uncommitted failing member or "
                 f"no-ops on the aborted row, and 'complete' would mean a threshold abort "
                 f"was lost by the CAS. Got {batch.status!r}."
             )
             assert batch.completed_at is not None, "a terminal batch must carry completed_at"
             assert await _non_terminal_members(conn, schema, bid) == 0, (
-                "CONTRACT: the aborted batch must leave every member terminal — abort "
+                "CONTRACT: the aborted batch must leave every member terminal - abort "
                 "cancels pending/scheduled members and the two racing terminal writes "
                 "both landed."
             )

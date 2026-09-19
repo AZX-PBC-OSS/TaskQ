@@ -4,7 +4,7 @@ The command's own output names queue mismatches as "assignment drift" (the
 two routing halves disagree: boot adopts the stored queue and cron fires
 follow it while producers enqueue by their own literal) and metadata
 mismatches as startup-blocking (the next worker boot raises
-ActorConfigDriftList) — exactly the states a CI gate exists to catch. A
+ActorConfigDriftList) - exactly the states a CI gate exists to catch. A
 diff that detects drift, prints that it fails the gate, and then exits 0
 reports failure as success to the shell; the exit code is the contract a
 CI pipeline can gate on.
@@ -56,8 +56,8 @@ def test_diff_exits_nonzero_on_queue_assignment_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A stored row whose queue disagrees with the code literal leaves the
-    fleet's two routing halves in disagreement — cron fires follow the
-    stored queue, producers follow their literal — so the diff must not
+    fleet's two routing halves in disagreement - cron fires follow the
+    stored queue, producers follow their literal - so the diff must not
     report success even though boot itself adopts the stored assignment."""
     drifted = ActorConfigRow(
         actor="drift_actor",
@@ -77,7 +77,7 @@ def test_diff_exits_nonzero_on_queue_assignment_drift(
 
 
 def test_diff_exits_zero_when_stored_rows_match_code(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No drift — the command genuinely has nothing to report — exits 0."""
+    """No drift - the command genuinely has nothing to report - exits 0."""
     matching = ActorConfigRow(
         actor="drift_actor",
         max_concurrent=None,
@@ -101,7 +101,7 @@ def test_diff_exits_nonzero_when_registry_actor_has_no_stored_row(
     """A registry actor with no stored row is blocked at dispatch, not boot:
     the next worker startup seeds the row and boots fine, but until then the
     dispatch capacity gate never selects the actor. Blocking dispatch is
-    blocking — the diff must fail the run."""
+    blocking - the diff must fail the run."""
     _patch_db(monkeypatch, [])
 
     result = runner.invoke(app, ["actor-config", "diff", "--actors", _REGISTRY_PATH])
@@ -137,7 +137,7 @@ def test_diff_exits_nonzero_on_metadata_only_drift(
 def test_diff_exits_zero_on_capacity_only_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A stored capacity override is operator-owned by design — stored wins,
+    """A stored capacity override is operator-owned by design - stored wins,
     startup logs it at info and boots. Reportable drift, not blocking drift:
     a CI gate that fired on every legitimate operator override would be a
     failure-that-looks-like-a-failure until it got ignored."""
@@ -154,7 +154,7 @@ def test_diff_exits_zero_on_capacity_only_drift(
 
     result = runner.invoke(app, ["actor-config", "diff", "--actors", _REGISTRY_PATH])
 
-    # The drift must be visibly reported — exit 0 is only meaningful if
+    # The drift must be visibly reported - exit 0 is only meaningful if
     # the command actually compared the stored row (otherwise the pass
     # is vacuous).
     assert "max_concurrent" in result.output
@@ -166,7 +166,7 @@ def test_diff_exits_zero_on_capacity_only_drift(
 def test_diff_exits_zero_for_leftover_stored_row(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A stored row whose actor is no longer registered is stale but inert —
+    """A stored row whose actor is no longer registered is stale but inert -
     it only serves already-queued jobs and blocks neither dispatch nor
     boot, so it must not fail the gate."""
     matching = ActorConfigRow(
