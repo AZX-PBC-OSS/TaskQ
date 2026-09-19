@@ -283,7 +283,12 @@ class TestPollFallback:
         deps.dispatcher_pool = Mock()
         deps.notify_conn = Mock()
         # The producer's availability subtracts active jobs (#229).
-        deps.active_jobs = Mock(count=lambda: 0, held_ids=lambda: [], mark_claimed=lambda jid: None, resolve_claim=lambda jid: None)
+        deps.active_jobs = Mock(
+            count=lambda: 0,
+            held_ids=lambda: [],
+            mark_claimed=lambda jid: None,
+            resolve_claim=lambda jid: None,
+        )
 
         mock_clock = Mock(spec=Clock)
         mock_clock.now.return_value = NotImplemented
@@ -346,7 +351,12 @@ class TestPollFallback:
         deps.dispatcher_pool = Mock()
         deps.notify_conn = Mock()
         # The producer's availability subtracts active jobs (#229).
-        deps.active_jobs = Mock(count=lambda: 0, held_ids=lambda: [], mark_claimed=lambda jid: None, resolve_claim=lambda jid: None)
+        deps.active_jobs = Mock(
+            count=lambda: 0,
+            held_ids=lambda: [],
+            mark_claimed=lambda jid: None,
+            resolve_claim=lambda jid: None,
+        )
 
         mock_clock = Mock(spec=Clock)
         mock_clock.now.return_value = NotImplemented
@@ -415,7 +425,13 @@ def _drain_capable(deps: Mock) -> None:
     """Give a Mock deps the reads the producer makes: the exit
     hand-back's two (``active_jobs`` / ``dispatcher_pool``) and the
     availability accounting's ``active_jobs.count()`` (#229)."""
-    deps.active_jobs = Mock(all=list, count=lambda: 0, held_ids=lambda: [], mark_claimed=lambda jid: None, resolve_claim=lambda jid: None)
+    deps.active_jobs = Mock(
+        all=list,
+        count=lambda: 0,
+        held_ids=lambda: [],
+        mark_claimed=lambda jid: None,
+        resolve_claim=lambda jid: None,
+    )
     deps.dispatcher_pool = _NoopDrainPool()
 
 
@@ -521,7 +537,12 @@ class TestEagerRecheck:
         deps.dispatcher_pool = Mock()
         deps.notify_conn = Mock()
         # The producer's availability subtracts active jobs (#229).
-        deps.active_jobs = Mock(count=lambda: 0, held_ids=lambda: [], mark_claimed=lambda jid: None, resolve_claim=lambda jid: None)
+        deps.active_jobs = Mock(
+            count=lambda: 0,
+            held_ids=lambda: [],
+            mark_claimed=lambda jid: None,
+            resolve_claim=lambda jid: None,
+        )
 
         mock_clock = Mock(spec=Clock)
         mock_clock.now.return_value = NotImplemented
@@ -597,7 +618,12 @@ class TestNotifyDisabled:
         deps.dispatcher_pool = Mock()
         deps.notify_conn = Mock()
         # The producer's availability subtracts active jobs (#229).
-        deps.active_jobs = Mock(count=lambda: 0, held_ids=lambda: [], mark_claimed=lambda jid: None, resolve_claim=lambda jid: None)
+        deps.active_jobs = Mock(
+            count=lambda: 0,
+            held_ids=lambda: [],
+            mark_claimed=lambda jid: None,
+            resolve_claim=lambda jid: None,
+        )
 
         mock_clock = Mock(spec=Clock)
         mock_clock.now.return_value = NotImplemented
@@ -746,7 +772,12 @@ def mock_deps() -> tuple[Mock, PostgresBackend]:
     deps.dispatcher_pool = Mock()
     deps.notify_conn = Mock()
     # The producer's availability subtracts active jobs (#229).
-    deps.active_jobs = Mock(count=lambda: 0, held_ids=lambda: [], mark_claimed=lambda jid: None, resolve_claim=lambda jid: None)
+    deps.active_jobs = Mock(
+        count=lambda: 0,
+        held_ids=lambda: [],
+        mark_claimed=lambda jid: None,
+        resolve_claim=lambda jid: None,
+    )
 
     mock_clock = Mock(spec=Clock)
     mock_clock.now.return_value = NotImplemented

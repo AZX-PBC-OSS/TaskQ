@@ -42,7 +42,7 @@ import structlog
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq._shield import shield_with_retrieval
-from taskq.backend._protocol import Backend, CancelPhase
+from taskq.backend._protocol import Backend, CancelPhase, JobId
 from taskq.backend._sql import (
     parse_rowcount,  # pyright: ignore[reportPrivateUsage]  # Why: parse_rowcount is the canonical command-tag parser; used identically in worker/cancel.py.
 )
@@ -168,7 +168,7 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
     # held_ids() covers BOTH maps: registered consumers (executing now)
     # and claim intents (taken off local_queue, not yet registered, the
     # window the registry's comment documents).
-    active_ids: list[UUID] = deps.active_jobs.held_ids()
+    active_ids: list[JobId] = deps.active_jobs.held_ids()
     # The attempt refund: the claim stamped attempt + 1 for an execution
     # this hand-back says never happened, so the increment goes back ,
     # the same non-consuming-release idiom the snooze/unavailable and
@@ -199,7 +199,7 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
     # The exclusion clause is only bound when there is something to
     # exclude: an empty registry (the common drained-worker case) keeps
     # the single-parameter statement shape the helper has always issued.
-    params: list[UUID | list[UUID]] = [worker_id]
+    params: list[UUID | list[JobId]] = [worker_id]
     if active_ids:
         sql += " AND id <> ALL($2::uuid[])"
         params.append(active_ids)

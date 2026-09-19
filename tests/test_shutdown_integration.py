@@ -429,14 +429,14 @@ async def test_drain_refuses_rows_carrying_a_cancel_phase(
         await create_worker(conn, schema, worker_id)
         for jid in job_ids:
             await conn.execute(
-                f"UPDATE \"{schema}\".jobs SET status='running', locked_by_worker=$1, "
-                "started_at=now(), attempt = 2 WHERE id=$2 AND status='pending'",  # Why: schema validated by WorkerSettings/conftest; asyncpg has no parameter binding for identifiers.
+                f"UPDATE \"{schema}\".jobs SET status='running', locked_by_worker=$1, "  # noqa: S608  # Why: schema validated by WorkerSettings/conftest; asyncpg has no parameter binding for identifiers.
+                "started_at=now(), attempt = 2 WHERE id=$2 AND status='pending'",
                 worker_id,
                 jid,
             )
         # The operator cancel lands on the row the drain must refuse.
         await conn.execute(
-            f'UPDATE "{schema}".jobs SET cancel_phase = 1, cancel_requested_at = now() '
+            f'UPDATE "{schema}".jobs SET cancel_phase = 1, cancel_requested_at = now() '  # noqa: S608  # Why: schema validated by WorkerSettings/conftest; asyncpg has no parameter binding for identifiers.
             f"WHERE id = $1",
             job_ids[0],
         )
