@@ -34,7 +34,7 @@ the actor's payload and result types end-to-end.
 Supports both plain and parameterised forms:
 
 ```python
-# Plain — all options take their defaults.
+# Plain: all options take their defaults.
 @actor
 async def send_email(payload: EmailPayload) -> EmailResult: ...
 
@@ -50,24 +50,24 @@ async def process_order(payload: OrderPayload) -> OrderResult: ...
 |---|---|---|---|
 | `name` | `str \| None` | `fn.__qualname__` | Actor name stored in the `actor_config` table and on every job row. Override when the qualified name would be unstable across refactors. |
 | `queue` | `str` | `"default"` | Queue this actor is dispatched on. Must match `[A-Za-z0-9_][A-Za-z0-9_.-]*` — note `:` is excluded, because it separates segments in the `taskq:global:queue:` concurrency-cap namespace. Can be overridden per-enqueue. |
-| `retry` | `RetryPolicy \| None` | `RetryPolicy()` | Retry policy — see [Retry policy](#retry-policy). `None` resolves to the default `RetryPolicy()`. |
-| `result_ttl` | `timedelta \| None` | `None` | How long the result JSONB is retained after a job succeeds. `None` means retain indefinitely. Only the *seed* value: once a worker has synced this actor once, the stored `actor_config.result_ttl` is authoritative and this literal is ignored — see [ActorConfig sync](workers.md#actorconfig-sync). |
-| `singleton` | `bool` | `False` | Enforce at most one active job of this actor fleet-wide — see [Singleton actors](#singleton-actors). |
-| `max_concurrent` | `int \| None` | `None` | Fleet-wide concurrency cap, **best-effort — not a hard cap**. `None` = unbounded. `0` = drain mode (no jobs dispatched). May exceed the configured value by up to `(num_active_producers - 1) * max_concurrent`; use a reservation for strict enforcement — see [Choosing a concurrency control](#choosing-a-concurrency-control). Only the *seed* value: once a worker has synced this actor once, the stored `actor_config.max_concurrent` is authoritative and this literal is ignored — tune it live with `taskq actor-config set`, see [ActorConfig sync](workers.md#actorconfig-sync). |
-| `max_pending` | `int \| None` | `None` | Queue-depth backpressure cap — see [`max_pending` backpressure](#max_pending-backpressure). Only the *seed* value: once a worker has synced this actor once, a non-NULL stored `actor_config.max_pending` is authoritative and this literal is ignored — tune it live with `taskq actor-config set`, see [ActorConfig sync](workers.md#actorconfig-sync). |
+| `retry` | `RetryPolicy \| None` | `RetryPolicy()` | Retry policy; see [Retry policy](#retry-policy). `None` resolves to the default `RetryPolicy()`. |
+| `result_ttl` | `timedelta \| None` | `None` | How long the result JSONB is retained after a job succeeds. `None` means retain indefinitely. Only the *seed* value: once a worker has synced this actor once, the stored `actor_config.result_ttl` is authoritative and this literal is ignored; see [ActorConfig sync](workers.md#actorconfig-sync). |
+| `singleton` | `bool` | `False` | Enforce at most one active job of this actor fleet-wide; see [Singleton actors](#singleton-actors). |
+| `max_concurrent` | `int \| None` | `None` | Fleet-wide concurrency cap, **best-effort, not a hard cap**. `None` = unbounded. `0` = drain mode (no jobs dispatched). May exceed the configured value by up to `(num_active_producers - 1) * max_concurrent`; use a reservation for strict enforcement; see [Choosing a concurrency control](#choosing-a-concurrency-control). Only the *seed* value: once a worker has synced this actor once, the stored `actor_config.max_concurrent` is authoritative and this literal is ignored — tune it live with `taskq actor-config set`, see [ActorConfig sync](workers.md#actorconfig-sync). |
+| `max_pending` | `int \| None` | `None` | Queue-depth backpressure cap; see [`max_pending` backpressure](#max_pending-backpressure). Only the *seed* value: once a worker has synced this actor once, a non-NULL stored `actor_config.max_pending` is authoritative and this literal is ignored — tune it live with `taskq actor-config set`, see [ActorConfig sync](workers.md#actorconfig-sync). |
 | `metadata` | `dict[str, object] \| None` | `{}` | Arbitrary key-value metadata stored in `actor_config.metadata` (JSONB). Must be a plain `dict`; mapping proxies and frozendicts are rejected at decoration time. The key `"singleton"` is reserved by the library. |
-| `unique_for` | `timedelta \| None` | `None` | Deduplication window — see [`unique_for` deduplication](#unique_for-deduplication). |
+| `unique_for` | `timedelta \| None` | `None` | Deduplication window; see [`unique_for` deduplication](#unique_for-deduplication). |
 | `unique_states` | `tuple[JobStatus, ...]` | `("pending", "scheduled", "running", "succeeded")` | Job statuses a `unique_for` window matches. `succeeded` is included because it is the state that says the work already happened; the failure states are excluded so one failure does not suppress the identity for the rest of the window. |
-| `start_to_close` | `timedelta \| None` | `None` | Per-attempt execution timeout. Precedence (first wins): per-enqueue `start_to_close` > this actor default > `TASKQ_DEFAULT_START_TO_CLOSE`. `None` means no per-attempt timeout unless a worker-wide default is set. See [Retries — `start_to_close` vs `schedule_to_close`](retries.md#7-start_to_close-vs-schedule_to_close). |
-| `rate_limits` | `list[str] \| None` | `[]` | Named rate-limit buckets this actor consumes — see [Rate limits and reservations](#rate-limits-and-reservations). |
-| `reservations` | `list[str \| KeyedReservationRef] \| None` | `[]` | Named concurrency reservation slots this actor claims. A `KeyedReservationRef` derives per-key (session/tenant) reservation buckets from the job payload at dispatch time — see [Rate limits and reservations](#rate-limits-and-reservations). |
+| `start_to_close` | `timedelta \| None` | `None` | Per-attempt execution timeout. Precedence (first wins): per-enqueue `start_to_close` > this actor default > `TASKQ_DEFAULT_START_TO_CLOSE`. `None` means no per-attempt timeout unless a worker-wide default is set. See [Retries: `start_to_close` vs `schedule_to_close`](retries.md#7-start_to_close-vs-schedule_to_close). |
+| `rate_limits` | `list[str] \| None` | `[]` | Named rate-limit buckets this actor consumes; see [Rate limits and reservations](#rate-limits-and-reservations). |
+| `reservations` | `list[str \| KeyedReservationRef] \| None` | `[]` | Named concurrency reservation slots this actor claims. A `KeyedReservationRef` derives per-key (session/tenant) reservation buckets from the job payload at dispatch time; see [Rate limits and reservations](#rate-limits-and-reservations). |
 | `non_retryable_exceptions` | `tuple[type[BaseException], ...]` | `()` | Exception types that fail the job immediately instead of retrying. |
-| `retry_classifier` | `RetryClassifierHook \| None` | `None` | Hook for exception-instance-level retry classification. Invoked with `(exception, attempt)` for exceptions that survive `non_retryable_exceptions`/`PayloadValidationError` checks; return `RetryOverride` to refine `kind`/`delay` per occurrence or `None` to fall back to the static `RetryPolicy`. See [Retries — `retry_classifier` hook](retries.md#5-retry_classifier-hook-per-instance-retry-overrides). |
+| `retry_classifier` | `RetryClassifierHook \| None` | `None` | Hook for exception-instance-level retry classification. Invoked with `(exception, attempt)` for exceptions that survive `non_retryable_exceptions`/`PayloadValidationError` checks; return `RetryOverride` to refine `kind`/`delay` per occurrence or `None` to fall back to the static `RetryPolicy`. See [Retries: `retry_classifier` hook](retries.md#5-retry_classifier-hook-per-instance-retry-overrides). |
 | `on_retry_exhausted` | `OnRetryExhausted \| None` | `None` | Callback invoked when the retry budget is exhausted, before the job is marked `failed`. |
 | `on_retry_exhausted_timeout` | `float` | `3.0` | Seconds allowed for `on_retry_exhausted` to complete before it is abandoned. |
-| `on_success` | `OnSuccess \| None` | `None` | Callback invoked when the job succeeds, after the transaction commits. Receives `(job_row, result)`. Mirrors `on_retry_exhausted` with a timeout guard — see [Retries — `on_success` hook](retries.md#on_success-hook). |
+| `on_success` | `OnSuccess \| None` | `None` | Callback invoked when the job succeeds, after the transaction commits. Receives `(job_row, result)`. Mirrors `on_retry_exhausted` with a timeout guard; see [Retries: `on_success` hook](retries.md#on_success-hook). |
 | `on_success_timeout` | `float` | `3.0` | Seconds allowed for `on_success` to complete before it is abandoned. |
-| `on_cancel` | `OnCancel \| None` | `None` | Callback invoked when a running job ends `cancelled`, beside the terminal write. Receives `(job_row)` — a cancelled attempt produced no result. Best-effort and timeout-bounded like the hooks above — see [Job Cancellation — `on_cancel` hook](cancellation.md#11-the-on_cancel-hook). |
+| `on_cancel` | `OnCancel \| None` | `None` | Callback invoked when a running job ends `cancelled`, beside the terminal write. Receives `(job_row)` — a cancelled attempt produced no result. Best-effort and timeout-bounded like the hooks above; see [Job Cancellation: `on_cancel` hook](cancellation.md#11-the-on_cancel-hook). |
 | `on_cancel_timeout` | `float` | `3.0` | Seconds allowed for `on_cancel` to complete before it is abandoned. |
 | `priority` | `int` | `0` | Default dispatch priority for jobs enqueued without an explicit `priority=`. Must fit `smallint` range (-32768..32767). |
 
@@ -108,19 +108,19 @@ async def process_order(payload: OrderPayload) -> OrderResult: ...
     ```
 
     A first deploy seeds whatever the literal says, so this trap only bites on
-    the *second* change — and it bites silently. If you want decorator literals
+    the *second* change, and it bites silently. If you want decorator literals
     to be authoritative, reconcile them explicitly on boot with
     `taskq actor-config set` (it is idempotent) rather than assuming the
     decorator did it. See [ActorConfig sync](workers.md#actorconfig-sync).
 
     A `NULL` stored `max_concurrent` means **uncapped**, not "fall back to the
-    literal" — so an actor seeded before you added the argument stays uncapped
+    literal", so an actor seeded before you added the argument stays uncapped
     until an operator sets it.
 
 ### Choosing a concurrency control
 
 TaskQ limits concurrency at several independent scopes. They are not
-interchangeable, and the strict ones are the leased-slot mechanisms — not the
+interchangeable, and the strict ones are the leased-slot mechanisms, not the
 `max_concurrent` decorator argument.
 
 | You want to… | Use | Scope | Strict? |
@@ -134,7 +134,7 @@ interchangeable, and the strict ones are the leased-slot mechanisms — not the
     `actor_config.max_concurrent` is a **per-round admission damper**. Dispatch
     reads the `running` count once, before it takes `FOR UPDATE SKIP LOCKED` row
     locks, and never rechecks it. Concurrent dispatchers each see the same count,
-    each admit up to the residual, and lock *disjoint* rows — so `SKIP LOCKED`
+    each admit up to the residual, and lock *disjoint* rows, so `SKIP LOCKED`
     does not serialize them and every one of them succeeds. The over-dispatch
     bound is `(num_producers - 1) * max_concurrent` per round, and those jobs
     genuinely run: reclaiming stale locks does not undo an over-dispatch.
@@ -432,11 +432,11 @@ the second positional parameter when they declare `ctx: JobContext[YourPayload]`
 | `attempt` | `int` | Current attempt number (1-indexed). |
 | `worker_id` | `UUID` | The worker running this attempt. |
 | `payload` | `P` | Fully-validated payload instance. Typed as `P` — no cast required. |
-| `jobs` | `SubJobEnqueuer` | Enqueue sub-jobs from within the actor body — see [Sub-job enqueuing](#sub-job-enqueuing). |
+| `jobs` | `SubJobEnqueuer` | Enqueue sub-jobs from within the actor body; see [Sub-job enqueuing](#sub-job-enqueuing). |
 | `log` | `structlog.BoundLogger` | Structured logger pre-bound with `job_id`, `actor`, and `attempt`. |
 | `span` | `opentelemetry.trace.Span \| None` | Active OTel span for this attempt. `None` when tracing is disabled. |
 | `cancel_event` | `asyncio.Event` | Set by the cancel-poll hook when the job enters cooperative cancellation. |
-| `progress(...)` | `async method` | Report incremental progress for this job — see [Progress reporting](#progress-reporting). |
+| `progress(...)` | `async method` | Report incremental progress for this job; see [Progress reporting](#progress-reporting). |
 | `cancellation_requested` | `bool` (property) | Returns `True` when `cancel_event` is set. |
 | `check_cancelled()` | `method → None` | Raises `asyncio.CancelledError` if `cancel_event` is set. Convenience for cooperative exit inside actor loops. |
 | `should_abort()` | `method → bool` | **Sync-only.** Thread-safe cooperative cancellation check. Returns `True` when cancellation has been requested. Sync actors must poll this; they cannot `await cancel_event.wait()` from a thread. |
@@ -515,7 +515,7 @@ async def daily_report(payload: ReportPayload) -> None: ...
 - Singleton enforcement is **actor-scoped**, not identity-scoped. Different `identity_key` values
   for the same singleton actor are still blocked.
 - For per-identity singleton semantics (one active job per user, not per actor), use
-  `max_concurrent=1` with an `identity_key` instead — but note this is
+  `max_concurrent=1` with an `identity_key` instead, but note this is
   **best-effort, not a hard 1**: the dispatcher's `running_identities` snapshot
   is read before it takes row locks, so concurrent dispatchers can each admit a
   job for the same identity. Use it for fairness, never as a mutex. For a strict
@@ -542,7 +542,7 @@ the blocking job's `schedule_to_close` when available, otherwise `None`.
 
 ## `unique_for` deduplication
 
-`unique_for` deduplicates enqueues for the same `(actor, identity_key)` within a sliding window. For how to choose between this, `idempotency_key`, and `singleton` — they are three different tools — see the chooser table in [ops.md — Fan-out at scale](ops.md#5-fan-out-at-scale-chunks-cursors-idempotency).
+`unique_for` deduplicates enqueues for the same `(actor, identity_key)` within a sliding window. For how to choose between this, `idempotency_key`, and `singleton` — they are three different tools; see the chooser table in [ops.md: Fan-out at scale](ops.md#5-fan-out-at-scale-chunks-cursors-idempotency).
 
 ```python
 from datetime import timedelta
@@ -772,7 +772,7 @@ from taskq.di import ProviderRegistry, Scope
 
 registry = ProviderRegistry()
 
-# Register a pre-built singleton value (PROCESS scope — lives for the
+# Register a pre-built singleton value (PROCESS scope: lives for the
 # duration of the worker process).
 registry.register_value(Database, Scope.PROCESS, db_instance)
 
@@ -845,14 +845,14 @@ async def process_batch(payload: BatchPayload, ctx: JobContext[BatchPayload]) ->
         )
 ```
 
-See the `SubJobEnqueuer` reference in [Client API — SubJobEnqueuer](jobs-clients.md#subjobenqueuer).
+See the `SubJobEnqueuer` reference in [Client API: SubJobEnqueuer](jobs-clients.md#subjobenqueuer).
 
 ### Transaction semantics
 
 Sub-job enqueues join the parent job's transaction by default. On a `TASKQ_MAX_CONCURRENCY=1`
 worker that transaction runs on the registered **LOOP-scope `asyncpg.Connection`**; at higher
 concurrency the worker opens a dedicated per-slot transaction pool, each job transacts on its
-own slot connection, and the actor receives that same slot connection by injection — so the
+own slot connection, and the actor receives that same slot connection by injection, so the
 actor's own database writes join the job's transaction too, and two concurrent slots' actors
 can never interleave operations on one connection (asyncpg permits one operation per
 connection at a time). Either way, sub-job INSERTs are part of the parent's database
@@ -869,7 +869,7 @@ completes successfully.
 job's tags by default. This makes sub-jobs findable by `JobFilter(tags=...)` and
 cancellable by `cancel_where`. Pass `inherit_tags=False` to suppress inheritance
 for a specific sub-job, or pass explicit `tags=[...]` to merge with inherited
-tags. See [Jobs & Clients — Sub-job tag inheritance](jobs-clients.md#tag-inheritance)
+tags. See [Jobs & Clients: Sub-job tag inheritance](jobs-clients.md#tag-inheritance)
 for the full semantics table.
 
 **Autonomous fallback.** If no LOOP-scope `asyncpg.Connection` is registered in the DI
@@ -894,7 +894,7 @@ transactional consume is silently disabled, not enabled.
     transactional actor on a `TASKQ_MAX_CONCURRENCY=1` worker, where the transaction — and
     the actor's injected connection — keep using the registered connection; that is also the
     minimal-connection-budget shape (no `max_concurrency + 1` slot pool). See
-    [Jobs & Clients — SubJobEnqueuer](jobs-clients.md#subjobenqueuer).
+    [Jobs & Clients: SubJobEnqueuer](jobs-clients.md#subjobenqueuer).
 
 ### Handle limitations
 
@@ -917,7 +917,7 @@ result_handle = await client.get(job_id, result_adapter=process_item.result_adap
 
 Actors can emit structured progress updates that are buffered in memory, published to Redis in real
 time, and periodically flushed to Postgres. Callers can subscribe to these events via
-`JobHandle.progress_stream()` or the HTTP SSE endpoint — see [Progress & Streaming](progress.md).
+`JobHandle.progress_stream()` or the HTTP SSE endpoint; see [Progress & Streaming](progress.md).
 
 ### `ctx.progress()`
 
@@ -1233,6 +1233,6 @@ row also carries the executor statistics the shared per-actor stats read
 computes — completed jobs (live terminal rows included), failures with their
 share, the most recent `error_class`, and duration percentiles — with a
 window toggle for the recency view; see
-[admin-ui.md — `GET /admin/actors`](admin-ui.md#get-adminactors) and the
+[admin-ui.md: `GET /admin/actors`](admin-ui.md#get-adminactors) and the
 [`taskq.jobs.reclaimed{actor, disposition}`](observability.md#counters)
 counter for the per-actor crash split the expired-locks sweep records.

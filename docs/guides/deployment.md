@@ -67,7 +67,7 @@ KillSignal=SIGTERM
 TimeoutStopSec=120
 ```
 
-`TimeoutStopSec` must exceed `TASKQ_TERMINATION_GRACE_PERIOD` so systemd does not SIGKILL the worker before it finishes its drain/cancel/abandon sequence. For custom bootstrap (DI providers, ErrorReporter), use `worker_main` programmatically — see [workers.md](workers.md#programmatically-via-worker_main).
+`TimeoutStopSec` must exceed `TASKQ_TERMINATION_GRACE_PERIOD` so systemd does not SIGKILL the worker before it finishes its drain/cancel/abandon sequence. For custom bootstrap (DI providers, ErrorReporter), use `worker_main` programmatically; see [workers.md](workers.md#programmatically-via-worker_main).
 
 ### Concurrency tuning
 
@@ -75,9 +75,9 @@ TimeoutStopSec=120
 
 | Workload type | Recommended `max_concurrency` | Rationale |
 |---|---|---|
-| I/O-bound (HTTP, DB queries) | 16–64 | asyncio multiplexes I/O cheaply |
-| Mixed I/O + CPU | 8–16 | Offload CPU work to `run_in_executor` |
-| CPU-bound (image, ML) | 2–4 per core | CPU work blocks the event loop |
+| I/O-bound (HTTP, DB queries) | 16-64 | asyncio multiplexes I/O cheaply |
+| Mixed I/O + CPU | 8-16 | Offload CPU work to `run_in_executor` |
+| CPU-bound (image, ML) | 2-4 per core | CPU work blocks the event loop |
 
 !!! tip "CPU-bound actors"
     asyncio consumers are cooperatively concurrent, not threaded. CPU-bound
@@ -108,7 +108,7 @@ TASKQ_PG_DSN_DIRECT=postgresql://taskq:secret@postgres.internal:5432/taskq
 TASKQ_PG_DSN_POOLED=postgresql://taskq:secret@pgbouncer.internal:6432/taskq
 ```
 
-Without PgBouncer, set only `TASKQ_PG_DSN` — both split DSNs fall back to it. **Never** point `TASKQ_PG_DSN` at a transaction-mode PgBouncer. See [workers.md — PgBouncer compatibility](workers.md#pgbouncer-compatibility).
+Without PgBouncer, set only `TASKQ_PG_DSN` — both split DSNs fall back to it. **Never** point `TASKQ_PG_DSN` at a transaction-mode PgBouncer. See [workers.md: PgBouncer compatibility](workers.md#pgbouncer-compatibility).
 
 ### Schema isolation and multi-tenancy
 
@@ -119,7 +119,7 @@ TASKQ_SCHEMA_NAME=taskq_billing    TASKQ_PG_DSN=postgresql://app:secret@postgres
 TASKQ_SCHEMA_NAME=taskq_notifications TASKQ_PG_DSN=postgresql://app:secret@postgres:5432/appdb
 ```
 
-Each schema gets its own migration set, NOTIFY channels (derived from a hash of the schema name — see [architecture.md](../architecture.md#notify--wake-mechanism)), and advisory-lock keyspace. Must match `^[A-Za-z_][A-Za-z0-9_]*$` and be at most 63 characters.
+Each schema gets its own migration set, NOTIFY channels (derived from a hash of the schema name; see [architecture.md](../architecture.md#notify--wake-mechanism)), and advisory-lock keyspace. Must match `^[A-Za-z_][A-Za-z0-9_]*$` and be at most 63 characters.
 
 ### Migration strategy
 
@@ -142,7 +142,7 @@ removes those old structures. A bare `taskq migrate up` applies **both** phases 
 fresh install or a stop-and-replace redeploy, but wrong anywhere a rollout can overlap: a
 `post` phase applied while old pods still serve breaks them mid-rollout (dropping the old
 single-column idempotency index, for example, turns every enqueue from a pre-upgrade worker
-into `InvalidColumnReferenceError`, SQLSTATE 42P10 — see the phase-obligation notes in
+into `InvalidColumnReferenceError`, SQLSTATE 42P10; see the phase-obligation notes in
 `01.00.03_01_pre_idempotency_scope.sql`). On a rolling deploy the sequence is:
 
 1. Apply `taskq migrate up --phase pre` as the pre-deploy job or init container — safe
@@ -158,9 +158,9 @@ naming the missing migrations; a pending `post`-phase migration never blocks boo
 middle state is the rollout window by design.
 
 **Deployment order:** (1) apply migrations as a pre-deploy job or init container — with
-`--phase pre` on anything that rolls, (2) start workers — they call `sync_actor_config` at startup and fail with `ActorConfigDriftList` if a registered actor's **structural** config (`metadata`) differs from the stored row (a differing `queue` literal is the rolling-deploy window of `taskq actor-config move-queue`: it logs `actor-config-queue-override` and boots). That drift check does **not** detect a stale *schema* — it compares config rows, never a schema version — but a stale schema is caught anyway: a worker whose schema has a pending `pre`-phase migration **refuses to boot**, naming the missing migrations (see above), (3) start the admin UI (optionally with `TASKQ_MIGRATE_ON_START=true`), (4) once the rollout is confirmed everywhere, apply `--phase post` as described above.
+`--phase pre` on anything that rolls, (2) start workers — they call `sync_actor_config` at startup and fail with `ActorConfigDriftList` if a registered actor's **structural** config (`metadata`) differs from the stored row (a differing `queue` literal is the rolling-deploy window of `taskq actor-config move-queue`: it logs `actor-config-queue-override` and boots). That drift check does **not** detect a stale *schema* — it compares config rows, never a schema version, but a stale schema is caught anyway: a worker whose schema has a pending `pre`-phase migration **refuses to boot**, naming the missing migrations (see above), (3) start the admin UI (optionally with `TASKQ_MIGRATE_ON_START=true`), (4) once the rollout is confirmed everywhere, apply `--phase post` as described above.
 
-For rolling deploys where actor config changes, deploy the first pod with `TASKQ_FORCE_UPDATE_ACTOR_CONFIG=true` to overwrite stored config, then deploy the rest without it. See [workers.md — ActorConfig sync](workers.md#actorconfig-sync).
+For rolling deploys where actor config changes, deploy the first pod with `TASKQ_FORCE_UPDATE_ACTOR_CONFIG=true` to overwrite stored config, then deploy the rest without it. See [workers.md: ActorConfig sync](workers.md#actorconfig-sync).
 
 ---
 
@@ -309,7 +309,7 @@ kubectl exec deploy/taskq-worker -- taskq migrate up --phase post
 ```
 
 A pending `post` phase is a safe steady state meanwhile — workers boot and run normally
-against it — so there is no urgency that would justify automating the step away. See
+against it, so there is no urgency that would justify automating the step away. See
 [Migration strategy](#migration-strategy) for what each phase guarantees.
 
 See [configuration.md](configuration.md#production-example-env) for the full set of `TASKQ_*` environment variables and cross-field validation constraints.
@@ -340,20 +340,20 @@ work*, not *restart me*.
     healthy pair during a rolling restart. The failure is never silent: the WARN is the named,
     alertable record. What the configured address then answers depends on who holds it — a
     live peer's listener answers for the *peer* (its leadership, its shutdown phase, not this
-    worker's), and an address nobody holds refuses connections — so treat the WARN as an
+    worker's), and an address nobody holds refuses connections, so treat the WARN as an
     action item: give each replica a unique socket path (or a per-replica directory), because
     until you do this replica's health is not observable at the address you configured.
 
     When `TASKQ_HEALTH_PORT` **is** set, the collision costs the Unix surface alone: the TCP
     probe listener is bound anyway, so the port your manifest routes probes to keeps answering
     for this replica (the WARN carries `tcp_listener=serving` to say so). The Unix surface
-    stays the action item above — unique path per replica — and with no port configured the
+    stays the action item above — unique path per replica, and with no port configured the
     answer is unchanged: warn, boot, no listener anywhere.
 
 !!! danger "A TCP probe port that cannot bind refuses startup"
     The TCP listener is a different contract: the deployment manifest routed health probes
     for THIS replica to `TASKQ_HEALTH_PORT`, and a worker that boots without it answers
-    nothing there — or worse, under a `tcpSocket` probe on a port some other process holds,
+    nothing there, or worse, under a `tcpSocket` probe on a port some other process holds,
     the probes pass against the wrong process. When the port cannot be bound the worker logs
     `health-http-bind-failed` (ERROR) and exits with `HealthTcpBindError` instead of running
     with probes silently dead. Give each replica a unique port (a downward-API pod port or
@@ -511,9 +511,9 @@ Add a `PodDisruptionBudget` (`minAvailable: 1`, selector matching `app: taskq-wo
     ```
 
     At TaskQ's defaults (85 / 30 / 10) the modelled worst case is **82s**, so
-    `terminationGracePeriodSeconds: 90` is a safe value at defaults — not the
+    `terminationGracePeriodSeconds: 90` is a safe value at defaults, not the
     `60`-ish the old advice implied. (The default grace covers the model with
-    3s to spare — but the ~87s sibling-crash path, nine sequential closes
+    3s to spare, but the ~87s sibling-crash path, nine sequential closes
     where the orchestrated leader-conn close never ran, including the
     conditional per-slot pool, now exceeds the default by 2s on per-slot
     workers. Deployments running the per-slot path with tight crash budgets
@@ -540,7 +540,7 @@ The worker has up to three listeners, and every one of them is **off unless you 
 Fail-closed semantics, identical across the platforms below:
 
 - **Both TCP listeners bind nothing until you set a port.** A worker that binds a port nobody asked for is a surprise network surface; setting the port is the opt-in.
-- **A TCP health listener that cannot bind refuses startup.** The worker logs `health-http-bind-failed` (ERROR) and exits with `HealthTcpBindError` rather than run with the manifest's probe port dead (a `tcpSocket` probe on a port another process holds would pass while checking nothing). The unix socket's collision is deliberately softer: a collision there means a live peer owns the path, so the boot warns (`health-server-unavailable`) and continues — and because the two transports bind independently, the TCP listener still comes up, so the port the manifest routes probes to keeps answering; only with no `TASKQ_HEALTH_PORT` configured does the collision leave the worker with no listener at all.
+- **A TCP health listener that cannot bind refuses startup.** The worker logs `health-http-bind-failed` (ERROR) and exits with `HealthTcpBindError` rather than run with the manifest's probe port dead (a `tcpSocket` probe on a port another process holds would pass while checking nothing). The unix socket's collision is deliberately softer: a collision there means a live peer owns the path, so the boot warns (`health-server-unavailable`) and continues, and because the two transports bind independently, the TCP listener still comes up, so the port the manifest routes probes to keeps answering; only with no `TASKQ_HEALTH_PORT` configured does the collision leave the worker with no listener at all.
 - **The scrape listener refuses startup.** If `[prometheus]` or autoconfigure is missing the worker tells you and binds nothing; if the listener itself cannot be configured or bound, `OtelExporterConfigurationError` exits the worker with code 1 rather than run with its scrape silently dead.
 - The scrape endpoint answers without a token: keep it on interfaces only your scraper reaches.
 
@@ -777,7 +777,7 @@ With the `[otel]` extra installed, `taskq worker` installs SDK tracer and meter 
 
 ### Prometheus scrape
 
-The worker series — leader-sampled gauges, dispatch/consume counters, attempt failures, the watchdog family — exist only in the **worker** processes; the admin UI's `/jobs/health/metrics` serves the admin process's own activity and none of them. Scrape every worker pod: install `taskq[prometheus]`, set `TASKQ_METRICS_PORT=9464`, and point a scrape job at each worker on that port with `metrics_path: /metrics` (a pod-role discovery with a `taskq-worker` selector, or a headless Service). The listener binds `TASKQ_METRICS_HOST` when set, falling back to `TASKQ_HEALTH_HOST` (`0.0.0.0`); set `TASKQ_METRICS_HOST=127.0.0.1` for a sidecar scraper that shares the pod's loopback while the health probes stay on the pod network. The port and host writes are scoped to the SDK call and rolled back, so neither leaks to child processes. A worker missing the `[prometheus]` extra binds no listener and says so; one that cannot configure or bind the listener exits 1 rather than run with its scrape silently dead. The endpoint is unauthenticated (see [SECURITY.md](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/SECURITY.md)), so keep it on the pod network or loopback. The worker's health socket additionally serves three process gauges at `GET /metrics` without any extra. See [observability.md — Serving the metrics](observability.md#serving-the-metrics-the-prometheus-endpoint).
+The worker series — leader-sampled gauges, dispatch/consume counters, attempt failures, the watchdog family — exist only in the **worker** processes; the admin UI's `/jobs/health/metrics` serves the admin process's own activity and none of them. Scrape every worker pod: install `taskq[prometheus]`, set `TASKQ_METRICS_PORT=9464`, and point a scrape job at each worker on that port with `metrics_path: /metrics` (a pod-role discovery with a `taskq-worker` selector, or a headless Service). The listener binds `TASKQ_METRICS_HOST` when set, falling back to `TASKQ_HEALTH_HOST` (`0.0.0.0`); set `TASKQ_METRICS_HOST=127.0.0.1` for a sidecar scraper that shares the pod's loopback while the health probes stay on the pod network. The port and host writes are scoped to the SDK call and rolled back, so neither leaks to child processes. A worker missing the `[prometheus]` extra binds no listener and says so; one that cannot configure or bind the listener exits 1 rather than run with its scrape silently dead. The endpoint is unauthenticated (see [SECURITY.md](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/SECURITY.md)), so keep it on the pod network or loopback. The worker's health socket additionally serves three process gauges at `GET /metrics` without any extra. See [observability.md: Serving the metrics](observability.md#serving-the-metrics-the-prometheus-endpoint).
 
 ### Structured logging
 
@@ -806,14 +806,14 @@ For multi-tenant queues, set `round_robin` mode to interleave by `fairness_key` 
 taskq queues set-mode multi round_robin
 ```
 
-See [workers.md — Queue dispatch modes](workers.md#queue-dispatch-modes).
+See [workers.md: Queue dispatch modes](workers.md#queue-dispatch-modes).
 
 ### max_concurrent and max_pending
 
 `max_concurrent` (per-actor via `@actor(max_concurrent=N)`) is a **best-effort** fleet-wide damper on how many jobs for an actor run simultaneously — distinct from `TASKQ_MAX_CONCURRENCY` (total jobs per process).
 
 !!! warning "`max_concurrent` is not a hard cap"
-    Dispatch reads its `running` count once per round, before taking row locks, and never rechecks it. Two worker replicas dispatching concurrently each see the same count, each admit up to the cap, and lock *disjoint* rows — so both succeed. The over-dispatch bound is `(num_producers - 1) * max_concurrent` per round, and those jobs genuinely run; reclaiming stale locks does not undo an over-dispatch.
+    Dispatch reads its `running` count once per round, before taking row locks, and never rechecks it. Two worker replicas dispatching concurrently each see the same count, each admit up to the cap, and lock *disjoint* rows, so both succeed. The over-dispatch bound is `(num_producers - 1) * max_concurrent` per round, and those jobs genuinely run; reclaiming stale locks does not undo an over-dispatch.
 
     With `max_concurrent=2` and 3 replicas you can see 6 concurrent executions. For a memory- or GPU-bound actor that is an OOMKill, a restart, and a re-dispatch.
 
@@ -829,7 +829,7 @@ See [workers.md — Queue dispatch modes](workers.md#queue-dispatch-modes).
 | slot pool (conditional) | `max_concurrency + 1` (direct DSN) | `TASKQ_MAX_CONCURRENCY` |
 | `notify_conn` + `leader_conn` | 2 (dedicated) | Fixed |
 
-The slot pool exists only when a LOOP-scope `asyncpg.Connection` is registered and `max_concurrency > 1` — the per-slot transaction pool that carries every per-job transaction (the actor's own writes via its injected slot connection, the terminal write, transactional sub-enqueues). Total per worker ≈ `dispatcher + heartbeat + worker_pool + 2`, plus `max_concurrency + 1` direct connections on the per-slot path. For 10 workers at `max_concurrency=16`: ~10 × 34 = 340 connections, or ~10 × 51 = 510 on the per-slot path (each worker adds 17 direct). On that path `TASKQ_MAX_CONCURRENCY` is boot-blocking — the worker opens `max_concurrency + 1` direct connections at startup and fails to boot if it cannot — and a credential-rotation window peaks at `2 × (max_concurrency + 1)` slot connections per worker (old pool draining + new pool warm, bounded by the reload drain timeout), so plan `max_connections` against that peak whenever rotations can coincide across the fleet (a scheduled `TASKQ_RELOAD_INTERVAL` is exactly that), against the steady state only when rotations are staggered. Ensure Postgres `max_connections` accommodates this plus your application's connections. The full budget formula (idle floors, leader extras, client pods, PgBouncer compression) is in [ops.md — Sizing](ops.md#4-sizing-workers-and-postgres-connections).
+The slot pool exists only when a LOOP-scope `asyncpg.Connection` is registered and `max_concurrency > 1` — the per-slot transaction pool that carries every per-job transaction (the actor's own writes via its injected slot connection, the terminal write, transactional sub-enqueues). Total per worker ≈ `dispatcher + heartbeat + worker_pool + 2`, plus `max_concurrency + 1` direct connections on the per-slot path. For 10 workers at `max_concurrency=16`: ~10 × 34 = 340 connections, or ~10 × 51 = 510 on the per-slot path (each worker adds 17 direct). On that path `TASKQ_MAX_CONCURRENCY` is boot-blocking — the worker opens `max_concurrency + 1` direct connections at startup and fails to boot if it cannot, and a credential-rotation window peaks at `2 × (max_concurrency + 1)` slot connections per worker (old pool draining + new pool warm, bounded by the reload drain timeout), so plan `max_connections` against that peak whenever rotations can coincide across the fleet (a scheduled `TASKQ_RELOAD_INTERVAL` is exactly that), against the steady state only when rotations are staggered. Ensure Postgres `max_connections` accommodates this plus your application's connections. The full budget formula (idle floors, leader extras, client pods, PgBouncer compression) is in [ops.md: Sizing](ops.md#4-sizing-workers-and-postgres-connections).
 
 ---
 

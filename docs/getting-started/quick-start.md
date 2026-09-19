@@ -70,7 +70,7 @@ cp .env.example .env
 No env var is strictly required — `TASKQ_PG_DSN` defaults to `postgresql://taskq:taskq@localhost:5432/taskq`. For any real deployment, set it to your actual database.
 
 ```dotenv
-# Direct PG DSN — sessions, LISTEN/NOTIFY, and advisory locks require this.
+# Direct PG DSN: sessions, LISTEN/NOTIFY, and advisory locks require this.
 TASKQ_PG_DSN=postgresql://taskq:taskq@localhost:5432/taskq
 
 # Schema name for all TaskQ tables. Override if multi-tenanting.
@@ -83,7 +83,7 @@ TASKQ_REDIS_URL=redis://localhost:6379/0
 > **PgBouncer warning:** Advisory locks and `LISTEN/NOTIFY` require a direct Postgres connection. Do not point `TASKQ_PG_DSN` at a PgBouncer endpoint in transaction-pooling mode.
 
 TaskQ loads configuration through `dotenvmodel` with cascading `.env` discovery:
-`.env` → `.env.local` → `.env.{env}` → `.env.{env}.local`, where `{env}` comes from the `ENV` variable (default `dev`). Real environment variables take precedence over `.env` files — see [Configuration](../guides/configuration.md) for the full resolution rules.
+`.env` → `.env.local` → `.env.{env}` → `.env.{env}.local`, where `{env}` comes from the `ENV` variable (default `dev`). Real environment variables take precedence over `.env` files; see [Configuration](../guides/configuration.md) for the full resolution rules.
 
 The worker validates cross-field constraints at startup (e.g. `TASKQ_LOCK_LEASE` must be `>= 4 × TASKQ_HEARTBEAT_INTERVAL`). See [Worker](../guides/workers.md) for the full settings reference.
 
@@ -127,7 +127,7 @@ class SendEmailResult(BaseModel):
     message_id: str
 
 
-# Bare form — omit retry for the default: 3 attempts, exponential backoff.
+# Bare form: omit retry for the default: 3 attempts, exponential backoff.
 @actor
 async def send_email(payload: SendEmailPayload) -> SendEmailResult:
     # Replace with your real email logic.
@@ -135,7 +135,7 @@ async def send_email(payload: SendEmailPayload) -> SendEmailResult:
     return SendEmailResult(message_id="msg-123")
 
 
-# Parameterised form — override queue, retry policy, etc.
+# Parameterised form: override queue, retry policy, etc.
 # @actor(queue="priority")
 # async def send_email(...) -> ...:
 #     ...
@@ -143,7 +143,7 @@ async def send_email(payload: SendEmailPayload) -> SendEmailResult:
 
 The `@actor` decorator validates the signature at import time. It rejects unannotated parameters and payload types that are not `BaseModel` subclasses. Both `async def` and `def` are accepted.
 
-**Sync actors** run via `asyncio.to_thread()` — the event loop is never blocked. Cancellation for sync actors is cooperative: poll `ctx.should_abort()` in long-running loops. LOOP-scoped DI dependencies (e.g. `asyncpg.Connection`) are not thread-safe and should not be used by sync actors; the worker logs a warning at startup validation when a sync actor declares one. See [Actor API — Sync actors](../guides/actors.md#sync-actors) for details.
+**Sync actors** run via `asyncio.to_thread()` — the event loop is never blocked. Cancellation for sync actors is cooperative: poll `ctx.should_abort()` in long-running loops. LOOP-scoped DI dependencies (e.g. `asyncpg.Connection`) are not thread-safe and should not be used by sync actors; the worker logs a warning at startup validation when a sync actor declares one. See [Actor API: Sync actors](../guides/actors.md#sync-actors) for details.
 
 **Tags** can be attached at enqueue time for filtering and categorization:
 
@@ -155,7 +155,7 @@ handle = await client.enqueue(
 )
 ```
 
-Tags appear in the admin UI as filterable badges. Tag validation: `\A\w(?:[\w\-]*\w)?\Z`, max 255 chars per tag (short tags like `ci` are fine). See [Jobs — Tags](../guides/jobs-clients.md#tags) for details.
+Tags appear in the admin UI as filterable badges. Tag validation: `\A\w(?:[\w\-]*\w)?\Z`, max 255 chars per tag (short tags like `ci` are fine). See [Jobs: Tags](../guides/jobs-clients.md#tags) for details.
 
 See [Actor API](../guides/actors.md) for the full decorator reference: queue assignment, retry policies, concurrency caps, singletons, rate limits, and DI dependencies.
 
@@ -198,7 +198,7 @@ from myapp.actors import send_email
 settings = WorkerSettings.load()
 # actor_registry keys must match each ActorRef's registered name
 # (defaults to the function's __qualname__).
-# Passing actor_registry=None runs stub consumers only — not for production use.
+# Passing actor_registry=None runs stub consumers only: not for production use.
 exit_code = worker_main(settings, actor_registry={"send_email": send_email})
 ```
 

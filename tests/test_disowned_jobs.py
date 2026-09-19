@@ -689,7 +689,12 @@ async def test_failed_actor_not_found_release_disowns_the_job() -> None:
 
     await asyncio.wait_for(
         di_consumer_loop(
-            SimpleNamespace(producer_stop_event=asyncio.Event(), disowned_jobs=disowned),  # type: ignore[arg-type]  # Why: the fields the loop reads on this path; the signature still requires the full WorkerDeps.
+            SimpleNamespace(
+                producer_stop_event=asyncio.Event(),
+                disowned_jobs=disowned,
+                active_jobs=ActiveJobRegistry(),
+                drain_failures=0,
+            ),  # type: ignore[arg-type]  # Why: the fields the loop reads on this path; the signature still requires the full WorkerDeps.
             local_queue,
             shutdown_event,
             backend=cast(Backend, _DeadSnoozeBackend()),  # type: ignore[arg-type]  # Why: structural stand-in satisfying the one call the loop makes.

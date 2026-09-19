@@ -19,7 +19,7 @@ mechanics), `src/taskq/backend/_dispatch_sql.py` (the CTE under test),
 
 The shipped strict-FIFO CTE (`src/taskq/backend/_dispatch_sql.py`, the
 `locked` CTE) re-joins the small `ranked` candidate set back to `jobs` with
-`WHERE j.status = 'pending'`. At scale the planner serves that join — and the
+`WHERE j.status = 'pending'`. At scale the planner serves that join, and the
 terminal `UPDATE ... FROM eligible` — as **hash joins over a Seq Scan of the
 entire pending backlog**, twice per dispatch round:
 
@@ -28,7 +28,7 @@ entire pending backlog**, twice per dispatch round:
 - the final `UPDATE ... FROM eligible`: a **second** full pending Seq Scan,
   hash-joined against the 50 eligible ids.
 
-Measured (PG 18.6, EXPLAIN ANALYZE BUFFERS, JIT off — see the JIT note):
+Measured (PG 18.6, EXPLAIN ANALYZE BUFFERS, JIT off; see the JIT note):
 
 | backlog depth | exec time | buffers |
 |---:|---:|---:|
@@ -249,7 +249,7 @@ family).
 ### Problem
 
 `job_events` has no retention of its own: rows die only via the parent-job
-`ON DELETE CASCADE` when the prune sweep removes a terminal job (30–90 day
+`ON DELETE CASCADE` when the prune sweep removes a terminal job (30-90 day
 per-status windows — `_leader_shared.py`'s `_ARCHIVE_CTE_SQL`, cutoff =
 `finished_at < statement_timestamp() - retention`). At the measured ~2
 events/job and 100 jobs/s that is ~17.3 M events/day and ~110 GB/30 days of
@@ -291,7 +291,7 @@ WHERE e.id = expired.id
 RETURNING e.id
 ```
 
-Required index (migration — see §4):
+Required index (migration; see §4):
 
 ```sql
 CREATE INDEX IF NOT EXISTS job_events_occurred_at_idx
@@ -308,7 +308,7 @@ size.
 ### Scheduling and bounds
 
 - **Leader-gated, per-tick cadence** (runs in `_sweep_loop` after sweep 5,
-  like sweeps 1–4) — *not* the daily prune-cron shape: at 100 jobs/s a
+  like sweeps 1-4) — *not* the daily prune-cron shape: at 100 jobs/s a
   once-daily sweep would need to delete ~17 M rows in one leader pass.
   One batch per tick bounds each call.
 - Batch size: `event_retention_batch_size`, default 10 000
@@ -439,7 +439,7 @@ on them ships, cheap to apply online):
 
 # generic-plan cliff (v1 shape, 2-row under-dispatch)
 ./.venv/bin/python - <<'EOF'
-# see "Alternatives prototyped" — v1 under plan_cache_mode=force_generic_plan
+# see "Alternatives prototyped": v1 under plan_cache_mode=force_generic_plan
 EOF
 ```
 

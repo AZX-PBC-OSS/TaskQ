@@ -44,7 +44,7 @@ cron("*/15 * * * *", "health_check", static_payload={"endpoint": "/api/health"})
 # Fire every Monday at 09:00 America/New_York
 cron("0 9 * * 1", "weekly_summary", timezone="America/New_York")
 
-# Fire every 30 seconds — the optional 6th field is seconds, appended after
+# Fire every 30 seconds: the optional 6th field is seconds, appended after
 # the standard 5-field expression, so */30 must be placed last for sub-minute
 # intervals.
 cron("* * * * * */30", "ticker")
@@ -61,7 +61,7 @@ cron("* * * * * */30", "ticker")
 | `name` | `str` | `""` | Schedule discriminator. When multiple schedules target the same actor (per-property scheduling), each must have a distinct `name`. Combined with `actor` to form the unique constraint `(actor, name)`. Defaults to `""` (empty string) which is treated as the single (legacy) schedule for that actor. See [Per-property schedules](#per-property-schedules). |
 | `identity_key` | `str \| None` | `None` | Opaque identity key passed through to `enqueue()` on every fire. Enables cron↔on-demand dedup: a cron fire and an ad-hoc `enqueue()` with the same `identity_key` are deduplicated by `unique_for` on the actor. See [Per-property schedules](#per-property-schedules). |
 | `timezone` | `str` | `"UTC"` | IANA timezone name (e.g. `"America/New_York"`). Controls when the cron expression fires. |
-| `dst_strategy` | `"skip" \| "firstof" \| "allof"` | `"skip"` | How DST gaps and overlaps are handled — see [DST strategies](#dst-strategies). |
+| `dst_strategy` | `"skip" \| "firstof" \| "allof"` | `"skip"` | How DST gaps and overlaps are handled; see [DST strategies](#dst-strategies). |
 | `enabled` | `bool` | `True` | Whether the schedule is active at registration time. |
 
 `cron()` raises `ValueError` on invalid cron expressions or when both `payload_factory` and
@@ -134,7 +134,7 @@ One cron tick plans its due batch inside a single deadline — the leader's
 that deadline is a write reserve the factory path may not spend, so the **funded factory
 budget** is 90% of the whole-tick deadline (4.5 seconds at defaults). Each factory's
 granted deadline is `min(TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT, what remains of the funded
-budget)`, tracked by actual elapsed time — so a batch's factory waits can never sum past
+budget)`, tracked by actual elapsed time, so a batch's factory waits can never sum past
 the whole-tick deadline, however many schedules are due.
 
 A factory is only **called** when the remaining funded budget can fund at least a
@@ -269,7 +269,7 @@ table enforces a unique constraint on `actor`. The `name` and `identity_key`
 parameters extend this to support **multiple schedules per actor**, each
 targeting a different logical entity (a "property").
 
-### `name` — multiple schedules per actor
+### `name`: multiple schedules per actor
 
 The unique constraint is `(actor, name)`, not just `actor`. When `name` is
 `""` (the default) the schedule is the single legacy schedule for that
@@ -279,7 +279,7 @@ actor:
 ```python
 from taskq import cron
 
-# Daily report for each tenant — one schedule per tenant, same actor.
+# Daily report for each tenant: one schedule per tenant, same actor.
 cron("0 3 * * *", "daily_report", name="tenant:acme")
 cron("0 4 * * *", "daily_report", name="tenant:globex")
 cron("0 5 * * *", "daily_report", name="tenant:initech")
@@ -289,7 +289,7 @@ Each schedule fires the `daily_report` actor independently with its own
 `next_fire_at`, `consecutive_failures`, and `enabled` state. Disabling one
 schedule (via `handle.disable()`) does not affect the others.
 
-### `identity_key` — cron↔on-demand dedup
+### `identity_key`: cron↔on-demand dedup
 
 The `identity_key` parameter is passed through to `enqueue()` on every cron
 fire. When the actor has `unique_for` configured, this enables deduplication
@@ -329,7 +329,7 @@ await client.enqueue(
 last 6 hours, the on-demand enqueue returns the existing job handle with
 `was_existing=True` rather than creating a duplicate. See
 [`unique_for` deduplication](actors.md#unique_for-deduplication) and
-[Jobs & Clients — enqueue evaluation order](jobs-clients.md#enqueue-evaluation-order).
+[Jobs & Clients: enqueue evaluation order](jobs-clients.md#enqueue-evaluation-order).
 
 ### Full per-property example
 
@@ -459,7 +459,7 @@ the `taskq.cron_schedule_id` attribute of the `cron fire` span. The
 `taskq.cron.disabled_schedules` observable gauge tracks the count of disabled schedules.
 
 Failure telemetry is emitted only once the tick's transaction commits, so a strike the
-database rolled back leaves no log line, span or metric delta behind — and a connection's
+database rolled back leaves no log line, span or metric delta behind, and a connection's
 telemetry recovers on its very next tick regardless: the commit gate re-establishes itself
 per tick rather than assuming a prior tick's registration survived.
 
@@ -488,7 +488,7 @@ flag) and the same `max_pending` cap. A schedule whose actor is blocked is
 A suppressed slot advances `next_fire_at` and nothing else: no `last_fired_at` stamp
 (nothing fired), no `last_fire_error` write, and no `consecutive_failures` change in
 either direction. Suppression says nothing about the schedule's health — the actor is
-merely busy — so it must neither punish nor amnesty. The classification
+merely busy, so it must neither punish nor amnesty. The classification
 is essential to the invariant: a collision routed into the failure path instead would strike the
 schedule, and three consecutive collisions (the default
 `TASKQ_CRON_AUTO_DISABLE_THRESHOLD`) would permanently auto-disable a healthy, busy
@@ -497,7 +497,7 @@ factory errors, missing `actor_config` rows, and the like.
 
 A budget-deferred slot (see [Tick budget and deferral](#tick-budget-and-deferral))
 shares this bucket and this accounting — its factory was never called, so there is
-nothing to punish it for — but advances differently: one leader tick of retry instead
+nothing to punish it for, but advances differently: one leader tick of retry instead
 of the next cron slot. A policy-suppressed slot is genuinely unlandable while the
 blocker holds, so retrying it would hot-loop against the blocker; a budget-deferred
 slot is perfectly landable, only its funding was missing, so it retries on the very
@@ -529,4 +529,4 @@ operator to run `taskq migrate up`.
 - [Workers](workers.md) — maintenance leader, cron loop, sweep loops
 - [Configuration](configuration.md) — `TASKQ_CRON_CATCH_UP_WINDOW`, `TASKQ_CRON_AUTO_DISABLE_THRESHOLD`, and other settings
 - [Admin UI](admin-ui.md) — schedules page
-- [API Reference — CLI](../api-reference/cli.md) — `taskq` command reference
+- [API Reference: CLI](../api-reference/cli.md) — `taskq` command reference

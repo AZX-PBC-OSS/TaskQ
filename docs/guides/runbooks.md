@@ -21,11 +21,11 @@ instead of subtracting in your own clock domain.
 
 ## TaskQScheduledBacklogGrowing
 
-**What fired.** `taskq_jobs_oldest_due_age_seconds > 300 and (taskq_jobs_scheduled_count > (taskq_jobs_scheduled_count offset 5m) or changes(taskq_jobs_scheduled_count[5m]) == 0)` for 5 minutes: the oldest due job has been waiting more than 5 minutes AND the `scheduled` job count is demonstrably not draining — either it is HIGHER than it was 5 minutes ago (promotion from `scheduled` to `pending` is not keeping up with arrivals) or it has not moved at all across those 5 minutes (promotion has stopped and no arrivals are landing net — the stalled plateau). Either way, due work is waiting while the scheduled backlog fails to shrink — not merely one slow-to-clear job.
+**What fired.** `taskq_jobs_oldest_due_age_seconds > 300 and (taskq_jobs_scheduled_count > (taskq_jobs_scheduled_count offset 5m) or changes(taskq_jobs_scheduled_count[5m]) == 0)` for 5 minutes: the oldest due job has been waiting more than 5 minutes AND the `scheduled` job count is demonstrably not draining — either it is HIGHER than it was 5 minutes ago (promotion from `scheduled` to `pending` is not keeping up with arrivals) or it has not moved at all across those 5 minutes (promotion has stopped and no arrivals are landing net — the stalled plateau). Either way, due work is waiting while the scheduled backlog fails to shrink, not merely one slow-to-clear job.
 
-An earlier form of this alert joined the oldest-due-age gauge against its own value 5 minutes back. That self-join is satisfied by a perfectly healthy, steadily draining backlog for the entire time its current straggler waits its turn — the age of "whichever job is currently oldest" climbs monotonically right up until that one job is promoted, regardless of how healthily everything behind it drains — so the join degenerated to a bare `age > 300` threshold and paged on healthy operation. Count, not the single oldest item's age, is what distinguishes "stalled" from "one slow straggler": a `scheduled` count that is moving — falling as jobs promote, rising as arrivals land — is healthy flow no matter how long the current straggler has waited. What is never healthy is a due job aging past the threshold while the count never moves at all, and a strict growth comparison cannot see it: a flat count is never `>` itself 5 minutes back, so a promoter that has stopped completely while arrivals are absent (or throttled, or backpressured) would stay silent forever on the growth arm alone. That is the stalled plateau the `changes(...) == 0` arm catches.
+An earlier form of this alert joined the oldest-due-age gauge against its own value 5 minutes back. That self-join is satisfied by a perfectly healthy, steadily draining backlog for the entire time its current straggler waits its turn — the age of "whichever job is currently oldest" climbs monotonically right up until that one job is promoted, regardless of how healthily everything behind it drains, so the join degenerated to a bare `age > 300` threshold and paged on healthy operation. Count, not the single oldest item's age, is what distinguishes "stalled" from "one slow straggler": a `scheduled` count that is moving — falling as jobs promote, rising as arrivals land — is healthy flow no matter how long the current straggler has waited. What is never healthy is a due job aging past the threshold while the count never moves at all, and a strict growth comparison cannot see it: a flat count is never `>` itself 5 minutes back, so a promoter that has stopped completely while arrivals are absent (or throttled, or backpressured) would stay silent forever on the growth arm alone. That is the stalled plateau the `changes(...) == 0` arm catches.
 
-`taskq_jobs_scheduled_count` is a label-less twin of `taskq_jobs_by_status{status="scheduled"}`, sampled by the same leader tick — it exists so every operand of the alert carries an identical (empty) label set. Prometheus pairs the two sides of a vector `and`/`or` (or comparison) only when their label sets are identical, with no `on`/`ignoring` modifier here to reconcile a mismatch, and it reports a non-matching join as an empty result rather than an error — so a version of this alert that joined the per-`status` depth gauge directly against the label-less age gauge could never fire, however bad the stall.
+`taskq_jobs_scheduled_count` is a label-less twin of `taskq_jobs_by_status{status="scheduled"}`, sampled by the same leader tick — it exists so every operand of the alert carries an identical (empty) label set. Prometheus pairs the two sides of a vector `and`/`or` (or comparison) only when their label sets are identical, with no `on`/`ignoring` modifier here to reconcile a mismatch, and it reports a non-matching join as an empty result rather than an error, so a version of this alert that joined the per-`status` depth gauge directly against the label-less age gauge could never fire, however bad the stall.
 
 **How to confirm.**
 
@@ -119,7 +119,7 @@ Extra workers consume `pending` jobs faster but promote nothing.
 
 ## TaskQSweepTimeouts
 
-**What fired.** `rate(taskq_maintenance_leader_sweep_timeouts_total[5m]) > 0` for 5 minutes: sweep batches are being aborted by deadlines (`TimeoutError` on the client) or server-side cancels (`QueryCanceledError` from `statement_timeout`) — the database cannot finish bounded batches — or a gauge sampler's read did not complete. The `sweep_name` label says which: sweep names are aborted batches; the sampler names (`queue_depth`, `backlog_detection`, `actor_backlog`, `reservation_slots`) are reads that did not happen, counted for every failure class — a dead sampler's gauges go stale or absent while nothing else names the loss, and the per-actor backlog read dying resolves `TaskQQueueDepthHigh` at the exact moment the incident it alerts on is killing the read, which is why that failure must land here.
+**What fired.** `rate(taskq_maintenance_leader_sweep_timeouts_total[5m]) > 0` for 5 minutes: sweep batches are being aborted by deadlines (`TimeoutError` on the client) or server-side cancels (`QueryCanceledError` from `statement_timeout`) — the database cannot finish bounded batches, or a gauge sampler's read did not complete. The `sweep_name` label says which: sweep names are aborted batches; the sampler names (`queue_depth`, `backlog_detection`, `actor_backlog`, `reservation_slots`) are reads that did not happen, counted for every failure class — a dead sampler's gauges go stale or absent while nothing else names the loss, and the per-actor backlog read dying resolves `TaskQQueueDepthHigh` at the exact moment the incident it alerts on is killing the read, which is why that failure must land here.
 
 **How to confirm.**
 
@@ -185,7 +185,7 @@ Extra workers consume `pending` jobs faster but promote nothing.
 
 **What fired.** `sum(rate(taskq_leader_lock_contention_total[10m])) > 0 and sum(taskq_maintenance_leader_is_leader) < 1` sustained for 10 minutes: maintenance-lock acquisitions are being lost AND no worker holds leadership. The counter is recorded by the *losing* side at every maintenance acquisition point, labeled by `lock`.
 
-The leader-count operand is what makes this alertable at all. A healthy multi-worker fleet has exactly one winner per election round and every other worker records a loss, so a lost-acquire rate above zero is the **normal steady state** of any fleet larger than one worker — an alert on that rate alone pages on health and trains operators to silence it. Losses while the leader count has fallen below one is the genuine signature: nobody ever wins. Both operands are summed to fleet-wide scalars so the vector join pairs; an `and` between series carrying different label sets never matches, and Prometheus reports that as an empty result rather than an error. The lock key is schema-qualified — `taskq:maintenance_leader:<schema>`, built by `taskq.constants.schema_lock_name` — so contention is always between sessions of the **same schema**: a second schema in the same database takes a different key and cannot starve this one (the cross-schema silent starvation the unqualified lock name allowed is fixed). What sustained contention on a schema-qualified lock means: same-schema double-election attempts that keep losing (two pods of this deployment racing each other every heartbeat), or a stuck/long-held session sitting on this schema's key.
+The leader-count operand is what makes this alertable at all. A healthy multi-worker fleet has exactly one winner per election round and every other worker records a loss, so a lost-acquire rate above zero is the **normal steady state** of any fleet larger than one worker — an alert on that rate alone pages on health and trains operators to silence it. Losses while the leader count has fallen below one is the genuine signature: nobody ever wins. Both operands are summed to fleet-wide scalars so the vector join pairs; an `and` between series carrying different label sets never matches, and Prometheus reports that as an empty result rather than an error. The lock key is schema-qualified — `taskq:maintenance_leader:<schema>`, built by `taskq.constants.schema_lock_name`, so contention is always between sessions of the **same schema**: a second schema in the same database takes a different key and cannot starve this one (the cross-schema silent starvation the unqualified lock name allowed is fixed). What sustained contention on a schema-qualified lock means: same-schema double-election attempts that keep losing (two pods of this deployment racing each other every heartbeat), or a stuck/long-held session sitting on this schema's key.
 
 **How to confirm.**
 
@@ -210,7 +210,7 @@ The leader-count operand is what makes this alertable at all. A healthy multi-wo
    counter's remaining shapes: the row's holder keeps changing (handover
    churn), or the counting pod cannot read the row at all. A courtesy lock
    held by a session no lease row accounts for never produces it: the lease
-   is what confers the role, so nothing waits on that session — but a lock
+   is what confers the role, so nothing waits on that session, but a lock
    nobody owns still points at a pod that elected under an older release,
    or at a session one left behind.
 3. **Upgrade discipline:** the schema-qualified names replaced the
@@ -252,7 +252,7 @@ The leader-count operand is what makes this alertable at all. A healthy multi-wo
 
 **How to confirm.**
 
-- Metric: `taskq_cron_lock_contention_total` rising at roughly the tick rate (one contention per tick attempt) — not brief bursts. `taskq_cron_disabled_schedules` staying 0 while no `cron fired` lines appear is the same stall seen from the other side.
+- Metric: `taskq_cron_lock_contention_total` rising at roughly the tick rate (one contention per tick attempt), not brief bursts. `taskq_cron_disabled_schedules` staying 0 while no `cron fired` lines appear is the same stall seen from the other side.
 - SQL — the cron lock holder (the lock name is `taskq:cron:<schema>`, a single bigint key via `hashtextextended`, so it appears with `classid = 0`):
 
   ```sql
@@ -277,7 +277,7 @@ The leader-count operand is what makes this alertable at all. A healthy multi-wo
 
 ## TaskQCronBudgetDeferrals
 
-**What fired.** A sustained rate of `taskq_cron_budget_deferrals_total` (one increment per cron fire the tick's funded factory budget could not fund a grant for). A brief burst is benign — catch-up backlogs drain in tick-sized batches and each draining tick defers whatever its factories' waits could not fit. A rate that persists for minutes means one schedule's payload factory is **monopolizing the tick budget every tick**: it is planned ahead of its peers (an older `next_fire_at`, or a catch-up crawl), consumes most of the funded factory budget, and still SUCCEEDS — so it never strikes, never auto-disables, and never frees the budget. Its peers then defer on every tick: delayed (the deferral advances `next_fire_at` one leader tick, the owed slot stays inside the catch-up window), never struck, never disabled — quiet starvation with no auto-disable rescue, which is exactly why the counter exists. The monopolizer itself looks perfectly healthy (`cron fired` lines, `consecutive_failures = 0`).
+**What fired.** A sustained rate of `taskq_cron_budget_deferrals_total` (one increment per cron fire the tick's funded factory budget could not fund a grant for). A brief burst is benign — catch-up backlogs drain in tick-sized batches and each draining tick defers whatever its factories' waits could not fit. A rate that persists for minutes means one schedule's payload factory is **monopolizing the tick budget every tick**: it is planned ahead of its peers (an older `next_fire_at`, or a catch-up crawl), consumes most of the funded factory budget, and still SUCCEEDS, so it never strikes, never auto-disables, and never frees the budget. Its peers then defer on every tick: delayed (the deferral advances `next_fire_at` one leader tick, the owed slot stays inside the catch-up window), never struck, never disabled — quiet starvation with no auto-disable rescue, which is exactly why the counter exists. The monopolizer itself looks perfectly healthy (`cron fired` lines, `consecutive_failures = 0`).
 
 **How to confirm.**
 
@@ -307,7 +307,7 @@ The leader-count operand is what makes this alertable at all. A healthy multi-wo
 
 ## TaskQRunningLeaseExpired
 
-**What fired.** `taskq_jobs_running_lease_expired > 0` for 5 minutes: running jobs whose lock lease is past expiry, sustained, with no cancel in flight — rows in a cancel phase (`cancel_phase != 0`) are carved out of the gauge, because the reclaim sweep deliberately waits cancel grace + cleanup grace + 60 s past expiry for a cancelling row before it pre-empts it, so an expired lease mid-cancel is the cancellation protocol working, not an incident (a cancel that never completes pages elsewhere: [TaskQAbandonedJobs](#taskqabandonedjobs) when its worker is alive to escalate through the phases, `TaskQHeartbeatMisses` when it died mid-cancel — the reclaim sweep honors the row to `cancelled` either way). A healthy fleet reads 0 — the leader's reclaim sweep (`sweep_name="expired_locks"`) drains expired leases within a tick or two of expiry — so a sustained non-zero count means reclaim is not draining. Work is claimed and stuck in `running` while health probes stay green: the zombie-running shape.
+**What fired.** `taskq_jobs_running_lease_expired > 0` for 5 minutes: running jobs whose lock lease is past expiry, sustained, with no cancel in flight — rows in a cancel phase (`cancel_phase != 0`) are carved out of the gauge, because the reclaim sweep deliberately waits cancel grace + cleanup grace + 60 s past expiry for a cancelling row before it pre-empts it, so an expired lease mid-cancel is the cancellation protocol working, not an incident (a cancel that never completes pages elsewhere: [TaskQAbandonedJobs](#taskqabandonedjobs) when its worker is alive to escalate through the phases, `TaskQHeartbeatMisses` when it died mid-cancel — the reclaim sweep honors the row to `cancelled` either way). A healthy fleet reads 0 — the leader's reclaim sweep (`sweep_name="expired_locks"`) drains expired leases within a tick or two of expiry, so a sustained non-zero count means reclaim is not draining. Work is claimed and stuck in `running` while health probes stay green: the zombie-running shape.
 
 **How to confirm.**
 
@@ -339,7 +339,7 @@ The leader-count operand is what makes this alertable at all. A healthy multi-wo
 
 1. If `TaskQHeartbeatMisses` is firing or the holders' workers are gone: the jobs self-heal — the reclaim sweep transitions them (retryable → `pending` after a backoff; exhausted → `crashed`). The alert's value is that it stays non-zero when that does NOT happen.
 2. If the reclaim sweep is stalled or timing out: follow [TaskQPromotionStalled](#taskqpromotionstalled) and [TaskQSweepTimeouts](#taskqsweeptimeouts) — fix the sweep/database; the zombies are a symptom.
-3. If the sweep is healthy and the count still regrows: jobs are repeatedly outliving their lease — the lease (`lock_lease`-shaped settings) is shorter than the actor's real run time and heartbeats are not renewing fast enough. Check `TaskQLockExpiringSoon` (it reads the measured lease left at each renewal — `lock_lease` minus the gap since the previous one — so firing means renewals are landing late, from a slow heartbeat pool, failed ticks or a blocked event loop; `taskq_worker_event_loop_lag_seconds` and `taskq_heartbeat_misses_total` say which) and widen the lease/heartbeat budget for those actors; do not restart workers to "clear" the gauge — the same jobs will zombie again.
+3. If the sweep is healthy and the count still regrows: jobs are repeatedly outliving their lease — the lease (`lock_lease`-shaped settings) is shorter than the actor's real run time and heartbeats are not renewing fast enough. Check `TaskQLockExpiringSoon` (it reads the measured lease left at each renewal — `lock_lease` minus the gap since the previous one, so firing means renewals are landing late, from a slow heartbeat pool, failed ticks or a blocked event loop; `taskq_worker_event_loop_lag_seconds` and `taskq_heartbeat_misses_total` say which) and widen the lease/heartbeat budget for those actors; do not restart workers to "clear" the gauge — the same jobs will zombie again.
 4. Confirm recovery: `taskq_jobs_running_lease_expired` returns to 0 and stays there across several sweep intervals.
 
 ---
@@ -365,7 +365,7 @@ The leader-count operand is what makes this alertable at all. A healthy multi-wo
 **How to remediate.**
 
 1. One actor, one `error_class`: fix that actor or its dependency; failed rows can be retried from the admin UI's Retry button or `backend.retry_job()` once the cause is fixed.
-2. `DeadlineExceeded` dominating: widen `schedule_to_close` (or the retry `base`/`cap`) for the actor — see [ops.md — Timeouts](ops.md#2-timeouts-start_to_close-and-schedule_to_close).
+2. `DeadlineExceeded` dominating: widen `schedule_to_close` (or the retry `base`/`cap`) for the actor; see [ops.md: Timeouts](ops.md#2-timeouts-start_to_close-and-schedule_to_close).
 3. Many actors at once: a shared dependency (database, downstream API) — check `TaskQRetryRateHigh` and `TaskQDispatchLatencyHigh` first; the terminal share is the tail end of the same incident once budgets run out.
 
 ---
@@ -389,14 +389,14 @@ The leader-count operand is what makes this alertable at all. A healthy multi-wo
 **How to remediate.**
 
 1. Fix or wait out the dependency the `error_type` names; retries recover on their own once it answers again. Do not raise `max_attempts` to "make it go away" — that spends more slots on the same failure.
-2. If the rate is one actor with a transient class that is really permanent (a bad payload that will never succeed), classify it: `non_retryable_exceptions` on the actor, or a `retry_classifier` — see [ops.md — Classifying failures](ops.md#6-classifying-failures-terminal-retryable-transient).
+2. If the rate is one actor with a transient class that is really permanent (a bad payload that will never succeed), classify it: `non_retryable_exceptions` on the actor, or a `retry_classifier`; see [ops.md: Classifying failures](ops.md#6-classifying-failures-terminal-retryable-transient).
 3. Confirm recovery: the retried share falls back under the threshold and `taskq_jobs_by_status{status="scheduled"}` drains.
 
 ---
 
 ## TaskQAbandonedJobs
 
-**What fired.** `rate(taskq_jobs_abandoned_total[5m]) > 0` for 5 minutes: a job was **abandoned** — an operator-requested cancel outlasted both grace periods (the actor was asked to stop, then forced with `task.cancel()`, and still never exited), so the running attempt was taken from it. Shutdowns never produce this: a deploy releases (interrupts) in-flight jobs back to the fleet. A retry or snooze never reaches this series either — those are `outcome="scheduled"` on the consumed-messages counter — so any rate here is a real actor ignoring cancellation.
+**What fired.** `rate(taskq_jobs_abandoned_total[5m]) > 0` for 5 minutes: a job was **abandoned** — an operator-requested cancel outlasted both grace periods (the actor was asked to stop, then forced with `task.cancel()`, and still never exited), so the running attempt was taken from it. Shutdowns never produce this: a deploy releases (interrupts) in-flight jobs back to the fleet. A retry or snooze never reaches this series either — those are `outcome="scheduled"` on the consumed-messages counter, so any rate here is a real actor ignoring cancellation.
 
 **How to confirm.**
 
@@ -413,9 +413,9 @@ The leader-count operand is what makes this alertable at all. A healthy multi-wo
 
 **How to remediate.**
 
-1. The named actor does not yield to cancellation: it is blocking the event loop (a sync call without `asyncio.to_thread`), swallowing `CancelledError`, or running a native call that cannot be interrupted. Make it cooperative — poll `ctx.cancellation_requested` (or await `ctx.cancel_event`) in long loops, keep blocking work off the loop — see [ops.md — Thread-unsafe native libraries](ops.md#thread-unsafe-native-libraries).
+1. The named actor does not yield to cancellation: it is blocking the event loop (a sync call without `asyncio.to_thread`), swallowing `CancelledError`, or running a native call that cannot be interrupted. Make it cooperative — poll `ctx.cancellation_requested` (or await `ctx.cancel_event`) in long loops, keep blocking work off the loop; see [ops.md: Thread-unsafe native libraries](ops.md#thread-unsafe-native-libraries).
 2. The abandoned row is terminal; the actor's coroutine may still be running in the worker until the process restarts. If it holds resources, restart that worker (`taskq_active_jobs` on its health socket shows the stuck slot).
-3. If the graces are simply too short for a well-behaved actor's cleanup, widen `TASKQ_CANCELLATION_GRACE_PERIOD` / `TASKQ_CLEANUP_GRACE_PERIOD` — but only after (1) is ruled out.
+3. If the graces are simply too short for a well-behaved actor's cleanup, widen `TASKQ_CANCELLATION_GRACE_PERIOD` / `TASKQ_CLEANUP_GRACE_PERIOD`, but only after (1) is ruled out.
 
 ---
 
@@ -449,7 +449,7 @@ The leader-count operand is what makes this alertable at all. A healthy multi-wo
 
 ## TaskQStrandedJobs
 
-**What fired.** `taskq_jobs_stranded > 0` for 5 minutes: pending/scheduled jobs that can never be dispatched, with the reason on the label. `reason="no_actor_config"`: the actor has no `actor_config` row (deregistered with `taskq actor-config deregister`, or never registered by any worker), so the dispatch CTE — which derives its candidates from `actor_config` — never sees the rows. `reason="unserved_queue"`: the queue dispatch routes the actor on (the actor's current assignment for a re-pended row, the row's own queue otherwise) has no live worker subscribed. Neither dispatch nor the deadline sweep will ever touch these rows.
+**What fired.** `taskq_jobs_stranded > 0` for 5 minutes: pending/scheduled jobs that can never be dispatched, with the reason on the label. `reason="no_actor_config"`: the actor has no `actor_config` row (deregistered with `taskq actor-config deregister`, or never registered by any worker), so the dispatch CTE, which derives its candidates from `actor_config` — never sees the rows. `reason="unserved_queue"`: the queue dispatch routes the actor on (the actor's current assignment for a re-pended row, the row's own queue otherwise) has no live worker subscribed. Neither dispatch nor the deadline sweep will ever touch these rows.
 
 **How to confirm.**
 

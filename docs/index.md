@@ -108,7 +108,7 @@ TaskQ's key capabilities and where it fits:
         if no `auth_dependency` is configured. Configure SSO via `taskq[oidc]`
         or `taskq[saml]`, pass a custom `auth_dependency`, or explicitly opt
         out with `TASKQ_ADMIN_UI_REQUIRE_AUTH=false`. See
-        [Admin UI — Security](guides/admin-ui.md#security).
+        [Admin UI: Security](guides/admin-ui.md#security).
 
 -   :material-chart-line:{ .lg .middle } **Observability**
 
@@ -214,7 +214,7 @@ class SendEmailResult(BaseModel):
     message_id: str
 
 
-# Define an actor — payload and result types are inferred from annotations.
+# Define an actor: payload and result types are inferred from annotations.
 @actor
 async def send_email(payload: SendEmailPayload) -> SendEmailResult:
     print(f"Sending '{payload.subject}' to {payload.to}")

@@ -44,6 +44,8 @@ class FakeConn:
         return f"{pieces[0]} 1"
 
     async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
+        self.fetch_calls = getattr(self, "fetch_calls", [])
+        self.fetch_calls.append((sql, args))
         return list(self._fetch_rows)
 
     async def close(self) -> None:
@@ -108,7 +110,9 @@ async def test_isolate_self_opens_fresh_connect() -> None:
 
     connect_calls: list[tuple[str, float]] = []
 
-    async def fake_connect(dsn: str, *, timeout: float) -> FakeConn:
+    async def fake_connect(
+        dsn: str, *, timeout: float, command_timeout: float | None = None
+    ) -> FakeConn:
         connect_calls.append((dsn, timeout))
         return FakeConn()
 
@@ -132,7 +136,9 @@ async def test_isolate_self_opens_fresh_connect() -> None:
 async def test_isolate_self_shutdown_even_on_connect_failure() -> None:
     """isolate_self calls shutdown.set() even when asyncpg.connect() raises."""
 
-    async def fake_connect(dsn: str, *, timeout: float) -> FakeConn:
+    async def fake_connect(
+        dsn: str, *, timeout: float, command_timeout: float | None = None
+    ) -> FakeConn:
         raise OSError("connection refused")
 
     import asyncpg as apg
@@ -175,7 +181,9 @@ async def test_isolate_self_writes_attempt_row_per_job() -> None:
 
     conn = FakeConn(fetch_rows=job_rows)
 
-    async def fake_connect(dsn: str, *, timeout: float) -> FakeConn:
+    async def fake_connect(
+        dsn: str, *, timeout: float, command_timeout: float | None = None
+    ) -> FakeConn:
         return conn
 
     import asyncpg as apg
@@ -232,7 +240,9 @@ async def test_isolate_self_honours_fr12_case_shape() -> None:
 
     conn = StubConn()
 
-    async def fake_connect(dsn: str, *, timeout: float) -> StubConn:
+    async def fake_connect(
+        dsn: str, *, timeout: float, command_timeout: float | None = None
+    ) -> StubConn:
         return conn
 
     import asyncpg as apg
@@ -324,7 +334,9 @@ async def test_isolate_self_shields_terminal_writes() -> None:
             ]
         )
 
-        async def fake_connect(dsn: str, *, timeout: float) -> FakeConn:
+        async def fake_connect(
+            dsn: str, *, timeout: float, command_timeout: float | None = None
+        ) -> FakeConn:
             return conn
 
         import asyncpg as apg
@@ -365,7 +377,9 @@ async def test_isolate_self_terminates_hung_conn_close(
     conn = FakeConn()
     conn.close_wait.clear()  # close() blocks forever from now on
 
-    async def fake_connect(dsn: str, *, timeout: float) -> FakeConn:
+    async def fake_connect(
+        dsn: str, *, timeout: float, command_timeout: float | None = None
+    ) -> FakeConn:
         return conn
 
     import asyncpg as apg
@@ -390,7 +404,9 @@ async def test_isolate_self_fast_close_not_terminated(
     terminated. Pins the no-regression behaviour (passes pre/post-fix)."""
     conn = FakeConn()
 
-    async def fake_connect(dsn: str, *, timeout: float) -> FakeConn:
+    async def fake_connect(
+        dsn: str, *, timeout: float, command_timeout: float | None = None
+    ) -> FakeConn:
         return conn
 
     import asyncpg as apg
@@ -402,4 +418,100 @@ async def test_isolate_self_fast_close_not_terminated(
 
     assert conn.close_calls == 1
     assert conn.terminated is False
+    assert shutdown.is_set()
+
+
+# ── Test: isolate excludes still-owned rows and routes them to the interrupt arm ──
+
+
+async def test_isolate_self_cancels_live_actors_and_excludes_their_rows() -> None:
+    """A still-executing actor's row must never enter the re-pend.
+
+    Isolate used to re-pend every running row at the reclaim backoff while
+    the local actor kept executing: a peer claimed the row when its
+    scheduled_at arrived and ran it concurrently with the body still in
+    flight, a double run. Now isolate cancels the local actors the same way
+    the orchestrator's CANCELLING phase does (origin stamp, cancel event,
+    task cancel) so each consumer routes through its SHUTDOWN-origin
+    mark_interrupted arm, waits for that bounded, and excludes the rows
+    from the re-pend selection: their release belongs to the interrupt
+    arms (hold earned, attempt spent).
+    """
+    from types import SimpleNamespace
+
+    from taskq.backend._protocol import CancelPhase
+    from taskq.context import CancelOrigin
+
+    job_id = new_uuid()
+    interrupt_writes: list[object] = []
+    origin_stamps: list[CancelOrigin] = []
+    cancel_event = asyncio.Event()
+
+    async def _fake_consumer() -> None:
+        # Park the way a real consumer does between flag polls; on cancel,
+        # the SHUTDOWN-origin interrupt arm runs its release write during
+        # unwinding.
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            interrupt_writes.append(job_id)
+            raise
+
+    entry_task = asyncio.create_task(_fake_consumer())
+    # Let the consumer reach its park: a real consumer task is long
+    # started by the time a heartbeat failure isolates the worker, and a
+    # cancel delivered before a task's first run never executes its body.
+    await asyncio.sleep(0)
+    entry = SimpleNamespace(
+        job_id=job_id,
+        task=entry_task,
+        ctx=SimpleNamespace(
+            cancel_event=cancel_event,
+            _set_cancel_origin=origin_stamps.append,
+        ),
+        cancel_phase=CancelPhase.NONE,
+        cancel_observed_at=None,
+        cancel_origin=CancelOrigin.NONE,
+    )
+    # _ActiveJob is the registry's entry type; the fake carries the exact
+    # attribute surface isolate_self reads.
+    deps = _make_deps()
+    deps.active_jobs._by_id[job_id] = entry  # type: ignore[reportAttributeAccessUsage, index-assign]  # Why: unit test injects a minimal entry; the registry's real register() needs a full JobContext the fake replaces.
+
+    conn = FakeConn()
+
+    async def fake_connect(
+        dsn: str, *, timeout: float, command_timeout: float | None = None
+    ) -> FakeConn:
+        return conn
+
+    import asyncpg as apg
+
+    monkeypatch_orig = apg.connect
+    apg.connect = fake_connect  # type: ignore[method-assign]
+    try:
+        shutdown = asyncio.Event()
+        await asyncio.wait_for(isolate_self(deps, new_uuid(), shutdown), timeout=10.0)
+    finally:
+        apg.connect = monkeypatch_orig  # type: ignore[method-assign]
+
+    # The actor got the CANCELLING-phase treatment: cooperative event, the
+    # SHUTDOWN origin stamp (the interrupt arm's routing key), and the
+    # task cancellation that delivered it into unwinding.
+    assert cancel_event.is_set()
+    assert origin_stamps == [CancelOrigin.SHUTDOWN]
+    assert interrupt_writes == [job_id], (
+        "the consumer's interrupt arm must run: the row's release with the "
+        "hold and the spent attempt belongs to it, not to the re-pend"
+    )
+    assert entry_task.done()
+
+    # The re-pend's SELECT excluded the owned row: the exclusion array is
+    # the fetch's second bound parameter.
+    assert len(conn.fetch_calls) == 1
+    _sql, fetch_args = conn.fetch_calls[0]
+    assert len(fetch_args) == 2
+    assert job_id in fetch_args[1], (
+        "the re-pend selection must exclude the row the local actor owns"
+    )
     assert shutdown.is_set()

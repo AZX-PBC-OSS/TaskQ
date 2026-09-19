@@ -72,7 +72,7 @@ is configured. `admin_ui_require_auth` defaults to `True`, so
 deploying an unauthenticated admin UI in production.
 
 ```sh
-# The default — fails closed in non-dev:
+# The default: fails closed in non-dev:
 TASKQ_ENVIRONMENT=production taskq ui serve
 # RuntimeError: admin UI requires auth_dependency in non-dev environments
 ```
@@ -84,7 +84,7 @@ To opt out (e.g. when relying on a reverse proxy for authentication), set
 export TASKQ_ENVIRONMENT=production
 export TASKQ_ADMIN_UI_REQUIRE_AUTH=false
 taskq ui serve
-# WARNING log: admin-ui-no-auth — but server starts
+# WARNING log: admin-ui-no-auth: but server starts
 ```
 
 Dev environments (`TASKQ_ENVIRONMENT=dev` or `development`) bypass the
@@ -243,7 +243,7 @@ Archived rows (from `jobs_archive`) are shown with an "archived" badge in the So
 
 ### `GET /admin/jobs`
 
-Job listing page with "Live Jobs" and "Archived" tabs. Supports filtering by status (multi-select), actor (substring match), queue, time range, identity key, fairness key, free-text search (matches job ID or actor), and tags. Results are paginated at 100 rows using keyset pagination and can be sorted by created_at, started_at, actor, queue, status, or attempt. HTMX partial refreshes update the table without a full page reload. The table is polled at `TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS` whenever the Live Jobs tab is open; with the live toggle on, an SSE stream (`/admin/sse/jobs`, PG `LISTEN` on the schema's events channel) additionally brings a refresh forward the moment an event arrives. The events channel carries only the running-job cancel fast-path today — terminal writes and dispatch do not NOTIFY it — which is why polling stays the source of truth and SSE is an accelerator, never a replacement.
+Job listing page with "Live Jobs" and "Archived" tabs. Supports filtering by status (multi-select), actor (substring match), queue, time range, identity key, fairness key, free-text search (matches job ID or actor), and tags. Results are paginated at 100 rows using keyset pagination and can be sorted by created_at, started_at, actor, queue, status, or attempt. HTMX partial refreshes update the table without a full page reload. The table is polled at `TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS` whenever the Live Jobs tab is open; with the live toggle on, an SSE stream (`/admin/sse/jobs`, PG `LISTEN` on the schema's events channel) additionally brings a refresh forward the moment an event arrives. The events channel carries only the running-job cancel fast-path today — terminal writes and dispatch do not NOTIFY it, which is why polling stays the source of truth and SSE is an accelerator, never a replacement.
 
 Sorting by `started_at` ascending together with a `status=running` filter is the "running longest" view: the jobs that have held a worker the longest come first. `started_at` is NULL for jobs that have not started, and those rows sort last in both directions (NULLS LAST) so paging through live rows is never interrupted by the not-yet-started tail.
 
@@ -274,7 +274,7 @@ Cancels a non-terminal job by writing a cancel request via `backend.write_cancel
 
 ### `POST /admin/jobs/{job_id}/retry`
 
-Puts a job that has come to rest back to `pending` via `backend.retry_job`, allowing it to be re-dispatched by a worker. Every resting state is a valid source — `failed`, `crashed`, `cancelled`, `abandoned` and `succeeded` — so the replay path after a bad deploy and the put-back path after a worker restart are both supported. Returns `403` if `admin_actions_enabled` is `false`, `404` if the job does not exist, `409` if the job is `running` (re-pending a live attempt could run it twice) or already queued as `pending`/`scheduled`. Redirects to the job detail page on success. The retry leaves `attempt` where it is and raises `max_attempts` just enough to fund one more run, clears error fields and any stored result, and sets `status='pending'`. It also clears `schedule_to_close` **only when that deadline has already elapsed** — dispatch never claims a row whose deadline has passed, so keeping a stale deadline would leave the retried row undispatchable (swept back to `failed` on the next tick) even though the retry reported success. A still-future `schedule_to_close` is preserved unchanged: the original time budget still applies to the re-run.
+Puts a job that has come to rest back to `pending` via `backend.retry_job`, allowing it to be re-dispatched by a worker. Every resting state is a valid source — `failed`, `crashed`, `cancelled`, `abandoned` and `succeeded`, so the replay path after a bad deploy and the put-back path after a worker restart are both supported. Returns `403` if `admin_actions_enabled` is `false`, `404` if the job does not exist, `409` if the job is `running` (re-pending a live attempt could run it twice) or already queued as `pending`/`scheduled`. Redirects to the job detail page on success. The retry leaves `attempt` where it is and raises `max_attempts` just enough to fund one more run, clears error fields and any stored result, and sets `status='pending'`. It also clears `schedule_to_close` **only when that deadline has already elapsed** — dispatch never claims a row whose deadline has passed, so keeping a stale deadline would leave the retried row undispatchable (swept back to `failed` on the next tick) even though the retry reported success. A still-future `schedule_to_close` is preserved unchanged: the original time budget still applies to the re-run.
 
 ### `GET /admin/jobs/count`
 
@@ -312,13 +312,13 @@ Response shape:
 }
 ```
 
-Duration percentiles are derived from the attempt rows' `duration_ms` via `percentile_cont` (`job_attempts_archive` on the archive side, `job_attempts` on the live side). Actors with no recorded attempt rows will have `null` for duration fields. `last_activity_at` is the freshest `finished_at` the actor has on either side; `total` counts attempt rows (which equals the job count in the common single-attempt case). `last_error_class` is the error class of the actor's most recent completed row that carries one — the job row's own `error_class`, which every terminal failure path stamps (the classifier's exception name, `WorkerCrashed` on crash-reclaim, `DeadlineExceeded` on the deadline sweep) — so "what is this actor dying of" reads without opening a job; `null` when none of the actor's rows ever carried one.
+Duration percentiles are derived from the attempt rows' `duration_ms` via `percentile_cont` (`job_attempts_archive` on the archive side, `job_attempts` on the live side). Actors with no recorded attempt rows will have `null` for duration fields. `last_activity_at` is the freshest `finished_at` the actor has on either side; `total` counts attempt rows (which equals the job count in the common single-attempt case). `last_error_class` is the error class of the actor's most recent completed row that carries one — the job row's own `error_class`, which every terminal failure path stamps (the classifier's exception name, `WorkerCrashed` on crash-reclaim, `DeadlineExceeded` on the deadline sweep), so "what is this actor dying of" reads without opening a job; `null` when none of the actor's rows ever carried one.
 
 ### `GET /admin/workers`
 
 Workers overview. Lists all rows from the `workers` table ordered by `last_seen_at DESC`, with an `is_leader` flag computed by a LEFT JOIN on `maintenance_leader`, and a **Running / Max** column: the count of `jobs` rows in `status = 'running'` locked by that worker (one index seek per worker over `jobs_locked_by_worker_running_idx`, the same population the `taskq.worker.active_jobs` metric counts per process) against the `max_concurrency` the worker registered in its row metadata. Amber when the worker is at capacity; a dash when an older registration carried no capacity. Reserved-but-unclaimed capacity (rate-limit slots, in-flight dispatch probes) is in neither number.
 
-The **Stall hotspots** column renders the worker's rolling tally of attributed event-loop stalls from the same metadata (`send_email x12 (gil_held)`, hottest actor first) — the actors whose synchronous code blocked that worker's event loop, as the lag watchdog attributed them. Empty when the worker attributed none. The tally counts ATTRIBUTED stalls per actor; the Running / Max column counts running rows. See [runbooks.md — Event-loop stall attribution](runbooks.md#event-loop-stall-attribution-worker-warnings).
+The **Stall hotspots** column renders the worker's rolling tally of attributed event-loop stalls from the same metadata (`send_email x12 (gil_held)`, hottest actor first) — the actors whose synchronous code blocked that worker's event loop, as the lag watchdog attributed them. Empty when the worker attributed none. The tally counts ATTRIBUTED stalls per actor; the Running / Max column counts running rows. See [runbooks.md: Event-loop stall attribution](runbooks.md#event-loop-stall-attribution-worker-warnings).
 
 ### `GET /admin/leader`
 
@@ -346,7 +346,7 @@ Advances `next_fire_at` to the next computed fire time after the current one. Re
 
 Enqueues a job for the schedule's actor immediately, using the schedule's `payload_factory` and the actor's stored `actor_config` row for queue, `max_attempts`, and `retry_kind`. Returns `403` if `admin_actions_enabled` is `false`, `404` if the schedule does not exist, `303` redirect with an error query parameter if the payload factory fails or the actor is not configured. A per-process 10-second cooldown prevents rapid re-triggering of the same schedule.
 
-!!! warning "Per-process cooldown — not distributed"
+!!! warning "Per-process cooldown, not distributed"
     The run-now cooldown is tracked in-process (`asyncio` loop time), not in
     Postgres or Redis. In multi-replica deployments, each process has its own
     cooldown timer, so N replicas get N× the trigger rate. If you need a
@@ -482,7 +482,7 @@ configuration. Two things sit on top of it, and neither replaces it:
 * **The jobs page's SSE accelerator.** With the *Live refresh* toggle on, the jobs
   list also opens an `EventSource` to `GET /admin/sse/jobs`, a PG `LISTEN` on the
   schema's events channel. That channel carries only the running-job cancel
-  fast-path today — terminal writes and dispatch never `NOTIFY` it — so an event can
+  fast-path today — terminal writes and dispatch never `NOTIFY` it, so an event can
   bring a refresh forward or update one row's badge in place, never stand in for
   the poll. If the stream drops (a proxy idle timeout, a server restart) the
   browser's own `EventSource` reconnect runs; the poll carries the page meanwhile.
@@ -636,7 +636,7 @@ unstyled content on page load).
 
 ---
 
-## `create_router()` — embedding in your own FastAPI app
+## `create_router()`: embedding in your own FastAPI app
 
 If you have an existing FastAPI application, you can mount the admin router directly instead of running `taskq ui serve`.
 

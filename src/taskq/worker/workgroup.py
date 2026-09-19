@@ -556,6 +556,12 @@ class _ChildState:
     health_failures: int = 0
     stdout_task: asyncio.Task[None] | None = None
     stderr_task: asyncio.Task[None] | None = None
+    respawn_task: asyncio.Task[None] | None = None
+    """The child's in-flight backoff-then-respawn, run detached so one
+    child's backoff cannot pin the monitor's tick (a crash-looping child
+    would otherwise blind the monitor to every sibling for up to
+    ``backoff_max`` per cycle). The reference prevents garbage collection
+    of the detached task."""
     gave_up: bool = False
     """Set when the burst budget is exhausted. The monitor stops
     scheduling this child entirely, the give-up critical fires once,
@@ -956,6 +962,30 @@ async def _delay_then_respawn(
                 )
 
 
+def _start_respawn(
+    child: _ChildState,
+    delay: float,
+    actors: str,
+    wg_instance: UUID,
+    shutting_down: asyncio.Event,
+) -> None:
+    """Run one child's backoff-then-respawn detached from the monitor's tick.
+
+    Awaiting the respawn inline would serialize child-failure detection
+    behind one child's backoff sleep: a crash-looping child pinning the
+    monitor at ``backoff_max`` per cycle leaves every sibling undetected
+    for minutes. Detached, the monitor keeps ticking at its own cadence;
+    the respawn task is per-child (the spawn re-checks the process slot
+    under the lock, so overlap is safe) and self-terminates on shutdown.
+    """
+    if child.respawn_task is not None and not child.respawn_task.done():
+        return
+    child.respawn_task = asyncio.create_task(
+        _delay_then_respawn(child, delay, actors, wg_instance, shutting_down),
+        name=f"workgroup.respawn.{child.spec.name}",
+    )
+
+
 async def run_forever(config_path: Path) -> None:
     """Load config, spawn children, manage lifecycle until a signal arrives.
 
@@ -1091,9 +1121,7 @@ async def run_forever(config_path: Path) -> None:
                         )
                     if delay is None:
                         continue
-                    await _delay_then_respawn(
-                        child, delay, config.actors, wg_instance, shutting_down
-                    )
+                    _start_respawn(child, delay, config.actors, wg_instance, shutting_down)
                     continue
                 if proc.returncode is not None:
                     async with child.restart_lock:
@@ -1110,11 +1138,10 @@ async def run_forever(config_path: Path) -> None:
                         delay = await _handle_child_exit(
                             child, config.actors, wg_instance, scfg, shutting_down
                         )
-                    # Lock released.  Sleep outside the lock, racing against shutdown.
+                    # Lock released.  The respawn runs detached: the
+                    # monitor keeps ticking while this child backs off.
                     if delay is not None:
-                        await _delay_then_respawn(
-                            child, delay, config.actors, wg_instance, shutting_down
-                        )
+                        _start_respawn(child, delay, config.actors, wg_instance, shutting_down)
             await asyncio.sleep(0.5)
 
     # ── Health-check loop, kills hung workers via DB ─────────────────

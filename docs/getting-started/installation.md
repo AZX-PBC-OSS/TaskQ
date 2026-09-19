@@ -96,7 +96,7 @@ No env var is strictly required — `TASKQ_PG_DSN` defaults to
 actual database.
 
 ```dotenv
-# Direct PG DSN — sessions, LISTEN/NOTIFY, and advisory locks require this.
+# Direct PG DSN: sessions, LISTEN/NOTIFY, and advisory locks require this.
 TASKQ_PG_DSN=postgresql://taskq:taskq@localhost:5432/taskq
 
 # Schema name for all TaskQ tables. Override if multi-tenanting.
@@ -121,7 +121,7 @@ never picked up, with no error raised.
 TaskQ loads configuration through `dotenvmodel` with cascading `.env` discovery:
 `.env` → `.env.local` → `.env.{env}` → `.env.{env}.local`, where `{env}` comes from the
 `ENV` variable (default `dev`). Real environment variables take precedence over `.env`
-files — see [Configuration](../guides/configuration.md) for the full resolution rules.
+files; see [Configuration](../guides/configuration.md) for the full resolution rules.
 
 ---
 

@@ -31,6 +31,7 @@ import structlog
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq._dsn import dsn_host
 from taskq._shield import shield_with_retrieval
+from taskq.backend._protocol import CancelPhase
 from taskq.backend._records import jsonb_param
 from taskq.backend._sql import (
     INSERT_ATTEMPT_SQL,
@@ -44,6 +45,7 @@ from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Wh
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
 )
+from taskq.context import CancelOrigin
 from taskq.obs import (
     get_logger,
     get_meter,
@@ -518,6 +520,7 @@ _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
     "SELECT id, attempt, started_at, max_attempts, retry_kind, cancel_phase "
     'FROM "{schema}".jobs '
     "WHERE locked_by_worker = $1 AND status = 'running'"
+    " AND id <> ALL($2::uuid[])"
 )
 
 # Recovery transitions via isolate_self: running→cancelled when a
@@ -686,6 +689,58 @@ async def isolate_self(
     # arithmetic explainable (selected rows = pending + crashed +
     # cancelled + lost_race).
     jobs_lost_race_count = 0
+    # The re-pend's exclusion set: empty (vacuously matches every row)
+    # when this process holds no actors, the ids captured at cancel time
+    # otherwise.
+    excluded_ids: list[UUID] = []
+    # Actors still executing in THIS process: their rows must never enter
+    # the re-pend below. The reclaim delay (however large the operator
+    # sized the backoff) does not outlive a long actor: a peer claims the
+    # re-pended row the moment its scheduled_at arrives and runs it
+    # concurrently with the local body, a double run. Instead the local
+    # actors take the same route the shutdown orchestrator's CANCELLING
+    # phase gives them: the SHUTDOWN origin stamp plus the cancel event
+    # routes each consumer's unwinding through its mark_interrupted arm,
+    # which earns the exit-proving hold and releases the row with the
+    # spent attempt standing. Where PG is truly unreachable and the
+    # interrupt writes fail, the rows stay running and lock-lease expiry
+    # reclaims them, the honest residual.
+    active_entries = deps.active_jobs.all()
+    loop = asyncio.get_running_loop()
+    for active in active_entries:
+        active.ctx.cancel_event.set()
+        if active.cancel_origin is CancelOrigin.NONE:
+            active.cancel_origin = CancelOrigin.SHUTDOWN
+            active.ctx._set_cancel_origin(CancelOrigin.SHUTDOWN)  # pyright: ignore[reportPrivateUsage]  # Why: the isolate path is the other designated shutdown-side writer of the context's origin stamp, same contract as the orchestrator's CANCELLING phase.
+        if active.cancel_phase < CancelPhase.COOPERATIVE:
+            active.cancel_phase = CancelPhase.COOPERATIVE
+            active.cancel_observed_at = loop.time()
+        if not active.task.done():
+            active.task.cancel()
+    if active_entries:
+        # The interrupt writes run inside the consumers' own unwinding,
+        # bounded by the terminal-write retry budget; the join here is the
+        # outer bound (the grace periods the actor's own unwinding may
+        # take, plus close slack). Entries that outlive it keep their rows
+        # excluded from the re-pend, lock-lease expiry is the backstop.
+        excluded_ids = [active.job_id for active in active_entries]
+        join_bound = (
+            deps.settings.cancellation_grace_period
+            + deps.settings.cleanup_grace_period
+            + CLOSE_TIMEOUT_SECS
+        )
+        live_tasks = [active.task for active in active_entries if not active.task.done()]
+        if live_tasks:
+            _done, still_running = await asyncio.wait(live_tasks, timeout=join_bound)
+            if still_running:
+                logger.warning(
+                    "isolate-self-actor-join-timeout",
+                    kind="isolate_self_actor_join_timeout",
+                    worker_id=worker_id,
+                    still_running=[
+                        str(active.job_id) for active in active_entries if not active.task.done()
+                    ],
+                )
 
     try:
         # command_timeout, not just the connect timeout: the connect budget
@@ -710,7 +765,14 @@ async def isolate_self(
                 lost_race = 0
                 async with conn.transaction():
                     rows = await conn.fetch(  # pyright: ignore[reportUnknownVariableType]  # Why: conn type suppressed above due to asyncpg-stubs limitation on connect().
-                        select_running_jobs_sql, worker_id
+                        select_running_jobs_sql,
+                        worker_id,
+                        # The still-owned rows: their release belongs to the
+                        # consumers' interrupt arms (the hold and the spent
+                        # attempt), not to this re-pend. An empty array
+                        # vacuously matches every row, so the statement
+                        # shape never varies.
+                        excluded_ids,
                     )
                     for row in rows:  # pyright: ignore[reportUnknownVariableType]  # Why: rows type suppressed above, propagates from conn.fetch() suppression.
                         # The guarded UPDATE is the race arbiter, so its

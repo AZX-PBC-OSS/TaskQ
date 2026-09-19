@@ -64,7 +64,7 @@ This is a deliberate tradeoff, not a missing feature:
    `TASKQ_MIGRATE_ON_START=true` is **not** a substitute here: it is honoured
    only by `taskq ui serve`, which runs as a single process. The worker
    ignores it (and warns when it is set) — N worker replicas racing to migrate
-   is the hazard the migration advisory lock exists to prevent — and a worker
+   is the hazard the migration advisory lock exists to prevent, and a worker
    started against a schema still missing a `pre`-phase migration refuses to
    boot rather than running against a schema behind its code.
 
@@ -190,14 +190,14 @@ and pin `taskq-py` back until every worker is upgraded.
 
 ### `taskq.worker.actor_config` → `taskq.actor_config`
 
-> **Released in v0.2.0–v0.2.2, moved in unreleased.** This is a breaking
+> **Released in v0.2.0-v0.2.2, moved in unreleased.** This is a breaking
 > change for anyone importing `ActorConfig` from the old path.
 
 The `ActorConfig` dataclass has moved from `taskq.worker.actor_config` to
 the top-level `taskq.actor_config` module. It is a shared carrier used by
-the client, CLI, and admin UI — not worker-internal.
+the client, CLI, and admin UI, not worker-internal.
 
-**Old (v0.2.0–v0.2.2):**
+**Old (v0.2.0-v0.2.2):**
 
 ```python
 from taskq.worker.actor_config import ActorConfig
@@ -380,7 +380,7 @@ validated model rather than the raw row dict. Two consequences:
    invalid-payload path, it no longer is.
 2. **Your caller owns the terminal write for the escaping error.** This was
    already true — the outer `try` has no `except` clauses, so the error
-   propagated from the in-`try` fallback as well — but it now propagates
+   propagated from the in-`try` fallback as well, but it now propagates
    earlier. `dispatch_one_job`'s outer handler and the in-memory test runner
    both already do this.
 
@@ -549,9 +549,9 @@ Pydantic-validated payloads are unaffected: `dict[str, ...]` model fields
 reject non-`str` keys at validation (they do not coerce), so a payload that
 reaches `EnqueueArgs` through `jobs.enqueue` already has string keys.
 Non-`str` keys were always lossy on the wire — JSON objects and PG `jsonb`
-can only carry string keys — so failing fast surfaces at the boundary what
+can only carry string keys, so failing fast surfaces at the boundary what
 used to surface as a silently rewritten key on read-back. Dropping the flag
-is also 1.29–1.73x faster on str-keyed input (its only effect there). See
+is also 1.29-1.73x faster on str-keyed input (its only effect there). See
 the `taskq._json.dumps` docstring for the full reasoning.
 
 ### `heartbeat_timeout` is enforced by the reclaim sweep
@@ -645,10 +645,10 @@ the attempt already sits at the cap the retry is refused and the row stays
 terminal rather than re-pending a job whose next claim would overflow the
 `attempt` column. The retryable source statuses also widened: every
 terminal status is now valid (`succeeded` — the replay path after a bad
-deploy — and `abandoned` included), while `running` stays excluded because
+deploy, and `abandoned` included), while `running` stays excluded because
 re-pending a live row races its own terminal write.
 
-### Graceful shutdown interrupts — it no longer terminalises in-flight work
+### Graceful shutdown interrupts: it no longer terminalises in-flight work
 
 > **Unreleased.** Behaviour change with one additive pre migration
 > (`01.00.12_02_pre_job_interrupt_count.sql` — apply it before rolling
@@ -699,7 +699,7 @@ What to audit:
   `THREAD_JOIN_TIMEOUT` (300s) — a released row could become claimable
   while its actor still ran. The thread's late completion accomplished
   nothing (the row was already released-with-hold and the fleet re-attempts
-  the work), so ending it at the deadline loses nothing — but an
+  the work), so ending it at the deadline loses nothing, but an
   embedder's own cleanup that expected the process to outlive a stuck
   actor no longer does.
 * **Two new startup warnings, no new hard validation.** The release park
@@ -772,7 +772,7 @@ process than the one that issued it (#239).
 
 One policy fixes both: **the signed correlation cookie is the binding** —
 verifiable by every replica sharing `session_secret`, so cross-replica
-callbacks now succeed with no sticky sessions — and the cookie-less
+callbacks now succeed with no sticky sessions, and the cookie-less
 fallback moved behind `TASKQ_SAML_ALLOW_COOKIELESS_FALLBACK`, **default
 `false`**. What to do on upgrade:
 
@@ -905,7 +905,7 @@ If you run `backend="redis"` rate limits with `rate_limit_pg_fallback_enabled`
 (the default), refunds were previously credited to Redis even when a Redis
 outage had caused the acquire to fall through to Postgres and spend the token
 there. Postgres was never repaid — permanently, for a fixed-quota bucket with
-`refill_per_second == 0` — and Redis gained a token it never spent.
+`refill_per_second == 0`, and Redis gained a token it never spent.
 
 Refunds now dispatch on the store the acquire actually used. **Expect your
 effective quotas to shift after upgrading**: Postgres-side buckets that had
@@ -919,7 +919,7 @@ Postgres log-style sliding-window `refund()` was a silent no-op (it now
 properly frees slots), and the Postgres token-bucket `refund()` was likewise
 a no-op (it now properly refunds tokens, capped at capacity, via `FOR
 UPDATE` on `rate_limit_buckets`). Both were released behaviour — a
-release-and-retry cycle never gave the slot back — so fixed-quota buckets
+release-and-retry cycle never gave the slot back, so fixed-quota buckets
 may again admit work that had been permanently locked out.
 
 ### `@actor(...)` capacity literals no longer win over the stored row
@@ -1022,7 +1022,7 @@ them, and the schema name alone may be 63 characters. With the name
 interpolated, the per-worker cancel channel (13 + schema + 37 bytes) broke
 from a 14-character schema on — every cancel's NOTIFY errored, was logged
 as `cancel-request-notify-failed`, and cancellation fell back to the
-heartbeat poll — and the wake channel broke every enqueue from 53. The tag
+heartbeat poll, and the wake channel broke every enqueue from 53. The tag
 makes every channel's length independent of the schema; settings loading
 now refuses any schema whose channels would not fit.
 
@@ -1152,7 +1152,7 @@ allows:
   fleet.
 - `01.00.12_08` / `01.00.12_09` — only the `CREATE INDEX` builds. Each
   build takes a `SHARE` lock (writes queue, reads keep flowing). The
-  runner wraps each **file** in one transaction — not each statement —
+  runner wraps each **file** in one transaction, not each statement —
   so a file's builds share ONE write-block window whose duration is the
   **sum** of that file's builds (`01.00.12_08`'s two builds run
   back-to-back with no drain between them; measured, a writer INSERT
@@ -1221,7 +1221,7 @@ transaction; they now drain their match set in bounded committed batches
 (`event_writer_batch_size` rows per transaction, each with a server-side
 `statement_timeout`). A mid-operation failure therefore leaves the batches
 that already committed **as durable partial progress** instead of rolling
-everything back — and a re-run continues where the stopped one left off,
+everything back, and a re-run continues where the stopped one left off,
 because already-cancelled rows fall out of the match set. If you relied on
 all-or-nothing semantics (e.g. aborting a tenant offboard on any error and
 expecting zero cancels), re-check the returned counts before retrying: they
@@ -1355,7 +1355,7 @@ instead of silently disabling Redis.
 
 The `.env`-not-found warning suppression is narrowed to exactly that one
 warning — a `logging.Filter` matched on message prefix, instead of raising
-the whole `dotenvmodel` logger to ERROR — so real misconfiguration warnings
+the whole `dotenvmodel` logger to ERROR, so real misconfiguration warnings
 (e.g. an invalid `DOTENV_*` value) stay visible.
 
 ### `start_to_close` now cancels the running actor
@@ -1365,7 +1365,7 @@ the whole `dotenvmodel` logger to ERROR — so real misconfiguration warnings
 `start_to_close` now actually cancels the running actor on the transactional
 path. `_run_actor_in_tx` wrapped the actor in `asyncio.shield()` *inside*
 the `wait_for` enforcing the deadline, and a shield keeps the shielded
-awaitable running when its waiter is cancelled — so the timeout applied to
+awaitable running when its waiter is cancelled, so the timeout applied to
 the wait and never to the actor. The attempt was marked timed out and became
 eligible for retry on another worker while the original body kept executing,
 running every side effect past the timeout point twice. **An actor that
@@ -1430,7 +1430,7 @@ message now names only the ref, matching the sanitization contract
 days) are now deleted by a leader sweep regardless of parent-job status;
 `timedelta(0)` disables it; the crash-reclaim outbox slice
 (`kind='state_change' AND detail->>'reason'='lock_expired'`) is carved out
-of the ordinary window so an unread reclaim event survives it — but the
+of the ordinary window so an unread reclaim event survives it, but the
 carve-out is bounded, not unconditional. The same sweep deletes that slice
 once it is older than 100x the retention period
 (`RECLAIM_OUTBOX_RETENTION_MULTIPLIER`), because a fleet with no
@@ -1473,14 +1473,14 @@ The bundled Prometheus rule `TaskQQueueDepthHigh`
 `taskq_queue_depth > 1000`; it now fires on the oldest pending job's age —
 `max by (actor, queue) (taskq_jobs_oldest_pending_age_seconds) > 900`,
 sustained for 5 minutes. Depth alone is ambiguous — a deep queue that
-drains is healthy throughput — and a queue-summed number cannot tell a
+drains is healthy throughput, and a queue-summed number cannot tell a
 busy shared queue apart from an actor nobody consumes: a misrouted actor
 produces no refusal and no failed job, its rows simply pile up pending
 while every probe stays green, and its age series rises without bound
 while its queue-mates stay flat. The per-`(actor, queue)` attribution
 names exactly whose `TASKQ_QUEUES` coverage to check. `taskq_queue_depth`
 is still emitted, so dashboards and any rules you wrote against it keep
-working — but if you overrode the bundled alert's threshold, re-express
+working, but if you overrode the bundled alert's threshold, re-express
 the override in seconds of oldest-pending age.
 
 ---
@@ -1510,7 +1510,7 @@ Notes:
 - **`max_concurrent=0`.** `0` previously passed both the CLI and the ops-layer
   guard and then hit the table's `CHECK (max_concurrent IS NULL OR
   max_concurrent >= 1)`, producing a raw asyncpg `CheckViolationError`
-  traceback — so scripts passing `0` were already failing, just messily. `NULL`
+  traceback, so scripts passing `0` were already failing, just messily. `NULL`
   (via `--clear`) is the uncapped state; an emergency drain to `0` belongs to
   the per-actor `taskq actor-config set --max-concurrent 0`, which still
   accepts it.
@@ -1561,7 +1561,7 @@ Workgroup TOML configs follow the same load-time rule through
 - `[[workers]] name` is capped at 43 characters. The supervisor binds a
   health socket for every child at
   `/tmp/taskq_health_<name>_<uuid>.sock` — 60 fixed chars around the
-  name — and the path must fit every supported platform's AF_UNIX
+  name, and the path must fit every supported platform's AF_UNIX
   `sun_path` budget (104 bytes on macOS/BSD, 108 on Linux, NUL
   included). A name of 44-64 chars previously loaded and then died at
   child spawn with `OSError: AF_UNIX path too long`, restart-looping
@@ -1620,7 +1620,7 @@ selects on `state_change` before upgrading, or you lose visibility silently.
 
 Three other event names were kebab-cased in the same pass —
 `batch_streaming_enqueued`, `pg_credential_refresh_failed`, and
-`cancel_where_notify_failed` — but none of them ever appeared in a release, so
+`cancel_where_notify_failed`, but none of them ever appeared in a release, so
 no consumer can be matching the old spellings.
 
 ---
@@ -1743,7 +1743,7 @@ changelog becomes the authoritative record and these notes age out.
   (`queue`, `active`, `batch_id`, `limit`).
 - **`enqueue_batch_streaming` for unbounded iterables** — accepts an
   `Iterable[EnqueueItem]` (including generators) and inserts in chunks of
-  `chunk_size` (1–1000). All items share the same `batch_id`.
+  `chunk_size` (1-1000). All items share the same `batch_id`.
 - **`wait_for_batch` with `expect_at_least`, `on_empty`, `exclude_job_id`** —
   `expect_at_least` raises `EmptyBatchError` when fewer than the expected
   number of jobs are present; `on_empty` controls behaviour when zero jobs
@@ -1944,7 +1944,7 @@ changelog becomes the authoritative record and these notes age out.
 - Test containers are shared singletons: one Postgres and one Dragonfly
   container per pytest invocation, shared across all xdist workers (filelock
   refcount, stale-leftover sweep) with per-module database and per-test
-  schema isolation preserved — full suite ~152 s vs the ~226–240 s baseline.
+  schema isolation preserved — full suite ~152 s vs the ~226-240 s baseline.
 - Docker/testcontainers calls in tests run off the event loop
   (`asyncio.to_thread`) — docker-py's blocking HTTP round-trips no longer
   stall the event loop mid-test.
@@ -1993,7 +1993,7 @@ Per-schedule attribution lives on the `cron fired` / `cron fire failed`
 log lines and the `cron fire` span's `taskq.cron_schedule_id` attribute.
 The per-actor balance is reconciled against the database every tick —
 each tick re-derives the per-actor sum over the whole
-`cron_schedules.consecutive_failures` table — so disable, re-enable and
+`cron_schedules.consecutive_failures` table, so disable, re-enable and
 delete actions taken in any process self-correct on the next tick with
 due work rather than stranding residue, and the value returns to zero
 once no schedule is failing. `cron_schedules.consecutive_failures` and
@@ -2015,7 +2015,7 @@ op carries its id, that re-run could not land a second row: it raised
 `UniqueViolationError` for an enqueue that had already committed and
 would run (observed live under an old-contract emulation: 11
 UniqueViolations across 400 jittered kills). The harm was that error
-returned for work that SUCCEEDED — and the invitation it created: a
+returned for work that SUCCEEDED, and the invitation it created: a
 caller that retried on the error issued a fresh-id enqueue, and THAT row
 landed, which is the route that actually runs the job twice. Two
 mechanisms now split the concern:
@@ -2110,7 +2110,7 @@ this release's connection stack landed and once now:
 - **Previously (≤ v0.2.2):** the default was the literal `"taskq"`; no
   environment or `.env` value was read at all.
 - **At this release's first connection-stack landings:** the constructor
-  ran a full validating `TaskQSettings.load()` — so `TASKQ_SCHEMA_NAME`
+  ran a full validating `TaskQSettings.load()`, so `TASKQ_SCHEMA_NAME`
   was honored (process env and `.env`), but any OTHER malformed
   `TASKQ_*` value (e.g. `TASKQ_ADMIN_PORT=not-a-port`, a setting the
   client never reads) raised in an embedder's constructor.

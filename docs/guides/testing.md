@@ -125,7 +125,7 @@ async def test_actor_direct() -> None:
 
 This runs the real handler in-process and is the simplest option when you do
 not need to test enqueue/dispatch behaviour. See
-[Actors — direct invocation](actors.md#direct-invocation-__call__).
+[Actors: direct invocation](actors.md#direct-invocation-__call__).
 
 ### Actor-config registration
 
@@ -274,8 +274,8 @@ use them):
 | `worker_with_running_job` | function | `(worker_id, job_id, conn)` | Pre-created worker + running job on `clean_pg_conn`. |
 | `redis_container` | session | `RedisContainer` | Dragonfly v1.39.0 (Redis-compatible wire protocol), started with `--dbnum 1024 --proactor_threads 2 --maxmemory 512mb`. |
 | `killable_redis_container` | function | `RedisContainer` | Own Dragonfly container per test — for chaos tests that stop/restart Redis. Never stop the session container. |
-| `redis_url` | function | `str` | Per-test URL with a UNIQUE, never-reused logical DB (1–1023) allocated from the invocation's file-backed monotonic counter (unique across all xdist workers). DB 0 is reserved. |
-| `module_redis_url` | module | `str` | Unique Redis DB (1–1023) per module. `FLUSHDB` at setup AND on teardown. |
+| `redis_url` | function | `str` | Per-test URL with a UNIQUE, never-reused logical DB (1-1023) allocated from the invocation's file-backed monotonic counter (unique across all xdist workers). DB 0 is reserved. |
+| `module_redis_url` | module | `str` | Unique Redis DB (1-1023) per module. `FLUSHDB` at setup AND on teardown. |
 | `clean_redis_url` | function | `str` | `FLUSHDB` before each test. |
 | `clean_redis_client` | function | `redis.asyncio.Redis` | Fresh async client on the module DB. |
 | `backend_pair` | function | `Backend` | Parametrised `["memory", "pg"]`. The `pg` branch skips unless `@pytest.mark.integration` is set. |
@@ -418,7 +418,7 @@ Metric query helpers:
   `ProcessorFormatter` handlers around each test.
 
 These run automatically for any test that imports from `taskq.testing.otel`.
-See [Observability — testing observability](observability.md#6-testing-observability)
+See [Observability: testing observability](observability.md#6-testing-observability)
 for the full trace-context-propagation pattern.
 
 ---
@@ -760,8 +760,8 @@ connection pressure of such a split.
 
 ## See also
 
-- [Actors — testing actors without a database](actors.md#testing-actors-without-a-database) — `InMemoryBackend` + direct invocation
-- [Rate Limiting — testing rate limits](rate-limiting.md#testing-rate-limits) — `backend="memory"` + `FakeClock`
-- [Observability — testing observability](observability.md#6-testing-observability) — `setup_tracer`, `setup_meter`, trace-context propagation
-- [API Reference — Testing](../api-reference/testing.md) — full `taskq.testing` API surface
+- [Actors: testing actors without a database](actors.md#testing-actors-without-a-database) — `InMemoryBackend` + direct invocation
+- [Rate Limiting: testing rate limits](rate-limiting.md#testing-rate-limits) — `backend="memory"` + `FakeClock`
+- [Observability: testing observability](observability.md#6-testing-observability) — `setup_tracer`, `setup_meter`, trace-context propagation
+- [API Reference: Testing](../api-reference/testing.md) — full `taskq.testing` API surface
 - [Workers](workers.md) — worker lifecycle, `WorkerDeps`, maintenance leader

@@ -46,7 +46,7 @@ per tick — their backlog drains across ticks by construction.
 
 ## 2. Why every event-writer is bounded
 
-Everything in this initiative that writes `job_events` rows — sweeps 1–2,
+Everything in this initiative that writes `job_events` rows — sweeps 1-2,
 bulk cancel, deregistration — shares one discipline, and `job_events` is not
 just an audit trail: it feeds
 `poll_reclaim_events()`, the crash-reclaim feed consumers subscribe to. That
@@ -86,7 +86,7 @@ violation is invisible by construction.
 | Layer | What it does | What it is *not* |
 |---|---|---|
 | **Bounded batches** | One call transitions at most `batch_size` rows using a constant number of statements (a LIMIT-ed driving UPDATE, one batched `job_attempts` INSERT and one `pg_notify` where applicable, one batched `job_events` INSERT) inside one short transaction. Repeated calls drain the remainder. | Not an enforcement — a `LIMIT` alone is a hope about database speed. |
-| **Server-side `statement_timeout` per batch — the enforcement** | Each batch transaction applies `TASKQ_EVENT_WRITER_STATEMENT_TIMEOUT_MS` (default 1750 ms = 7/8 of the 2 s watermark). A batch that cannot finish inside the watermark margin is **aborted by the server** — arriving as `QueryCanceledError` (SQLSTATE 57014), treated as transient — not silently slow. | Not a success path: the aborted batch is retried and counts against the breaker. |
+| **Server-side `statement_timeout` per batch — the enforcement** | Each batch transaction applies `TASKQ_EVENT_WRITER_STATEMENT_TIMEOUT_MS` (default 1750 ms = 7/8 of the 2 s watermark). A batch that cannot finish inside the watermark margin is **aborted by the server** — arriving as `QueryCanceledError` (SQLSTATE 57014), treated as transient, not silently slow. | Not a success path: the aborted batch is retried and counts against the breaker. |
 | **Batch size** | Keeps a *healthy* database off the timeout in the first place (derivation in §3). | Merely a tuning value — the timeout remains the guard if the constant is wrong for a given deployment. |
 
 The timeout is deliberately the enforcement and the batch size deliberately
@@ -424,7 +424,7 @@ failing — connection loss, constraint trouble) is different: one enqueue
 statement covers every planned fire, so its failure fails them all at once,
 and on a real connection the aborted INSERT has already invalidated the
 tick's transaction. The whole tick rolls back — the schedules stay due
-because their `next_fire_at` was never advanced — and **the next one-second
+because their `next_fire_at` was never advanced, and **the next one-second
 tick retries**. Cron failure bookkeeping (the auto-disable counters) also
 rolls back with the tick; the per-schedule span and metric still record the
 failure attempt.
@@ -459,6 +459,6 @@ problem by *where the text comes from*:
 - [configuration.md](configuration.md#leader-sweep-intervals) — the knob rows (types, defaults, ranges).
 - [runbooks.md](runbooks.md) — the alerts that page on sweep timeouts, degradation and promotion stalls, with confirm/remediate steps.
 - [observability.md](observability.md#sweep-samples-rows-and-duration-are-different-populations) — the sweep metrics and their sample-population rule.
-- [workers.md](workers.md#leader-election) — which loop runs which sweep, and the leader's loop inventory.
+- [workers.md](workers.md#leader-election), which loop runs which sweep, and the leader's loop inventory.
 - [architecture.md](../architecture.md#which-component-drives-each-transition) — the trailing-watermark derivation the batch bounds enforce.
 - [upgrading.md](upgrading.md) — adopt-by-restart for the lock rename and the migration 01.00.06_01 maintenance-window note.

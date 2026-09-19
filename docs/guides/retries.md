@@ -6,7 +6,7 @@ When an actor raises an exception, TaskQ evaluates the actor's `RetryPolicy` to 
 
 ---
 
-## 1. RetryPolicy — field reference
+## 1. RetryPolicy: field reference
 
 `RetryPolicy` is a frozen Pydantic model imported from `taskq.retry`.
 
@@ -132,7 +132,7 @@ raw = base   (ignores attempt number)
 
 | Attempt | base=5s, cap=1h, jitter=0 |
 |---|---|
-| 1–6 | 5s |
+| 1-6 | 5s |
 
 ### Jitter
 
@@ -201,7 +201,7 @@ The `RetryClassifier` also accepts a `non_retryable_exceptions` tuple. This is p
 
 ---
 
-## 5. `retry_classifier` hook — per-instance retry overrides
+## 5. `retry_classifier` hook: per-instance retry overrides
 
 `non_retryable_exceptions` and `RetryPolicy.kind` classify by exception *type*. Sometimes a single
 exception type needs different retry behaviour depending on *which instance* was raised — a
@@ -317,7 +317,7 @@ See `jobs-clients.md` for the full `enqueue` signature.
 ## 7. `start_to_close` vs `schedule_to_close`
 
 These two settings both look like "timeouts" but bound different things. Confusing them leads to
-either jobs that never give up, or jobs that get cut off mid-retry-budget unexpectedly — so it's
+either jobs that never give up, or jobs that get cut off mid-retry-budget unexpectedly, so it's
 worth being precise:
 
 | | `schedule_to_close` | `start_to_close` |
@@ -372,7 +372,7 @@ await client.enqueue(
 ```
 
 ```bash
-# 3. Worker-wide fallback — applies only to actors/enqueue calls that set no
+# 3. Worker-wide fallback: applies only to actors/enqueue calls that set no
 #    start_to_close of their own.
 export TASKQ_DEFAULT_START_TO_CLOSE=5m
 ```
@@ -563,7 +563,7 @@ Backoff schedule for this policy (jitter=0 for illustration):
 
 ---
 
-## 12. Crash vs. shutdown — what happens to the attempt count
+## 12. Crash vs. shutdown: what happens to the attempt count
 
 An attempt is spent at *claim* time: dispatch increments `attempt` when a worker locks the row. What happens to that spent attempt when the worker goes away mid-execution depends on *how* it went away:
 
@@ -590,7 +590,7 @@ The defaults differ more than the configuration shapes suggest — compare the w
 | Oban | **20** | exponential, worker-overridable via `backoff/1` | yes (`:inc` mode) |
 | TaskQ | **3** | `base × 2^(N-1)` with `base = 5s`, capped at `cap` (default 1 h) | ±20% multiplicative by default; the crash-reclaim path derives the same band deterministically from `(job_id, attempt)` |
 
-An adopter porting a River budget by matching `max_attempts=25` gets roughly 15 hours of retry coverage on TaskQ's default curve where River's 25 attempts span weeks — so decide the wall-clock window you actually want and set `base`/`cap` (or a `time_budget`) for it, rather than copying the attempt count. Budget for crashes too: as [§12](#12-crash-vs-shutdown-what-happens-to-the-attempt-count) covers, a crashed worker spends an attempt just as an actor failure does.
+An adopter porting a River budget by matching `max_attempts=25` gets roughly 15 hours of retry coverage on TaskQ's default curve where River's 25 attempts span weeks, so decide the wall-clock window you actually want and set `base`/`cap` (or a `time_budget`) for it, rather than copying the attempt count. Budget for crashes too: as [§12](#12-crash-vs-shutdown-what-happens-to-the-attempt-count) covers, a crashed worker spends an attempt just as an actor failure does.
 
 Two more differences worth knowing up front. `kind="indefinite"` ignores `max_attempts` entirely — the row still carries the configured value, but it is inert (the admin UI renders it as `— (indefinite)`); the only stopping condition is the `schedule_to_close` deadline. And TaskQ has **no dead-letter queue**: a job whose budget is exhausted stays queryable in `jobs` (then `jobs_archive`) with its terminal `error_class`; routing to a real DLQ is your code, at the two designed hook points — `on_retry_exhausted` per actor and the worker's `ErrorReporter`. See [ops.md](ops.md).
 

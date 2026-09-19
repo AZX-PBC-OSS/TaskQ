@@ -12,7 +12,7 @@ behavior described in [admin-ui.md](admin-ui.md).
 
 | | OIDC (`taskq[oidc]`) | SAML (`taskq[saml]`) |
 |---|---|---|
-| **Native dependencies** | None (pure Python) | None on common platforms — see [SAML container requirements](#saml-container-requirements) |
+| **Native dependencies** | None (pure Python) | None on common platforms; see [SAML container requirements](#saml-container-requirements) |
 | **Setup complexity** | Lower | Slightly higher (IdP metadata exchange; no container changes needed on common platforms) |
 | **Entra support** | App registrations (recommended) | Enterprise applications (SAML gallery/non-gallery) |
 | **When to use** | Default for new integrations | Only if an IdP or compliance requirement mandates SAML |
@@ -440,7 +440,7 @@ navigation. PKCE also makes a cookie-less OIDC callback structurally unable
 to complete: without the `code_verifier` from the cookie there is no token
 exchange at all, and the nonce binds the ID token to the login that started
 it. OIDC therefore took the stateless-no-fallback tradeoff — a browser that
-loses the state cookie simply cannot log in — and has neither the
+loses the state cookie simply cannot log in, and has neither the
 cross-replica dependency nor the cookie-less acceptance shape.
 
 The auth dependency re-checks the group allowlist on every request, so changing

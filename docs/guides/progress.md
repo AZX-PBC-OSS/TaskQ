@@ -216,7 +216,7 @@ authenticating ingress covers the mount point:
 
 ```sh
 export TASKQ_PROGRESS_REQUIRE_AUTH=false
-# WARNING log: progress-router-no-auth — but the router is created
+# WARNING log: progress-router-no-auth: but the router is created
 ```
 
 Serving without auth in *any* environment — dev included — logs the
@@ -227,7 +227,7 @@ subscription and an asyncio task for as long as the client stays connected.
 same progress router internally at `/jobs` (`src/taskq/web/admin/_factory.py`), and the admin
 router is itself mounted at `/admin` (`taskq ui serve` / `docs/guides/admin-ui.md`). The
 resulting paths are `GET /admin/jobs/api/job/{job_id}/progress/stream` and
-`GET /admin/jobs/api/job/{job_id}/state` — not the bare `/api/job/...` or `/jobs/api/job/...`
+`GET /admin/jobs/api/job/{job_id}/state`, not the bare `/api/job/...` or `/jobs/api/job/...`
 paths shown above, which only apply when you mount `taskq.web.progress.create_router()`
 yourself at a different prefix. Without Redis configured, the stream endpoint returns
 `503 {"error": "redis_not_configured"}` while the `/state` poll endpoint still works.

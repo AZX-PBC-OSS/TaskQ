@@ -42,7 +42,7 @@ GROUP BY j.actor;
 SELECT id, hostname, pid, last_seen_at FROM {schema}.workers ORDER BY last_seen_at DESC;
 ```
 
-Check worker logs for `dispatch-actor-not-found` or `stranded-jobs-no-actor-config`. For the "wrong queue name" cause, the worker also logs `actors-on-unconsumed-queues` **at bootstrap** when a registered actor targets a queue that worker does not consume — see [workers.md](workers.md#actors-on-unconsumed-queues) for the warning's semantics (it fires even in legitimate split-queue topologies). A worker logging `worker-consumes-no-queues` at bootstrap has an empty `TASKQ_QUEUES` and will never dispatch anything — see [workers.md](workers.md#worker-consumes-no-queues).
+Check worker logs for `dispatch-actor-not-found` or `stranded-jobs-no-actor-config`. For the "wrong queue name" cause, the worker also logs `actors-on-unconsumed-queues` **at bootstrap** when a registered actor targets a queue that worker does not consume; see [workers.md](workers.md#actors-on-unconsumed-queues) for the warning's semantics (it fires even in legitimate split-queue topologies). A worker logging `worker-consumes-no-queues` at bootstrap has an empty `TASKQ_QUEUES` and will never dispatch anything; see [workers.md](workers.md#worker-consumes-no-queues).
 
 ### Fix
 
@@ -200,7 +200,7 @@ shows the same verdict.
 
 ### Fix
 
-- **No leader:** ensure at least one worker is running. Failover is bounded by `leader_lease + heartbeat_interval` plus one round trip — 50s at defaults — for a leader that went silent, and by `heartbeat_interval + 1s` for one that exited cleanly. For one that kept winning the row but could not open its leader connections the bound is the same pair **plus one failing cycle's connection attempts** (each bounded by `TASKQ_RELOAD_FACTORY_TIMEOUT`, 30s at defaults — so roughly 80s, not 50s; the bound rests on the hand-back, not the lapse, because sub-lease re-wins keep refreshing `expires_at` so the row never lapses while the pod keeps winning). See `leader-resigned-unassumable` below.
+- **No leader:** ensure at least one worker is running. Failover is bounded by `leader_lease + heartbeat_interval` plus one round trip — 50s at defaults — for a leader that went silent, and by `heartbeat_interval + 1s` for one that exited cleanly. For one that kept winning the row but could not open its leader connections the bound is the same pair **plus one failing cycle's connection attempts** (each bounded by `TASKQ_RELOAD_FACTORY_TIMEOUT`, 30s at defaults, so roughly 80s, not 50s; the bound rests on the hand-back, not the lapse, because sub-lease re-wins keep refreshing `expires_at` so the row never lapses while the pod keeps winning). See `leader-resigned-unassumable` below.
 - **PgBouncer:** set `TASKQ_PG_DSN_DIRECT` to bypass PgBouncer. See [PgBouncer compatibility](workers.md#pgbouncer-compatibility).
 - **Lapsed lease nobody takes:** the surviving pods cannot reach or write `{schema}.maintenance_leader`. Check their logs for `election-attempt-failed`, and check that the application role still holds `INSERT`/`UPDATE`/`DELETE` on that table. Nothing else is needed to recover the role — no privilege over other sessions, and no manual intervention in the database.
 - **`leader-resigned-unassumable` in the logs:** that pod won elections but could not open the dedicated leader connections (connection-count pressure, a credential-factory outage), and the WARN means the hand-back **landed** — the lease row was actually deleted, so a peer takes over on its next election cycle (bounded by `leader_lease + heartbeat_interval` plus one failing cycle's connection attempts, each capped by `TASKQ_RELOAD_FACTORY_TIMEOUT` — roughly 80s at defaults, since a slow-failing factory open stretches the horizon past the flat 50s). If the WARN keeps repeating on one pod, that pod's connection budget or credential factory is the fault to fix — the fleet is leading from elsewhere. The shape to tell apart: repeated `leader-dedicated-conn-failed` **without** `leader-resigned-unassumable` (often with `leader-resign-failed`) means the hand-back could not reach the database — the row is still that pod's, it goes back on the next won cycle whose resign can land, and if the pod stops re-winning the row lapses as the backstop (sub-lease re-wins keep refreshing `expires_at`, so the lapse alone cannot fire while it keeps winning).
@@ -285,7 +285,7 @@ Check whether the actor suppresses `asyncio.CancelledError` — a `try/except as
 - **Increase grace periods:** if the actor needs more cleanup time, raise `TASKQ_CANCELLATION_GRACE_PERIOD` and `TASKQ_CLEANUP_GRACE_PERIOD`. Constraints: `cancellation + cleanup < lock_lease` and `< termination_grace_period - 5.0`.
 - **Re-running an abandoned job:** `abandoned` jobs — an operator cancel the actor did not honour within the cancellation and cleanup grace periods, so the worker gave up on the attempt (not a worker restart: that releases the job as `pending`/`scheduled`, see below) — can be retried via `backend.retry_job()` or the admin UI's Retry button, the same as `failed`, `crashed`, `cancelled`, and `succeeded` jobs. Only a `running` job (a live attempt) or one already queued as `pending`/`scheduled` is refused.
 
-### Shutdown never lands here — read `interrupt_count` instead
+### Shutdown never lands here: read `interrupt_count` instead
 
 A deploy that interrupts a running job does not produce `abandoned`: the job is released back to
 the fleet (`pending`, or `scheduled` behind the remaining termination budget when the actor never
@@ -301,7 +301,7 @@ SELECT id, status, attempt, interrupt_count FROM {schema}.jobs WHERE id = $1;
 A job whose `interrupt_count` climbs without ever finishing is too long for your deploy cadence:
 it is re-run from scratch on every deploy. Bound it with `schedule_to_close` (the deadline fails
 it terminally instead of releasing it forever), or checkpoint through `ctx.progress()` — the
-released row carries the last checkpoint — and resume on re-claim.
+released row carries the last checkpoint, and resume on re-claim.
 
 ---
 
@@ -631,7 +631,7 @@ Check dispatch latency via OTel or the `/metrics` endpoint (`taskq health metric
   **This is inert on its own.** Cohorts come from `fairness_key`, which is set at
   enqueue time; with no keys every job lands in one `__null__` cohort and the
   queue behaves exactly like `strict_fifo`. See
-  [workers.md — Queue dispatch modes](workers.md#queue-dispatch-modes).
+  [workers.md: Queue dispatch modes](workers.md#queue-dispatch-modes).
 - **Scale horizontally:** add worker processes. `FOR UPDATE SKIP LOCKED` prevents duplicate dispatch. Use unique `--health-socket-path` per worker on the same host.
 - **Offload CPU-bound work:** the worker is asyncio-based — CPU-bound actors block the event loop. Use `run_in_executor()`. Monitor `taskq.dispatch.duration` and `messaging.process.duration` via OTel: rising dispatch duration with flat process duration = DB contention; rising process duration = actor bottleneck.
 

@@ -54,6 +54,15 @@ class _Active:
     def all(self) -> list[object]:
         return []
 
+    def held_ids(self) -> list[object]:
+        return []
+
+    def mark_claimed(self, job_id: object) -> None:
+        return None
+
+    def resolve_claim(self, job_id: object) -> None:
+        return None
+
 
 class _RecordingBackend:
     """dispatch_batch that records (monotonic time, limit) per round."""
@@ -232,6 +241,16 @@ class _RegistrySpy:
 
     def all(self) -> list[object]:
         return []
+
+    def held_ids(self) -> list[object]:
+        return []
+
+    def mark_claimed(self, job_id: object) -> None:
+        self.registered.append(("intent", job_id))
+        return None
+
+    def resolve_claim(self, job_id: object) -> None:
+        return None
 
 
 async def test_stub_consumer_wakes_the_producer_after_the_deregister() -> None:

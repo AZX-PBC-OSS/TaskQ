@@ -63,11 +63,11 @@ When `cancellation_initiated=False`, the job was already in a terminal state and
 
 The protocol runs inside the heartbeat loop, which ticks every `heartbeat_interval` seconds (default: 10 s). On each tick, `CancelController.run_in_tx()` executes inside the open heartbeat transaction and `run_post_tx()` is called after the transaction commits.
 
-### Phase 0 — None (`CancelPhase.NONE`)
+### Phase 0: None (`CancelPhase.NONE`)
 
 No cancellation is in progress. The job is running normally.
 
-### Phase 1 — Cooperative (`CancelPhase.COOPERATIVE`)
+### Phase 1: Cooperative (`CancelPhase.COOPERATIVE`)
 
 The heartbeat loop calls `POLL_CANCEL_FLAGS_SQL` to fetch outstanding cancel flags for this worker. When it finds `cancel_phase >= 1` in Postgres for a running job:
 
@@ -78,7 +78,7 @@ The heartbeat loop calls `POLL_CANCEL_FLAGS_SQL` to fetch outstanding cancel fla
 
 No Postgres write occurs at phase 1. The actor can now observe `ctx.cancellation_requested == True` and exit cleanly. If it does, the consumer calls `backend.mark_cancelled()`.
 
-### Phase 2 — Forced (`CancelPhase.FORCED`)
+### Phase 2: Forced (`CancelPhase.FORCED`)
 
 If `loop.time() - cancel_observed_at > cancellation_grace_period` (default: 30 s), the heartbeat loop escalates:
 
@@ -92,7 +92,7 @@ When `asyncio.CancelledError` propagates out of the actor, the consumer catches 
 
 **PG-observation fast-advance:** If the heartbeat loop observes `db_phase == 2` while the local phase is still `NONE` or `COOPERATIVE` (e.g. because another worker's heartbeat already wrote phase 2), the local phase is advanced to `FORCED` without any PG write or `task.cancel()` call.
 
-### Phase 3 — Abandon pending (`CancelPhase.ABANDON_PENDING`)
+### Phase 3: Abandon pending (`CancelPhase.ABANDON_PENDING`)
 
 This is an in-process sentinel. It is never persisted to Postgres (the `cancel_phase` column has a `CHECK (cancel_phase BETWEEN 0 AND 2)` constraint).
 
@@ -154,7 +154,7 @@ except asyncio.CancelledError:
 
 Always re-raise `asyncio.CancelledError` or let it propagate. The consumer's exception handler takes care of the terminal write.
 
-### Shutdown is not an operator cancel — `ctx.cancel_origin`
+### Shutdown is not an operator cancel: `ctx.cancel_origin`
 
 A rolling deploy (SIGTERM, a drain-monitor trigger) signals the same `cancel_event`, but it is an *infrastructure* event, not a request to discard the work. When the grace windows expire with the job still running, the worker **releases** it back to the fleet; `pending` (or `scheduled` behind a hold); and the row's `interrupt_count` bumps. The attempt is not refunded: the interrupted attempt did start executing, so its increment stands (a refund would re-create the attempt epoch the interrupted handler holds and let its late terminal write land on the re-dispatched attempt). The job is then claimed and run by a surviving pod at a fresh attempt. Shutdown never writes `cancelled` or `abandoned`.
 

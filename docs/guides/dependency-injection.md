@@ -18,7 +18,7 @@ from taskq.di import Scope
 | Scope | Value | Lifetime | Typical use |
 |---|---|---|---|
 | `Scope.PROCESS` | `0` | Worker process start to exit | Config, shared read-only singletons |
-| `Scope.THREAD` | `1` | Thread spawn to thread close | Reserved — see below |
+| `Scope.THREAD` | `1` | Thread spawn to thread close | Reserved; see below |
 | `Scope.LOOP` | `2` | Event loop start to loop close | asyncpg pools, HTTP clients, Redis clients |
 | `Scope.TRANSIENT` | `3` | Per actor invocation | Per-request context, one-shot helpers |
 
@@ -70,7 +70,7 @@ registry.register_factory(asyncpg.Pool, Scope.LOOP, make_db_pool)
 # Register a class with automatic lifecycle detection
 registry.register_class(MyService, Scope.LOOP)
 
-# Pass to the worker — do NOT call validate() yourself.
+# Pass to the worker: do NOT call validate() yourself.
 # The worker calls validate() after auto-registering WorkerSettings, Clock,
 # and the asyncpg pool, so pre-validating would fail on those providers.
 ```
@@ -143,7 +143,7 @@ automatically. Priority order:
 | 4 | `Plain` | none of the above | no teardown |
 
 ```python
-# Shape 1 — AsyncContextManager
+# Shape 1: AsyncContextManager
 class RedisClient:
     async def __aenter__(self) -> "RedisClient":
         await self._connect()
@@ -155,11 +155,11 @@ class RedisClient:
 
 registry.register_class(RedisClient, Scope.LOOP)
 
-# Shape 2 — AsyncCloseable (e.g. asyncpg Pool has aclose)
+# Shape 2: AsyncCloseable (e.g. asyncpg Pool has aclose)
 registry.register_class(MyAsyncResource, Scope.LOOP)
 
 
-# Shape 4 — Plain (no teardown)
+# Shape 4: Plain (no teardown)
 class ReadOnlyConfig:
     def __init__(self) -> None:
         self.value = os.environ["MY_VAR"]
@@ -259,4 +259,4 @@ call (including the worker's) is a no-op.
 - [Actors](actors.md) — `@actor` decorator, `JobContext`, handler signatures
 - [Workers](workers.md) — `open_worker_deps`, scope bootstrapping sequence
 - [Rate Limiting](rate-limiting.md) — rate-limit registry wired via DI
-- [API Reference — DI](../api-reference/di.md) — `ProviderRegistry`, `Scope` API docs
+- [API Reference: DI](../api-reference/di.md) — `ProviderRegistry`, `Scope` API docs

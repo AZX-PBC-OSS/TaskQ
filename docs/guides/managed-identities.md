@@ -3,9 +3,9 @@
 TaskQ ships DSN-first: the worker, client, admin UI, and migration helpers
 all accept a `TASKQ_PG_DSN` / `TASKQ_REDIS_URL` and construct `asyncpg`
 pools and `redis.asyncio` clients internally. That model breaks down when
-your deployment authenticates with **rotating credentials** — managed
+your deployment authenticates with **rotating credentials**: managed
 identities (Azure Entra ID, AWS IAM), dynamic secret managers (HashiCorp
-Vault), or short-lived OAuth tokens — all of which issue credentials that
+Vault), or short-lived OAuth tokens, all of which issue credentials that
 expire, so a DSN baked at process start goes stale mid-run.
 
 This guide documents the **connection hook points** TaskQ exposes so you
@@ -14,14 +14,14 @@ can either:
 1. hand TaskQ a **pre-constructed** pool / connection / Redis client that
    you own and close yourself, or
 2. hand TaskQ a **zero-arg async factory** that TaskQ invokes at the
-   right point in its lifecycle to build that resource — letting you fetch
+   right point in its lifecycle to build that resource, letting you fetch
    a fresh credential at construction time.
 
 If you run the stock `taskq` console script (including under the
 workgroup supervisor), you do **not** need a custom entrypoint to reach
 any of this: point `TASKQ_PG_CREDENTIAL_PROVIDER` /
 `TASKQ_REDIS_CREDENTIAL_PROVIDER` at your provider and TaskQ builds every
-factory for you — see [From the CLI](#from-the-cli-no-custom-entrypoint).
+factory for you; see [From the CLI](#from-the-cli-no-custom-entrypoint).
 Both are ordinary TaskQ settings, so they can equally live in a `.env`
 file alongside `TASKQ_PG_DSN`; the matching CLI flag, when given, wins.
 
@@ -31,10 +31,10 @@ implementations available as extras:
 
 | Extra | Module | Providers |
 | --- | --- | --- |
-| `taskq[aad]` | `taskq.aad` | Microsoft Entra ID (Azure AD) — PG + Redis |
-| `taskq[aws]` | `taskq.aws` | AWS IAM RDS — PG |
-| `taskq[vault]` | `taskq.vault` | HashiCorp Vault database secrets engine — PG |
-| _(none needed)_ | `taskq.auth` | Base interfaces + factory builders — implement your own provider |
+| `taskq[aad]` | `taskq.aad` | Microsoft Entra ID (Azure AD): PG + Redis |
+| `taskq[aws]` | `taskq.aws` | AWS IAM RDS: PG |
+| `taskq[vault]` | `taskq.vault` | HashiCorp Vault database secrets engine: PG |
+| _(none needed)_ | `taskq.auth` | Base interfaces + factory builders: implement your own provider |
 
 ---
 
@@ -45,7 +45,7 @@ implementations available as extras:
 | Token expires → **new** connections fail auth. Established sessions survive token expiry; it is pool growth / reconnects that get rejected. | Factory is called when TaskQ builds the pool; you fetch a fresh token then. |
 | A password passed as a fixed string is reused for every connection the pool opens later. | The factory builders pass `password=` as an **async callable**, which asyncpg awaits once per physical connection - pool growth and idle-recycle replacements each authenticate with a freshly fetched credential. |
 | Azure Redis requires a `CredentialProvider` returning `(username, token)` per reconnect. | You own the `redis.asyncio.Redis` client → pass a `CredentialProvider`. |
-| You already run an app-wide pool (FastAPI lifespan) and want to share it. | Pass the pool directly — TaskQ will **not** close a caller-owned resource. |
+| You already run an app-wide pool (FastAPI lifespan) and want to share it. | Pass the pool directly; TaskQ will **not** close a caller-owned resource. |
 | Migrations / `TaskQ.watch_reclaims()` open their own `asyncpg.connect(dsn)`. | `apply_pending_locked` and the client accept a `conn` / `conn_factory` so LISTEN/migrate work without a DSN. |
 
 ### Ownership rule (read this carefully)
@@ -60,11 +60,11 @@ implementations available as extras:
 Three consequences worth knowing:
 
 * A **caller-owned `notify_conn`** that drops leaves TaskQ nothing to
-  rebuild through — the NOTIFY listener disables itself (logged as
+  rebuild through: the NOTIFY listener disables itself (logged as
   `notify-listener-disabled`) and the worker falls back to poll-based
   dispatch instead of crashing.
 * A **caller-owned `leader_conn`** with no `leader_conn_factory` **and**
-  no `pg_dsn_direct` is a **startup `ValueError`** — a dropped leader
+  no `pg_dsn_direct` is a **startup `ValueError`**: a dropped leader
   connection could never be rebuilt, so TaskQ fails fast instead of
   silently never recovering leadership.
 * **TaskQ-owned** dedicated connections (DSN- or factory-built
@@ -76,21 +76,21 @@ Three consequences worth knowing:
 
 | Site | Pre-constructed | Factory | Notes |
 | --- | --- | --- | --- |
-| Worker — dispatcher pool | `WorkerConnections.dispatcher_pool` | `dispatcher_pool_factory` | `pg_dsn_direct` role |
-| Worker — heartbeat pool | `WorkerConnections.heartbeat_pool` | `heartbeat_pool_factory` | `command_timeout=2s` is your responsibility when overriding |
-| Worker — worker pool | `WorkerConnections.worker_pool` | `worker_pool_factory` | `pg_dsn_pooled` role |
-| Worker — per-slot transaction pool | — (deliberately no `WorkerConnections` slot) | — (worker-internal) | Opened when a LOOP-scope `asyncpg.Connection` is registered and `max_concurrency > 1`; built by TaskQ on the direct DSN, or provider-backed via `pg_credential_provider` on `worker_main` / `worker_main_async` |
-| Worker — notify conn | `WorkerConnections.notify_conn` | `notify_conn_factory` | LISTEN is issued by TaskQ; a dropped conn is rebuilt through the same factory |
-| Worker — leader conn | `WorkerConnections.leader_conn` | `leader_conn_factory` | Advisory-lock conn |
-| Worker — Redis | `WorkerConnections.redis_client` | `redis_client_factory` | |
-| Client — main pool | `TaskQ(pool=...)` (caller-owned) | `TaskQ(pool_factory=...)` or `TaskQ(dsn=..., pg_provider=...)` | TaskQ-owned; rotated on its `ReloadSchedule` (`reload_interval=` or the granted lease), on demand with `await tq.reload_credentials()` |
-| Client — Redis | `TaskQ(redis_client=...)` ✓ existing | — | |
-| Client — `watch_reclaims` LISTEN conn | `TaskQ(listen_conn=...)` | `TaskQ(pg_conn_factory=...)` | Replaces the DSN-only LISTEN transport; `stream()` polls through the main pool and needs neither |
-| Migrate — locked apply | `apply_pending_locked(conn=...)` | `apply_pending_locked(conn_factory=...)` | `list_applied` / `apply_pending` take an open conn only — no factory |
-| Admin UI | `create_router(pg_pool=..., redis_client=...)` ✓ existing | — | Or `taskq ui serve --pg-credential-provider` / `--redis-credential-provider` |
-| CLI — `taskq worker` | — | `--pg-credential-provider` / `--redis-credential-provider` (env: `TASKQ_PG_CREDENTIAL_PROVIDER` / `TASKQ_REDIS_CREDENTIAL_PROVIDER`) | Builds **every** worker role: all four pools (dispatcher, heartbeat, worker, and the conditional per-slot transaction pool), `notify_conn`, `leader_conn`, Redis |
-| CLI — `taskq workgroup start` | — | same env vars | Children are `taskq worker` subprocesses and inherit the environment |
-| CLI — `taskq migrate up` / `status` | — | `--pg-credential-provider` (env: `TASKQ_PG_CREDENTIAL_PROVIDER`) | One-shot connection through the provider |
+| Worker: dispatcher pool | `WorkerConnections.dispatcher_pool` | `dispatcher_pool_factory` | `pg_dsn_direct` role |
+| Worker: heartbeat pool | `WorkerConnections.heartbeat_pool` | `heartbeat_pool_factory` | `command_timeout=2s` is your responsibility when overriding |
+| Worker: worker pool | `WorkerConnections.worker_pool` | `worker_pool_factory` | `pg_dsn_pooled` role |
+| Worker: per-slot transaction pool | n/a (deliberately no `WorkerConnections` slot) | n/a (worker-internal) | Opened when a LOOP-scope `asyncpg.Connection` is registered and `max_concurrency > 1`; built by TaskQ on the direct DSN, or provider-backed via `pg_credential_provider` on `worker_main` / `worker_main_async` |
+| Worker: notify conn | `WorkerConnections.notify_conn` | `notify_conn_factory` | LISTEN is issued by TaskQ; a dropped conn is rebuilt through the same factory |
+| Worker: leader conn | `WorkerConnections.leader_conn` | `leader_conn_factory` | Advisory-lock conn |
+| Worker: Redis | `WorkerConnections.redis_client` | `redis_client_factory` | |
+| Client: main pool | `TaskQ(pool=...)` (caller-owned) | `TaskQ(pool_factory=...)` or `TaskQ(dsn=..., pg_provider=...)` | TaskQ-owned; rotated on its `ReloadSchedule` (`reload_interval=` or the granted lease), on demand with `await tq.reload_credentials()` |
+| Client: Redis | `TaskQ(redis_client=...)` ✓ existing | n/a | |
+| Client: `watch_reclaims` LISTEN conn | `TaskQ(listen_conn=...)` | `TaskQ(pg_conn_factory=...)` | Replaces the DSN-only LISTEN transport; `stream()` polls through the main pool and needs neither |
+| Migrate: locked apply | `apply_pending_locked(conn=...)` | `apply_pending_locked(conn_factory=...)` | `list_applied` / `apply_pending` take an open conn only; no factory |
+| Admin UI | `create_router(pg_pool=..., redis_client=...)` ✓ existing | n/a | Or `taskq ui serve --pg-credential-provider` / `--redis-credential-provider` |
+| CLI: `taskq worker` | n/a | `--pg-credential-provider` / `--redis-credential-provider` (env: `TASKQ_PG_CREDENTIAL_PROVIDER` / `TASKQ_REDIS_CREDENTIAL_PROVIDER`) | Builds **every** worker role: all four pools (dispatcher, heartbeat, worker, and the conditional per-slot transaction pool), `notify_conn`, `leader_conn`, Redis |
+| CLI: `taskq workgroup start` | n/a | same env vars | Children are `taskq worker` subprocesses and inherit the environment |
+| CLI: `taskq migrate up` / `status` | n/a | `--pg-credential-provider` (env: `TASKQ_PG_CREDENTIAL_PROVIDER`) | One-shot connection through the provider |
 
 ---
 
@@ -98,7 +98,7 @@ Three consequences worth knowing:
 
 `taskq.auth` provides two async Protocols and reusable factory builders.
 Any provider implementing the Protocols gets all the factory builders for
-free — no third-party dependencies required.
+free: no third-party dependencies required.
 
 ### Protocols
 
@@ -106,18 +106,18 @@ free — no third-party dependencies required.
 from taskq.auth import PgCredential, PgCredentialProvider, RedisCredential, RedisCredentialProvider
 
 
-# Postgres — return a password (token) and optionally a fresh username
+# Postgres: return a password (token) and optionally a fresh username
 class PgCredentialProvider(Protocol):
     async def get_pg_credential(self) -> PgCredential: ...
 
 
-# Redis — return (username, password)
+# Redis: return (username, password)
 class RedisCredentialProvider(Protocol):
     async def get_redis_credential(self) -> RedisCredential: ...
 ```
 
 `PgCredential` carries a `password` (always required) and an optional
-`username` — token providers (AAD, AWS IAM) set only the password; dynamic
+`username`: token providers (AAD, AWS IAM) set only the password; dynamic
 username providers (Vault) set both. `enrich_pg_dsn` handles either case.
 
 ### Factory builders
@@ -144,13 +144,13 @@ automatically via the redis-py `CredentialProvider` adapter.
 `password=` (always) and `user=` (when the credential carries one)
 **keyword arguments**. Keyword arguments take precedence over both DSN
 userinfo and DSN query parameters in asyncpg's resolver, so a stale
-credential baked into the DSN can never shadow the fresh one — and the
+credential baked into the DSN can never shadow the fresh one, and the
 token never appears in the DSN string.
 
 `enrich_pg_dsn(dsn, credential)` (also exported from `taskq` top-level)
 is the string-helper variant for callers that need a self-contained DSN:
 the credential is written into the DSN **userinfo** (percent-encoded),
-replacing any existing userinfo password — and replacing the user only
+replacing any existing userinfo password, and replacing the user only
 when `credential.username` is set (Vault dynamic creds). Never put the
 credential in the query string instead: asyncpg applies userinfo *before*
 query parameters, so a `password=` query param is silently ignored
@@ -158,15 +158,15 @@ whenever the DSN already carries userinfo (`enrich_pg_dsn` drops stale
 `user=` / `password=` query params for the same reason).
 
 **sslmode**: both the factories and `enrich_pg_dsn` add
-`sslmode=require` **only when the DSN has no explicit sslmode** — an
+`sslmode=require` **only when the DSN has no explicit sslmode; an
 explicit `verify-ca` / `verify-full` is preserved (never downgraded) and
 is recommended where your server presents a verifiable certificate.
 `require` encrypts the connection but does **not** verify the server
 certificate.
 
 **A verifying sslmode needs an explicit `sslrootcert`.** If you set
-`verify-ca` / `verify-full`, add a CA bundle to the DSN as well — e.g.
-`&sslrootcert=/etc/ssl/certs/ca-certificates.crt` — or set `PGSSLROOTCERT`
+`verify-ca` / `verify-full`, add a CA bundle to the DSN as well, e.g.
+`&sslrootcert=/etc/ssl/certs/ca-certificates.crt`, or set `PGSSLROOTCERT`
 in the environment. Neither asyncpg nor libpq falls back to the system
 trust store here: libpq
 [documents](https://www.postgresql.org/docs/current/libpq-ssl.html) that
@@ -176,8 +176,8 @@ trust store here: libpq
 "default system root CA certificates won't be loaded when specifying a
 particular sslmode, following the same behavior in libpq". In a container
 whose home directory is empty, a verifying DSN with no `sslrootcert`
-therefore fails while asyncpg is *parsing connection arguments* — before
-any TCP connection is attempted — with:
+therefore fails while asyncpg is *parsing connection arguments*,
+any TCP connection is attempted, with:
 
 ```
 asyncpg.exceptions._base.ClientConfigurationError: root certificate file "/home/<user>/.postgresql/root.crt" does not exist or cannot be accessed
@@ -192,7 +192,7 @@ environment-specific (a private CA needs its own PEM).
 
 `taskq worker`, `taskq workgroup start`, `taskq ui serve` and
 `taskq migrate` resolve a credential provider from a `module:attr`
-reference — the same syntax `--actors` uses:
+reference (the same syntax `--actors` uses):
 
 ```bash
 export TASKQ_PG_CREDENTIAL_PROVIDER=myapp.auth:make_provider
@@ -212,22 +212,22 @@ def make_provider() -> EntraIdProvider:
 
 The reference may point at any of:
 
-* a **provider instance** — `myapp.auth:PROVIDER`
-* a **zero-arg factory** returning one — `myapp.auth:make_provider`
+* a **provider instance**: `myapp.auth:PROVIDER`
+* a **zero-arg factory** returning one: `myapp.auth:make_provider`
 * the **provider class**, when its constructor takes no required
-  arguments — `myapp.auth:MyProvider`
+  arguments: `myapp.auth:MyProvider`
 
 Equivalent CLI flags exist for one-off runs:
 `--pg-credential-provider` / `--redis-credential-provider`.
 
-**What the worker builds.** Every Postgres role — the dispatcher,
+**What the worker builds.** Every Postgres role: the dispatcher,
 heartbeat and worker pools, the `notify_conn` LISTEN connection and the
-`leader_conn` advisory-lock connection — plus the Redis client is built
+`leader_conn` advisory-lock connection), plus the Redis client is built
 through your provider, sized and timed out exactly as the DSN path sizes
 them (`TASKQ_DISPATCHER_POOL_SIZE`, `TASKQ_HEARTBEAT_COMMAND_TIMEOUT`,
 `TASKQ_POOL_MAX_INACTIVE_LIFETIME`, `dispatcher_command_timeout` on the
 dedicated connections). Because *every* role is factory-backed, SIGHUP and
-`TASKQ_RELOAD_INTERVAL` rotate all of them — a role left on the DSN
+`TASKQ_RELOAD_INTERVAL` rotate all of them: a role left on the DSN
 fallback would be silently un-rotatable, since `reload_credentials`
 skips roles that have no factory.
 
@@ -251,10 +251,10 @@ after deploy.
 **Other commands.**
 
 ```bash
-# admin UI — pool and (with --migrate) the migration connection
+# admin UI: pool and (with --migrate) the migration connection
 taskq ui serve --pg-credential-provider myapp.auth:make_provider
 
-# migrations — the one-shot connection
+# migrations: the one-shot connection
 taskq migrate up --pg-credential-provider myapp.auth:make_provider
 ```
 
@@ -268,7 +268,7 @@ Every admin route resolves the live pool per request, so a rotation never
 serves from a closed pool. The migration connection (`--migrate`) is
 one-shot and takes no schedule.
 
-**Embedding.** The builder behind the worker option is public — use it
+**Embedding.** The builder behind the worker option is public: use it
 when you have a custom entrypoint and want the same full wiring:
 
 ```python
@@ -285,7 +285,7 @@ worker_main(
 
 The `pg_credential_provider` argument exists for the per-slot transaction pool (opened when a
 LOOP-scope `asyncpg.Connection` is registered and `max_concurrency > 1`): the role pools take
-their credentials from `connections`, the slot pool from this parameter — or from the direct
+their credentials from `connections`, the slot pool from this parameter, or from the direct
 DSN when omitted. See [Worker: `WorkerConnections`](#worker-workerconnections).
 
 ---
@@ -326,13 +326,13 @@ Two things per-connection refresh cannot do, for which the
 **The rebuild cadence: `ReloadSchedule`.** Every pool and dedicated
 connection built by `make_pg_pool_factory` / `make_dedicated_conn_factory`
 records the credential it is issued on a `taskq.auth.ReloadSchedule`, and
-every consumer that rebuilds pools — the worker, `taskq ui serve`,
-`TaskQ` — reads its interval from that schedule:
+every consumer that rebuilds pools: the worker, `taskq ui serve`,
+`TaskQ`: reads its interval from that schedule:
 
 * `TASKQ_RELOAD_INTERVAL` (or `TaskQ(reload_interval=...)`) set: that
   interval, always.
 * Unset, and the provider reports a lease (`PgCredential.lease_duration`
-  — `VaultDynamicDbProvider` reports the TTL Vault granted): **half the
+  , `VaultDynamicDbProvider` reports the TTL Vault granted): **half the
   shortest lease seen so far** (`taskq.auth.LEASE_RELOAD_FRACTION`), so a
   rebuild that fails at `T + TTL/2` still has a full half-life of retries
   before the pair is revoked. Logged at pool build as
@@ -351,7 +351,7 @@ All four triggers run the same `reload_credentials` path:
 
 | Trigger | How | When to use |
 | --- | --- | --- |
-| `TASKQ_RELOAD_INTERVAL` (seconds; unset = derived from the lease) | `TASKQ_RELOAD_INTERVAL=720 taskq worker --actors …` | Periodic reload with no external signal — the only option on Windows (no SIGHUP) and the hands-off option everywhere else. Set it to override the lease-derived cadence, or to force periodic rebuilds for a token provider (e.g. ~720 s for AWS IAM's 15-minute tokens). |
+| `TASKQ_RELOAD_INTERVAL` (seconds; unset = derived from the lease) | `TASKQ_RELOAD_INTERVAL=720 taskq worker --actors …` | Periodic reload with no external signal: the only option on Windows (no SIGHUP) and the hands-off option everywhere else. Set it to override the lease-derived cadence, or to force periodic rebuilds for a token provider (e.g. ~720 s for AWS IAM's 15-minute tokens). |
 | SIGHUP | `pkill -HUP -f 'taskq worker'` (also `taskq ui serve`) | Unix on-demand rotation (cron, k8s CronJob, config-change hooks). |
 | `deps.request_reload()` | programmatic, from an embedder holding `WorkerDeps` | In-process trigger (e.g. your own secrets-watch callback). Equivalent to SIGHUP. |
 | `reload_credentials(deps, ...)` | direct async call | Lower-level (e.g. tests); returns `(reloaded, failed)`. |
@@ -361,10 +361,10 @@ script that means the provider must be configured
 (`TASKQ_PG_CREDENTIAL_PROVIDER`, see [From the CLI](#from-the-cli-no-custom-entrypoint));
 on a pure DSN worker a reload reconnects `notify_conn` / `leader_conn`
 with the same static DSN credential and rotates nothing else. Confirm
-with the `credentials-reloaded` log line — its `resources` list names
+with the `credentials-reloaded` log line; its `resources` list names
 what actually rotated.
 
-SIGHUP delivery patterns (the console script is `taskq` — there is no
+SIGHUP delivery patterns (the console script is `taskq` (there is no
 `taskq-worker` process name):
 
 ```bash
@@ -394,27 +394,27 @@ What a reload does:
   (`drain_timeout`, default 5 s): in-flight actors holding the old pool
   get that long to finish. On timeout the old pool is **terminated**;
   an actor that outlives the drain sees its next `acquire()` fail and
-  the job retries — landing on the new pool.
+  the job retries, landing on the new pool.
 * A provider-backed per-slot transaction pool rotates with the rest, keeping
   its boot-time size (`TASKQ_MAX_CONCURRENCY` is boot-only). In-flight jobs
-  get the drain timeout to finish; past it the old pool is terminated — the
+  get the drain timeout to finish; past it the old pool is terminated;
   job's transaction rolls back, the row stays `running`, and lock-lease
   expiry reclaims and retries it: a loud, retryable infrastructure failure,
   never a false success. For the drain window the worker briefly holds
   `2 × (max_concurrency + 1)` slot-pool connections (old pool draining +
-  new pool warm) — budget for that peak when rotations can coincide across
+  new pool warm); budget for that peak when rotations can coincide across
   the fleet.
 * A SIGHUP arriving **mid-reload** (success or failure) is honored with
   exactly one follow-up reload; N signals during one reload coalesce
   into one follow-up, not N. Reloads are skipped while shutdown is in
   progress.
-* Job processing continues throughout — the dispatcher/consumer/
+* Job processing continues throughout: the dispatcher/consumer/
   heartbeat loops are not stopped for a reload.
 
 Each resource reloads independently: if one factory call fails (e.g. a
 transient credential-fetch error), that resource simply keeps its current
 pool/connection and everything else still reloads. Check the
-`credentials-reloaded` log line's `failed` field after a SIGHUP — a
+`credentials-reloaded` log line's `failed` field after a SIGHUP: a
 non-empty list means a partial reload; trigger another reload to retry
 the resources that didn't rotate.
 
@@ -422,7 +422,7 @@ the resources that didn't rotate.
 watchdog's reopen-and-re-acquire path (the same path a real connection
 drop takes), which also rebuilds the leader's other dedicated connections
 (the monitor and cron loops' connections) through the same credential
-source — so a single reload rotates every leader-owned connection, not
+source, so a single reload rotates every leader-owned connection, not
 just `leader_conn` itself. This happens within one `heartbeat_interval`
 tick, not instantly.
 
@@ -442,7 +442,7 @@ For Azure Redis, refresh is also automatic: `redis-py` calls the
 rotates tokens for free between reloads.
 
 Caller-owned resources (passed as concrete `pool=` / `redis_client=` /
-`notify_conn=`) are **not** swapped by a reload — the caller owns their
+`notify_conn=`) are **not** swapped by a reload; the caller owns their
 lifecycle. Only factory-backed resources are hot-reloaded.
 
 `reload_credentials` can also be called programmatically (also
@@ -458,7 +458,7 @@ await reload_credentials(deps, drain_timeout=10.0, factory_timeout=30.0)
 
 ## Provider extras
 
-### Azure Entra ID (AAD) — `taskq[aad]`
+### Azure Entra ID (AAD): `taskq[aad]`
 
 ```bash
 pip install 'taskq-py[aad]'
@@ -498,13 +498,13 @@ WorkerConnections(
 )
 ```
 
-`EntraIdProvider` implements **both** Protocols — pass one instance to PG
+`EntraIdProvider` implements **both** Protocols: pass one instance to PG
 and Redis factories. For PG-only or Redis-only, use `EntraIdPgProvider` /
 `EntraIdRedisProvider` individually.
 
 The providers accept either an **async** credential
 (`azure.identity.aio`, as above) or a **sync** `azure.identity`
-credential — sync credentials perform blocking HTTP, so their
+credential: sync credentials perform blocking HTTP, so their
 `get_token` is offloaded to a thread and never stalls the event loop.
 The credential you pass is **caller-owned** (close it in your lifespan).
 Pass `credential=None` (the default) and the provider lazily creates
@@ -516,9 +516,9 @@ Pass `credential=None` (the default) and the provider lazily creates
 **Prerequisites**: enable Entra authentication on Azure DB for Postgres
 and Azure Cache for Redis; grant the managed identity the appropriate
 roles. The factories add `sslmode=require` when the DSN has no explicit
-sslmode (see *sslmode* under Factory builders) — Azure requires TLS.
+sslmode (see *sslmode* under Factory builders); Azure requires TLS.
 
-### AWS IAM RDS — `taskq[aws]`
+### AWS IAM RDS: `taskq[aws]`
 
 ```bash
 pip install 'taskq-py[aws]'
@@ -542,7 +542,7 @@ WorkerConnections(
 
 AWS IAM RDS auth tokens are valid for **15 minutes**.
 `generate_db_auth_token` itself is local SigV4 signing, but resolving the
-ambient AWS credential chain can block on STS/IMDS HTTPS refreshes — so
+ambient AWS credential chain can block on STS/IMDS HTTPS refreshes, so
 the provider offloads the boto call to a thread rather than stalling the
 event loop, and builds its `boto3.client('rds')` once on first use (pass
 `client=` to supply your own). Pass `region=None` (the default) to let
@@ -556,7 +556,7 @@ create an IAM-mapped DB user (`GRANT rds_iam TO myuser`); grant
 `rds-db:connect` to the IAM principal. The DSN's `user` must be the
 IAM-mapped DB user.
 
-### HashiCorp Vault — `taskq[vault]`
+### HashiCorp Vault: `taskq[vault]`
 
 ```bash
 pip install 'taskq-py[vault]'
@@ -582,15 +582,15 @@ WorkerConnections(
 
 Vault's database secrets engine issues a **fresh username + password** on
 each `generate_credentials` call, with a configurable lease TTL. Unlike
-token providers, `PgCredential.username` is always set — the DSN's user
-is overridden — and the pair is only valid together, so the factory
+token providers, `PgCredential.username` is always set: the DSN's user
+is overridden, and the pair is only valid together, so the factory
 builders pin **one lease per pool / dedicated connection**: `user=` is
 the lease's username and every physical connection authenticates with
 that lease's password (a pool never burns a lease per connection).
 Rotation is the pool rebuild, and it is scheduled for you: the provider
 reports the TTL Vault granted as `PgCredential.lease_duration`, and with no
 `TASKQ_RELOAD_INTERVAL` set the worker, `taskq ui serve` and `TaskQ` rebuild
-each pool at half that TTL — before Vault revokes the previous user (see
+each pool at half that TTL, before Vault revokes the previous user (see
 [Token refresh for long-lived pools](#token-refresh-for-long-lived-pools)).
 Set `TASKQ_RELOAD_INTERVAL` to choose the cadence yourself. Each issued
 lease is logged as `vault-lease-issued` with its `lease_id` and
@@ -609,18 +609,18 @@ must point at the Postgres Vault provisions creds for.
 
 ## Other patterns (no extra needed)
 
-These don't warrant a dedicated extra — implement a
+These don't warrant a dedicated extra: implement a
 `PgCredentialProvider` or pass a pre-constructed pool directly.
 
 ### GCP Cloud SQL IAM
 
-Use the official `google-cloud-sql-connector` — it handles token refresh
+Use the official `google-cloud-sql-connector: it handles token refresh
 and mTLS automatically, so you don't need a credential provider. Build a
 pool factory on the connector's async API (`create_async_connector` +
 `connect_async` with the `"asyncpg"` driver and `enable_iam_auth=True`),
 and pass it to `asyncpg.create_pool` via the **`connect=` keyword**. All
-of these calls are already async, so the factory awaits them directly —
-no `asyncio.to_thread` offload:
+of these calls are already async, so the factory awaits them directly,
+with no `asyncio.to_thread` offload:
 
 ```python
 from contextlib import asynccontextmanager
@@ -636,7 +636,7 @@ def make_cloudsql_pool_factory(connector, instance: str, user: str, db: str):
         async def getconn() -> asyncpg.Connection:
             return await connector.connect_async(
                 instance,  # "project:region:instance"
-                "asyncpg",  # driver — asyncpg, not pg8000
+                "asyncpg",  # driver: asyncpg, not pg8000
                 user=user,  # IAM principal, e.g. "my-mi@project.iam"
                 db=db,
                 enable_iam_auth=True,
@@ -665,7 +665,7 @@ async def lifespan(app):
 
 ### mTLS / client certificates
 
-Pass an `ssl.SSLContext` via a factory — no credential provider needed:
+Pass an `ssl.SSLContext` via a factory: no credential provider needed:
 
 ```python
 import ssl
@@ -751,22 +751,22 @@ worker_main(
 ```
 
 Mixing a pre-constructed pool **and** a factory for the same role raises
-`ValueError` at startup — pick one.
+`ValueError` at startup: pick one.
 
 The worker's per-slot transaction pool (opened when a LOOP-scope `asyncpg.Connection` is
 registered and `max_concurrency > 1`) has **no** `WorkerConnections` slot, by design: it is
 worker-internal infrastructure, built by TaskQ on the direct DSN. Embedders whose credentials
 live in their own pool factories must **also** pass `pg_credential_provider` to `worker_main` /
-`worker_main_async` — the same provider used to build `connections` — or the slot pool
+`worker_main_async`: the same provider used to build `connections`, or the slot pool
 authenticates from the DSN (the worker warns `slot_pool_own_credentials` at boot when
 caller-supplied pools are in play with no provider). The `taskq worker` CLI passes the resolved
 `--pg-credential-provider` / `TASKQ_PG_CREDENTIAL_PROVIDER` automatically.
 
-### `worker_main_async` — when you must own the loop
+### `worker_main_async`: when you must own the loop
 
 `worker_main` drives its own `asyncio.Runner`. If your actors are closures
-over dependencies you have to build first — an `asyncpg.Pool` is **loop-bound**,
-so it must be created on the loop the worker will run on — await
+over dependencies you have to build first. An `asyncpg.Pool` is **loop-bound**,
+so it must be created on the loop the worker will run on, so await
 `worker_main_async` from your own coroutine instead. Same parameters, same
 exit codes; `worker_main` is the thin sync wrapper over it.
 
@@ -802,7 +802,7 @@ connections = build_worker_connections(
 )
 ```
 
-Only the **endpoint** is overridden — every pool size and timeout still comes
+Only the **endpoint** is overridden: every pool size and timeout still comes
 from `WorkerSettings`. That is the point: hand-building one
 `make_pg_pool_factory` and passing it to all three pool roles silently gives
 each role a full `max_size` pool (`5 x pool_max + 3` per replica) instead of
@@ -823,7 +823,7 @@ type ConnFactory = Callable[[], Awaitable[asyncpg.Connection]]
 type RedisFactory = Callable[[], Awaitable[redis.asyncio.Redis]]
 ```
 
-All three are **zero-arg async callables** — closures that capture
+All three are **zero-arg async callables**: closures that capture
 whatever they need (DSN, sizing, credentials). Exported from `taskq`
 top-level.
 
@@ -833,7 +833,7 @@ top-level.
 
 ### Rotating credentials on the client
 
-`TaskQ` takes a `pool_factory=` — the same
+`TaskQ` takes a `pool_factory=`: the same
 [`PoolFactory`](#poolfactory-connfactory-redisfactory-signatures) the worker
 takes per role. TaskQ invokes it at `open()` and **owns** the result, and
 `await tq.reload_credentials()` re-invokes it to swap the pool in place: the
@@ -877,7 +877,7 @@ tq = TaskQ(pool_factory=make_pg_pool_factory(dsn, provider, max_size=5, init=reg
 `dsn=`, `pool=` and `pool_factory=` are mutually exclusive, and `pg_provider=`
 requires `dsn=`. Ownership follows the rule above: a pool TaskQ built (from a
 DSN or a factory) is closed by `tq.close()`; one you passed as `pool=` never
-is — and `reload_credentials()` refuses to rotate it, because rotating means
+is, and `reload_credentials()` refuses to rotate it, because rotating means
 closing.
 
 Note that `reload_credentials()` is not needed for ordinary token refresh:
@@ -886,7 +886,7 @@ Note that `reload_credentials()` is not needed for ordinary token refresh:
 credential. Reload is how you drop sessions opened under a **revoked**
 credential, and the way a **username-bearing pair** such as a Vault lease
 rotates (asyncpg resolves `user=` once per pool, so the pool stays on the
-pair it was built with) — scheduled for you as described above.
+pair it was built with), scheduled for you as described above.
 
 ### LISTEN transport
 
@@ -917,7 +917,7 @@ the job's progress channel instead.
 ## `ensure_sslmode_require`
 
 Every factory in `taskq.auth` applies this before connecting. Call it yourself
-on the DSN paths they do not cover — a raw `asyncpg.connect`, a migration
+on the DSN paths they do not cover: a raw `asyncpg.connect`, a migration
 connection, a DSN handed to another library:
 
 ```python
@@ -927,13 +927,13 @@ conn = await asyncpg.connect(ensure_sslmode_require(dsn), password=token)
 ```
 
 It adds `sslmode=require` **only when no sslmode is set**. An explicit mode is
-never overridden — `verify-ca` / `verify-full` are not downgraded (`require`
+never overridden: `verify-ca` / `verify-full` are not downgraded (`require`
 skips certificate verification, which would expose the very token you are
 injecting), and `sslmode=disable` stays disabled, which is how a test container
 or a Unix-socket deployment opts out.
 
 Because an explicit `verify-ca` / `verify-full` is passed straight through to
-asyncpg, it must carry its own `sslrootcert` (or `PGSSLROOTCERT`) — see
+asyncpg, it must carry its own `sslrootcert` (or `PGSSLROOTCERT`); see
 **sslmode** under *Factory builders* above. This helper only ever fills in a
 missing `sslmode`; it does not, and should not, supply a CA bundle.
 
@@ -967,7 +967,7 @@ from taskq.aad import EntraIdProvider
 
 @asynccontextmanager
 async def lifespan(app):
-    # The credential is caller-owned — async with (or aclose() in a
+    # The credential is caller-owned: async with (or aclose() in a
     # finally) so its aiohttp session is closed on shutdown.
     async with DefaultAzureCredential() as cred:
         provider = EntraIdProvider(cred)

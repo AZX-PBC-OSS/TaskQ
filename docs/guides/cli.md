@@ -145,11 +145,11 @@ taskq migrate up [OPTIONS]
 | `--phase` | `pre \| post \| None` | `None` | Restrict to only `pre` or only `post` phase migrations. When absent, applies both phases in order. |
 | `--target` | `str \| None` | `None` | Stop after applying this migration version (inclusive). Version format matches the filename prefix, e.g. `01.00.00_01`. |
 | `--max-steps` | `int \| None` | `None` | Maximum number of migrations to apply in this invocation. |
-| `--ddl-lock-timeout` | `float` | `30` | Seconds a transactional migration waits for a table lock before it fails and rolls back (`SET LOCAL lock_timeout`; see [Upgrading — the migration gave up waiting for a table lock](upgrading.md#the-migration-gave-up-waiting-for-a-table-lock)). `0` waits indefinitely, parking every statement on the table behind the queued DDL. |
+| `--ddl-lock-timeout` | `float` | `30` | Seconds a transactional migration waits for a table lock before it fails and rolls back (`SET LOCAL lock_timeout`; see [Upgrading: the migration gave up waiting for a table lock](upgrading.md#the-migration-gave-up-waiting-for-a-table-lock)). `0` waits indefinitely, parking every statement on the table behind the queued DDL. |
 
 The command is idempotent: each migration is recorded in `{schema}.schema_migrations` and is skipped on subsequent runs. Running `taskq migrate up` with no options applies all pending migrations.
 
-On failure (exit code 1) the command never prints a traceback. When a migration fails during apply, the command diagnoses itself: it names the failed migration, reports the state the schema was left in — a clean rollback for transactional migrations, or for `-- taskq:no-transaction` migrations the statements that remain applied plus any INVALID indexes found — and prints the single action to take. When the database connection itself cannot be established, there is nothing to diagnose, so it prints a short report naming the connection error and the same re-run action.
+On failure (exit code 1) the command never prints a traceback. When a migration fails during apply, the command diagnoses itself: it names the failed migration, reports the state the schema was left in — a clean rollback for transactional migrations, or for `-- taskq:no-transaction` migrations the statements that remain applied plus any INVALID indexes found, and prints the single action to take. When the database connection itself cannot be established, there is nothing to diagnose, so it prints a short report naming the connection error and the same re-run action.
 
 **Example: apply all pending:**
 
@@ -417,7 +417,7 @@ stall tally, `doctor` reports one finding per attributed actor: which
 worker recorded it, the actor, the kind counts (`blocking_call` — a sync
 call that released the GIL; `gil_held` — sync work that held it), and the
 remedy. The tally is the rolling top-20 the worker's lag watchdog
-attributed (see [runbooks.md — Event-loop stall attribution](runbooks.md#event-loop-stall-attribution-worker-warnings));
+attributed (see [runbooks.md: Event-loop stall attribution](runbooks.md#event-loop-stall-attribution-worker-warnings));
 the worker's own `event-loop-stall-attributed` warnings name the exact
 file:line.
 
@@ -469,7 +469,7 @@ taskq job show JOB_ID
 
 Prints the operator-facing fields of the stored row — id, actor, queue, status, priority, attempt, max_attempts, retry_kind, the four timestamps, and (only when set) `error_class`/`error_message` and `idempotency_key`. `payload`, `result` and `error_traceback` are deliberately not printed, keeping a terminal read from dragging arbitrarily large blobs onto the wire. A row found in `jobs_archive` is marked `archived: yes`; see [jobs-clients.md](jobs-clients.md) for the archival lifecycle.
 
-Under `retry_kind="indefinite"` the stored `max_attempts` ceiling is inert — the retry path never consults it — so the command renders it as `— (indefinite)`, the same framing the admin UI uses; a bare number would advertise a budget the job is not enforcing. See [retries.md](retries.md#2-retry-kinds).
+Under `retry_kind="indefinite"` the stored `max_attempts` ceiling is inert — the retry path never consults it, so the command renders it as `— (indefinite)`, the same framing the admin UI uses; a bare number would advertise a budget the job is not enforcing. See [retries.md](retries.md#2-retry-kinds).
 
 **Example output:**
 
@@ -583,7 +583,7 @@ All conditions must pass for the response to be `200`. During any shutdown phase
 | Code | Condition |
 |---|---|
 | `0` | HTTP 200 — worker is ready |
-| `1` | HTTP 503 — not ready (shutting down or PG ping failed) |
+| `1` | HTTP 503, not ready (shutting down or PG ping failed) |
 | `1` | Socket unreachable |
 
 **Example (Kubernetes readiness probe via exec):**
@@ -702,7 +702,7 @@ Resolving the reference is also what lets validate warn about an actor whose que
 
 ```shell
 taskq workgroup validate workgroup.toml
-# config OK — 2 worker(s), actors='billing.actors:registry'
+# config OK: 2 worker(s), actors='billing.actors:registry'
 #   api: queues=['default'] poll=0.5s concurrency=8 health=off
 #   batch: queues=['email', 'report'] poll=5.0s concurrency=2 health=on
 ```
@@ -763,7 +763,7 @@ taskq workgroup start workgroup.toml
 |---|---|
 | `0` | Success |
 | `1` | Any failure: bad arguments, import errors, config drift, PG connection failures, health probe negative result |
-| `2` | Watchdog force-exit (wedged worker) — not returned by `taskq worker` itself; emitted by `os._exit(EXIT_WATCHDOG)` |
+| `2` | Watchdog force-exit (wedged worker), not returned by `taskq worker` itself; emitted by `os._exit(EXIT_WATCHDOG)` |
 | `3` | `taskq worker --until-idle`: some jobs failed during the drain |
 | `4` | `taskq worker --until-idle`: idle-max-runtime exceeded before drain completed |
 

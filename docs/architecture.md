@@ -131,7 +131,7 @@ class Backend(Protocol):
         fallback_result_ttl: timedelta | None = None,
         *,
         result_bytes: bytes | None = None,
-    ) -> bool: ...  # result OR result_bytes (its orjson encoding) — never both
+    ) -> bool: ...  # result OR result_bytes (its orjson encoding); never both
     async def mark_succeeded_with_conn(
         self,
         conn,
@@ -215,7 +215,7 @@ class Backend(Protocol):
     # Admin operations
     async def retry_job(self, job_id: JobId) -> bool: ...
 
-    # Scheduling / sweeps — no `now` parameter: the backend's own clock
+    # Scheduling / sweeps: no `now` parameter; the backend's own clock
     # (PG: clock_timestamp() in the statement; InMemory: the injected
     # Clock) is the arbiter.
     async def scheduled_to_pending(self) -> int: ...
@@ -290,11 +290,11 @@ PG backend renders a single status as `status = $n` and a sequence as
 `status = ANY($n)` with bound parameters.  An empty sequence
 (`status=[]`) matches no jobs, not all jobs; unknown status values are
 rejected with `ValueError` at `JobFilter` construction so both backends
-fail identically.  `status` and `active` are mutually exclusive —
+fail identically.  `status` and `active` are mutually exclusive:
 specifying both raises `ValueError`.
 
 The `active` meta-filter selects statuses by terminality. `active=True`
-selects all non-terminal statuses (pending, scheduled, running — 'not yet
+selects all non-terminal statuses (pending, scheduled, running: 'not yet
 finished') and `active=False` the terminal ones; the non-terminal set is
 derived from `ACTIVE_STATUSES` in `statemachine.py`.
 
@@ -303,24 +303,24 @@ assert this constant matches at import time, preventing silent protocol drift.
 
 **When the version bumps:** increment it whenever a change alters an existing
 protocol member's observable contract such that an implementation written
-against the previous version would *silently* misbehave — return wrong rows,
-ignore inputs — instead of failing loudly.  Purely additive changes that an old
+against the previous version would *silently* misbehave (return wrong rows,
+ignore inputs) instead of failing loudly.  Purely additive changes that an old
 implementation can ignore without producing incorrect behaviour (a new optional
 method with a default, a new carrier field old code simply never reads) do not
-require a bump.  History: **v3** (unreleased — folds in every protocol
-change since the last shipped release) — `list_jobs`; `JobFilter.status`
+require a bump.  History: **v3** (unreleased; folds in every protocol
+change since the last shipped release): `list_jobs`; `JobFilter.status`
 widened to accept a sequence and the `active` meta-filter was added (a v2
 implementation returns 0 rows for `status=[...]` and ignores `active`, with
 no error).  `get_actor_max_pending` added as a required method (a v2
 implementation lacks it; the client capacity cache's fail-open would
 otherwise swallow the `AttributeError` and silently enforce code literals
-forever — the cache raises `TypeError` at first use instead).
+forever; the cache raises `TypeError` at first use instead).
 `mark_succeeded` / `mark_succeeded_with_conn` gained the
 `fallback_result_ttl` keyword (without it, a cleared stored `result_ttl`
 keeps the enqueue-pinned `result_expires_at`, silently expiring results at
 completion; a v2 implementation errors loudly on the unexpected keyword at
 the first succeeded job).  The same methods gained the `result_bytes`
-keyword — the result's orjson encoding, produced once by the worker
+keyword: the result's orjson encoding, produced once by the worker
 consumer.  An implementation that ignores it stores a NULL result (and NULL
 `result_size_bytes`) for every consumer-completed job, silently; it must
 bind `result_bytes.decode("utf-8")`, store `result_size_bytes =
@@ -328,10 +328,10 @@ len(result_bytes)`, NUL-guard the bytes exactly as the dict form is
 guarded, reject bytes that are not valid JSON with the `ValueError`
 family (bound as text and cast server-side, non-JSON surfaces as a
 `PostgresError` the terminal-write classification reads as transient
-infrastructure — a permanent data defect looping the job through
+infrastructure: a permanent data defect looping the job through
 reclaim), and reject a call passing both `result` and `result_bytes`.
-Any valid JSON value the guard accepts — an array or scalar, not just
-an object — stores and reads back verbatim, exactly as PG's jsonb
+Any valid JSON value the guard accepts (an array or scalar, not just
+an object) stores and reads back verbatim, exactly as PG's jsonb
 column holds it: `result`'s `dict[str, object] | None` type describes
 the actor contract, not a runtime guarantee for direct `result_bytes`
 callers, so a read path must not assume a dict. All of this validation
@@ -345,8 +345,8 @@ constant at import time, the same pattern `PostgresBackend` and
 contract bump fails fast instead of drifting silently.
 
 `retry_job` puts a job that has come to rest back to `pending` so it can be
-re-dispatched. Every resting state is a valid source — `failed`, `crashed`,
-`cancelled`, `abandoned` and `succeeded` — because an operator re-run means
+re-dispatched. Every resting state is a valid source (`failed`, `crashed`,
+`cancelled`, `abandoned` and `succeeded`), because an operator re-run means
 "run this again": `succeeded` records that the actor returned without raising,
 not that the result was right, and `abandoned` means a deploy interrupted the
 job. A `running` job is refused, because re-pending a row while an attempt is
@@ -371,8 +371,8 @@ class. This means:
 
 ### `supports_transactional_simulation`
 
-`PostgresBackend` sets this to `False` — atomicity comes from real PG transactions.
-`InMemoryBackend` sets it to `True` — `SubJobEnqueuer` buffers sub-job `EnqueueArgs`
+`PostgresBackend` sets this to `False`: atomicity comes from real PG transactions.
+`InMemoryBackend` sets it to `True`: `SubJobEnqueuer` buffers sub-job `EnqueueArgs`
 and flushes on success or discards on failure to simulate rollback semantics.
 
 ---
@@ -411,10 +411,10 @@ abandoned → (terminal)
 
 `assert_valid_transition(from_status, to_status, job_id)` is the application-level
 guard. The SQL `WHERE status = 'X'` predicate is the authoritative serialization
-gate — two concurrent writers cannot both transition the same row because only one
+gate: two concurrent writers cannot both transition the same row because only one
 can hold the row lock from the dispatch CTE's `FOR UPDATE SKIP LOCKED`.
 
-`statemachine.py` also exports `ACTIVE_STATUSES` — the complement of
+`statemachine.py` also exports `ACTIVE_STATUSES`: the complement of
 `TERMINAL_STATUSES` over the full `JobStatus` set (pending, scheduled, running),
 derived from `VALID_TRANSITIONS` keys.  `JobFilter(active=True)` uses this set
 so that adding a new non-terminal state to the state machine automatically
@@ -430,7 +430,7 @@ extends the active filter without a second edit.
 | running → failed | Consumer after error / deadline |
 | running → scheduled | Consumer on `Snooze` / `RetryAfter` / transient retry |
 | running → cancelled | Consumer after cancel_phase=1 (cooperative) |
-| running → cancelled | `reclaim_expired_locks` sweep (leader, Sweep 1 — cancel in-flight, retries exhausted) |
+| running → cancelled | `reclaim_expired_locks` sweep (leader, Sweep 1: cancel in-flight, retries exhausted) |
 | running → abandoned | `CancelController.run_post_tx` (heartbeat, post-phase-3) / shutdown RELEASING phase (operator cancel in flight only) |
 | running → crashed | `reclaim_expired_locks` sweep (leader, Sweep 1) |
 | running → pending/scheduled | `mark_interrupted` (consumer on a shutdown-origin cancel; shutdown RELEASING phase); the attempt is NOT refunded (it started executing), `interrupt_count` bumps; `pending` when the actor has provably exited (async actor unwound, sync actor's thread finished, transactional unwind done; the consumer parks on the tracked exit handles, bounded by the remaining termination budget, before writing), `scheduled` behind the process's exit window (deadline + watchdog exit tail) when it has not |
@@ -444,7 +444,7 @@ transaction as the reclaim UPDATE.  Consumers observe crash-reclaimed jobs via
 without enumerating every `job_id`.
 
 A `running → pending` reclaim (crash or heartbeat) reschedules through the
-job's own `RetryPolicy` — base, cap, backoff kind and jitter — exactly as an
+job's own `RetryPolicy` (base, cap, backoff kind and jitter), exactly as an
 application-level failure does, not a hardcoded flat interval, and clamped at
 the same effective cap: the lesser of the policy's `cap` and the operator's
 `TASKQ_MAX_RETRY_BACKOFF` ceiling (24 h default). The sweep
@@ -459,7 +459,7 @@ cohort at once spreads their `scheduled_at` across a band instead of
 stamping every row with the same instant.
 
 Delivery is **at-least-once, and gap-free under a bounded-transaction-duration
-assumption** — not an unconditional guarantee. `job_events.id` (`bigserial`)
+assumption**, not an unconditional guarantee. `job_events.id` (`bigserial`)
 is allocated at INSERT time, so under concurrent sweep transactions, id
 allocation order and commit order can diverge: a transaction holding a lower
 id can commit *after* one holding a higher id. A naive `id > cursor` poll
@@ -471,7 +471,7 @@ reasons worth recording so they aren't retried:
 
 - A per-row filter comparing each row's inserting-transaction id against
   `pg_snapshot_xmin(pg_current_snapshot())` only checks whether *that row's
-  own* transaction is complete — it cannot detect a *different*,
+  own* transaction is complete: it cannot detect a *different*,
   still-uncommitted transaction sitting at a lower `event_id`, because that
   row is invisible under MVCC to any plain `SELECT`, not merely filtered out.
   No predicate computed only over visible rows can bound something it cannot
@@ -481,22 +481,22 @@ reasons worth recording so they aren't retried:
   transaction in progress) fails for a structural reason: `job_events` is a
   shared, multi-kind table (state changes, cancel requests, progress) written
   continuously by unrelated code paths, so some transaction is touching it
-  almost continuously in a live system — the "anything in progress" signal is
+  almost continuously in a live system: the "anything in progress" signal is
   effectively always true, which would stall reclaim-event delivery
   indefinitely rather than only during genuine contention. (Separately, this
   environment's `pg_snapshot_xmin`/`pg_snapshot_xmax` did not reflect a
-  confirmed-active concurrent transaction in ad hoc testing — a further reason
+  confirmed-active concurrent transaction in ad hoc testing; a further reason
   not to depend on them here without deeper investigation.)
 
 Instead, `poll_reclaim_events` uses a **trailing-watermark (visibility delay)
 filter**: `id` (`nextval`) and `occurred_at` (`clock_timestamp()`) are stamped
-by the same INSERT statement, so they are co-monotonic — an earlier id has an
+by the same INSERT statement, so they are co-monotonic: an earlier id has an
 earlier-or-equal `occurred_at`. (Co-monotonicity itself is an assumption, not
 a guarantee: the two values come from separate volatile calls that Postgres
 does not evaluate atomically across concurrent transactions, so one
 transaction can in principle evaluate both of its own between another's
 `nextval` and `clock_timestamp()`, stamping a lower id with a later
-`occurred_at` — the window is nanosecond-scale and no occurrence is known,
+`occurred_at`; the window is nanosecond-scale and no occurrence is known,
 but the watermark is only as exact as this non-interleaving assumption.)
 Only rows older than
 `taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY` (2 seconds by default) are
@@ -505,22 +505,22 @@ have inserted a still-lower id has had at least as long to commit, so it must
 have either committed (returned, correctly ordered, in this or an earlier
 poll) or aborted (permanently gone, safe to skip). **This assumes no
 `job_events` writer takes longer than the margin between its INSERT and its
-commit** — true for TaskQ's short, single-round-trip sweep and terminal-write
-transactions, and for the batch event-writers (sweeps 1–3, bulk cancel,
+commit**: true for TaskQ's short, single-round-trip sweep and terminal-write
+transactions, and for the batch event-writers (sweeps 1-3, bulk cancel,
 deregistration) it is now an *enforced* property rather than a hope: each
 batch is capped at `event_writer_batch_size` rows and its transaction carries
 a server-side `statement_timeout` at 7/8 of the margin, so a batch that
 cannot fit inside the watermark margin is aborted by the server instead of
 silently blowing it (see
 [Maintenance Sweeps](guides/maintenance-sweeps.md)). The assumption remains
-conditional, not a guarantee the SQL can make on its own — a stalled or
+conditional, not a guarantee the SQL can make on its own: a stalled or
 GC-paused worker holding a transaction open, or a non-batch writer, could
 still in principle exceed the margin and reproduce the gap, which is what the
 `check_reclaim_visibility_delay_risk` detector below watches for. Consumers
 must be idempotent (dedupe on `event_id`).
 Configurable via `WorkerSettings.reclaim_event_visibility_delay` /
 `TASKQ_RECLAIM_EVENT_VISIBILITY_DELAY` (and per-call via
-`poll_reclaim_events(..., visibility_delay=...)`) — raise it under heavy
+`poll_reclaim_events(..., visibility_delay=...)`); raise it under heavy
 sweep contention or large batches, lower it if latency matters more and
 writes are known to be fast.
 
@@ -528,16 +528,16 @@ writes are known to be fast.
 than a slower one that's visible, so detection is wired in by default,
 not left for operators to discover: every `TaskQ.watch_reclaims()`
 consumer runs `PostgresBackend.check_reclaim_visibility_delay_risk` on a
-slow cadence (once a minute — cheap, and far outside the per-poll hot
+slow cadence (once a minute; cheap, and far outside the per-poll hot
 path, which is why the diagnostic is *not* part of the `Backend`
 protocol) and logs a loud structured
 `watch-reclaims-visibility-delay-at-risk` warning for every transaction
 it finds holding `job_events` open past the margin. The diagnostic
-itself — `PostgresBackend.check_reclaim_visibility_delay_risk` — queries
+itself (`PostgresBackend.check_reclaim_visibility_delay_risk`) queries
 `pg_locks`/`pg_stat_activity` and returns `LongRunningJobEventsWriter`
 rows; it remains available standalone for a dedicated
 monitoring/alerting loop that wants tighter cadence or its own sink.
-Either way it is a *proxy* signal, not proof of an actual miss — it
+Either way it is a *proxy* signal, not proof of an actual miss; it
 cannot see whether that transaction will insert a `job_events` row
 before committing, only that it has held the table open unusually long,
 so it can both false-positive (an unrelated long-running transaction
@@ -545,7 +545,7 @@ that merely touched `job_events` once) and false-negative (a writer
 that inserts and commits within the margin every time, even if some
 other assumption about the deployment is wrong).
 
-**Worked example: fan-out completion.** The motivating use case — a
+**Worked example: fan-out completion.** The motivating use case: a
 producer fans out N jobs and must fire a callback when *all* of them
 reach a terminal state. Without a reclaim feed, a SIGKILLed worker
 leaves the counter stuck at 1 forever (the job is retried or crashed in
@@ -564,7 +564,7 @@ async def track_completions(tq: TaskQ) -> None:
         if evt.detail["to_state"] != "pending":  # terminal reclaim only;
             outstanding -= 1  # retries redispatch normally
         cursor = evt.event_id
-        await save_reclaim_cursor(cursor)  # persist AFTER processing —
+        await save_reclaim_cursor(cursor)  # persist AFTER processing;
         # a crash before this re-delivers the event (at-least-once;
         # dedupe on event_id if your decrement isn't idempotent)
         if outstanding == 0:
@@ -572,29 +572,29 @@ async def track_completions(tq: TaskQ) -> None:
 ```
 
 Terminal states reached on the normal path (success, failure,
-cooperative cancel) are counted as each job's own result is recorded —
+cooperative cancel) are counted as each job's own result is recorded:
 `watch_reclaims` exists to close the crash gap, where *no* application
 code runs. Only terminal reclaims decrement the counter: a
 `to_state='pending'` event means the job was rescheduled and will be
 counted when it eventually lands terminal. The producer must only prune
-`job_events` rows older than every live consumer's persisted cursor —
+`job_events` rows older than every live consumer's persisted cursor;
 rows pruned before a slow consumer reads them are permanently lost to
 that consumer.
 
 `TaskQ.watch_reclaims()`'s PG LISTEN transport wakes on the reclaim
 `pg_notify` for low latency, but a NOTIFY-triggered poll can still come up
-empty if the event hasn't cleared the visibility-delay margin yet — it then
+empty if the event hasn't cleared the visibility-delay margin yet; it then
 retries on a short, bounded cadence (`_catch_up_after_notify`) until the
-margin elapses, rather than falling back to a full — possibly much longer —
+margin elapses, rather than falling back to a full (possibly much longer)
 `poll_timeout` wait.
 This is the standard "polling publisher" mitigation for the transactional
-outbox pattern's well-known bigserial-ordering hazard — the alternative,
+outbox pattern's well-known bigserial-ordering hazard; the alternative,
 fully exact fix is to read commit order directly off the WAL (logical
 decoding / CDC), which is out of scope here.
 
 Sweep 1 now fires one `pg_notify` per sweep call that reclaims at least one
 row of *either* kind (previously only when the retry branch produced a
-row), which is a **wake-channel semantics change**, not purely a bugfix —
+row), which is a **wake-channel semantics change**, not purely a bugfix:
 `wake_channel` previously meant only "new dispatchable work"; it now also
 means "something changed on job_events," so every crash-reclaim wakes every
 subscriber (including pure-dispatch workers with no interest in it).
@@ -605,9 +605,9 @@ The index added by migration `01.00.02_01_pre_job_events_outbox.sql` uses
 `CREATE INDEX` (not `CONCURRENTLY`) and takes an exclusive lock on
 `job_events` for the duration of the build, which can stall writes to that
 heavily-written table. The migration runner supports a per-migration opt-out
-from its default transaction wrapper — the `-- taskq:no-transaction` header
+from its default transaction wrapper: the `-- taskq:no-transaction` header
 directive, which unlocks `CONCURRENTLY` forms (see
-[Non-transactional migrations](guides/upgrading.md#non-transactional-migrations)) —
+[Non-transactional migrations](guides/upgrading.md#non-transactional-migrations)),
 but bundled migrations deliberately remain transactional (pinned by
 `test_bundled_migrations_are_all_transactional`), so operators with a
 large/populated table should still run the equivalent `CREATE INDEX
@@ -617,10 +617,10 @@ instead.
 
 Migration `01.00.06_01_pre_cancel_and_cascade_indexes.sql` follows the same
 precedent with the same caveat: its plain transactional `CREATE INDEX`
-statements take a write-blocking lock on `jobs` (the hottest table — enqueue,
+statements take a write-blocking lock on `jobs` (the hottest table; enqueue,
 dispatch and heartbeat all write it) and `job_attempts` for the duration of
-each build. It stays transactional deliberately — the `CONCURRENTLY` form
-deadlocks under the runner's own serialized-migrator advisory lock — so apply
+each build. It stays transactional deliberately: the `CONCURRENTLY` form
+deadlocks under the runner's own serialized-migrator advisory lock, so apply
 it during a maintenance window (or when `jobs` is small/quiescent, e.g. right
 after a prune sweep) on any deployment where `jobs` is large; the migration
 file's header carries the full derivation.
@@ -635,9 +635,9 @@ The dispatch CTE is a single atomic `UPDATE … RETURNING *` statement. It acqui
 row locks and transitions `pending` → `running` for a batch of jobs. TaskQ ships
 two dispatch SQL variants selected per-queue at dispatch time:
 
-- **`DISPATCH_STRICT_FIFO_SQL`** — priority-then-time ordering. Best for queues
+- **`DISPATCH_STRICT_FIFO_SQL`**: priority-then-time ordering. Best for queues
   with no fairness requirements.
-- **`DISPATCH_ROUND_ROBIN_SQL`** — per-fairness-key interleaving (lateral dispatch).
+- **`DISPATCH_ROUND_ROBIN_SQL`**: per-fairness-key interleaving (lateral dispatch).
   Prevents deep queues of one actor or tenant from starving others. See [Queue modes](#queue-modes) below.
 
 ### Queue modes
@@ -647,11 +647,11 @@ Each queue has a `mode` column in the `queues` table: `strict_fifo` (default) or
 `_resolve_queue_modes()`, served from a per-worker TTL cache (5 s): a cache hit
 adds no query to the round, the miss path runs the one indexed
 `queues` read and refills the cache, and `taskq queues set-mode` invalidates the
-caches of the process it runs in — so a mode flip reaches every worker within
+caches of the process it runs in, so a mode flip reaches every worker within
 the TTL.
 Queues absent from the table default to `strict_fifo`.
 
-A dispatch round runs in autocommit — no `BEGIN`/`COMMIT` around the claim.
+A dispatch round runs in autocommit: no `BEGIN`/`COMMIT` around the claim.
 The claim is one atomic `UPDATE … RETURNING` whose row locks end with the
 statement, the mode resolve and the claimable probe are read-only, and an
 empty round holds no locks between window expansions, so a transaction added
@@ -670,7 +670,7 @@ The round-robin mode computes `fairness_rank` via:
 ROW_NUMBER() OVER (PARTITION BY COALESCE(fairness_key, '__null__')
                    ORDER BY priority DESC, scheduled_at)
 ```
-Jobs without a `fairness_key` collapse into a single `__null__` cohort — equivalent
+Jobs without a `fairness_key` collapse into a single `__null__` cohort, equivalent
 to `strict_fifo` within that cohort. See [guides/jobs-clients.md](guides/jobs-clients.md) for `fairness_key` usage.
 
 ### Common CTE structure
@@ -697,7 +697,7 @@ identity_dedup      → DISTINCT ON (actor, identity_key) for identity-gated job
                       UNION ALL non-identity jobs
 ranked              → ROW_NUMBER() OVER (PARTITION BY actor ORDER BY …) as pending_rank
                       (round_robin: ORDER BY fairness_rank, priority; strict_fifo: ORDER BY priority)
-                      MATERIALIZED — the optimization fence that finalizes ranks before the cut
+                      MATERIALIZED: the optimization fence that finalizes ranks before the cut
 capped_ranked       → the ranked rows of actors carrying a max_concurrent cap
 top_ids             → capped actors only: the pre-lock window, LIMIT limit_n
 locked              → capped: FOR UPDATE SKIP LOCKED over the top_ids window
@@ -735,7 +735,7 @@ UPDATE jobs         → WHERE j.id IN eligible AND j.status = 'pending'
 
 4. Expected over-count: `(num_producers - 1) * max_concurrent` jobs may be
    dispatched beyond the cap per round under concurrent producers. This is a
-   documented, bounded tradeoff — the sweep loop reclaims stale locks.
+   documented, bounded tradeoff: the sweep loop reclaims stale locks.
 
 5. Per-actor oversampling (`LIMIT pac.residual * oversample`, default `oversample=2`
    via `TASKQ_DISPATCH_OVERSAMPLE`) absorbs filtering from max_concurrent caps and
@@ -758,10 +758,10 @@ Source: `src/taskq/_di/`.
 
 | File | Role |
 |---|---|
-| `registry.py` | `ProviderRegistry` — registration, validation, plan cache |
-| `scope.py` | Re-export shim for `Scope` — the canonical definition lives in `src/taskq/_scope.py` (PROCESS=0, THREAD=1, LOOP=2, TRANSIENT=3) |
+| `registry.py` | `ProviderRegistry`: registration, validation, plan cache |
+| `scope.py` | Re-export shim for `Scope`: the canonical definition lives in `src/taskq/_scope.py` (PROCESS=0, THREAD=1, LOOP=2, TRANSIENT=3) |
 | `scopes.py` | `ScopeContainer`, `ProcessScope`, `ThreadScope`, `LoopScope`, `build_actor_scope` |
-| `solver.py` | `solve_dependencies` — resolves kwargs dict for a callable |
+| `solver.py` | `solve_dependencies`: resolves kwargs dict for a callable |
 | `lifecycle.py` | Detects provider lifecycle from class/factory shape |
 | `_validate.py` | Five-phase startup validation (cycle detection, scope rules, missing providers) |
 
@@ -775,7 +775,7 @@ PROCESS (widest)
 ```
 
 A narrower scope may depend on a wider scope (a TRANSIENT provider may inject a
-LOOP-scoped connection). A wider scope must not depend on a narrower scope — this
+LOOP-scoped connection). A wider scope must not depend on a narrower scope; this
 would mean the longer-lived singleton depends on something that might not exist.
 Violations are detected at `registry.validate()` time and raise `ScopeViolation`.
 
@@ -786,7 +786,7 @@ Violations are detected at `registry.validate()` time and raise `ScopeViolation`
 1. Calls `get_type_hints(func, include_extras=True)` to collect annotated parameter
    types.
 2. For each parameter (excluding `return` and any name present in the caller-supplied
-   `passthrough_kwargs` dict — in practice this is how `payload` and `ctx` are
+   `passthrough_kwargs` dict; in practice this is how `payload` and `ctx` are
    excluded from DI lookup, since callers pass them through by name rather than the
    solver hardcoding those parameter names):
    - Unwraps `Annotated[T, Scope.X]` to extract the type `T` and any scope override.
@@ -833,7 +833,7 @@ constraint enforces this).
 `CancelController.run_in_tx(conn)` runs inside the heartbeat transaction on every
 tick:
 
-**Phase 1 — Cooperative**
+**Phase 1: Cooperative**
 
 The heartbeat reads `cancel_requested_at IS NOT NULL AND status='running'` rows for
 this worker via `POLL_CANCEL_FLAGS_SQL`. On first observation of `db_phase >= 1`:
@@ -846,7 +846,7 @@ this worker via `POLL_CANCEL_FLAGS_SQL`. On first observation of `db_phase >= 1`
 If `db_phase == FORCED` while local is still `< FORCED`, the controller advances
 locally without writing to PG (another controller already escalated).
 
-**Phase 2 — Forced**
+**Phase 2: Forced**
 
 After `cancellation_grace_period` elapses since `cancel_observed_at`:
 - Executes `CANCEL_ESCALATION_SQL` (`SET cancel_phase = 2 WHERE cancel_phase = 1`).
@@ -854,12 +854,12 @@ After `cancellation_grace_period` elapses since `cancel_observed_at`:
 - Calls `active.task.cancel()` (asyncio task cancellation).
 - **PG write happens BEFORE `task.cancel()` with no intervening `await`.**
 
-**Phase 3 — Abandonment**
+**Phase 3: Abandonment**
 
 After `cancellation_grace_period + cleanup_grace_period` elapses:
 - Sets `active.cancel_phase = ABANDON_PENDING` (in-process sentinel).
 - Appends `job_id` to `_pending_abandons` deque.
-- Does NOT call `mark_abandoned` here — the heartbeat transaction holds an UPDATE
+- Does NOT call `mark_abandoned` here; the heartbeat transaction holds an UPDATE
   lock on the row; calling `mark_abandoned` (which opens a separate pool connection)
   would self-deadlock.
 
@@ -878,12 +878,12 @@ both the consumer and the heartbeat attempt a terminal write.
 
 The phases above only ever advance on the lock-holding worker. If that worker
 dies mid-protocol, Sweep 1 (`reclaim_expired_locks`) eventually reclaims the job
-— after a flat extra 60s of headroom on top of `cancel_grace + cleanup_grace`,
+, after a flat extra 60s of headroom on top of `cancel_grace + cleanup_grace`,
 so a merely-slow cancellation isn't mistaken for a crash. What the reclaim does
 with the in-flight cancel state puts operator intent first:
 
 - **Cancel branch** (`cancel_phase != 0`, any retry budget): the job lands on
-  **`cancelled`**, not `crashed` — the caller's explicit request is the honest
+  **`cancelled`**, not `crashed`; the caller's explicit request is the honest
   terminal label: anyone reconciling terminal states sees the cancel was
   honored. The row **keeps** `cancel_phase`/`cancel_requested_at` as the audit
   trail of the honored request, exactly as the worker-honored terminal write
@@ -896,13 +896,13 @@ with the in-flight cancel state puts operator intent first:
 
 The earlier design evaluated the retry budget *before* `cancel_phase`, so a
 retryable job with a cancel in flight went back to `pending` with its cancel
-columns wiped — the operator's request silently lost: the cancel call itself
+columns wiped, the operator's request silently lost: the cancel call itself
 had returned normally (the request was initiated), while the row was re-pended
 uncancelled with no surviving marker of the request. The reset-on-re-pend that
 design carried existed to prevent a re-cancel loop (a re-pended row still
 carrying `cancel_phase` would be re-cancelled by each new claimant, then
 reclaimed again). Ordering the cancel branch first removes the loop
-structurally instead: the cancel branch never re-pends — it terminalises — so
+structurally instead: the cancel branch never re-pends (it terminalises), so
 no arm of the sweep can produce a re-pended row carrying cancel columns, and
 the retry branch resets columns that are already clean. `isolate_self`
 (worker heartbeat loss) mirrors this ordering branch for branch; its one
@@ -932,8 +932,8 @@ Source: `src/taskq/worker/leader.py`.
 
 Leadership is a lease on the `maintenance_leader` row. The holder writes an
 `expires_at` of its own choosing (`leader_lease`, default 40 s) and renews it
-every `heartbeat_interval` over `deps.leader_conn` — a dedicated, non-pooled
-connection — under a term fenced by `(worker_id, elected_at)`. Any pod may
+every `heartbeat_interval` over `deps.leader_conn` (a dedicated, non-pooled
+connection) under a term fenced by `(worker_id, elected_at)`. Any pod may
 take the row over once that instant has passed.
 
 On each heartbeat tick, a pod that is not leading runs one statement that
@@ -944,7 +944,7 @@ its renewal returning nothing means a successor holds the row.
 "Gone quiet" means both of the liveness signals the row can carry have
 stopped: the lease the holder chose has expired, and its `last_seen_at` has
 been silent for four heartbeat intervals. Two are needed because during a
-roll the row can be written by two protocols — a pod from a release that
+roll the row can be written by two protocols: a pod from a release that
 predates the lease names four columns in its upsert and leaves whatever
 `expires_at` it found in place, so the expiry alone would judge a pod that is
 pinging every tick to be dead. Requiring both costs nothing against the
@@ -963,7 +963,7 @@ own instant.
 
 The election loop sets the event and the term together and clears them
 together, and it clears them before any await that could release the courtesy
-lock — a peer must never be able to elect while this process still reads
+lock: a peer must never be able to elect while this process still reads
 `leading()` as true. The two are exposed separately because `is_leader` is
 what the watchdog parks on and what the gauge and health report publish, while
 the term is what narrows how long that role is trusted between renewals.
@@ -972,7 +972,7 @@ The schema-qualified advisory lock (`taskq:maintenance_leader:<schema>`, built
 by `taskq.constants.schema_lock_name`) is still taken after winning. It keeps a
 pod from a release that knows only the lock from leading beside a lease holder
 during a roll. It is never required and never waited on: the row alone decides
-the election in every state — held, lapsed, or absent — so a lock that
+the election in every state (held, lapsed, or absent), so a lock that
 outlives the row behind it (a candidate dead between its lock attempt and its
 election write, a departed leader's lingering session) blocks nothing.
 Recovery from a holder that died without closing its session depends only on
@@ -982,9 +982,9 @@ so a follower's next election cycle already finds it free. Failover from a
 holder that dies without a FIN is bounded by `leader_lease +
 heartbeat_interval` plus one round trip.
 
-A pod that keeps *winning* the row but cannot finish the assume — the
+A pod that keeps *winning* the row but cannot finish the assume (the
 dedicated monitor and cron connections refuse to open (connection-count
-pressure, a credential-factory outage) — is handed back on the same budget.
+pressure, a credential-factory outage) is handed back on the same budget.
 The own-row arm lets it re-win every heartbeat, which refreshes the row's
 lease and ping, so peers' lapse predicate never matches: left alone, nobody
 leads for as long as the failure lasts, fleet-wide. The election loop
@@ -992,11 +992,11 @@ therefore anchors the first such failure's trust window and, once it is
 spent, resigns the row through the fence (`_hand_back_unassumable_lease`,
 fenced on the current win's term so a peer that already took over is never
 deleted); the anchor is cleared by a successful assume or by an observed
-election loss (a peer holds the row — a later win starts a fresh episode),
+election loss (a peer holds the row; a later win starts a fresh episode),
 so a pod that re-wins while still broken hands the row straight back rather
 than buying a fresh window. One failed open inside the window is a blip that
-costs nothing — the own-row arm's cheap route back (a credential reload) is
-exactly what that window preserves — and the worst case is the dead-leader
+costs nothing: the own-row arm's cheap route back (a credential reload) is
+exactly what that window preserves, and the worst case is the dead-leader
 SLA plus the duration of one failing cycle's connection attempts (each
 bounded by `reload_factory_timeout`, 30 s at defaults, so roughly
 `leader_lease + heartbeat_interval + 30 s` ≈ 80 s at defaults): the bound
@@ -1008,19 +1008,19 @@ keeps winning.
 
 `MaintenanceLeader` runs eleven cooperative loops in a `TaskGroup`:
 
-1. **Election loop** — claims and renews the leadership lease.
-2. **Watchdog** — detects a lost connection to Postgres on a dedicated monitor
+1. **Election loop**: claims and renews the leadership lease.
+2. **Watchdog**: detects a lost connection to Postgres on a dedicated monitor
    connection, faster than the renewal cadence would.
-3. **Scheduled-wake (Sweep 3)** — promotes `scheduled` → `pending` when
+3. **Scheduled-wake (Sweep 3)**: promotes `scheduled` → `pending` when
    `scheduled_at <= statement_timestamp()` (a STABLE bound, so
    `jobs_scheduled_wake_idx` serves it as an index condition). Sends
    `pg_notify` after promoting to wake consumer loops. One bounded batch per
    one-second tick (`event_writer_batch_size` rows); a larger due backlog
    drains across ticks.
-4. **Cron** — fires cron-scheduled actors at their declared cadence, at most
+4. **Cron**: fires cron-scheduled actors at their declared cadence, at most
    `cron_tick_limit` schedules per one-second tick under the schema-qualified
    cron advisory lock (`taskq:cron:<schema>`, transaction-scoped).
-5. **Sweep (Sweeps 1, 2, 4)** — **leader-only** (gated on `ctx.deps.is_leader`),
+5. **Sweep (Sweeps 1, 2, 4)**: **leader-only** (gated on `ctx.deps.is_leader`),
    runs every `sweep_interval` (default 30 s): `reclaim_expired_locks`
    (Sweep 1, uses `FOR UPDATE SKIP LOCKED`), `deadline_sweep` (Sweep 2), and,
    when the backend supports them, `sweep_leaked_reservation_slots` (Sweep 4),
@@ -1032,27 +1032,27 @@ keeps winning.
    `sweep_drain_batches` batches per tick before leaving the remainder to the
    next tick (see [Maintenance Sweeps](guides/maintenance-sweeps.md) for the
    derivation).
-6. **Prune (Sweep 5)** — runs daily (default 03:00 UTC). Moves terminal jobs
+6. **Prune (Sweep 5)**: runs daily (default 03:00 UTC). Moves terminal jobs
    (`succeeded`, `failed`, `cancelled`, `crashed`, `abandoned`) from `jobs` to
    `jobs_archive` once their per-status retention period has elapsed. Batched at
    10 000 rows per CTE; atomic move+delete within each batch. After job pruning
    completes, `prune_old_batches` deletes completed batch rows past the same
    cutoff (see [Batch Subsystem](#batch-subsystem)). Controlled by
    `TASKQ_PRUNE_*` settings.
-7. **Archive expiry (Sweep 6)** — runs daily (default 04:00 UTC, 1 hour after
+7. **Archive expiry (Sweep 6)**: runs daily (default 04:00 UTC, 1 hour after
    prune). Hard-deletes rows from `jobs_archive` once their `expire_at` has
    passed. Cascades to `job_attempts_archive`. Controlled by
    `TASKQ_ARCHIVE_EXPIRY_*` settings.
-8. **Queue-depth sampling** — samples queue counts every 15 seconds for OTel
+8. **Queue-depth sampling**: samples queue counts every 15 seconds for OTel
    gauges.
-9. **Reservation sampling** — samples reservation-slot usage every 15 seconds
+9. **Reservation sampling**: samples reservation-slot usage every 15 seconds
    for OTel gauges.
-10. **Backlog detection** — samples jobs-by-status and oldest-due-age gauges
+10. **Backlog detection**: samples jobs-by-status and oldest-due-age gauges
     every `queue_depth_interval`. Deliberately **not** leader-gated, unlike
     every sibling sampler: a detector hosted behind the leadership gate emits
     nothing under the very failure (election loss, another schema holding the
     old-style lock) it exists to expose, so every worker samples.
-11. **Stranded-jobs detector** — runs every 60 s. Warns about pending/scheduled
+11. **Stranded-jobs detector**: runs every 60 s. Warns about pending/scheduled
     jobs whose actor has no `actor_config` row (e.g. the actor was removed from
     the registry but jobs remain enqueued).
 
@@ -1070,14 +1070,14 @@ Three Postgres LISTEN channels are subscribed per worker:
 
 | Channel | Format | Payload |
 |---|---|---|
-| `taskq_wake_{tag}` | `wake_channel(schema)` | Empty (payload ignored — notification alone triggers dispatch) |
+| `taskq_wake_{tag}` | `wake_channel(schema)` | Empty (payload ignored; notification alone triggers dispatch) |
 | `taskq_events_{tag}` | `events_channel(schema)` | JSON: `{"type": "cancel", "worker_id": "...", "job_id": "..."}` |
 | `taskq_worker_{tag}_{worker_id}` | `worker_channel(schema, worker_id)` | Same JSON format; no worker_id filtering needed |
 
 `{tag}` is `schema_channel_tag(schema)`: the first 10 hex digits of
 `sha224(schema)` (`taskq` → `124a200651`). Channels are Postgres identifiers
-bounded by 63 bytes — `LISTEN` silently truncates a longer name and
-`pg_notify` rejects it — while a schema name may itself be 63 characters, so
+bounded by 63 bytes (`LISTEN` silently truncates a longer name and
+`pg_notify` rejects it), while a schema name may itself be 63 characters, so
 a channel that interpolated the schema stopped matching its listener past a
 schema length (14 characters for the per-worker channel). The fixed-width tag
 makes every channel's length independent of the schema; `check_channels_fit`
@@ -1103,19 +1103,19 @@ INSERT (a future `scheduled_at` lands as `scheduled`), so the WHEN clause
 is what keeps a future-dated enqueue from waking the fleet. The COPY path
 cannot decide status in its write: its rows land as `scheduled` (the
 trigger stays silent) and the fixup UPDATE that flips the runnable rows to
-`pending` issues the one wake itself, only when it flipped any — so a
+`pending` issues the one wake itself, only when it flipped any, so a
 future-dated COPY batch wakes nobody and a mixed batch wakes the fleet
 once. Postgres coalesces identical
 `(channel, payload)` notifications within one transaction, so a batch costs
 one delivery. (An app-side notify after the INSERT was the same pair the
 trigger emits: coalesced with it in a transaction, a second delivery to
-every listener on a caller's bare connection — pinned by
+every listener on a caller's bare connection (pinned by
 `tests/test_enqueue_wake_source.py`.) A plain pool enqueue is therefore
 exactly one statement, `INSERT … RETURNING *`, in autocommit
 (`tests/test_round_trip_budgets.py`). pg-boss folds its notify into the
 INSERT gated on the row being due; Oban notifies only for `available` rows.
 
-The empty payload is intentional — consumers do not need to parse it; the
+The empty payload is intentional: consumers do not need to parse it; the
 notification alone is sufficient to trigger a dispatch poll. Paths that
 re-pend a row by UPDATE (admin retry, the reclaim sweeps) issue their own
 `pg_notify`, since the trigger fires on INSERT only.
@@ -1157,7 +1157,7 @@ set (credential-provider-backed) so a factory deployment reconnects through the
 same source rather than falling back to a stale DSN.
 
 The health-check loop is deliberately exempt from watchdog detector 2 (stale-tick)
-— see [Watchdog Subsystem](#watchdog-subsystem) for details.
+; see [Watchdog Subsystem](#watchdog-subsystem) for details.
 
 ---
 
@@ -1176,7 +1176,7 @@ begins, so health endpoints and consumers can observe the current phase:
 | `NONE` | 0 | Running normally |
 | `DRAINING` | 1 | Stop accepting new dispatch; re-pend locked-but-unstarted jobs (attempt refunded) |
 | `CANCELLING` | 2 | Cooperative cancel of remaining in-flight jobs (set `cancel_event`, stamp the shutdown origin) |
-| `FORCING` | 3 | Force-cancel grace: `task.cancel()` (delivered even when the escalation PG write fails — the local cancel is never skipped) + `write_cancel_escalation(phase=2)` (lands only on rows carrying an operator's cancel request) |
+| `FORCING` | 3 | Force-cancel grace: `task.cancel()` (delivered even when the escalation PG write fails; the local cancel is never skipped) + `write_cancel_escalation(phase=2)` (lands only on rows carrying an operator's cancel request) |
 | `RELEASING` | 4 | Release never-unwound jobs back to the fleet via `mark_interrupted` (the spent attempt stands, no refund; held behind the remaining termination budget **plus the watchdog's exit tail** past the deadline; the dump-interval check lag and the bounded pre-`os._exit` flush); operator-cancelled jobs still reach `abandoned` |
 
 Phase ordering invariant: `NONE → DRAINING → CANCELLING → FORCING → RELEASING`.
@@ -1193,7 +1193,7 @@ Phase ordering invariant: `NONE → DRAINING → CANCELLING → FORCING → RELE
   (see `reload_credentials` in `deps.py`). Multiple SIGHUPs during a reload
   coalesce into one follow-up reload.
 - **SIGUSR2**: calls `dump_task_stacks("sigusr2")` for an on-demand asyncio
-  task-stack dump — live debugging without an image rebuild. Emits one
+  task-stack dump: live debugging without an image rebuild. Emits one
   structured log record per live task (name, coro qualifier, await-site
   frames) plus a raw stderr fallback. No locals or payload values are
   included.
@@ -1205,7 +1205,7 @@ SIGQUIT is not registered; it produces a core dump on Linux. Use `tini` or
 
 `drain_local_queue_to_pending` issues a single bounded-timeout `UPDATE` that
 clears the lock on rows where `locked_by_worker = $worker_id AND status =
-'running' AND started_at IS NULL` — jobs the worker locked in its local queue
+'running' AND started_at IS NULL`: jobs the worker locked in its local queue
 but never started executing. On pool exhaustion or connection error, it logs a
 warning and returns 0 so the recovery sweep acts as the backstop.
 
@@ -1222,7 +1222,7 @@ concurrently.
 ### The no-concurrent-run promise
 
 An interruption release (`mark_interrupted`) is held back until the
-interrupted actor has *provably exited* — the promise is that no other pod can
+interrupted actor has *provably exited*: the promise is that no other pod can
 claim a row while this process might still run or touch the work. An async
 actor proves it by unwinding (the `CancelledError` propagated through its
 frames); a sync `def` actor proves it only when its executor thread finishes,
@@ -1234,7 +1234,7 @@ termination budget and capped by the lease
 `shutdown_event`, so the park must never outlive the lease the reclaim sweep
 reads), and releases `pending` (hold=0) only on a provable exit inside that
 window; otherwise the release is `scheduled` behind the rest of the process's
-exit window — the termination deadline **plus the watchdog's exit tail**
+exit window: the termination deadline **plus the watchdog's exit tail**
 (check lag + bounded flush + render slack), because the deadline trip is not
 instantaneous. An actor that outlives the window is still released, never
 stranded.
@@ -1242,23 +1242,23 @@ stranded.
 The exit bound is **enforced, not modelled**: the shutdown watchdog stays
 armed until every tracked actor handle is reaped (`await_tracked_actor_reap`
 gates the disarm in the worker's exit path), so the process either exits
-cleanly with no live actor — its remaining lifetime is bounded pool closes,
-which touch no row — or the deadline trip `os._exit`s it with the
+cleanly with no live actor; its remaining lifetime is bounded pool closes,
+which touch no row, or the deadline trip `os._exit`s it with the
 still-running thread inside, under the dedicated
 `tracked-actor-outlived-teardown` reason. Without that gate the clean path
 disarmed the watchdog and then joined the detached thread in
-`asyncio.Runner.close()` (`THREAD_JOIN_TIMEOUT`, 300s) — a released row became
-claimable while its actor still ran. The alternative closure — a hard
-`os._exit(0)` on every clean exit — is rejected because TaskQ is a library:
+`asyncio.Runner.close()` (`THREAD_JOIN_TIMEOUT`, 300s): a released row became
+claimable while its actor still ran. The alternative closure (a hard
+`os._exit(0)` on every clean exit) is rejected because TaskQ is a library:
 embedders run the worker in-process (cennan's CLI, TAStack's `ta_worker`), and
 a hard exit on the clean path would kill the host's own cleanup. In-process
-embedders with the watchdog enabled get the closure for free — the watchdog is
+embedders with the watchdog enabled get the closure for free: the watchdog is
 TaskQ's own task on the embedder's loop, and the trip semantics are unchanged.
 
 The promise is scoped: it holds when the watchdog is enabled, or when the
 platform SIGKILL lands by `termination_grace_period + exit tail`. With
 `watchdog_enabled = false` there is no trip to enforce the bound, the hold
-degrades to `lock_lease` — the bound the lease-expiry path already imposes —
+degrades to `lock_lease` (the bound the lease-expiry path already imposes),
 and the platform grace must supply the ceiling the watchdog would have (see
 the platform-grace window in docs/guides/workers.md).
 
@@ -1280,21 +1280,21 @@ path's promise is exactly the park plus the deferral, and no more.
 #### Deliberate divergence from the queue ancestors
 
 No peer ships this contract. Celery requeues a job whose worker died mid-run
-(`worker/request.py`: an unacked message returns on `worker-lost`, by design —
+(`worker/request.py`: an unacked message returns on `worker-lost`, by design;
 the at-least-once overlap is accepted), and River rescues stuck rows purely by
 a visibility timeout racing the attempt. TaskQ deliberately diverges: an
 interruption *releases with a hold sized to the releaser's own enforced exit*
 rather than accepting the overlap, at the cost of one exit-window of latency
-for an actor that outlives its budget. The other half of the design — the
+for an actor that outlives its budget. The other half of the design (the
 heartbeat continuing through the drain so a slow-but-alive worker's leases are
-not reclaimed out from under it — aligns with dramatiq's worker shutdown
+not reclaimed out from under it) aligns with dramatiq's worker shutdown
 (`worker.py`: the broker drain waits for in-flight messages) and Celery 5.6+'s
 documented warm-shutdown waiting for active tasks
 (`docs/userguide/workers.rst`).
 
 The `ShutdownWatchdog` (detector 1) runs concurrently outside the TaskGroup
-and enforces `termination_grace_period` as a hard wall — see
-[Watchdog Subsystem](#watchdog-subsystem).
+and enforces `termination_grace_period` as a hard wall (see
+[Watchdog Subsystem](#watchdog-subsystem)).
 
 ---
 
@@ -1305,7 +1305,7 @@ Source: `src/taskq/worker/_watchdog.py`, `src/taskq/worker/_transient.py`.
 The watchdog is an in-worker hang/deadlock detection system with four
 independent detectors and a terminal force-exit on trip. A wedged process
 cannot be trusted to unwind gracefully, so a trip dumps diagnostics and calls
-`os._exit(EXIT_WATCHDOG)` (exit code 2) with no further awaits — the
+`os._exit(EXIT_WATCHDOG)` (exit code 2) with no further awaits: the
 supervisor restarts the worker, and in-flight jobs are reclaimed by the
 leader sweep on lock-lease expiry (the existing, tested recovery path).
 
@@ -1334,8 +1334,8 @@ thread-safe.
 3. Calls `dump_task_stacks` (one record per live task).
 4. Flushes stdout/stderr.
 5. Best-effort OTel metrics flush on a daemon thread with a 2-second join
-   deadline — a hung OTLP collector costs at most 2 seconds, never more.
-6. `os._exit(EXIT_WATCHDOG)` — no further awaits.
+   deadline: a hung OTLP collector costs at most 2 seconds, never more.
+6. `os._exit(EXIT_WATCHDOG)`: no further awaits.
 
 Detector 4 (`LoopLagWatchdog`) follows the same pattern but inlines the dump
 (`faulthandler.dump_traceback` for thread frames) because it runs off-loop
@@ -1354,7 +1354,7 @@ behind four callers:
 Each call emits one structured log record per live asyncio task (task name,
 coro qualifier, await-site frames as `file:line`), plus a raw stderr fallback
 so the dump survives a broken logging pipeline. No locals or payload values
-are included — the dump reveals code structure and file paths only.
+are included: the dump reveals code structure and file paths only.
 
 ### LoopLiveness
 
@@ -1363,7 +1363,7 @@ Interval-driven loops call `tick(name, period=...)` once per iteration. The
 staleness budget is `period × grace_factor` with a `watchdog_stale_floor`
 minimum (default 10s) so tiny test intervals cannot false-trip under load.
 Loops that never tick (event-driven: notify listener, consumers, reload
-coordinator) are not tracked — they are covered by detectors 1, 3, and 4
+coordinator) are not tracked; they are covered by detectors 1, 3, and 4
 instead.
 
 Gated loops (e.g. the leadership watchdog) call `forget(name)` when their
@@ -1385,7 +1385,7 @@ enforceable rather than validation-only). While counting:
   threshold).
 - Logs straggler dumps (names + await sites of still-alive siblings) every
   `watchdog_dump_interval`, but only once the shutdown has consumed at least
-  `watchdog_dump_after_fraction` of its hard budget (default 0.5 — only in
+  `watchdog_dump_after_fraction` of its hard budget (default 0.5; only in
   the back half). A drain in its front half is within expectations and stays
   quiet.
 - On deadline: `trip("shutdown-deadline", ...)`.
@@ -1393,14 +1393,14 @@ enforceable rather than validation-only). While counting:
 
 The deadline is anchored on the **first shutdown signal** (not
 `shutdown_event.set()`) because orchestration spends the cancel/cleanup
-graces before `shutdown_event` is set — anchoring on the event alone would
+graces before `shutdown_event` is set; anchoring on the event alone would
 double-count them against `termination_grace_period`.
 
 ### LoopLagWatchdog (detector 4)
 
 A daemon thread that measures event-loop scheduling lag. Arms after
 `watchdog_loop_lag_startup_grace` seconds or the first liveness tick,
-whichever comes first — import-heavy startup and DI bootstrap must never
+whichever comes first: import-heavy startup and DI bootstrap must never
 trip it. On each poll interval (`watchdog_check_interval`, default 1s):
 
 1. Checks if armed (startup grace elapsed or any liveness tick landed).
@@ -1412,7 +1412,7 @@ trip it. On each poll interval (`watchdog_check_interval`, default 1s):
    thread exits cleanly.
 
 The thread catches `BaseException` and logs loudly rather than dying
-silently — a dead watchdog thread takes detector 4 with it, leaving the
+silently: a dead watchdog thread takes detector 4 with it, leaving the
 worker unprotected with no indication.
 
 ### Stale-tick sweep (detector 2)
@@ -1421,14 +1421,14 @@ worker unprotected with no indication.
 `watchdog_check_interval` (default 1s), it calls `liveness.ages()` (which
 also updates the OTel tick-age gauge) and `liveness.stale()`. If any loop is
 stale, it trips. Deliberately parked loops (notify listener, consumers,
-reload coordinator) have no cadence and are not tracked — they are covered
+reload coordinator) have no cadence and are not tracked; they are covered
 by detectors 1, 3, and 4.
 
 ### Sibling-contract check (detector 3)
 
 Lives in the sibling spawner (`_make_sibling_spawner`), not in
 `_watchdog.py`. A sibling returning cleanly while `shutdown_event` is clear
-is a contract violation — siblings are long-lived loops that should only
+is a contract violation: siblings are long-lived loops that should only
 exit on shutdown. The violation is re-raised, which propagates into the
 TaskGroup and tears the worker down (the watchdog's other detectors then
 ensure the process exits).
@@ -1439,7 +1439,7 @@ Source: `src/taskq/worker/_transient.py`.
 
 Every long-lived worker loop that awaits Postgres treats the same set of
 errors as "PG is having a moment; log and retry next tick".
-`TRANSIENT_PG_ERRORS` is the single tuple that defines this set — one home
+`TRANSIENT_PG_ERRORS` is the single tuple that defines this set: one home
 for every transient shape, so any error a site learns, every site learns:
 
 - `TimeoutError` (client-side deadlines)
@@ -1458,7 +1458,7 @@ transient for static DSNs and must not retry silently.
 `UnexpectedLoopErrorGuard` is the per-loop backstop for errors **outside**
 the transient set. It tolerates isolated surprises with a loud, distinct,
 alertable record per occurrence, but re-raises after `max_consecutive`
-(default 5) consecutive unexpected errors — so a permanent fault (a code
+(default 5) consecutive unexpected errors, so a permanent fault (a code
 bug, not a PG blip) still kills the worker deliberately instead of retrying
 forever into a zombie that ticks but does no work. Only a fully successful
 work iteration resets the streak; an idle or transiently-failing iteration
@@ -1479,7 +1479,7 @@ must not buy the fault more time.
 
 A load-time invariant checks that `dispatcher_command_timeout + loop_period`
 fits within the staleness budget `max(period × grace_factor, stale_floor)`
-for every bounded loop — so a timeout-capped iteration can never false-trip
+for every bounded loop, so a timeout-capped iteration can never false-trip
 the stale-loop detector on a healthy worker.
 
 ### Relationship to worker lifecycle
@@ -1556,7 +1556,7 @@ bookkeeping.
 In addition to actor-declared reservations, the worker registers a fleet-wide
 `ConcurrencyReservation` per queue at startup when the `queues.max_concurrent` column is set
 (via `queue_concurrency_reservation_name(queue)`), and prepends it to the acquire list at
-dispatch time — see the [Queue-level concurrency cap](guides/rate-limiting.md#queue-level-concurrency-cap)
+dispatch time; see the [Queue-level concurrency cap](guides/rate-limiting.md#queue-level-concurrency-cap)
 guide section for details.
 
 ### Dispatch integration
@@ -1582,8 +1582,8 @@ TaskQ runs two independent clocks: the PG server clock (`clock_timestamp()` /
 `now()` in SQL) and each process's Python wall clock (the injectable
 `Clock` in `src/taskq/backend/clock.py`). Divergence between them (NTP drift,
 VM pause) is a production reality, so the architecture rule is **one arbiter
-per predicate — the data store that owns the row also owns the time it is
-compared against**:
+per predicate (the data store that owns the row also owns the time it is
+compared against)**:
 
 - Every skew-sensitive timestamp decision lives in the SQL statement that owns
   its predicate: lease/liveness writes and expiry checks, sweep and dispatch
@@ -1591,34 +1591,34 @@ compared against**:
   TAT/token epoch math (`EXTRACT(EPOCH FROM clock_timestamp())`), and the cron
   due-check, catch-up cutoff, and beyond-window recompute (read inside the
   tick's transaction). This now includes the retry path end-to-end:
-  `mark_failed_or_retry` takes a *delay* — the backend derives
+  `mark_failed_or_retry` takes a *delay*: the backend derives
   `scheduled_at = now() + delay`, the scheduled/pending status, AND the
   `schedule_to_close` deadline outcome from its own clock in one statement;
   the Python retry classifier (`taskq.retry.RetryClassifier`) decides
   retry-kind and backoff only and takes no deadline and no clock input, so
   no second, skewable arbiter can disagree with the SQL.
 - Known residual: the enqueue-time singleton collision hint
-  (`SingletonCollisionError.retry_after`) mixes domains *by design* — a
-  server-read `schedule_to_close` minus a Python now — to steer the
+  (`SingletonCollisionError.retry_after`) mixes domains *by design* (a
+  server-read `schedule_to_close` minus a Python now) to steer the
   caller's retry timing. It is advisory metadata only and is never stored
   or compared as a predicate.
 - Rate-limit Lua scripts read Redis `TIME` (`redis.call('TIME')`) rather than a
   client-supplied timestamp, so multi-node fleets share one clock; scripts are
   non-deterministic but replication-safe under Redis ≥ 5 effect replication
   (see the [EVAL docs](https://redis.io/docs/latest/commands/eval/)). The
-  in-memory limiter backends keep their injected `Clock` — a single process is
+  in-memory limiter backends keep their injected `Clock`: a single process is
   a single domain by construction.
 - `JobsClient.create_schedule` / `update_schedule` seed the first
   `next_fire_at` anchored to the backend's own clock: for Postgres backends
   the value is computed from the **server** clock (the same arbiter the cron
   due-check and catch-up recompute use), so app↔DB skew does not shift the
   first fire after creation. The in-memory backend keeps its injected
-  `Clock` — a single process is a single domain by construction.
+  `Clock`: a single process is a single domain by construction.
 - Known residual: ephemeral progress events (Redis pub/sub → SSE, built in
   `src/taskq/progress/_publish.py`) carry a `ts` stamped from the publishing
   process's clock (`datetime.now(UTC)`), not the PG clock. They are ordered
   by `seq`, never persisted, and never used as a predicate, so neither
-  ordering nor correctness is affected — but under app↔DB skew the
+  ordering nor correctness is affected, but under app↔DB skew the
   timestamps the UI shows for progress/state-change events can disagree with
   the `job_events.occurred_at` values recorded server-side for the same job.
 
@@ -1663,8 +1663,8 @@ a queryable audit trail in `job_events`.
 When the prune sweep (Sweep 5) moves a terminal job out of `jobs`, it inserts
 an identical row into `jobs_archive` plus two extra columns:
 
-- `archived_at` (`timestamptz`) — wall-clock time the row was moved.
-- `expire_at` (`timestamptz`) — when the row becomes eligible for hard-deletion
+- `archived_at` (`timestamptz`): wall-clock time the row was moved.
+- `expire_at` (`timestamptz`): when the row becomes eligible for hard-deletion
   by Sweep 6. Computed as `archived_at + archive_retention_period` (default
   1 year).
 
@@ -1672,7 +1672,7 @@ an identical row into `jobs_archive` plus two extra columns:
 `jobs_archive(id) ON DELETE CASCADE`. Sweeps 5 and 6 are both batched atomic
 CTEs, so `jobs_archive` and `job_attempts_archive` stay in sync by construction.
 
-`job_events` rows are **not** archived — they are deleted by cascade when the
+`job_events` rows are **not** archived: they are deleted by cascade when the
 parent `jobs` row is pruned. Historical event data is not available in the
 archive. The admin UI job-detail page shows an empty event log for archived
 jobs and displays an "archived" banner to make this clear.
@@ -1692,7 +1692,7 @@ parameter binding for SQL identifiers, so interpolation is unavoidable. Rather
 than relying on a single check, TaskQ uses **defence-in-depth**: the schema
 name is validated at `PostgresBackend.__init__` (and `migrate.py`) construction
 time, **and** independently re-checked at every call site that interpolates the
-schema into a SQL string — 20+ sites across `backend/`, `worker/`, `ratelimit/`,
+schema into a SQL string; 20+ sites across `backend/`, `worker/`, `ratelimit/`,
 `web/admin/`, `testing/pg.py`, and `batch.py`. Each call site runs
 `_IDENT_RE.match(schema)` immediately before the f-string/`.format()` that
 embeds it, so a schema that bypassed construction-time validation (e.g. one
@@ -1711,7 +1711,7 @@ Source: `src/taskq/batch.py`, `src/taskq/batch_policy.py`,
 The batch subsystem adds opt-in tracking, failure policies, and finalizer
 enqueuing for groups of jobs. A row in the `batches` table is created only
 when the caller supplies a `failure_policy` or `finalizer` to
-`enqueue_batch()` / `enqueue_batch_streaming()` — plain batch enqueues without
+`enqueue_batch()` / `enqueue_batch_streaming()`: plain batch enqueues without
 these arguments insert no `batches` row and carry only the `metadata.batch_id`
 tag on each job.
 
@@ -1726,7 +1726,7 @@ tag on each job.
 | `consecutive_failures` | `int` | Running failure count, reset on success. |
 | `failure_threshold` | `int` | Threshold from `AbortBatchAfter`; `NULL` if no policy. |
 | `finalizer_job_id` | `uuid` | Job ID of the finalizer, if one was enqueued. |
-| `originating_actor` | `text` | Reserved for future use — currently always `NULL`. Will be populated from the actor context in a future release. |
+| `originating_actor` | `text` | Reserved for future use; currently always `NULL`. Will be populated from the actor context in a future release. |
 | `created_at` | `timestamptz` | Batch creation time. |
 | `completed_at` | `timestamptz` | When the batch reached `complete` or `aborted`. |
 | `metadata` | `jsonb` | Arbitrary batch-level metadata. |
@@ -1745,7 +1745,7 @@ A batch starts as `active` when `create_batch` inserts the row. The
 ### `apply_batch_terminal_outcome` hook
 
 Called after every terminal write (consumer and in-memory runner). For
-non-batched jobs (no `metadata.batch_id`) it returns immediately — zero
+non-batched jobs (no `metadata.batch_id`) it returns immediately: zero
 overhead. For batched jobs:
 
 | Outcome | Action |
@@ -1753,13 +1753,13 @@ overhead. For batched jobs:
 | `succeeded` | Resets `consecutive_failures` to 0. If no non-terminal jobs remain, marks batch `complete`. |
 | `failed` | Increments `consecutive_failures`. If `>= failure_threshold`, aborts the batch. Otherwise, if no non-terminal jobs remain, marks batch `complete`. |
 | `cancelled` / `crashed` | Counts non-terminal jobs; if none remain, marks batch `complete`. Does not touch the failure counter. |
-| `snoozed` / `reservation_denied` / `rate_limit_denied` / `scheduled` | Returns immediately — the job is rescheduled, not terminal. |
+| `snoozed` / `reservation_denied` / `rate_limit_denied` / `scheduled` | Returns immediately: the job is rescheduled, not terminal. |
 
 "No non-terminal jobs remain" is decided by `complete_batch`'s own `NOT
 EXISTS` guard in its statement's snapshot (the count the counter writes
 return is advisory). Both the guard and that count are the open-member
-probe served by `jobs_batch_open_members_idx` — a partial index over
-exactly the non-terminal members, keyed by `batch_id` — so each terminal
+probe served by `jobs_batch_open_members_idx`: a partial index over
+exactly the non-terminal members, keyed by `batch_id`, so each terminal
 write costs an index range over the members still open, never a walk of
 the batch's whole membership.
 
@@ -1808,13 +1808,13 @@ The finalizer job is automatically excluded from counts via the batch row's
 Batch queries use `BatchFilter`, not `JobFilter`. `BatchFilter` carries only
 fields relevant to batch queries: `queue`, `active` (status terminality),
 `batch_id`, and `limit`. Job-oriented fields (`status`, `actor`, `tags`,
-`cursor`, `order_by`, `identity_key`) are intentionally absent — using
+`cursor`, `order_by`, `identity_key`) are intentionally absent: using
 `JobFilter` for batch queries would silently ignore those fields.
 
 ### `enqueue_batch_streaming`
 
 Accepts an `Iterable[EnqueueItem]` (including generators) and inserts in
-chunks of `chunk_size` (1–1000). All items share the same `batch_id`. When
+chunks of `chunk_size` (1-1000). All items share the same `batch_id`. When
 `failure_policy` or `finalizer` is set and no caller-owned `connection` is
 provided, the entire operation is delegated to
 `Backend.enqueue_batch_atomic` for single-transaction atomicity. Otherwise,
@@ -1861,7 +1861,7 @@ to be causally related.
 | `taskq.dispatch.duration` | Histogram | SQL-execution latency for dispatch_batch |
 | `messaging.process.duration` | Histogram | Full actor execution duration |
 | `messaging.client.consumed.messages` | Counter | Count of completed jobs by actor/queue/outcome |
-| `taskq.backpressure.errors` | Counter | Enqueue backpressure rejections by actor/kind — `max_pending` (cap reached) and `max_pending_lock_timeout` (serialization-lock wait budget exhausted) |
+| `taskq.backpressure.errors` | Counter | Enqueue backpressure rejections by actor/kind: `max_pending` (cap reached) and `max_pending_lock_timeout` (serialization-lock wait budget exhausted) |
 | `taskq.deadline_exceeded_sweep.jobs_failed` | Counter | Jobs failed by the deadline sweep |
 | `taskq.cancellation.requested` | Counter | Bumped once per `JobsClient.cancel()` call (regardless of outcome) |
 | `taskq.cancellation.phase_transitions` | Counter | Cancel phase changes |
@@ -1875,7 +1875,7 @@ to be causally related.
 | `taskq.worker.shutdown_duration_seconds` | Histogram | Wall-clock seconds from first shutdown signal to clean exit |
 | `taskq.worker.leader_loop_unexpected_errors_total` | Counter | Unexpected (non-transient) errors tolerated by leader loop backstop |
 
-The table above is illustrative, not exhaustive — the codebase defines 25+ instruments. For the complete list, see `src/taskq/obs/_otel.py` and the worker observability modules in `src/taskq/worker/` (`notify.py`, `cancel.py`, `leader.py`, `_leader_shared.py`, `heartbeat.py`, `_watchdog.py`, `_transient.py`, `shutdown.py`).
+The table above is illustrative, not exhaustive: the codebase defines 25+ instruments. For the complete list, see `src/taskq/obs/_otel.py` and the worker observability modules in `src/taskq/worker/` (`notify.py`, `cancel.py`, `leader.py`, `_leader_shared.py`, `heartbeat.py`, `_watchdog.py`, `_transient.py`, `shutdown.py`).
 
 ### structlog context propagation
 
@@ -1895,17 +1895,17 @@ whichever backend's collector is in the stack.
 
 These invariants must remain true across all changes.
 
-1. **`lock_lease >= 4 × heartbeat_interval`** — the lock lease must outlive
+1. **`lock_lease >= 4 × heartbeat_interval`**: the lock lease must outlive
    several heartbeat intervals so a slow heartbeat tick does not expire the lock
    before the next renewal arrives.
 
-2. **PG-write before task.cancel()** — in the phase-2 cancel path, the
+2. **PG-write before task.cancel()**: in the phase-2 cancel path, the
    `CANCEL_ESCALATION_SQL` UPDATE is executed and the `job_events` row is
    inserted BEFORE `active.task.cancel()` is called, with no intervening `await`.
    If the write fails, the exception propagates and `task.cancel()` is never
-   called — the job retains phase 1 and the heartbeat retries on the next tick.
+   called; the job retains phase 1 and the heartbeat retries on the next tick.
 
-3. **Terminal writes own their row** — `mark_succeeded`, `mark_failed_or_retry`,
+3. **Terminal writes own their row**: `mark_succeeded`, `mark_failed_or_retry`,
    `mark_cancelled`, `mark_abandoned` all guard with
    `WHERE status = 'running' AND locked_by_worker = $worker_id`. A rowcount of 0
    means the write was a no-op (concurrent writer already moved the row).
@@ -1914,12 +1914,12 @@ These invariants must remain true across all changes.
    retried a bounded number of times (`terminal-write-retry`); when the budget
    is spent the row stays `running` and the worker **disowns** it
    (`WorkerDeps.disowned_jobs`): the heartbeat's lease renewal excludes
-   disowned ids, so lock-lease expiry — not the process's lifetime — bounds how
+   disowned ids, so lock-lease expiry, not the process's lifetime, bounds how
    long the row stays orphaned, and the reclaim sweep hands it back to the
    fleet. The producer re-owns an id it claims again; the heartbeat drops ids
    whose row is no longer this worker's running row.
 
-4. **Schema identifier validation is defence-in-depth, not single-point** —
+4. **Schema identifier validation is defence-in-depth, not single-point**:
    `PostgresBackend.__init__` validates `schema_name` against `_IDENT_RE` once
    at construction, and every call site that interpolates the schema into SQL
    re-validates it independently (20+ sites). asyncpg cannot bind identifiers
@@ -1928,21 +1928,21 @@ These invariants must remain true across all changes.
    it is not a plain `[A-Za-z_][A-Za-z0-9_]*` identifier. All user-supplied
    values use `$N` parameter binding.
 
-5. **`ABANDON_PENDING` is in-process only** — `CancelPhase.ABANDON_PENDING = 3`
+5. **`ABANDON_PENDING` is in-process only**: `CancelPhase.ABANDON_PENDING = 3`
    is never written to PG. `parse_cancel_phase(value)` raises `ValueError` if it
    encounters value `3` from a PG row.
 
-6. **`InMemoryBackend` is single-threaded** — do not share an `InMemoryBackend`
+6. **`InMemoryBackend` is single-threaded**: do not share an `InMemoryBackend`
    across threads or event loops. The single-writer contract is enforced by
    documentation; the `_single_threaded()` guard is a no-op.
 
-7. **Migration files are append-only** — never modify an applied migration.
+7. **Migration files are append-only**: never modify an applied migration.
    The migration runner stores a SHA-256 checksum of each applied file's
    rendered SQL in `schema_migrations` and logs a `migration-checksum-drift`
    warning when an applied file no longer matches, so tampering surfaces in
-   logs (drift is warned on, not rejected — applied migrations never re-run).
+   logs (drift is warned on, not rejected; applied migrations never re-run).
 
-8. **`BACKEND_PROTOCOL_VERSION` is checked at import time** — both
+8. **`BACKEND_PROTOCOL_VERSION` is checked at import time**: both
    `PostgresBackend` and `InMemoryBackend` assert the version constant at module
    load, not at runtime. A version bump without updating both implementations
    raises `RuntimeError` on import, not on the first query. The version bumps
@@ -1962,7 +1962,7 @@ timing is trusted.
   pyinstrument a single bench).
 - Regression gate: `make bench-save` commits `benchmarks/results/baseline.json`,
   then `make bench-check` fails (exit 1) when any bench is slower by more than
-  1.20× **and** more than 100 ns/op — medians of interleaved batches, both
+  1.20× **and** more than 100 ns/op: medians of interleaved batches, both
   conditions required so sub-microsecond benches don't flip on timer jitter.
 - Cross-version: `make bench-matrix` runs the suite under Python 3.12/3.13/3.14
   via uv and prints a bench × version table.
