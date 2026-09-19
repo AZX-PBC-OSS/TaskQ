@@ -1234,7 +1234,14 @@ async def _enqueue_on_conn(
     # (channel, payload) pair the trigger emits: coalesced with it inside
     # a transaction, a second delivery to every listener outside one.
     if is_new:
-        logger.info(
+        # Debug, not INFO: JobsClient.enqueue already logs the successful
+        # enqueue at debug (client/_jobs.py), and this line renders the
+        # full structlog chain plus a stream write on the event loop for
+        # every single insert. At enqueue rates that is a permanent
+        # per-row tax paid on the same loop that runs the producer and
+        # consumers, and the client-side line already carries the audit
+        # fields an operator needs.
+        logger.debug(
             "enqueue",
             kind="enqueue",
             job_id=str(row.id),

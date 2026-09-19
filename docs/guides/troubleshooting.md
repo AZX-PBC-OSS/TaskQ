@@ -289,7 +289,8 @@ Check whether the actor suppresses `asyncio.CancelledError` — a `try/except as
 
 A deploy that interrupts a running job does not produce `abandoned`: the job is released back to
 the fleet (`pending`, or `scheduled` behind the remaining termination budget when the actor never
-unwound) with its attempt refunded. You see it on the row and the timeline, not in a terminal
+unwound) with the spent attempt standing and `interrupt_count` bumped. You see it on the row and
+the timeline, not in a terminal
 state:
 
 ```sql

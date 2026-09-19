@@ -381,9 +381,9 @@ async def test_second_sigterm_escalates(
     ``cancellation_grace`` (1.0 s) + ``cleanup_grace`` (1.0 s) = 2.0 s.
     With escalation, the CANCELLING phase is cut short, so the job is
     released faster. The assertion is that the job is back with the fleet
-    (``pending``/``scheduled``, attempt refunded, interruption counted)
-    and a ``finished`` effect is NOT recorded (the actor was cancelled
-    mid-sleep).
+    (``pending``/``scheduled``, the spent attempt standing,
+    ``interrupt_count`` bumped) and a ``finished`` effect is NOT recorded
+    (the actor was cancelled mid-sleep).
     """
     import time
 

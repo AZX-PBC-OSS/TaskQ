@@ -846,8 +846,9 @@ Two more states worth naming because they mean *infrastructure*, not your code:
     the run as cancelled and return", the job records **`succeeded`** (it returned normally), no
     retry runs, and successor enqueues never happen — a chain whose actor returns early on cancel
     dies on every deploy. Read `ctx.cancel_origin` to tell the deploy apart from the operator:
-    on `SHUTDOWN` the attempt is released and re-run by the fleet with its budget refunded, so
-    checkpoint via progress state and re-raise; on `OPERATOR` the job terminalises, so the
+    on `SHUTDOWN` the attempt is released and re-run by the fleet with the
+    interrupted attempt spent, so checkpoint via progress state and
+    re-raise; on `OPERATOR` the job terminalises, so the
     partial result you return is the one kept. See
     [cancellation.md — Shutdown is not an operator cancel](cancellation.md#shutdown-is-not-an-operator-cancel-ctxcancel_origin).
 

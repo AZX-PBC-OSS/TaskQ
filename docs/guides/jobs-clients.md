@@ -39,11 +39,13 @@ Terminal statuses (`succeeded`, `failed`, `cancelled`, `crashed`, `abandoned`) h
 
 **Interruptions.** A graceful shutdown that reaches a still-running job releases it: the row
 returns to `pending` (or `scheduled` behind the remaining termination budget when the actor never
-unwound) with the claim's `attempt` increment refunded — infrastructure events never spend a job's
-budget. The row's `interrupt_count` column counts how often this has happened, and each release
+unwound), with the interrupted attempt spent and `interrupt_count` bumped. The spent attempt is
+what guarantees a re-run can never share the attempt epoch with the process that was still
+shutting down; the row's `interrupt_count` column counts how often this has happened, and each
+release
 writes one `job_events` transition with `reason = 'interrupted'`. An operator cancel in flight
 when the deploy lands still wins the row. The mirror image — a crash (SIGKILL, OOM, a lost
-heartbeat) — *does* spend the attempt; see
+heartbeat) — *also* spends the attempt and additionally writes a `job_attempts` audit row; see
 [retries.md §12](retries.md#12-crash-vs-shutdown-what-happens-to-the-attempt-count) for the
 crash-vs-shutdown accounting.
 

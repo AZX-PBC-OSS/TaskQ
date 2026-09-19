@@ -3,10 +3,10 @@
 ``docs/guides/retries.md`` is where a newcomer lands to learn what an
 "attempt" costs, and it must state the two things an adopter gets wrong
 by default: a crash mid-execution (SIGKILL)
-SPENDS the attempt while a graceful shutdown (SIGTERM) REFUNDS it, and the
-default retry budgets/curves differ by orders of magnitude across the
-vendors. A doc edit that drifts from the shipped behaviour fails these
-pins — the pattern the docs-contract suite established (see
+SPENDS the attempt and a graceful shutdown (SIGTERM) spends it too, and
+the default retry budgets/curves differ by orders of magnitude across
+the vendors. A doc edit that drifts from the shipped behaviour fails
+these pins (the pattern the docs-contract suite established; see
 tests/test_outbox_exemption_docs_contract.py).
 """
 
@@ -32,10 +32,11 @@ def test_retries_guide_names_crash_and_shutdown_accounting() -> None:
         "attempt is spent and the job_attempts audit row records "
         "outcome='crashed' with error_class='WorkerCrashed'"
     )
-    assert "refunded" in text and "interrupt_count" in text, (
-        "retries.md must pin the shutdown half: SIGTERM refunds the claim's "
-        "attempt (no attempt row; interrupt_count carries the aggregate) — "
-        "a deploy never burns the job's retry budget"
+    assert "spent, not refunded" in text and "interrupt_count" in text, (
+        "retries.md must pin the shutdown half: the interrupted claim is "
+        "spent, not refunded (no attempt row; interrupt_count carries the "
+        "aggregate) — a deploy costs one attempt, the price of never "
+        "sharing an attempt epoch between a dying process and its re-run"
     )
     assert "heartbeat_interval" in text and "lock_lease" in text, (
         "retries.md must point at the operator controls for crash-detection "

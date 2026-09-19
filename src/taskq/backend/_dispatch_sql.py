@@ -1645,7 +1645,15 @@ async def dispatch_batch(
         elapsed = time.monotonic() - t0
         returned_count = len(rows)
         span.set_status(StatusCode.OK)
-        logger.info(
+        # An empty round is the common case on a quiet fleet (every NOTIFY
+        # wake runs at least one claim round, and the cooldown caps those at
+        # ~20 per second per worker): logging it at INFO writes one full
+        # structlog render per idle round to the same loop that runs the
+        # producer and consumers, and log aggregation sees
+        # N_workers x 20 lines/sec of count=0 noise under load. A round
+        # that claimed something is the auditable event and stays at INFO.
+        log_dispatch = logger.info if returned_count else logger.debug
+        log_dispatch(
             "dispatch",
             kind="dispatch",
             from_state="pending",

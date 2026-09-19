@@ -82,7 +82,7 @@ from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.worker._consumer import consume_one_job
 from tests._fleet import Fleet, FleetPayload, fleet_actor_config, open_fleet
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.load_sensitive]
 
 _QUEUE = "fleet_saturation_isolation_q"
 _SATURATED_ACTOR = "saturation_isolation_saturated"

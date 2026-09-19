@@ -89,13 +89,17 @@ async def test_cancel_notify_fires_on_running_job(pg_dsn: str) -> None:
         # Collect NOTIFY payloads received on each channel via a dedicated
         # listener connection opened before the cancel fires.
         fleet_payloads: list[str] = []
+        fleet_notify = asyncio.Event()
         worker_payloads: list[str] = []
 
         listen_conn = await asyncpg.connect(pg_dsn)
         try:
             await listen_conn.add_listener(
                 fleet_ch,
-                lambda _conn, _pid, _ch, payload: fleet_payloads.append(payload),
+                lambda _conn, _pid, _ch, payload: (
+                    fleet_payloads.append(payload),
+                    fleet_notify.set(),
+                ),
             )
             await listen_conn.add_listener(
                 worker_ch,
@@ -106,8 +110,11 @@ async def test_cancel_notify_fires_on_running_job(pg_dsn: str) -> None:
             result = await backend.write_cancel_request(job_id, "test cancel")
             assert result is True
 
-            # Give asyncpg time to deliver the NOTIFY callbacks.
-            await asyncio.sleep(0.3)
+            # Wait on delivery instead of guessing the latency: a fixed
+            # sleep guesses how long asyncpg needs to deliver the NOTIFY
+            # callback, and the assert below means nothing if the
+            # connection closes first. Same idiom as the wake test below.
+            await asyncio.wait_for(fleet_notify.wait(), timeout=5.0)
         finally:
             await listen_conn.close()
 

@@ -2,10 +2,10 @@
 
 The operator-facing surfaces named here carry the behaviour contract for
 what a deploy does to in-flight work: release (interrupt) it back to the
-fleet with the attempt refunded, never terminalise it, and never lose an
-operator cancel inside one. A doc edit that drifts from the shipped
-behaviour fails these pins — the pattern the docs-contract suite
-established (see tests/test_outbox_exemption_docs_contract.py).
+fleet with the spent attempt standing, never terminalise it, and never
+lose an operator cancel inside one. A doc edit that drifts from the
+shipped behaviour fails these pins (the pattern the docs-contract suite
+established; see tests/test_outbox_exemption_docs_contract.py).
 
 Surfaces pinned: ``docs/guides/cancellation.md``, ``docs/guides/ops.md``,
 ``docs/guides/deployment.md``, ``docs/guides/jobs-clients.md`` (the four
