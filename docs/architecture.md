@@ -1097,7 +1097,8 @@ event delivery without fleet-wide fanout.
 
 The wake is the `tr_notify_job_insert` row trigger's: `AFTER INSERT ON jobs
 … WHEN (NEW.status = 'pending')`, it issues `pg_notify(wake_channel(schema),
-'')` for every row that lands dispatchable. The single and batch INSERT
+NEW.queue)` for every row that lands dispatchable: the payload names the row's queue, which the
+listener side filters on. The single and batch INSERT
 paths issue no notify of their own and decide `status` server-side in the
 INSERT (a future `scheduled_at` lands as `scheduled`), so the WHEN clause
 is what keeps a future-dated enqueue from waking the fleet. The COPY path
@@ -1115,8 +1116,9 @@ exactly one statement, `INSERT … RETURNING *`, in autocommit
 (`tests/test_round_trip_budgets.py`). pg-boss folds its notify into the
 INSERT gated on the row being due; Oban notifies only for `available` rows.
 
-The empty payload is intentional: consumers do not need to parse it; the
-notification alone is sufficient to trigger a dispatch poll. Paths that
+An empty payload wakes every subscriber unfiltered: it comes from the COPY fixup's bulk wake (a
+batch spanning queues cannot name one queue) or from an older trigger still live in a rolling
+deploy. The non-empty payload is the row's queue. Paths that
 re-pend a row by UPDATE (admin retry, the reclaim sweeps) issue their own
 `pg_notify`, since the trigger fires on INSERT only.
 
@@ -1126,7 +1128,7 @@ re-pend a row by UPDATE (admin retry, the reclaim sweeps) issue their own
 DSN, TCP keepalives enabled) and subscribes to all three channels:
 
 - **Wake channel**: the callback iterates `backend._wake_subscribers` and calls
-  `event.set()` on each. The payload is ignored.
+  `event.set()` on each. The payload selects which subscribers wake (the queue filter); an empty payload wakes all of them.
 - **Events channel**: `_make_events_callback` parses the JSON payload, checks the
   `"type"` discriminator (currently only `"cancel"`), and filters by `worker_id`.
   Matching cancel events set `backend._cancel_subscribers` events.
@@ -1137,8 +1139,10 @@ Consumer loops register via `backend.subscribe_wake()` (an async context manager
 which adds a fresh `asyncio.Event` to `_wake_subscribers` on enter and removes it
 on exit. The consumer loop awaits the event; on wake it polls `dispatch_batch`.
 
-The wake channel is schema-wide, so one enqueue wakes every worker's producer
-and all but one run a losing round. After a round that came back short (fewer
+The wake channel is schema-wide; the payload names the row's queue, so a subscriber's event
+fires only when its served queue set includes that queue (an empty payload wakes everyone). A
+worker for an unserved queue skips the claim round entirely; a filtered wake costs one fallback
+poll interval, never work. After a round that came back short (fewer
 rows than requested, or none) the producer waits a small jittered cooldown
 (`_CLAIM_COOLDOWN_SECONDS`, 50 ms) before its next round; wakes and freed
 slots that land meanwhile are folded into that one round. A full round

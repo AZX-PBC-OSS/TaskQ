@@ -344,11 +344,11 @@ Sync actors cannot be force-cancelled via `asyncio.Task.cancel()`. They must coo
 def long_loop(payload: BigPayload, ctx: JobContext[BigPayload]) -> None:
     for item in payload.items:
         if ctx.should_abort():
-            return  # cooperative exit; job will be marked cancelled
+            raise asyncio.CancelledError  # cooperative exit; job marked cancelled
         process(item)
 ```
 
-- **Phase 1 (COOPERATIVE):** `ctx.should_abort()` returns `True`. The actor should return or raise.
+- **Phase 1 (COOPERATIVE):** `ctx.should_abort()` returns `True`. The actor must RAISE to cancel: returning normally after a cancel request marks the job `succeeded` (the attempt's outcome is what the actor's return says it is; the consumer never second-guesses a returned value), so cancelled work would silently report success. Raising `asyncio.CancelledError` (or calling `ctx.check_cancelled()`, which raises it for you) is what routes the attempt to `cancelled`.
 - **Phase 2 (FORCED):** The cancel controller writes `cancel_phase=2` to PG but **cannot** interrupt the thread. The sync actor continues until it polls `should_abort()` or hits `start_to_close` timeout.
 - **Phase 3 (ABANDON):** If the actor never polls, the job is abandoned after `cancel_grace + cleanup_grace`.
 
@@ -694,7 +694,7 @@ async def flaky_call(payload: CallPayload) -> CallResult: ...
 | `max_attempts` | `int` | `3` | Maximum attempts. Must be >= 1. Used only when `kind="transient"`. |
 | `time_budget` | `timedelta \| None` | `None` | Total wall-clock budget. Used only when `kind="indefinite"`. |
 | `backoff` | `"exponential" \| "linear" \| "fixed"` | `"exponential"` | Backoff shape. |
-| `base` | `timedelta` | `5s` | Base delay for backoff computation. |
+| `base` | `timedelta` | `5s` | Base delay for backoff computation. Must be > 0. |
 | `cap` | `timedelta` | `1h` | Maximum per-attempt delay (must be >= `base`). |
 | `jitter` | `float` | `0.2` | Multiplicative jitter factor in `[0.0, 1.0]`. Applies symmetric jitter: `delay * uniform(1-jitter, 1+jitter)`. |
 
@@ -944,9 +944,9 @@ unchanged.
 | `data` | `dict[str, object] \| None` | Arbitrary structured data. Must serialise to JSON with string dict keys (a non-`str` key raises `TypeError`). |
 
 **Coalescing.** Multiple `ctx.progress()` calls between periodic flush ticks are coalesced:
-only the latest value for each field is written to Postgres. Real-time Redis events are still
-emitted for every call. This means consumers that subscribe via SSE see fine-grained updates while
-Postgres retains only the most recent snapshot.
+only the latest value for each field is written to Postgres. Redis publishes are coalesced: at
+most one publish per job is in flight at a time and the final publish always lands, so SSE
+consumers see the latest state, not literally every call.
 
 **Sequence numbers.** Each call increments a strictly monotone `seq` counter. SSE consumers use
 `seq` to detect duplicate or out-of-order delivery and to resume after reconnecting via
@@ -1014,9 +1014,12 @@ async def test_double_value():
     client = JobsClient(backend)
 
     # Register a stub so run_until_drained knows how to execute the actor.
+    # Pass the ActorRef, not the bare name: the ref carries the declared
+    # payload model, so the stub validates payloads against it (a bare name
+    # falls back to the permissive PassthroughPayload and emits a warning).
     backend.register_stub(
-        double_value.name,
-        lambda payload, ctx: {"doubled": payload["value"] * 2},
+        double_value,
+        lambda payload, ctx: {"doubled": payload.value * 2},
     )
 
     handle = await client.enqueue(double_value, MyPayload(value=21))

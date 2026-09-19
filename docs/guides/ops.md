@@ -136,8 +136,8 @@ async def reindex_bucket(payload: Payload) -> None: ...
   after the deadline still succeeds.
 - **The enqueue-time `heartbeat_timeout` parameter reclaims silent holders.** A running
   job whose holder stops heartbeating past its `heartbeat_timeout` is crash-reclaimed
-  by the leader's sweep even while its lease (the global `TASKQ_LOCK_LEASE`
-  (default 60 s) is still valid: the shorter of the two deadlines governs. Size it
+  by the leader's sweep even while its lease (the global `TASKQ_LOCK_LEASE`,
+  default 60 s) is still valid: the shorter of the two deadlines governs. Size it
   `>= 2x` the fleet's `TASKQ_HEARTBEAT_INTERVAL`; a value below one heartbeat
   interval reclaims a healthy job on a single missed beat. `2x` is enough to
   absorb one transient beat because the heartbeat loop anchors its wait to each
@@ -676,7 +676,7 @@ finalizer separately as above. The finalizer's `wait_for_batch(db, batch_id)` ra
     no deadline or (on a `kind="indefinite"` actor; `time_budget` is inert on any other kind)
     a `retry.time_budget` that comfortably exceeds the expected batch duration (plus retries).
     Note a default-kind (`transient`) finalizer that snoozes has neither a deadline nor an
-    attempt ceiling (snooze bumps `max_attempts` instead of consuming it), so make it
+    attempt ceiling (a snooze refunds the attempt instead of consuming it), so make it
     `indefinite` with a budget if you want it bounded.
 
 ### Pattern C: app-level run accounting + finalize sweep
@@ -974,6 +974,8 @@ discovered post-claim and snoozed at the limiter's retry hint, the behaviour des
 | `raise Snooze(delay)` | **No**: the claim's attempt increment is released, so `attempt` returns to what it was and `max_attempts` never moves | `now + delay` | waiting for a condition (batch completion, external state) |
 | `raise RetryAfter(delay)` | **Yes** (default); bounded by `max_attempts`, terminal `MaxAttemptsExceeded` when out | `now + delay` | a retry that should wait a *known* time (429s) |
 | `raise RetryAfter(delay, consume_budget=False)` | No (snooze semantics) | `now + delay` | known-delay wait that must never exhaust the budget |
+
+A deferral on a row carrying an operator's cancel request is refused (noop) and the cancel ladder terminalises the row; a deferral whose `schedule_to_close` lapses on such a row terminalises `cancelled`, never `DeadlineExceeded`: operator intent outranks the deadline.
 
 A classifier `RetryOverride(delay=...)` is the type-level variant: it applies to a whole
 exception class and **is** clamped by `max_retry_backoff`; `RetryAfter`'s delay is *not* clamped

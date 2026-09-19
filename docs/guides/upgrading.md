@@ -661,8 +661,8 @@ async actor unwound on the cancel, a sync actor's thread finished, the
 transactional unwind completed; the consumer parks on the tracked exit
 handles, bounded by the remaining termination budget, before writing) or
 `scheduled` behind the remaining `TASKQ_TERMINATION_GRACE_PERIOD` budget
-plus the watchdog's exit tail: the dump-interval lag before the deadline
-trip is observed and the ~2s bounded flush before `os._exit`), when the
+plus the watchdog's exit tail (the dump-interval lag before the deadline
+trip is observed, and the ~2s bounded flush before `os._exit`), when the
 actor never provably exits (the row stays unclaimable until the exiting
 process is provably gone; with `TASKQ_WATCHDOG_ENABLED=false` the hold is
 `TASKQ_LOCK_LEASE`). The no-concurrent-run promise is two-legged: it holds
@@ -798,6 +798,27 @@ fallback moved behind `TASKQ_SAML_ALLOW_COOKIELESS_FALLBACK`, **default
 These change what your code *does* without changing what it *accepts*. Nothing
 raises, so nothing points you at the call site; audit for them explicitly.
 
+* **The wake payload names the inserted row's queue, and queue-scoped
+  subscribers filter on it.** The insert trigger's NOTIFY carried an empty
+  payload and woke every worker's producer; it now names the row's queue
+  (migration `01.00.16_01`, applied automatically), and a worker's listener
+  wakes its producer only when the payload names a queue the worker serves.
+  An EMPTY payload wakes every subscriber unfiltered (the COPY fixup's bulk
+  wake, or an older trigger still live in a rolling deploy). A filtered wake
+  never drops work: the worker's jittered fallback poll stays authoritative,
+  so the worst case for a dropped wake is one poll interval of added
+  latency. External code that LISTENs on the wake channel and parses
+  payloads (nothing in TaskQ does) sees the new payload shape.
+
+* **`ctx.progress()` coalesces Redis publishes: at most one publish per job
+  is in flight at a time.** Every call used to fire its own background
+  publish; a call racing a running publish now latches onto the buffer and
+  the running task re-publishes the latch when its round trip lands, so the
+  final publish always lands and the latest state is what subscribers see.
+  Intermediate events under publish pressure are skipped, which the
+  consumer-side seq-discard discipline already treats as replaceable.
+  Postgres-side coalescing is unchanged.
+
 * **Cron payload-factory budget exhaustion now defers instead of
   striking, and micro-grants no longer exist.** A factory-backed cron
   schedule the tick's funded budget could not pay for used to take a
@@ -809,8 +830,9 @@ raises, so nothing points you at the call site; audit for them explicitly.
   micro-grant, cutting slower factories into manufactured
   "timed-out-after-0.08s" strikes behind a *slow-but-successful*
   monopolizer that never drains; a factory is now called only when the
-  leftover can fund at least `min(TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT, a
-  quarter of the tick's funded budget)`; smaller leftovers defer.
+  leftover can fund at least `TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT` or a
+  quarter of the tick's funded budget, whichever is smaller; smaller
+  leftovers defer.
   Operators keying on the old `last_fire_error` text should watch the
   `cron-fire-budget-deferred` log event and the new
   `taskq.cron.budget_deferrals` counter instead (see the cron guide's
@@ -1021,7 +1043,7 @@ them, and the schema name alone may be 63 characters. With the name
 interpolated, the per-worker cancel channel (13 + schema + 37 bytes) broke
 from a 14-character schema on: every cancel's NOTIFY errored, was logged
 as `cancel-request-notify-failed`, and cancellation fell back to the
-heartbeat poll, and the wake channel broke every enqueue from 53. The tag
+heartbeat poll, and the wake channel broke every enqueue from a 53-character schema. The tag
 makes every channel's length independent of the schema; settings loading
 now refuses any schema whose channels would not fit.
 

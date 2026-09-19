@@ -310,8 +310,8 @@ taking row locks, so concurrent dispatchers can over-admit by up to
 "at most N jobs from queue X, fleet-wide" independent of which or how many actors publish to
 that queue.
 
-The queue-level concurrency cap fills both gaps. It is leased-slot based -- acquiring a slot
-is a single read-and-write statement against one physical row -- so unlike
+The queue-level concurrency cap fills both gaps. It is leased-slot based: acquiring a slot
+is a single read-and-write statement against one physical row: so unlike
 `actor_config.max_concurrent` it has no read-then-decide window and **is** a hard cap.
 
 ### Mechanism

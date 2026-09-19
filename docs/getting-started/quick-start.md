@@ -151,7 +151,7 @@ The `@actor` decorator validates the signature at import time. It rejects unanno
 handle = await client.enqueue(
     send_email,
     SendEmailPayload(to="user@example.com", subject="Hello", body="World"),
-    tags=["notification", "priority:high"],
+    tags=["notification", "priority-high"],
 )
 ```
 

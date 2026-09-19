@@ -5,7 +5,7 @@ TaskQ provides a real-time progress pipeline: actors emit structured updates via
 pub/sub bridge delivers events to subscribers immediately. Consumers can receive events
 server-to-client via:
 
-- **`JobHandle.**`JobHandle.progress_stream()`**: Python async iterator (worker or service process)
+- **`JobHandle.progress_stream()`**: Python async iterator (worker or service process)
 - **HTTP SSE endpoint**: browser or HTTP client via `GET /api/job/{job_id}/progress/stream`
   relative to wherever the router is mounted. Under `taskq ui serve` (the admin UI), the
   admin router mounts this progress router at `/jobs`, and the admin router itself mounts
@@ -55,9 +55,11 @@ server-to-client via:
 5. At job completion or crash, the buffer is flushed one final time before the terminal status
    is written.
 
-This means **Redis subscribers see every `ctx.progress()` call** while **Postgres retains only
-the most recent snapshot**. Clients reconnecting via `Last-Event-ID` receive a catch-up
-snapshot from Postgres and then resume the live Redis stream.
+Redis publishes are coalesced: at most one publish per job is in flight at a time; a call racing
+a running publish is latched onto the buffer and the running task re-publishes the latch when its
+round trip lands, so the final publish always lands. **Postgres retains only the most recent
+snapshot**, intermediate events are replaceable by a later seq, and clients reconnecting via
+`Last-Event-ID` receive a catch-up snapshot from Postgres and then resume the live Redis stream.
 
 **The Redis publish is fire-and-forget.** Because it runs as a background task, `ctx.progress()`
 never blocks the calling actor code on the network; this holds even when an actor calls
@@ -329,8 +331,8 @@ between polls.
 - **High-frequency progress in tight loops is fine.** Because the Redis publish never blocks the
   actor and the coalesce buffer collapses intermediate values, calling `ctx.progress()` on every
   iteration of a hot loop is safe; only the periodic flush interval (`TASKQ_PROGRESS_COALESCE_INTERVAL`)
-  bounds how much Postgres write traffic this generates, and Redis subscribers see every call
-  regardless.
+  bounds how much Postgres write traffic this generates, and each superseding call is latched so
+  the latest state is what publishes.
 
 ---
 

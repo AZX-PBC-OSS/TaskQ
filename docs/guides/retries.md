@@ -144,7 +144,7 @@ delay = raw × uniform(1 - jitter, 1 + jitter)
 
 The band `[raw × (1 − jitter), raw × (1 + jitter)]` is fitted under `effective_cap` *before* the draw, so the result always lies in `[0, effective_cap]`. With the default `jitter=0.2`, each computed delay varies by ±20% of the raw value. For example, a raw delay of 10s produces a value in `[8s, 12s]`.
 
-At the cap the band is one-sided: once the curve saturates (the default exponential policy from attempt 11 on, any `fixed`/`linear` policy whose base reaches the cap, a curve above `max_retry_backoff`), the delay is drawn uniformly from `[cap × (1 − jitter), cap] (e.g. `[48min, 60min]` for the default policy). The cap bounds the band, not the drawn value: clamping the drawn value would collapse the upper half of the band onto the cap exactly, so half of a cohort retrying at the cap, the retries most likely to follow a fleet-wide event, would come due at the same instant.
+At the cap the band is one-sided: once the curve saturates (the default exponential policy from attempt 11 on, any `fixed`/`linear` policy whose base reaches the cap, a curve above `max_retry_backoff`), the delay is drawn uniformly from `[cap × (1 − jitter), cap]` (e.g. `[48min, 60min]`) for the default policy. The cap bounds the band, not the drawn value: clamping the drawn value would collapse the upper half of the band onto the cap exactly, so half of a cohort retrying at the cap, the retries most likely to follow a fleet-wide event, would come due at the same instant.
 
 **Why not Full Jitter (`uniform(0, raw)`)?** Full Jitter collapses toward zero on attempt 1, causing a thundering-herd effect for high-volume actors. Multiplicative-symmetric jitter preserves the expected delay while still spreading retries across the fleet. (See Marc Brooker, "Exponential Backoff And Jitter", AWS Architecture Blog.)
 
@@ -335,7 +335,8 @@ retry a fourth time, as long as `max_attempts` and `schedule_to_close` allow it.
 One sync-actor caveat: the timeout cancels the *await*, never a sync `def` actor's executor
 thread. Before the retry write re-pends the row, the consumer parks on the thread's tracked
 exit handle (bounded by the exit-wait budget) and defers the retry behind the release hold when
-the thread outlives that window, a bound, not a proof, for an actor that outlives both. See
+the thread outlives that window. The hold is a bound, not a proof, for an actor that outlives
+both the budget and the window. See
 the no-concurrent-run promise's scoping in [architecture.md](../architecture.md).
 
 ### Precedence chain
@@ -451,11 +452,11 @@ These exceptions are raised inside the actor body to influence scheduling withou
 
 Defined in `taskq.exceptions`. Raises immediately reschedule the job to `now + delay` without evaluating the retry policy. The job transitions to `scheduled` status and the backoff formula is not consulted.
 
-`Snooze` never exhausts the retry budget: the reschedule leaves `attempt` unchanged and bumps `max_attempts` by one, so the classifier's `attempt < max_attempts` test holds no matter how many times the job snoozes. (The dispatch that follows a snooze does increment `attempt`; the `max_attempts` bump compensates for it, which is why `metadata.snooze_count` exists for visibility rather than the attempt counter.)
+`Snooze` never exhausts the retry budget: the reschedule refunds the claim's attempt increment, so `attempt` returns to what it was before the claim, and `max_attempts` never moves. A job can snooze indefinitely; `metadata.snooze_count` exists for visibility rather than the attempt counter.
 
 A negative `delay` raises `ValueError` at construction.
 
-If `now + delay > schedule_to_close`, the backend immediately fails the job with `error_class="DeadlineExceeded"` and `error_message="schedule_to_close reached before next dispatch"` instead of rescheduling.
+If `now + delay > schedule_to_close`, the backend immediately fails the job with `error_class="DeadlineExceeded"` and `error_message="schedule_to_close reached before next dispatch"` instead of rescheduling. If the row already carries an operator's cancel request, the deferral is refused entirely (the write is a noop) and the cancel ladder terminalises the row; a cancel request on a row whose `schedule_to_close` lapses at deferral time terminalises `cancelled`, not `DeadlineExceeded`: operator intent outranks the deadline.
 
 ```python
 from datetime import timedelta
@@ -474,7 +475,7 @@ async def poll_invoice(payload: Payload) -> Result:
 Defined in `taskq.exceptions`. Schedules a retry at `now + delay`, bypassing the normal backoff formula. Use when the actor knows the exact wait time (e.g. a `Retry-After` response header).
 
 - `consume_budget=True` (default): the reschedule is gated by the attempt budget like a normal retry: with `kind="transient"` and no attempts left, the job fails terminally with `error_class="MaxAttemptsExceeded"`.
-- `consume_budget=False`: snooze semantics: the reschedule leaves `attempt` unchanged and bumps `max_attempts` by one, so it can never exhaust the budget.
+- `consume_budget=False`: snooze semantics: the reschedule refunds the claim's attempt increment and `max_attempts` never moves, so it can never exhaust the budget.
 
 A negative `delay` raises `ValueError` at construction.
 

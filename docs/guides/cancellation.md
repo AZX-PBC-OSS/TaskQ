@@ -156,7 +156,7 @@ Always re-raise `asyncio.CancelledError` or let it propagate. The consumer's exc
 
 ### Shutdown is not an operator cancel: `ctx.cancel_origin`
 
-A rolling deploy (SIGTERM, a drain-monitor trigger) signals the same `cancel_event`, but it is an *infrastructure* event, not a request to discard the work. When the grace windows expire with the job still running, the worker **releases** it back to the fleet; `pending` (or `scheduled` behind a hold); and the row's `interrupt_count` bumps. The attempt is not refunded: the interrupted attempt did start executing, so its increment stands (a refund would re-create the attempt epoch the interrupted handler holds and let its late terminal write land on the re-dispatched attempt). The job is then claimed and run by a surviving pod at a fresh attempt. Shutdown never writes `cancelled` or `abandoned`.
+A rolling deploy (SIGTERM, a drain-monitor trigger) signals the same `cancel_event`, but it is an *infrastructure* event, not a request to discard the work. When the grace windows expire with the job still running, the worker **releases** it back to the fleet (`pending`, or `scheduled` behind a hold) and the row's `interrupt_count` bumps. The attempt is not refunded: the interrupted attempt did start executing, so its increment stands (a refund would re-create the attempt epoch the interrupted handler holds and let its late terminal write land on the re-dispatched attempt). The job is then claimed and run by a surviving pod at a fresh attempt. Shutdown never writes `cancelled` or `abandoned`.
 
 Actors can tell the two signals apart with `ctx.cancel_origin`:
 
@@ -333,7 +333,7 @@ The contract is the same one the other lifecycle hooks carry:
 
 A shutdown interruption is also not a cancel: when `ctx.cancel_origin is CancelOrigin.SHUTDOWN`, the attempt is released back to the fleet (`pending` again; the spent attempt stands, it is not refunded) rather than terminalised, so `on_cancel` does not fire. An operator cancel that races a deploy still wins the row; the job ends `cancelled` and the hook fires.
 
-For in-process embedders: do not stop the worker by cancelling its loop tasks directly. The tracked-exit gate (which keeps the shutdown watchdog armed until actor threads are reaped) lives in the worker's own exit path and never runs on an external cancel. Stop through the worker's shutdown event, the same path a signal takes, and the gate holds.
+For in-process embedders: do not stop the worker by cancelling its loop tasks directly. The tracked-exit gate (which keeps the shutdown watchdog armed until actor threads are reaped) lives in the worker's own exit path and never runs on an external cancel. Stop through the worker's shutdown event, the same path a signal takes, and the gate holds. Cancelling the task running `worker_main`/`worker_main_async` itself IS a supported stop path: it raises the worker's shutdown flag, every sibling drains, and the shutdown watchdog bounds the exit exactly as on the signal path.
 
 ---
 
