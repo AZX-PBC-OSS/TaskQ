@@ -116,7 +116,7 @@ def _patch_reads(
 
         async def close(self) -> None: ...
 
-    async def fake_connect(dsn: str) -> Any:
+    async def fake_connect(dsn: str, **_kwargs: object) -> Any:
         return _FakeConn()
 
     monkeypatch.setattr("taskq.cli.asyncpg.connect", fake_connect)
