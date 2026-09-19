@@ -70,11 +70,14 @@ from taskq.constants import (
 
 __all__ = [
     "ApplyFailureDiagnosis",
+    "ChecksumDrift",
+    "ChecksumDriftError",
     "Migration",
     "MigrationLockTimeoutError",
     "Phase",
     "apply_pending",
     "apply_pending_locked",
+    "checksum_drifts",
     "diagnose_apply_failure",
     "discover",
     "list_applied",
@@ -217,6 +220,57 @@ class MigrationLockTimeoutError(RuntimeError):
             "wait for it, then re-run; to wait longer, raise ddl_lock_timeout "
             "(apply_pending / apply_pending_locked), 0 waits indefinitely, at the cost "
             "of parking every statement on the table behind the queued DDL."
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChecksumDrift:
+    """One applied migration whose ledger checksum differs from the file.
+
+    ``key`` is the ledger identity (``{version}:{phase}``), ``stored`` is
+    the checksum recorded when the migration ran, ``current`` is the
+    checksum the bundled file renders to now.
+    """
+
+    key: str
+    stored: str
+    current: str
+
+
+class ChecksumDriftError(RuntimeError):
+    """An APPLIED migration's ledger checksum differs from the bundled file.
+
+    The ledger checksum is the SHA-256 of the SQL as it ran; a mismatch
+    means the file no longer matches the schema the database actually
+    has. Applying further migrations on top would build on an unverified
+    premise (the recorded schema may not be what the current files
+    produce, so the next file's assumptions can be silently wrong), which
+    is why the runner refuses by default instead of warning and
+    continuing. NOT-YET-APPLIED files cannot drift: nothing is recorded
+    for them yet.
+
+    Remedies: restore the migration file to the version that actually ran
+    (editing an already-applied migration is never picked up, forward-only
+    by design), or, after verifying the edited file is exactly what the
+    database already has (or that the edit is safe to build on), pass
+    ``allow_checksum_drift=True`` (the CLI's ``--allow-checksum-drift``)
+    to proceed past the refusal. The drift is still logged as a warning
+    either way, the ledger keeps the stored checksum.
+    """
+
+    def __init__(self, drifts: list[ChecksumDrift]) -> None:
+        self.drifts = drifts
+        detail = "; ".join(
+            f"{d.key} stored {d.stored[:12]} vs file {d.current[:12]}" for d in drifts
+        )
+        super().__init__(
+            f"{len(drifts)} applied migration(s) no longer match the bundled "
+            f"files (checksum drift): {detail}. The database schema was built "
+            "from different SQL than the files now contain, so refusing to "
+            "apply anything on top of it. Restore the migration file(s) to "
+            "what actually ran, or verify the edit is safe and re-run with "
+            "--allow-checksum-drift (apply_pending / apply_pending_locked's "
+            "allow_checksum_drift) to proceed past the refusal."
         )
 
 
@@ -560,6 +614,61 @@ async def list_applied(conn: asyncpg.Connection, schema: str) -> set[str]:
     return applied_keys
 
 
+def _detect_checksum_drifts(
+    all_migrations: list[Migration],
+    applied_checksums: dict[str, str],
+    schema: str,
+) -> list[ChecksumDrift]:
+    """Compare every APPLIED migration's ledger checksum against the file.
+
+    Checksums are computed over the schema-rendered SQL, the same input
+    the apply path hashes. NOT-YET-APPLIED files are not in
+    ``applied_checksums`` and cannot drift, nothing is recorded for them
+    yet.
+    """
+    drifts: list[ChecksumDrift] = []
+    for m in all_migrations:
+        stored = applied_checksums.get(m.key)
+        if stored is not None and stored != (current := m.checksum(schema)):
+            drifts.append(ChecksumDrift(key=m.key, stored=stored, current=current))
+    return drifts
+
+
+async def checksum_drifts(conn: asyncpg.Connection, *, schema: str) -> dict[str, ChecksumDrift]:
+    """Compare the ledger's recorded checksums against the bundled files.
+
+    Returns one :class:`ChecksumDrift` per APPLIED migration whose stored
+    checksum differs from what its file renders to now, keyed by the
+    migration key, empty when the ledger and the files agree (or when no
+    ledger exists yet). Shared by ``migrate up``'s fail-closed refusal
+    (:func:`apply_pending`) and ``migrate status``'s drift report, so both
+    surfaces answer with the same comparison.
+
+    A drifted checksum means the file no longer matches the SQL that
+    built the schema: the file was edited after it ran, or the ledger was
+    tampered with. Neither is recoverable by applying more migrations,
+    which is why callers should surface the result prominently rather
+    than bury it among pending entries.
+    """
+    if not _IDENT_RE.match(schema):
+        raise ValueError(f"invalid schema name {schema!r}")
+    exists = await conn.fetchval(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = $1 AND table_name = 'schema_migrations'
+        )
+        """,
+        schema,
+    )
+    if not exists:
+        return {}
+    rows = await conn.fetch(f'SELECT version, checksum FROM "{schema}".schema_migrations')
+    applied_checksums: dict[str, str] = {r["version"]: r["checksum"] for r in rows}
+    drift_list = _detect_checksum_drifts(discover(), applied_checksums, schema)
+    return {d.key: d for d in drift_list}
+
+
 async def list_invalid_indexes(conn: asyncpg.Connection, schema: str) -> list[str]:
     """Return the names of INVALID indexes in ``schema``, sorted by name.
 
@@ -593,6 +702,7 @@ async def apply_pending(
     target: str | None = None,
     max_steps: int | None = None,
     ddl_lock_timeout: float = DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT,
+    allow_checksum_drift: bool = False,
 ) -> list[Migration]:
     """Apply pending migrations.
 
@@ -618,7 +728,18 @@ async def apply_pending(
         to ``-- taskq:no-transaction`` files, whose ``CONCURRENTLY`` waits
         are heavyweight-lock waits by design. A wait that outlives it
         raises :class:`MigrationLockTimeoutError`; ``0`` waits indefinitely.
+    :param allow_checksum_drift: proceed past :class:`ChecksumDriftError`
+        when an APPLIED migration's ledger checksum differs from the
+        bundled file. The drift is still logged as a warning. NOT-YET-
+        APPLIED files cannot drift (nothing is recorded for them yet), so
+        this flag never changes which migrations run, only whether a
+        drifted ledger refuses the run.
     :returns: migrations that were applied (in order).
+    :raises ChecksumDriftError: when an applied migration's stored checksum
+        differs from the file and ``allow_checksum_drift`` is False.
+        Raised BEFORE anything is applied: a ledger that no longer matches
+        the files means the schema's provenance is unverified, and further
+        migrations must not build on it.
     """
     if ddl_lock_timeout < 0:
         raise ValueError(f"ddl_lock_timeout must be >= 0, got {ddl_lock_timeout}")
@@ -676,17 +797,21 @@ async def apply_pending(
             "with `taskq migrate status`."
         )
 
-    for m in all_migrations:
-        if m.key in applied_checksums:
-            stored = applied_checksums[m.key]
-            current = m.checksum(schema)
-            if stored != current:
-                logger.warning(
-                    "migration-checksum-drift",
-                    key=m.key,
-                    stored_checksum=stored,
-                    current_checksum=current,
-                )
+    drifts = _detect_checksum_drifts(all_migrations, applied_checksums, schema)
+    for d in drifts:
+        logger.warning(
+            "migration-checksum-drift",
+            key=d.key,
+            stored_checksum=d.stored,
+            current_checksum=d.current,
+        )
+    # Fail-closed: a drifted ledger means the database was built from SQL
+    # the files no longer contain, so this run's premise (the files
+    # describe the schema) is unverified. The refusal happens BEFORE the
+    # apply loop, so a refused run applies nothing. Allowed through, the
+    # warnings above still land: the drift stays visible in the logs.
+    if drifts and not allow_checksum_drift:
+        raise ChecksumDriftError(drifts)
 
     pending = [m for m in all_migrations if m.key not in applied_keys]
     if phase is not None:
@@ -1215,6 +1340,7 @@ async def apply_pending_locked(
     conn_factory: Callable[[], Awaitable[asyncpg.Connection]] | None = None,
     lock_timeout: float = DEFAULT_MIGRATION_LOCK_TIMEOUT,
     ddl_lock_timeout: float = DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT,
+    allow_checksum_drift: bool = False,
 ) -> list[Migration]:
     """Apply pending migrations under a session-level advisory lock.
 
@@ -1233,6 +1359,14 @@ async def apply_pending_locked(
     identically on every retry).
     Losing the race raises :class:`SystemExit` naming the contention, rather
     than hanging until the platform kills the container.
+
+    ``allow_checksum_drift`` passes through to :func:`apply_pending`: a
+    ledger checksum that no longer matches the bundled files refuses the
+    run (as :class:`ChecksumDriftError`, converted to ``SystemExit`` by
+    this wrapper's failure handling) unless the flag is set. Startup
+    callers (``--migrate``, ``TASKQ_MIGRATE_ON_START``) should leave it
+    False: a drifted ledger is exactly the state a fleet must not start
+    on.
 
     Connection sources (mutually exclusive):
     * ``conn``, pre-constructed, caller-owned; NOT closed here.
@@ -1285,6 +1419,7 @@ async def apply_pending_locked(
                 target=target,
                 max_steps=max_steps,
                 ddl_lock_timeout=ddl_lock_timeout,
+                allow_checksum_drift=allow_checksum_drift,
             )
         if applied:
             logger.info("migrations-applied-before-startup", count=len(applied))
