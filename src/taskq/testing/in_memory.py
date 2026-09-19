@@ -911,7 +911,10 @@ class InMemoryBackend:
         honest about the wake contract.
         """
         event = asyncio.Event()
-        queue_set = frozenset(queues) if queues else None
+        # A bare str satisfies Iterable[str] and would char-split into a
+        # nonsense set ('reports' -> {'r','e',...}), silently falling the
+        # subscriber back to poll cadence: single strings are the whole set.
+        queue_set = frozenset({queues}) if isinstance(queues, str) else (frozenset(queues) if queues else None)
         return _SubscriberContext(
             event,
             self._wake_subscribers,

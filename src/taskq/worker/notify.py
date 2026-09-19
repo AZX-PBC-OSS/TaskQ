@@ -8,7 +8,7 @@ worker.
 
 Three channels are subscribed per worker (names from ``taskq.constants``,
 each carrying the schema's fixed-width tag rather than the schema name):
-  - ``wake_channel(schema)``: enqueue wakeup (payload ignored)
+  - ``wake_channel(schema)``: enqueue wakeup (payload names the inserted row's queue; empty means wake everything)
   - ``events_channel(schema)``: fleet-wide worker events with JSON payload
     ``{"type": "<event>", ...}``
   - ``worker_channel(schema, worker_id)``: per-worker targeted events,
