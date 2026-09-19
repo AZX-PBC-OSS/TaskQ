@@ -467,7 +467,7 @@ taskq job show JOB_ID
 |---|---|---|
 | `JOB_ID` | `UUID` | The job's id. A non-UUID value is rejected as a usage error before any database access. |
 
-Prints the operator-facing fields of the stored row: id, actor, queue, status, priority, attempt, max_attempts, retry_kind, the four timestamps, and (only when set) `error_class`/`error_message` and `idempotency_key`. `payload`, `result` and `error_traceback` are deliberately not printed, keeping a terminal read from dragging arbitrarily large blobs onto the wire. A row found in `jobs_archive` is marked `archived: yes`; see [jobs-clients.md](jobs-clients.md) for the archival lifecycle.
+Prints the operator-facing fields of the stored row: id, actor, queue, status, priority, attempt, max_attempts, retry_kind, the four timestamps, and (only when set) `error_class`/`error_message` and `idempotency_key`. `payload`, `result` and `error_traceback` are deliberately not printed by default, keeping a terminal read from dragging arbitrarily large blobs onto the wire; `error_traceback` and `payload` are available under the opt-in flags below. A row found in `jobs_archive` is marked `archived: yes`; see [jobs-clients.md](jobs-clients.md) for the archival lifecycle.
 
 Under `retry_kind="indefinite"` the stored `max_attempts` ceiling is inert: the retry path never consults it, so the command renders it as `(indefinite)`, the same framing the admin UI uses; a bare number would advertise a budget the job is not enforcing. See [retries.md](retries.md#2-retry-kinds).
 
@@ -497,6 +497,145 @@ archived: yes
 | `1` | Invalid job id (not a UUID), or no row with that id in either table |
 
 **No options.** Uses `TASKQ_PG_DSN` and `TASKQ_SCHEMA_NAME` from the environment.
+
+**Options:**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--traceback` | flag | off | Also print the stored `error_traceback`. The default output stays blob-free; this flag is the operator asking for the traceback by name. |
+| `--payload` | flag | off | Also print the stored `payload` jsonb. |
+
+A blob the job does not carry prints as `(none)`, so an absent value is distinguishable from a flag that did nothing. Both blobs print in full and unbounded.
+
+---
+
+## `taskq job cancel`
+
+Cancels one job, through the same backend mechanism the admin UI's cancel route calls.
+
+```shell
+taskq job cancel JOB_ID [--reason TEXT]
+```
+
+A `pending` or `scheduled` job moves straight to terminal `cancelled`. A `running` job gets a cooperative cancel request (`cancel_phase=1`): the worker running it stops the attempt at its next cancellation checkpoint and writes the terminal state itself, so the command prints `cooperative cancel requested` and the job's status stays `running` until that write lands. See [cancellation.md](cancellation.md).
+
+**Options:**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--reason` | `str` | `None` | Recorded on the job's `cancel_request` event. |
+
+**Exit codes:**
+
+| Code | Condition |
+|---|---|
+| `0` | Cancel applied (directly, or requested on a running job) |
+| `1` | Invalid job id (not a UUID), no job with that id, or the job is already in a terminal state |
+
+---
+
+## `taskq job retry`
+
+Re-pends a resting job, the same backend operation the admin UI's retry route calls.
+
+```shell
+taskq job retry JOB_ID
+```
+
+Every terminal status is a valid source: `failed`, `crashed`, `cancelled`, and also `succeeded` (a re-run after a bad deploy - the status records what the actor returned, never that its side effects were right) and `abandoned`. A `pending`, `scheduled`, or `running` job is refused: re-pending a row while an attempt is live can execute the job twice concurrently, and a job that is already queued has nothing to put back.
+
+The attempt counter is **not** reset: the re-pended job climbs to fresh attempt numbers, and `max_attempts` rises to at least `attempt + 1` so at least one fresh execution is possible.
+
+**Exit codes:**
+
+| Code | Condition |
+|---|---|
+| `0` | Job re-pended (prints the read-back status, `pending`) |
+| `1` | Invalid job id, no job with that id, the job is not in a terminal state, or it left a terminal state between the pre-check and the write (a concurrent claim won the race; no rows changed) |
+
+---
+
+## `taskq job cancel-where`
+
+Bulk-cancels every job matching the given filters in one set-based operation, through `JobsClient.cancel_where`'s bounded drain.
+
+```shell
+taskq job cancel-where [--queue NAME] [--status S]... [--actor NAME] [--tag T]... [--older-than DURATION] [--reason TEXT] [--dry-run]
+```
+
+Pending/scheduled matches move straight to terminal `cancelled`; running matches get `cancel_phase=1` (cooperative cancel). The write executes as bounded committed batches, so a mid-operation failure leaves partial progress rather than rolling everything back; re-running continues where it stopped (already-cancelled rows are skipped).
+
+**Guardrail:** with no filter at all the command refuses to run - a filter with no predicates would cancel the entire table, and the CLI offers no `allow_empty_filter` bypass. Add at least one of `--queue`, `--status`, `--actor`, `--tag`, or `--older-than`.
+
+**Options:**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--queue` | `str` | `None` | Only jobs on this queue. |
+| `--status` | `list[str]` | `[]` | Only jobs in this status. Repeatable. Valid: `pending`, `scheduled`, `running`, `succeeded`, `failed`, `cancelled`, `crashed`, `abandoned`. |
+| `--actor` | `str` | `None` | Only jobs for this actor name. |
+| `--tag` | `list[str]` | `[]` | Only jobs carrying this tag. Repeatable; matches any of the given tags. |
+| `--older-than` | duration | `None` | Only jobs enqueued before now minus this duration. Formats: `45` (seconds), `30m`, `2h`, `7d`, `2w`. |
+| `--reason` | `str` | `None` | Recorded on every matched job's `cancel_request` event. |
+| `--dry-run` | flag | off | Print the matching count and up to 5 sample ids (newest first) and write nothing. |
+
+**Example:**
+
+```shell
+# Preview, then apply: the same predicate set, so the preview answers for the write.
+taskq job cancel-where --queue email --status pending --older-than 7d --dry-run
+taskq job cancel-where --queue email --status pending --older-than 7d --reason "stale backlog"
+```
+
+**Exit codes:**
+
+| Code | Condition |
+|---|---|
+| `0` | Bulk cancel applied (or the dry run completed) |
+| `1` | No filter predicate given, an unknown `--status` value, an unparseable `--older-than` duration, or the backend's empty-filter guardrail refused the write |
+
+---
+
+## `taskq job events`
+
+Lists one job's `job_events` timeline: `occurred_at`, the event `kind` (`state_change`, `cancel_request`, `heartbeat_miss`, `progress`), and the `detail` jsonb rendered as one bounded line.
+
+```shell
+taskq job events JOB_ID
+```
+
+A long detail is truncated with the dropped-character count named. The job must exist in `jobs` or `jobs_archive`; a job with no events prints `no job_events rows`.
+
+**Exit codes:**
+
+| Code | Condition |
+|---|---|
+| `0` | Timeline printed (possibly empty) |
+| `1` | Invalid job id, or no job with that id in either table |
+
+---
+
+## `taskq queues depth`
+
+Per-queue depth from one grouped pass over `{schema}.jobs`: pending/scheduled/running/failed counts plus the age of the oldest pending job.
+
+```shell
+taskq queues depth
+```
+
+```
+queue   pending  scheduled  running  failed  oldest_pending
+email         4          0        2       0           3m12s
+default       0          0        1       9               -
+```
+
+The oldest-pending age is computed server-side (`clock_timestamp()`), never by subtracting the CLI process's clock from a database timestamp. `failed` is included alongside the live statuses because the command runs once on demand; a `-` oldest-pending age means the queue has no pending rows. Queues are ordered newest activity first. Read-only, like every `queues` subcommand.
+
+**Exit codes:**
+
+| Code | Condition |
+|---|---|
+| `0` | Depth table printed (or `no jobs ... nothing to report` on an empty table) |
 
 ---
 

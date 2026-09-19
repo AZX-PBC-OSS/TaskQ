@@ -6,6 +6,9 @@ Usage::
     taskq migrate up [--phase pre|post] [--target VERSION] [--max-steps N] [--ddl-lock-timeout SECS]
     taskq worker --actors myapp.actors:registry
     taskq job show JOB_ID
+    taskq job cancel JOB_ID [--reason TEXT]
+    taskq job retry JOB_ID
+    taskq job cancel-where [--queue NAME] [--status S]... [--dry-run]
 
 The console script puts the current working directory on ``sys.path``
 (see :func:`main`), so ``module:attr`` options resolve application modules
@@ -16,11 +19,12 @@ import asyncio
 import contextlib
 import importlib
 import os
+import re
 import signal
 import sys
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, Final, cast
 from uuid import UUID
@@ -60,14 +64,25 @@ from taskq.auth import (
     make_redis_client_factory,
     reload_schedule_of,
 )
-from taskq.backend._protocol import parse_retry_kind
+from taskq.backend._filter_sql import (
+    build_filter_conditions,  # pyright: ignore[reportPrivateUsage]  # Why: the one filter-to-WHERE builder shared by the client's list and cancel_where; the cancel-where dry-run must preview the exact predicate set the write will apply, so re-deriving the conditions in the CLI would let the two drift.
+)
+from taskq.backend._protocol import JobFilter, JobId, parse_retry_kind
+from taskq.backend.statemachine import TERMINAL_STATUSES
+from taskq.client import TaskQ
 from taskq.connections import ConnFactory, PoolFactory, RedisFactory, WorkerConnections
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex for defence-in-depth schema validation at this SQL interpolation site, the queue_ops convention.
 )
-from taskq.exceptions import ActorConfigDriftList, ActorDeregistrationError, ActorNotFoundError
+from taskq.exceptions import (
+    ActorConfigDriftList,
+    ActorDeregistrationError,
+    ActorNotFoundError,
+    EmptyFilterError,
+)
 from taskq.obs import OtelExporterConfigurationError, configure_exporters, setup_logging
 from taskq.settings import TaskQSettings, WorkerSettings
+from taskq.types import BulkCancelResult
 from taskq.worker._stall_tally import remedy_for_kind
 from taskq.worker.dev import dev_watch_loop
 from taskq.worker.queue_ops import (
@@ -159,7 +174,7 @@ app.add_typer(queue_app, name="queue")
 
 job_app = typer.Typer(
     no_args_is_help=True,
-    help="Inspect individual jobs.",
+    help="Inspect individual jobs and operate on them (cancel, retry, bulk cancel).",
 )
 app.add_typer(job_app, name="job")
 
@@ -2583,6 +2598,84 @@ async def _queues_set_max_concurrent(
     _print_queue_row(row)
 
 
+_DEPTH_SQL_TEMPLATE = (
+    "SELECT queue, "
+    "count(*) FILTER (WHERE status = 'pending')::int AS pending, "
+    "count(*) FILTER (WHERE status = 'scheduled')::int AS scheduled, "
+    "count(*) FILTER (WHERE status = 'running')::int AS running, "
+    "count(*) FILTER (WHERE status = 'failed')::int AS failed, "
+    "EXTRACT(EPOCH FROM (clock_timestamp() "
+    "- MIN(created_at) FILTER (WHERE status = 'pending')))::float8 AS oldest_pending_age "
+    'FROM "{schema}".jobs '
+    "GROUP BY queue "
+    "ORDER BY max(created_at) DESC, queue ASC"
+)
+"""One grouped pass over jobs, per queue: the four depth counts plus the
+oldest pending row's age.
+
+The shape reuses the leader sampler's reads: grouped counts over the
+live statuses with the age arithmetic done server-side
+(``clock_timestamp()``), never by subtracting this process's clock from
+a database timestamp. ``failed`` is the one deliberate widening beyond
+the sampler's live-status set: the sampler drops terminal statuses
+because a per-tick read must not grow with the terminal history between
+retention sweeps, while this command runs once, on demand, and an
+operator reading depth wants the failure signal next to the backlog.
+Ordering is newest activity first (the queue with the most recent job
+on top), queue name breaking ties."""
+
+
+@queues_app.command("depth")
+def queues_depth() -> None:
+    """Per-queue depth: pending/scheduled/running/failed counts and the
+    age of the oldest pending job, newest activity first."""
+    settings = TaskQSettings.load()
+    asyncio.run(_queues_depth(settings))
+
+
+async def _queues_depth(settings: TaskQSettings) -> None:
+    if not _IDENT_RE.match(settings.schema_name):
+        # Defence in depth: the queue_ops convention, re-checked at the
+        # SQL interpolation site.
+        typer.echo(f"invalid schema name: {settings.schema_name!r}", err=True)
+        raise typer.Exit(code=1)
+    sql = _DEPTH_SQL_TEMPLATE.format(schema=settings.schema_name)
+    conn = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        rows = await conn.fetch(
+            sql
+        )  # Why: sql is a rendered constant, the schema the only interpolation, identifier-validated above.
+    finally:
+        await close_conn_bounded(conn, "queues-depth", CLOSE_TIMEOUT_SECS)
+    if not rows:
+        typer.echo(f"no jobs in {settings.schema_name}.jobs; nothing to report")
+        return
+    name_width = max(len("queue"), max(len(str(row["queue"])) for row in rows))
+    header = f"{'queue':{name_width}}  pending  scheduled  running  failed  oldest_pending"
+    typer.echo(header)
+    for row in rows:
+        age = "-" if row["oldest_pending_age"] is None else _format_age(row["oldest_pending_age"])
+        typer.echo(
+            f"{row['queue']:{name_width}}  {row['pending']:>7}  {row['scheduled']:>9}  "
+            f"{row['running']:>7}  {row['failed']:>6}  {age:>14}"
+        )
+
+
+def _format_age(seconds: float) -> str:
+    """Humanize a server-computed age for the depth table."""
+    total = int(seconds)
+    days, rem = divmod(total, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    if days > 0:
+        return f"{days}d{hours}h"
+    if hours > 0:
+        return f"{hours}h{minutes}m"
+    if minutes > 0:
+        return f"{minutes}m{secs}s"
+    return f"{secs}s"
+
+
 # ── job ────────────────────────────────────────────────────────────────
 
 _JOB_SHOW_COLUMNS: Final = (
@@ -2602,12 +2695,16 @@ _JOB_SHOW_COLUMNS: Final = (
     "error_message",
     "idempotency_key",
 )
-"""The operator-facing columns ``taskq job show`` prints.
+"""The operator-facing columns ``taskq job show`` prints by default.
 
 Explicit, not ``SELECT *``: the printed set is the contract, and leaving
 ``payload``/``result``/``progress_state``/``error_traceback`` out keeps a
 terminal-friendly read from dragging arbitrarily large blobs onto the
 wire. Both ``jobs`` and ``jobs_archive`` carry every column listed.
+``error_traceback`` and ``payload`` join the SELECT only under the
+opt-in ``--traceback``/``--payload`` flags (see ``job_show``): the
+default output stays blob-free, the flags are the operator asking for
+the blob by name.
 """
 
 
@@ -2627,13 +2724,29 @@ def _format_max_attempts(max_attempts: int, retry_kind: str) -> str:
 @job_app.command("show")
 def job_show(
     job_id: Annotated[str, typer.Argument(help="Job id (UUID).")],
+    show_traceback: Annotated[
+        bool,
+        typer.Option("--traceback", help="Also print the stored error_traceback (can be large)."),
+    ] = False,
+    show_payload: Annotated[
+        bool,
+        typer.Option("--payload", help="Also print the stored payload jsonb (can be large)."),
+    ] = False,
 ) -> None:
     """Show one job's stored row, from `jobs` or `jobs_archive`."""
     settings = TaskQSettings.load()
-    asyncio.run(_job_show(settings, job_id))
+    asyncio.run(
+        _job_show(settings, job_id, show_traceback=show_traceback, show_payload=show_payload)
+    )
 
 
-async def _job_show(settings: TaskQSettings, job_id: str) -> None:
+async def _job_show(
+    settings: TaskQSettings,
+    job_id: str,
+    *,
+    show_traceback: bool = False,
+    show_payload: bool = False,
+) -> None:
     try:
         parsed = UUID(job_id)
     except ValueError:
@@ -2645,6 +2758,14 @@ async def _job_show(settings: TaskQSettings, job_id: str) -> None:
         typer.echo(f"invalid schema name: {settings.schema_name!r}", err=True)
         raise typer.Exit(code=1)
     columns = ", ".join(_JOB_SHOW_COLUMNS)
+    # Opt-in columns only: the default SELECT stays blob-free (see
+    # _JOB_SHOW_COLUMNS), the flags add the named blob to the same probe.
+    extra_columns = ""
+    if show_traceback:
+        extra_columns += ", error_traceback"
+    if show_payload:
+        extra_columns += ", payload"
+    columns += extra_columns
     conn = await asyncpg.connect(str(settings.pg_dsn))
     archived = False
     try:
@@ -2685,5 +2806,458 @@ async def _job_show(settings: TaskQSettings, job_id: str) -> None:
         typer.echo(f"error_message: {row['error_message']}")
     if row["idempotency_key"] is not None:
         typer.echo(f"idempotency_key: {row['idempotency_key']}")
+    if show_traceback:
+        _print_blob_field("error_traceback", row["error_traceback"])
+    if show_payload:
+        _print_blob_field("payload", row["payload"])
     if archived:
         typer.echo("archived: yes")
+
+
+def _print_blob_field(name: str, value: Any) -> None:
+    """Print one opt-in blob field (``--traceback`` / ``--payload``).
+
+    A ``(none)`` placeholder rather than silence: the operator asked this
+    field by name, so an absent value must be distinguishable from a flag
+    that did nothing. The value is printed in full and unbounded -- the
+    flags exist to surface the blob, truncating it here would send the
+    operator to SQL for the rest, the failure the admin UI's bounded
+    render accepts for a page but a pointed ask does not need.
+    """
+    if value is None:
+        typer.echo(f"{name}: (none)")
+        return
+    typer.echo(f"{name}:")
+    for line in str(value).splitlines() or [""]:
+        typer.echo(f"  {line}")
+
+
+# ── job write path ─────────────────────────────────────────────────────
+#
+# The write commands (cancel, retry, cancel-where) talk to Postgres
+# through the same Backend the admin UI's POST routes call, so a CLI
+# cancel and an admin-UI cancel are one mechanism, not two write paths
+# that can drift: write_cancel_request / retry_job / cancel_where carry
+# the EPQ guards, the job_events writes, and the cooperative-cancel
+# signalling. A short-lived TaskQ client (the public facade that owns
+# the pool + PostgresBackend + JobsClient wiring) is the connection
+# lifecycle here -- a bare asyncpg connection cannot run the backend's
+# pooled drain machinery.
+
+
+@contextlib.asynccontextmanager
+async def _job_ops_client(settings: TaskQSettings) -> AsyncGenerator[TaskQ, None]:
+    """Open a short-lived client for the job write commands, close it after.
+
+    A whole client for one command is heavier than the read commands'
+    single ``asyncpg.connect``: the write paths run on the backend, and
+    the backend is pool-shaped (its drain batches on pooled connections,
+    its NOTIFY targets a dispatcher pool). One command's lifetime bounds
+    the cost; the pool stays at the client's small defaults.
+    """
+    tq = TaskQ(dsn=str(settings.pg_dsn), schema=settings.schema_name)
+    await tq.open()
+    try:
+        yield tq
+    finally:
+        await tq.close()
+
+
+@job_app.command("cancel")
+def job_cancel(
+    job_id: Annotated[str, typer.Argument(help="Job id (UUID).")],
+    reason: Annotated[
+        str | None,
+        typer.Option("--reason", help="Recorded on the job's cancel_request event."),
+    ] = None,
+) -> None:
+    """Cancel one job: pending/scheduled goes straight to terminal
+    `cancelled`; running gets a cooperative cancel request the worker's
+    cancel controller acts on."""
+    settings = TaskQSettings.load()
+    asyncio.run(_job_cancel(settings, job_id, reason))
+
+
+async def _job_cancel(settings: TaskQSettings, job_id: str, reason: str | None) -> None:
+    try:
+        parsed = UUID(job_id)
+    except ValueError:
+        typer.echo(f"invalid job id (expected a UUID): {job_id!r}", err=True)
+        raise typer.Exit(code=1) from None
+
+    async with _job_ops_client(settings) as tq:
+        # The admin route's pre-checks (web/admin/jobs.py job_cancel): a
+        # missing id is a clean not-found, and a job already at rest is a
+        # conflict named before any write -- a cancel that "succeeds"
+        # against a terminal row would read as an action taken when the
+        # write applied to nothing.
+        row = await tq.get_row(JobId(parsed))
+        if row is None:
+            typer.echo(f"no job {parsed} in {settings.schema_name}.jobs", err=True)
+            raise typer.Exit(code=1)
+        if row.status in TERMINAL_STATUSES:
+            typer.echo(
+                f"job {parsed} is already in a terminal state (status: {row.status}); "
+                "use `taskq job retry` to re-pend a resting job",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        result = await tq.cancel(JobId(parsed), reason)
+
+    typer.echo(f"job: {result.job_id}")
+    typer.echo(f"previous_status: {result.previous_status}")
+    typer.echo(f"new_status: {result.new_status}")
+    typer.echo(f"cancellation_initiated: {'yes' if result.cancellation_initiated else 'no'}")
+    if result.new_status == "cancelled":
+        typer.echo("outcome: cancelled directly (the job was not running)")
+    elif result.cancellation_initiated:
+        # The running row stays 'running' until the worker's heartbeat-
+        # driven cancel controller observes cancel_phase=1 and the actor's
+        # cancel_event produces the terminal write; the CLI cannot wait
+        # for that (the actor owns the transition), so the honest print is
+        # "requested", not "cancelled".
+        typer.echo(
+            "outcome: cooperative cancel requested (cancel_phase=1); the worker "
+            "running the job will stop it at its next cancellation checkpoint"
+        )
+    else:
+        typer.echo("outcome: no cancel was initiated (the job reached a terminal state first)")
+
+
+@job_app.command("retry")
+def job_retry(
+    job_id: Annotated[str, typer.Argument(help="Job id (UUID).")],
+) -> None:
+    """Re-pend a resting job (every terminal status, including `succeeded`
+    and `abandoned`). The attempt counter is not reset."""
+    settings = TaskQSettings.load()
+    asyncio.run(_job_retry(settings, job_id))
+
+
+async def _job_retry(settings: TaskQSettings, job_id: str) -> None:
+    try:
+        parsed = UUID(job_id)
+    except ValueError:
+        typer.echo(f"invalid job id (expected a UUID): {job_id!r}", err=True)
+        raise typer.Exit(code=1) from None
+
+    async with _job_ops_client(settings) as tq:
+        # The admin route's pre-checks (web/admin/ops.py job_retry): 404
+        # on a missing row, 409 on a non-terminal status -- retrying a
+        # running job would race that attempt's terminal write and can
+        # execute the job twice concurrently, so the refusal is the
+        # feature, not a limitation.
+        row = await tq.get_row(JobId(parsed))
+        if row is None:
+            typer.echo(f"no job {parsed} in {settings.schema_name}.jobs", err=True)
+            raise typer.Exit(code=1)
+        if row.status not in TERMINAL_STATUSES:
+            typer.echo(
+                f"job {parsed} is not in a retryable state (status: {row.status}); "
+                "a job is retryable only from a terminal status "
+                "(succeeded, failed, cancelled, crashed, abandoned)",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        # The read above is only a pre-check: the write's own guard is the
+        # arbiter (the admin route's wording). False means the row left a
+        # retryable state between the two reads, or the attempt ceiling
+        # cannot rise, so the write applied to nothing.
+        retried = await tq.retry_job(JobId(parsed))
+        if not retried:
+            typer.echo(
+                f"job {parsed} is not in a retryable state (it left a terminal status "
+                "between the pre-check and the write, or its attempt ceiling cannot rise); "
+                "no rows were changed",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        new_row = await tq.get_row(JobId(parsed))
+
+    typer.echo(f"job: {parsed}")
+    typer.echo(f"previous_status: {row.status}")
+    typer.echo(f"new_status: {new_row.status if new_row is not None else '(gone)'}")
+    typer.echo("outcome: re-pended (the attempt counter was not reset)")
+
+
+def _parse_older_than(text: str) -> timedelta:
+    """Parse a ``--older-than`` duration: ``45`` (seconds), ``30m``, ``2h``,
+    ``7d``, ``2w``."""
+    match = re.fullmatch(r"(\d+)([smhdw]?)", text.strip())
+    if match is None:
+        typer.echo(
+            f"invalid --older-than duration: {text!r} (expected e.g. 45, 30m, 2h, 7d, 2w)",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    seconds = int(match.group(1))
+    unit = match.group(2) or "s"
+    unit_secs = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}[unit]
+    return timedelta(seconds=seconds * unit_secs)
+
+
+def _cancel_where_predicates_text() -> str:
+    return "--queue, --status, --actor, --tag, or --older-than"
+
+
+@job_app.command("cancel-where")
+def job_cancel_where(
+    queue: Annotated[
+        str | None, typer.Option("--queue", help="Cancel only jobs on this queue.")
+    ] = None,
+    status: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--status",
+            help="Cancel only jobs in this status. Repeatable. "
+            "Valid: pending, scheduled, running, succeeded, failed, cancelled, "
+            "crashed, abandoned.",
+        ),
+    ] = None,
+    actor: Annotated[
+        str | None, typer.Option("--actor", help="Cancel only jobs for this actor name.")
+    ] = None,
+    tag: Annotated[
+        list[str] | None,
+        typer.Option("--tag", help="Cancel only jobs carrying this tag. Repeatable."),
+    ] = None,
+    older_than: Annotated[
+        str | None,
+        typer.Option(
+            "--older-than",
+            help="Only jobs enqueued before now minus this duration (e.g. 45, 30m, 2h, 7d, 2w).",
+        ),
+    ] = None,
+    reason: Annotated[
+        str | None,
+        typer.Option("--reason", help="Recorded on every matched job's cancel_request event."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Print the matching count and sample ids; write nothing."),
+    ] = False,
+) -> None:
+    """Bulk cancel every job matching the given filters.
+
+    Refuses to run with no filter at all: a naked full-table cancel is
+    the one mistake this command cannot walk back.
+    """
+    settings = TaskQSettings.load()
+    asyncio.run(
+        _job_cancel_where(
+            settings,
+            queue=queue,
+            status=tuple(status) if status else None,
+            actor=actor,
+            tags=tuple(tag) if tag else None,
+            older_than=older_than,
+            reason=reason,
+            dry_run=dry_run,
+        )
+    )
+
+
+async def _job_cancel_where(
+    settings: TaskQSettings,
+    *,
+    queue: str | None,
+    status: tuple[str, ...] | None,
+    actor: str | None,
+    tags: tuple[str, ...] | None,
+    older_than: str | None,
+    reason: str | None,
+    dry_run: bool,
+) -> None:
+    # The empty-filter guard fires HERE, before any connection is opened,
+    # with the backend's EmptyFilterError as the semantic twin: the client
+    # layer raises the same refusal a call further down would, but failing
+    # before the pool exists keeps the loud guardrail from costing a
+    # round trip, and the CLI offers no allow_empty_filter bypass -- a
+    # shell one-liner is exactly the context a naked full-table cancel
+    # comes from.
+    created_before: datetime | None = None
+    if older_than is not None:
+        # The cutoff comes from this process's clock while created_at is
+        # stamped by the database's; the skew that mixes is NTP-scale, and
+        # --dry-run re-derives the same cutoff, so the preview answers for
+        # the write that follows it.
+        created_before = datetime.now(UTC) - _parse_older_than(older_than)
+
+    try:
+        job_filter = JobFilter(
+            queue=queue,
+            status=status,  # pyright: ignore[reportArgumentType]  # Why: validated one step down; JobFilter.__post_init__ rejects unknown statuses with the full valid list.
+            actor=actor,
+            tags=tags,
+            created_before=created_before,
+        )
+    except ValueError as exc:
+        # Unknown --status values land here, named with the valid set, the
+        # same failure the backend's filter validation raises.
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+
+    if not job_filter.has_predicates():
+        typer.echo(
+            "cancel-where requires at least one filter predicate "
+            f"({_cancel_where_predicates_text()}); a filter with no predicates "
+            "would cancel the entire table. The CLI offers no bypass for this "
+            "guardrail.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    if dry_run:
+        await _cancel_where_dry_run(settings, job_filter)
+        return
+
+    try:
+        result = await _cancel_where_write(settings, job_filter, reason)
+    except EmptyFilterError as exc:
+        # Unreachable via this command (the guard above runs first), but
+        # caught rather than trusted: the backend's guardrail is the
+        # authority on what an empty filter is, and the CLI must surface
+        # its refusal, not assume its own copy stays in sync.
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+
+    typer.echo(f"cancelled directly: {result.cancelled_directly} (pending/scheduled -> cancelled)")
+    typer.echo(
+        f"cooperative cancel requested: {result.cancel_requested} (running -> cancel_phase=1, "
+        "the workers running them will stop them at their next cancellation checkpoint)"
+    )
+    typer.echo(f"total affected: {result.total_affected}")
+    for label, ids in (
+        ("cancelled", result.cancelled_ids),
+        ("cancel requested", result.cancel_requested_ids),
+    ):
+        sample = ids[:5]
+        display = ", ".join(str(i) for i in sample)
+        if len(ids) > len(sample):
+            display += f", and {len(ids) - len(sample)} more"
+        if display:
+            typer.echo(f"{label}: {display}")
+
+
+async def _cancel_where_write(
+    settings: TaskQSettings, job_filter: JobFilter, reason: str | None
+) -> BulkCancelResult:
+    async with _job_ops_client(settings) as tq:
+        return await tq.cancel_where(job_filter, reason)
+
+
+async def _cancel_where_dry_run(settings: TaskQSettings, job_filter: JobFilter) -> None:
+    """Print the matching count and a few sample ids, write nothing.
+
+    The conditions come from ``build_filter_conditions`` -- the same
+    builder ``cancel_where`` itself will apply -- so the preview can
+    never describe a match set the write disagrees with.
+    """
+    if not _IDENT_RE.match(settings.schema_name):
+        typer.echo(f"invalid schema name: {settings.schema_name!r}", err=True)
+        raise typer.Exit(code=1)
+    filter_sql = build_filter_conditions(job_filter)
+    conditions_str = " AND ".join(filter_sql.conditions) if filter_sql.conditions else "TRUE"
+    count_sql = (
+        "WITH matching AS MATERIALIZED ( "  # noqa: S608  # Why: schema is identifier-validated above; the conditions are the shared bound-parameter filter builder's output, every value bound by asyncpg.
+        f'SELECT id, created_at FROM "{settings.schema_name}".jobs '
+        f"WHERE {conditions_str}"
+        " ) "
+        "SELECT (SELECT count(*)::int FROM matching) AS total, "
+        "(SELECT array_agg(id ORDER BY created_at DESC, id) "
+        "FROM (SELECT id, created_at FROM matching "
+        "ORDER BY created_at DESC, id LIMIT 5) sample) AS sample_ids"
+    )
+    conn = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        row = await conn.fetchrow(count_sql, *filter_sql.params)
+    finally:
+        await close_conn_bounded(conn, "job-cancel-where-dry-run", CLOSE_TIMEOUT_SECS)
+    total = int(row["total"]) if row is not None else 0
+    sample_ids: list[UUID] = list(row["sample_ids"] or []) if row is not None else []
+    typer.echo(f"dry run (nothing written): {total} matching job(s)")
+    for job_id in sample_ids:
+        typer.echo(f"  {job_id}")
+    if total > len(sample_ids):
+        typer.echo(f"  ... and {total - len(sample_ids)} more")
+
+
+@job_app.command("events")
+def job_events(
+    job_id: Annotated[str, typer.Argument(help="Job id (UUID).")],
+) -> None:
+    """List one job's job_events timeline (kind, occurred_at, detail)."""
+    settings = TaskQSettings.load()
+    asyncio.run(_job_events(settings, job_id))
+
+
+async def _job_events(settings: TaskQSettings, job_id: str) -> None:
+    try:
+        parsed = UUID(job_id)
+    except ValueError:
+        typer.echo(f"invalid job id (expected a UUID): {job_id!r}", err=True)
+        raise typer.Exit(code=1) from None
+    if not _IDENT_RE.match(settings.schema_name):
+        typer.echo(f"invalid schema name: {settings.schema_name!r}", err=True)
+        raise typer.Exit(code=1)
+
+    conn = await asyncpg.connect(str(settings.pg_dsn))
+    archived = False
+    try:
+        # Existence probe first (the show command's jobs -> jobs_archive
+        # fallback): an unknown id must read as "no such job", not as the
+        # empty timeline a bare events query would return for it.
+        exists = await conn.fetchval(
+            f'SELECT EXISTS (SELECT 1 FROM "{settings.schema_name}".jobs WHERE id = $1) '  # noqa: S608  # Why: schema is identifier-validated above; asyncpg cannot bind identifiers, the id is a bound parameter.
+            f'OR EXISTS (SELECT 1 FROM "{settings.schema_name}".jobs_archive WHERE id = $1)',
+            parsed,
+        )
+        if not exists:
+            typer.echo(
+                f"no job {parsed} in {settings.schema_name}.jobs or "
+                f"{settings.schema_name}.jobs_archive",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        rows = await conn.fetch(
+            f'SELECT occurred_at, kind, detail FROM "{settings.schema_name}".job_events '  # noqa: S608  # Why: schema is identifier-validated above; asyncpg cannot bind identifiers, the job id is a bound parameter.
+            "WHERE job_id = $1 ORDER BY occurred_at, id",
+            parsed,
+        )
+        if not rows:
+            archived_row = await conn.fetchval(
+                f'SELECT EXISTS (SELECT 1 FROM "{settings.schema_name}".jobs_archive WHERE id = $1)',  # noqa: S608  # Why: schema is identifier-validated above.
+                parsed,
+            )
+            archived = bool(archived_row)
+    finally:
+        await close_conn_bounded(conn, "job-events", CLOSE_TIMEOUT_SECS)
+
+    if not rows:
+        if archived:
+            typer.echo(f"job {parsed} (archived) has no job_events rows")
+        else:
+            typer.echo(f"job {parsed} has no job_events rows")
+        return
+    for event in rows:
+        detail = _format_event_detail(event["detail"])
+        typer.echo(f"{event['occurred_at']}  {event['kind']}  {detail}")
+
+
+_EVENT_DETAIL_LINE_LIMIT: Final[int] = 120
+"""One-line cap for a ``job events`` detail render. The detail jsonb is
+free-form; a timeline read must stay a timeline, so a long detail is
+truncated with the dropped-character count named, the admin UI's
+traceback-truncation convention at timeline scale."""
+
+
+def _format_event_detail(detail: Any) -> str:
+    """Render an event's detail jsonb as one bounded line."""
+    if detail is None:
+        return ""
+    text = " ".join(str(detail).split())
+    if len(text) <= _EVENT_DETAIL_LINE_LIMIT:
+        return text
+    remaining = len(text) - _EVENT_DETAIL_LINE_LIMIT
+    suffix = f"... (+{remaining} characters)"
+    return text[: _EVENT_DETAIL_LINE_LIMIT - len(suffix)] + suffix

@@ -2,9 +2,10 @@
 
 Extracted from ``_reads._list_jobs`` so that ``cancel_where`` (bulk
 cancel) reuses the exact same filter logic. Only predicate fields
-(queue, status, actor, identity_key, batch_id, tags, active) are
-translated to conditions. The ``cursor``, ``limit``, and ``order_by``
-fields are NOT handled here, callers apply them separately.
+(queue, status, actor, identity_key, batch_id, tags, active,
+created_before) are translated to conditions. The ``cursor``,
+``limit``, and ``order_by`` fields are NOT handled here, callers apply
+them separately.
 
 This module is SQL-only; the in-memory backend filters via its own
 implementation in ``testing/_reads.py``. Filter semantics between the
@@ -42,9 +43,9 @@ def build_filter_conditions(filter: JobFilter) -> FilterSQL:
     so the filter semantics are identical for query and mutation.
 
     Only predicate fields (queue, status, actor, identity_key, batch_id,
-    tags, active) are translated to conditions. The ``cursor``, ``limit``,
-    and ``order_by`` fields are NOT handled here, callers apply them
-    separately:
+    tags, active, created_before) are translated to conditions. The
+    ``cursor``, ``limit``, and ``order_by`` fields are NOT handled here,
+    callers apply them separately:
 
     - ``_list_jobs`` appends the cursor keyset condition and LIMIT/OFFSET
       after calling this helper (preserving the existing behavior).
@@ -98,5 +99,14 @@ def build_filter_conditions(filter: JobFilter) -> FilterSQL:
         n += 1
         conditions.append(f"tags && ${n}::text[]")
         params.append(list(filter.tags))
+
+    if filter.created_before is not None:
+        n += 1
+        # Strictly before: "older than N" reads as "enqueued before the N
+        # boundary", a job stamped exactly at the boundary is not older
+        # than it. The same builder serves the CLI's dry-run count, so the
+        # preview and the write can never disagree on the boundary.
+        conditions.append(f"created_at < ${n}")
+        params.append(filter.created_before)
 
     return FilterSQL(conditions=tuple(conditions), params=tuple(params))
