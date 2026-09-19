@@ -794,6 +794,44 @@ snoozed AS (
            OR clock_timestamp() + (SELECT effective_delay FROM params) <= j.schedule_to_close)
     RETURNING j.*, 'snoozed'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),
+deadline_cancelled AS (
+    -- Operator intent outranks the deadline, the same cancel-first
+    -- arbitration _SWEEP_1_SQL's CASE carries (and the isolate template
+    -- mirrors branch-for-branch): a row carrying a cancel phase whose
+    -- schedule_to_close lapses at deferral time terminalises 'cancelled'
+    -- here, never 'failed:DeadlineExceeded': the pre-fix shape matched
+    -- the deadline arm below and failed a row the operator had already
+    -- claimed, firing DeadlineExceeded hooks and error reports on a
+    -- cancel in flight. This arm runs BEFORE the failure arm; the
+    -- failure arm reads cancel_phase = 0 by construction (and re-guards
+    -- with NOT EXISTS here, defence-in-depth against direct-SQL shapes).
+    -- The SET mirrors mark_cancelled: the cancel-origin marker on the
+    -- row and attempt (phase 2 was forced, phase 1 cooperative), no
+    -- DeadlineExceeded stamp (the record of what happened to this row
+    -- is the in-flight request it preserves), and the cancel columns
+    -- survive untouched as the audit trail, the doctrine every
+    -- terminal cancel path carries. The lease-clear trio matches the
+    -- deadline arm below: the row's claim is released either way.
+    UPDATE "{s}".jobs j
+    SET status = 'cancelled',
+        finished_at = clock_timestamp(),
+        error_class = CASE WHEN j.cancel_phase = 2 THEN '{CANCEL_ORIGIN_FORCED}'
+                           ELSE '{CANCEL_ORIGIN_COOPERATIVE}' END,
+        locked_by_worker = NULL,
+        lock_expires_at = NULL,
+        last_heartbeat_at = NULL,
+        progress_seq = (SELECT progress_seq FROM params),
+        progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
+    WHERE j.id = (SELECT job_id FROM params)
+      AND j.status = 'running'
+      AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
+      AND j.cancel_phase != 0
+      AND j.schedule_to_close IS NOT NULL
+      AND clock_timestamp() + (SELECT effective_delay FROM params) > j.schedule_to_close
+      AND NOT EXISTS (SELECT 1 FROM snoozed)
+    RETURNING j.*, 'cancelled'::text AS outcome_branch, clock_timestamp() AS now_ts
+),
 deadline_failed AS (
     UPDATE "{s}".jobs j
     SET status = 'failed',
@@ -818,6 +856,12 @@ deadline_failed AS (
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
       AND j.attempt = (SELECT attempt FROM params)
+      -- The cancelled arm above owns every phase-carrying row (the
+      -- cancel-first ordering); this arm is the clean row's exit. Both
+      -- conjuncts are no-ops given the arm order, kept as
+      -- defence-in-depth against direct-SQL shapes.
+      AND j.cancel_phase = 0
+      AND NOT EXISTS (SELECT 1 FROM deadline_cancelled)
       AND j.schedule_to_close IS NOT NULL
       AND clock_timestamp() + (SELECT effective_delay FROM params) > j.schedule_to_close
       AND NOT EXISTS (SELECT 1 FROM snoozed)
@@ -825,6 +869,33 @@ deadline_failed AS (
 ),
 holder AS (
     SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
+),
+cancelled_att AS (
+    -- The cancelled arm's attempt row: outcome 'cancelled' with the
+    -- cancel-origin marker the UPDATE stamped, mirroring mark_cancelled's
+    -- attempt shape, never a 'failed'/DeadlineExceeded record (the
+    -- deadline did not fail this job, the operator's cancel decided it).
+    INSERT INTO "{s}".job_attempts
+    (job_id, attempt, started_at, finished_at, outcome,
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+    SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'cancelled',
+           d.error_class, NULL, NULL,
+           trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
+           (SELECT id FROM holder), '{{}}'::jsonb
+    FROM deadline_cancelled d
+    -- A claim-clamped attempt number repeats at the smallint ceiling:
+    -- keep the first record, never roll the transition back (see the
+    -- mark_succeeded insert's comment).
+    ON CONFLICT (job_id, attempt) DO NOTHING
+),
+cancelled_evt AS (
+    INSERT INTO "{s}".job_events
+    (job_id, occurred_at, kind, detail)
+    SELECT d.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', 'running', 'to_state', 'cancelled',
+                              'error_class', d.error_class,
+                              'worker_id', $2::text)
+    FROM deadline_cancelled d
 ),
 deadline_att AS (
     INSERT INTO "{s}".job_attempts
@@ -850,7 +921,8 @@ deadline_evt AS (
     FROM deadline_failed d
 )
 SELECT * FROM snoozed
-UNION ALL SELECT * FROM deadline_failed""",
+UNION ALL SELECT * FROM deadline_cancelled
+ UNION ALL SELECT * FROM deadline_failed""",
         mark_retry_after_consume_true=f"""\
 WITH params AS (
     SELECT $1::uuid AS job_id,
@@ -896,6 +968,44 @@ WITH params AS (
            OR j.attempt < j.max_attempts)
     RETURNING j.*, j.attempt AS running_attempt, 'snoozed'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),
+deadline_cancelled AS (
+    -- Operator intent outranks the deadline AND the budget, the same
+    -- cancel-first arbitration _SWEEP_1_SQL's CASE carries (and the
+    -- isolate template mirrors branch-for-branch): a row carrying a
+    -- cancel phase whose schedule_to_close lapses at deferral time
+    -- terminalises 'cancelled' here, never
+    -- 'failed:DeadlineExceeded'/'failed:MaxAttemptsExceeded': the
+    -- pre-fix shape matched the budget/deadline arms below and failed a
+    -- row the operator had already claimed, firing DeadlineExceeded and
+    -- retry-exhausted hooks on a cancel in flight. This arm runs BEFORE
+    -- both; those arms read cancel_phase = 0 by construction (and
+    -- re-guard with NOT EXISTS here, defence-in-depth against
+    -- direct-SQL shapes). The SET mirrors mark_cancelled: the
+    -- cancel-origin marker on the row and attempt, no deadline/budget
+    -- stamp (the record of what happened to this row is the in-flight
+    -- request it preserves), and the cancel columns survive untouched
+    -- as the audit trail. The lease-clear trio matches the sibling
+    -- terminal arms: the row's claim is released either way.
+    UPDATE "{s}".jobs j
+    SET status = 'cancelled',
+        finished_at = clock_timestamp(),
+        error_class = CASE WHEN j.cancel_phase = 2 THEN '{CANCEL_ORIGIN_FORCED}'
+                           ELSE '{CANCEL_ORIGIN_COOPERATIVE}' END,
+        locked_by_worker = NULL,
+        lock_expires_at = NULL,
+        last_heartbeat_at = NULL,
+        progress_seq = (SELECT progress_seq FROM params),
+        progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
+    WHERE j.id = (SELECT job_id FROM params)
+      AND j.status = 'running'
+      AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
+      AND j.cancel_phase != 0
+      AND j.schedule_to_close IS NOT NULL
+      AND clock_timestamp() + (SELECT delay FROM params) > j.schedule_to_close
+      AND NOT EXISTS (SELECT 1 FROM snoozed)
+    RETURNING j.*, j.attempt AS running_attempt, 'cancelled'::text AS outcome_branch, clock_timestamp() AS now_ts
+),
 max_attempts_failed AS (
     UPDATE "{s}".jobs j
     SET status = 'failed',
@@ -918,6 +1028,12 @@ max_attempts_failed AS (
       -- the statement fell through to a silent reschedule.
       AND j.retry_kind <> 'indefinite'
       AND j.attempt >= j.max_attempts
+      -- The cancelled arm above owns every phase-carrying row (the
+      -- cancel-first ordering); this arm is the clean row's exit. Both
+      -- conjuncts are no-ops given the arm order, kept as
+      -- defence-in-depth against direct-SQL shapes.
+      AND j.cancel_phase = 0
+      AND NOT EXISTS (SELECT 1 FROM deadline_cancelled)
       AND (j.schedule_to_close IS NULL
            OR clock_timestamp() + (SELECT delay FROM params) <= j.schedule_to_close)
       AND NOT EXISTS (SELECT 1 FROM snoozed)
@@ -941,12 +1057,45 @@ deadline_failed AS (
       AND j.attempt = (SELECT attempt FROM params)
       AND j.schedule_to_close IS NOT NULL
       AND clock_timestamp() + (SELECT delay FROM params) > j.schedule_to_close
+      -- The cancelled arm owns every phase-carrying row (the
+      -- cancel-first ordering); this arm is the clean row's exit. Both
+      -- conjuncts are no-ops given the arm order, kept as
+      -- defence-in-depth against direct-SQL shapes.
+      AND j.cancel_phase = 0
+      AND NOT EXISTS (SELECT 1 FROM deadline_cancelled)
       AND NOT EXISTS (SELECT 1 FROM snoozed)
       AND NOT EXISTS (SELECT 1 FROM max_attempts_failed)
     RETURNING j.*, j.attempt AS running_attempt, 'deadline_failed'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),
 holder AS (
     SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
+),
+cancelled_att AS (
+    -- The cancelled arm's attempt row: outcome 'cancelled' with the
+    -- cancel-origin marker the UPDATE stamped, mirroring mark_cancelled's
+    -- attempt shape, never a 'failed' record (neither the deadline nor
+    -- the budget failed this job, the operator's cancel decided it).
+    INSERT INTO "{s}".job_attempts
+    (job_id, attempt, started_at, finished_at, outcome,
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+    SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'cancelled',
+           d.error_class, NULL, NULL,
+           trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
+           (SELECT id FROM holder), '{{}}'::jsonb
+    FROM deadline_cancelled d
+    -- A claim-clamped attempt number repeats at the smallint ceiling:
+    -- keep the first record, never roll the transition back (see the
+    -- mark_succeeded insert's comment).
+    ON CONFLICT (job_id, attempt) DO NOTHING
+),
+cancelled_evt AS (
+    INSERT INTO "{s}".job_events
+    (job_id, occurred_at, kind, detail)
+    SELECT d.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', 'running', 'to_state', 'cancelled',
+                              'error_class', d.error_class,
+                              'worker_id', $2::text)
+    FROM deadline_cancelled d
 ),
 snoozed_att AS (
     INSERT INTO "{s}".job_attempts
@@ -1017,7 +1166,8 @@ deadline_evt AS (
     FROM deadline_failed d
 )
 SELECT * FROM snoozed
-UNION ALL SELECT * FROM max_attempts_failed
+UNION ALL SELECT * FROM deadline_cancelled
+ UNION ALL SELECT * FROM max_attempts_failed
  UNION ALL SELECT * FROM deadline_failed""",
         # The RetryAfter(consume_budget=False) arm is an actor-requested
         # deferral, a server Retry-After honoured without spending
@@ -1078,6 +1228,43 @@ snoozed AS (
            OR clock_timestamp() + (SELECT effective_delay FROM params) <= j.schedule_to_close)
     RETURNING j.*, 'snoozed'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),
+deadline_cancelled AS (
+    -- Operator intent outranks the deadline, the same cancel-first
+    -- arbitration _SWEEP_1_SQL's CASE carries (and the isolate template
+    -- mirrors branch-for-branch): a row carrying a cancel phase whose
+    -- schedule_to_close lapses at deferral time terminalises 'cancelled'
+    -- here, never 'failed:DeadlineExceeded': the pre-fix shape matched
+    -- the deadline arm below and failed a row the operator had already
+    -- claimed, firing DeadlineExceeded hooks and error reports on a
+    -- cancel in flight. This arm runs BEFORE the failure arm; the
+    -- failure arm reads cancel_phase = 0 by construction (and re-guards
+    -- with NOT EXISTS here, defence-in-depth against direct-SQL shapes).
+    -- The SET mirrors mark_cancelled: the cancel-origin marker on the
+    -- row and attempt, no DeadlineExceeded stamp (the record of what
+    -- happened to this row is the in-flight request it preserves), and
+    -- the cancel columns survive untouched as the audit trail. The
+    -- lease-clear trio matches the deadline arm below: the row's claim
+    -- is released either way.
+    UPDATE "{s}".jobs j
+    SET status = 'cancelled',
+        finished_at = clock_timestamp(),
+        error_class = CASE WHEN j.cancel_phase = 2 THEN '{CANCEL_ORIGIN_FORCED}'
+                           ELSE '{CANCEL_ORIGIN_COOPERATIVE}' END,
+        locked_by_worker = NULL,
+        lock_expires_at = NULL,
+        last_heartbeat_at = NULL,
+        progress_seq = (SELECT progress_seq FROM params),
+        progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
+    WHERE j.id = (SELECT job_id FROM params)
+      AND j.status = 'running'
+      AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
+      AND j.cancel_phase != 0
+      AND j.schedule_to_close IS NOT NULL
+      AND clock_timestamp() + (SELECT effective_delay FROM params) > j.schedule_to_close
+      AND NOT EXISTS (SELECT 1 FROM snoozed)
+    RETURNING j.*, 'cancelled'::text AS outcome_branch, clock_timestamp() AS now_ts
+),
 deadline_failed AS (
     UPDATE "{s}".jobs j
     SET status = 'failed',
@@ -1096,11 +1283,44 @@ deadline_failed AS (
       AND j.attempt = (SELECT attempt FROM params)
       AND j.schedule_to_close IS NOT NULL
       AND clock_timestamp() + (SELECT effective_delay FROM params) > j.schedule_to_close
+      -- The cancelled arm above owns every phase-carrying row (the
+      -- cancel-first ordering); this arm is the clean row's exit. Both
+      -- conjuncts are no-ops given the arm order, kept as
+      -- defence-in-depth against direct-SQL shapes.
+      AND j.cancel_phase = 0
+      AND NOT EXISTS (SELECT 1 FROM deadline_cancelled)
       AND NOT EXISTS (SELECT 1 FROM snoozed)
     RETURNING j.*, 'deadline_failed'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),
 holder AS (
     SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
+),
+cancelled_att AS (
+    -- The cancelled arm's attempt row: outcome 'cancelled' with the
+    -- cancel-origin marker the UPDATE stamped, mirroring mark_cancelled's
+    -- attempt shape, never a 'failed'/DeadlineExceeded record (the
+    -- deadline did not fail this job, the operator's cancel decided it).
+    INSERT INTO "{s}".job_attempts
+    (job_id, attempt, started_at, finished_at, outcome,
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+    SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'cancelled',
+           d.error_class, NULL, NULL,
+           trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
+           (SELECT id FROM holder), '{{}}'::jsonb
+    FROM deadline_cancelled d
+    -- A claim-clamped attempt number repeats at the smallint ceiling:
+    -- keep the first record, never roll the transition back (see the
+    -- mark_succeeded insert's comment).
+    ON CONFLICT (job_id, attempt) DO NOTHING
+),
+cancelled_evt AS (
+    INSERT INTO "{s}".job_events
+    (job_id, occurred_at, kind, detail)
+    SELECT d.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', 'running', 'to_state', 'cancelled',
+                              'error_class', d.error_class,
+                              'worker_id', $2::text)
+    FROM deadline_cancelled d
 ),
 deadline_att AS (
     INSERT INTO "{s}".job_attempts
@@ -1126,7 +1346,8 @@ deadline_evt AS (
     FROM deadline_failed d
 )
 SELECT * FROM snoozed
-UNION ALL SELECT * FROM deadline_failed""",
+UNION ALL SELECT * FROM deadline_cancelled
+ UNION ALL SELECT * FROM deadline_failed""",
         # mark_interrupted releases a RUNNING attempt the worker cannot
         # finish because the process is going away (graceful shutdown past
         # its graces). It is the non-terminal release of a *started*

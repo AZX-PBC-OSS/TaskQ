@@ -250,6 +250,10 @@ _PINNED_JOBS_INDEXES: frozenset[str] = frozenset(
         "jobs_running_lock_expires_idx",
         "jobs_schedule_to_close_idx",
         "jobs_identity_active_idx",
+        # 01.00.15_01 (pre): the unique-preflight probe's index over every
+        # status, serving caller-configured unique_states that fold
+        # terminal states into the dedup answer.
+        "jobs_identity_status_idx",
         "jobs_singleton_uniq",
         "jobs_actor_running_idx",
         "jobs_actor_pending_idx",

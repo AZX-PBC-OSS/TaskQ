@@ -372,12 +372,14 @@ def test_worker_fenced_terminal_templates_carry_the_attempt_epoch_conjunct() -> 
         ("mark_failed", "AND attempt = $8", 1),
         ("mark_cancelled", "AND attempt = $5", 1),
         ("mark_retry", "AND j.attempt = (SELECT attempt FROM params)", 2),
-        # mark_snoozed has exactly two arms (snoozed, deadline_failed) —
-        # a deferral's only terminal exit is the job's own deadline, so a
+        # mark_snoozed has exactly three arms (snoozed, deadline_cancelled,
+        # deadline_failed): a deferral's terminal exits are the job's own
+        # deadline, which a cancel-carrying row exits as 'cancelled' (the
+        # cancel-first arm) and a clean row as 'failed'; the
         # denial/budget arm no longer exists to fence.
-        ("mark_snoozed", "AND j.attempt = (SELECT attempt FROM params)", 2),
-        ("mark_retry_after_consume_true", "AND j.attempt = (SELECT attempt FROM params)", 3),
-        ("mark_retry_after_consume_false", "AND j.attempt = (SELECT attempt FROM params)", 2),
+        ("mark_snoozed", "AND j.attempt = (SELECT attempt FROM params)", 3),
+        ("mark_retry_after_consume_true", "AND j.attempt = (SELECT attempt FROM params)", 4),
+        ("mark_retry_after_consume_false", "AND j.attempt = (SELECT attempt FROM params)", 3),
     )
     for template, needle, expected in fenced:
         rendered: str = getattr(sql, template)

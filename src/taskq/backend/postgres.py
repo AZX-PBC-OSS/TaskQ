@@ -1335,9 +1335,13 @@ class PostgresBackend:
     ) -> int:
         if connection is not None:
             return await _abort_batch(connection, self._batch_sql, batch_id)
+        # No outer transaction here: _abort_batch drains the member set
+        # as bounded, self-committed pages (each with its own
+        # statement_timeout and deadlock retry), and wrapping the drain
+        # in one transaction would re-create the whole-member write set
+        # the drain exists to bound.
         async with _bounded_checkout(self._worker_pool, "abort_batch") as conn:
-            async with conn.transaction():
-                return await _abort_batch(conn, self._batch_sql, batch_id)
+            return await _abort_batch(conn, self._batch_sql, batch_id)
 
     async def complete_batch(
         self,

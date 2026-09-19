@@ -772,9 +772,66 @@ async def _mark_snoozed(
     # snoozed → deadline: observably equivalent, since the SQL snooze
     # arm's own deadline guard excludes every past-deadline row before
     # the deadline arm sees it. The deadline is a deferral's ONLY
-    # terminal exit, nothing about admission decides a job's outcome.
+    # terminal exit for a clean row, nothing about admission decides a
+    # job's outcome.
     if row.schedule_to_close is not None and new_scheduled_at > row.schedule_to_close:
         deadline_merged_progress = _merge_progress(row.progress_state, progress_state)
+        # Cancel-first arbitration inside the deadline arm, the twin of
+        # the SQL deadline_cancelled arm (and of _SWEEP_1_SQL's CASE
+        # ordering): operator intent outranks the deadline, so a
+        # phase-carrying row whose schedule_to_close lapsed at deferral
+        # time terminalises 'cancelled', never 'failed:DeadlineExceeded'
+        # (which would fire DeadlineExceeded hooks and error reports on
+        # a cancel in flight). The write mirrors _mark_cancelled: the
+        # cancel-origin marker on the row and attempt, the cancel
+        # columns preserved as the audit trail, no deadline stamp. The
+        # row is already terminal, so the caller reads back "noop", the
+        # same contract the fence below returns (the deferral did not
+        # land; the operator's cancel decided the row).
+        if row.cancel_phase != CancelPhase.NONE:
+            origin = (
+                CANCEL_ORIGIN_FORCED
+                if row.cancel_phase == CancelPhase.FORCED
+                else CANCEL_ORIGIN_COOPERATIVE
+            )
+            self._jobs[job_id] = replace(
+                row,
+                status="cancelled",
+                finished_at=now,
+                error_class=origin,
+                locked_by_worker=None,
+                lock_expires_at=None,
+                last_heartbeat_at=None,
+                progress_seq=progress_seq,
+                progress_state=deadline_merged_progress,
+            )
+            self._append_attempt(
+                job_id=job_id,
+                attempt=row.attempt,
+                started_at=row.started_at,
+                now=now,
+                outcome="cancelled",
+                error_class=origin,
+                error_message=None,
+                error_traceback=None,
+                worker_id=worker_id,
+            )
+            self._append_state_change_event(
+                job_id=job_id,
+                from_state="running",
+                to_state="cancelled",
+                now=now,
+                error_class=origin,
+                worker_id=worker_id,
+            )
+            logger.debug(
+                "state-change",
+                kind="state_change",
+                from_state="running",
+                to_state="cancelled",
+                job_id=str(job_id),
+            )
+            return "noop"
         self._jobs[job_id] = replace(
             row,
             status="failed",
@@ -934,6 +991,66 @@ async def _mark_retry_after(
 
     if row.schedule_to_close is not None and new_scheduled_at > row.schedule_to_close:
         deadline_merged_progress = _merge_progress(row.progress_state, progress_state)
+        # Cancel-first arbitration inside the deadline arm, the twin of
+        # the SQL deadline_cancelled arm (and of _SWEEP_1_SQL's CASE
+        # ordering): operator intent outranks the deadline AND the
+        # budget, so a phase-carrying row whose schedule_to_close lapsed
+        # at deferral time terminalises 'cancelled', never
+        # 'failed:DeadlineExceeded'/'failed:MaxAttemptsExceeded' (which
+        # would fire deadline/exhaustion hooks and error reports on a
+        # cancel in flight). The write mirrors _mark_cancelled: the
+        # cancel-origin marker on the row and attempt, the cancel
+        # columns preserved as the audit trail, no deadline/budget
+        # stamp. The row is already terminal, so the caller reads back
+        # "noop", the same contract the fence below returns (the
+        # deferral did not land; the operator's cancel decided the row).
+        if row.cancel_phase != CancelPhase.NONE:
+            origin = (
+                CANCEL_ORIGIN_FORCED
+                if row.cancel_phase == CancelPhase.FORCED
+                else CANCEL_ORIGIN_COOPERATIVE
+            )
+            self._jobs[job_id] = replace(
+                row,
+                status="cancelled",
+                finished_at=now,
+                error_class=origin,
+                locked_by_worker=None,
+                lock_expires_at=None,
+                last_heartbeat_at=None,
+                progress_seq=progress_seq,
+                progress_state=deadline_merged_progress,
+            )
+            self._append_attempt(
+                job_id=job_id,
+                attempt=row.attempt,
+                started_at=row.started_at,
+                now=now,
+                outcome="cancelled",
+                error_class=origin,
+                error_message=None,
+                error_traceback=None,
+                worker_id=worker_id,
+            )
+            self._append_state_change_event(
+                job_id=job_id,
+                from_state="running",
+                to_state="cancelled",
+                now=now,
+                error_class=origin,
+                worker_id=worker_id,
+            )
+            logger.debug(
+                "state-change",
+                kind="state_change",
+                from_state="running",
+                to_state="cancelled",
+                job_id=str(job_id),
+                worker_id=worker_id,
+                attempt=row.attempt,
+                cause="retry_after",
+            )
+            return "noop"
         self._jobs[job_id] = replace(
             row,
             status="failed",
@@ -1055,10 +1172,10 @@ async def _mark_retry_after(
     # rescheduled; the reset below would launder the operator's request
     # mid-flight. The fenced-out row stays 'running' carrying its phase,
     # the caller reads back "noop", and the worker's cancel ladder
-    # terminalises it. The deadline and exhaustion arms above stay
-    # unfenced (the SQL arms are too): they preserve the cancel columns,
-    # so there is nothing to launder. On a clean row the check is
-    # trivially false and the budget semantics are unchanged.
+    # terminalises it. (A phase-carrying row whose deadline has ALREADY
+    # lapsed never reaches this fence: the deadline arm's cancel-first
+    # split above terminalised it 'cancelled' first.) On a clean row the
+    # check is trivially false and the budget semantics are unchanged.
     if row.cancel_phase != CancelPhase.NONE:
         return "noop"
     new_attempt = row.attempt if consume_budget else max(row.attempt - 1, 0)

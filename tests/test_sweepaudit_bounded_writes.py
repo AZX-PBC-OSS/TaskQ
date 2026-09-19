@@ -49,6 +49,7 @@ import pytest
 
 import taskq
 from taskq.backend._batch_sql import (  # pyright: ignore[reportPrivateUsage]  # Why: pinning the exact production statement is the point; redefining it here would let the pin drift from the SQL that runs.
+    _ABORT_BATCH_JOBS_SQL,
     _PRUNE_OLD_BATCHES_SQL,
 )
 from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: same.
@@ -222,11 +223,6 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "UPDATE_JOBS_LOCK_SQL_TEMPLATE",
     ),
     # ── Batch-scoped ──
-    "_ABORT_BATCH_JOBS_SQL": (
-        "WHERE metadata @> $1::jsonb",
-        "one batch's job membership; cleared by the class audit "
-        "(abort_batch refuted as a backlog-proportional site)",
-    ),
 }
 
 
@@ -344,6 +340,7 @@ _WINDOWED_WRITE_STATEMENTS: dict[str, str] = {
     "_SWEEP_IDLE_KEYED_BUCKETS_SQL": _SWEEP_IDLE_KEYED_BUCKETS_SQL,
     "_SWEEP_IDLE_KEYED_SLOTS_SQL": _SWEEP_IDLE_KEYED_SLOTS_SQL,
     "_PRUNE_OLD_BATCHES_SQL": _PRUNE_OLD_BATCHES_SQL,
+    "_ABORT_BATCH_JOBS_SQL": _ABORT_BATCH_JOBS_SQL,
 }
 
 

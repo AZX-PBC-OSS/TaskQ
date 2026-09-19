@@ -12,13 +12,16 @@ data.  The schema identifier is validated against ``_IDENT_RE`` before
 formatting (defence-in-depth).
 """
 
+import asyncio
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from itertools import islice
+from random import random
 from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID
 
+import asyncpg
 import structlog
 from asyncpg.exceptions import LockNotAvailableError, UniqueViolationError
 
@@ -27,6 +30,11 @@ from taskq._advisory import (
     _LOCK_TIMEOUT_SET_SQL,  # pyright: ignore[reportPrivateUsage]
 )
 from taskq._json import dumps_str
+from taskq.backend._cancel_bulk import (
+    _UUID_MIN,  # pyright: ignore[reportPrivateUsage]  # Why: the keyset-cursor sentinel the bulk-cancel drain defines; a local copy would let the two drains' cursors drift.
+    _apply_batch_plan_mode,  # pyright: ignore[reportPrivateUsage]  # Why: the plan-cache pin the keyset drains share, defined once next to the drain that measured the generic-plan re-walk defect.
+    _restore_plan_mode,  # pyright: ignore[reportPrivateUsage]  # Why: same shared-discipline rationale as _apply_batch_plan_mode.
+)
 from taskq.backend._cursor import decode_batch_cursor
 from taskq.backend._enqueue import _enqueue_batch
 from taskq.backend._protocol import (
@@ -39,6 +47,11 @@ from taskq.backend._protocol import (
 )
 from taskq.backend._records import _batch_row_from_record
 from taskq.backend._sql_templates import SqlTemplates
+from taskq.backend._sweeps import (
+    _apply_batch_statement_timeout,  # pyright: ignore[reportPrivateUsage]  # Why: the batch statement_timeout capture/restore is shared verbatim by every event-writer batch path; re-defining it here would let the two disciplines drift.
+    _restore_statement_timeout,  # pyright: ignore[reportPrivateUsage]  # Why: same shared-discipline rationale as _apply_batch_statement_timeout.
+    _validate_positive,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical pre-SQL bound validation, shared with the sweeps and the bulk-cancel drain.
+)
 from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
 from taskq.connections import (
     _bounded_checkout,  # pyright: ignore[reportPrivateUsage] # Why: the one implementation of the bounded pool checkout (release carries _POOL_RELEASE_RESET_TIMEOUT_SECS and never raises); a local copy would drift from the discipline it documents.
@@ -46,6 +59,8 @@ from taskq.connections import (
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_CHUNK_SIZE,
+    DEFAULT_EVENT_WRITER_BATCH_SIZE,
+    DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
 )
 from taskq.obs import get_logger
 
@@ -169,16 +184,58 @@ LEFT JOIN LATERAL (
 ) c ON true"""
 
 _ABORT_BATCH_JOBS_SQL = """\
-UPDATE "{schema}".jobs
-SET status = 'cancelled',
-    finished_at = clock_timestamp(),
-    error_class = 'BatchAbortedError',
-    error_message = 'Batch aborted due to consecutive failures',
-    cancel_requested_at = clock_timestamp(),
-    cancel_phase = 2
-WHERE metadata @> $1::jsonb
-  AND status IN ('pending', 'scheduled')
-RETURNING id"""
+-- ONE keyset window of the abort drain, not the whole member set: the
+-- _cancel_bulk.py shape (its pending/scheduled arm, same table, same
+-- membership predicate). Bounding matters even though the membership set
+-- is batch-scoped: a huge batch aborted in one statement takes row locks
+-- over every pending/scheduled member in one transaction, parking
+-- concurrent dispatch behind that write set for its whole duration.
+-- MATERIALIZED is essential: without it the planner may inline the
+-- LIMIT-ed matching CTE into the UPDATE and abort more rows than the
+-- LIMIT admits.
+-- The window is a keyset page, not a fresh scan: `id > $2` starts each
+-- pass where the previous one stopped and ORDER BY id gives the cursor
+-- its meaning; without it every pass re-walks the rows earlier pages
+-- already moved to 'cancelled' and the drain is quadratic in member
+-- count. `j.id = ANY (...)` is a RESTRICTION clause on jobs alone (no
+-- join to reorder), so each page is one primary-key probe per windowed
+-- id, never a Seq Scan (see _cancel_bulk.py's arm comment for the
+-- measured plan shapes).
+WITH matching AS MATERIALIZED (
+    SELECT id
+    FROM "{schema}".jobs
+    WHERE metadata @> $1::jsonb
+      AND status IN ('pending', 'scheduled')
+      AND id > $2::uuid
+    ORDER BY id
+    LIMIT $3
+),
+batch_ids AS MATERIALIZED (
+    -- The last element is the greatest id this page windowed, the
+    -- drain's next cursor. PostgreSQL has no max(uuid) aggregate, so
+    -- the ordered array carries it; the ORDER BY is stated explicitly
+    -- rather than assumed from matching's scan order, the cursor is the
+    -- drain's only re-walk bound.
+    SELECT array_agg(id ORDER BY id) AS ids,
+           (array_agg(id ORDER BY id))[count(*)] AS last_id
+    FROM matching
+),
+aborted AS (
+    UPDATE "{schema}".jobs AS j
+    SET status = 'cancelled',
+        finished_at = clock_timestamp(),
+        error_class = 'BatchAbortedError',
+        error_message = 'Batch aborted due to consecutive failures',
+        cancel_requested_at = clock_timestamp(),
+        cancel_phase = 2
+    WHERE j.id = ANY ((SELECT ids FROM batch_ids)::uuid[])
+      AND j.status IN ('pending', 'scheduled')
+    RETURNING j.id
+)
+SELECT
+    (SELECT count(*)::int FROM matching) AS matched_count,
+    (SELECT last_id FROM batch_ids) AS last_id,
+    (SELECT count(*)::int FROM aborted) AS aborted_count"""
 
 _ABORT_BATCH_ROW_SQL = """\
 UPDATE "{schema}".batches
@@ -359,6 +416,12 @@ def render_batch_sql(schema: str) -> BatchSql:
 #: a streaming append (see the counter statements' comment), and the
 #: skip it buys is M7's best-effort loss class.
 _BATCH_COUNTER_LOCK_TIMEOUT_MS: Final[float] = 2000.0
+
+#: Deadlock retries per abort-drain page on a connection we own, the
+#: same discipline _drain_cancel_batches applies per batch: the retried
+#: page re-reads a clean snapshot, its predicate skips rows an earlier
+#: committed page cancelled, nothing counts twice.
+_ABORT_DRAIN_RETRIES: Final = 3
 
 
 async def _bounded_batches_row_wait[T](
@@ -546,21 +609,105 @@ async def abort_batch(
     conn: ConnLike,
     sql: BatchSql,
     batch_id: UUID,
+    *,
+    batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
+    statement_timeout_ms: int = DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
 ) -> int:
     """Cancel all pending/scheduled member jobs and mark the batch as aborted.
 
     Returns the number of jobs cancelled.
 
-    The two statements (cancel jobs + update batch row) are wrapped in a
-    transaction so they commit atomically even when *conn* is a caller-
-    supplied loop connection that is not already inside an explicit
-    transaction.  asyncpg nested transactions use savepoints, so this is
-    safe when the caller already has an outer transaction.
+    The member cancel runs as a keyset drain (the
+    ``_cancel_bulk.py`` discipline): bounded ``LIMIT``-ed pages of one
+    fixed statement, each page under its own ``statement_timeout``
+    (``set_config(..., true)`` capture/restore, the sweeps' discipline)
+    and its own plan-cache pin, instead of one UPDATE taking row locks
+    over the whole member set for a transaction's length. Pages commit
+    one at a time on a connection we own, so a mid-drain failure leaves
+    partial progress a re-run continues (already-cancelled members no
+    longer match the page predicate and the cursor resumes past them),
+    the same deliberately non-atomic contract the bulk-cancel drain
+    documents; on a caller-supplied connection already inside a
+    transaction (the terminal-outcome hook path) the pages ride that
+    transaction as savepoints and a deadlock propagates to the caller,
+    whose transaction is dead regardless, so the retry below is
+    meaningless there and is skipped. Deadlocks on an owned connection
+    retry per page (3 attempts, exponential backoff with jitter), the
+    same discipline ``_drain_cancel_batches`` uses: the page re-runs on
+    a clean snapshot, its predicate no longer matches rows an earlier
+    committed page cancelled, and nothing is counted twice.
+
+    The batches row flips to ``'aborted'`` FIRST, before the drain:
+    every completion path (the terminal hook's ``complete_batch`` and
+    the leader's stale-batch sweep) guards on ``status = 'active'``, so
+    the flip is what decides abort-wins-over-complete for the whole
+    call. Flipping after the drain would expose every committed page's
+    cancellations to a concurrent completion arbiter through the pages'
+    commits, a race the single-statement form never had (its
+    cancellations were invisible until the one transaction committed).
+
+    *batch_size* pages the drain (the bulk-cancel path's page size,
+    :data:`taskq.constants.DEFAULT_EVENT_WRITER_BATCH_SIZE`).
     """
+    _validate_positive("batch_size", batch_size)
+    _validate_positive("statement_timeout_ms", statement_timeout_ms)
+    filter_json = _batch_filter_json(batch_id)
+
+    # The batches-row flip first: see the docstring. One small
+    # transaction (a real one on an owned connection, a savepoint inside
+    # a caller's), the same wrapper the pages below use.
     async with conn.transaction():
-        rows = await conn.fetch(sql.abort_batch_jobs, _batch_filter_json(batch_id))
         await conn.execute(sql.abort_batch_row, batch_id)
-        return len(rows)
+
+    async def _one_page(cursor: UUID) -> asyncpg.Record | None:
+        """One committed (or savepoint-scoped) windowed cancel page."""
+        async with conn.transaction():
+            prev_timeout = await _apply_batch_statement_timeout(conn, statement_timeout_ms)
+            prev_plan = await _apply_batch_plan_mode(conn)
+            rec = await conn.fetchrow(sql.abort_batch_jobs, filter_json, cursor, batch_size)
+            # Success path only: restore the caller's settings inside
+            # the still-open transaction; on error the rollback has
+            # already discarded the SET LOCALs.
+            await _restore_plan_mode(conn, prev_plan)
+            await _restore_statement_timeout(conn, prev_timeout)
+        return rec
+
+    total = 0
+    cursor = _UUID_MIN
+    while True:
+        rec: asyncpg.Record | None = None
+        # On a caller's transaction a deadlock aborts it for good: there
+        # is nothing to retry into, so the exception propagates (the
+        # caller's rollback also discards the flip above, restoring the
+        # pre-call state whole).
+        attempts = 1 if conn.is_in_transaction() else _ABORT_DRAIN_RETRIES
+        for attempt in range(attempts):
+            try:
+                rec = await _one_page(cursor)
+                break
+            except asyncpg.DeadlockDetectedError:
+                if attempt == attempts - 1:
+                    raise
+                await asyncio.sleep(0.1 * (2**attempt) + random() * 0.05)
+        # Termination keys on the WINDOW count, not the aborted count:
+        # a row windowed by the CTE that a dispatcher claims
+        # (pending -> running) between the snapshot and the row lock
+        # fails the EPQ re-check and drops out of `aborted`, so an
+        # aborted-count termination could abandon the tail of a full
+        # window. A window under the page size is the drained end.
+        matched = int(rec["matched_count"]) if rec is not None else 0
+        total += int(rec["aborted_count"]) if rec is not None else 0
+        if matched < batch_size:
+            break
+        last_id = rec["last_id"] if rec is not None else None
+        # A full window always carries a cursor (matched_count ==
+        # batch_size implies a non-empty array); the None branch keeps
+        # the type checker honest rather than ever re-walking from the
+        # bottom of the key space.
+        if last_id is None:  # pragma: no cover - full windows always carry one
+            break
+        cursor = last_id
+    return total
 
 
 async def complete_batch(

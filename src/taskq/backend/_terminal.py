@@ -791,9 +791,11 @@ async def _mark_snoozed(
         branch = rec["outcome_branch"]
         # A non-terminal snooze/denial writes no attempt/event rows and no
         # timestamps of its own, it increments the outcome-keyed counter
-        # on the row (see _sql_templates.mark_snoozed).  The deadline arm
-        # is the statement's ONLY terminal exit, and writes its attempt
-        # row and state_change event exactly like every other terminal
+        # on the row (see _sql_templates.mark_snoozed).  The deadline
+        # arms are the statement's ONLY terminal exits (failed for a
+        # clean row, cancelled for a phase-carrying one, the
+        # cancel-first arm), and each writes its attempt row and
+        # state_change event exactly like every other terminal
         # transition.
 
     if branch == "snoozed":
@@ -806,6 +808,25 @@ async def _mark_snoozed(
             attempt=rec["attempt"],
         )
         return "scheduled"
+    if branch == "cancelled":
+        # The deadline arm's cancel-first exit (the mark_cancelled
+        # semantics the statement's deadline_cancelled arm carries): the
+        # schedule_to_close lapsed at deferral time on a row carrying a
+        # cancel phase, and the statement terminalised 'cancelled' per
+        # operator intent, not 'failed'. The row is already terminal, so
+        # there is nothing left for the worker's cancel ladder to do and
+        # no DeadlineExceeded failure to report: read back "noop", the
+        # same contract a fenced-out deferral returns (the deferral did
+        # not land; the operator's cancel decided the row).
+        log_state_change(
+            logger,
+            from_state="running",
+            to_state="cancelled",
+            job_id=str(job_id),
+            worker_id=str(worker_id),
+            attempt=rec["attempt"],
+        )
+        return "noop"
     log_state_change(
         logger,
         from_state="running",
@@ -875,6 +896,28 @@ async def _mark_retry_after(
             cause="retry_after",
         )
         return "scheduled"
+    if branch == "cancelled":
+        # The deadline arm's cancel-first exit (the mark_cancelled
+        # semantics the statement's deadline_cancelled arm carries): the
+        # schedule_to_close lapsed at deferral time on a row carrying a
+        # cancel phase, and the statement terminalised 'cancelled' per
+        # operator intent, ahead of both the budget and deadline
+        # failure arms. The row is already terminal, so there is nothing
+        # left for the worker's cancel ladder to do and no
+        # DeadlineExceeded/MaxAttemptsExceeded failure to report: read
+        # back "noop", the same contract a fenced-out deferral returns
+        # (the deferral did not land; the operator's cancel decided the
+        # row).
+        log_state_change(
+            logger,
+            from_state="running",
+            to_state="cancelled",
+            job_id=str(job_id),
+            worker_id=str(worker_id),
+            attempt=row_attempt,
+            cause="retry_after",
+        )
+        return "noop"
     log_state_change(
         logger,
         from_state="running",

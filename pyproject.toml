@@ -306,6 +306,9 @@ ignore = [
 # SIM117: pool.acquire() and conn.transaction() cannot be flattened.
 # S311: random module used for jitter in deadlock retry backoff, not crypto.
 "src/taskq/backend/_cancel_bulk.py" = ["S608", "SIM117", "S311"]
+# S311: same jitter rationale as _cancel_bulk.py, the abort drain shares
+# the bulk-cancel path's per-page deadlock retry discipline.
+"src/taskq/backend/_batch_sql.py" = ["S311"]
 "src/taskq/backend/_dispatch.py" = ["S608", "SIM117"]
 "src/taskq/backend/_sql_templates.py" = ["S608"]
 "src/taskq/worker/dispatch.py" = ["S608"]

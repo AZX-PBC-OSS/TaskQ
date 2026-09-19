@@ -12,14 +12,26 @@ increment, re-creating the exact attempt epoch the interrupted (zombie) handler
 holds. The zombie's later terminal write then passes the attempt fence and
 lands on the re-dispatched attempt, and the live execution's own terminal write
 no-ops. The interrupt arm must not refund: the attempt did start executing.
+
+Issue: the fused deferral statements' deadline arm had no cancel-first
+arbitration, so a row carrying a cancel phase whose ``schedule_to_close``
+lapsed at deferral time terminalised ``failed:DeadlineExceeded`` instead of
+``cancelled``: operator intent lost to a lapsed clock, and the deadline
+hooks fired on a cancel in flight. The deadline arm must order the cancel
+arm first, the same arbitration ``_SWEEP_1_SQL``'s CASE carries.
 """
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from taskq._ids import new_job_id
-from taskq.backend._protocol import CancelPhase, EnqueueArgs, JobFilter, JobId
+import pytest
+
+from taskq._ids import new_job_id, new_uuid
+from taskq.backend import Backend, EnqueueArgs
+from taskq.backend._protocol import CancelPhase, JobFilter, JobId
+from taskq.backend.postgres import PostgresBackend
+from taskq.constants import CANCEL_ORIGIN_COOPERATIVE, CANCEL_ORIGIN_FORCED
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 
@@ -288,3 +300,188 @@ class TestInterruptArmAttemptEpoch:
         assert row is not None
         assert row.status == "succeeded"
         assert row.result == {"live": True}
+
+
+# ── Issue: a lapsed deferral deadline must not outbid an in-flight cancel ──
+
+
+async def _pair_enqueue_and_dispatch(backend: Backend) -> tuple[JobId, UUID]:
+    """Enqueue and dispatch one job on EITHER backend (the pair fixture)."""
+    job_id = new_job_id()
+    await backend.enqueue(
+        EnqueueArgs(
+            id=job_id,
+            actor="actor_a",
+            queue="default",
+            payload={"k": "v"},
+            max_attempts=5,
+            retry_kind="transient",
+            scheduled_at=_START,
+        )
+    )
+    if isinstance(backend, InMemoryBackend):
+        worker_id = backend._worker_id  # type: ignore[reportPrivateUsage]  # Why: canonical worker identity for InMemoryBackend; mirrors tests/test_backend_equivalence.py
+    else:
+        assert isinstance(backend, PostgresBackend)
+        schema: str = backend._schema_name  # type: ignore[reportPrivateUsage]  # Why: PG-path helper mirrors tests/test_backend_equivalence.py
+        pool = backend._worker_pool  # type: ignore[reportPrivateUsage]  # Why: same
+        worker_id = new_uuid()
+        async with pool.acquire() as conn:  # type: ignore[reportUnknownVariableType]  # Why: asyncpg stubs yield PoolConnectionProxy | Unknown
+            await conn.execute(
+                f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) '  # noqa: S608 # Why: schema is fixture-derived and _IDENT_RE-validated; every value is $N-bound
+                "VALUES ($1, $2, $3, $4)",
+                worker_id,
+                "test-host",
+                12345,
+                ["default"],
+            )
+    dispatched = await backend.dispatch_batch(
+        worker_id,
+        ["default"],
+        limit=1,
+        lock_lease=timedelta(seconds=60),
+    )
+    assert job_id in {row.id for row in dispatched}
+    return job_id, worker_id
+
+
+async def _pair_force_deadline_lapsed(backend: Backend, job_id: JobId) -> None:
+    """Put the running row's schedule_to_close in the past.
+
+    The deferral arms compare the would-be reschedule time against the
+    deadline; a lapsed deadline sends every deferral shape to the fused
+    statement's terminal arms, which is where the pre-fix deadline arm
+    terminalised 'failed' on a phase-carrying row.
+    """
+    if isinstance(backend, InMemoryBackend):
+        row = backend._jobs[job_id]  # type: ignore[reportPrivateUsage]  # Why: forcing a race-window state the public API cannot reach directly; mirrors tests/test_backend_equivalence.py
+        backend._jobs[job_id] = replace(  # type: ignore[reportPrivateUsage]  # Why: same
+            row, schedule_to_close=_START - timedelta(seconds=1)
+        )
+        return
+    assert isinstance(backend, PostgresBackend)
+    schema: str = backend._schema_name  # type: ignore[reportPrivateUsage]  # Why: PG-path helper mirrors tests/test_backend_equivalence.py
+    pool = backend._worker_pool  # type: ignore[reportPrivateUsage]  # Why: same
+    async with pool.acquire() as conn:  # type: ignore[reportUnknownVariableType]  # Why: asyncpg stubs
+        await conn.execute(
+            f'UPDATE "{schema}".jobs SET schedule_to_close = $2 WHERE id = $1',  # noqa: S608 # Why: schema is fixture-derived and _IDENT_RE-validated; values are $N-bound
+            job_id,
+            _START - timedelta(seconds=1),
+        )
+
+
+async def _pair_set_in_flight_cancel(backend: Backend, job_id: JobId, phase: CancelPhase) -> None:
+    """Stamp an operator cancel in flight (phase + timestamp) on the row."""
+    if isinstance(backend, InMemoryBackend):
+        row = backend._jobs[job_id]  # type: ignore[reportPrivateUsage]  # Why: as above
+        backend._jobs[job_id] = replace(  # type: ignore[reportPrivateUsage]  # Why: same
+            row, cancel_phase=phase, cancel_requested_at=_START
+        )
+        return
+    assert isinstance(backend, PostgresBackend)
+    schema: str = backend._schema_name  # type: ignore[reportPrivateUsage]  # Why: as above
+    pool = backend._worker_pool  # type: ignore[reportPrivateUsage]  # Why: same
+    async with pool.acquire() as conn:  # type: ignore[reportUnknownVariableType]  # Why: asyncpg stubs
+        await conn.execute(
+            f'UPDATE "{schema}".jobs '  # noqa: S608 # Why: schema is fixture-derived and _IDENT_RE-validated; values are $N-bound
+            "SET cancel_phase = $2, cancel_requested_at = clock_timestamp() "
+            "WHERE id = $1",
+            job_id,
+            int(phase),
+        )
+
+
+_ARM_CALLS = {
+    "snoozed": lambda backend, job_id, wid: backend.mark_snoozed(
+        job_id, wid, timedelta(seconds=30), attempt=1
+    ),
+    "retry_after_consume_true": lambda backend, job_id, wid: backend.mark_retry_after(
+        job_id, wid, timedelta(seconds=10), consume_budget=True, attempt=1
+    ),
+    "retry_after_consume_false": lambda backend, job_id, wid: backend.mark_retry_after(
+        job_id, wid, timedelta(seconds=10), consume_budget=False, attempt=1
+    ),
+}
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("arm", sorted(_ARM_CALLS), ids=sorted(_ARM_CALLS))
+@pytest.mark.parametrize(
+    "phase,origin",
+    [
+        (CancelPhase.COOPERATIVE, CANCEL_ORIGIN_COOPERATIVE),
+        (CancelPhase.FORCED, CANCEL_ORIGIN_FORCED),
+    ],
+    ids=["phase1", "phase2"],
+)
+class TestDeadlineArmsHonourInFlightCancel:
+    """A phase-carrying row whose deadline lapsed at deferral time must
+    terminalise 'cancelled', never 'failed:DeadlineExceeded'.
+
+    Operator intent outranks the deadline (and the retry budget), the
+    same cancel-first arbitration _SWEEP_1_SQL's CASE carries: the
+    deadline arm terminalises the cancel first, preserves the cancel
+    columns as the audit trail, and stamps the cancel-origin marker
+    rather than DeadlineExceeded.
+    """
+
+    async def test_terminalises_cancelled_with_columns_preserved(
+        self,
+        backend_pair: Backend,
+        arm: str,
+        phase: CancelPhase,
+        origin: str,
+    ) -> None:
+        backend = backend_pair
+        job_id, wid = await _pair_enqueue_and_dispatch(backend)
+        await _pair_force_deadline_lapsed(backend, job_id)
+        await _pair_set_in_flight_cancel(backend, job_id, phase)
+
+        result = await _ARM_CALLS[arm](backend, job_id, wid)
+
+        # The deferral did not land: the caller reads back "noop" (the
+        # same contract the deadline-fenced deferral returns), never a
+        # "failed" that would report DeadlineExceeded for a cancelled
+        # job.
+        assert result == "noop", (
+            f"{arm} on a phase-carrying row past its deadline must report "
+            "that the deferral did not land, not a deadline failure"
+        )
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.status == "cancelled", (
+            f"{arm} terminalised a phase-carrying row past its deadline as "
+            f"{row.status!r}: the deadline arm outbid the operator's "
+            "in-flight cancel (cancel-first ordering missing)"
+        )
+        assert row.error_class == origin, (
+            f"{arm} stamped error_class={row.error_class!r} on a cancelled "
+            "row: the cancel-origin marker, never DeadlineExceeded"
+        )
+        # The cancel columns survive: they are the row's audit trail.
+        assert row.cancel_phase == phase
+        assert row.cancel_requested_at is not None
+
+    async def test_clean_row_still_fails_on_lapsed_deadline(
+        self,
+        backend_pair: Backend,
+        arm: str,
+        phase: CancelPhase,
+        origin: str,
+    ) -> None:
+        """The arbitration narrows nothing for the clean case: a phase-0
+        row past its deadline fails with DeadlineExceeded exactly as
+        before."""
+        backend = backend_pair
+        job_id, wid = await _pair_enqueue_and_dispatch(backend)
+        await _pair_force_deadline_lapsed(backend, job_id)
+
+        result = await _ARM_CALLS[arm](backend, job_id, wid)
+
+        expected = "failed" if arm == "snoozed" else "failed:DeadlineExceeded"
+        assert result == expected
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.status == "failed"
+        assert row.error_class == "DeadlineExceeded"
+        assert row.cancel_phase == CancelPhase.NONE

@@ -221,6 +221,65 @@ class TestPostgresAbortBatch:
         count = await backend.abort_batch(new_uuid())
         assert count == 0
 
+    async def test_abort_drains_a_multi_page_member_set(self, jobs_app: JobsApp) -> None:
+        """A member set larger than one drain page aborts ALL members.
+
+        The member cancel runs as a keyset drain (the _cancel_bulk.py
+        discipline) instead of one unbounded UPDATE, so the whole-set
+        contract now rides the cursor loop: the drain must not stop
+        after the first full page, must not re-count a page, and must
+        leave the batch outcome exactly the single-statement contract
+        (status 'aborted', every pending/scheduled member 'cancelled'
+        with the BatchAbortedError markers, running members untouched).
+        """
+        deps = jobs_app.deps
+        backend = jobs_app.backend
+        schema = deps.settings.schema_name
+        bid = new_uuid()
+
+        await backend.create_batch(bid, "default", 0, None, None, None)
+
+        # 105 pending members against the drain's 100-row default page:
+        # the second page is the contract under test.
+        member_ids: list[UUID] = []
+        async with deps.worker_pool.acquire() as conn:
+            for _ in range(105):
+                member_ids.append(await _insert_test_job(conn, schema, bid, status="pending"))
+            running_id = await _insert_test_job(conn, schema, bid, status="running")
+
+        cancelled_count = await backend.abort_batch(bid)
+        assert cancelled_count == 105, (
+            "the drain must cancel every member across its pages, not just the first page's worth"
+        )
+
+        async with deps.worker_pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"SELECT id, status, error_class "  # noqa: S608  # Why: test helper; schema is a validated constant from settings, not user input
+                f'FROM "{schema}".jobs '
+                f"WHERE id = ANY($1::uuid[])",
+                member_ids,
+            )
+            assert len(rows) == 105
+            for r in rows:
+                assert r["status"] == "cancelled", (
+                    "a member was left un-aborted: the drain lost the tail "
+                    "of the member set across the page boundary"
+                )
+                assert r["error_class"] == "BatchAbortedError"
+            running_row = await conn.fetchrow(
+                f'SELECT status FROM "{schema}".jobs WHERE id = $1',  # noqa: S608  # Why: same
+                running_id,
+            )
+            assert running_row is not None and running_row["status"] == "running", (
+                "the abort must not touch a running member (the worker owns "
+                "its terminal write), same as the single-statement contract"
+            )
+
+        row = await backend.get_batch(bid)
+        assert row is not None
+        assert row.status == "aborted"
+        assert row.completed_at is not None
+
 
 # ── reset_batch_failures ─────────────────────────────────────────
 
