@@ -28,7 +28,9 @@ VALID_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     "scheduled": frozenset(
         {"pending", "cancelled", "failed"}
     ),  # failed only via deadline-exceeded sweep
-    "running": frozenset({"succeeded", "failed", "cancelled", "crashed", "abandoned", "scheduled"}),
+    "running": frozenset(
+        {"succeeded", "failed", "cancelled", "crashed", "abandoned", "scheduled", "pending"}
+    ),  # pending only via the lease-expiry and heartbeat-timeout sweep
     "succeeded": frozenset(),
     "failed": frozenset(),
     "cancelled": frozenset(),

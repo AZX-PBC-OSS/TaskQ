@@ -992,7 +992,9 @@ async def test_tn2_releasing_runs_with_zero_jobs(
 # flight) — those pins stand. These siblings cover the ordinary deploy:
 # rows the production claim CTE leaves at ``cancel_phase = 0``. The deploy
 # must release them back to the fleet (never ``cancelled``/``abandoned``)
-# with the claim's attempt increment refunded.
+# with the interrupted claim's attempt increment standing: the attempt
+# started executing, and a refund would re-create the attempt epoch the
+# interrupted handler still holds.
 
 
 async def test_deploy_releases_running_work_back_to_the_fleet(
@@ -1058,9 +1060,11 @@ async def test_deploy_releases_running_work_back_to_the_fleet(
             "a deploy with no operator cancel in flight must release the row "
             f"behind the termination-budget hold, not terminalise it; got {row.status!r}"
         )
-        assert row.attempt == attempt_at_claim[jid] - 1, (
-            "the claim's attempt increment must be refunded: the deploy ran "
-            f"nothing; attempt reads {row.attempt}, claimed at {attempt_at_claim[jid]}"
+        assert row.attempt == attempt_at_claim[jid], (
+            "the interrupted claim spends the attempt increment: the attempt "
+            "started executing, and refunding it would re-create the attempt "
+            f"epoch the interrupted handler still holds; attempt reads "
+            f"{row.attempt}, claimed at {attempt_at_claim[jid]}"
         )
         assert row.locked_by_worker is None and row.lock_expires_at is None, (
             "a released row must not stay locked to the departed pod"
