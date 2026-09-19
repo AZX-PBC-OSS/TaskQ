@@ -66,21 +66,21 @@ class TestTransitionMatrix:
     @pytest.mark.parametrize(
         ("from_status", "to_status"),
         [
-            # pending — only running, cancelled, and failed (sweep) allowed
+            # pending - only running, cancelled, and failed (sweep) allowed
             ("pending", "pending"),
             ("pending", "scheduled"),
             ("pending", "succeeded"),
             ("pending", "crashed"),
             ("pending", "abandoned"),
-            # scheduled — only pending, cancelled, and failed (sweep) allowed
+            # scheduled - only pending, cancelled, and failed (sweep) allowed
             ("scheduled", "scheduled"),
             ("scheduled", "running"),
             ("scheduled", "succeeded"),
             ("scheduled", "crashed"),
             ("scheduled", "abandoned"),
-            # running — only the 7 listed above allowed
+            # running - only the 7 listed above allowed
             ("running", "running"),
-            # terminal statuses — nothing allowed
+            # terminal statuses - nothing allowed
             ("succeeded", "pending"),
             ("succeeded", "scheduled"),
             ("succeeded", "running"),

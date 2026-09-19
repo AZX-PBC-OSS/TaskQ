@@ -12,7 +12,7 @@ stamp is now "older" than its own never-claimed status?
 It does not, and this test pins why: the claim statement's ORDER BY chains
 compare ``priority DESC`` BEFORE ``actor_claimed_at ASC NULLS FIRST`` at
 every cut (top_ids: "ORDER BY pending_rank, priority DESC, actor_claimed_at
-ASC NULLS FIRST, ..." — src/taskq/backend/_dispatch_sql.py lines 469-471;
+ASC NULLS FIRST, ..." - src/taskq/backend/_dispatch_sql.py lines 469-471;
 the same order at eligible's re-limit, lines 544-545). Priority strictly
 dominates the rotation tiebreak; the tiebreak only decides ties AMONG
 equal-priority actors. A single higher-priority actor therefore keeps its
@@ -21,10 +21,10 @@ lower-priority actors were stamped before it existed.
 
 This test also documents the shape of the guarantee an adopter should NOT
 assume: because ``pending_rank`` partitions BY ACTOR (ranked AS MATERIALIZED
-... ROW_NUMBER() OVER (PARTITION BY id.actor ...) — line 407-412), a single
+... ROW_NUMBER() OVER (PARTITION BY id.actor ...) - line 407-412), a single
 actor's jobs compete against every OTHER actor's same-rank job one slot at
 a time; a priority=100 actor with a deep backlog does not claim multiple
-round slots just because its priority is high — it claims exactly one slot
+round slots just because its priority is high - it claims exactly one slot
 per round for as long as other actors also have pending_rank-1 work, the
 same as everyone else. Priority orders WHICH job wins a contested slot; it
 does not grant an actor extra slots. See docs/guides/actors.md's
@@ -36,7 +36,7 @@ committed): 10 quiet actors (priority=0) each enqueue 50 jobs and get
 claimed in round 1, before urgent_actor (priority=100) has any jobs at
 all. urgent_actor then arrives mid-stream. Across the next 10 rounds,
 urgent_actor was served in EVERY round from the first one its jobs
-existed — the adversarial "already-stamped" ordering did not delay it by
+existed - the adversarial "already-stamped" ordering did not delay it by
 even one round. This test pins that same result permanently through the
 fleet harness.
 """
@@ -68,7 +68,7 @@ async def _set_priority(fleet: Fleet, actor: str, priority: int) -> None:
 async def test_late_arriving_high_priority_actor_is_served_every_round(pg_dsn: str) -> None:
     """A priority=100 actor arriving after low-priority actors are already
     stamped must still be served the very first round its work exists,
-    and every round after — not delayed by the rotation tiebreak, which
+    and every round after - not delayed by the rotation tiebreak, which
     only orders ties among equal-priority actors.
     """
     quiet_actors = _quiet_actor_names()
@@ -94,7 +94,7 @@ async def test_late_arriving_high_priority_actor_is_served_every_round(pg_dsn: s
         assert first_round, "setup invariant: round 1 must claim something to stamp quiet actors"
 
         # urgent_actor now arrives, priority=100, with its own deep
-        # backlog — the adversarial case: every quiet actor is already
+        # backlog - the adversarial case: every quiet actor is already
         # stamped (claimed_at is non-null), while urgent_actor is not.
         await fleet.enqueue(30, actor=urgent_actor, queue=_QUEUE)
         await _set_priority(fleet, urgent_actor, _URGENT_PRIORITY)
@@ -124,7 +124,7 @@ async def test_late_arriving_high_priority_actor_is_served_every_round(pg_dsn: s
             f"urgent_actor (priority={_URGENT_PRIORITY}) was skipped in round "
             f"{first_miss} despite {_N_QUIET} lower-priority actors already being "
             "stamped as claimed before it had any work. The cross-actor rotation "
-            "tiebreak (actor_claimed_at) must never override priority — if it does, "
+            "tiebreak (actor_claimed_at) must never override priority - if it does, "
             "an operator's priority bias on an urgent actor can be silently defeated "
             "by unrelated, lower-priority actors that merely arrived first."
         )

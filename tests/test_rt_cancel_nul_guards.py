@@ -3,7 +3,7 @@
 Two boundaries bind caller- or exception-derived text straight into
 ``text`` columns without the guard their twins carry:
 
-* ``ScheduleUpdateArgs`` (``src/taskq/backend/_protocol.py``) — the
+* ``ScheduleUpdateArgs`` (``src/taskq/backend/_protocol.py``) - the
   update twin of ``ScheduleCreateArgs``, whose ``_check_no_nul_text``
   rejects a NUL at construction.  The update struct had no such guard,
   so ``JobsClient.update_schedule(payload_factory=...)`` and the
@@ -11,12 +11,12 @@ Two boundaries bind caller- or exception-derived text straight into
   raw asyncpg ``CharacterNotInRepertoireError`` (SQLSTATE 22021) from
   deep inside the UPDATE instead of the clean ``ValueError`` the create
   path raises at the boundary.
-* ``_FireFailure.error_text`` (``src/taskq/worker/cron_loop.py``) —
+* ``_FireFailure.error_text`` (``src/taskq/worker/cron_loop.py``) -
   ``str(exc)`` of an uncontrolled payload-factory exception, bound into
   the batched failures UPDATE's ``unnest($2::text[])``.  A NUL in the
   message aborts the WHOLE failures UPDATE with 22021, so the tick
   raises, the caller's transaction rolls back, and
-  ``consecutive_failures`` never increments — a permanently failing
+  ``consecutive_failures`` never increments - a permanently failing
   schedule can never reach auto-disable, and the defect that would have
   named the reason is the very thing that destroys the bookkeeping.
   Same rationale as ``worker/_handlers.py``: derived from an
@@ -26,7 +26,7 @@ Two boundaries bind caller- or exception-derived text straight into
 Also pins the classification contract for the third guard,
 ``ErrorInfo``: a future raw constructor path must fail as a bug
 (``ValueError``, outside every transient/infra set), never as a
-transient-retry — which is exactly what the guard's ``ValueError``
+transient-retry - which is exactly what the guard's ``ValueError``
 buys, because the raw 22021 it pre-empts IS a ``PostgresError`` and
 would be transient-misread.
 """
@@ -75,7 +75,7 @@ def test_schedule_update_args_rejects_nul_in_payload_factory() -> None:
 
 
 def test_schedule_update_args_rejects_nul_in_last_fire_error() -> None:
-    """last_fire_error is bound as raw text too — same guard, same clean error."""
+    """last_fire_error is bound as raw text too - same guard, same clean error."""
     with pytest.raises(ValueError, match="last_fire_error contains a NUL"):
         ScheduleUpdateArgs(last_fire_error="a\x00b")
 
@@ -112,7 +112,7 @@ def test_schedule_update_args_clean_text_still_constructs() -> None:
 # (the loop guards' loud-then-fatal doctrine) instead of a transient
 # retry.  The contrast half is the evidence: the raw 22021 the guard
 # pre-empts is a PostgresError and would be transient-misread by BOTH
-# sets — retrying forever, never failing the job.
+# sets - retrying forever, never failing the job.
 
 
 def test_error_info_guard_raises_value_error_for_nul_message() -> None:
@@ -134,7 +134,7 @@ def test_guard_value_error_is_not_terminal_write_infra() -> None:
 
 def test_guard_value_error_is_not_transient_pg() -> None:
     """Nor may the leader loops retry it: a construction bug retried every
-    tick is a functional zombie — ticking, doing no work, alerting on
+    tick is a functional zombie - ticking, doing no work, alerting on
     nothing."""
     try:
         raise ValueError("error_message contains a NUL character (U+0000)")
@@ -147,8 +147,8 @@ def test_guard_value_error_is_not_transient_pg() -> None:
 def test_the_raw_22021_the_guard_pre_empts_would_be_infra_misread() -> None:
     """Evidence for why the guard must raise ValueError rather than let the
     bind fail: CharacterNotInRepertoireError is a PostgresError, and the
-    terminal-write infra catch — the exact context ErrorInfo's text is
-    bound in — matches ANY PostgresError, so a raw 22021 leaves the job
+    terminal-write infra catch - the exact context ErrorInfo's text is
+    bound in - matches ANY PostgresError, so a raw 22021 leaves the job
     running for lease reclaim instead of failing it (the strand cycle
     ErrorInfo's docstring documents).  The leader loops' transient set
     deliberately excludes data errors, so those loops already classify a
@@ -160,7 +160,7 @@ def test_the_raw_22021_the_guard_pre_empts_would_be_infra_misread() -> None:
         "a raw 22021 would be terminal-write-infra-misread without the guard"
     )
     assert not isinstance(raw, TRANSIENT_PG_ERRORS), (
-        "the leader-loop transient set excludes data errors by design — "
+        "the leader-loop transient set excludes data errors by design - "
         "a raw 22021 there is already an unexpected (bug) classification"
     )
 
@@ -212,7 +212,7 @@ async def test_nul_bearing_factory_failure_still_reaches_auto_disable(
     row = await schedule_row(clean_pg_conn, schema, schedule_id)
     assert row["enabled"] is False, (
         "a permanently failing schedule must still reach auto-disable when the "
-        "failure text carries a NUL — the bookkeeping is the safety net, and "
+        "failure text carries a NUL - the bookkeeping is the safety net, and "
         "aborting the failures UPDATE removes it for the whole tick"
     )
     assert row["consecutive_failures"] == 3
@@ -230,9 +230,9 @@ async def test_fire_failure_error_text_is_sanitized_at_construction(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """The sanitize happens where the text is derived
-    (``_compute_fire_failure`` — the pure half of the old
+    (``_compute_fire_failure`` - the pure half of the old
     ``_record_fire_failure``, which split into compute + deferred span
-    marking when strike telemetry became buffered), not at the bind —
+    marking when strike telemetry became buffered), not at the bind -
     pinning the construction-site contract the same way
     ``worker/_handlers.py`` pins its ErrorInfo construction sites."""
     from taskq.worker.cron_loop import (

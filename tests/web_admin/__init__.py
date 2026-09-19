@@ -164,8 +164,8 @@ class StubRedisPipeline:
     Commands are recorded (not executed) as they are queued; ONE
     ``execute()`` call resolves them in order by replaying each read
     against the owning client's direct readers. A reader that raises
-    therefore surfaces at the round trip — exactly where a live Redis
-    failure would — which is the failure seam the fetch's degrade-to-None
+    therefore surfaces at the round trip - exactly where a live Redis
+    failure would - which is the failure seam the fetch's degrade-to-None
     guard protects.
     """
 

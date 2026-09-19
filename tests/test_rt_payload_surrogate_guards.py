@@ -122,7 +122,7 @@ async def test_surrogate_detail_must_not_break_the_terminal_write() -> None:
     TimeoutError only), so the job is left running."""
     backend = InMemoryBackend(clock=FakeClock(datetime(2026, 1, 1, tzinfo=UTC)))
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="rt_detail_actor")
     args = make_enqueue_args(
         actor="rt_detail_actor", payload={"value": 1}, scheduled_at=backend._clock.now()

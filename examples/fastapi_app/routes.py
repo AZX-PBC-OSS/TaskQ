@@ -1,4 +1,4 @@
-"""FastAPI routes — enqueue, stream, and cancel jobs using the public TaskQ surface."""
+"""FastAPI routes - enqueue, stream, and cancel jobs using the public TaskQ surface."""
 
 from collections.abc import AsyncGenerator
 from uuid import UUID

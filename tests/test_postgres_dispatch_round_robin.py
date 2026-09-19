@@ -140,7 +140,7 @@ async def test_round_robin_two_queues_alternate(
 
     assert dispatched, "expected at least one job dispatched"
 
-    # Both queues should contribute — round-robin should not starve either.
+    # Both queues should contribute - round-robin should not starve either.
     q1_count = sum(1 for r in dispatched if r.queue == "q1")  # type: ignore[comparison-overlap] # Why: Literal str vs str at runtime
     q2_count = sum(1 for r in dispatched if r.queue == "q2")  # type: ignore[comparison-overlap]
     assert q1_count >= 1, f"expected at least 1 job from q1, got {q1_count}"
@@ -157,7 +157,7 @@ async def test_round_robin_fairness_concurrent(pg_dsn: str) -> None:
     Each queue has 5 pending jobs (15 total). Two producers dispatch
     with limit=4 each, synchronised via an ``asyncio.Barrier(2)``.
     Oracle: after both commit, each of the 3 queues should have at least
-    one job dispatched — round-robin across queues should prevent any
+    one job dispatched - round-robin across queues should prevent any
     single queue from monopolising the dispatch window.
     """
     actor = "X"
@@ -200,7 +200,7 @@ async def test_round_robin_fairness_concurrent(pg_dsn: str) -> None:
         assert total_dispatched >= 1, "expected at least one job dispatched"
         assert 1 <= running_count <= 8, f"running_count={running_count} out of expected bounds"
 
-        # Each queue should have at least one running job — round-robin
+        # Each queue should have at least one running job - round-robin
         # across the 3 queues must not starve any queue.
         for qname in queues_to_test:
             assert distribution.get(qname, 0) >= 1, (
@@ -221,7 +221,7 @@ async def test_round_robin_queue_depth_skew(
     """One queue has many more pending jobs than another.
 
     q1 has 20 jobs, q2 has 2 jobs. Dispatch with limit=5 and verify
-    that the shallower queue (q2) is not starved — round-robin ignores
+    that the shallower queue (q2) is not starved - round-robin ignores
     per-queue depth.
     """
     deps = clean_jobs_app.deps
@@ -334,7 +334,7 @@ async def test_round_robin_identity_constraints(
     for _i in range(5):
         await backend.enqueue(make_enqueue_args(actor=actor, queue="q2", identity_key="K"))
 
-    # Sequential dispatch rounds — at most 1 identity "K" running at a time.
+    # Sequential dispatch rounds - at most 1 identity "K" running at a time.
     round_1 = await backend.dispatch_batch(
         worker_id=worker_id,
         queues=["q1", "q2"],

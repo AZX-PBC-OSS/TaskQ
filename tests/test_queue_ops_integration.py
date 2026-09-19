@@ -144,7 +144,7 @@ async def test_zero_max_concurrent_is_rejected_before_any_db_write(
 ) -> None:
     """0 is not a queue cap: NULL is the uncapped state, and the table's
     CHECK (``max_concurrent IS NULL OR max_concurrent >= 1``) rejects 0
-    only after the round trip — as a raw asyncpg CheckViolationError
+    only after the round trip - as a raw asyncpg CheckViolationError
     traceback. The ops layer must reject it first, with nothing written."""
     with pytest.raises(ValueError, match="max_concurrent"):
         await set_queue_max_concurrent(clean_pg_conn, "q", 0, schema=module_pg_schema.schema_name)

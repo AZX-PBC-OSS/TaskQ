@@ -1,6 +1,6 @@
 """Test-runner helpers for InMemoryBackend.
 
-These functions and types are NOT part of the Backend protocol — they
+These functions and types are NOT part of the Backend protocol, they
 exist solely to drive deterministic test execution (``run_until_drained``,
 cancel-polling simulation, stub/actor-config registration, archive
 simulation, and ``wait_for_batch``).
@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     # taskq.actor stays TYPE_CHECKING here: a runtime import would pull
     # asyncpg into the driver-free testing boundary (pinned by
     # test_testing_no_transitive_asyncpg). Runtime discrimination uses
-    # isinstance(str) instead — see register_stub.
+    # isinstance(str) instead, see register_stub.
     from taskq.actor import ActorRef
     from taskq.testing.in_memory import InMemoryBackend
     from taskq.worker.leader import ArchiveExpiryResult, PruneResult
@@ -85,12 +85,12 @@ class _StubContext:
     completed non-consuming deferrals at dispatch time, so an actor
     keyed off it behaves identically under the test runner and the PG
     worker), and at the trace-correlation contract (``span`` is the
-    documented OTel-disabled ``None`` — the in-memory runner is
+    documented OTel-disabled ``None``, the in-memory runner is
     uninstrumented, so actors reading ``ctx.span`` observe exactly what
     a production worker without a tracer hands them), and at the
     documented method surface: ``check_cancelled()``,
     ``should_abort()``, and ``await ctx.progress(...)`` (recorded on
-    ``progress_reports``, never published — the runner has no
+    ``progress_reports``, never published, the runner has no
     Redis/Postgres wiring) behave as the production contract documents,
     so actors using them are exercisable under the runner.
     """
@@ -119,7 +119,7 @@ class _StubContext:
         self.cancel_event = cancel_event
         self.snooze_count = snooze_count
         self.span: Span | None = None
-        # One record per progress() call — the harness half of the
+        # One record per progress() call, the harness half of the
         # documented progress contract: the report lands observably
         # (the stub or its test inspects this list), with `seq` strictly
         # monotone per call as production guarantees. The runner has no
@@ -132,7 +132,7 @@ class _StubContext:
 
     def check_cancelled(self) -> None:
         """Raise :class:`asyncio.CancelledError` when cancellation has
-        been requested — the production contract, so stubs using the
+        been requested, the production contract, so stubs using the
         raising style are exercisable under the runner."""
         if self.cancellation_requested:
             raise asyncio.CancelledError
@@ -173,15 +173,15 @@ class PassthroughPayload(BaseModel):
 
     Tests register stubs with raw ``dict[str, object]`` payloads; the
     production consumer expects an actor-supplied :class:`pydantic.BaseModel`.
-    This model bridges the gap — ``model_config = {"extra": "allow"}``
+    This model bridges the gap, ``model_config = {"extra": "allow"}``
     means any field shape validates, and ``model_dump()`` round-trips
     through the same JSON adapter as a real payload model. It is the
     deliberate escape hatch: pass ``payload_type=PassthroughPayload`` to
     :meth:`InMemoryBackend.register_stub` to opt into it. When
     ``payload_type`` is omitted the runner first resolves the actor's
     declared model from a passed :class:`~taskq.actor.ActorRef`, and only
-    falls back to this permissive default — with a
-    :class:`StubPayloadTypeWarning` — when the actor is a bare name the
+    falls back to this permissive default, with a
+    :class:`StubPayloadTypeWarning`, when the actor is a bare name the
     runner cannot resolve.
     """
 
@@ -194,7 +194,7 @@ class StubPayloadTypeWarning(UserWarning):
     Emitted when a stub is registered by bare actor name with no
     ``payload_type=``: the runner has no declared model to validate
     against, so ``run_until_drained`` validates payloads with
-    :class:`PassthroughPayload` (``extra="allow"``) — a payload the
+    :class:`PassthroughPayload` (``extra="allow"``), a payload the
     actor's real model would reject passes the in-memory test and fails
     only in production, where the worker validates against the declared
     model on every dispatch.
@@ -329,14 +329,14 @@ def register_stub(
     ``cancel_event: asyncio.Event | None``.
 
     ``payload_type`` is the Pydantic model the consumer validates the
-    raw row payload against before invoking the stub — the same
+    raw row payload against before invoking the stub, the same
     validation a production worker runs on every dispatch. Resolution
     order when omitted: the ActorRef's declared ``payload_type`` when the
     actor was passed as a ref; otherwise :class:`PassthroughPayload`
     (``extra="allow"``) with a :class:`StubPayloadTypeWarning`, because a
     bare name leaves the runner unable to see the actor's real model and
     the permissive default accepts payload shapes that model would
-    reject — a green in-memory test over code a worker would refuse.
+    reject, a green in-memory test over code a worker would refuse.
     Pass ``payload_type=PassthroughPayload`` explicitly to opt into the
     permissive behaviour deliberately, without the warning.
 
@@ -354,10 +354,10 @@ def register_stub(
     """
     # Why the Any-parameterized ref: ActorRef is invariant in its payload
     # and result type parameters, so no narrower parameterization accepts
-    # every concrete ref — the same spell worker/run.py uses for its
+    # every concrete ref, the same spell worker/run.py uses for its
     # registry mapping. Only ``name``/``payload_type`` are read. The
     # discriminant is isinstance(str) (not isinstance(ActorRef)) so this
-    # module never imports taskq.actor at runtime — that import would
+    # module never imports taskq.actor at runtime, that import would
     # pull asyncpg into the driver-free testing boundary.
     actor_ref: ActorRef[Any, Any] | None = None
     if isinstance(actor_name, str):
@@ -367,7 +367,7 @@ def register_stub(
         name = actor_ref.name
 
     if payload_type is not None:
-        # Explicit always wins — including PassthroughPayload, which is
+        # Explicit always wins, including PassthroughPayload, which is
         # then the deliberate, warning-free escape hatch.
         resolved_payload_type = payload_type
     elif actor_ref is not None:
@@ -383,8 +383,8 @@ def register_stub(
                 "name; falling back to PassthroughPayload, which accepts "
                 "payload shapes the actor's real model would reject (a "
                 "green in-memory test over code a production worker would "
-                "refuse). Pass the ActorRef — register_stub(my_actor, ...) "
-                "— or payload_type=MyPayload to validate against the "
+                "refuse). Pass the ActorRef, register_stub(my_actor, ...) "
+                ", or payload_type=MyPayload to validate against the "
                 "declared model, or payload_type=PassthroughPayload to opt "
                 "into the permissive default deliberately."
             ),
@@ -410,7 +410,7 @@ def register_stub(
         result_ttl=result_ttl,
         payload_type=resolved_payload_type,
     )
-    # Ensure the stub-registered actor can dispatch —
+    # Ensure the stub-registered actor can dispatch ,
     # the dispatch gate requires _actor_configs_meta entries
     # when any actor_config is registered.
     if name not in backend._actor_configs_meta:  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
@@ -443,7 +443,7 @@ def register_actor_config(
     Builds an ``ActorConfig`` from keyword arguments and stores it
     in ``_actor_configs_meta``.  ``max_concurrent`` is read by dispatch;
     ``max_pending`` is read by the client-side capacity cache
-    (:meth:`InMemoryBackend.get_actor_max_pending`) — registering here is
+    (:meth:`InMemoryBackend.get_actor_max_pending`), registering here is
     the in-memory analog of ``taskq actor-config set``. ``queue`` and
     ``metadata`` are stored for future use.
     """
@@ -482,7 +482,7 @@ def set_queue_mode(backend: "InMemoryBackend", queue_name: str, mode: QueueMode)
 async def get_events(backend: "InMemoryBackend", job_id: JobId) -> list[EventRow]:
     """Return events for *job_id* (test-only accessor).
 
-    Isolated copies, like every other read seam — a mutated read result
+    Isolated copies, like every other read seam, a mutated read result
     must never reach ``_events`` storage.
     """
     return [_event_read_copy(e) for e in backend._events if e.job_id == job_id]  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
@@ -505,11 +505,11 @@ def archive_terminal_jobs(
     ``_archive_attempts``; removes from ``_jobs`` and ``_attempts``.
 
     When *statuses* is provided, only jobs in those terminal statuses
-    are considered — allowing the caller to simulate per-status
+    are considered, allowing the caller to simulate per-status
     retention by making separate calls per status group (matching
     the PG ``prune_terminal_jobs`` per-status CTE pattern).
 
-    NOT on the Backend Protocol — the leader calls this as a
+    NOT on the Backend Protocol, the leader calls this as a
     concrete method.
     """
     from taskq.worker.leader import PruneResult
@@ -564,7 +564,7 @@ def expire_archived_jobs(backend: "InMemoryBackend") -> "ArchiveExpiryResult":
     expired rows from ``_archive`` and their corresponding entries
     from ``_archive_attempts``.
 
-    NOT on the Backend Protocol — the leader calls this as a
+    NOT on the Backend Protocol, the leader calls this as a
     concrete method.
     """
     from taskq.worker.leader import ArchiveExpiryResult
@@ -622,7 +622,7 @@ async def tick_cancel_polling(backend: "InMemoryBackend") -> None:
     per-job cancel event (registered via ``register_cancel_event``).
     Subsequent calls escalate ``cancel_phase = 2`` if the cancellation
     grace period has elapsed, or mark ``abandoned`` if the cleanup
-    grace period has also elapsed — and, when the abandoned job's
+    grace period has also elapsed, and, when the abandoned job's
     attempt is executing under ``run_until_drained``, cancel that
     attempt's task: the runner's mirror of production phase 2's hard
     cancel of a non-cooperative attempt.
@@ -654,7 +654,7 @@ async def tick_cancel_polling(backend: "InMemoryBackend") -> None:
             and job_id in backend._cancel_observed_at  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
             and now - backend._cancel_observed_at[job_id] > backend._cancellation_grace  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
         ):
-            # Escalate to phase 2 — delegate to write_cancel_escalation
+            # Escalate to phase 2, delegate to write_cancel_escalation
             # so the EventRow is written.
             await backend.write_cancel_escalation(job_id, backend._worker_id, 2)  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
 
@@ -714,12 +714,12 @@ def _undrainable_jobs(backend: "InMemoryBackend") -> dict[str, list[JobRow]]:
     Dispatch candidates come FROM the ``_actor_configs_meta`` registry
     (``_dispatch._dispatch_batch``: zero registered actors means zero
     capacity rows means zero candidates), so an actor with no entry can
-    never be claimed — the strictly-worse silent twin of the
+    never be claimed, the strictly-worse silent twin of the
     dispatched-but-stubless case ``run_until_drained`` already raises on.
 
     A registered-but-denied job (a saturated rate limit or reservation)
     is never returned here: its denial required a dispatch attempt, and a
-    dispatch attempt requires the registry entry — so this predicate
+    dispatch attempt requires the registry entry, so this predicate
     cannot false-positive on the denial-starvation guard's jobs.
     """
     stranded: dict[str, list[JobRow]] = {}
@@ -738,7 +738,7 @@ def _raise_for_undrainable_work(backend: "InMemoryBackend") -> None:
     (or "every scheduled job starved", or "real clock, cannot advance")
     reads as *drained* only when nothing left behind is undispatchable.
     Otherwise a job whose actor was never registered sits ``pending``
-    forever while the drain reports success — and a caller in
+    forever while the drain reports success, and a caller in
     ``handle.wait()`` polls it without a deadline, unable to tell "will
     never run" apart from "ran to completion".
     """
@@ -753,7 +753,7 @@ def _raise_for_undrainable_work(backend: "InMemoryBackend") -> None:
     # dispatched-but-stubless raise below, so both missing-registration
     # failures match one pattern.
     raise RuntimeError(
-        f"no stub registered for actor: {', '.join(sorted(stranded))} — "
+        f"no stub registered for actor: {', '.join(sorted(stranded))}, "
         f"run_until_drained cannot end drained with work nothing can "
         f"dispatch ({detail}). Register the actor with register_stub() or "
         f"register_actor_config() before draining; without a registry "
@@ -766,12 +766,12 @@ def _every_scheduled_job_starved(backend: "InMemoryBackend", starved: "set[JobId
     """True when every scheduled job was denied again at or after the
     reschedule point its own previous denial set.
 
-    A first denial only proves "no capacity right now" — the reschedule
+    A first denial only proves "no capacity right now", the reschedule
     point it produces is the limiter's own Retry-After promise, and a
     limiter that refills by then must get its chance: the drain advances
     the clock to that point and re-claims. A job denied AGAIN at or after
-    the point has exhausted the promise — admission only ever answers
-    "no" for it — so advancing the clock further cannot drain it. This
+    the point has exhausted the promise, admission only ever answers
+    "no" for it, so advancing the clock further cannot drain it. This
     separates "waiting for the clock", which draining should advance
     through, from "waiting for capacity this test never grants", which
     it cannot.
@@ -798,14 +798,14 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
        which handles ``Snooze``, ``RetryAfter``,
        ``ReservationUnavailable``, generic exceptions, cancellation,
        and success.
-    5. Terminates when: no pending, no running, no scheduled-due jobs —
+    5. Terminates when: no pending, no running, no scheduled-due jobs ,
        or when every remaining scheduled job is starved (denied again at
        or after the reschedule point its own previous denial set; see the
        ``starved`` bookkeeping below). Termination is checked for
        undispatchable work first: a non-terminal job whose actor has no
        registered stub/config can never be claimed (dispatch candidates
        come from the actor registry), so ending "drained" beside one
-       would report success over a job that will never run — the loop
+       would report success over a job that will never run, the loop
        raises ``RuntimeError`` instead, the same contract as a
        dispatched job with no stub.
 
@@ -823,12 +823,12 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
     """
     from taskq.worker._consumer import consume_one_job
 
-    # An admission denial reschedules the job indefinitely — that is the
+    # An admission denial reschedules the job indefinitely, that is the
     # 429 contract, and nothing about the job's own state ever ends the
     # loop. The drain would then spin forever against a limiter that is
     # saturated for the whole test, advancing the FakeClock one deferral
     # at a time. Draining means "run what can run", so a job that only
-    # ever gets denied is drained as far as it can go — but a single
+    # ever gets denied is drained as far as it can go, but a single
     # denial cannot prove that: the reschedule point the denial sets is
     # the limiter's own Retry-After promise, and a limiter that refills
     # by then must get its chance. The drain therefore trusts the promise
@@ -841,7 +841,7 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
 
     while True:
         # Step 1: promote scheduled→pending (the backend's own clock is
-        # the arbiter — no caller-supplied now).
+        # the arbiter, no caller-supplied now).
         await backend.scheduled_to_pending()
 
         # Step 2: dispatch one job
@@ -857,7 +857,7 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
             # Step 3: check termination / clock-advance conditions.
             next_at = _earliest_scheduled_at(backend)
             if next_at is None:
-                # No scheduled jobs at all — fully drained, unless what
+                # No scheduled jobs at all, fully drained, unless what
                 # remains can never be dispatched (never-registered actor).
                 _raise_for_undrainable_work(backend)
                 return
@@ -894,7 +894,7 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
         # mismatch. The production dispatch_one_job catches such escapes via
         # its outer except-Exception and routes through
         # _handle_generic_exception; the test runner has no such wrapper, so
-        # we catch it here and transition the job to failed — matching the
+        # we catch it here and transition the job to failed, matching the
         # non-retryable contract documented on PayloadValidationError.
         # The in-flight attempt registration: tick_cancel_polling's
         # both-graces arm cancels this task to terminate a
@@ -941,35 +941,35 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
             # Production's generic-exception escape routes this failure
             # through _handle_generic_exception and applies the batch
             # hook with the handler's terminal outcome before returning
-            # — a batch completes when any member reaches terminal status
-            # — so the mirror sets the failed outcome and falls through
+            # , a batch completes when any member reaches terminal status
+            # , so the mirror sets the failed outcome and falls through
             # to the shared hook call below.
             outcome = "failed"
         except asyncio.CancelledError:
             # Three cancellation origins reach this boundary. Production
-            # separates them by construction — its dispatch loop and its
-            # per-attempt tasks are distinct — while the runner awaits
+            # separates them by construction, its dispatch loop and its
+            # per-attempt tasks are distinct, while the runner awaits
             # every attempt inline in the drain task, so the origins must
             # be told apart here by state, not by where the raise surfaced:
             #
             # 1. Actor-originated: the documented check_cancelled() style,
             #    or the actor ending itself with its own
-            #    asyncio.CancelledError — the two are indistinguishable
+            #    asyncio.CancelledError, the two are indistinguishable
             #    inside consume_one_job, and production treats them
             #    identically (same shielded mark, same re-raise, same
             #    absorption at the worker's task boundary, worker keeps
             #    dispatching). No cancel() was requested on the drain
             #    task, so its cancel count is still at this dispatch's
-            #    baseline — absorb and keep draining.
+            #    baseline, absorb and keep draining.
             # 2. Caller-originated: a cancel() requested on the drain task
             #    itself. The count sits ABOVE the baseline and the row was
-            #    not abandoned by the escalation tick — the caller's stop
+            #    not abandoned by the escalation tick, the caller's stop
             #    always wins and must propagate, exactly as a production
             #    worker stops when its dispatch task is cancelled, even if
             #    the interrupted job also had a cancel requested.
             # 3. Escalation-originated (the phase-2 force-cancel):
             #    tick_cancel_polling's both-graces arm marks the row
-            #    abandoned and only then cancels the inflight attempt —
+            #    abandoned and only then cancels the inflight attempt ,
             #    which the runner registered as the drain task itself, so
             #    the count is above baseline exactly like origin 2. The
             #    abandoned row, written BEFORE the cancel is delivered,
@@ -979,12 +979,12 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
             #    absorb the raise (production cancels only the offending
             #    attempt task and its dispatch loop keeps claiming, so the
             #    drain continues), and balance the tick's cancel() with
-            #    one uncancel() — the bookkeeping asyncio.timeout and
+            #    one uncancel(), the bookkeeping asyncio.timeout and
             #    TaskGroup do for every cancel they inject, so an elevated
             #    cancelling() count does not follow the caller's task past
             #    the drain. If a caller cancel landed ON TOP of the
             #    force-cancel, the count is still above baseline after the
-            #    balancing uncancel — the caller's stop wins and the raise
+            #    balancing uncancel, the caller's stop wins and the raise
             #    propagates. The outcome is "cancelled", matching
             #    production's CancelledError escape hook; the row is
             #    already terminal abandoned, so this arm issues no second
@@ -1005,7 +1005,7 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
                 outcome = "cancelled"
         finally:
             # Identity-guarded: a concurrent run_until_drained on the same
-            # backend may have registered its own attempt over ours — only
+            # backend may have registered its own attempt over ours, only
             # clear what this dispatch registered.
             if registration is not None and backend._inflight_attempt is registration:  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
                 backend._inflight_attempt = None  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
@@ -1017,7 +1017,7 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
         after = backend._jobs.get(job.id)  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
         if after is not None and after.rate_limit_blocked_count > job.rate_limit_blocked_count:
             previous_point = denied_reschedule.get(job.id)
-            if previous_point is not None and backend._clock.now() >= previous_point:  # pyright: ignore[reportPrivateUsage]  # Why: same runner-helper access pattern as above — the denial timestamp lives on the backend's clock.
+            if previous_point is not None and backend._clock.now() >= previous_point:  # pyright: ignore[reportPrivateUsage]  # Why: same runner-helper access pattern as above, the denial timestamp lives on the backend's clock.
                 # Denied again at/after the reschedule point the previous
                 # denial itself set: the limiter's own Retry-After promise
                 # was honored once and failed, so no further clock advance
@@ -1061,9 +1061,9 @@ async def wait_for_batch(
     ``snooze_via_exception=True`` (the default) raises
     :class:`~taskq.exceptions.Snooze` while members are in flight;
     ``False`` blocks on ``asyncio.sleep(snooze_interval)`` and rescans
-    until every member is terminal. The sleep is real event-loop time —
+    until every member is terminal. The sleep is real event-loop time ,
     the injected clock drives row timestamps, not the loop clock, the
-    same division the PG path has (PG's clock_timestamp vs the loop) —
+    same division the PG path has (PG's clock_timestamp vs the loop) ,
     so blocking-mode tests advance the batch from a concurrent task.
     """
     if snooze_interval < _min_snooze:
@@ -1118,7 +1118,7 @@ async def wait_for_batch(
             snooze_via_exception=snooze_via_exception,
         )
 
-        # Members in flight: raise (exception mode — the consumer
+        # Members in flight: raise (exception mode, the consumer
         # reschedules the caller) or block and rescan (blocking mode),
         # the two arms of the PG poll loop.
         if status.pending > 0:

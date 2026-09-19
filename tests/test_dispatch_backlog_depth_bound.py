@@ -1,30 +1,30 @@
 """Dispatch's row work is independent of pending-backlog depth.
 
-The shipped dispatch bounds — the STABLE ``scheduled_at`` selection bound
+The shipped dispatch bounds - the STABLE ``scheduled_at`` selection bound
 that serves the candidates lateral as an Index Cond, the strict-FIFO
 lateral's ``LIMIT``, and ``per_actor_capacity``'s idle-actor EXISTS
-prefilter — bound the strict-FIFO candidate *scan*. Two shapes in the
+prefilter - bound the strict-FIFO candidate *scan*. Two shapes in the
 same CTE still do backlog-proportional row work per dispatch round:
 
 * the round-robin candidates lateral computes ``ROW_NUMBER() OVER
   (PARTITION BY COALESCE(fairness_key, '__null__') ...)`` over EVERY due
   pending row of the (actor, queue) pair before the outer
-  ``w2.fairness_rank <= residual * oversample`` filter can drop them — a
+  ``w2.fairness_rank <= residual * oversample`` filter can drop them - a
   window function cannot short-circuit, and the lateral carries no
   LIMIT, so the WindowAgg (and the scan or sort feeding it) processes the
   whole due backlog at every depth;
 * the ``locked`` CTE re-joins ``ranked`` back onto ``jobs`` with a plain
   ``j.status = 'pending'`` predicate, and the LIMIT bounds render as
-  ``(SELECT ... FROM params)`` subqueries the planner cannot fold — the
+  ``(SELECT ... FROM params)`` subqueries the planner cannot fold - the
   candidate chain is estimated at the whole index range, so the join is
   served as a Seq Scan + Hash over the entire pending backlog.
 
 Oracle: EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) of the production
 constants, executed once per seeded depth (1k and 30k due pending rows;
 one actor, one queue, one fairness_key cohort). A node's ``Actual Rows``
-multiplied by its ``Actual Loops`` is its exact total row work —
+multiplied by its ``Actual Loops`` is its exact total row work -
 deterministic for a fixed seed, the same doctrine as the loop-count
-oracle in tests/test_sweepaudit_dispatch_bound.py — so the pin asserts
+oracle in tests/test_sweepaudit_dispatch_bound.py - so the pin asserts
 row counts, never wall time. A depth-bounded dispatch's widest node
 carries the candidate/locked set: at most residual * oversample rows per
 (actor, queue) pair (limit_n * oversample for a NULL-cap actor) plus the
@@ -72,7 +72,7 @@ _VARIANTS = (
 )
 
 # A depth-bounded dispatch's widest node carries ~limit_n * oversample
-# candidate rows plus the locked/eligible stages at limit_n — ~100 rows on
+# candidate rows plus the locked/eligible stages at limit_n - ~100 rows on
 # this module's single (actor, queue, cohort) seed. Six times that headroom
 # absorbs any bounded shape's constant factors; only work that grows with
 # the backlog (a window over every due row, a scan+hash of the whole
@@ -133,7 +133,7 @@ def _plan_node_row_counts(plan: dict[str, Any]) -> list[tuple[float, str]]:
     """(rows * loops, node label) for every plan node, widest first.
 
     ``Actual Rows`` is per loop and ``Actual Loops`` is the node's
-    execution count, so the product is the node's total row work — exact
+    execution count, so the product is the node's total row work - exact
     counts for a fixed seed, the assertion medium this module shares with
     the loop-count oracle in tests/test_sweepaudit_dispatch_bound.py.
     """
@@ -159,7 +159,7 @@ async def _explain_row_work(
 
     Returns (execution milliseconds, per-node row work widest-first).
     EXPLAIN ANALYZE executes the dispatch UPDATE, so each caller re-seeds
-    the backlog first — the row counts are then exact for that depth.
+    the backlog first - the row counts are then exact for that depth.
     """
     rows = await conn.fetch(
         f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {sql}",
@@ -187,7 +187,7 @@ async def test_dispatch_row_work_is_depth_bounded(
     The dispatch round admits limit_n jobs from a single (actor, queue,
     cohort); a depth-bounded plan's widest node carries the
     candidate/locked set at every depth. A node whose actual row count
-    grows with the seeded depth is backlog-proportional work per round —
+    grows with the seeded depth is backlog-proportional work per round -
     the round-robin lateral's unbounded ROW_NUMBER window over every due
     pending row, or the locked CTE's whole-backlog scan+hash
     re-resolution of ``j.status = 'pending'``.
@@ -204,7 +204,7 @@ async def test_dispatch_row_work_is_depth_bounded(
             widest_by_depth[depth] = widest
             assert widest <= _NODE_ROW_BOUND, (
                 f"{variant}: at a {depth}-row due backlog the dispatch plan's "
-                f"widest node ({label}) did {widest:.0f} rows of work — "
+                f"widest node ({label}) did {widest:.0f} rows of work - "
                 "backlog-proportional, where a depth-bounded dispatch does at "
                 f"most ~{_LIMIT_N * _OVERSAMPLE} candidate/locked rows at any "
                 f"depth (bound {_NODE_ROW_BOUND}). Widest nodes: {nodes[:5]}; "
@@ -214,7 +214,7 @@ async def test_dispatch_row_work_is_depth_bounded(
         shallow_widest = widest_by_depth[_SHALLOW_DEPTH]
         assert deep_widest <= _DEPTH_RATIO_BOUND * shallow_widest, (
             f"{variant}: the dispatch plan's widest node grows with backlog "
-            f"depth — {shallow_widest:.0f} rows of work at {_SHALLOW_DEPTH} "
+            f"depth - {shallow_widest:.0f} rows of work at {_SHALLOW_DEPTH} "
             f"pending vs {deep_widest:.0f} at {_DEEP_DEPTH} "
             f"(ratio bound {_DEPTH_RATIO_BOUND}x)."
         )
@@ -229,8 +229,8 @@ async def test_claimable_probe_row_work_is_depth_bounded(pg_dsn: str, depth_sche
     The probe gates window expansion on an empty dispatch round, so it runs
     exactly where the backlog may be deep; a depth-proportional probe would
     tax every idle round with the walk the claim statement is built to
-    avoid. Its inner probes are LIMIT-1 reads with no ORDER BY — the first
-    matching entry answers — so the widest plan node is the one-row
+    avoid. Its inner probes are LIMIT-1 reads with no ORDER BY - the first
+    matching entry answers - so the widest plan node is the one-row
     actor_config scan plus one matched probe row at any depth.
     """
     rendered = DISPATCH_CLAIMABLE_PROBE_SQL.format(schema=depth_schema)
@@ -251,14 +251,14 @@ async def test_claimable_probe_row_work_is_depth_bounded(pg_dsn: str, depth_sche
             widest_by_depth[depth] = widest
             assert widest <= 100, (
                 f"claimable probe: at a {depth}-row due backlog the widest plan "
-                f"node ({label}) did {widest:.0f} rows of work — the probe is a "
+                f"node ({label}) did {widest:.0f} rows of work - the probe is a "
                 f"LIMIT-1 first-entry read and must stay at a handful of rows "
                 f"whatever the depth. Widest nodes: {nodes[:5]}."
             )
         assert widest_by_depth[_DEEP_DEPTH] <= _DEPTH_RATIO_BOUND * max(
             widest_by_depth[_SHALLOW_DEPTH], 1.0
         ), (
-            f"claimable probe: row work grows with backlog depth — "
+            f"claimable probe: row work grows with backlog depth - "
             f"{widest_by_depth[_SHALLOW_DEPTH]:.0f} at {_SHALLOW_DEPTH} pending vs "
             f"{widest_by_depth[_DEEP_DEPTH]:.0f} at {_DEEP_DEPTH}."
         )
@@ -275,12 +275,12 @@ async def test_dispatch_round_does_not_pay_jit_compilation_at_depth(
     ``test_dispatch_row_work_is_depth_bounded``) says nothing about the
     plan's row-*estimate*. The estimate is built before ``top_ids``' LIMIT
     or ``sliding_locked``'s LIMIT cuts the actual scan, off the candidate
-    chain's uncapped index-range guess — at a 30k+ row backlog it pushes
+    chain's uncapped index-range guess - at a 30k+ row backlog it pushes
     the terminal ``ModifyTable`` node's ``Total Cost`` into the tens of
     millions (measured ~15.8M at 200k due rows on strict-FIFO), which sits
     far above Postgres's default ``jit_above_cost`` (100000). Postgres
     JIT-compiles the plan on every dispatch round once that threshold is
-    crossed — and the plan's own ``JIT`` block in EXPLAIN's JSON output
+    crossed - and the plan's own ``JIT`` block in EXPLAIN's JSON output
     reports that compile time directly, so this asserts on it rather than
     on wall clock: deterministic for a fixed seed and immune to CI-host
     timing noise, the same doctrine ``test_dispatch_row_work_is_depth_bounded``
@@ -288,17 +288,17 @@ async def test_dispatch_round_does_not_pay_jit_compilation_at_depth(
 
     Measured on the production statement (strict-FIFO, this module's
     fixture): ``JIT.Timing.Total`` was 0ms at 1k due rows and ~1000-1150ms
-    at 30k/200k, all in ``Optimization``/``Emission`` — the plan's
+    at 30k/200k, all in ``Optimization``/``Emission`` - the plan's
     inflated *estimated* cost triggering compilation whose actual payoff
     (a bounded ~100-row scan) never justifies it. This is a second,
     independent instance of the same root defect the depth-bound fix
     above addresses (row-count estimates divorced from the LIMIT that
-    actually bounds execution) — it produces the identical "queue gets
+    actually bounds execution) - it produces the identical "queue gets
     slower the behinder you are" symptom via JIT compile time instead of
     scan time, and nothing in the production dispatch path
     (``taskq.backend._dispatch``, ``taskq.connections``, pool
     ``server_settings``, worker bootstrap) sets ``jit = off`` or raises
-    ``jit_above_cost`` to prevent it — unlike
+    ``jit_above_cost`` to prevent it - unlike
     ``benchmarks/pg_dispatch_depth_spike.py``, which disables JIT by
     default specifically because of this (see its own comment at the
     ``SET jit = off`` call), which is why the design doc's flat
@@ -306,7 +306,7 @@ async def test_dispatch_round_does_not_pay_jit_compilation_at_depth(
 
     EXPECTED TO FAIL until the estimate cascade is fixed (or the
     production connection path disables JIT / raises jit_above_cost for
-    this statement) — this pins a live defect, not a regression guard.
+    this statement) - this pins a live defect, not a regression guard.
     """
     rendered = sql.format(schema=depth_schema)
     worker_id = new_uuid()
@@ -330,7 +330,7 @@ async def test_dispatch_round_does_not_pay_jit_compilation_at_depth(
             f"{variant}: at a {_DEEP_DEPTH}-row due backlog the dispatch "
             f"statement triggered JIT compilation ({jit_total_ms:.1f} ms, "
             f"full JIT block: {jit}) despite the plan's actual row/buffer "
-            "work staying bounded — the plan's ESTIMATED cost is still "
+            "work staying bounded - the plan's ESTIMATED cost is still "
             "depth-proportional (divorced from the LIMIT that bounds "
             "actual execution), which crosses jit_above_cost and pays "
             "full JIT compile time on every round. This reproduces the "

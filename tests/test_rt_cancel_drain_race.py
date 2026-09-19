@@ -3,7 +3,7 @@
 Three properties of ``_cancel_where``'s bounded drain that the two-statement
 design promises but no pinned test exercises at DRAIN scale (≥2 batches):
 
-* **EPQ under the drain shape** — a job claimed (``pending→running``, the
+* **EPQ under the drain shape** - a job claimed (``pending→running``, the
   dispatch claim UPDATE shape) by a real second connection *mid-drain*
   must land in cooperative cancel (``cancel_phase=1``, one
   ``cancel_request`` event, never terminal-cancelled), and a job that
@@ -13,10 +13,10 @@ design promises but no pinned test exercises at DRAIN scale (≥2 batches):
   this is the same attack with the claim arriving between two committed
   ps-batches, where a cursor-based or single-snapshot rewrite would
   either miss it or double-cancel it.
-* **No-match drains are statement-minimal** — a filter matching nothing
+* **No-match drains are statement-minimal** - a filter matching nothing
   writes nothing, notifies nothing, and issues exactly the two driving
   statements (one per phase), never an event INSERT.
-* **NOTIFY target accumulation across batches** — a running backlog
+* **NOTIFY target accumulation across batches** - a running backlog
   larger than one batch produces each running job's notify target
   exactly once, and NULL ``locked_by_worker`` rows are excluded.
 """
@@ -82,7 +82,7 @@ class _GatedEventConn:
     The pause is the deterministic stand-in for "a dispatch happened
     mid-drain": the gated statement is one of a batch's two event INSERTs,
     so batch k-1 is committed, batch k's driving UPDATE is in flight
-    (its row locks held), and every later batch is still unselected — the
+    (its row locks held), and every later batch is still unselected - the
     exact window in which a dispatcher claims a job out of a later batch.
     """
 
@@ -116,7 +116,7 @@ class _GatedEventConn:
 
 
 class _DrainGateState:
-    """Pool-level gate bookkeeping — the drain takes a fresh connection per batch."""
+    """Pool-level gate bookkeeping - the drain takes a fresh connection per batch."""
 
     def __init__(self, pause_at: int) -> None:
         self.event_inserts = 0
@@ -206,7 +206,7 @@ async def test_mid_drain_claim_lands_in_cooperative_cancel_and_finisher_is_untou
     skipped by the ps batch that would have terminalised it (EPQ status
     predicate) and caught by the running drain (fresh snapshot), ending
     ``running`` with ``cancel_phase=1`` and exactly one ``cancel_request``
-    event — never terminal-cancelled.  A job that finishes mid-drain
+    event - never terminal-cancelled.  A job that finishes mid-drain
     (``running→succeeded`` on a second connection) is invisible to the
     running batch: no phase, no stamp, no event."""
     schema = module_pg_schema.schema_name
@@ -327,7 +327,7 @@ async def test_no_match_filter_writes_nothing_and_issues_only_the_two_driving_st
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """A filter matching nothing: all-zero result, zero events, zero notify
-    targets, and exactly the two driving statements (one per phase) — the
+    targets, and exactly the two driving statements (one per phase) - the
     short-batch termination must not re-loop an empty match set."""
     schema = module_pg_schema.schema_name
     render(schema)
@@ -443,7 +443,7 @@ async def test_notify_targets_accumulate_exactly_once_across_running_batches(
     assert result.cancelled_directly == 0
     target_jobs = [t.job_id for t in notify_targets]
     assert len(target_jobs) == len(set(target_jobs)) == 250, (
-        "260 running jobs across 3 batches must yield exactly 250 targets — one per "
+        "260 running jobs across 3 batches must yield exactly 250 targets - one per "
         "owned job, no duplicates, none lost at a batch boundary"
     )
     assert set(target_jobs) == set(owned_ids)

@@ -6,14 +6,14 @@ plus one ``executemany`` event INSERT per cancelled job, all inside the
 single ``conn.transaction()`` that also performs the schedule disable, the
 ``actor_config`` delete, and the optional purge.  For an actor with a large
 backlog that transaction holds row locks on the whole match set for its
-whole duration and inserts one ``job_events`` row per job — precisely the
+whole duration and inserts one ``job_events`` row per job - precisely the
 "abnormally large batch inserted in one transaction" that
 ``taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY``'s docstring names as a
 way to silently miss a reclaim event.
 
 The contract these tests encode: a force deregistration still cancels
 EVERY pending/scheduled job for the actor and still reports
-``jobs_cancelled`` for all of them — but the cancel drains as bounded
+``jobs_cancelled`` for all of them - but the cancel drains as bounded
 committed batches (``batch_size`` driving rows per transaction), each
 batch writing its ``state_change`` events as ONE batched ``unnest`` INSERT
 inside the same transaction as its driving UPDATE.
@@ -230,14 +230,14 @@ async def test_force_deregister_drains_backlog_in_bounded_batches(
     # Bounded: no single transaction mutated more than batch_size driving
     # rows, and covering the backlog took more than one batch.
     assert max(counting.tx_rows_updated, default=0) <= _BATCH, (
-        f"one transaction mutated {max(counting.tx_rows_updated, default=0)} driving rows — "
+        f"one transaction mutated {max(counting.tx_rows_updated, default=0)} driving rows - "
         f"the force-path cancel still has no LIMIT, so row locks cover the entire "
         f"backlog for the whole transaction"
     )
     driving_txs = [n for n in counting.tx_rows_updated if n > 0]
     assert len(driving_txs) >= 3, (
         f"cancelling {_BACKLOG} rows at batch_size={_BATCH} needs at least 3 committed "
-        f"batches; saw {len(driving_txs)} — nothing is being drained"
+        f"batches; saw {len(driving_txs)} - nothing is being drained"
     )
 
     # Batched event writes: no per-row executemany; the events land as
@@ -250,7 +250,7 @@ async def test_force_deregister_drains_backlog_in_bounded_batches(
         f"INSERT per batch; saw {counting.event_insert_statements}"
     )
     assert max(counting.event_batches, default=0) <= _BATCH, (
-        f"one event INSERT covered {max(counting.event_batches, default=0)} rows — "
+        f"one event INSERT covered {max(counting.event_batches, default=0)} rows - "
         f"the batch cap is not applied to the event write"
     )
 
@@ -275,7 +275,7 @@ async def test_force_deregister_drains_backlog_in_bounded_batches(
             f"the whole unnest would hardcode a single from_state here"
         )
 
-    # Both previous statuses must actually be represented — otherwise the
+    # Both previous statuses must actually be represented - otherwise the
     # mixed-seed premise of this test has silently evaporated.
     observed = {parse_detail(r["detail"])["from_state"] for r in state_changes}
     assert observed == {"pending", "scheduled"}, (

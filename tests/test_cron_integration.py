@@ -648,17 +648,17 @@ async def test_tc1_leader_failover_mid_tick(pg_dsn: str, monkeypatch: pytest.Mon
     a due schedule, but the tick is interrupted (connection dies) before
     the UPDATE commits. Leader B becomes leader and fires the schedule
     on its next tick. Oracle: exactly 1 job in taskq.jobs (created by
-    leader B, not leader A — verified by asserting 0 jobs after leader A
+    leader B, not leader A - verified by asserting 0 jobs after leader A
     shutdown, before leader B starts).
 
     The mid-tick interruption is simulated by patching the leader's
     ``tick_cron`` callee to raise on every tick while leader A is running
     (the tick was rewritten to plan per-schedule fires internally, so the
     injection moved from the old per-schedule ``fire_schedule`` seam to the
-    tick itself — a tick-level RuntimeError is the failure shape that rolls
+    tick itself - a tick-level RuntimeError is the failure shape that rolls
     the whole transaction back rather than being recorded per-schedule).
     Each tick from leader A opens a transaction, acquires the advisory
-    lock, then the patched tick raises — causing the transaction to roll
+    lock, then the patched tick raises - causing the transaction to roll
     back (advisory lock released, no UPDATEs committed). Leader A can never
     successfully fire. Leader B then acquires the lock and completes the
     tick successfully.
@@ -926,7 +926,7 @@ async def _job_count(pool: asyncpg.Pool, schema: str, actor: str) -> int:
 
 async def _dispatch_eligible_count(pool: asyncpg.Pool, schema: str, actor: str) -> int:
     """Count jobs a dispatcher could pick up right now: ``status='pending'``
-    and ``scheduled_at <= clock_timestamp()`` — both measured in the server
+    and ``scheduled_at <= clock_timestamp()`` - both measured in the server
     clock domain, so a skewed leader cannot influence the predicate."""
     async with pool.acquire() as conn:
         return await conn.fetchval(
@@ -946,7 +946,7 @@ async def _tick(
 
 
 class _SkewedCronDatetime:
-    """Shim for ``cron_loop.datetime`` — offsets ``now()`` by *skew*.
+    """Shim for ``cron_loop.datetime`` - offsets ``now()`` by *skew*.
 
     The cron loop no longer reads the Python clock on the fire path (the
     enqueue is server-stamped via ``scheduled_at=None``); patching the
@@ -969,7 +969,7 @@ async def test_ti9_catch_up_recompute_anchored_to_server_clock_no_fire_loop(
     default) catch-up-fires exactly once and re-anchors its chain to the
     SERVER clock. The leader's Python clock is shimmed 10 minutes BEHIND:
     pre-fix the beyond-window recompute seeds croniter from the skewed now,
-    landing ``next_fire_at`` in the server's past — the next tick sees it
+    landing ``next_fire_at`` in the server's past - the next tick sees it
     due again and fires in a loop. Post-fix the recompute seeds from
     ``clock_timestamp()`` read inside the tick transaction, so the second
     tick finds nothing due."""
@@ -998,7 +998,7 @@ async def test_ti9_catch_up_recompute_anchored_to_server_clock_no_fire_loop(
         assert await _job_count(deps.dispatcher_pool, schema, "anchor_actor") == 1
         assert await _dispatch_eligible_count(deps.dispatcher_pool, schema, "anchor_actor") == 1, (
             "a fired job must land status='pending' with scheduled_at <= "
-            "clock_timestamp() — immediately dispatch-eligible"
+            "clock_timestamp() - immediately dispatch-eligible"
         )
 
         async with deps.dispatcher_pool.acquire() as conn:
@@ -1010,7 +1010,7 @@ async def test_ti9_catch_up_recompute_anchored_to_server_clock_no_fire_loop(
         assert row is not None
         assert row["last_fired_at"] is not None
         assert row["next_fire_at"] > await _server_now(deps.dispatcher_pool), (
-            "next_fire_at must be anchored to the server clock — a skewed "
+            "next_fire_at must be anchored to the server clock - a skewed "
             "leader must not recompute it into the server's past"
         )
 
@@ -1057,7 +1057,7 @@ async def test_ti10_catch_up_continues_when_python_clock_ahead(
         assert await _job_count(deps.dispatcher_pool, schema, "catchup_actor") == 1
         assert await _dispatch_eligible_count(deps.dispatcher_pool, schema, "catchup_actor") == 1, (
             "a fired job must land status='pending' with scheduled_at <= "
-            "clock_timestamp() — a leader skewed AHEAD must not stamp the "
+            "clock_timestamp() - a leader skewed AHEAD must not stamp the "
             "job into the server's future"
         )
 
@@ -1067,7 +1067,7 @@ async def test_ti10_catch_up_continues_when_python_clock_ahead(
             "skewed-ahead leader must not skip the backlog"
         )
         assert await _dispatch_eligible_count(deps.dispatcher_pool, schema, "catchup_actor") == 2, (
-            "every fired job must be immediately dispatch-eligible — "
+            "every fired job must be immediately dispatch-eligible - "
             "status='pending' and scheduled_at <= clock_timestamp()"
         )
 
@@ -1078,7 +1078,7 @@ async def test_ti11_due_by_server_clock_fires_under_python_clock_skew(
 ) -> None:
     """C7 regression guard: a schedule due by the SERVER clock (the due
     check ``next_fire_at <= now()`` is server-side) fires and chains
-    server-anchored regardless of the leader's Python clock — here shimmed
+    server-anchored regardless of the leader's Python clock - here shimmed
     10 minutes behind. The chain-from-fire_at arm is server-domain by
     construction; this test pins that end-to-end."""
     import taskq.worker.cron_loop as cron_loop_mod
@@ -1099,7 +1099,7 @@ async def test_ti11_due_by_server_clock_fires_under_python_clock_skew(
                 cron_expr="* * * * *",
                 next_fire_at=datetime.now(UTC),
             )
-            # Why date_trunc: the due time is the current minute boundary —
+            # Why date_trunc: the due time is the current minute boundary -
             # always in the server's past (due), and the chained next fire
             # (boundary + 1 min) is always in the server's future. A fixed
             # "now - 5s" offset lands the chained next fire in the past
@@ -1119,7 +1119,7 @@ async def test_ti11_due_by_server_clock_fires_under_python_clock_skew(
         assert await _job_count(deps.dispatcher_pool, schema, "due_actor") == 1
         assert await _dispatch_eligible_count(deps.dispatcher_pool, schema, "due_actor") == 1, (
             "a fired job must land status='pending' with scheduled_at <= "
-            "clock_timestamp() — immediately dispatch-eligible"
+            "clock_timestamp() - immediately dispatch-eligible"
         )
         async with deps.dispatcher_pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -1138,7 +1138,7 @@ async def test_ti12_fired_job_dispatch_eligible_under_ahead_clock_skew(
 ) -> None:
     """C7 pin: a schedule due by the SERVER clock fires while the leader's
     Python clock is 10 minutes AHEAD, and the fired job is immediately
-    dispatch-eligible — ``status='pending'`` and ``scheduled_at <=
+    dispatch-eligible - ``status='pending'`` and ``scheduled_at <=
     clock_timestamp()``. Pre-fix the enqueue stamped the job with the
     skewed Python ``datetime.now(UTC)`` (10 min in the server's future),
     landing it ``status='scheduled'`` and invisible to dispatch for the
@@ -1182,7 +1182,7 @@ async def test_ti12_fired_job_dispatch_eligible_under_ahead_clock_skew(
             await _dispatch_eligible_count(deps.dispatcher_pool, schema, "eligible_actor") == 1
         ), (
             "a cron-fired job must be immediately dispatch-eligible even when "
-            "the leader's Python clock is skewed ahead — the enqueue must "
+            "the leader's Python clock is skewed ahead - the enqueue must "
             "stamp the server clock, not the leader's"
         )
 
@@ -1199,14 +1199,14 @@ async def test_ti12_fired_job_dispatch_eligible_under_ahead_clock_skew(
 async def test_allof_schedule_fires_both_occurrences_of_a_repeated_hour(pg_dsn: str) -> None:
     """A schedule stored with ``dst_strategy='allof'`` whose next fire lands in
     a DST fall-back overlap enqueues BOTH occurrences of the ambiguous local
-    time — the contract 'allof' exists to provide.
+    time - the contract 'allof' exists to provide.
 
     America/New_York fell back on 2025-11-02 at 02:00 EDT → 01:00 EST, so local
     01:30 happened twice: 05:30Z and 06:30Z. Firing from 01:00 EDT, an 'allof'
     schedule owes a job for each; 'skip' owes one.
 
     The catch-up window is widened for this test so the fixed historical fire
-    time is caught up rather than skipped — the DST dates are calendar facts
+    time is caught up rather than skipped - the DST dates are calendar facts
     and cannot be expressed relative to now.
     """
     schema_name = f"test_cron_{new_base62()}"
@@ -1256,7 +1256,7 @@ async def test_allof_schedule_fires_both_occurrences_of_a_repeated_hour(pg_dsn: 
         )
         # The due fire is enqueued immediately (server-stamped "now"); the
         # SECOND occurrence of the ambiguous 01:30 is enqueued for its own
-        # instant, 06:30Z — the one a 'skip' schedule never produces.
+        # instant, 06:30Z - the one a 'skip' schedule never produces.
         assert datetime(2025, 11, 2, 6, 30, tzinfo=UTC) in scheduled_ats
 
 
@@ -1265,7 +1265,7 @@ async def test_skip_schedule_fires_a_repeated_hour_only_once(pg_dsn: str) -> Non
     """The control for the test above: the same schedule stored with the
     default ``dst_strategy='skip'`` owes exactly one job for the repeated
     hour. Without this pair, 'allof' passing would not prove the column was
-    read — only that two jobs appeared."""
+    read - only that two jobs appeared."""
     schema_name = f"test_cron_{new_base62()}"
     async with _open_cron_single(pg_dsn, schema_name) as (
         schema,
@@ -1315,11 +1315,11 @@ async def test_cron_due_check_is_statement_time_not_transaction_start(pg_dsn: st
 
     ``tick_cron`` contractually requires an already-open transaction (the
     advisory lock is transaction-scoped), and it is never the first statement
-    in it — the lock and the ``server_now`` read come first, and on a leader
+    in it - the lock and the ``server_now`` read come first, and on a leader
     handling a catch-up burst the transaction can be open for seconds.  Under
     the transaction-start ``now()`` the due-check would be pinned to BEGIN, so
     every schedule that came due after the transaction opened is skipped and
-    only fires a tick later — repeatedly, whenever ticks run back to back.
+    only fires a tick later - repeatedly, whenever ticks run back to back.
 
     The schedule here becomes due 2 s after BEGIN and the tick runs 3 s in:
     ``clock_timestamp()`` sees it due, ``now()`` does not.
@@ -1356,6 +1356,6 @@ async def test_cron_due_check_is_statement_time_not_transaction_start(pg_dsn: st
             )
 
         assert job_count == 1, (
-            "schedule that fell due inside the open tick transaction did not fire — "
+            "schedule that fell due inside the open tick transaction did not fire - "
             "the due-check read transaction-start time instead of statement time"
         )

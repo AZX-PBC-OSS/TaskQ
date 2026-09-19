@@ -11,7 +11,7 @@ Contract:
 - :class:`ChaosException` is raised on the Nth query call (execute,
   fetchrow, fetch, fetchval).  Query calls are counted in execution
   order regardless of method name.
-- Does **not** swallow ``CancelledError`` — it propagates naturally
+- Does **not** swallow ``CancelledError``, it propagates naturally
   from the wrapped connection.
 - :class:`ChaosPool` honours ``acquire(timeout=...)`` against its
   ``acquire_delay``, raising ``TimeoutError`` on expiry exactly as an
@@ -37,11 +37,11 @@ else:
 __all__ = ["ChaosConnection", "ChaosException", "ChaosPool"]
 
 
-class ChaosException(Exception):  # noqa: N818  # Why: test utility — not a public API exception; naming matches the "Chaos" prefix convention for test helpers
+class ChaosException(Exception):  # noqa: N818  # Why: test utility, not a public API exception; naming matches the "Chaos" prefix convention for test helpers
     """Raised by :class:`ChaosConnection` on the configured call number.
 
     Carries the call number for debugging.  Does **not** represent a real
-    PG error — it simulates a failure between SQL statements inside a
+    PG error, it simulates a failure between SQL statements inside a
     transaction, causing the transaction to roll back.
     """
 
@@ -160,7 +160,7 @@ class _ChaosAcquireCtx:
 
     async def __aenter__(self) -> ChaosConnection:
         if self._acquire_delay is not None:
-            # timeout=None means "wait forever", exactly as asyncpg does —
+            # timeout=None means "wait forever", exactly as asyncpg does ,
             # so acquire_delay=math.inf with no timeout models the wedged
             # pool that an unbounded acquire() hangs on indefinitely.
             await asyncio.wait_for(asyncio.sleep(self._acquire_delay), timeout=self._timeout)
@@ -176,34 +176,34 @@ class _ChaosAcquireCtx:
 
 class ChaosPool:
     """Pool-like object that yields a :class:`ChaosConnection` from
-    ``acquire()``.
+     ``acquire()``.
 
-    Used to inject a ``ChaosConnection`` into backend methods that acquire
-    connections from ``self._worker_pool``.  Temporarily replace
-    ``backend._worker_pool`` with a ``ChaosPool`` to test mid-transaction
-    failures.
+     Used to inject a ``ChaosConnection`` into backend methods that acquire
+     connections from ``self._worker_pool``.  Temporarily replace
+     ``backend._worker_pool`` with a ``ChaosPool`` to test mid-transaction
+     failures.
 
-    *acquire_delay* simulates a pool with no free connection: ``acquire()``
-    waits that many seconds before yielding.  Combined with the caller's
-    ``timeout=``, this is what makes the *bounded-wait* invariant testable
-    — a call site that forgets ``timeout=`` hangs here exactly as it would
-    against a wedged Postgres, and one that passes it raises
-    ``TimeoutError``.  Default ``None`` means a connection is immediately
-    available, so ``acquire()`` returns without waiting and ``timeout=``
-    can never fire — matching a real pool that is not exhausted, and
-    leaving the mid-transaction-failure tests unaffected.
+     *acquire_delay* simulates a pool with no free connection: ``acquire()``
+     waits that many seconds before yielding.  Combined with the caller's
+     ``timeout=``, this is what makes the *bounded-wait* invariant testable
+    , a call site that forgets ``timeout=`` hangs here exactly as it would
+     against a wedged Postgres, and one that passes it raises
+     ``TimeoutError``.  Default ``None`` means a connection is immediately
+     available, so ``acquire()`` returns without waiting and ``timeout=``
+     can never fire, matching a real pool that is not exhausted, and
+     leaving the mid-transaction-failure tests unaffected.
 
-    ``timeout`` was previously accepted and silently discarded, which made
-    it impossible for any test built on this pool to observe an acquire
-    bound at all.
+     ``timeout`` was previously accepted and silently discarded, which made
+     it impossible for any test built on this pool to observe an acquire
+     bound at all.
 
-    Deliberate divergences from ``asyncpg.Pool``, all inherent to a
-    single-connection double and none of them silent: there is no holder
-    queue (so no contention between concurrent acquirers), no
-    ``release()``/reset cycle, no ``closing``/uninitialised state (a real
-    pool raises ``InterfaceError`` from ``acquire()`` for those *before*
-    it waits, regardless of *timeout*), and no bare-``await`` acquire
-    form.  Tests needing any of those want a real pool.
+     Deliberate divergences from ``asyncpg.Pool``, all inherent to a
+     single-connection double and none of them silent: there is no holder
+     queue (so no contention between concurrent acquirers), no
+     ``release()``/reset cycle, no ``closing``/uninitialised state (a real
+     pool raises ``InterfaceError`` from ``acquire()`` for those *before*
+     it waits, regardless of *timeout*), and no bare-``await`` acquire
+     form.  Tests needing any of those want a real pool.
     """
 
     def __init__(self, chaos_conn: ChaosConnection, *, acquire_delay: float | None = None) -> None:

@@ -64,7 +64,7 @@ def test_live_workers_gauge_reports_one_series_per_queue(
 def test_live_workers_gauge_clears_on_an_empty_sample(
     gauge_reader: InMemoryMetricReader,
 ) -> None:
-    """A queue that lost its last live worker must vanish from the series —
+    """A queue that lost its last live worker must vanish from the series -
     that absence is exactly what TaskQQueueUnserved joins against."""
     obs_mod.update_queue_live_workers_cache({"default": 2})
     assert _points(gauge_reader, "taskq.queue.live_workers")

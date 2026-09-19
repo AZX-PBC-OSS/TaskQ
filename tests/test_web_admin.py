@@ -19,7 +19,7 @@ pytestmark = [pytest.mark.fastapi]
 
 class _FakeConn:
     async def fetch(self, query: str, *args: object) -> list[dict[str, object]]:
-        # Return empty — web admin unit tests verify route registration, CSRF,
+        # Return empty - web admin unit tests verify route registration, CSRF,
         # and template rendering structure, not data content. Shape-specific
         # data (queues, schedules, jobs) would pollute cross-template rendering
         # (e.g. queue-shaped dicts crash the schedules template which expects
@@ -114,7 +114,7 @@ def test_router_has_all_routes() -> None:
     assert expected.issubset(route_paths), f"missing routes: {expected - route_paths}"
 
 
-# ── no auth — all routes accessible ────────────────────────────
+# ── no auth - all routes accessible ────────────────────────────
 
 
 def test_no_auth_all_routes_accessible() -> None:
@@ -128,7 +128,7 @@ def test_no_auth_all_routes_accessible() -> None:
     assert response.status_code == 200  # pyright: ignore[reportUnknownVariableType] # Why: response.status_code type is unknown due to upstream Any.
 
 
-# ── auth dep raises 401 — routes return 401 ────────────────────
+# ── auth dep raises 401 - routes return 401 ────────────────────
 
 
 def test_auth_dep_raises_401() -> None:
@@ -184,7 +184,7 @@ def test_sse_returns_sentinel(monkeypatch: pytest.MonkeyPatch) -> None:
 
     from taskq.web.admin import sse as sse_mod
 
-    # Signature mirrors taskq.web.admin.sse._sse_generator exactly — a double
+    # Signature mirrors taskq.web.admin.sse._sse_generator exactly - a double
     # that outlives the real signature stops standing in for anything.
     async def _terminating_gen(
         semaphore: asyncio.Semaphore,
@@ -218,7 +218,7 @@ def test_sse_returns_sentinel(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_warning_no_auth_non_dev_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Set TASKQ_ENVIRONMENT=production and TASKQ_ADMIN_UI_REQUIRE_AUTH=false;
     call create_router(mock_pool, auth_dependency=None); WARNING-level structlog
-    event 'admin-ui-no-auth' emitted (opt-out path — fail-closed is tested in
+    event 'admin-ui-no-auth' emitted (opt-out path - fail-closed is tested in
     test_admin_security_fixes.py)."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "production")
     monkeypatch.setenv("TASKQ_ADMIN_UI_REQUIRE_AUTH", "false")
@@ -277,7 +277,7 @@ async def test_sse_429_on_concurrency_exhaustion(monkeypatch: pytest.MonkeyPatch
 
     from taskq.web.admin import sse as sse_mod
 
-    # Signature mirrors taskq.web.admin.sse._sse_generator exactly — a double
+    # Signature mirrors taskq.web.admin.sse._sse_generator exactly - a double
     # that outlives the real signature stops standing in for anything.
     async def _terminating_gen(
         semaphore: asyncio.Semaphore,

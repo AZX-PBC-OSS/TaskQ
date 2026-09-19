@@ -1,7 +1,7 @@
 """Red-team: both-done race drops a TAKEN job in the consumer loops (E2).
 
 Contract under attack: a job TAKEN out of ``local_queue`` is never silently
-dropped — it must be either executed (routed to a consumer) or explicitly
+dropped - it must be either executed (routed to a consumer) or explicitly
 re-pended/released.
 
 Hypothesis (verified against the current tree): ``di_consumer_loop`` races
@@ -9,7 +9,7 @@ Hypothesis (verified against the current tree): ``di_consumer_loop`` races
 (src/taskq/worker/run.py:551-554). When the producer's put and
 ``shutdown_event.set()`` resolve in the same loop turn, BOTH waiters are done;
 the ``if shut_wait in _done: return`` arm (run.py:559-560) fires and the TAKEN
-job is discarded — it has already left the queue, no consumer runs it, no
+job is discarded - it has already left the queue, no consumer runs it, no
 terminal write or release is issued; recovery only via lock-lease expiry.
 ``consumer_loop_stub`` has the same seam (run.py:423-424).
 
@@ -135,7 +135,7 @@ async def test_di_consumer_loop_does_not_drop_job_taken_on_shutdown_race(
         spy_job_ids.append(cast("JobRow", kwargs["job"]).id)
         return "succeeded"
 
-    # Why the spy: it observes "the taken job was routed to execution" —
+    # Why the spy: it observes "the taken job was routed to execution" -
     # di_consumer_loop calls the run-module global dispatch_one_job, so a
     # module-attr monkeypatch is the execution observable without building
     # the full DI stack.
@@ -172,7 +172,7 @@ async def test_di_consumer_loop_does_not_drop_job_taken_on_shutdown_race(
     assert executed or _job_re_pended(local_queue, job) or _backend_saw_job(fb, job.id), (
         _DI_DROP_MSG + f" Evidence: dispatch spy saw {spy_job_ids!r}, queue re-pend="
         f"{_job_re_pended(local_queue, job)}, backend calls for the job="
-        f"{_backend_saw_job(fb, job.id)} (queue is empty — the job was TAKEN)."
+        f"{_backend_saw_job(fb, job.id)} (queue is empty - the job was TAKEN)."
     )
 
 
@@ -203,5 +203,5 @@ async def test_consumer_loop_stub_does_not_drop_job_taken_on_shutdown_race() -> 
     assert _job_re_pended(local_queue, job) or _backend_saw_job(fb, job.id), (
         _STUB_DROP_MSG + f" Evidence: queue re-pend={_job_re_pended(local_queue, job)}, "
         f"backend calls for the job={_backend_saw_job(fb, job.id)} "
-        "(queue is empty — the job was TAKEN)."
+        "(queue is empty - the job was TAKEN)."
     )

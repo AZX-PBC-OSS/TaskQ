@@ -7,12 +7,12 @@ SKIP LOCKED slide ranges only within that materialized window
 (``sliding_locked`` in ``taskq.backend._dispatch_sql``). With more than
 ``oversample`` concurrent dispatchers holding rows of one (actor, queue),
 the next dispatcher's whole window is row-locked: without expansion it
-returns an empty round while deeper rows sit unlocked — a worker that
+returns an empty round while deeper rows sit unlocked - a worker that
 reports successful empty rounds and moves no work.
 
 The contract pinned here: a dispatcher may come back empty only when no
-unlocked claimable rows remain, and the remedy for a locked-out window —
-probe for remaining routable rows, then re-claim with a doubled window —
+unlocked claimable rows remain, and the remedy for a locked-out window -
+probe for remaining routable rows, then re-claim with a doubled window -
 stays bounded in both directions:
 
 * an idle round (nothing pending) pays one claim statement plus one
@@ -90,7 +90,7 @@ async def _seed_actor(
     actor: str,
     queue: str = _QUEUE,
 ) -> None:
-    """One uncapped actor_config row — the claim CTE only sees registered actors."""
+    """One uncapped actor_config row - the claim CTE only sees registered actors."""
     await conn.execute(
         f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2) '
         "ON CONFLICT (actor) DO NOTHING",
@@ -111,7 +111,7 @@ async def _claim_with_open_locks(
 
     The caller owns the commit/rollback so the claimed rows stay locked
     (and, being uncommitted, still read as pending to other sessions) for
-    the duration of the scenario — the peer-lockout condition under test.
+    the duration of the scenario - the peer-lockout condition under test.
     """
     return await dispatch_batch_sql(
         conn,
@@ -129,7 +129,7 @@ class _CountingConn:
 
     Wraps a real pooled connection: the SQL under test runs against the
     real engine, and the test reads back how many claim/probe statements
-    one dispatch round actually spent — the round-trip budget is the
+    one dispatch round actually spent - the round-trip budget is the
     observable cost contract of window expansion.
     """
 
@@ -214,7 +214,7 @@ async def test_locked_out_window_expands_and_claims_deeper_rows(
     Window arithmetic: limit 5 x oversample 2 covers the top 10 candidates,
     exactly the rows the two holders lock. The production seam answers the
     lockout by doubling the window, so its round comes back with the next
-    five rows — the throughput the third pod was added to provide. Runs on
+    five rows - the throughput the third pod was added to provide. Runs on
     both queue modes: the expansion is round orchestration and must hold
     whichever claim statement the mode selects.
     """
@@ -270,7 +270,7 @@ async def test_locked_out_window_expands_and_claims_deeper_rows(
                 f"a third dispatcher facing a fully locked window must expand and "
                 f"claim the next {limit_n} unlocked rows (ids 11-15 by priority); "
                 f"got {[r.id for r in dispatched]}. An empty round here means a pod "
-                f"that reports successful polls while moving no work — throughput "
+                f"that reports successful polls while moving no work - throughput "
                 f"that does not grow when a worker is added."
             )
         finally:
@@ -283,7 +283,7 @@ async def test_locked_out_window_expands_and_claims_deeper_rows(
 
 
 async def test_idle_round_pays_one_probe_and_never_a_second_claim(pg_dsn: str) -> None:
-    """The commonest empty round — nothing pending at all — must stay cheap:
+    """The commonest empty round - nothing pending at all - must stay cheap:
     one claim statement and one LIMIT-1 probe, and no widened re-claim."""
     schema = f"twe_{new_base62()}".lower()
     stack, deps, _backend = await _open_pg_backend(pg_dsn, schema_name=schema)
@@ -294,7 +294,7 @@ async def test_idle_round_pays_one_probe_and_never_a_second_claim(pg_dsn: str) -
         assert dispatched == [], "fixture broken: an empty schema must dispatch nothing"
         assert _claim_statement_count(pool) == 1, (
             f"an idle round must execute the claim statement exactly once; got "
-            f"{_claim_statement_count(pool)} — expansion must only fire when the "
+            f"{_claim_statement_count(pool)} - expansion must only fire when the "
             f"probe sees rows remain"
         )
         assert _probe_statement_count(pool) == 1, (
@@ -307,7 +307,7 @@ async def test_idle_round_pays_one_probe_and_never_a_second_claim(pg_dsn: str) -
 
 async def test_expansion_is_bounded_when_peers_hold_the_whole_backlog(pg_dsn: str) -> None:
     """A round that can never make progress (every pending row is locked by
-    a peer) must stop widening after the expansion bound and report empty —
+    a peer) must stop widening after the expansion bound and report empty -
     bounded wasted work, never an unbounded retry burn against a saturated
     queue."""
     schema = f"twe_{new_base62()}".lower()
@@ -353,7 +353,7 @@ async def test_expansion_is_bounded_when_peers_hold_the_whole_backlog(pg_dsn: st
 async def test_probe_ignores_rows_of_unregistered_actors(pg_dsn: str) -> None:
     """Pending rows whose actor has no actor_config row are not dispatchable
     (candidates come FROM the registry), so they must not keep the probe
-    alive — otherwise a stranded orphan backlog would tax every empty round
+    alive - otherwise a stranded orphan backlog would tax every empty round
     with wasted expansions."""
     schema = f"twe_{new_base62()}".lower()
     stack, deps, backend = await _open_pg_backend(pg_dsn, schema_name=schema)
@@ -471,7 +471,7 @@ async def test_expansion_reaches_rows_routed_by_actor_assignment(pg_dsn: str) ->
             assert [r.id for r in dispatched] == [args_list[2].id], (
                 f"with the two-row re-pended window locked by peers, expansion must "
                 f"reach the third re-pended row; got {[r.id for r in dispatched]}. "
-                f"Re-pended rows are claimable work — an empty round here strands "
+                f"Re-pended rows are claimable work - an empty round here strands "
                 f"retries behind a locked window."
             )
             assert _claim_statement_count(pool) > 1, (

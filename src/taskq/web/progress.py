@@ -3,8 +3,8 @@
 Bridges Redis pub/sub progress events to Server-Sent Events for browsers and
 API clients.  Mount at ``prefix="/jobs"`` to produce the canonical URLs:
 
-    GET /jobs/api/job/{job_id}/progress/stream  — SSE stream
-    GET /jobs/api/job/{job_id}/state            — poll-state (JSON)
+    GET /jobs/api/job/{job_id}/progress/stream , SSE stream
+    GET /jobs/api/job/{job_id}/state           , poll-state (JSON)
 
 Importing this module requires the ``taskq[fastapi]`` optional extra (which
 includes ``sse-starlette``).
@@ -24,7 +24,7 @@ Design notes
   which has no per-message timeout support).
 - Each broker read carries an app-level deadline: the delegated ``timeout=``
   bounds only the read itself, while a reconnect inside redis-py's
-  ``parse_response`` (broker dropped mid-read) is bounded by nothing — so the
+  ``parse_response`` (broker dropped mid-read) is bounded by nothing, so the
   loop wraps every read in ``asyncio.wait_for`` and a read that outlives the
   deadline ends the stream, exactly as broker death does.
 - On client disconnect, ``try/finally`` in the generator calls
@@ -86,11 +86,11 @@ _REDIS_503_BODY: dict[str, str] = {"error": "redis_not_configured"}
 # task, and the SSE slot stay pinned. Every TaskQ-initiated wait on a
 # possibly-dead broker is bounded by this codebase (the admin health ping's
 # 0.5 s wait_for in admin/_factory.py, every close via close_redis_bounded);
-# the read gets the same treatment — one heartbeat window for the read
+# the read gets the same treatment, one heartbeat window for the read
 # itself, plus the same grace the health ping allows.
 _BROKER_READ_GRACE_SECS: float = 0.5
 
-# JSON responses render through orjson (taskq._json), never stdlib json —
+# JSON responses render through orjson (taskq._json), never stdlib json ,
 # byte-identical bodies to starlette's stdlib JSONResponse for these payloads.
 _OrjsonJSONResponse: "type[JSONResponse]" = orjson_response_class()
 
@@ -255,7 +255,7 @@ async def _event_generator(
                 # Performance: the published payload is already exactly
                 # ``ProgressEvent.model_dump_json(exclude_none=True)`` bytes
                 # (progress/_publish.py), and this generator reads only
-                # ``seq`` and ``terminal`` — so a pydantic validate→dump
+                # ``seq`` and ``terminal``, so a pydantic validate→dump
                 # round-trip per message per client (O(clients x events))
                 # re-derives bytes the channel already carries. Parse the
                 # envelope once with orjson, validate the required keys
@@ -296,7 +296,7 @@ async def _event_generator(
             last_emitted_seq = seq
 
             if terminal:
-                # terminal event — emit payload then done, close.
+                # terminal event, emit payload then done, close.
                 yield _make_sse_event(
                     event="terminal",
                     seq=seq,
@@ -322,7 +322,7 @@ async def _event_generator(
         # must not mask the primary exception.
         with contextlib.suppress(Exception):
             await pubsub.unsubscribe(channel)
-        # Why bounded: keeps "every TaskQ-initiated close is bounded" true —
+        # Why bounded: keeps "every TaskQ-initiated close is bounded" true ,
         # the helper never raises, so the redundant suppress is dropped and a
         # hung broker cannot wedge the stream finalizer. Module-global read
         # at call time: tests monkeypatch CLOSE_TIMEOUT_SECS to shrink it.
@@ -336,7 +336,7 @@ async def _event_generator(
 
 def create_router(
     pg_pool: asyncpg.Pool,
-    redis_client: Any,  # redis.asyncio.Redis | None — typed Any at erasure boundary; redis is an optional dep
+    redis_client: Any,  # redis.asyncio.Redis | None, typed Any at erasure boundary; redis is an optional dep
     *,
     schema: str = "taskq",
     auth_dependency: Callable[..., Any] | None = None,
@@ -483,8 +483,8 @@ def create_router(
         emits one catch-up event from PG if ``progress_seq > last_event_id``,
         then resumes streaming.
 
-        HTTP 404 — job not found.
-        HTTP 503 — Redis not configured or unavailable.
+        HTTP 404, job not found.
+        HTTP 503, Redis not configured or unavailable.
         """
         if redis_client is None:
             return _OrjsonJSONResponse(  # pyright: ignore[reportReturnType]  # Why: FastAPI accepts any Response subclass here; the JSON response is returned for the 503 before SSE upgrade.
@@ -557,7 +557,7 @@ def create_router(
                 channel=channel,
                 error=str(exc),
             )
-            # Why bounded: same close contract as the generator finally —
+            # Why bounded: same close contract as the generator finally ,
             # helper never raises (suppress dropped), hung broker cannot
             # wedge the 503 path.
             await close_redis_bounded(pubsub, "web-progress", CLOSE_TIMEOUT_SECS)
@@ -568,7 +568,7 @@ def create_router(
                 headers={"Retry-After": "2"},
             )
 
-        # short-lived PG connection — released before any SSE
+        # short-lived PG connection, released before any SSE
         # byte is written.
         try:
             async with pg_pool.acquire() as conn:
@@ -641,7 +641,7 @@ def create_router(
 
             {"status": <str>, "progress_state": <dict | null>, "progress_seq": <int>}
 
-        HTTP 404 — job not found.
+        HTTP 404, job not found.
         """
         async with pg_pool.acquire() as conn:
             row = await conn.fetchrow(_progress_sql, job_id)

@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
     type _Conn = asyncpg.Connection | PoolConnectionProxy
 else:
-    type _Conn = object  # pyright: ignore[reportInvalidTypeForm] # Why: runtime fallback — asyncpg is TYPE_CHECKING-only to avoid transitive import
+    type _Conn = object  # pyright: ignore[reportInvalidTypeForm] # Why: runtime fallback - asyncpg is TYPE_CHECKING-only to avoid transitive import
 
 pytestmark = pytest.mark.integration
 
@@ -241,7 +241,7 @@ class TestSweepExpiredLocks:
         assert row["status"] == "crashed"
         # Terminal job must have finished_at set
         assert row["finished_at"] is not None
-        # scheduled_at must NOT be advanced to now()+5s — the job is
+        # scheduled_at must NOT be advanced to now()+5s - the job is
         # not being re-queued
         assert row["scheduled_at"] == pre_scheduled_at
         # Both job_attempts and job_events rows must exist
@@ -260,7 +260,7 @@ class TestSweepExpiredLocks:
         For ``retry_kind='indefinite'`` the retry budget is the
         ``schedule_to_close`` deadline; ``max_attempts`` is documented as
         ignored for the retry decision, and the consumer's own failure
-        path honours that — it reschedules an indefinite job whatever its
+        path honours that - it reschedules an indefinite job whatever its
         attempt number. A worker crash is a less conclusive event than a
         failed execution, so it must not be the one thing that ends such a
         job early.
@@ -328,7 +328,7 @@ class TestSweepExpiredLocks:
 
         cleanup_stale_workers (same sweep loop, earlier tick) deletes a
         crashed worker's row once its heartbeat is stale
-        ``heartbeat_interval * (max_heartbeat_failures + 3)`` — with a
+        ``heartbeat_interval * (max_heartbeat_failures + 3)`` - with a
         lease longer than that (any worker killed shortly after a
         heartbeat), the row is gone before the reclaim tick first sees the
         expired lease. The job_attempts INSERT must then not FK-violate on
@@ -378,7 +378,7 @@ class TestSweepExpiredLocks:
 
     async def test_cancel_phase_carve_out_not_touched(self, clean_jobs_app: JobsApp) -> None:
         """Running job with cancel_phase=1 and lock slightly past now
-        should NOT be swept — the cancel grace extension applies."""
+        should NOT be swept - the cancel grace extension applies."""
         deps = clean_jobs_app.deps
         schema = deps.settings.schema_name
         worker_id = new_uuid()
@@ -412,7 +412,7 @@ class TestSweepExpiredLocks:
     async def test_cancel_phase_carve_out_deeply_expired(self, clean_jobs_app: JobsApp) -> None:
         """Running job with cancel_phase=1 and lock expired past the
         cancel_grace + cleanup_grace + 60s threshold SHOULD be swept,
-        and with operator intent outranking the retry budget (#238),
+        and with operator intent outranking the retry budget,
         the reclaim terminalises it 'cancelled' whatever its budget,
         never re-pends it with a wiped cancel."""
         deps = clean_jobs_app.deps
@@ -458,7 +458,7 @@ class TestSweepExpiredLocks:
     ) -> None:
         """A deeply expired lock with an in-flight cancel request on a
         RETRYABLE job terminalises 'cancelled' and keeps its cancel
-        columns as the audit trail of the honored request (#238).
+        columns as the audit trail of the honored request.
 
         The pre-fix statement evaluated the retry budget before
         ``cancel_phase``, so this row went back 'pending' with
@@ -585,7 +585,7 @@ class TestSweepExpiredLocks:
     ) -> None:
         """A deeply-expired lock with an in-flight cancel request and no
         retries remaining terminates as 'cancelled' (the caller's explicit
-        request), not 'crashed' — reconciling terminal states must show
+        request), not 'crashed' - reconciling terminal states must show
         the cancel was honored.  The job_events outbox row carries
         to_state='cancelled' so watch_reclaims consumers see the honest
         label, while job_attempts still records outcome='crashed'
@@ -637,7 +637,7 @@ class TestSweepExpiredLocks:
         assert row is not None
         assert row["status"] == "cancelled"
         # The audit trail of the honored request survives the terminal
-        # write (#238): the sweep's cancelled arm keeps both cancel
+        # write: the sweep's cancelled arm keeps both cancel
         # columns, the same doctrine mark_cancelled carries: the
         # pre-fix statement wiped them here too.
         assert row["cancel_phase"] == 1
@@ -744,7 +744,7 @@ class _FailingEventConn:
 
 
 class TestPollReclaimEvents:
-    """poll_reclaim_events — fleet-wide cursor-based reclaim event polling.
+    """poll_reclaim_events - fleet-wide cursor-based reclaim event polling.
 
     A consumer tracking completion of a fan-out of N jobs via an
     outstanding-work counter can observe crash-reclaimed jobs without
@@ -867,7 +867,7 @@ class TestPollReclaimEvents:
         self, clean_jobs_app: JobsApp
     ) -> None:
         """If the event INSERT fails inside the transaction, both the
-        state change and the event row are rolled back — no partial
+        state change and the event row are rolled back - no partial
         observation."""
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend
@@ -990,7 +990,7 @@ class TestPollReclaimEvents:
         waits, a slower sweep pass, GC pauses): a transaction holding a
         LOWER id can commit AFTER one holding a HIGHER id.
 
-        With ``visibility_delay=0`` (no protection — reproduces the bug
+        With ``visibility_delay=0`` (no protection - reproduces the bug
         directly against the real query, not a reverted copy of it),
         polling right after the higher-id transaction commits returns it
         immediately; a cursor advanced to that id would then permanently
@@ -999,7 +999,7 @@ class TestPollReclaimEvents:
         The production default (``RECLAIM_EVENT_VISIBILITY_DELAY``) holds
         back freshly-committed rows until enough wall-clock time has
         passed that any transaction which could hold a lower id is
-        guaranteed to have already committed or aborted — ``id`` and
+        guaranteed to have already committed or aborted - ``id`` and
         ``occurred_at`` are stamped at the same INSERT instant, so they
         are co-monotonic, and this is why waiting on ``occurred_at``
         alone is sufficient once it clears the margin.
@@ -1051,7 +1051,7 @@ class TestPollReclaimEvents:
             )
 
             # B inserts second, grabbing the HIGHER event_id, and commits
-            # immediately — out of order relative to A.
+            # immediately - out of order relative to A.
             await tx_b.start()
             await conn_b.execute(
                 f'INSERT INTO "{schema}".'
@@ -1164,7 +1164,7 @@ class TestPollReclaimEvents:
     ) -> None:
         """A PostgresBackend constructed with a custom
         reclaim_event_visibility_delay applies that margin as
-        poll_reclaim_events' default when no per-call override is given —
+        poll_reclaim_events' default when no per-call override is given -
         the end-to-end path from WorkerSettings.reclaim_event_visibility_delay
         (via PostgresBackend.__init__) down to the SQL, not just the
         per-call visibility_delay= parameter exercised elsewhere."""
@@ -1217,7 +1217,7 @@ class TestPollReclaimEvents:
         """Cursor semantics on an empty table: polling returns nothing at
         cursor 0, and a cursor arbitrarily far ahead of the table's max id
         (e.g. persisted before a schema reset, or mis-restored from a
-        backup) also returns nothing rather than erroring — the cursor is
+        backup) also returns nothing rather than erroring - the cursor is
         a watermark compared with `>`, never dereferenced."""
         backend = clean_jobs_app.backend
 
@@ -1228,9 +1228,9 @@ class TestPollReclaimEvents:
         """Interaction with job_events pruning: a consumer's cursor may
         point at a row an operator later prunes.  Because the cursor is a
         watermark (`id > cursor`), deleting rows at or below it changes
-        nothing — the next poll still returns exactly the un-pruned rows
+        nothing - the next poll still returns exactly the un-pruned rows
         ahead of it, with no error and no replay.  (The dangerous
-        direction — pruning rows AHEAD of a slow consumer's cursor —
+        direction - pruning rows AHEAD of a slow consumer's cursor -
         permanently loses those events for that consumer; that is an
         operational policy constraint, not something the SQL can guard
         against, and is documented in watch_reclaims.)"""
@@ -1262,7 +1262,7 @@ class TestPollReclaimEvents:
         assert len(events) == 3
         cursor = events[0].event_id
 
-        # Operator prunes the two oldest rows — one AT the consumer's
+        # Operator prunes the two oldest rows - one AT the consumer's
         # cursor, one AHEAD of it (simulating a too-aggressive prune).
         async with deps.worker_pool.acquire() as conn:
             await conn.execute(
@@ -1278,7 +1278,7 @@ class TestPollReclaimEvents:
 
     async def test_single_pg_notify_per_sweep_with_rows(self, clean_jobs_app: JobsApp) -> None:
         """The sweep fires exactly ONE pg_notify per call that reclaims at
-        least one row (not one per row), and none when nothing is swept —
+        least one row (not one per row), and none when nothing is swept -
         wake storms on a crash-reclaim of N jobs would punish every
         subscriber for a single sweep pass."""
         deps = clean_jobs_app.deps
@@ -1295,7 +1295,7 @@ class TestPollReclaimEvents:
         try:
             await listen_conn.add_listener(
                 wake_channel(schema),
-                _on_notify,  # type: ignore[arg-type]  # Why: asyncpg stubs over-narrow the callback type — same suppression as the transports under test
+                _on_notify,  # type: ignore[arg-type]  # Why: asyncpg stubs over-narrow the callback type - same suppression as the transports under test
             )
 
             async with deps.worker_pool.acquire() as conn:
@@ -1320,7 +1320,7 @@ class TestPollReclaimEvents:
 
             # NOTIFY delivery is asynchronous even after the sweep's
             # commit: a bounded poll on the received list waits exactly as
-            # long as delivery needs — a fixed 0.3s sleep races it
+            # long as delivery needs - a fixed 0.3s sleep races it
             # under load (too short → the notification has not arrived
             # yet → false failure).
             deadline = asyncio.get_running_loop().time() + 5.0
@@ -1335,7 +1335,7 @@ class TestPollReclaimEvents:
             )
 
             # A no-op sweep fires nothing. Negative assert: kept as a
-            # fixed settled window on purpose — absence cannot be polled
+            # fixed settled window on purpose - absence cannot be polled
             # for, and 0.3s (several delivery beats after the commit
             # above) is the window in which a stray NOTIFY would have
             # arrived.
@@ -1406,7 +1406,7 @@ class TestSweepDeadlineExceeded:
         assert attempt["outcome"] == "failed"
         assert attempt["error_class"] == "DeadlineExceeded"
         # never-dispatched job: started_at was NULL on jobs row, COALESCE'd
-        # to now() — the row exists with a non-null started_at value.
+        # to now() - the row exists with a non-null started_at value.
         assert attempt["started_at"] is not None
         assert attempt["worker_id"] is None  # never dispatched, no owner
 
@@ -1491,12 +1491,12 @@ class TestSweepDeadlineExceeded:
     ) -> None:
         """An admin-retried job that has already spent its whole retry
         budget and whose deadline has passed must come back budget-eligible
-        and dispatchable — not stranded pending past its own deadline.
+        and dispatchable - not stranded pending past its own deadline.
 
-        This pin's former premise — ``retry_job`` never rebases
+        This pin's former premise - ``retry_job`` never rebases
         ``schedule_to_close``, so a past-deadline retried row sits
         dispatch-excluded and Sweep 2 is the only thing that can ever touch
-        it — was replaced by the merged deliberate contract
+        it - was replaced by the merged deliberate contract
         (``tests/test_retry_job_stale_deadline_operator_footgun.py``, and
         the ``retry_job`` template's own comment in
         ``src/taskq/backend/_sql_templates.py``): an already-elapsed
@@ -1504,7 +1504,7 @@ class TestSweepDeadlineExceeded:
         ``finished_at``/``result``, and is CLEARED for the fresh run the
         retry grants; a still-future deadline survives. With the stale
         deadline gone the row is dispatchable again, so the resolution path
-        for this shape is dispatch, not the sweep — the sweep-to-failed
+        for this shape is dispatch, not the sweep - the sweep-to-failed
         behaviour for rows still past deadline (staged directly, no admin
         retry involved) remains pinned by
         ``test_overdue_job_with_existing_attempt_row_is_still_failed`` and
@@ -1570,7 +1570,7 @@ class TestSweepDeadlineExceeded:
             )
 
             # The row left the deadline sweep's predicate: the sweep runs
-            # cleanly over the schema and touches nothing — no collision is
+            # cleanly over the schema and touches nothing - no collision is
             # even reachable on this path, and the row is not re-failed
             # behind the operator's back.
             swept_count = await PostgresBackend.sweep_deadline_exceeded(
@@ -1584,7 +1584,7 @@ class TestSweepDeadlineExceeded:
             assert after_sweep is not None and after_sweep["status"] == "pending"
 
         # The no-leak close-out: the only resolver this shape has now is
-        # dispatch, and dispatch resolves it — the spent attempt number does
+        # dispatch, and dispatch resolves it - the spent attempt number does
         # not block the claim, because the retry raised the ceiling above it.
         claimed = await backend.dispatch_batch(
             worker_id, ["default"], limit=1, lock_lease=timedelta(minutes=5)
@@ -1593,7 +1593,7 @@ class TestSweepDeadlineExceeded:
 
     async def test_running_job_not_touched(self, clean_jobs_app: JobsApp) -> None:
         """Running jobs with schedule_to_close in the past are NOT
-        swept — Sweep 2 only targets pending/scheduled."""
+        swept - Sweep 2 only targets pending/scheduled."""
         deps = clean_jobs_app.deps
         schema = deps.settings.schema_name
         worker_id = new_uuid()
@@ -1751,13 +1751,13 @@ class TestSweepDeadlineExceeded:
         self, clean_jobs_app: JobsApp
     ) -> None:
         """An admin ``retry_job`` of a job whose ``schedule_to_close`` has
-        already passed must hand back a genuinely dispatchable row — the
+        already passed must hand back a genuinely dispatchable row - the
         operator's Retry means "run this again", not "sweep me back to
         failed on the next tick".
 
-        This pin's former premise — ``retry_job`` leaves the stale deadline
+        This pin's former premise - ``retry_job`` leaves the stale deadline
         in place, stranding the row past its own deadline until Sweep 2
-        re-fails it — was replaced by the merged deliberate contract
+        re-fails it - was replaced by the merged deliberate contract
         (``tests/test_retry_job_stale_deadline_operator_footgun.py``): a
         ``schedule_to_close`` that has already elapsed is cleared at retry
         time, exactly like the other prior-run terminal-state artifacts the
@@ -1802,7 +1802,7 @@ class TestSweepDeadlineExceeded:
             assert {a["attempt"] for a in attempts_before} == {1}
 
             # The operator re-runs it. The row goes back to pending at the
-            # same attempt, with the elapsed deadline cleared — the retry
+            # same attempt, with the elapsed deadline cleared - the retry
             # writes no attempt row of its own.
             assert await backend.retry_job(job_id)
             retried = await conn.fetchrow(
@@ -1823,7 +1823,7 @@ class TestSweepDeadlineExceeded:
             )
             assert {a["attempt"] for a in attempts_after} == {1}
 
-            # The sweep runs cleanly over the schema — the retried row is no
+            # The sweep runs cleanly over the schema - the retried row is no
             # longer sweep-eligible, so nothing is swept and no
             # job_attempts_pkey collision is even reachable on this path.
             try:
@@ -1946,7 +1946,7 @@ class TestSweepDeadlineExceeded:
 
         Tolerating an existing ``job_attempts`` row once is not enough. The
         sweep runs on a fixed leader cadence over the whole table, so a row
-        it cannot resolve is a row it re-selects on every tick forever —
+        it cannot resolve is a row it re-selects on every tick forever -
         the pathology is not one raised error but an unbounded series of
         them, each one aborting that tick's transaction and taking every
         overdue sibling down with it while the leader's error rate climbs
@@ -1989,7 +1989,7 @@ class TestSweepDeadlineExceeded:
         assert counts[0] == 1, (
             f"first tick swept {counts[0]} rows, expected the one overdue job. A job "
             "that already ran an attempt must still be resolvable by the deadline "
-            "sweep — nothing else will ever terminate it, since dispatch skips rows "
+            "sweep - nothing else will ever terminate it, since dispatch skips rows "
             "past schedule_to_close."
         )
         assert counts[1:] == [0, 0], (
@@ -2434,7 +2434,7 @@ class TestSweepScheduledToPending:
         assert row["status"] == "pending"
 
     async def test_promotion_writes_no_event_rows(self, clean_jobs_app: JobsApp) -> None:
-        """A promoted batch produces no ``job_events`` rows at all — a row
+        """A promoted batch produces no ``job_events`` rows at all - a row
         per promotion is the unbounded-growth vector under sustained
         admission denial (claim + promote are the cycle's two acts), so
         the aggregated denial counters on the job row carry contention
@@ -2478,7 +2478,7 @@ class TestSweepScheduledToPending:
 
 class TestReclaimExpiredLocksInstance:
     """Integration tests for PostgresBackend.reclaim_expired_locks instance
-    method — the delegation surface the leader's _sweep_loop calls.
+    method - the delegation surface the leader's _sweep_loop calls.
 
     These exercises go through the instance method (which acquires a
     connection from _notify_pool) rather than calling the static

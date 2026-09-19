@@ -5,11 +5,11 @@ Leaf module by design (mirrors ``taskq._close``): imports only asyncio and
 without a layering inversion.
 
 Why this exists: ``asyncio.shield`` leaves the inner awaitable running
-detached when the OUTER await is cancelled — the cancellation is delivered
+detached when the OUTER await is cancelled, the cancellation is delivered
 to the waiter, not to the inner task. If a second ``CancelledError`` lands
 while that detached inner is still running (a double cancel: shutdown
 racing a job cancellation, a force-cancel escalating over a cooperative
-one), its eventual failure is retrieved by nobody — asyncio reports
+one), its eventual failure is retrieved by nobody, asyncio reports
 "Task exception was never retrieved" and the infra error is lost.
 :func:`shield_with_retrieval` generalizes the
 ``_retrieve_detached_outcome`` pattern from ``taskq.worker._consumer``:
@@ -39,10 +39,10 @@ def _log_detached_failure(task: "asyncio.Task[object]") -> None:
 
     Nobody awaits the detached task afterwards, so its outcome must be
     retrieved here or asyncio reports "Task exception was never
-    retrieved" — but unlike the minimal consumer-side variant this also
+    retrieved", but unlike the minimal consumer-side variant this also
     LOGS the exception: the failure is a real infra signal, not noise.
     ``task.exception()`` raises ``CancelledError`` when the task ended
-    cancelled — the only outcome suppressed here (asyncio already exempts
+    cancelled, the only outcome suppressed here (asyncio already exempts
     cancelled tasks from the retrieval warning, and there is no error to
     surface).
     """
@@ -66,7 +66,7 @@ async def shield_with_retrieval[T](aw: Awaitable[T]) -> T:
     keeps running when the outer await is cancelled, and its result or
     exception is delivered to the caller on the normal path. If the outer
     await IS cancelled, the still-running inner task is left detached with
-    a done-callback that retrieves (and logs) its eventual outcome — see
+    a done-callback that retrieves (and logs) its eventual outcome, see
     the module docstring for the double-cancel race this closes.
     """
     # Why an explicit task: the handle is needed on the cancellation path

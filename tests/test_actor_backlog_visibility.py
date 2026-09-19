@@ -1,7 +1,7 @@
 """Pins for making an unconsumed actor visible in the emitted series.
 
 The deployment failure this guards against is silent by construction.
-No worker refuses to start because an actor's queue has no consumer —
+No worker refuses to start because an actor's queue has no consumer -
 the governing rule is that a worker able to do work never fails to boot,
 and in a multi-worker or workgroup fleet no single supervisor can know
 what consumes a queue. So a misrouted actor produces no refusal, no
@@ -36,12 +36,12 @@ def test_backlog_depth_is_attributable_per_actor_and_queue() -> None:
     queue-summed depth: the queue keeps moving, so nothing crosses a
     depth threshold and nothing rises. Split by actor, the stuck actor's
     own series is the one that rises without bound while its siblings
-    stay flat — the shape that distinguishes an unconsumed actor from
+    stay flat - the shape that distinguishes an unconsumed actor from
     load.
     """
     update = getattr(obs_mod, "update_actor_backlog_cache", None)
     assert update is not None, (
-        "taskq.obs exposes no per-actor backlog-depth cache update — backlog "
+        "taskq.obs exposes no per-actor backlog-depth cache update - backlog "
         "depth is attributable per queue only, so an actor whose jobs are "
         "never consumed is indistinguishable from a busy shared queue"
     )
@@ -67,7 +67,7 @@ def test_oldest_pending_age_is_attributable_per_actor_and_queue() -> None:
     """Oldest-pending-age is emitted per (actor, queue) pair.
 
     Depth alone is ambiguous: a deep queue that drains is healthy
-    throughput. Age is what separates the two — an actor nobody consumes
+    throughput. Age is what separates the two - an actor nobody consumes
     has a pending job whose age grows monotonically with wall clock,
     while a busy actor's oldest pending job stays bounded by its drain
     rate no matter how deep the queue gets. This is distinct from the
@@ -77,7 +77,7 @@ def test_oldest_pending_age_is_attributable_per_actor_and_queue() -> None:
     """
     update = getattr(obs_mod, "update_actor_oldest_pending_age_cache", None)
     assert update is not None, (
-        "taskq.obs exposes no per-actor oldest-pending-age cache update — "
+        "taskq.obs exposes no per-actor oldest-pending-age cache update - "
         "without it, pending work that no consumer ever takes reads as 0.0 on "
         "the oldest-due-age gauge (that gauge measures promotion, not pickup) "
         "and nothing in the emitted series ages"
@@ -119,7 +119,7 @@ def test_actor_backlog_series_carry_only_actor_and_queue_dimensions() -> None:
         }
         assert dimension_sets == {("actor", "queue")}, (
             f"{callback_name} emits dimensions {dimension_sets!r}; the contract is "
-            "exactly (actor, queue) — enough to name the stuck actor, and nothing "
+            "exactly (actor, queue) - enough to name the stuck actor, and nothing "
             "unbounded"
         )
 
@@ -129,7 +129,7 @@ def test_backlog_sampler_feeds_the_per_actor_caches() -> None:
     and computes the oldest pending age from the same snapshot.
 
     A gauge with no sampler feeding it reads 0 forever, which is exactly
-    the reading a healthy fleet produces — the most dangerous possible
+    the reading a healthy fleet produces - the most dangerous possible
     failure for a detector, because it is indistinguishable from success.
     """
     from taskq.worker import _leader_shared, _leader_sweeps
@@ -138,7 +138,7 @@ def test_backlog_sampler_feeds_the_per_actor_caches() -> None:
         _leader_sweeps, "_QUERY_ACTOR_BACKLOG_SQL_TEMPLATE", None
     )
     assert sql_template is not None, (
-        "no per-actor backlog query exists in the leader sweep SQL — the "
+        "no per-actor backlog query exists in the leader sweep SQL - the "
         "per-actor gauges have nothing feeding them and would read 0 forever, "
         "which is what a healthy fleet reads too"
     )

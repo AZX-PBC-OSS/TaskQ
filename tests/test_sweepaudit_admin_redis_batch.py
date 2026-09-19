@@ -3,8 +3,8 @@
 ``_fetch_redis_rl_state`` (taskq.web.admin.ops) reads live Redis state for
 every configured/materialized rate-limit bucket. Its name set is UNBOUNDED
 by construction: the page unions the in-process registry with every
-``rate_limit_buckets`` PG row — keyed buckets are published there on first
-acquisition and never removed — so the set grows with distinct keys ever
+``rate_limit_buckets`` PG row - keyed buckets are published there on first
+acquisition and never removed - so the set grows with distinct keys ever
 seen. One awaited Redis call per name (the pre-fix shape) is the
 per-row-round-trip class: at 10k keyed buckets that is 10k sequential
 awaits (~seconds at ~0.3 ms each) inside one request handler, on a page
@@ -106,7 +106,7 @@ async def test_fetch_redis_state_is_one_pipelined_round_trip() -> None:
 
     result = await _fetch_redis_rl_state(client, "sweepaudit", names, read_timeout=1.0)  # type: ignore[arg-type]  # Why: recording stand-in for redis.asyncio.Redis at the module's Any erasure boundary.
 
-    # Exactly one pipeline, executed exactly once — N commands, 1 round trip.
+    # Exactly one pipeline, executed exactly once - N commands, 1 round trip.
     assert len(client.pipelines) == 1, (
         f"expected exactly one pipeline, got {len(client.pipelines)} "
         f"(direct calls: {client.direct_calls})"

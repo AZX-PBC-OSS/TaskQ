@@ -1,4 +1,4 @@
-"""Shutdown hard-deadline watchdog e2e — a shutdown that exceeds
+"""Shutdown hard-deadline watchdog e2e - a shutdown that exceeds
 ``termination_grace_period`` trips detector 1 (``ShutdownWatchdog``).
 
 The ``ShutdownWatchdog`` (``_watchdog.py:269-337``) parks on
@@ -35,7 +35,7 @@ counting during the hang. With ``termination_grace = 5.01`` and zero grace
 periods, the watchdog trips just after the deadline.
 
 This module follows the ``test_pg_restart_chaos.py`` pattern: a dedicated
-PG container, schema, pool, client, and worker — none of the shared module
+PG container, schema, pool, client, and worker - none of the shared module
 fixtures are requested, so the autouse ``clean_e2e_state`` guard
 early-yields.
 """
@@ -345,7 +345,7 @@ async def test_shutdown_hard_deadline_watchdog(
             await _probe_pg(chaos_pg.host_dsn, attempts=60, interval=1.0)
 
 
-# ── The tracked-actor exit gate (#232's F1 closure) ────────────────────
+# ── The tracked-actor exit gate (the F1 closure) ────────────────────
 
 
 def _reap_gate_worker_env(
@@ -480,7 +480,7 @@ async def test_shutdown_exit_gate_trips_when_a_sync_actor_outlives_teardown(
     logs = _container_logs(reap_gate_worker.container)
     assert exit_code == EXIT_WATCHDOG, (
         f"expected the watchdog trip's exit code {EXIT_WATCHDOG}, got "
-        f"{exit_code} — the process must not outlive its own deadline just "
+        f"{exit_code} - the process must not outlive its own deadline just "
         f"because an actor thread does\n{logs}"
     )
     assert "tracked-actor-outlived-teardown" in logs, (
@@ -504,6 +504,6 @@ async def test_shutdown_exit_gate_trips_when_a_sync_actor_outlives_teardown(
     exit_tail = 0.5 + 2.0 + 1.0  # dump interval + bounded flush + slack
     assert scheduled_at >= sigterm_wall + timedelta(seconds=8.01 + exit_tail - 1.5), (
         "the hold must keep the row unclaimable until the process is provably "
-        "gone — the deadline trip plus the exit tail, which is now the true "
+        "gone - the deadline trip plus the exit tail, which is now the true "
         f"exit by construction; scheduled_at={scheduled_at}"
     )

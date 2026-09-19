@@ -2,7 +2,7 @@
 
 ``taskq.testing.assertions`` is not usable client-side: ``wait_for`` awaits an
 in-process ``asyncio.Event`` and ``wait_for_job_status`` requires an in-process
-``Backend`` — neither exists across the container boundary. The e2e test
+``Backend`` - neither exists across the container boundary. The e2e test
 process is a pure client, so these helpers poll externally observable state
 (``JobHandle`` reads and PG rows) with wall-clock deadlines instead.
 
@@ -99,7 +99,7 @@ async def wait_all[R: BaseModel | None](
     Returns each handle's ``wait`` result in input order.  Any exception
     (``TimeoutError``, :class:`JobFailed`, :class:`ResultUnavailable`)
     propagates inside the ``ExceptionGroup`` raised by the ``TaskGroup`` on
-    exit — use this when every handle is expected to reach ``succeeded``.
+    exit - use this when every handle is expected to reach ``succeeded``.
     """
     async with asyncio.TaskGroup() as tg:
         tasks = [tg.create_task(handle.wait(timeout=timeout)) for handle in handles]
@@ -117,7 +117,7 @@ async def wait_all_ignoring_failures[R: BaseModel | None](
     ``TimeoutError``, :class:`JobFailed` and :class:`ResultUnavailable` raised
     by an individual handle are swallowed so one non-succeeding handle cannot
     abort the wait.  Use this when some handles are not expected to reach
-    ``succeeded`` within *timeout* — e.g. a finalizer that snoozes via
+    ``succeeded`` within *timeout* - e.g. a finalizer that snoozes via
     ``wait_for_batch`` until its children finish, or jobs cancelled/failed by
     a batch-abort policy.  Terminal state is verified afterward via DB polling
     (``fetch_job_rows`` / ``wait_for_effects``) rather than ``wait``'s return.
@@ -172,8 +172,8 @@ async def fetch_job_rows(
     """One-shot read of ``{schema}.jobs`` rows by id, ordered by ``created_at``.
 
     For terminal-state assertions after a wait (e.g. ``max_attempts`` as a
-    snooze discriminator — ``mark_snoozed`` is the only healthy-lifecycle
-    writer that bumps it) — pair with ``JobHandle.wait`` so no polling is
+    snooze discriminator - ``mark_snoozed`` is the only healthy-lifecycle
+    writer that bumps it) - pair with ``JobHandle.wait`` so no polling is
     needed.
     """
     return await pool.fetch(
@@ -251,7 +251,7 @@ async def wait_for_worker_ready(
     POST-REGISTER heartbeat (``last_seen_at > started_at``, within the last
     10s). Requiring a heartbeat after registration means a worker that
     crashes mid-bootstrap (after ``register_worker`` but before its first
-    tick — e.g. an actor-config failure) never satisfies the gate, so the
+    tick - e.g. an actor-config failure) never satisfies the gate, so the
     fixture dumps the container logs with the actual traceback instead of
     letting the test proceed against a dead worker.
 

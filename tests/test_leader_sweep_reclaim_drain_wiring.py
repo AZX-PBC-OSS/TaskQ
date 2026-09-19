@@ -4,7 +4,7 @@ The keyed-eviction block feeds the drain (evicted bucket names recorded
 under the settings-derived pending cap), the drain runs on the same
 non-leader-gated path with the dispatcher pool and its command timeout,
 and a drain failure warns and leaves the loop alive to retry on the next
-tick — the pending set survives the failure intact.
+tick - the pending set survives the failure intact.
 """
 
 import asyncio
@@ -99,7 +99,7 @@ def _seed_idle_keyed_entry(reg: RateLimitRegistry) -> None:
 
 def _seed_idle_keyed_rate_limit_entry(reg: RateLimitRegistry, schema: str) -> None:
     """Simulate a keyed-materialized rate limit idle for 2 hours whose
-    publish landed (schema captured) — the shape whose eviction must
+    publish landed (schema captured) - the shape whose eviction must
     record a pending reclaim under the settings-derived cap."""
     reg.register(TokenBucket(name="krl:k1", capacity=5, refill_per_second=0.5, backend="memory"))
     reg._keyed_rate_limit_last_used["krl:k1"] = monotonic() - 7200.0  # pyright: ignore[reportPrivateUsage]  # Why: seeding an idle keyed entry for eviction
@@ -137,7 +137,7 @@ async def test_sweep_loop_drains_pending_reclaims_via_dispatcher_pool(
 ) -> None:
     """One tick: the idle keyed entry is evicted and recorded under the
     settings-derived pending cap, and the drain runs with the dispatcher
-    pool and the dispatcher command timeout — the pool wait is bounded the
+    pool and the dispatcher command timeout - the pool wait is bounded the
     same way as every other pool acquire in the loop."""
     own = RateLimitRegistry()
     _seed_idle_keyed_entry(own)
@@ -173,17 +173,17 @@ async def test_sweep_loop_drains_pending_reclaims_via_dispatcher_pool(
     )
 
     assert evict_calls, (
-        "the tick must evict the idle keyed entry — the eviction is the drain's feed"
+        "the tick must evict the idle keyed entry - the eviction is the drain's feed"
     )
     assert evict_calls[0]["max_pending_reclaims"] == ctx.deps.settings.max_keyed_reservations, (
         "the sweep must record pending reclaims under the settings-derived cap "
-        "(WorkerSettings.max_keyed_reservations), not the constant fallback — "
+        "(WorkerSettings.max_keyed_reservations), not the constant fallback - "
         "with a deliberately small setting the pending set would otherwise grow "
         "to the constant's 10 000 while the tracked entries are capped far lower"
     )
     assert drain_calls, "the tick must run the pending-reclaim drain after the evictions"
     assert drain_calls[0][0] is ctx.deps.dispatcher_pool, (
-        "the drain must run on the dispatcher pool — the loop's convention for "
+        "the drain must run on the dispatcher pool - the loop's convention for "
         "every pool acquire on this path"
     )
     assert drain_calls[0][1] == ctx.deps.settings.dispatcher_command_timeout, (
@@ -219,7 +219,7 @@ async def test_sweep_loop_survives_drain_failure_and_retries_next_tick(
     # earlier test in the same process can freeze the module-level proxy
     # (a monkeypatched-then-"restored" method pins the bound logger of the
     # moment against a stale structlog configuration), and capture_logs
-    # cannot see through a frozen proxy. The loop's wiring is unchanged —
+    # cannot see through a frozen proxy. The loop's wiring is unchanged -
     # same logger kind, same module name, dynamically bound.
     import taskq.worker._leader_sweeps as sweeps_mod
 
@@ -228,7 +228,7 @@ async def test_sweep_loop_survives_drain_failure_and_retries_next_tick(
         await _run_loop_until(ctx, lambda: attempts >= 2)
 
     assert attempts >= 2, (
-        "a drain failure must not kill the sweep loop — the next tick retries "
+        "a drain failure must not kill the sweep loop - the next tick retries "
         "with the pending set intact"
     )
     assert any(
@@ -246,7 +246,7 @@ async def test_sweep_loop_records_rate_limit_reclaims_under_settings_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The rate-limit eviction records its pending reclaims under the
-    settings-derived cap — the same bound the reservation twin on the
+    settings-derived cap - the same bound the reservation twin on the
     same tick applies, and the same bound the rate-limit opportunistic
     eviction already applies.
 
@@ -254,7 +254,7 @@ async def test_sweep_loop_records_rate_limit_reclaims_under_settings_cap(
     entries; a sweep-site eviction that passes no cap records pendings
     under the constant fallback (10 000), so under a persistently failing
     drain the pending set can grow two orders of magnitude past the
-    operator's ceiling while the tracked entries it mirrors stay capped —
+    operator's ceiling while the tracked entries it mirrors stay capped -
     the exact defect the reservation side's own comment describes."""
     own = RateLimitRegistry()
     deps = _deps()
@@ -275,12 +275,12 @@ async def test_sweep_loop_records_rate_limit_reclaims_under_settings_cap(
     )
 
     assert evict_calls, (
-        "the tick must evict the idle keyed rate-limit entry — the eviction is the drain's feed"
+        "the tick must evict the idle keyed rate-limit entry - the eviction is the drain's feed"
     )
     assert evict_calls[0]["max_pending_reclaims"] == ctx.deps.settings.max_keyed_rate_limits, (
         "the sweep must record rate-limit pending reclaims under the "
         "settings-derived cap (WorkerSettings.max_keyed_rate_limits), not the "
-        "constant fallback — the reservation twin on the same tick and the "
+        "constant fallback - the reservation twin on the same tick and the "
         "rate-limit opportunistic eviction both pass the settings-derived cap, "
         "and the same rationale binds here: with a deliberately small setting "
         "the pending set would otherwise grow to the constant's 10 000 while "

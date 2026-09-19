@@ -1,4 +1,4 @@
-"""E2E actors — deterministic workloads shared by the test process and the worker container.
+"""E2E actors - deterministic workloads shared by the test process and the worker container.
 
 The test process imports this module as ``tests.e2e.actors`` (ActorRef
 handles + payload models); the worker container imports it as
@@ -7,7 +7,7 @@ asyncpg, and the taskq public API so both environments load it cleanly.
 The one exception is a relative sibling import (``from .di import
 FakeHttpClient``): TaskQ's DI solver keys providers by type identity
 (:func:`taskq._di.solver.solve_dependencies`), so the injected type must
-resolve in this module's namespace at decoration time — the relative form
+resolve in this module's namespace at decoration time - the relative form
 resolves under both package roots where an absolute ``e2e.di`` /
 ``tests.e2e.di`` import would break one of them.
 
@@ -39,7 +39,7 @@ from .di import FakeHttpClient
 def _effects_schema() -> str:
     """Return the TaskQ schema name from worker env (``TASKQ_SCHEMA_NAME``).
 
-    Cached once per process — the worker container's env is fixed at start.
+    Cached once per process - the worker container's env is fixed at start.
     """
     return WorkerSettings.load().schema_name
 
@@ -107,7 +107,7 @@ async def send_welcome_email(
 
 
 class PermanentSyncError(Exception):
-    """Non-retryable sync failure — proves the permanent-failure taxonomy."""
+    """Non-retryable sync failure - proves the permanent-failure taxonomy."""
 
 
 class SyncUserProfilePayload(BaseModel):
@@ -135,7 +135,7 @@ async def sync_user_profile(
     ``fail_times`` counts attempts for the transient/permanent kinds and
     SNOOZES for the snooze kind: a non-consuming deferral refunds the
     claim's attempt increment, so ``ctx.attempt`` stays at 1 across
-    snooze cycles — an actor that snoozes N times then succeeds counts
+    snooze cycles - an actor that snoozes N times then succeeds counts
     deferrals (``ctx.snooze_count``), not attempts, because the snooze
     refunds the attempt budget without consuming work.
     """
@@ -344,7 +344,7 @@ async def rebuild_search_index(
     """Simulates a search-index rebuild.
 
     ``unique_for`` dedup fires only when the enqueue also passes an
-    ``identity_key`` — that is the test's enqueue-time responsibility.
+    ``identity_key`` - that is the test's enqueue-time responsibility.
     """
     await asyncio.sleep(0.05)
     await _record_effect(
@@ -377,7 +377,7 @@ async def enrich_order(
     """Simulates order enrichment via the DI-injected fake HTTP client.
 
     ``http`` resolves from the TRANSIENT-scope provider (fresh instance per
-    invocation); ``pool`` from the LOOP-scope provider — together they prove
+    invocation); ``pool`` from the LOOP-scope provider - together they prove
     DI bootstrap inside a real worker container.
     """
     path = f"/orders/{payload.order_id}/enrichment"
@@ -403,7 +403,7 @@ async def enrich_order(
 # Per-tenant token bucket: each tenant gets an independent capacity-3 /
 # 1-refill-per-second bucket materialized lazily on first acquisition.
 # The key_fn extracts tenant_id from the validated payload, so two tenants
-# share NO token budget — draining tenant A's bucket does not affect
+# share NO token budget - draining tenant A's bucket does not affect
 # tenant B's bucket at all.
 
 
@@ -437,7 +437,7 @@ async def deliver_tenant_webhook(
 
     Each ``tenant_id`` gets its own independent capacity-3 / 1-refill-per-second
     bucket (materialized lazily via :class:`KeyedRateLimitRef`). Draining one
-    tenant's bucket has no effect on another tenant's bucket — the e2e test
+    tenant's bucket has no effect on another tenant's bucket - the e2e test
     proves this independence.
     """
     await asyncio.sleep(0.03)
@@ -456,7 +456,7 @@ async def deliver_tenant_webhook(
 # ── Typed keyed rate-limit actor with aliased payload ───────────────────
 # Uses KeyedRateLimitRef.typed with a payload model that has a wire alias
 # (tenantId). The stored row carries the alias key, so a raw-dict key_fn
-# would fail — this proves the validated model (not the raw dict) reaches
+# would fail - this proves the validated model (not the raw dict) reaches
 # key_fn at acquire time.
 
 
@@ -508,7 +508,7 @@ async def deliver_typed_tenant_webhook(
 # max_concurrent at startup and registers a ConcurrencyReservation; the
 # dispatch path transparently prepends the queue-cap reservation name
 # via _effective_reservations, so this actor needs no rate_limits or
-# reservations declaration — the cap is purely queue-level.
+# reservations declaration - the cap is purely queue-level.
 
 
 class CappedWorkerPayload(BaseModel):
@@ -623,7 +623,7 @@ async def slow_deliver_webhook(
     """Long-running webhook delivery that outlives a SIGTERM grace period.
 
     Records ``started`` immediately, sleeps 3 s (longer than the shutdown
-    drain window), then records ``finished`` — proving whether the worker
+    drain window), then records ``finished`` - proving whether the worker
     drained or killed the in-flight job.
     """
     await _record_effect(
@@ -741,7 +741,7 @@ async def short_lived_job(
     window (cancellation_grace=1.0 + cleanup_grace=1.0 = 2.0 s).
 
     Records ``started`` immediately, sleeps 0.5 s, then records ``finished``
-    — proving the worker drains (not cancels) a short in-flight job on
+    - proving the worker drains (not cancels) a short in-flight job on
     SIGTERM.
     """
     await _record_effect(
@@ -812,7 +812,7 @@ async def batch_abort_worker(
     *,
     pool: asyncpg.Pool,
 ) -> None:
-    """Always fails — used to test batch abort policy."""
+    """Always fails - used to test batch abort policy."""
     await _record_effect(pool, ctx, "attempt", {"run_id": payload.run_id})
     raise RuntimeError("intentional failure for batch abort test")
 

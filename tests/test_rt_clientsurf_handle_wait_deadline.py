@@ -2,8 +2,8 @@
 
 The project's own rule (docs/guides/ops.md, enforced across the worker
 surface): "every wait on something outside the process is bounded, and
-exceeding the bound is reported." ``JobHandle.wait`` polls the backend —
-a wait on something outside the process — and its docstring promises
+exceeding the bound is reported." ``JobHandle.wait`` polls the backend -
+a wait on something outside the process - and its docstring promises
 ``TimeoutError: timeout elapsed before any terminal transition was
 observed`` (src/taskq/client/_handle.py:246-247).
 
@@ -17,9 +17,9 @@ The loop only checks the deadline BETWEEN polls::
             raise TimeoutError()
 
 (src/taskq/client/_handle.py:253-265). A ``backend.get`` that never
-returns — a wedged pool acquire (asyncpg's default acquire timeout is
+returns - a wedged pool acquire (asyncpg's default acquire timeout is
 None), a black-holed connection on a backend without command_timeout, a
-hung custom backend — holds the loop INSIDE the fetch while the caller's
+hung custom backend - holds the loop INSIDE the fetch while the caller's
 deadline expires unenforced. ``wait(timeout=0.3)`` then blocks forever:
 the documented TimeoutError never fires, violating both the docstring
 and the bounded-wait rule. The client-tier PG pool carries
@@ -29,7 +29,7 @@ not just one tuned pool.
 
 These tests pin the DESIRED observable: the deadline is enforced even
 while a fetch is in flight. Every wait is bounded (``asyncio.wait`` with
-a timeout) so a red never hangs the suite. In-memory tier — the defect
+a timeout) so a red never hangs the suite. In-memory tier - the defect
 is in the loop shape, not in SQL.
 """
 
@@ -60,12 +60,12 @@ def _pending_row() -> JobRow:
     Uses SubJobEnqueuer._synthesize_row (the same display-only row the
     in-buffering path hands callers pre-commit) so the test needs no
     running loop and no hand-rolled 40-field literal that would drift
-    from JobRow. The wait loop never reads this seed row for status —
+    from JobRow. The wait loop never reads this seed row for status -
     every status read goes through the duck-typed backend below."""
     args = make_enqueue_args(actor="rt_cs_wait_probe", queue="default")
     enqueuer = SubJobEnqueuer(
-        None,  # type: ignore[arg-type]  # Why: test seam — loop_scope_resolved is unused by _synthesize_row.
-        None,  # type: ignore[arg-type]  # Why: test seam — worker_pool is unused by _synthesize_row.
+        None,  # type: ignore[arg-type]  # Why: test seam - loop_scope_resolved is unused by _synthesize_row.
+        None,  # type: ignore[arg-type]  # Why: test seam - worker_pool is unused by _synthesize_row.
         InMemoryBackend(clock=FakeClock(_FROZEN_NOW)),
     )
     return enqueuer._synthesize_row(args)  # pyright: ignore[reportPrivateUsage]  # Why: deliberate test seam for loop-free row synthesis; no public equivalent exists.
@@ -75,7 +75,7 @@ class _HungFetchBackend:
     """Duck-typed Backend whose ``get`` wedges.
 
     ``hang_after=N`` lets the first *N* calls return the pending row
-    (a healthy poll cycle) before the wedge — the production shape
+    (a healthy poll cycle) before the wedge - the production shape
     where a pool exhausts only after some successful polls. ``None``
     wedges from the first call. The handle only calls ``get`` on the
     backend it was constructed with, so this is the whole surface the
@@ -85,7 +85,7 @@ class _HungFetchBackend:
         self._row = row
         self._hang_after = hang_after
         self.calls = 0
-        self._gate = asyncio.Event()  # never set — the wedged fetch
+        self._gate = asyncio.Event()  # never set - the wedged fetch
 
     async def get(self, job_id: Any) -> JobRow | None:  # type: ignore[override]  # Why: duck-typed Backend stand-in; signature matches Backend.get structurally.
         self.calls += 1
@@ -110,7 +110,7 @@ def _handle(backend: Any) -> JobHandle[None]:  # type: ignore[type-var]  # Why: 
         row=_pending_row(),
         result_adapter=_NONE_ADAPTER,
         was_existing=False,
-        backend=backend,  # type: ignore[arg-type]  # Why: duck-typed Backend seam — the wait loop only calls .get(job_id), which the stand-ins above provide.
+        backend=backend,  # type: ignore[arg-type]  # Why: duck-typed Backend seam - the wait loop only calls .get(job_id), which the stand-ins above provide.
     )
 
 
@@ -122,7 +122,7 @@ async def test_wait_deadline_is_enforced_while_a_fetch_hangs() -> None:
     (src/taskq/client/_handle.py:246-247 "TimeoutError: timeout elapsed
     before any terminal transition was observed"): the deadline check
     lives at src/taskq/client/_handle.py:262-265, BETWEEN polls, so a
-    fetch that never returns holds the loop past every deadline — the
+    fetch that never returns holds the loop past every deadline - the
     caller's wait blocks forever despite an explicit timeout."""
     stuck = _HungFetchBackend(_pending_row())  # every get wedges
     handle = _handle(stuck)
@@ -138,7 +138,7 @@ async def test_wait_deadline_is_enforced_while_a_fetch_hangs() -> None:
             await task
         pytest.fail(
             "CONTRACT: handle.wait(timeout=0.3) must raise TimeoutError once the "
-            "deadline elapses — the project rule is 'every wait on something "
+            "deadline elapses - the project rule is 'every wait on something "
             "outside the process is bounded, and exceeding the bound is "
             "reported'. Instead the coroutine was still parked inside "
             "backend.get() 2 s after its deadline expired: the deadline is "
@@ -157,7 +157,7 @@ async def test_wait_deadline_is_enforced_while_a_fetch_hangs() -> None:
 
 async def test_wait_deadline_is_enforced_when_a_fetch_hangs_mid_poll() -> None:
     """RED contract variant: the first two fetches return (a healthy poll
-    cycle begins), the third wedges — the deadline must still fire.
+    cycle begins), the third wedges - the deadline must still fire.
 
     This is the production shape of the defect: a pool whose acquire
     wedges only once (exhaustion after two successful polls) converts an
@@ -165,9 +165,9 @@ async def test_wait_deadline_is_enforced_when_a_fetch_hangs_mid_poll() -> None:
     stuck = _HungFetchBackend(_pending_row(), hang_after=2)
     handle = _handle(stuck)
 
-    # timeout=1.5 spans three poll cycles (interval 0.5 s): gets #1 and #2
-    # return promptly at t=0 / t=0.5, get #3 wedges at t=1.0 — a full second
-    # BEFORE the deadline — so the deadline can only be honored by enforcing
+    # timeout=1.5 spans three poll cycles (interval 0.5 s): gets and
+    # return promptly at t=0 / t=0.5, get wedges at t=1.0 - a full second
+    # BEFORE the deadline - so the deadline can only be honored by enforcing
     # it against the in-flight fetch.
     task = asyncio.create_task(handle.wait(timeout=1.5))
     _done, pending = await asyncio.wait({task}, timeout=3.5)
@@ -180,7 +180,7 @@ async def test_wait_deadline_is_enforced_when_a_fetch_hangs_mid_poll() -> None:
             "CONTRACT: two successful polls followed by a wedged fetch must "
             "still surface wait(timeout=1.5)'s TimeoutError; instead the "
             "coroutine was still inside backend.get() 2 s after the deadline "
-            "(the fetch wedged at t=1.0, the deadline was t=1.5) — the loop's "
+            "(the fetch wedged at t=1.0, the deadline was t=1.5) - the loop's "
             "deadline check (src/taskq/client/_handle.py:262-265) cannot run "
             "until the in-flight fetch returns."
         )
@@ -194,7 +194,7 @@ async def test_wait_deadline_is_enforced_when_a_fetch_hangs_mid_poll() -> None:
 
 async def test_wait_deadline_fires_when_fetches_return_promptly() -> None:
     """GREEN control isolating the variable: the same never-terminal job,
-    a backend whose fetches DO return — the loop-level deadline fires on
+    a backend whose fetches DO return - the loop-level deadline fires on
     schedule. Pinned alongside the two RED tests so a fix that merely
     breaks the healthy path cannot pass unnoticed."""
     handle = _handle(_PromptBackend(_pending_row()))

@@ -89,13 +89,17 @@ async def test_cancel_notify_fires_on_running_job(pg_dsn: str) -> None:
         # Collect NOTIFY payloads received on each channel via a dedicated
         # listener connection opened before the cancel fires.
         fleet_payloads: list[str] = []
+        fleet_notify = asyncio.Event()
         worker_payloads: list[str] = []
 
         listen_conn = await asyncpg.connect(pg_dsn)
         try:
             await listen_conn.add_listener(
                 fleet_ch,
-                lambda _conn, _pid, _ch, payload: fleet_payloads.append(payload),
+                lambda _conn, _pid, _ch, payload: (
+                    fleet_payloads.append(payload),
+                    fleet_notify.set(),
+                ),
             )
             await listen_conn.add_listener(
                 worker_ch,
@@ -106,8 +110,11 @@ async def test_cancel_notify_fires_on_running_job(pg_dsn: str) -> None:
             result = await backend.write_cancel_request(job_id, "test cancel")
             assert result is True
 
-            # Give asyncpg time to deliver the NOTIFY callbacks.
-            await asyncio.sleep(0.3)
+            # Wait on delivery instead of guessing the latency: a fixed
+            # sleep guesses how long asyncpg needs to deliver the NOTIFY
+            # callback, and the assert below means nothing if the
+            # connection closes first. Same idiom as the wake test below.
+            await asyncio.wait_for(fleet_notify.wait(), timeout=5.0)
         finally:
             await listen_conn.close()
 
@@ -176,7 +183,7 @@ async def test_subscribe_cancel_wake_fires_on_cancel(pg_dsn: str) -> None:
 
 @_integration
 async def test_no_notify_on_pending_job_cancel(pg_dsn: str) -> None:
-    """Cancelling a pending job (case 1 — immediate terminal) does NOT
+    """Cancelling a pending job (case 1 - immediate terminal) does NOT
     fire pg_notify on the events or worker channels. Only running jobs need
     the interrupt signal.
     """
@@ -303,7 +310,7 @@ async def test_no_notify_on_second_cancel_call(pg_dsn: str) -> None:
         try:
             backend = PostgresBackend(deps, SystemClock(), _GRACE, _GRACE)
 
-            # First cancel — should fire NOTIFY (listener not yet attached, so
+            # First cancel - should fire NOTIFY (listener not yet attached, so
             # it arrives on no local listener; we only care about the second).
             r1 = await backend.write_cancel_request(job_id, "first")
             assert r1 is True
@@ -316,7 +323,7 @@ async def test_no_notify_on_second_cancel_call(pg_dsn: str) -> None:
                 lambda _conn, _pid, _ch, payload: received_after_second.append(payload),
             )
 
-            # Second cancel — case 3, should be a no-op.
+            # Second cancel - case 3, should be a no-op.
             r2 = await backend.write_cancel_request(job_id, "second")
             assert r2 is False
             await asyncio.sleep(0.3)
@@ -332,7 +339,7 @@ async def test_no_notify_on_second_cancel_call(pg_dsn: str) -> None:
 
 # ── heartbeat_loop sleep interrupted by cancel_wake_event ─────────
 #
-# Pure unit test — no PG required. Uses FakePool/FakeConn from test_heartbeat.py
+# Pure unit test - no PG required. Uses FakePool/FakeConn from test_heartbeat.py
 # patterns so the heartbeat loop runs without a real database.
 
 
@@ -396,7 +403,7 @@ async def test_heartbeat_loop_sleep_interrupted_by_cancel_wake_event() -> None:
 
     Configures a 10-second heartbeat interval, fires cancel_wake_event after
     ~50 ms, and asserts the loop ticks again (i.e., runs another heartbeat
-    SQL batch) well within 1 second — proving the wait_for interruption works.
+    SQL batch) well within 1 second - proving the wait_for interruption works.
     """
     # Remove the integration mark so this test runs without PG.
     # Short heartbeat so cleanup (await task) doesn't block on a long wait_for.
@@ -432,7 +439,7 @@ async def test_heartbeat_loop_sleep_interrupted_by_cancel_wake_event() -> None:
 
     # Allow up to 0.5 second for the second tick to fire.
     deadline = asyncio.get_running_loop().time() + 0.5
-    while tick_count < first_tick_count + 1 and asyncio.get_running_loop().time() < deadline:  # noqa: ASYNC110 — polling external tick_count, not a waitable event
+    while tick_count < first_tick_count + 1 and asyncio.get_running_loop().time() < deadline:  # noqa: ASYNC110 - polling external tick_count, not a waitable event
         await asyncio.sleep(0.02)
 
     shutdown.set()
@@ -440,7 +447,7 @@ async def test_heartbeat_loop_sleep_interrupted_by_cancel_wake_event() -> None:
 
     assert tick_count >= first_tick_count + 1, (
         f"expected at least {first_tick_count + 1} ticks after cancel_wake_event.set(), "
-        f"got {tick_count} — sleep was not interrupted"
+        f"got {tick_count} - sleep was not interrupted"
     )
 
 
@@ -483,7 +490,7 @@ async def test_heartbeat_loop_cancel_wake_event_clears_after_interrupt() -> None
     # Wait for the second tick (woken by the event) to complete.
     deadline = asyncio.get_running_loop().time() + 0.5
     before = counting_pool.acquire_count
-    while counting_pool.acquire_count < before + 1 and asyncio.get_running_loop().time() < deadline:  # noqa: ASYNC110 — polling external acquire_count, not a waitable event
+    while counting_pool.acquire_count < before + 1 and asyncio.get_running_loop().time() < deadline:  # noqa: ASYNC110 - polling external acquire_count, not a waitable event
         await asyncio.sleep(0.02)
 
     # Give the loop a moment to clear the event after the tick.

@@ -1,4 +1,4 @@
-"""Contract tests for ``taskq.obs.configure_exporters`` — the SDK exporter
+"""Contract tests for ``taskq.obs.configure_exporters`` - the SDK exporter
 wiring the ``taskq worker`` CLI performs at startup.
 
 Before this wiring existed a stock worker exported nothing: the OTel
@@ -9,15 +9,15 @@ alert rule was inert.
 
 The contract, per outcome:
 
-- ``configured`` — the variables (or ``TASKQ_METRICS_PORT``) asked for
+- ``configured`` - the variables (or ``TASKQ_METRICS_PORT``) asked for
   exporters and the SDK is installed: real SDK providers are installed
   once and ``otel-exporter-configured`` names what was wired.
-- ``sdk_missing`` — exporters were asked for but the package is missing:
+- ``sdk_missing`` - exporters were asked for but the package is missing:
   a WARNING names the extra, nothing crashes, the proxies stay.
-- ``disabled`` — ``TASKQ_OTEL_AUTOCONFIGURE=false``: nothing is touched.
-- ``preconfigured`` — the embedding application already set a provider:
+- ``disabled`` - ``TASKQ_OTEL_AUTOCONFIGURE=false``: nothing is touched.
+- ``preconfigured`` - the embedding application already set a provider:
   that exact provider stays.
-- ``none`` / ``sdk_disabled`` — nothing was asked for, or the SDK is
+- ``none`` / ``sdk_disabled`` - nothing was asked for, or the SDK is
   switched off by ``OTEL_SDK_DISABLED``.
 
 Scenarios that install a provider mutate process-global OTel state behind
@@ -63,7 +63,7 @@ def _run_scenario(body: str, *, env: dict[str, str] | None = None) -> dict[str, 
         if not k.startswith("OTEL_") and not k.startswith("TASKQ_")
     }
     child_env.update(env or {})
-    result = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell — the current interpreter running this file's own literal scenario bodies; no untrusted input.
+    result = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell - the current interpreter running this file's own literal scenario bodies; no untrusted input.
         [sys.executable, "-c", body],
         capture_output=True,
         text=True,

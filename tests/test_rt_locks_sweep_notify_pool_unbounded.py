@@ -2,9 +2,9 @@
 """Red-team locks: backend sweeps acquire the notify/dispatcher pool with no timeout.
 
 ``backend/postgres.py``'s sweep entrypoints acquire with
-``async with self._notify_pool.acquire() as conn:`` — no ``timeout=``
+``async with self._notify_pool.acquire() as conn:`` - no ``timeout=``
 (``scheduled_to_pending``, ``deadline_sweep``, ``reclaim_expired_locks``)
-— and ``_notify_pool`` delegates to the DISPATCHER pool, the same pool a
+- and ``_notify_pool`` delegates to the DISPATCHER pool, the same pool a
 prune drain holds for its whole multi-batch drain
 (``worker/_leader_sweeps.py`` keeps its dispatcher conn across
 ``prune_terminal_jobs``). With that pool exhausted, a sweep queues
@@ -53,14 +53,14 @@ async def test_sweep_notify_pool_acquire_must_be_bounded_under_held_dispatcher_c
     pg_dsn: str,
 ) -> None:
     """RED: with the single-conn dispatcher pool held (the prune-drain
-    shape), the sweep entrypoint must fail (or succeed) within a bound —
+    shape), the sweep entrypoint must fail (or succeed) within a bound -
     not queue indefinitely.
 
     Contract: backend sweeps must bound their notify/dispatcher pool
     acquire and classify the failure. Today the contract is violated:
     postgres.py's ``scheduled_to_pending`` acquires with
-    ``async with self._notify_pool.acquire() as conn:`` — no timeout=
-    (same shape at ``deadline_sweep`` and ``reclaim_expired_locks``) — so
+    ``async with self._notify_pool.acquire() as conn:`` - no timeout=
+    (same shape at ``deadline_sweep`` and ``reclaim_expired_locks``) - so
     with the pool's only connection held by a prune drain, the sweep
     queued past the test's own 8 s bound; the ONLY thing that ended the
     wait was this test's wait_for, proving the acquire itself carries no
@@ -86,7 +86,7 @@ async def test_sweep_notify_pool_acquire_must_be_bounded_under_held_dispatcher_c
         )
         control = await asyncio.wait_for(backend.scheduled_to_pending(), timeout=_TEST_BOUND_S)
         assert control == 0, (
-            "control: a fresh schema has nothing scheduled — the sweep entrypoint "
+            "control: a fresh schema has nothing scheduled - the sweep entrypoint "
             "itself works when a connection is free, guarding the starved case below "
             "against wrong-reason failure"
         )
@@ -100,13 +100,13 @@ async def test_sweep_notify_pool_acquire_must_be_bounded_under_held_dispatcher_c
                 if elapsed >= _UNBOUNDED_MARGIN_S:
                     pytest.fail(
                         "Contract: the backend sweep entrypoints must bound their "
-                        "notify/dispatcher pool acquire and classify the failure — a "
+                        "notify/dispatcher pool acquire and classify the failure - a "
                         "held dispatcher conn (the prune drain holds one for its "
                         "whole multi-batch drain) must not queue a sweep indefinitely. "
                         "Today the contract is violated: postgres.py's "
                         "scheduled_to_pending acquires with `async with "
-                        "self._notify_pool.acquire() as conn:` — no timeout= (same "
-                        "shape at deadline_sweep and reclaim_expired_locks) — and the "
+                        "self._notify_pool.acquire() as conn:` - no timeout= (same "
+                        "shape at deadline_sweep and reclaim_expired_locks) - and the "
                         f"sweep was still queued at the test's own {elapsed:.1f} s "
                         "bound; the only thing that ended the wait was this test's "
                         "wait_for, proving the acquire carries no bound of its own"
@@ -115,7 +115,7 @@ async def test_sweep_notify_pool_acquire_must_be_bounded_under_held_dispatcher_c
             await pool.release(held)
         after = await asyncio.wait_for(backend.scheduled_to_pending(), timeout=_TEST_BOUND_S)
         assert after == 0, (
-            "Contract: releasing the holder must let the sweep run again — the "
+            "Contract: releasing the holder must let the sweep run again - the "
             "starve is an unbounded queue, not a break"
         )
     finally:

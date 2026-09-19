@@ -8,7 +8,7 @@ batched ``unnest`` INSERT per event kind inside the same transaction as
 the driving UPDATE, and the drain terminates on the window count the
 statement itself returns.  The two layers below pin that contract:
 
-* **Layer 1 — the boundedness contract.**  No single transaction may
+* **Layer 1 - the boundedness contract.**  No single transaction may
   mutate more than a bound well below the backlog, no transaction may
   insert an unbounded number of ``job_events`` rows, and the event
   writes must not take one round trip per row.  This is the property
@@ -16,29 +16,29 @@ statement itself returns.  The two layers below pin that contract:
   trailing-watermark guarantee for ``poll_reclaim_events`` holds only
   while no ``job_events`` writer takes longer than the margin between
   its INSERT and its COMMIT, and it names "an abnormally large batch
-  inserted in one transaction" as a known way to violate it — the
+  inserted in one transaction" as a known way to violate it - the
   consequence being a **silently missed event** (a lower-``id`` row
   committing after the consumer's cursor has already advanced past its
   position, with no error raised anywhere).  A bulk cancel is squarely
   inside that class of writers, so its per-transaction volume is bounded
   and each batch carries a server-side ``statement_timeout`` as
   enforcement.
-* **Layer 2 — the behaviour pins.**  Completeness (every matching job
+* **Layer 2 - the behaviour pins.**  Completeness (every matching job
   reaches terminal ``cancelled``), containment (non-matching jobs are
   bit-for-bit untouched), per-row ``from_state`` in the
   ``state_change`` detail, per-row ``occurred_at`` co-monotonic with
   ``job_events.id``, running jobs get cooperative cancel (never
   terminal), re-runs are idempotent, and the returned counts equal the
   rows actually cancelled.  Completeness includes the mid-drain re-pend
-  dimension (#237): a matching running row moved back to pending /
+  dimension: a matching running row moved back to pending /
   scheduled BEHIND the pending arm's keyset cursor (a crash reclaim, a
   denial snooze, a shutdown interrupt, a consumer retry) must still be
   cancelled by the same call, and the two-arm drain must terminate as a
   bounded fixpoint (a first empty round stops it; a hard round cap
   bounds it under sustained churn), never an unbounded loop.
 
-Counting mutated rows and event rows per transaction — from the driving
-statement's own RETURNING aggregates — rather than wall-clock seconds
+Counting mutated rows and event rows per transaction - from the driving
+statement's own RETURNING aggregates - rather than wall-clock seconds
 keeps every assertion RTT-independent and deterministic in any
 environment, the same discipline ``test_dispatch_event_batching`` and
 ``test_sweep_scheduled_to_pending_batching`` use for round trips.
@@ -46,7 +46,7 @@ environment, the same discipline ``test_dispatch_event_batching`` and
 Bounding this path was an API-contract decision, not a mechanical
 refactor: ``cancel_where`` still cancels everything matching (the
 ``limit``/``cursor``/``order_by`` filter fields remain ignored for bulk
-writes), but across several committed transactions — the operation is
+writes), but across several committed transactions - the operation is
 deliberately non-atomic, and a concurrent enqueue can slip a new
 matching row in between batches.  The EPQ-safe predicates and the
 window-count termination keep the drain complete and exactly-once
@@ -274,16 +274,16 @@ class _CountingPool:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# LAYER 1 — the boundedness contract.  These assert the properties the
+# LAYER 1 - the boundedness contract.  These assert the properties the
 # bounded implementation enforces; a regression to an unbounded single
 # transaction (no LIMIT on the matching CTE, per-row event writes) fails
 # here.
 #
 # Contract context: making ``cancel_where`` bounded was an API-CONTRACT
-# DECISION, not a mechanical refactor — the documented contract
+# DECISION, not a mechanical refactor - the documented contract
 # (``src/taskq/backend/_protocol.py`` on ``JobFilter``: "for
 # ``cancel_where``, the ``limit``, ``cursor`` and ``order_by`` fields are
-# ignored — a bulk cancel is not paginated") now means "cancel everything
+# ignored - a bulk cancel is not paginated") now means "cancel everything
 # matching, but in bounded committed chunks", not "in one transaction".
 # The operation is deliberately non-atomic: a concurrent enqueue can slip
 # a new matching row in between batches, and a mid-operation failure
@@ -307,7 +307,7 @@ async def test_bulk_cancel_does_not_update_the_whole_backlog_in_one_transaction(
     The bounded drain commits the match set in batches of at most the
     batch size: no single transaction mutates more than
     ``_MAX_ROWS_PER_TX`` job rows, and covering a backlog larger than the
-    cap therefore takes more than one committed transaction — so row
+    cap therefore takes more than one committed transaction - so row
     locks are never held on the entire match set for one transaction's
     duration.
 
@@ -334,7 +334,7 @@ async def test_bulk_cancel_does_not_update_the_whole_backlog_in_one_transaction(
     assert result.cancelled_directly == _BACKLOG, "every matching job must still be cancelled"
     assert pool.max_rows_in_one_tx <= _MAX_ROWS_PER_TX, (
         f"one transaction mutated {pool.max_rows_in_one_tx} job rows out of a "
-        f"{_BACKLOG}-row backlog — the driving CTE still has no LIMIT, so row locks "
+        f"{_BACKLOG}-row backlog - the driving CTE still has no LIMIT, so row locks "
         f"are held on the entire match set for the whole transaction, and at production "
         f"backlog sizes that transaction is the 'abnormally large batch inserted in one "
         f"transaction' that RECLAIM_EVENT_VISIBILITY_DELAY's docstring names as a cause "
@@ -342,7 +342,7 @@ async def test_bulk_cancel_does_not_update_the_whole_backlog_in_one_transaction(
     )
     assert pool.transactions > 1, (
         f"cancelling {_BACKLOG} rows under a {_MAX_ROWS_PER_TX}-row cap must commit in "
-        f"more than one transaction; saw {pool.transactions} — nothing is being chunked"
+        f"more than one transaction; saw {pool.transactions} - nothing is being chunked"
     )
 
 
@@ -392,7 +392,7 @@ async def test_bulk_cancel_event_writes_are_bounded_per_transaction(
     # per-transaction row budget.
     assert pool.max_event_rows_in_one_tx <= 2 * _MAX_ROWS_PER_TX, (
         f"one transaction inserted {pool.max_event_rows_in_one_tx} job_events rows for a "
-        f"{_BACKLOG}-row backlog — RECLAIM_EVENT_VISIBILITY_DELAY's 2s margin assumes no "
+        f"{_BACKLOG}-row backlog - RECLAIM_EVENT_VISIBILITY_DELAY's 2s margin assumes no "
         f"job_events writer holds a transaction open longer than that between INSERT and "
         f"COMMIT, and an unbounded bulk cancel is exactly the 'abnormally large batch "
         f"inserted in one transaction' its docstring names; the consequence is a silently "
@@ -417,7 +417,7 @@ async def test_bulk_cancel_does_not_issue_one_round_trip_per_row(
     differs per row (``prev_statuses[jid]`` is ``'pending'`` for some
     rows and ``'scheduled'`` for others, carried as a second ``unnest``
     column by the two-column batch template).  Both land as one batched
-    ``unnest`` INSERT per event kind per batch — the same
+    ``unnest`` INSERT per event kind per batch - the same
     ``INSERT_EVENTS_DETAIL_BATCH_SQL`` shape the dispatch path uses.
 
     That is why the assertion is on the batch size, not on statement
@@ -441,7 +441,7 @@ async def test_bulk_cancel_does_not_issue_one_round_trip_per_row(
     assert result.cancelled_directly == _BACKLOG
     assert pool.max_event_batch <= _MAX_ROWS_PER_TX, (
         f"a single event write covered {pool.max_event_batch} rows (executemany calls: "
-        f"{pool.executemany_calls}) — the per-row parameter tuples are still being sent "
+        f"{pool.executemany_calls}) - the per-row parameter tuples are still being sent "
         f"for the entire unbounded match set inside one transaction"
     )
 
@@ -482,7 +482,7 @@ async def test_bulk_cancel_of_running_jobs_is_also_bounded(
     assert notify_targets == [], "no locked_by_worker means no NOTIFY targets"
     assert pool.max_rows_in_one_tx <= _MAX_ROWS_PER_TX, (
         f"one transaction set cancel_phase=1 on {pool.max_rows_in_one_tx} running rows out "
-        f"of {_BACKLOG} — statement 2's matching CTE has no LIMIT either, so chunking only "
+        f"of {_BACKLOG} - statement 2's matching CTE has no LIMIT either, so chunking only "
         f"statement 1 would leave this half of the lock hold untouched"
     )
     assert pool.max_event_rows_in_one_tx <= _MAX_ROWS_PER_TX, (
@@ -492,7 +492,7 @@ async def test_bulk_cancel_of_running_jobs_is_also_bounded(
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# LAYER 2 — CORRECTNESS PINNING.  Every test below PASSES NOW and MUST STILL
+# LAYER 2 - CORRECTNESS PINNING.  Every test below PASSES NOW and MUST STILL
 # PASS AFTER the fix.  The fix rewrites SQL that mutates job state and writes
 # the audit log, so these pin the observable behaviour that must not change.
 # ══════════════════════════════════════════════════════════════════════════
@@ -503,7 +503,7 @@ async def test_pins_every_matching_job_reaches_cancelled_and_others_are_untouche
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """LAYER 2 — pins the behaviour the bounded drain must preserve.
+    """LAYER 2 - pins the behaviour the bounded drain must preserve.
 
     Completeness and containment: every job matching the predicate ends in
     terminal ``cancelled`` with ``finished_at`` stamped, and every job that does
@@ -574,7 +574,7 @@ async def test_pins_state_change_from_state_is_each_jobs_actual_previous_status(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """LAYER 2 — pins the behaviour the bounded drain must preserve.
+    """LAYER 2 - pins the behaviour the bounded drain must preserve.
 
     The ``state_change`` batch carries a PER-ROW detail: ``from_state`` comes
     from ``prev_statuses[jid]``, which is that job's own status as read
@@ -651,7 +651,7 @@ async def test_pins_event_occurred_at_is_per_row_and_co_monotonic_with_id(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """LAYER 2 — pins the behaviour the bounded drain must preserve.
+    """LAYER 2 - pins the behaviour the bounded drain must preserve.
 
     ``INSERT_EVENT_SQL`` stamps ``occurred_at`` with ``clock_timestamp()``, not
     ``now()``: ``now()`` is frozen at transaction start, so a rewrite that
@@ -701,7 +701,7 @@ async def test_pins_event_occurred_at_is_per_row_and_co_monotonic_with_id(
         if stamps[i + 1] < stamps[i]
     ]
     assert inversions == [], (
-        f"occurred_at must be non-decreasing in id order — {len(inversions)} inversion(s) "
+        f"occurred_at must be non-decreasing in id order - {len(inversions)} inversion(s) "
         f"found, e.g. {inversions[:3]}; poll_reclaim_events' trailing watermark assumes "
         f"job_events.id and occurred_at are co-monotonic (see "
         f"taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY)"
@@ -712,7 +712,7 @@ async def test_pins_event_occurred_at_is_per_row_and_co_monotonic_with_id(
     assert sc_stamps and cr_stamps
     assert sc_stamps.isdisjoint(cr_stamps), (
         "state_change and cancel_request events written by separate statements in the "
-        "same transaction must not share an occurred_at — a shared value means the "
+        "same transaction must not share an occurred_at - a shared value means the "
         "timestamp is frozen at transaction start (now()) or bound once from Python, "
         "not the per-row clock_timestamp() INSERT_EVENT_SQL specifies"
     )
@@ -727,7 +727,7 @@ async def test_pins_running_jobs_get_cooperative_cancel_not_terminal_status(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """LAYER 2 — pins the behaviour the bounded drain must preserve.
+    """LAYER 2 - pins the behaviour the bounded drain must preserve.
 
     The two arms are not interchangeable and a rewrite must not merge them: a
     ``running`` job is NEVER moved to terminal ``cancelled`` by a bulk cancel.
@@ -816,7 +816,7 @@ async def test_pins_rerunning_the_bulk_cancel_is_idempotent(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """LAYER 2 — pins the behaviour the bounded drain must preserve.
+    """LAYER 2 - pins the behaviour the bounded drain must preserve.
 
     A second identical bulk cancel cancels nothing extra and writes no extra
     events: the ``status IN ('pending','scheduled')`` guard in the driving CTE
@@ -881,7 +881,7 @@ async def test_pins_returned_count_equals_the_number_actually_cancelled(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """LAYER 2 — pins the behaviour the bounded drain must preserve.
+    """LAYER 2 - pins the behaviour the bounded drain must preserve.
 
     ``BulkCancelResult.cancelled_directly`` is the count of rows that actually
     moved to ``cancelled`` by THIS call -- not the size of the match set, and
@@ -940,7 +940,7 @@ async def test_pins_returned_count_equals_the_number_actually_cancelled(
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# LAYER 3 — the scaling contract. Layer 1 bounds what ONE transaction does;
+# LAYER 3 - the scaling contract. Layer 1 bounds what ONE transaction does;
 # these bound how the drain behaves ACROSS transactions as the backlog
 # grows. A bulk cancel that is bounded per batch can still be unusable at
 # scale in two ways an operator feels and no layer-1 assertion can see:
@@ -1232,7 +1232,7 @@ async def test_running_arm_drain_batch_cost_does_not_grow_as_requests_accumulate
     The running arm re-selects "the next ``batch_size`` matching rows with
     ``status='running' AND cancel_phase=0``" on every pass, and a row it
     already requested STAYS ``running`` (the worker owns the terminal
-    write) — only ``cancel_phase`` moves. If the plan cannot skip the
+    write) - only ``cancel_phase`` moves. If the plan cannot skip the
     already-requested rows, batch N pays for the (N-1) * batch_size rows
     its predecessors moved, exactly as the terminal arm does, and an
     offboard landing on a fleet with a deep running backlog strands its
@@ -1526,7 +1526,7 @@ async def test_partial_drain_progress_is_durable_and_a_rerun_resumes(
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# LAYER 2b: the fixpoint rounds (#237). Mid-drain re-pends behind the
+# LAYER 2b: the fixpoint rounds. Mid-drain re-pends behind the
 # keyset cursor, and their termination/cost bound.
 #
 # The keyset cursor that keeps each batch cheap (perf-evidence-bulk-cancel.md)
@@ -1660,7 +1660,7 @@ async def test_repend_behind_the_cursor_is_caught_by_the_next_round(
 ) -> None:
     """A matching running row the crash-reclaim sweep re-pends BEHIND the
     pending arm's keyset cursor mid-drain must still be cancelled by the
-    same call (#237).
+    same call.
 
     Reproduction of the defect on the pre-rounds drain: the row was
     'running' when the pending arm windowed past its id (no window ever
@@ -1751,22 +1751,22 @@ async def test_cancel_in_flight_reclaimed_mid_drain_is_terminal_cancelled(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """The #237 + #238 composition, end to end: a running job whose cancel
+    """The full composition, end to end: a running job whose cancel
     is ALREADY in flight (phase 1, requested_at stamped by a prior
     single-job cancel), reclaimed by the production sweep between the
     drain's two arms, behind the pending arm's cursor.
 
     Doubly lost on the pre-fix code: the budget-first sweep re-pended the
-    row 'pending' with the operator's cancel columns WIPED (#238), and
+    row 'pending' with the operator's cancel columns WIPED, and
     the re-pended row sat at an id the pending arm had already passed so
-    no later arm of the call could see it (#237): the call returned
+    no later arm of the call could see it: the call returned
     normally reporting nothing about a job whose cancel it had been asked
     to complete.  That doubly-lost OUTCOME needs both defects together;
     the pin is stronger than that outcome: patch-out experiments show the
-    test red with EITHER fix alone reverted. #237 out (single pass, no
-    rounds): the row ends 'cancelled' via the fixed sweep but
-    ``ps_drains_started`` reads 1, not the asserted 2; #238 out
-    (budget-first sweep): the rounds catch the re-pended row so it ends
+    test red with EITHER fix alone reverted. Dropping the fixpoint (single
+    pass, no rounds): the row ends 'cancelled' via the fixed sweep but
+    ``ps_drains_started`` reads 1, not the asserted 2; dropping the
+    budget-first sweep: the rounds catch the re-pended row so it ends
     'cancelled', but via arm 1 directly (``cancelled_directly`` reads 5,
     not the asserted 4, and the preserved-audit-column assertions fail
     (the sweep wiped the phase before the round cancelled it).  So the
@@ -1867,7 +1867,7 @@ async def test_drain_rounds_terminate_at_the_first_empty_round(
     bottom of the key space, matches nothing, and stops the loop.
 
     This is the bound proof for the no-churn case: the second pass is the
-    price of the #237 fix (one extra empty two-arm pass), and it is paid
+    price of the fix (one extra empty two-arm pass), and it is paid
     ONCE, not per batch: a regression to an unbounded loop shows up as
     more pending-arm drains, and a regression to the single-pass drain as
     exactly one.

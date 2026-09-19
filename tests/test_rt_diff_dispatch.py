@@ -3,7 +3,7 @@
 Axes: strict-FIFO ordering and priority ties, scheduled_at ties (normalized
 against each side's own id order), oversample truncation, identity dedup,
 the two RCA-era FIXED divergences (empty queues list; NULL fairness_key in
-round-robin — both must hold as GREEN differentials), actor_config gating,
+round-robin - both must hold as GREEN differentials), actor_config gating,
 and per-actor max_concurrent admission.
 """
 
@@ -37,7 +37,7 @@ async def test_diff_dispatch_fifo_priority_order(pg_dsn: str) -> None:
     mem, pg = await run_differential(_fifo_priority_order, pg_dsn=pg_dsn)
     assert_mirror(
         "strict-FIFO dispatch selects jobs by priority DESC, then "
-        "scheduled_at, then id — the same jobs win each LIMIT-bounded round "
+        "scheduled_at, then id - the same jobs win each LIMIT-bounded round "
         "on both backends",
         mem,
         pg,
@@ -51,7 +51,7 @@ async def test_diff_dispatch_fifo_priority_order(pg_dsn: str) -> None:
 
 async def _scheduled_ties_same_timestamp(side: DiffSide) -> None:
     # Identical priority AND identical scheduled_at: the only legal selector
-    # is id, and each side's ids differ — so the observable is each side's
+    # is id, and each side's ids differ - so the observable is each side's
     # dispatch expressed as ranks in its OWN id order.
     await side.enqueue("t1", scheduled_in=-1.0)
     await side.enqueue("t2", scheduled_in=-1.0)
@@ -92,7 +92,7 @@ async def _cross_actor_priority_interleave(side: DiffSide) -> None:
 
 async def test_diff_dispatch_cross_actor_priority_tie(pg_dsn: str) -> None:
     """At a shared rank with limit 1, the higher-priority job must win on BOTH
-    backends — the mirror may not substitute alphabetical actor order."""
+    backends - the mirror may not substitute alphabetical actor order."""
     mem, pg = await run_differential(
         _cross_actor_priority_interleave,
         pg_dsn=pg_dsn,
@@ -102,7 +102,7 @@ async def test_diff_dispatch_cross_actor_priority_tie(pg_dsn: str) -> None:
         "when a dispatch round's limit cuts inside a rank shared by jobs of "
         "different actors, the winner is the highest-priority job (PG's "
         "eligible ORDER BY: pending_rank, fairness_rank NULLS LAST, priority "
-        "DESC, scheduled_at) — never the alphabetically-first actor",
+        "DESC, scheduled_at) - never the alphabetically-first actor",
         mem,
         pg,
     )
@@ -122,7 +122,7 @@ async def test_diff_dispatch_empty_queues_list_matches_nothing(pg_dsn: str) -> N
     NOTHING (PG's unnest annihilates every candidate), never 'no filter'."""
     mem, pg = await run_differential(_empty_queues_list, pg_dsn=pg_dsn)
     assert_mirror(
-        "queues=[] selects no candidates on either backend — the mirror must "
+        "queues=[] selects no candidates on either backend - the mirror must "
         "not dispatch work a real worker polling the same empty list never "
         "would (the fixed RCA-era divergence, now pinned green)",
         mem,
@@ -157,7 +157,7 @@ async def test_diff_dispatch_round_robin_null_fairness_shared_partition(pg_dsn: 
     assert_mirror(
         "round_robin partitions every unkeyed job into ONE shared __null__ "
         "fairness cohort (ranks 1..N) exactly like PG's PARTITION BY "
-        "COALESCE(fairness_key, '__null__') — a bounded round selects "
+        "COALESCE(fairness_key, '__null__') - a bounded round selects "
         "unkeyed AND keyed cohort jobs on both backends (the fixed RCA-era "
         "starvation, now pinned green)",
         mem,
@@ -220,7 +220,7 @@ async def _oversample_window_blocked_by_running_identity(side: DiffSide) -> None
     # Four pending jobs share the identity of a RUNNING job and sort ahead
     # of the fifth (different identity). The strict-FIFO lateral's base
     # window reads only residual * oversample = 2 * 2 = 4 candidates per
-    # queue — exactly the four blocked-identity jobs — so identity dedup
+    # queue - exactly the four blocked-identity jobs - so identity dedup
     # drops every candidate in the first pass. With a claimable row still
     # pending behind the window, the round widens the window and the
     # deeper row dispatches: an empty round is only legitimate when NO
@@ -243,14 +243,14 @@ async def _oversample_window_blocked_by_running_identity(side: DiffSide) -> None
 
 async def test_diff_dispatch_oversample_window_expansion(pg_dsn: str) -> None:
     """A fully-blocked base window does not end the round: the window widens
-    and the claimable job behind the blocked cohort dispatches — identically
+    and the claimable job behind the blocked cohort dispatches - identically
     on both backends."""
     mem, pg = await run_differential(_oversample_window_blocked_by_running_identity, pg_dsn=pg_dsn)
     assert_mirror(
         "the dispatch candidate set is bounded by residual * oversample per "
         "(actor, queue); when identity dedup removes that entire base window "
         "and claimable rows remain behind it, the round re-claims with a "
-        "widened window — the mirror walks the same doubling schedule and "
+        "widened window - the mirror walks the same doubling schedule and "
         "reaches the same row",
         mem,
         pg,
@@ -273,7 +273,7 @@ async def test_diff_dispatch_zero_actor_config_rows(pg_dsn: str) -> None:
     assert_mirror(
         "dispatch candidates come from the actor_config registry: zero "
         "registered actors means zero candidates on PG, and the mirror must "
-        "agree — 'no actors registered' must never read as 'no filter'",
+        "agree - 'no actors registered' must never read as 'no filter'",
         mem,
         pg,
     )
@@ -299,7 +299,7 @@ async def test_diff_dispatch_max_concurrent_admission(pg_dsn: str) -> None:
     )
     assert_mirror(
         "per-actor max_concurrent admission: one dispatch with the slot held, "
-        "zero while the running job holds it — identical on both backends",
+        "zero while the running job holds it - identical on both backends",
         mem,
         pg,
     )

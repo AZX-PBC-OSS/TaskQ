@@ -1,17 +1,17 @@
-"""Lock-timeout refusals are counted, not just logged — closing the counting asymmetry.
+"""Lock-timeout refusals are counted, not just logged - closing the counting asymmetry.
 
 The capacity arm of enqueue identity serialization has always counted its
 lock-budget refusals (``record_backpressure_error(actor,
 kind="max_pending_lock_timeout")`` beside the warning log). The unique_for
 and idempotency arms raised the same class of typed refusal with only a log
-line — a refusal an operator's alerting cannot see, in exactly the
+line - a refusal an operator's alerting cannot see, in exactly the
 contention storms where logs drown. These pins drive both remaining arms
 through the real emitters and assert the ``taskq.backpressure.errors``
 datapoint lands with its own bounded kind and the actor label: the same
 shape as the capacity arm, never a capacity kind, never uncounted.
 
 The error TYPES are unchanged (neither is a ``BackpressureError``; their
-retry-yields-dedup guidance is the caller's correct response) — pinned in
+retry-yields-dedup guidance is the caller's correct response) - pinned in
 tests/test_postgres_enqueue_unique_for_lock.py; what changed is that the
 refusal is also counted.
 """
@@ -43,7 +43,7 @@ _IDEMPOTENCY_KEY = "lock-counter-137"
 
 class _IdempotencyContendedFakeConn(_ContendedFakeConn):
     """The idempotency arm's contended stand-in: the contention surfaces at
-    the token INSERT itself — the server-side ``lock_timeout`` the bounded
+    the token INSERT itself - the server-side ``lock_timeout`` the bounded
     speculative wait set fires on the uncommitted same-pair row (55P03),
     the arm's documented exhaustion path."""
 
@@ -59,7 +59,7 @@ def otel_reader(monkeypatch: pytest.MonkeyPatch) -> InMemoryMetricReader:
 
     ``taskq.backpressure.errors`` is a module-level instrument singleton
     (unconditional, not lazy), so isolating it means rebinding the
-    singleton onto a fresh meter — the ``tests/test_obs.py``
+    singleton onto a fresh meter - the ``tests/test_obs.py``
     ``_patch_instruments`` convention.
     """
     from opentelemetry.sdk.metrics import MeterProvider
@@ -92,7 +92,7 @@ async def test_unique_for_lock_timeout_counts_on_backpressure_counter(
     otel_reader: InMemoryMetricReader,
 ) -> None:
     """A unique_for lock-budget refusal bumps ``taskq.backpressure.errors``
-    once, actor-labeled under the bounded kind ``unique_for_lock_timeout`` —
+    once, actor-labeled under the bounded kind ``unique_for_lock_timeout`` -
     the same shape as the capacity arm, which has always counted."""
     conn = _ContendedFakeConn(try_lock_result=False, blocking_times_out=True)
 
@@ -110,7 +110,7 @@ async def test_unique_for_lock_timeout_counts_on_backpressure_counter(
         (_UNIQUE_FOR_ACTOR, "unique_for_lock_timeout"): 1
     }, (
         "a unique_for lock-timeout refusal must land on taskq.backpressure.errors "
-        "with kind='unique_for_lock_timeout' — log-only refusals are invisible to "
+        "with kind='unique_for_lock_timeout' - log-only refusals are invisible to "
         "alerting in exactly the contention storms where logs drown"
     )
 
@@ -119,7 +119,7 @@ async def test_idempotency_lock_timeout_counts_on_backpressure_counter(
     otel_reader: InMemoryMetricReader,
 ) -> None:
     """An idempotency speculative-token timeout bumps the same counter
-    under ``idempotency_lock_timeout`` — all three identity-serialization
+    under ``idempotency_lock_timeout`` - all three identity-serialization
     arms count their refusals; no arm may be the log-only one."""
     conn = _IdempotencyContendedFakeConn(try_lock_result=True)
     args = make_enqueue_args(actor=_IDEMPOTENCY_ACTOR, idempotency_key=_IDEMPOTENCY_KEY)
@@ -138,7 +138,7 @@ async def test_idempotency_lock_timeout_counts_on_backpressure_counter(
         (_IDEMPOTENCY_ACTOR, "idempotency_lock_timeout"): 1
     }, (
         "an idempotency lock-timeout refusal must land on taskq.backpressure.errors "
-        "with kind='idempotency_lock_timeout' — the third arm of the identity "
+        "with kind='idempotency_lock_timeout' - the third arm of the identity "
         "serialization family may not be the uncounted one"
     )
 
@@ -146,7 +146,7 @@ async def test_idempotency_lock_timeout_counts_on_backpressure_counter(
 async def test_successful_enqueue_touches_no_backpressure_counter(
     otel_reader: InMemoryMetricReader,
 ) -> None:
-    """The happy path stays off the counter — a refusal counter that also
+    """The happy path stays off the counter - a refusal counter that also
     counts successes cannot serve as a refusal signal."""
     conn = _ContendedFakeConn(try_lock_result=True)
     row = await _enqueue_on_conn(

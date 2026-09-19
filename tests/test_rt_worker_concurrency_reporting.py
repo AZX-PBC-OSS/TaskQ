@@ -3,10 +3,10 @@ binding concurrency.
 
 ``run.py`` binds the worker's whole dispatch capacity to
 ``settings.max_concurrency`` (``local_queue`` maxsize, the available-
-slot computation) — yet ``register_worker`` writes only hostname, pid,
+slot computation) - yet ``register_worker`` writes only hostname, pid,
 queues, label, instance, and ``{"notify_enabled": ...}`` into the
-``workers`` row. The single most load-bearing number in a capacity
-incident — how many jobs each worker can actually run — is invisible
+``workers`` row. The single most critical number in a capacity
+incident - how many jobs each worker can actually run - is invisible
 fleet-wide, which is the production-evidenced complaint: a
 misconfigured fleet cannot be told apart from a correctly-sized one
 from the database.
@@ -16,8 +16,8 @@ fleet capacity diagnosable: knowing the max thread / concurrency count
 per worker, an operator can see at a glance whether the fleet is
 correctly sized or whether a capacity incident points to
 misconfiguration. The metadata schema already has a place for worker
-facts — the write that carries effective binding concurrency lives
-there, alongside the other row attributes. Red today — only
+facts - the write that carries effective binding concurrency lives
+there, alongside the other row attributes. Red today - only
 ``notify_enabled`` is written.
 """
 
@@ -55,8 +55,8 @@ async def test_register_worker_reports_effective_binding_concurrency() -> None:
     metadata_json = params[6]
     metadata = json.loads(metadata_json)
     assert metadata.get("max_concurrency") == 7, (
-        "the workers row must carry the worker's effective binding concurrency — "
-        "the number that sizes local_queue and bounds every dispatch — so a "
+        "the workers row must carry the worker's effective binding concurrency - "
+        "the number that sizes local_queue and bounds every dispatch - so a "
         "capacity incident is diagnosable from the database without reading "
         "the worker's runtime state. Metadata carries: "
         f"{sorted(metadata)}"

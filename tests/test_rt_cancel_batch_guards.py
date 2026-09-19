@@ -4,21 +4,21 @@ The maintenance sweeps' boundary validation, statement-timeout wiring and
 save/restore are pinned by ``tests/test_rt_sweeps_boundary.py`` and
 ``tests/test_rt_sweeps_timeout_leak.py``.  The bulk cancel and the
 force-deregistration drain are separate call sites with their own wiring of
-the same helpers — a fix that lands on one path and not its sibling is
+the same helpers - a fix that lands on one path and not its sibling is
 exactly the drift these tests exist to catch.
 
 Three guards, each with a test that goes red if the guard is removed:
 
-1.  **Boundary validation** — ``batch_size=0`` is a legal rowless query: a
+1.  **Boundary validation** - ``batch_size=0`` is a legal rowless query: a
     drain whose window never fills past a zero cap never terminates (the
     infinite-drain shape), while ``statement_timeout_ms=0`` disables the
     batch's safety net outright.  Both must be rejected at the typed
     boundary, BEFORE any database access.
-2.  **Statement-timeout enforcement on the cancel drain** — the batch
+2.  **Statement-timeout enforcement on the cancel drain** - the batch
     transaction runs under ``SET LOCAL statement_timeout``, so a batch whose
     driving statement exceeds the bound is aborted server-side
     (``QueryCanceledError``) rather than silently slow.
-3.  **Statement-timeout enforcement on the deregistration drain** — same
+3.  **Statement-timeout enforcement on the deregistration drain** - same
     wiring, plus the recovery property: the aborted batch rolls back and the
     finalize transaction (which deletes ``actor_config``) never runs, so a
     mid-drain timeout leaves the actor registered and the already-committed
@@ -142,7 +142,7 @@ async def test_cancel_where_rejects_degenerate_batch_bounds_before_db_access() -
     for kwargs in ({"batch_size": 0}, {"batch_size": -1}, {"statement_timeout_ms": 0}):
         with pytest.raises(ValueError, match=r"(batch_size|statement_timeout_ms)"):
             await _cancel_where(
-                _TouchRaisesPool(),  # type: ignore[arg-type]  # Why: the pool must never be used — validation precedes acquisition.
+                _TouchRaisesPool(),  # type: ignore[arg-type]  # Why: the pool must never be used - validation precedes acquisition.
                 "taskq",
                 render("taskq"),
                 JobFilter(tags=("guards",)),
@@ -153,12 +153,12 @@ async def test_cancel_where_rejects_degenerate_batch_bounds_before_db_access() -
 
 async def test_deregister_actor_rejects_degenerate_batch_bounds_before_db_access() -> None:
     """The force-deregistration drain validates the same two bounds at the
-    same boundary — a zero batch cap stalls its drain forever and a zero
+    same boundary - a zero batch cap stalls its drain forever and a zero
     timeout disables the batch safety net."""
     for kwargs in ({"batch_size": 0}, {"statement_timeout_ms": 0}):
         with pytest.raises(ValueError, match=r"(batch_size|statement_timeout_ms)"):
             await deregister_actor(
-                _TouchRaisesConn(),  # type: ignore[arg-type]  # Why: the connection must never be used — validation precedes any statement.
+                _TouchRaisesConn(),  # type: ignore[arg-type]  # Why: the connection must never be used - validation precedes any statement.
                 "guards_actor",
                 force=True,
                 schema="taskq",
@@ -174,7 +174,7 @@ async def test_cancel_batch_statement_timeout_aborts_a_slow_batch(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """A cancel batch whose driving statement outlives its
-    ``statement_timeout_ms`` is aborted server-side — ``QueryCanceledError``
+    ``statement_timeout_ms`` is aborted server-side - ``QueryCanceledError``
     propagates (no silent slow batch), and the aborted batch leaves every
     seeded job untouched: nothing cancelled, no events written."""
     schema = module_pg_schema.schema_name
@@ -210,7 +210,7 @@ async def test_deregister_batch_statement_timeout_aborts_a_slow_batch(
     """The same enforcement on the force-deregistration drain, plus its
     recovery property: the aborted batch rolls back, and because the
     ``actor_config`` delete runs only in the finalize transaction after the
-    whole drain, a mid-drain timeout leaves the actor REGISTERED — the
+    whole drain, a mid-drain timeout leaves the actor REGISTERED - the
     already-committed batches stay durable and a re-run continues."""
     schema = module_pg_schema.schema_name
     actor = "guards_dereg_actor"
@@ -238,7 +238,7 @@ async def test_deregister_batch_statement_timeout_aborts_a_slow_batch(
         actor,
     )
     assert still_registered == 1, (
-        "a mid-drain timeout must not delete actor_config — the finalize "
+        "a mid-drain timeout must not delete actor_config - the finalize "
         "transaction runs only after the whole drain completes"
     )
     still_pending = await clean_pg_conn.fetchval(

@@ -101,7 +101,7 @@ def _make_channels(
 
 # The module-global listener bookkeeping (_active_listeners /
 # _connected_lookup) is reset around every test by the conftest-level
-# _reset_notify_module_globals autouse fixture — this file's former
+# _reset_notify_module_globals autouse fixture - this file's former
 # file-local copy of that reset was promoted there (with the four other
 # identical copies across the notify suites) so every test gets it.
 
@@ -122,7 +122,7 @@ async def test_spontaneous_loss_flips_connected_gauge_then_recovers() -> None:
     """A spontaneous notify-conn loss must produce a DISTINGUISHABLE
     degraded outcome: ``taskq.notify.connected`` (via
     ``_connected_lookup``) flips to 0 while the listener is down and back
-    to 1 after the rebuild — the operator-visible signal that wakeups are
+    to 1 after the rebuild - the operator-visible signal that wakeups are
     degraded to the poll fallback, never a silent loss.
 
     Verdict asserted: DEGRADE-AND-REPORT (gauge observable).
@@ -171,7 +171,7 @@ async def test_spontaneous_loss_flips_connected_gauge_then_recovers() -> None:
 
 async def test_notify_flap_second_loss_reenters_reconnect_cleanly() -> None:
     """Flapping PG: after one completed rebuild, a SECOND spontaneous loss
-    must re-enter the reconnect machinery cleanly — the health loop keeps
+    must re-enter the reconnect machinery cleanly - the health loop keeps
     running (the worker never crashes), a second rebuild lands on the
     newest connection, and each recovery re-fires the wake so a subscriber
     registered across the flap is unblocked both times.
@@ -219,7 +219,7 @@ async def test_notify_flap_second_loss_reenters_reconnect_cleanly() -> None:
                 "after the second recovery the gauge must read healthy again"
             )
             assert subscriber_event.is_set(), (
-                "the SECOND rebuild must also re-fire the wake — flap recovery "
+                "the SECOND rebuild must also re-fire the wake - flap recovery "
                 "must not skip the missed-wake catch-up"
             )
         finally:
@@ -232,7 +232,7 @@ def test_notify_poll_interval_default_bounds_missed_wake_at_5s() -> None:
     """The missed-wake bound through a listener rebuild: the producer's
     poll fallback (run.py races the wake wait against a jittered
     ``notify_poll_interval`` sleep) is what bounds wakeups lost while the
-    listener is mid-rebuild — its default must stay at 5s so a rebuild (or
+    listener is mid-rebuild - its default must stay at 5s so a rebuild (or
     an outage longer than the reconnect backoff) can never strand an idle
     producer beyond that bound.
 
@@ -242,7 +242,7 @@ def test_notify_poll_interval_default_bounds_missed_wake_at_5s() -> None:
     assert s.notify_poll_interval == 5.0, (
         "DEPENDENCY-FAILURE contract (bounded missed-wake): notify_poll_interval "
         "default 5.0 is the bound that carries the producer through a NOTIFY "
-        "listener rebuild — any wake lost mid-rebuild is recovered by the poll "
+        "listener rebuild - any wake lost mid-rebuild is recovered by the poll "
         "fallback within this cadence. Raising it silently stretches the "
         "degraded-dispatch latency bound. Verdict: SAFE (pin)."
     )

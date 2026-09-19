@@ -783,6 +783,6 @@ class TestInMemoryEnqueueBatchSingletonAtomicity:
 
         assert len(rows) == 1, (
             "a stored metadata singleton value of 1 (truthy, but not the JSON "
-            "boolean true) blocked a batch singleton item — Postgres' partial "
+            "boolean true) blocked a batch singleton item - Postgres' partial "
             "index matches only jsonb true, so the mirror must not refuse here"
         )

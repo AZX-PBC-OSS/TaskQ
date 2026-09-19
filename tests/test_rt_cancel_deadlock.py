@@ -11,25 +11,25 @@ re-runs.
 
 The trap is deliberately lock-ORDER-independent (an earlier design that
 relied on the driving UPDATE locking rows in ``ORDER BY id`` sequence
-proved unstable — the planner's join order, not the CTE's ORDER BY,
+proved unstable - the planner's join order, not the CTE's ORDER BY,
 decides row-lock order):
 
 * 102 matching pending jobs at ``batch_size=100`` → batch 1 (the 100
   lowest ids) commits; batch 2 = the two highest ids.
-* The drain is gated INSIDE batch 2's transaction — its driving UPDATE
+* The drain is gated INSIDE batch 2's transaction - its driving UPDATE
   has already locked both batch-2 rows, and the gate holds the batch's
   first event INSERT open.
 * A second connection then takes ``LOCK TABLE job_events IN SHARE
   MODE``: the drain's event INSERT (RowExclusive on job_events) cannot
   proceed while the drain still holds both job-row locks.
 * The gate opens; the drain's INSERT blocks on the table lock (its
-  deadlock detector arms NOW), and only then — after the test observes
-  the drain waiting — the second connection requests one of the
+  deadlock detector arms NOW), and only then - after the test observes
+  the drain waiting - the second connection requests one of the
   drain-held rows ``FOR UPDATE``.  That closes a genuine cross-type
   cycle: drain (holds job row locks, wants the job_events table lock) ↔
   holder (holds the table lock, wants a job row lock).
 * The drain's detector armed first, so Postgres aborts the DRAIN's
-  batch — the real ``DeadlockDetectedError`` the retry loop exists for.
+  batch - the real ``DeadlockDetectedError`` the retry loop exists for.
 * The holder commits during the drain's backoff, so the retried batch
   re-runs against unlocked, still-pending rows.
 """
@@ -56,7 +56,7 @@ pytestmark = pytest.mark.integration
 # The gap between the drain's INSERT blocking (its detector arming) and
 # the holder's row request (the holder's detector arming): the drain
 # arms strictly first, so it is deterministically the transaction
-# Postgres aborts — the retry path under test.
+# Postgres aborts - the retry path under test.
 _ARM_GAP = 0.1
 
 
@@ -160,7 +160,7 @@ async def _wait_for_lock_waiter(
     statement touches ``job_events``.  ``pg_stat_activity`` is
     cluster-wide and the invocation's one shared container hosts every
     xdist worker's per-module database, so the database scope is what
-    makes "a backend waits" mean "our drain waits" — an unscoped count
+    makes "a backend waits" mean "our drain waits" - an unscoped count
     is satisfied by any other worker's parked statement, which would let
     the holder close the cycle before the drain's INSERT parks, invert
     which transaction's deadlock detector arms first, and abort the
@@ -189,7 +189,7 @@ async def test_real_deadlock_mid_drain_retries_cleanly_with_no_phantoms(
     """A genuine server-side 40P01 on batch 2 of the drain, raised from
     the batch's own event INSERT: batch 1 stays committed, the aborted
     batch contributes nothing, the retry re-runs it against the
-    now-unlocked rows, and the totals are exact — every job cancelled
+    now-unlocked rows, and the totals are exact - every job cancelled
     once, every event written once."""
     schema = module_pg_schema.schema_name
     render(schema)
@@ -203,8 +203,8 @@ async def test_real_deadlock_mid_drain_retries_cleanly_with_no_phantoms(
     holder_tx = holder.transaction()
     await holder_tx.start()
     try:
-        # Batch 1 = event INSERTs #1 (state_change) and #2
-        # (cancel_request); the gate holds batch 2's first INSERT (#3)
+        # Batch 1 = event INSERTs (state_change) and
+        # (cancel_request); the gate holds batch 2's first INSERT
         # open, inside the batch's transaction, after its driving UPDATE.
         state = _DeadlockWitnessState(gate_at=3)
         pool = _WitnessPool(module_pg_pool, state)
@@ -253,7 +253,7 @@ async def test_real_deadlock_mid_drain_retries_cleanly_with_no_phantoms(
         f"expected exactly one genuine DeadlockDetectedError from the drain's batch-2 "
         f"event INSERT; saw {state.event_insert_deadlocks}"
     )
-    # PR #272 (issue #237): the drain runs as bounded fixpoint rounds. Round
+    # The drain runs as bounded fixpoint rounds. Round
     # 1 is batch 1 + deadlocked batch 2 + retried batch 2. All 102 rows are
     # terminal 'cancelled' after it, so round 2's pending arm executes its
     # driving statement exactly once, windows zero matching rows, and the

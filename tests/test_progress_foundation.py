@@ -1,7 +1,7 @@
 """Unit tests for progress subpackage foundation: ProgressEvent, _ProgressBuffer,
 channel helpers, WorkerSettings fields, and ProgressTooLarge.
 
-Covers deliverables — no PG or Redis required.
+Covers deliverables - no PG or Redis required.
 """
 
 from dataclasses import fields
@@ -202,6 +202,10 @@ def test_progress_buffer_fields() -> None:
         "encoded_data",
         "dirty",
         "last_flush_at",
+        # The Redis publish gate: at most one publish in flight per job,
+        # superseded calls latched on pending_publish (JobContext.progress).
+        "publish_in_flight",
+        "pending_publish",
     }
 
 

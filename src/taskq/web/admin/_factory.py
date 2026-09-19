@@ -59,16 +59,16 @@ class GZipStaticOnly(_GZipMiddleware):
 # (`clock_timestamp()`), so the age of a row belongs to the database's clock
 # domain. Answering "how stale is this?" by subtracting from this process's
 # `datetime.now()` makes every rendered age wrong by exactly the app-to-database
-# skew — NTP drift, a paused VM, a container clock, WSL2's documented stepping —
+# skew, NTP drift, a paused VM, a container clock, WSL2's documented stepping ,
 # and that question is asked during an incident, when the wrong answer costs the
 # most. The rest of this branch removes mixed-domain arithmetic by pushing it
 # into SQL; a Jinja filter cannot issue a query, so it uses the next best thing:
 # a periodically measured offset between the two clocks, so the subtraction is
 # performed in the database's domain even though it runs in Python.
 #
-# Better still, a query can do the arithmetic server-side — the
+# Better still, a query can do the arithmetic server-side, the
 # `col >= clock_timestamp()` / `clock_timestamp() - make_interval(...)`
-# comparisons `_LEADER_SQL` (workers.py) uses for `watchdog_healthy` — so no
+# comparisons `_LEADER_SQL` (workers.py) uses for `watchdog_healthy`, so no
 # clock participates at all. That is the preferred form for new queries; it
 # renders the answer itself, not through this filter.
 
@@ -120,7 +120,7 @@ async def refresh_db_clock_offset(pool: BoundedPool) -> None:
         return
     # Why the midpoint: the round trip happens between the two local reads, so
     # the server's instant is best compared against the middle of that window
-    # rather than either end — the same correction NTP applies. On a local
+    # rather than either end, the same correction NTP applies. On a local
     # database this is sub-millisecond, but it costs nothing and keeps the
     # measurement honest over a slow link.
     app_now = before + (after - before) / 2
@@ -157,7 +157,7 @@ def _time_ago(ts: Any) -> str:
 
         return humanize.naturaltime(_db_now() - dt)
     except Exception:
-        return str(ts) if ts else "—"
+        return str(ts) if ts else ","
 
 
 def _iso_attr(ts: Any) -> str:
@@ -174,7 +174,7 @@ def _iso_attr(ts: Any) -> str:
 # ------------------------------------------------------------------
 # Redis health cache
 #
-# Accessed only from asyncio coroutines on a single event loop —
+# Accessed only from asyncio coroutines on a single event loop ,
 # no mutex is needed (asyncio is cooperative, not preemptive).
 # A harmless double-ping can occur when two coroutines both see a
 # stale cache simultaneously; last-writer-wins, both results valid.
@@ -198,7 +198,7 @@ async def get_realtime_mode(
     """Return ``(realtime_mode, mode_label)`` using a 5 s server-side cache.
 
     realtime_mode ∈ {"realtime", "polling", "polling-degraded"}.
-    Cache is module-level — one entry covers all admin UI routes
+    Cache is module-level, one entry covers all admin UI routes
     on the same process.
     """
     if redis_client is None:
@@ -264,7 +264,7 @@ def get_rl_registry(request: Request) -> RateLimitRegistry:
     ``setup_admin_state`` always sets the key (bundle instance or
     singleton). The ``getattr`` fallback keeps hand-assembled
     ``app.state`` setups (which never set the key) working exactly as
-    today: the module singleton. Internal — deliberately not exported.
+    today: the module singleton. Internal, deliberately not exported.
     """
     rl: RateLimitRegistry | None = getattr(request.app.state, "rate_limit_registry", None)
     return rl if rl is not None else _rl_singleton
@@ -273,7 +273,7 @@ def get_rl_registry(request: Request) -> RateLimitRegistry:
 def get_schema(request: Request) -> str:
     """Dependency: yields the schema name from ``app.state``.
 
-    Re-validates against :data:`_IDENT_RE` as defence-in-depth — the schema
+    Re-validates against :data:`_IDENT_RE` as defence-in-depth, the schema
     was validated at ``create_router`` construction time, but this ensures a
     runtime mutation of ``app.state.schema`` (e.g. by a misconfigured test
     fixture) cannot reach SQL interpolation.
@@ -347,15 +347,15 @@ class _CsrfRoute(APIRoute):
     form field via the ``get_csrf_token`` dependency.  On POST, the server
     compares the two values using ``validate_csrf``.
 
-    * ``httponly=True``  — prevents XSS-driven token theft
-    * ``secure``         — ``secure_cookies``, a *configured* value; see below
-    * ``samesite=strict`` — cookie never sent on cross-site requests
+    * ``httponly=True`` , prevents XSS-driven token theft
+    * ``secure``        , ``secure_cookies``, a *configured* value; see below
+    * ``samesite=strict``, cookie never sent on cross-site requests
 
     Why ``secure`` is configured rather than derived from
     ``request.url.scheme``: behind a TLS-terminating edge (Azure Application
     Gateway, App Service) TLS ends at the gateway and the app sees plain
     ``http``, so the derived flag silently evaporated on exactly the
-    deployments that most need it — while the session cookie, which already
+    deployments that most need it, while the session cookie, which already
     used a configured flag, kept it. The two cookies disagreeing about the
     same connection is the bug. Deployments that want the scheme to be
     observed accurately should run uvicorn with ``--proxy-headers`` so
@@ -400,7 +400,7 @@ class _CsrfRoute(APIRoute):
 
         Mirrors the loud ``admin-ui-no-auth`` warning: a misconfiguration that
         weakens the deployment should not be silent. Once per router, not per
-        request — a per-request warning is a log flood that gets filtered out,
+        request, a per-request warning is a log flood that gets filtered out,
         which is the same as being silent.
         """
         if self.scheme_mismatch_warned or self.secure_cookies:
@@ -489,7 +489,7 @@ class AdminBundle:
     the first request, then mount ``bundle.router`` via ``app.include_router``.
 
     ``rate_limit_registry`` scopes the registry the rate-limit/reservation
-    pages read; ``None`` resolves to the module singleton (the default —
+    pages read; ``None`` resolves to the module singleton (the default ,
     same-process behavior is unchanged).
     """
 
@@ -527,7 +527,7 @@ def create_router(
     *,
     schema: str = "taskq",
     redis_client: Any
-    | None = None,  # Why: redis is an optional dependency (taskq[redis]); only runtime use is `is not None` boolean check — erasure boundary documented per erasure-boundary policy
+    | None = None,  # Why: redis is an optional dependency (taskq[redis]); only runtime use is `is not None` boolean check, erasure boundary documented per erasure-boundary policy
     auth_dependency: Callable[..., Any] | None = None,
     base_path: str = "",
     backend: Backend | None = None,
@@ -548,7 +548,7 @@ def create_router(
     ``rate_limit_registry`` is an optional owned :class:`RateLimitRegistry`
     the admin pages read configured primitives from (e.g. the API-process
     instance in a multi-process deployment).  Default ``None`` resolves to
-    the module singleton — same-process behavior is unchanged.
+    the module singleton, same-process behavior is unchanged.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
@@ -667,7 +667,7 @@ def _discover_and_register(
 ) -> None:
     """Iterate sibling submodules and call their ``register()`` if present.
 
-    Pages add a ``register()`` function to their own submodule — they
+    Pages add a ``register()`` function to their own submodule, they
     never edit this file.  This follows the "decompose by composition, not
     accumulation" principle.
     """

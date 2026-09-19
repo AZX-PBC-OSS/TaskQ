@@ -1,4 +1,4 @@
-"""Equivalence harness — parametrised tests via ``backend_pair``.
+"""Equivalence harness - parametrised tests via ``backend_pair``.
 
 Asserts both backends produce the same final state for the same scenario.
 Both InMemoryBackend and PostgresBackend (via testcontainers) are exercised
@@ -116,7 +116,7 @@ async def _advance_and_promote(backend: Backend, target_time: datetime) -> int:
     """Advance to *target_time* and promote scheduled jobs to pending.
 
     InMemoryBackend: advances the FakeClock and calls ``scheduled_to_pending``
-    (the backend's injected clock is the arbiter — the same contract PG
+    (the backend's injected clock is the arbiter - the same contract PG
     implements with its server clock).
     PostgresBackend: forces all scheduled jobs' ``scheduled_at`` to the past
     (so server-side ``clock_timestamp()`` will find them eligible) and
@@ -252,7 +252,7 @@ def _assert_state_change_event(
 
 def _assert_no_snooze_event_row(events: list[EventRow]) -> None:
     """A non-terminal snooze/denial writes no event row: the row's status
-    transition is real, but its durable record is the row's counters —
+    transition is real, but its durable record is the row's counters -
     the only state_change events belong to terminal exits and the
     sweep/cancel audit entries."""
     state_changes = [e for e in events if e.kind == "state_change"]
@@ -304,7 +304,7 @@ async def test_mass_enqueue_sort_order(backend_pair: Backend) -> None:
     sorted by (priority DESC, scheduled_at ASC).
 
     Uses unique priorities (shuffled 0-49) so the dispatch sort key
-    ``(priority DESC, scheduled_at)`` is unambiguous — PG dispatch SQL
+    ``(priority DESC, scheduled_at)`` is unambiguous - PG dispatch SQL
     sorts by priority DESC, scheduled_at without an id tie-breaker,
     while InMemory adds id. With unique priorities both agree.
     """
@@ -334,7 +334,7 @@ async def test_mass_enqueue_sort_order(backend_pair: Backend) -> None:
     for actor in _ACTORS:
         await _set_actor_cap(backend_pair, actor=actor)  # uncapped
 
-    # Dispatch batch of 10 (use explicit queues — PG requires non-empty
+    # Dispatch batch of 10 (use explicit queues - PG requires non-empty
     # queue list; InMemory treats empty as "all").
     wid = await _dispatch_worker_id(backend_pair)
     dispatched = await backend_pair.dispatch_batch(
@@ -382,7 +382,7 @@ async def test_enqueue_batch_partitions_cap_admission_per_actor(backend_pair: Ba
     """A mixed-actor batch where one actor is over its cap: the healthy
     actors' items are admitted, the capped actor's items are refused with
     attribution (actor, item indices, counts, admitted count), and the
-    typed refusal raises after the admitted rows are stored — identical
+    typed refusal raises after the admitted rows are stored - identical
     caller-visible state on both backends (backend parity doctrine)."""
     healthy = "cap_part_healthy"
     capped = "cap_part_capped"
@@ -431,7 +431,7 @@ async def test_enqueue_batch_fast_partitions_cap_admission_per_actor(
 ) -> None:
     """COPY-tier parity with the batch tier's partition: a
     mixed-actor ``enqueue_batch_fast`` refuses the over-cap actor's items
-    and writes everyone else's — the same refusal shape (per-actor
+    and writes everyone else's - the same refusal shape (per-actor
     indices, admitted count, stored counts) on BOTH backends. Previously
     the mixed-actor partition was pinned only on the in-memory mirror,
     plus a single-actor PG test."""
@@ -594,8 +594,8 @@ async def test_scheduled_to_pending_equivalence(backend_pair: Backend) -> None:
 
 async def test_list_jobs_cursor_pagination(backend_pair: Backend) -> None:
     """enqueue 5 jobs with varying priorities. Call list_jobs(limit=2)
-    — assert both backends return the same 2 job ids. Use the cursor from
-    the last row; call list_jobs(limit=2, cursor=cursor) — assert both
+    - assert both backends return the same 2 job ids. Use the cursor from
+    the last row; call list_jobs(limit=2, cursor=cursor) - assert both
     return the same next 2 job ids. Validates keyset pagination.
     """
     # Enqueue 5 jobs with different priorities
@@ -641,7 +641,7 @@ async def test_list_jobs_cursor_pagination(backend_pair: Backend) -> None:
     last2 = page2[-1]
     cursor2 = encode_cursor(last2.priority, last2.scheduled_at, last2.id)
 
-    # Third page — only 1 job left
+    # Third page - only 1 job left
     page3 = await backend_pair.list_jobs(JobFilter(limit=2, cursor=cursor2))
     assert len(page3) == 1
     assert page3[0].id == ids[4]  # priority 1
@@ -662,7 +662,7 @@ async def test_pg_connection_loss_raises_typed_exception(
     pool = backend_pair._worker_pool  # type: ignore[reportPrivateUsage,union-attr] # Why: PG-only path; _worker_pool is the canonical pool ref
     await pool.close()
 
-    with pytest.raises(Exception):  # noqa: B017 # Why: connection-loss test — any exception proves the pool is closed; specificity is unnecessary here
+    with pytest.raises(Exception):  # noqa: B017 # Why: connection-loss test - any exception proves the pool is closed; specificity is unnecessary here
         await backend_pair.enqueue(
             EnqueueArgs(
                 id=new_job_id(),
@@ -911,7 +911,7 @@ async def test_reservation_unavailable_produces_metadata_annotated_snooze(
     (``metadata['awaiting']``), refunds the claim's attempt increment so
     the retry budget is untouched, and leaves its whole durable record on
     the row: the aggregated denial counter, no attempt row and no event
-    row. Both backends must agree — a capacity shortfall that spends
+    row. Both backends must agree - a capacity shortfall that spends
     budget would let a queue misconfiguration kill work that simply never
     got a slot.
     """
@@ -1005,8 +1005,8 @@ async def test_admission_denial_past_schedule_to_close_fails_on_the_deadline(
     """Deadline expiry is the one terminal exit a denied job has.
 
     When the reschedule point would land past ``schedule_to_close`` the job
-    fails through the normal deadline path — ``DeadlineExceeded``, never
-    ``MaxAttemptsExceeded`` — so an operator reading the row learns the job
+    fails through the normal deadline path - ``DeadlineExceeded``, never
+    ``MaxAttemptsExceeded`` - so an operator reading the row learns the job
     ran out of time waiting for capacity rather than out of retries.
     """
     deadline = _now_for(backend_pair) + timedelta(seconds=5)
@@ -1045,7 +1045,7 @@ async def test_mark_snoozed_idempotent_returns_noop(backend_pair: Backend) -> No
     assert result1 == "scheduled"
 
     # The second call presents the SAME (now stale) epoch the worker would
-    # hold — the status fence turns it into "noop".
+    # hold - the status fence turns it into "noop".
     result2 = await backend_pair.mark_snoozed(
         job_id, wid, timedelta(seconds=30), attempt=epoch_row.attempt
     )
@@ -1068,7 +1068,7 @@ async def test_mark_retry_after_idempotent_returns_noop(
     )
     assert result1 == "scheduled"
 
-    # The second call presents the SAME (now stale) epoch — "noop".
+    # The second call presents the SAME (now stale) epoch - "noop".
     result2 = await backend_pair.mark_retry_after(
         job_id, wid, timedelta(seconds=10), consume_budget=True, attempt=epoch_row.attempt
     )
@@ -1093,7 +1093,7 @@ async def test_mark_retry_after_idempotent_returns_noop(
 async def test_mark_interrupted_releases_pending_at_zero_hold(
     backend_pair: Backend,
 ) -> None:
-    """hold=0 → 'pending' at the head of the order (no deferral floor — the
+    """hold=0 → 'pending' at the head of the order (no deferral floor - the
     row is genuinely free and the actor is gone), the spent attempt stands
     (no refund), interrupt_count = 1, no attempt rows, one interrupted
     event; the row is immediately re-claimable and re-dispatch advances the
@@ -1155,7 +1155,7 @@ async def test_mark_interrupted_holds_the_release_until_the_process_is_gone(
     _assert_job_row(row, status="scheduled", attempt=1)
     assert row.interrupt_count == 1
     assert row.scheduled_at > _now_for(backend_pair), (
-        "the held row's due time must be in the future — claimable only once "
+        "the held row's due time must be in the future - claimable only once "
         "the releasing process cannot touch it"
     )
 
@@ -1187,7 +1187,7 @@ async def test_mark_interrupted_operator_cancel_in_flight_wins(
     backend_pair: Backend,
 ) -> None:
     """A row carrying an operator cancel (cancel_phase >= 1) is declined:
-    'noop', untouched — no refund, no interruption counted, no event. The
+    'noop', untouched - no refund, no interruption counted, no event. The
     operator's request owns the row's outcome, never the deploy's."""
     job_id, wid = await _enqueue_dispatch_any(backend_pair)
     await _force_job_state(
@@ -1201,7 +1201,7 @@ async def test_mark_interrupted_operator_cancel_in_flight_wins(
         job_id, wid, attempt=row.attempt, hold=timedelta(0)
     )
     assert outcome == "noop", (
-        "the interrupt write must decline a row under an operator cancel — "
+        "the interrupt write must decline a row under an operator cancel - "
         "the deploy must not launder the operator's terminal request into a release"
     )
 
@@ -1223,7 +1223,7 @@ async def test_mark_interrupted_past_the_jobs_deadline_fails_on_it(
     backend_pair: Backend,
 ) -> None:
     """A hold that would outlive schedule_to_close fails the job on the
-    deadline instead of parking it past its own terminal exit — the same
+    deadline instead of parking it past its own terminal exit - the same
     shape every deferral arm honours."""
     job_id, wid = await _enqueue_dispatch_any(backend_pair)
     deadline = _now_for(backend_pair) + timedelta(seconds=5)
@@ -1246,7 +1246,7 @@ async def test_mark_interrupted_past_the_jobs_deadline_fails_on_it(
         error_message="schedule_to_close reached before next dispatch",
         last_heartbeat_at_none=True,
     )
-    assert row.interrupt_count == 0, "the release never happened — the deadline arm owns it"
+    assert row.interrupt_count == 0, "the release never happened - the deadline arm owns it"
 
     attempts = await backend_pair.get_attempts(job_id)
     assert len(attempts) == 1
@@ -1319,7 +1319,7 @@ async def _pg_enqueue_dispatch(
     """Create a running job on a PostgresBackend via direct SQL.
 
     Uses private attributes ``_worker_pool`` and ``_schema_name`` under
-    ``type: ignore`` — same pattern as the chaos-test helpers. Returns
+    ``type: ignore`` - same pattern as the chaos-test helpers. Returns
     (job_id, worker_id).
     """
     import asyncpg as _asyncpg
@@ -1411,7 +1411,7 @@ async def test_mark_succeeded_transitions_row_and_emits_attempt(
     assert len(attempts) == 1
     _assert_attempt_row(attempts, 0, outcome="succeeded")
 
-    # second call is idempotent — returns False, no second attempt row
+    # second call is idempotent - returns False, no second attempt row
     # (the stale epoch presentation is the worker's own no-op shape)
     result2 = await backend_pair.mark_succeeded(
         job_id, wid, {"ok": True}, attempt=epoch_row.attempt
@@ -1467,7 +1467,7 @@ async def test_mark_cancelled_transitions_row_and_emits_attempt(
 ) -> None:
     """mark_cancelled: running → cancelled; attempt row outcome='cancelled'.
     Both backends must agree. Note: neither backend clears locked_by_worker
-    on cancellation — it is preserved as a forensic marker.
+    on cancellation - it is preserved as a forensic marker.
     """
     job_id, wid = await _enqueue_dispatch_any(backend_pair)
 
@@ -1485,7 +1485,7 @@ async def test_mark_cancelled_transitions_row_and_emits_attempt(
     assert len(attempts) == 1
     _assert_attempt_row(attempts, 0, outcome="cancelled")
 
-    # second call is idempotent — returns False, no second attempt row
+    # second call is idempotent - returns False, no second attempt row
     # (the stale epoch presentation is the worker's own no-op shape)
     result2 = await backend_pair.mark_cancelled(job_id, wid, attempt=epoch_row.attempt)
     assert result2 is False
@@ -1587,7 +1587,7 @@ async def test_reclaim_expired_locks_sets_worker_crashed_error_class(
 ) -> None:
     """after reclaim_expired_locks, jobs that can no longer retry
     carry 'WorkerCrashed' and the fired deadline's message on the jobs
-    row AND the AttemptRow — the row self-describes on both backends,
+    row AND the AttemptRow - the row self-describes on both backends,
     so an operator never joins job_attempts to learn why a job crashed.
     """
     # Enqueue a job that has exhausted its retry budget (max_attempts=1)
@@ -1738,7 +1738,7 @@ async def test_mark_snoozed_delay_exactly_equal_remaining_budget_fails(
 
     # For InMemory: place the clock one floor below the deadline so the
     # floored zero delay lands exactly ON it (==).
-    # For PG: no clock manipulation needed — server-side clock_timestamp()
+    # For PG: no clock manipulation needed - server-side clock_timestamp()
     # < schedule_to_close by 12h.
     if isinstance(backend_pair, InMemoryBackend):
         backend_pair.advance_clock_to(deadline - MIN_DEFERRAL_INTERVAL)
@@ -1814,7 +1814,7 @@ async def test_write_cancel_request_on_failed_job_returns_false(
 #
 # Parametric tests via backend_pair asserting both backends produce the same
 # observable dispatch outcomes for non-concurrent scenarios. Only counts
-# and field invariants are asserted — no per-row identity assertions across
+# and field invariants are asserted - no per-row identity assertions across
 # backends (determinism note: PG index scan order is not guaranteed to match
 # in-memory sort order when candidates share identical (priority, scheduled_at)).
 
@@ -2098,7 +2098,7 @@ async def test_indefinite_tier_fail_retry_succeed(backend_pair: Backend) -> None
     policy = _RetryPolicy(kind="indefinite", time_budget=timedelta(hours=2), jitter=0.0)
     from taskq.retry import compute_backoff as _compute_backoff
 
-    # The decision payload is a DELAY — the backend's own clock derives
+    # The decision payload is a DELAY - the backend's own clock derives
     # scheduled_at from it (single arbiter).
     retry_delay = _compute_backoff(policy, 1)
     row_after = await backend_pair.mark_failed_or_retry(
@@ -2180,7 +2180,7 @@ async def test_eq_multi_status_filter(
     backend_pair: Backend,
     all_statuses_seeded: dict[str, JobId],
 ) -> None:
-    """Query with status=['pending', 'running'] — both backends must
+    """Query with status=['pending', 'running'] - both backends must
     return exactly the pending and running job ids.
     """
     ids = all_statuses_seeded
@@ -2195,7 +2195,7 @@ async def test_eq_active_true_filter(
     backend_pair: Backend,
     all_statuses_seeded: dict[str, JobId],
 ) -> None:
-    """Query with active=True — both backends must return exactly the
+    """Query with active=True - both backends must return exactly the
     non-terminal job ids (pending, scheduled, running).
     """
     ids = all_statuses_seeded
@@ -2251,7 +2251,7 @@ async def test_eq_status_filter_full_sequence(
     all_statuses_seeded: dict[str, JobId],
 ) -> None:
     """A full status sequence (all 8 JobStatus values) behaves like no
-    status filter — returns all 8 seeded job ids for actor_a.
+    status filter - returns all 8 seeded job ids for actor_a.
     """
     ids = all_statuses_seeded
     rows = await backend_pair.list_jobs(
@@ -2267,10 +2267,10 @@ async def test_eq_multi_status_cursor_pagination(backend_pair: Backend) -> None:
 
     Enqueues 5 jobs with distinct priorities for ``actor_a``, forces a
     mix of statuses so that ``status=['pending', 'running']`` matches a
-    strict subset (4 of 5 — the succeeded job at priority 30 is
+    strict subset (4 of 5 - the succeeded job at priority 30 is
     excluded), then pages through with ``limit=2``. The combined pages
     must contain every matching id exactly once in
-    ``priority DESC, scheduled_at ASC, id ASC`` order — proving PG and
+    ``priority DESC, scheduled_at ASC, id ASC`` order - proving PG and
     in-memory produce identical, correct paginated results for a
     multi-status predicate.
     """
@@ -2319,7 +2319,7 @@ async def test_eq_status_filter_duplicate_statuses(
     backend_pair: Backend,
     all_statuses_seeded: dict[str, JobId],
 ) -> None:
-    """Duplicate statuses in the sequence are harmless — the result is the
+    """Duplicate statuses in the sequence are harmless - the result is the
     same union (in the same order) as the deduplicated form on both
     backends."""
     ids = all_statuses_seeded
@@ -2330,12 +2330,12 @@ async def test_eq_status_filter_duplicate_statuses(
             limit=100,
         )
     )
-    # Seeded priorities: pending=70, running=50 — exact order, not just set.
+    # Seeded priorities: pending=70, running=50 - exact order, not just set.
     assert [r.id for r in rows] == [ids["pending"], ids["running"]]
 
 
 async def test_eq_zero_limit_returns_no_rows(backend_pair: Backend) -> None:
-    """``limit=0`` returns no rows on both backends — PG ``LIMIT 0`` and
+    """``limit=0`` returns no rows on both backends - PG ``LIMIT 0`` and
     the in-memory slice agree."""
     await backend_pair.enqueue(
         EnqueueArgs(
@@ -2356,7 +2356,7 @@ async def test_list_jobs_rejects_invalid_schema_identifier() -> None:
     """``_list_jobs`` interpolates the schema into SQL, so per the
     defence-in-depth invariant (docs/architecture.md §Identifier
     validation) it must re-validate the identifier at the call site and
-    raise ``ValueError`` *before* touching the pool — passing ``None`` as
+    raise ``ValueError`` *before* touching the pool - passing ``None`` as
     the pool proves no database access happens first.
     """
     with pytest.raises(ValueError, match="invalid schema identifier"):
@@ -2367,7 +2367,7 @@ async def test_cancel_where_rejects_invalid_schema_identifier() -> None:
     """``_cancel_where`` interpolates the schema into raw SQL, so per the
     defence-in-depth invariant (docs/architecture.md §Identifier
     validation) it must re-validate the identifier at the call site and
-    raise ``ValueError`` *before* touching the pool — passing ``None`` as
+    raise ``ValueError`` *before* touching the pool - passing ``None`` as
     the pool proves no database access happens first.
     """
     with pytest.raises(ValueError, match="invalid schema identifier"):
@@ -2454,7 +2454,7 @@ async def test_eq_order_by_finished_at_desc_ties_break_id_desc(backend_pair: Bac
 
 async def test_eq_cursor_pagination_ties_on_default_sort_key(backend_pair: Backend) -> None:
     """Jobs tied on ``(priority, scheduled_at)`` sort by ``id ASC`` and
-    paginate without skips or duplicates — the cursor's id tie-breaker
+    paginate without skips or duplicates - the cursor's id tie-breaker
     works identically on both backends."""
     ids = [new_job_id() for _ in range(5)]
     for jid in ids:
@@ -2491,7 +2491,7 @@ async def test_eq_cursor_stable_when_rows_change_status_mid_pagination(
     """Keyset cursors stay consistent when rows change status between page
     fetches: a row that stops matching drops out of later pages, a row
     that keeps matching under a new status still appears, and stable rows
-    are neither skipped nor duplicated — identically on both backends."""
+    are neither skipped nor duplicated - identically on both backends."""
     priorities = [50, 40, 30, 20, 10]
     ids = [new_job_id() for _ in range(5)]
     for jid, pri in zip(ids, priorities, strict=True):
@@ -2594,7 +2594,7 @@ async def test_eq_active_true_cursor_pagination(backend_pair: Backend) -> None:
 async def test_eq_active_true_with_created_at_desc(backend_pair: Backend) -> None:
     """``active=True`` combined with ``order_by=CREATED_AT_DESC`` returns
     only non-terminal jobs, newest-created first, identically on both
-    backends — terminal jobs are excluded entirely, not just re-sorted."""
+    backends - terminal jobs are excluded entirely, not just re-sorted."""
     t0 = _START
     oldest_active = new_job_id()
     middle_active = new_job_id()
@@ -2635,7 +2635,7 @@ async def test_eq_active_true_with_created_at_desc(backend_pair: Backend) -> Non
     assert [r.id for r in rows] == [newest_active, middle_active, oldest_active]
 
 
-# ── enqueue_batch_fast: no conflict arbiter — duplicates abort the batch ──
+# ── enqueue_batch_fast: no conflict arbiter - duplicates abort the batch ──
 
 
 async def test_enqueue_batch_fast_intra_batch_duplicate_aborts_entire_batch(
@@ -2643,7 +2643,7 @@ async def test_enqueue_batch_fast_intra_batch_duplicate_aborts_entire_batch(
 ) -> None:
     """D7 parity pin: COPY has no ON CONFLICT arbiter, so a duplicate
     ``idempotency_key`` WITHIN one batch violates the unique index and
-    aborts the ENTIRE batch — all-or-nothing, nothing written, and both
+    aborts the ENTIRE batch - all-or-nothing, nothing written, and both
     backends surface the typed ``DuplicateIdempotencyKeyError`` (the
     classification fix; previously a raw ``asyncpg.UniqueViolationError``).
     Pre-fix the InMemory mirror silently deduplicated item-by-item and
@@ -2739,7 +2739,7 @@ async def test_enqueue_batch_fast_existing_key_aborts_entire_batch(
 
 async def test_enqueue_batch_fast_count_is_items_written(backend_pair: Backend) -> None:
     """D7 parity pin, count semantics: on success the count is exactly the
-    number of items — this path never deduplicates, so the count never
+    number of items - this path never deduplicates, so the count never
     includes pre-existing rows (the InMemory mirror used to include
     them)."""
     args_list = [
@@ -2763,12 +2763,12 @@ async def test_enqueue_batch_fast_multi_defect_batch_raises_payload_validation(
 ) -> None:
     """D7 parity pin, defect-ordering: a batch carrying BOTH a NUL-bearing
     payload and a duplicate (scope, key) pair must raise the SAME typed
-    error on both backends — PayloadValidationError, because PG's fast
+    error on both backends - PayloadValidationError, because PG's fast
     path serializes every item in the build loop (NUL guard) BEFORE the
     pre-COPY cap count and long before the COPY's duplicate violation.
     The InMemory mirror used to check duplicates first, so the same batch
     raised DuplicateIdempotencyKeyError in memory and
-    PayloadValidationError on PG — a multi-defect batch could pass app
+    PayloadValidationError on PG - a multi-defect batch could pass app
     tests and break on the first real enqueue."""
     from taskq.exceptions import PayloadValidationError
 
@@ -2786,7 +2786,7 @@ async def test_enqueue_batch_fast_multi_defect_batch_raises_payload_validation(
             scheduled_at=_START,
         ),
         # The duplicate pair: would abort the COPY on PG if the batch ever
-        # reached it — the ordering pin is that it must NOT be reached.
+        # reached it - the ordering pin is that it must NOT be reached.
         EnqueueArgs(
             id=new_job_id(),
             actor="actor_a",
@@ -2824,7 +2824,7 @@ async def test_enqueue_batch_fast_multi_defect_batch_raises_cap_before_duplicate
 ) -> None:
     """D7 parity pin, cap-vs-duplicate ordering under the per-actor
     partition: a batch whose sole actor is over cap is refused as a whole
-    group BEFORE the COPY ever sees the duplicate violation — the caller
+    group BEFORE the COPY ever sees the duplicate violation - the caller
     sees BatchMaxPendingExceededError naming the actor and every item
     index, and the duplicate pair is never reached (it is also
     cap-discounted on both tiers, consuming no capacity, so the cap
@@ -2851,7 +2851,7 @@ async def test_enqueue_batch_fast_multi_defect_batch_raises_cap_before_duplicate
             for i in range(3)
         ),
         # The duplicate pair: cap-discounted, but would abort the COPY if
-        # the batch reached it — the pin is that the cap refusal comes
+        # the batch reached it - the pin is that the cap refusal comes
         # first on BOTH backends.
         EnqueueArgs(
             id=new_job_id(),

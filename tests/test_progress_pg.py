@@ -145,7 +145,7 @@ def _no_retry_config() -> StubActorConfig:
 async def _run_job(
     deps: WorkerDeps,
     backend: PostgresBackend,
-    actor_ref: Any,  # ActorRef — typed as Any to avoid complex generic spelling
+    actor_ref: Any,  # ActorRef - typed as Any to avoid complex generic spelling
     *,
     worker_id: UUID | None = None,
 ) -> None:
@@ -163,7 +163,7 @@ async def _run_job(
             12345,
             ["default"],
         )
-        # Insert actor_config row — required by per_actor_capacity CTE for dispatch
+        # Insert actor_config row - required by per_actor_capacity CTE for dispatch
         await conn.execute(
             f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2) ON CONFLICT (actor) DO NOTHING',
             actor_ref.name,
@@ -291,7 +291,7 @@ async def test_ti4_coalesced_flush_fires_during_actor_sleep(
                 12345,
                 ["default"],
             )
-            # Insert actor_config row — required by per_actor_capacity CTE for dispatch
+            # Insert actor_config row - required by per_actor_capacity CTE for dispatch
             await conn.execute(
                 f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2) ON CONFLICT (actor) DO NOTHING',
                 "_progress_pg_sleep",
@@ -375,7 +375,7 @@ async def test_ti4_coalesced_flush_fires_during_actor_sleep(
             await probe_conn.close()
 
         assert mid_seq, (
-            "progress_seq was never > 0 during the actor sleep — flush loop did not fire"
+            "progress_seq was never > 0 during the actor sleep - flush loop did not fire"
         )
         assert mid_seq[0] >= 1
     finally:
@@ -431,7 +431,7 @@ async def test_ti5_redis_failure_pg_written(
 class _FailingPipeline:
     """Pipeline stand-in whose ``execute`` raises.
 
-    Simulates a failed pipelined dual-channel publish round trip — the
+    Simulates a failed pipelined dual-channel publish round trip - the
     surface progress events actually go through when
     ``progress_publish_global`` is on (one pipeline, one execute, both
     channels; ``client.publish`` is never called on that path).
@@ -460,7 +460,7 @@ async def test_ti6_redis_disconnect_mid_stream_pg_complete(
     """Redis publish raises after the 3rd round trip; PG has all 5 updates; job succeeds.
 
     Rather than stopping the session-scoped Redis container, we monkeypatch
-    the pipeline factory on the redis client to fail after N round trips —
+    the pipeline factory on the redis client to fail after N round trips -
     each progress event is one pipelined execute carrying both channels,
     so client.publish (which that path never calls) cannot inject the
     failure.
@@ -565,7 +565,7 @@ async def test_tc2_pg_unavailable_during_flush_recovers(
         # batched flush statement fences every row on (running + this
         # worker + this attempt epoch), and the buffer's default epoch
         # of 0 matches no running row by construction (see
-        # _ProgressBuffer.attempt) — production buffers are seeded from
+        # _ProgressBuffer.attempt) - production buffers are seeded from
         # the dispatched JobRow.attempt, which create_running_job's
         # attempt=1 default mirrors.
         buf = _ProgressBuffer(job_id=job_id, base_seq=0, attempt=1)
@@ -577,7 +577,7 @@ async def test_tc2_pg_unavailable_during_flush_recovers(
         # Inject a one-shot PG error at the tick's batched-statement
         # pool checkout. This is the batched-surface translation of this
         # test's original per-buffer injection (a _flush_buffer wrapper
-        # — the tick no longer routes through _flush_buffer; it drains
+        # - the tick no longer routes through _flush_buffer; it drains
         # its dirty set through bounded row-batches whose only per-batch
         # pool touch is this acquire). The facade is needed because a
         # real asyncpg Pool's attributes are read-only; the loop's

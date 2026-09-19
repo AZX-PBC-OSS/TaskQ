@@ -2,7 +2,7 @@
 
 Each detector gets both cases: it trips when it should, and it does NOT
 trip on slow-but-alive (the staleness floor and the startup grace are
-the assertions that matter — a terminal detector must never false-fire).
+the assertions that matter - a terminal detector must never false-fire).
 ``os._exit`` is patched to a recorder that raises a sentinel, so trip
 paths are asserted without killing the test process.
 """
@@ -64,7 +64,7 @@ def _clock(start: float = 0.0) -> tuple[list[float], Callable[[], float]]:
 
 def test_liveness_staleness_respects_floor() -> None:
     """A tiny interval (0.5s x grace 5 = 2.5s) must NOT trip before the
-    10s floor — Docker starvation must never fire a terminal detector."""
+    10s floor - Docker starvation must never fire a terminal detector."""
     t, clock = _clock()
     liveness = LoopLiveness(grace_factor=5.0, clock=clock)
     liveness.tick("heartbeat", period=0.5)
@@ -80,7 +80,7 @@ def test_liveness_never_watches_a_loop_that_never_ticked() -> None:
     """Event-driven siblings must be invisible to the stale-tick detector.
 
     The NOTIFY listener parks on shutdown, consumers park on an empty
-    queue, and the reload coordinator parks on its event — all park
+    queue, and the reload coordinator parks on its event - all park
     indefinitely by design. They deliberately never call ``tick``, and a
     loop with no registration must never become stale no matter how long
     the worker idles; otherwise an idle worker would force-exit itself.
@@ -274,7 +274,7 @@ async def test_shutdown_watchdog_deadline_check_does_not_lag_a_full_dump_interva
         await asyncio.wait_for(watchdog._task, timeout=2.0)
     assert loop.time() - t0 < 1.0, (
         "the deadline check must land ON the deadline (clipped final "
-        "sleep), not a full dump_interval after it — the release hold's "
+        "sleep), not a full dump_interval after it - the release hold's "
         "exit tail treats that lag as margin and an unclipped watch spends it"
     )
     assert exit_codes == [EXIT_WATCHDOG]
@@ -499,7 +499,7 @@ async def test_event_loop_lag_histogram_samples_a_blocked_loop(
     the warn/trip thresholds: a healthy loop samples microseconds per
     beat, and a loop blocked for 0.3 s produces one sample at least that
     long (the beat request outstanding when the block began lands when it
-    ends — the requests polled during the block must not re-stamp it)."""
+    ends - the requests polled during the block must not re-stamp it)."""
     from taskq.worker import _watchdog as watchdog_mod
 
     histogram = _HistogramRecorder()
@@ -643,8 +643,8 @@ def _warn_recorder(
 def test_loop_lag_warn_fires_once_and_never_exits(
     monkeypatch: pytest.MonkeyPatch, exit_codes: list[int]
 ) -> None:
-    """Crossing the warn budget emits exactly one tier-1 warning — warn
-    counter + faulthandler thread dump — and the watchdog keeps running;
+    """Crossing the warn budget emits exactly one tier-1 warning - warn
+    counter + faulthandler thread dump - and the watchdog keeps running;
     crossing the terminal budget afterwards still force-exits (tier 2
     unchanged). The latch matters: without it every poll past the warn
     budget would re-warn, spamming metrics and stderr for one stall."""
@@ -694,7 +694,7 @@ def test_loop_lag_warn_latch_resets_on_beat(
 ) -> None:
     """A beat (the loop scheduling again after the stall) clears the warn
     latch, so the NEXT stall gets a fresh tier-1 warning instead of riding
-    the first stall's latch — one warn per stall, not one per process."""
+    the first stall's latch - one warn per stall, not one per process."""
     increments, _dumps = _warn_recorder(monkeypatch)
     t, clock = _clock()
     liveness = LoopLiveness(clock=clock)
@@ -734,7 +734,7 @@ def test_loop_lag_warn_never_fires_while_unarmed(
     monkeypatch: pytest.MonkeyPatch, exit_codes: list[int]
 ) -> None:
     """The warn tier obeys the same arming gate as the terminal tier:
-    during startup grace with no liveness ticks, no warning and no exit —
+    during startup grace with no liveness ticks, no warning and no exit -
     import-heavy startup must never trip either tier (a warn_budget that
     would fire in 10ms if armed proves the gate, not the budget, held)."""
     increments, dumps = _warn_recorder(monkeypatch)
@@ -761,7 +761,7 @@ def test_loop_lag_warn_schedules_deferred_task_dump(
     monkeypatch: pytest.MonkeyPatch, exit_codes: list[int]
 ) -> None:
     """The warn tier defers the asyncio task-stack dump onto the loop via
-    call_soon_threadsafe — asyncio.all_tasks is not thread-safe, so the
+    call_soon_threadsafe - asyncio.all_tasks is not thread-safe, so the
     dump must run ON the loop once it schedules again (hence the
     'loop-lag-recovered' reason). The payload travels as a functools.partial
     carrying the detector label because call_soon_threadsafe forwards no
@@ -823,7 +823,7 @@ def test_loop_lag_warn_schedules_deferred_task_dump(
         # One stall crossing BOTH tiers at once on a closed loop: the warn
         # tier's deferred dump raises RuntimeError and is swallowed, and
         # the terminal check in the same poll iteration still exits. (The
-        # thread then ends on the beat-scheduling return — with the loop
+        # thread then ends on the beat-scheduling return - with the loop
         # closed there is nothing left to watch; the swallow's job is to
         # keep that first iteration alive through the terminal tier.)
         t2[0] = 2.0
@@ -860,7 +860,7 @@ async def test_dump_task_stacks_shape(capsys: pytest.CaptureFixture[str]) -> Non
     task = asyncio.create_task(_parked(), name="dump.target")
     # Single deterministic yield: one event-loop pass lets the task run its
     # first step (scheduled at create_task, before this coroutine's
-    # resumption) so the dump below sees a started task with a real frame —
+    # resumption) so the dump below sees a started task with a real frame -
     # an arbitrary fixed delay added nothing but a race window.
     await asyncio.sleep(0)
     records = dump_task_stacks("unit-test", detector="test")
@@ -1001,9 +1001,9 @@ async def test_spawner_unwedges_a_cancellation_swallowing_sibling() -> None:
 
     Regression (PG-restart chaos): a leader sweep raised into the worker's
     TaskGroup, the group cancelled every sibling, but a sibling that
-    swallows ``CancelledError`` — the ``suppress`` in the park-vs-shutdown
+    swallows ``CancelledError`` - the ``suppress`` in the park-vs-shutdown
     races, or a consumer treating cancellation as a cooperative job-cancel
-    — re-checked ``shutdown_event``, found it clear, and parked again.
+    - re-checked ``shutdown_event``, found it clear, and parked again.
     ``__aexit__`` then waited forever: the worker hung with no traceback,
     the ExceptionGroup never delivered. Setting shutdown_event on the
     failure path is what lets such a sibling notice and return.
@@ -1073,7 +1073,7 @@ async def test_demoted_leader_watchdog_never_goes_stale() -> None:
 async def test_shutdown_watchdog_silent_during_graceful_drain(
     exit_codes: list[int],
 ) -> None:
-    """A drain completing inside the grace budget must not trip — the
+    """A drain completing inside the grace budget must not trip - the
     detector's negative case, guarding the watchdog itself against being
     the regression source."""
     shutdown = asyncio.Event()
@@ -1089,7 +1089,7 @@ async def test_shutdown_watchdog_anchors_on_first_shutdown_signal(
     exit_codes: list[int],
 ) -> None:
     """The deadline counts from shutdown_started_at (first signal), not
-    from shutdown_event — the graces must not be double-counted."""
+    from shutdown_event - the graces must not be double-counted."""
     shutdown = asyncio.Event()
     started_at = time.monotonic() - 100.0  # signal arrived 100s ago
     watchdog = ShutdownWatchdog(

@@ -4,7 +4,7 @@ The transactional path wrapped the actor in ``asyncio.shield()`` INSIDE the
 ``asyncio.wait_for()`` that enforces ``start_to_close``.  ``shield`` is
 documented to leave the shielded awaitable running when the waiter is
 cancelled, so the timeout fired, the attempt was marked timed out and became
-eligible for a retry elsewhere — while the actor body kept executing.  Every
+eligible for a retry elsewhere - while the actor body kept executing.  Every
 side effect after the timeout point ran twice.
 
 The autonomous path has always cancelled correctly; it is the control here,

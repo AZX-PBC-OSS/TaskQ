@@ -5,14 +5,14 @@ backs ``_backlog_detection_loop``, which architecture.md's leader-loop
 inventory (item 10) documents as deliberately **not** leader-gated: "every
 worker samples instead, accepting N times the query cost" (see the loop's
 own docstring at the same location) so the detector still emits under the
-very failure — election loss, a stuck advisory lock — it exists to expose.
+very failure - election loss, a stuck advisory lock - it exists to expose.
 That tradeoff is sound only if one worker's sample is cheap, so the
 sampler is depth-bounded by construction: a recursive loose index scan
 enumerates the distinct pending (actor, queue) pairs (one bounded seek per
-pair, never one per row — the same geometry as the dispatch CTE's keys
+pair, never one per row - the same geometry as the dispatch CTE's keys
 walks), and a per-pair probe reads at most ``_ACTOR_BACKLOG_SAMPLE_CAP``
 rows in the index's own dispatch-head order, so the tick's row work is
-Σ min(depth_pair, cap) + #pairs — flat as the backlog grows. The shipped
+Σ min(depth_pair, cap) + #pairs - flat as the backlog grows. The shipped
 series semantics under the cap (depth exact below the cap, oldest_age the
 head-of-line age) are documented on the template and in
 docs/guides/ops.md.
@@ -20,11 +20,11 @@ docs/guides/ops.md.
 Oracle: :func:`taskq.testing.pg.install_row_visit_counter` /
 :class:`~taskq.testing.pg.RowVisitCounter`, the same row-level-security
 sequence-bump oracle ``test_dispatch_backlog_depth_bound.py`` and
-``test_rt_cancel_drain_keyset_cost.py`` use — it counts rows the engine
+``test_rt_cancel_drain_keyset_cost.py`` use - it counts rows the engine
 actually reads, not EXPLAIN text, so it is exact and cannot flake on plan
 shape or PG version.
 
-History: this pin was written RED against the original shape — a plain
+History: this pin was written RED against the original shape - a plain
 ``GROUP BY actor, queue`` over the whole pending set, which visited ~10x
 more rows at a 100k pending backlog than at 10k (measured 2026-09-15,
 local Postgres 18, `jit=off`: ~1.6ms p50 at 10k growing to ~13-15ms p50
@@ -33,7 +33,7 @@ at 100k for the identical query shape) and paid that per worker per
 the capped per-pair probe) is the acceptance fix this test turned green
 for; the assertion below is the same bound the dispatch depth oracle
 holds the claim path to. The SQL under test is the production template
-itself, rendered, never a copy — a paraphrase would let the shipped
+itself, rendered, never a copy - a paraphrase would let the shipped
 query regress while the pin stayed green.
 """
 
@@ -50,7 +50,7 @@ from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it.
 )
 from taskq.testing.pg import RowVisitCounter, install_row_visit_counter
-from taskq.worker._leader_sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: pin the production sampler statement, not a copy — a paraphrase would let the shipped query regress while the pin stayed green.
+from taskq.worker._leader_sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: pin the production sampler statement, not a copy - a paraphrase would let the shipped query regress while the pin stayed green.
     _QUERY_ACTOR_BACKLOG_SQL_TEMPLATE,
 )
 
@@ -70,7 +70,7 @@ _MAX_VISITS_DEPTH_RATIO = 3.0
 
 
 def _actor_backlog_sql(schema: str) -> str:
-    # The production template, rendered — not a copy. The query this loop
+    # The production template, rendered - not a copy. The query this loop
     # guards is the query the worker actually runs; a pinned paraphrase
     # would let the shipped sampler regress without this test noticing.
     return _QUERY_ACTOR_BACKLOG_SQL_TEMPLATE.format(schema=schema)

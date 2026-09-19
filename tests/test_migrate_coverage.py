@@ -272,7 +272,7 @@ async def test_apply_pending_max_steps_zero_still_applies_one(
 ) -> None:
     """Surprising boundary: the ``max_steps`` break check runs *after* a
     migration is appended to ``applied_now``, so ``max_steps=0`` does NOT
-    prevent the first pending migration from being applied — it merely
+    prevent the first pending migration from being applied - it merely
     stops immediately after applying exactly one (same as ``max_steps=1``).
     """
     schema = f"mig_cov_maxsteps0_{new_base62()}".lower()
@@ -365,7 +365,7 @@ async def test_job_events_reclaim_partial_index_applies_and_is_usable(pg_dsn: st
     silently falls back to scanning all of job_events), and the planner
     can actually use it for the poll query's shape.  The plan check uses
     the real SQL template (PREPARE + EXPLAIN EXECUTE) with seq scans
-    disabled — an empty table would otherwise legitimately prefer a seq
+    disabled - an empty table would otherwise legitimately prefer a seq
     scan, so planner choice alone cannot prove applicability.
     """
     schema = f"mig_cov_reclaim_idx_{new_base62()}".lower()
@@ -384,7 +384,7 @@ async def test_job_events_reclaim_partial_index_applies_and_is_usable(pg_dsn: st
             schema,
         )
         assert indexdef is not None, (
-            "job_events_reclaim_idx missing after apply_pending — "
+            "job_events_reclaim_idx missing after apply_pending - "
             "poll_reclaim_events would scan the full job_events table"
         )
         # The partial predicate must match the poll query's WHERE clause.
@@ -404,7 +404,7 @@ async def test_job_events_reclaim_partial_index_applies_and_is_usable(pg_dsn: st
         plan = "\n".join(str(r["QUERY PLAN"]) for r in plan_rows)
         assert "job_events_reclaim_idx" in plan, (
             f"planner cannot use the partial index for poll_reclaim_events' "
-            f"query shape — its predicate must have drifted from the index's:\n{plan}"
+            f"query shape - its predicate must have drifted from the index's:\n{plan}"
         )
     finally:
         await _drop_schema(conn, schema)

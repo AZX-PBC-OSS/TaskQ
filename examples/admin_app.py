@@ -1,4 +1,4 @@
-"""Admin sidecar FastAPI app — mounts the TaskQ admin router at ``/admin``.
+"""Admin sidecar FastAPI app - mounts the TaskQ admin router at ``/admin``.
 
 Demonstrates the "separate process" deployment shape: the admin UI is
 completely decoupled from the user's trigger app.  No trigger UI routes,

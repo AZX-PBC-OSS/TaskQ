@@ -86,7 +86,7 @@ def test_jobs_field_type_is_sub_job_enqueuer() -> None:
 
 
 def test_jobs_field_is_required() -> None:
-    """JobContext requires the jobs field — no default."""
+    """JobContext requires the jobs field - no default."""
     with pytest.raises(TypeError):
         JobContext(  # type: ignore[call-arg]
             job_id=new_uuid(),
@@ -108,7 +108,7 @@ def test_jobs_field_is_required() -> None:
 
 
 def test_frozen_dataclass_cannot_mutate_jobs() -> None:
-    """JobContext is frozen — cannot reassign ctx.jobs."""
+    """JobContext is frozen - cannot reassign ctx.jobs."""
     ctx = _make_context()
     with pytest.raises(FrozenInstanceError):
         ctx.jobs = _make_enqueuer()  # type: ignore[misc] # Why: assigning to frozen dataclass field to assert FrozenInstanceError at runtime
@@ -174,7 +174,7 @@ async def test_await_cancel_event_after_set_returns_immediately() -> None:
 def test_setattr_raises_frozen_instance_error() -> None:
     ctx = _make_context()
     with pytest.raises(FrozenInstanceError):
-        ctx.attempt = 2  # pyright: ignore[reportAttributeAccessIssue] — Why: deliberately assigning to frozen field to verify FrozenInstanceError at runtime
+        ctx.attempt = 2  # pyright: ignore[reportAttributeAccessIssue] - Why: deliberately assigning to frozen field to verify FrozenInstanceError at runtime
 
 
 # ── span attribute (,) ──────────────────────────────────────────
@@ -214,9 +214,9 @@ async def test_progress_no_buffer_wired_logs_once_then_stays_silent() -> None:
     """The first progress() call on a context with no progress buffers
     wired (direct actor testing, a miswired context) emits ONE debug-level
     drop notice so the silent no-op is discoverable; every later call
-    stays silent — a tight progress loop must not produce one log line
+    stays silent - a tight progress loop must not produce one log line
     per dropped call."""
-    ctx = _make_context()  # _progress_buffers defaults to None — nothing wired
+    ctx = _make_context()  # _progress_buffers defaults to None - nothing wired
 
     with structlog.testing.capture_logs() as logs:
         await ctx.progress(step=1)

@@ -4,12 +4,12 @@
 The worker never applies migrations by design, and the only schema-currency
 guard on the whole boot path is the queue-cap query's UndefinedColumnError →
 RuntimeError, which covers exactly one migration (01.00.04's
-``queues.max_concurrent``). A schema stopped one release earlier — 01.00.07,
-missing 01.00.08's ``snooze_count`` / ``rate_limit_blocked_count`` — passes
+``queues.max_concurrent``). A schema stopped one release earlier - 01.00.07,
+missing 01.00.08's ``snooze_count`` / ``rate_limit_blocked_count`` - passes
 every boot step: the enqueue INSERT's column list omits the counters, and the
 dispatch claim's ``RETURNING j.*`` record then dies in
 ``_job_row_from_record``'s strict ``rec["snooze_count"]`` (a bare KeyError)
-AFTER the claim has already committed the job to running+locked — every
+AFTER the claim has already committed the job to running+locked - every
 dispatched job loops through lock-expiry crash-reclaim and never executes.
 
 Desired observable, per the boot path's own doctrine ("a deployment mistake
@@ -71,7 +71,7 @@ async def _boot_until_idle_or_raise(
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
-        pytest.fail("worker boot did not reach a decision within 45s — unbounded boot path")
+        pytest.fail("worker boot did not reach a decision within 45s - unbounded boot path")
     exc = task.exception()
     if exc is not None:
         return None, exc
@@ -84,7 +84,7 @@ async def test_worker_boot_refuses_while_denial_counter_migration_is_pending(
     """RED contract: boot must refuse while migrations are pending.
 
     The queue-cap guard refuses a schema missing 01.00.04; the same doctrine
-    must cover ANY pending migration — a schema missing the newest one boots
+    must cover ANY pending migration - a schema missing the newest one boots
     today and half-works (claims commit, then every job dies on the strict
     ``rec["snooze_count"]`` row conversion).
     """
@@ -110,7 +110,7 @@ async def test_worker_boot_refuses_while_denial_counter_migration_is_pending(
         result, raised = await _boot_until_idle_or_raise(settings)
         assert raised is not None and "migrat" in str(raised).lower(), (
             "contract: the worker must REFUSE to boot while migrations are pending "
-            f"(schema at 01.00.07, {_DENIAL_COUNTERS_KEY} unapplied) — instead boot "
+            f"(schema at 01.00.07, {_DENIAL_COUNTERS_KEY} unapplied) - instead boot "
             f"completed and served against the stale schema (result={result!r}, "
             f"raised={raised!r}); the only boot-time guard covers 01.00.04 alone, "
             "and every claimed job then dies post-commit on the strict "
@@ -122,7 +122,7 @@ async def test_worker_boot_refuses_while_denial_counter_migration_is_pending(
 
 async def test_worker_boot_drains_cleanly_on_current_schema(pg_dsn: str) -> None:
     """Control for the refusal contract: the identical boot shape against a
-    CURRENT schema must boot, idle out, and exit 0 — proving the refusal
+    CURRENT schema must boot, idle out, and exit 0 - proving the refusal
     test's outcome is about schema staleness, not a broken in-process boot."""
     schema = f"tmg_{new_base62()}".lower()
     conn = await asyncpg.connect(pg_dsn)

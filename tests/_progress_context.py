@@ -2,9 +2,9 @@
 
 ``ctx.progress()`` writes into the worker's per-job buffer map and, when a
 Redis client and settings are present, publishes through them. Suites
-that exercise that path construct the same context — a job's identity,
+that exercise that path construct the same context - a job's identity,
 a no-op sub-enqueuer over an in-memory backend, a bound logger, and the
-private progress wiring — so one builder here keeps them on one shape.
+private progress wiring - so one builder here keeps them on one shape.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ def make_progress_context(
 
     *job_id* defaults to a fresh id; *worker_id* to *backend*'s own (a
     fresh in-memory backend unless one is given). With no *settings* the
-    context enforces no data-size cap and publishes nothing — pass
+    context enforces no data-size cap and publishes nothing - pass
     settings (and a *redis_client*) to exercise publishing; ``None``
     *buffers* is a context with no progress wiring at all.
     """

@@ -77,7 +77,7 @@ def _make_deps(**overrides: object) -> SimpleNamespace:
         "is_leader": SimpleNamespace(is_set=lambda: False),
         "active_jobs": SimpleNamespace(count=lambda: 2),
         "heartbeat_failures": 0,
-        # WorkerDeps.redis_client (default None) — health reads it for redis_configured.
+        # WorkerDeps.redis_client (default None) - health reads it for redis_configured.
         "redis_client": None,
         # Watchdog observability fields read by compute_health.
         "liveness": LoopLiveness(),
@@ -144,7 +144,7 @@ async def _invoke_health(command: str, sock_path: str) -> tuple[int, str, str]:
 
 
 async def test_cli_live_exit_code() -> None:
-    """CLI exit codes via socket — live.
+    """CLI exit codes via socket - live.
 
     Start a real HealthServer with healthy deps. Invoke taskq health live
     via async subprocess; assert exit 0 and stdout contains {"status":"ok"}. (.)
@@ -163,7 +163,7 @@ async def test_cli_live_exit_code() -> None:
 
 
 async def test_cli_ready_healthy_exit_code() -> None:
-    """CLI exit codes via socket — ready, healthy.
+    """CLI exit codes via socket - ready, healthy.
 
     Start a real HealthServer with healthy deps. Invoke taskq health ready
     via async subprocess; assert exit 0 and stdout carries exactly the
@@ -181,7 +181,7 @@ async def test_cli_ready_healthy_exit_code() -> None:
         # Exact key set: the /ready body is a wire contract, so a field
         # added or removed must be a deliberate edit here. "live",
         # "reasons", "loop_tick_ages" and "shutdown_elapsed_seconds" are
-        # the watchdog observability additions — a probe consumer needs
+        # the watchdog observability additions - a probe consumer needs
         # them to distinguish a zombie-ready worker from a healthy one.
         # "maintenance" is the degraded-maintenance view: degraded sweeps
         # do not flip readiness, they surface here for operators.
@@ -203,7 +203,7 @@ async def test_cli_ready_healthy_exit_code() -> None:
 
 
 async def test_cli_ready_pg_failure_exit_code() -> None:
-    """CLI exit codes via socket — ready, PG failure.
+    """CLI exit codes via socket - ready, PG failure.
 
     Start a real HealthServer with a failing PG pool. Invoke taskq health
     ready via async subprocess; assert exit 1 and stdout contains "ready":false. (.)
@@ -227,7 +227,7 @@ async def test_cli_ready_pg_failure_exit_code() -> None:
 
 
 def test_cli_socket_absent_fail_fast_constant() -> None:
-    """Constant assertion — _CONNECT_TIMEOUT_S == 0.1.
+    """Constant assertion - _CONNECT_TIMEOUT_S == 0.1.
 
     Locks the fail-fast budget in source; independent of behaviour. (.)
     """
@@ -235,7 +235,7 @@ def test_cli_socket_absent_fail_fast_constant() -> None:
 
 
 def test_cli_socket_absent_fail_fast_wall_clock() -> None:
-    """Behavioural wall-clock — CLI fails fast when socket absent.
+    """Behavioural wall-clock - CLI fails fast when socket absent.
 
     Wrap CliRunner.invoke with time.perf_counter() deltas; assert wall-clock
     stays bounded (generous CI budget, widened for parallel test load).
@@ -245,13 +245,13 @@ def test_cli_socket_absent_fail_fast_wall_clock() -> None:
     result = runner.invoke(
         app,
         ["health", "live"],
-        env={"TASKQ_HEALTH_SOCKET_PATH": "/tmp/definitely_does_not_exist.sock"},  # noqa: S108 # Why: test fixture — deliberately uses non-existent path for negative test.
+        env={"TASKQ_HEALTH_SOCKET_PATH": "/tmp/definitely_does_not_exist.sock"},  # noqa: S108 # Why: test fixture - deliberately uses non-existent path for negative test.
     )
     elapsed = time.perf_counter() - t0
     # Widened from 1.0s: the real oracle is the 0.1s connect-timeout fail-fast
     # behavior; this bound just guards against unbounded hangs, with headroom
     # for scheduler contention under parallel test load (pytest -n 4).
-    assert elapsed < 5.0, f"elapsed={elapsed:.3f}s — expected < 5.0s"
+    assert elapsed < 5.0, f"elapsed={elapsed:.3f}s - expected < 5.0s"
     assert result.exit_code == 1, f"stderr: {result.stderr}"
     assert "unreachable" in result.stderr.lower()
 
@@ -265,7 +265,7 @@ def test_cli_ready_socket_absent_in_process() -> None:
     result = runner.invoke(
         app,
         ["health", "ready"],
-        env={"TASKQ_HEALTH_SOCKET_PATH": "/tmp/definitely_does_not_exist_ready.sock"},  # noqa: S108 # Why: test fixture — deliberately uses non-existent path for negative test.
+        env={"TASKQ_HEALTH_SOCKET_PATH": "/tmp/definitely_does_not_exist_ready.sock"},  # noqa: S108 # Why: test fixture - deliberately uses non-existent path for negative test.
     )
     assert result.exit_code == 1, f"stderr: {result.stderr}"
     assert "unreachable" in result.stderr.lower()
@@ -280,7 +280,7 @@ def test_cli_metrics_socket_absent_in_process() -> None:
     result = runner.invoke(
         app,
         ["health", "metrics"],
-        env={"TASKQ_HEALTH_SOCKET_PATH": "/tmp/definitely_does_not_exist_metrics.sock"},  # noqa: S108 # Why: test fixture — deliberately uses non-existent path for negative test.
+        env={"TASKQ_HEALTH_SOCKET_PATH": "/tmp/definitely_does_not_exist_metrics.sock"},  # noqa: S108 # Why: test fixture - deliberately uses non-existent path for negative test.
     )
     assert result.exit_code == 1, f"stderr: {result.stderr}"
     assert "unreachable" in result.stderr.lower()
@@ -395,7 +395,7 @@ async def test_health_request_times_out_after_connect(monkeypatch: pytest.Monkey
 
 
 def test_cli_sub_app_registered() -> None:
-    """CLI sub-app registered — verify --help for health commands.
+    """CLI sub-app registered - verify --help for health commands.
 
     Assert that ["health", "live"], ["health", "ready"], ["health", "metrics"]
     are all valid invocations with --help. (.)

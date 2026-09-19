@@ -3,9 +3,9 @@
 Script bodies are stored as ``Final[bytes]`` module-level constants so that
 no file I/O occurs at import time and the byte-for-byte match against the
 canonical source can be asserted in CI.  ``redis-py``'s ``register_script()``
-consumes these directly — the bytes are sent verbatim to Redis.
+consumes these directly, the bytes are sent verbatim to Redis.
 
-Time domain: every script derives ``now`` from ``redis.call('TIME')`` — it
+Time domain: every script derives ``now`` from ``redis.call('TIME')``, it
 is NEVER passed as ARGV.  The admission state these scripts measure is
 shared by the whole fleet, so the clock that stamps and measures it must be
 shared too: a caller-supplied now lets one node's clock skew shift every
@@ -25,7 +25,7 @@ ARGV contract for the sliding-window log script:
 
 * ``ARGV[1]`` = window_ms    (integer milliseconds, e.g. 60000 for 60 s)
 * ``ARGV[2]`` = limit        (integer, e.g. 60)
-* ``ARGV[3]`` = request_id   (UUID7 string — unique member, prevents sub-ms collision)
+* ``ARGV[3]`` = request_id   (UUID7 string, unique member, prevents sub-ms collision)
 * ``ARGV[4]`` = ttl_ms       (integer ms for PEXPIRE; default 2*window_ms + 60_000)
 
 ARGV contract for the sliding-window GCRA script:
@@ -41,9 +41,9 @@ before and after the acquire, used for compare-and-set refunds.
 
 ARGV contract for the token-bucket refund script:
 
-* ``ARGV[1]`` = refund_amount (float — tokens to add back, NOT decision.remaining)
-* ``ARGV[2]`` = capacity     (float — bucket cap; prevents over-refund)
-* ``ARGV[3]`` = refill_per_second (float — mirrors the acquire script's
+* ``ARGV[1]`` = refund_amount (float, tokens to add back, NOT decision.remaining)
+* ``ARGV[2]`` = capacity     (float, bucket cap; prevents over-refund)
+* ``ARGV[3]`` = refill_per_second (float, mirrors the acquire script's
   elapsed-refill step so a refund does not lose accrued refill)
 """
 
@@ -56,7 +56,7 @@ _LUA_SRC: Final[str] = """\
 -- ARGV[3] = requested_tokens (float; default 1.0)
 -- ARGV[4] = ttl_seconds (integer; math.ceil(capacity/refill*2)+60)
 --
--- now is read from redis.call('TIME') — the shared admission state must
+-- now is read from redis.call('TIME'), the shared admission state must
 -- be stamped and measured by the store's own clock, never a caller's.
 --
 -- Returns: {allowed, tokens_remaining, retry_after_seconds}
@@ -108,7 +108,7 @@ end
 -- tostring() on the stored values normalizes the stored encoding to a
 -- decimal string and bounds precision at Lua's %.14g number formatting.
 -- This is behaviorally inert on every supported store (Redis 5/6.2/7 and
--- Dragonfly pass number arguments through untruncated — the integer
+-- Dragonfly pass number arguments through untruncated, the integer
 -- truncation documented for EVAL applies only to RETURNED numbers, which
 -- the return statement below already tostring()s for that reason).
 redis.call('HMSET', key, 'tokens', tostring(tokens), 'ts', tostring(now))
@@ -127,11 +127,11 @@ _SLIDING_WINDOW_LOG_SRC: Final[str] = """\
 -- KEYS[1] = window_key  (e.g. "taskq:myschema:sw:{vendor_x_per_min}")
 -- ARGV[1] = window_ms   (integer milliseconds, e.g. 60000 for 60 s)
 -- ARGV[2] = limit       (integer, e.g. 60)
--- ARGV[3] = request_id  (UUID7 string — unique member, prevents sub-ms collision)
+-- ARGV[3] = request_id  (UUID7 string, unique member, prevents sub-ms collision)
 -- ARGV[4] = ttl_ms      (integer ms for PEXPIRE; default 2*window_ms + 60_000)
 --
--- now_ms is derived from redis.call('TIME') — never a caller-supplied
--- ARGV — so every node's window boundary and ZADD score live in the same
+-- now_ms is derived from redis.call('TIME'), never a caller-supplied
+-- ARGV, so every node's window boundary and ZADD score live in the same
 -- clock domain as the shared sorted set.
 --
 -- Returns: {allowed, count, retry_after_ms}
@@ -180,7 +180,7 @@ _SLIDING_WINDOW_GCRA_SRC: Final[str] = """\
 --   https://brandur.org/rate-limiting
 -- Upstream commit: 4f0d73ce3a979ee917227e09faad4a0d357294be
 -- TaskQ deviations from upstream: now is read from redis.call('TIME')
--- rather than a caller-supplied ARGV — the TAT is shared fleet state, so
+-- rather than a caller-supplied ARGV, the TAT is shared fleet state, so
 -- the clock that advances it must be the store's own; a caller's skewed
 -- now would poison the shared admission boundary for every other node.
 -- TIME is non-deterministic, which is replication-safe because Redis
@@ -233,16 +233,16 @@ return {1, 0, remaining_estimate, tostring(tat), tostring(new_tat)}
 SLIDING_WINDOW_GCRA_SCRIPT: Final[bytes] = _SLIDING_WINDOW_GCRA_SRC.encode("utf-8")
 
 _REFUND_SRC: Final[str] = """\
--- Refund script (rollback path only — do NOT call after actor completes).
+-- Refund script (rollback path only, do NOT call after actor completes).
 -- KEYS[1] = bucket key
--- ARGV[1] = refund_amount (float — tokens to add back)
--- ARGV[2] = capacity (float — bucket cap; prevents over-refund)
--- ARGV[3] = refill_per_second (float — must mirror the acquire script's
+-- ARGV[1] = refund_amount (float, tokens to add back)
+-- ARGV[2] = capacity (float, bucket cap; prevents over-refund)
+-- ARGV[3] = refill_per_second (float, must mirror the acquire script's
 --           refill rate so a refund does not clobber accrued-but-unread
 --           refill; parity with _InMemoryBucket.refund, which always
 --           refunds against tokens computed with elapsed * refill applied)
 --
--- now is read from redis.call('TIME') — the elapsed-refill step must run
+-- now is read from redis.call('TIME'), the elapsed-refill step must run
 -- in the same clock domain the acquire script stamped ts in.
 local key      = KEYS[1]
 local refund   = tonumber(ARGV[1])
@@ -267,7 +267,7 @@ tokens = math.min(capacity, tokens + refund)
 -- tostring() on the stored values normalizes the stored encoding to a
 -- decimal string and bounds precision at Lua's %.14g number formatting;
 -- behaviorally inert on every supported store (number arguments are
--- passed through untruncated — only RETURNED numbers are truncated to
+-- passed through untruncated, only RETURNED numbers are truncated to
 -- integers, and the return value below is already tostring()'d).
 redis.call('HMSET', key, 'tokens', tostring(tokens), 'ts', tostring(now))
 return {1, tostring(tokens)}

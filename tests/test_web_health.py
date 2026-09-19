@@ -35,7 +35,7 @@ def _pristine_sweep_caches(  # pyright: ignore[reportUnusedFunction] # Why: pyte
     size reads as "degraded". The default-view tests below assert
     ``maintenance.degraded is False`` and the parity tests compare
     whole bodies, so they fail only when the full suite schedules sweep
-    tests onto the same xdist worker first — never in a standalone run.
+    tests onto the same xdist worker first - never in a standalone run.
     Same swap-and-restore pattern as tests/test_sweep_timeout_metrics.py
     and the seeding in tests/test_health_maintenance_degraded.py.
     """
@@ -103,7 +103,7 @@ def _make_deps(**overrides: object) -> SimpleNamespace:
             "is_leader": SimpleNamespace(is_set=lambda: False),
             "active_jobs": SimpleNamespace(count=lambda: 2),
             "heartbeat_failures": 0,
-            # WorkerDeps.redis_client (default None) — health reads it for redis_configured.
+            # WorkerDeps.redis_client (default None) - health reads it for redis_configured.
             "redis_client": None,
             # Watchdog observability fields read by compute_health.
             "liveness": LoopLiveness(),
@@ -194,7 +194,7 @@ async def test_ready_503_when_pg_ping_fails() -> None:
     assert response.status_code == 503
     body = response.json()  # pyright: ignore[reportUnknownVariableType] # Why: response.json() return type is Any; pyright reports unknown.
     assert body["ready"] is False
-    # pg_ping_ok is internal — must NOT appear on the wire
+    # pg_ping_ok is internal - must NOT appear on the wire
     assert "pg_ping_ok" not in body
     # fields must all be present
     assert "ready" in body
@@ -215,7 +215,7 @@ def test_fastapi_is_a_hard_dependency_of_the_health_router() -> None:
     A guarded import makes the dependency optional by construction: the except
     arm decides what happens without it and the module still imports, so a
     missing FastAPI surfaces as a health endpoint that quietly is not there
-    rather than as an ImportError at startup. Parsed rather than regexed —
+    rather than as an ImportError at startup. Parsed rather than regexed -
     the previous check only matched one particular spelling of the pattern and
     would have missed `try:\n    from fastapi import ...`.
     """

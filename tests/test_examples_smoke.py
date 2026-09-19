@@ -1,4 +1,4 @@
-"""Smoke tests for the example app — and.
+"""Smoke tests for the example app - and.
 
 is a pure import test (no containers needed). uses
 ``TestClient`` with testcontainers PG + Redis to verify the trigger app

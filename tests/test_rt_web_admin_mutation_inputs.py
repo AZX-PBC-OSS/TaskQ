@@ -1,18 +1,18 @@
 """Red-team attacks on the admin UI's mutation inputs, renders, and logs.
 
-Hunt scope: ``src/taskq/web/admin/`` — cancel/retry mutation inputs, the job
+Hunt scope: ``src/taskq/web/admin/`` - cancel/retry mutation inputs, the job
 detail render, and log framing for caller-controlled fields.
 
 Papered defects and pins
 ------------------------
-1. REAL DEFECT — cancel ``reason`` is the only unguarded mutation input
+1. REAL DEFECT - cancel ``reason`` is the only unguarded mutation input
    (jobs.py:653)::
 
        reason: str | None = Query(default=None),
 
    Every admin *list* filter is NUL-guarded via ``parse_text_filter``
    (jobs.py:365-371: "each of these reaches a ``text`` … parameter, which
-   asyncpg rejects with an opaque 22021") — but ``reason`` flows unguarded
+   asyncpg rejects with an opaque 22021") - but ``reason`` flows unguarded
    into ``backend.write_cancel_request`` → ``_insert_cancel_request_event``
    (backend/_terminal.py:184-192) → ``jsonb_param(detail)``. PostgreSQL
    rejects ``\\u0000`` inside jsonb strings (verified against PG 18:
@@ -20,39 +20,38 @@ Papered defects and pins
    so ``POST /jobs/{id}/cancel?reason=…%00…`` is an opaque 500 instead of
    the family's clean 400. RED: ``test_cancel_reason_nul_is_400_not_500``.
 
-2. REAL DEFECT — the job detail page renders ``result`` unbounded
+2. REAL DEFECT - the job detail page renders ``result`` unbounded
    (jobs.py:625 + templates/job_detail.html:219)::
 
        for _jsonb_key in ("progress_state", "payload", "metadata", "result"):
            job_dict[_jsonb_key] = decode_jsonb(job_dict.get(_jsonb_key))
 
    ``error_traceback`` is display-truncated at 2000 chars
-   (``_TRACEBACK_DISPLAY_LIMIT``, jobs.py:98,316-323) — the page's own
-   convention for big operator-facing text — but ``result`` (and
+   (``_TRACEBACK_DISPLAY_LIMIT``, jobs.py:98,316-323) - the page's own
+   convention for big operator-facing text - but ``result`` (and
    payload/metadata) render at full stored size. ``result_max_bytes`` is a
    *configurable storage* cap, not a render cap, so any deployment that
    raises it turns one job-detail click into a multi-MB HTML response.
    RED: ``test_job_detail_result_render_is_bounded``.
 
-3. REAL DEFECT (log framing) — the rate-limit reset route logs the
+3. REAL DEFECT (log framing) - the rate-limit reset route logs the
    URL-controlled ``bucket_name`` verbatim (ops.py:650-653)::
 
        logger.warning(
            "rate-limit-reset-bucket-not-registered",
-           bucket_name=bucket_name,
-       )
+           bucket_name=bucket_name,)
 
-   A ``%0A`` in the path parameter puts a raw newline into the log event —
+   A ``%0A`` in the path parameter puts a raw newline into the log event -
    under any line-oriented renderer (structlog console/KV) that forges a
    whole log line. The route family's own validation convention
    (parse_text_filter) is not applied to this route at all.
    RED: ``test_rate_limit_reset_log_framing_no_raw_control_chars``.
 
-4. GREEN PIN — the SSO group allowlist gates *mutations*, not only reads:
+4. GREEN PIN - the SSO group allowlist gates *mutations*, not only reads:
    a signed session outside ``allowed_groups`` is refused (401) on
    ``POST /jobs/{id}/cancel`` before the handler runs. The
    ``warn_if_no_group_allowlist`` text says "admin read access"
-   (_session.py:55) — this pin documents that the same single gate also
+   (_session.py:55) - this pin documents that the same single gate also
    covers every write endpoint, which the warning understates.
 """
 
@@ -201,7 +200,7 @@ def _make_client(
 
 
 def _csrf_post(client: TestClient, path: str) -> Any:
-    """CSRF-valid POST that does NOT follow the 303 — the stub pool serves no
+    """CSRF-valid POST that does NOT follow the 303 - the stub pool serves no
     detail row, so following the redirect would 404 for reasons unrelated to
     the behavior under test."""
     client.cookies.set("taskq_csrf_token", "rt-csrf")
@@ -257,14 +256,14 @@ def test_cancel_reason_nul_is_400_not_500() -> None:
     """A NUL in the cancel reason must be a clean 400 at the route.
 
     CONTRACT: every caller-controlled text that reaches a PG bind is
-    NUL-guarded at the route — the admin family's own contract
+    NUL-guarded at the route - the admin family's own contract
     (jobs.py:365-371 guards every list filter with parse_text_filter for
     exactly this class of driver rejection). ``reason`` is the one mutation
     input with no guard (jobs.py:653); it reaches the ``job_events`` jsonb
     insert (backend/_terminal.py:184-192), and PostgreSQL rejects ``\\u0000``
     in jsonb strings (verified: UntranslatableCharacterError).
 
-    CURRENT VIOLATION: the driver exception is unhandled — the POST
+    CURRENT VIOLATION: the driver exception is unhandled - the POST
     surfaces as an opaque 500 instead of the family's 400.
     """
     job_id = new_uuid()
@@ -280,16 +279,16 @@ def test_cancel_reason_nul_is_400_not_500() -> None:
     rejected = _csrf_post(client, f"/jobs/{job_id}/cancel?reason=boom%00mid")
     assert rejected.status_code == 400, (
         "CONTRACT: POST /jobs/{id}/cancel?reason=…%00… must be rejected with 400 at "
-        "the route — reason reaches the job_events jsonb insert "
+        "the route - reason reaches the job_events jsonb insert "
         "(backend/_terminal.py:184-192) and PostgreSQL rejects \\u0000 in jsonb "
         "strings with UntranslatableCharacterError, the exact opaque-driver-error "
         "class the admin family's parse_text_filter contract exists to prevent "
         "(jobs.py:365-371). CURRENT VIOLATION: reason is the only unguarded "
-        f"mutation input (jobs.py:653) and the driver exception is unhandled — "
+        f"mutation input (jobs.py:653) and the driver exception is unhandled - "
         f"got {rejected.status_code} {rejected.text[:200]!r}"
     )
     assert backend.cancel_calls == [(job_id, "operator-requested")], (
-        "CONTRACT: the NUL-bearing request must never reach the backend — the "
+        "CONTRACT: the NUL-bearing request must never reach the backend - the "
         "guard rejects before the write. CURRENT: only the control call recorded."
     )
 
@@ -300,7 +299,7 @@ def test_cancel_reason_nul_is_400_not_500() -> None:
 def test_job_detail_result_render_is_bounded() -> None:
     """A multi-MB job result must not be rendered verbatim into the page.
 
-    CONTRACT: operator-page rendering of stored blobs is display-bounded —
+    CONTRACT: operator-page rendering of stored blobs is display-bounded -
     the page's own convention truncates ``error_traceback`` at 2000 chars
     (``_TRACEBACK_DISPLAY_LIMIT``, jobs.py:98,316-323). ``result`` must get
     the same treatment: ``result_max_bytes`` is a *configurable storage*
@@ -321,10 +320,10 @@ def test_job_detail_result_render_is_bounded() -> None:
     assert len(resp.text) < 1_000_000, (
         "CONTRACT: the job detail page must display-bounded-render stored blobs "
         "the same way it truncates error_traceback at _TRACEBACK_DISPLAY_LIMIT=2000 "
-        "(jobs.py:98,316-323) — a multi-MB result must come back truncated, not as "
+        "(jobs.py:98,316-323) - a multi-MB result must come back truncated, not as "
         "a multi-MB HTML response. CURRENT VIOLATION: jobs.py:625 decodes result "
         "with no bound and templates/job_detail.html:219 renders "
-        f"'{{{{ job.result }}}}' verbatim — got a {len(resp.text):,}-byte page for "
+        f"'{{{{ job.result }}}}' verbatim - got a {len(resp.text):,}-byte page for "
         "a ~4MB stored result."
     )
 
@@ -338,7 +337,7 @@ def test_rate_limit_reset_log_framing_no_raw_control_chars(
     """A newline in the bucket_name path param must not forge log lines.
 
     CONTRACT: caller-controlled fields must not reach log events with raw
-    control characters — under any line-oriented renderer (structlog
+    control characters - under any line-oriented renderer (structlog
     console/KV) a raw newline in ``bucket_name`` forges a whole subsequent
     log line, corrupting log parsing/alerting.
 
@@ -363,7 +362,7 @@ def test_rate_limit_reset_log_framing_no_raw_control_chars(
         value = str(entry.get("bucket_name", ""))
         assert "\n" not in value and "\r" not in value, (
             "CONTRACT: URL-controlled fields must never reach log events with raw "
-            "control characters — 'bucket_name=forged\\nevent:injected' forges a "
+            "control characters - 'bucket_name=forged\\nevent:injected' forges a "
             "whole log line under any line-oriented renderer. CURRENT VIOLATION: "
             f"ops.py:650-653 logs the raw path parameter verbatim; got "
             f"bucket_name={value!r}"
@@ -378,7 +377,7 @@ def test_sso_group_allowlist_gates_mutations_not_only_reads() -> None:
     mutation endpoint; an in-allowlist session reaches the handler.
 
     CONTRACT (pin): ``create_router(auth_dependency=...)`` gates every admin
-    route — mutations included — through the SSO group allowlist
+    route - mutations included - through the SSO group allowlist
     (_factory.py:547-548 inserts the auth dependency first, so it runs
     before the route's CSRF check). The ``warn_if_no_group_allowlist``
     text speaks of "admin read access" (_session.py:55); this pin documents
@@ -400,7 +399,7 @@ def test_sso_group_allowlist_gates_mutations_not_only_reads() -> None:
     client.cookies.set("taskq_session", outsider)
     denied = _csrf_post(client, f"/jobs/{job_id}/cancel?reason=rt-outside-allowlist")
     assert denied.status_code == 401, (
-        "CONTRACT: the SSO group allowlist gates admin mutations, not only reads — "
+        "CONTRACT: the SSO group allowlist gates admin mutations, not only reads - "
         "an authenticated-but-out-of-allowlist session must be refused (401 for "
         f"non-HTML clients) before the handler runs; got {denied.status_code}"
     )

@@ -4,21 +4,21 @@ unkeyed SubJobEnqueuer.
 The documented BYO-connection pattern registers an ``asyncpg.Connection`` at
 ``Scope.LOOP``. ``dispatch_one_job`` resolves that one object and hands it to
 every slot, and ``SubJobEnqueuer`` (constructed once per loop) carries unkeyed
-per-job buffer state shared by every slot. With ``max_concurrency > 1`` — the
-default is 8 — two jobs are in flight on the same worker at once, and:
+per-job buffer state shared by every slot. With ``max_concurrency > 1`` - the
+default is 8 - two jobs are in flight on the same worker at once, and:
 
 - the later job's ``conn.transaction()`` nests as a SAVEPOINT inside the
   earlier job's transaction, so the earlier job's ROLLBACK silently discards
   work the later job already reported as committed (its terminal write and
   its transactional sub-enqueues), while the job row briefly read
-  ``succeeded`` — a failure that looks like a success;
+  ``succeeded`` - a failure that looks like a success;
 - a failing job's ``discard_buffer()`` clears the shared enqueuer buffer
   wholesale, deleting a sibling slot's not-yet-flushed sub-jobs.
 
 Both tests drive the production dispatch path (``dispatch_one_job`` →
 ``consume_one_job`` → ``_consume_transactional``) with two concurrent slots
 and assert the durable outcome a per-slot design must guarantee. The first
-needs real Postgres — the behaviour originates in asyncpg's ``_top_xact``
+needs real Postgres - the behaviour originates in asyncpg's ``_top_xact``
 handling and Postgres savepoint semantics.
 """
 
@@ -59,7 +59,7 @@ _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 _WORKER_ID = new_uuid()
 
 _SLOT_POOL_SIZE = 3
-"""Two consumer slots plus the readiness reserve — the shape bootstrap
+"""Two consumer slots plus the readiness reserve - the shape bootstrap
 sizes (max_concurrency + 1) for a two-slot worker."""
 
 
@@ -156,12 +156,12 @@ async def test_sibling_failure_does_not_roll_back_a_committed_slot(
 ) -> None:
     """Two slots on one worker, one LOOP-scope connection: slot B finishes and
     reports success while slot A is still inside its transaction; A then fails.
-    B's terminal write and its transactional sub-enqueue must be durable — A's
+    B's terminal write and its transactional sub-enqueue must be durable - A's
     rollback must not reach work B already committed."""
     backend = clean_jobs_app.backend
     deps = clean_jobs_app.deps
 
-    # The dispatch capacity gate inner-joins actor_config — the actor needs a
+    # The dispatch capacity gate inner-joins actor_config - the actor needs a
     # stored row before its jobs can be claimed.
     seed_conn = await asyncpg.connect(module_pg_schema.pg_dsn)
     try:
@@ -182,8 +182,8 @@ async def test_sibling_failure_does_not_roll_back_a_committed_slot(
             payload: _SlotPayload, ctx: JobContext[_SlotPayload]
         ) -> dict[str, object]:
             if payload.role == "fail":
-                # Signal that the actor body is running — i.e. this slot's
-                # transaction is open — then hold the transaction open
+                # Signal that the actor body is running - i.e. this slot's
+                # transaction is open - then hold the transaction open
                 # until the test says the sibling slot has finished, and
                 # fail inside it.
                 a_in_transaction.set()
@@ -209,7 +209,7 @@ async def test_sibling_failure_does_not_roll_back_a_committed_slot(
             # the test would pass without exercising the transactional seam.
             assert scopes.loop_scope.resolved_cache().get(asyncpg.Connection) is loop_conn
             # And without the slot pool, dispatch would resolve the ONE
-            # registered connection for every slot — the defect itself.
+            # registered connection for every slot - the defect itself.
             assert deps.slot_pool is slot_pool
 
             enqueuer = SubJobEnqueuer(
@@ -255,8 +255,8 @@ async def test_sibling_failure_does_not_roll_back_a_committed_slot(
                 )
 
             task_a = asyncio.create_task(_dispatch(row_a))
-            # Slot B starts only once A's transaction is open — the
-            # interleaving max_concurrency > 1 produces — and A holds its
+            # Slot B starts only once A's transaction is open - the
+            # interleaving max_concurrency > 1 produces - and A holds its
             # transaction open (event-driven, not a timed window) until
             # B has fully committed, then fails inside it.
             await asyncio.wait_for(a_in_transaction.wait(), timeout=10)
@@ -295,7 +295,7 @@ async def test_sibling_failure_does_not_discard_pending_sub_jobs(
     so the transactional consume path is taken."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))
     # The dispatch parity gate: candidates are built from the actor_config
-    # registry — zero registered actors means zero candidates (the sibling
+    # registry - zero registered actors means zero candidates (the sibling
     # PG test seeds its actors the same way; a dispatchable actor must be
     # registered on both backends alike).
     backend.register_actor_config(actor="slot_actor")
@@ -399,7 +399,7 @@ async def test_sibling_failure_does_not_discard_pending_sub_jobs(
             # defect from the connection-nesting one covered above.
             task_b = asyncio.create_task(_dispatch(row_b))
             await asyncio.wait_for(sibling_buffered.wait(), timeout=10)
-            # Precondition: B's sub-job is observably still buffered —
+            # Precondition: B's sub-job is observably still buffered -
             # the enqueue returned a handle but nothing is stored yet.
             # Without this, an implementation that never buffers (and
             # writes sub-jobs immediately instead) passes the final
@@ -435,7 +435,7 @@ async def test_snoozing_slot_does_not_re_enqueue_a_siblings_committed_sub_jobs(
     ``_pending_buffer`` only ever populates on the in-memory backend; on
     Postgres the shared state that leaks across slots is the
     transactional sub-enqueue tracking (``_loop_enqueue_args``): a job
-    that snoozes drains and re-enqueues every tracked sub-job — with a
+    that snoozes drains and re-enqueues every tracked sub-job - with a
     shared enqueuer that includes a SIBLING's already-committed ones,
     duplicate work (or an id-collision failure mislabelled as the
     snoozing job's own). With per-job binding, a snoozing slot drains
@@ -520,8 +520,8 @@ async def test_snoozing_slot_does_not_re_enqueue_a_siblings_committed_sub_jobs(
                     enqueuer=enqueuer,
                 )
 
-            # Slot B completes first — its transactional sub-job is
-            # committed — then slot A snoozes and its drain must not
+            # Slot B completes first - its transactional sub-job is
+            # committed - then slot A snoozes and its drain must not
             # touch B's work.
             outcome_b = await _dispatch(row_b)
             outcome_a = await _dispatch(row_a)
@@ -535,7 +535,7 @@ async def test_snoozing_slot_does_not_re_enqueue_a_siblings_committed_sub_jobs(
 
             assert len(committed_sub_jobs) == 1
             rows = await backend.list_jobs(
-                JobFilter(actor="sub_actor", limit=10)  # type: ignore[arg-type]  # Why: status filter left open — the assertion counts every row for the actor, whatever its state.
+                JobFilter(actor="sub_actor", limit=10)  # type: ignore[arg-type]  # Why: status filter left open - the assertion counts every row for the actor, whatever its state.
             )
             assert len(rows) == 1, (
                 "a sibling slot's snooze re-enqueued already-committed "
@@ -558,7 +558,7 @@ async def test_cancelled_slot_never_leaks_a_live_transaction_connection(
     open: asyncpg's release-reset would roll back under the live
     transaction and hand the connection to a sibling mid-flight. A
     connection still inside its transaction at release time is
-    terminated instead — the work is discarded, the row is never
+    terminated instead - the work is discarded, the row is never
     `succeeded`, and no sibling ever acquires a transaction-tainted
     connection.
     """
@@ -660,7 +660,7 @@ async def test_cancelled_slot_never_leaks_a_live_transaction_connection(
             assert row is not None
             assert row.status != "succeeded", (
                 "the cancelled slot's detached transaction landed a "
-                "terminal write after cancellation — a false success"
+                "terminal write after cancellation - a false success"
             )
 
             # Let the detached task unwind on its terminated connection
@@ -679,18 +679,18 @@ async def test_concurrent_transactional_slots_each_hold_their_own_di_connection(
 ) -> None:
     """Two concurrent transactional slots whose actors inject the LOOP-scope
     ``asyncpg.Connection`` must each receive the connection their own slot's
-    transaction runs on — never the ONE registered connection.
+    transaction runs on - never the ONE registered connection.
 
     The per-slot pool already carries TaskQ's own transactional writes (the
-    terminal write, transactional sub-enqueues — pinned above); this pin
+    terminal write, transactional sub-enqueues - pinned above); this pin
     closes the actor-visible half. Pre-fix, every concurrent slot's actor
     resolved the same registered LOOP-scope connection by DI injection, so:
 
     - two sibling actors with operations in flight on it raised
       ``InterfaceError: cannot perform operation: another operation is in
-      progress`` inside healthy actors — the consumer's generic handler
+      progress`` inside healthy actors - the consumer's generic handler
       burned retry budget on the misattributed failure;
-    - an actor's own writes ran OUTSIDE its slot's transaction — a failing
+    - an actor's own writes ran OUTSIDE its slot's transaction - a failing
       slot's rollback left them committed, so "transactional consume" was
       not transactional for the actor's own database work.
 
@@ -728,10 +728,10 @@ async def test_concurrent_transactional_slots_each_hold_their_own_di_connection(
             conns_seen[payload.role] = conn
             # Taken at actor entry, before any sibling can interleave: the
             # injected connection must already be inside this slot's open
-            # transaction — the per-slot LOOP-scope semantics.
+            # transaction - the per-slot LOOP-scope semantics.
             entered_in_transaction[payload.role] = conn.is_in_transaction()  # type: ignore[union-attr]  # Why: asyncpg.Connection exposes is_in_transaction; pool proxies forward it (dispatch's release path already relies on the same forwarding).
             if payload.role == "fail":
-                # A bare write through the injected connection — no explicit
+                # A bare write through the injected connection - no explicit
                 # transaction of the actor's own. Whichever connection this
                 # is, the write must live inside THIS slot's transaction, so
                 # this slot's failure rolls it back.
@@ -743,8 +743,8 @@ async def test_concurrent_transactional_slots_each_hold_their_own_di_connection(
                 sleep_task = asyncio.create_task(conn.execute("SELECT pg_sleep(1.0)"))  # type: ignore[union-attr]  # Why: same proxy forwarding as is_in_transaction above.
                 for _ in range(3):
                     await asyncio.sleep(0)
-                # The sleep task has now run to its first await — the
-                # statement is on the wire — so the sibling's probe below
+                # The sleep task has now run to its first await - the
+                # statement is on the wire - so the sibling's probe below
                 # contends with a genuinely in-flight operation.
                 a_in_flight.set()
                 await sleep_task
@@ -817,7 +817,7 @@ async def test_concurrent_transactional_slots_each_hold_their_own_di_connection(
             task_a = asyncio.create_task(_dispatch(row_a))
             await asyncio.wait_for(a_in_flight.wait(), timeout=10)
             # Slot B's entire attempt runs while slot A's statement is in
-            # flight on the (pre-fix) shared connection — the natural
+            # flight on the (pre-fix) shared connection - the natural
             # max_concurrency > 1 interleaving, event-driven on both ends.
             outcome_b = await _dispatch(row_b)
             outcome_a = await task_a
@@ -827,11 +827,11 @@ async def test_concurrent_transactional_slots_each_hold_their_own_di_connection(
             # other's.
             assert conns_seen["fail"] is not loop_conn, (
                 "the failing slot's actor was handed the registered LOOP-scope "
-                "connection — one object shared across every consumer slot"
+                "connection - one object shared across every consumer slot"
             )
             assert conns_seen["probe"] is not loop_conn, (
                 "the probing slot's actor was handed the registered LOOP-scope "
-                "connection — one object shared across every consumer slot"
+                "connection - one object shared across every consumer slot"
             )
             assert conns_seen["fail"] is not conns_seen["probe"], (
                 "two concurrent transactional slots resolved the same connection for their actors"
@@ -854,7 +854,7 @@ async def test_concurrent_transactional_slots_each_hold_their_own_di_connection(
             # connection's concurrent-operation error.
             assert outcome_b == "succeeded", (
                 "the probing slot's healthy actor failed against its sibling's "
-                f"in-flight statement (outcome {outcome_b!r}) — the shared "
+                f"in-flight statement (outcome {outcome_b!r}) - the shared "
                 "connection's InterfaceError was misattributed to the actor"
             )
             assert outcome_a in ("scheduled", "failed")
@@ -867,7 +867,7 @@ async def test_concurrent_transactional_slots_each_hold_their_own_di_connection(
                 await marker_probe.close()
             assert marker_count == 0, (
                 "the failing slot's actor wrote through its injected connection "
-                "outside the slot's transaction — the rollback left the write "
+                "outside the slot's transaction - the rollback left the write "
                 f"committed ({marker_count} marker rows survive)"
             )
 

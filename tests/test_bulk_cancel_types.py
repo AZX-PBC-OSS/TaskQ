@@ -41,7 +41,7 @@ class TestBulkCancelResult:
         assert result.total_affected == 0
 
     def test_ids_are_tuples(self) -> None:
-        """ID fields are tuples, not lists — frozen immutability."""
+        """ID fields are tuples, not lists - frozen immutability."""
         result = BulkCancelResult(
             cancelled_directly=1,
             cancel_requested=0,

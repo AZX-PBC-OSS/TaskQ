@@ -1,28 +1,28 @@
 """Red-team attacks on the cron tick's time semantics (real PG, real clock).
 
-* **Catch-up determinism (C4)** — beyond-window misses re-anchor on the
+* **Catch-up determinism (C4)** - beyond-window misses re-anchor on the
   tick's server clock (next_fire_at strictly future, "cron missed slots
   skipped" warned); within-window misses fire their scheduled slot and
   advance one cadence (sequential catch-up, no warning).  The exact
-  boundary — a miss exactly ``cron_catch_up_window`` old — is the
+  boundary - a miss exactly ``cron_catch_up_window`` old - is the
   strict-inequality property: it is a within-window catch-up, and it can
   only be pinned deterministically by pinning the tick's planning clock,
   so those two tests run the tick on :class:`FrozenClockConn` (a real
   connection whose ONLY intercepted call is the tick's own
   ``SELECT clock_timestamp()``; every statement still hits real PG).
-* **DST ``allof`` at a future overlap (C5)** — America/New_York falls
+* **DST ``allof`` at a future overlap (C5)** - America/New_York falls
   back on 2026-11-01 (02:00 EDT → 01:00 EST), so local 01:30 occurs at
   both 05:30Z and 06:30Z.  A yearly schedule pinned to that date and
   seeded due now (within window) owes TWO jobs: the overdue fire
   immediately (server-stamped, pending) and the second occurrence
-  pre-scheduled at exactly 06:30Z (status ``scheduled`` — the enqueue
+  pre-scheduled at exactly 06:30Z (status ``scheduled`` - the enqueue
   SQL decides status from the server clock, which is why the overlap
   must be in the future for this pin).  A ``skip`` twin owes one.
-* **Cap semantics (C6)** — limit fires the EARLIEST due schedules and
+* **Cap semantics (C6)** - limit fires the EARLIEST due schedules and
   leaves the remainder bit-for-bit untouched; a due set exactly equal to
   the limit fires all (no off-by-one) and the next tick fires nothing; a
   limit above the due set is not a truncation.
-* **Success-UPDATE alignment (C7)** — three schedules with distinct
+* **Success-UPDATE alignment (C7)** - three schedules with distinct
   cadences (5-min, 10-min, hourly) and distinct due slots: each fired
   schedule's next_fire_at must equal ITS OWN slot plus ITS OWN cadence,
   exactly.  A rewrite that zipped the ids array against a misordered
@@ -77,7 +77,7 @@ class TestCatchUpRecompute:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """90 minutes missed against a 1h window: the slot is skipped —
+        """90 minutes missed against a 1h window: the slot is skipped -
         warning logged, one immediate job, next_fire_at re-anchored on the
         server clock (grid-aligned, strictly future), not on the stale slot."""
         schema = module_pg_schema.schema_name
@@ -114,7 +114,7 @@ class TestCatchUpRecompute:
             next_ten_min_boundary(now_after) + timedelta(minutes=10),
         }
         assert row in expected, (
-            f"next_fire_at {row} is not the server-clock re-anchor {expected} — the "
+            f"next_fire_at {row} is not the server-clock re-anchor {expected} - the "
             "recompute seed must be the tick's clock_timestamp(), not the stale slot"
         )
         assert row > now_after, "the re-anchored next_fire_at must be strictly future"
@@ -131,7 +131,7 @@ class TestCatchUpRecompute:
     ) -> None:
         """30 minutes missed against a 1h window: NO skip warning, the slot
         fires, and next_fire_at advances EXACTLY one cadence from the fired
-        slot — still in the past, so the next tick continues the catch-up
+        slot - still in the past, so the next tick continues the catch-up
         one slot at a time."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
@@ -156,7 +156,7 @@ class TestCatchUpRecompute:
 
         assert first == 1
         assert [e for e in captured if e["event"] == "cron missed slots skipped"] == [], (
-            "a within-window miss is a catch-up, not a skip — no warning may be logged"
+            "a within-window miss is a catch-up, not a skip - no warning may be logged"
         )
         assert await _next_fire_at(clean_pg_conn, schema, schedule_id) == slot + timedelta(
             minutes=10
@@ -180,7 +180,7 @@ class TestCatchUpRecompute:
         """A miss exactly ``cron_catch_up_window`` old fires its scheduled
         slot (strict ``<`` at the boundary): no warning, next_fire_at =
         slot + one cadence, exactly.  A rewrite to ``<=`` would re-anchor
-        instead and log the skip warning — both assertions catch it.
+        instead and log the skip warning - both assertions catch it.
 
         The tick's planning clock is pinned (see the module docstring) so
         the equality is exact; the due SELECT's ``statement_timestamp()``
@@ -275,7 +275,7 @@ class TestDstAllofOverlap:
         """A schedule whose next match is the future fall-back overlap
         (2026-11-01 01:30 America/New_York = 05:30Z and 06:30Z):
 
-        * ``allof``: TWO jobs from ONE tick — the overdue fire immediately
+        * ``allof``: TWO jobs from ONE tick - the overdue fire immediately
           (pending, server-stamped) and the second occurrence at exactly
           06:30Z with status ``scheduled``; the schedule's next_fire_at is
           exactly 05:30Z and a second tick enqueues nothing more.
@@ -345,7 +345,7 @@ class TestDstAllofOverlap:
             second = await tick_cron(
                 clean_pg_conn, settings, make_backend(settings), schema, new_uuid()
             )
-        assert second == 0, "both schedules advanced to the future overlap — nothing due"
+        assert second == 0, "both schedules advanced to the future overlap - nothing due"
         assert len(await jobs_for_identity(clean_pg_conn, schema, "dst-allof")) == 2
         assert len(await jobs_for_identity(clean_pg_conn, schema, "dst-skip")) == 1
 
@@ -401,7 +401,7 @@ class TestCapSemantics:
         ), "the fired schedule advances from its own slot (sequential catch-up)"
         remainder_after = [await _full_row(clean_pg_conn, schema, sid) for sid in ids[1:]]
         assert remainder_after == remainder_before, (
-            "the unfired remainder must be bit-for-bit untouched — a capped tick "
+            "the unfired remainder must be bit-for-bit untouched - a capped tick "
             "leaves the rest due, it does not advance or stamp it"
         )
 
@@ -410,7 +410,7 @@ class TestCapSemantics:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """Three due, limit=3: all three fire, the next tick fires nothing —
+        """Three due, limit=3: all three fire, the next tick fires nothing -
         LIMIT is inclusive at the boundary, no schedule is dropped or held."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
@@ -437,7 +437,7 @@ class TestCapSemantics:
             second = await tick_cron(
                 clean_pg_conn, settings, make_backend(settings), schema, new_uuid(), limit=3
             )
-        assert second == 0, "every schedule advanced — the second tick must be empty"
+        assert second == 0, "every schedule advanced - the second tick must be empty"
         total: int = await clean_pg_conn.fetchval(
             f'SELECT count(*) FROM "{schema}".jobs WHERE actor = $1',  # noqa: S608  # Why: schema is a test-fixture identifier; actor is $-bound.
             _ACTOR,
@@ -449,7 +449,7 @@ class TestCapSemantics:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """Two due, limit=10: both fire — a limit above the due set is not a
+        """Two due, limit=10: both fire - a limit above the due set is not a
         truncation and does not hold work back."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
@@ -529,7 +529,7 @@ class TestSuccessUpdateAlignment:
             actual = await _next_fire_at(clean_pg_conn, schema, ids[name])
             assert actual == expected_next, (
                 f"schedule {name} (slot {slot}) advanced to {actual}, expected "
-                f"{expected_next} — its own cadence from its own slot; the batched "
+                f"{expected_next} - its own cadence from its own slot; the batched "
                 "success UPDATE's id/next_fire arrays are misaligned"
             )
 

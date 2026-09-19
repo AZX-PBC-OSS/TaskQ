@@ -3,14 +3,14 @@ A single elected leader per cluster runs cooperative loops inside one
 asyncio.TaskGroup: election, watchdog, scheduled-wake (sweep 3), cron,
 sweep (sweeps 1/2/4), prune (sweep 5), archive expiry (sweep 6), stale
 worker cleanup, queue depth, reservation slots, and backlog detection.
-Non-leader pods retry election periodically and skip the gated work —
+Non-leader pods retry election periodically and skip the gated work ,
 the backlog detector is the deliberate exception (every worker samples;
 see ``_backlog_detection_loop``).
 Leadership is a row lease in ``maintenance_leader``: the holder writes an
 ``expires_at`` it chose from ``leader_lease`` and renews it every heartbeat
 interval, and any pod may take the row over once that instant has passed.
-The row alone decides the election in every state — held, lapsed, or
-absent — so nothing about the role depends on the liveness of a
+The row alone decides the election in every state, held, lapsed, or
+absent, so nothing about the role depends on the liveness of a
 connection: a holder that dies without a FIN is replaced on a horizon
 TaskQ controls rather than the server's connection-reaping schedule, and
 the replacement needs no privilege beyond UPDATE on that row. The
@@ -130,7 +130,7 @@ _WATCHDOG_INTERVAL_SECS: float = 5.0
 #: trusting its own term. The local window opens at the instant the renewal
 #: attempt STARTS while the server's expiry is written after the round trip,
 #: so this margin plus that round trip is the gap in which no process acts as
-#: leader — the gap that makes the two windows unable to overlap.
+#: leader, the gap that makes the two windows unable to overlap.
 _LEADER_TRUST_MARGIN_SECS: Final[float] = 1.0
 
 #: How many heartbeat intervals the recorded holder's ``last_seen_at`` ping may
@@ -166,17 +166,17 @@ _PRE_LEASE_STALE_HEARTBEATS: Final[int] = 4
 #: leaves the PREVIOUS holder's ``expires_at`` in place: judging that row on
 #: the expiry alone would declare a pod that is actively pinging the row
 #: lapsed, and two processes would lead. Requiring the ping to have stopped
-#: too costs nothing against the failover bound — the lease is never shorter
+#: too costs nothing against the failover bound, the lease is never shorter
 #: than the slack (``resolved_leader_lease``), so the expiry is always the
 #: later of the two horizons for a pod that leases.
 #:
 #: The first arm lets the recorded holder refresh its OWN row (a new term,
-#: not a renewal — the renewal fence is narrower). While the row names this
+#: not a renewal, the renewal fence is narrower). While the row names this
 #: worker with a live lease no peer could legally have taken it, so the arm
 #: cannot put a second leader on the row; what it buys is a cheap route back
-#: for a holder that stepped down without its row lapsing — a credential
+#: for a holder that stepped down without its row lapsing, a credential
 #: reload that dropped leader_conn, a transient renewal failure that spent
-#: the trust window — which would otherwise pay a whole lease's lapse per
+#: the trust window, which would otherwise pay a whole lease's lapse per
 #: occurrence.
 _LEADER_ELECT_SQL_TEMPLATE: Final[str] = (
     'INSERT INTO "{schema}".maintenance_leader '
@@ -195,7 +195,7 @@ _LEADER_ELECT_SQL_TEMPLATE: Final[str] = (
     "RETURNING elected_at"
 )
 
-#: Renew, fenced on the term. Zero rows means the term is gone — taken over,
+#: Renew, fenced on the term. Zero rows means the term is gone, taken over,
 #: or lapsed at the server. A lapsed-but-untaken lease is deliberately not
 #: renewable: the holder must re-elect through the same statement every peer
 #: runs, so being the previous holder confers no advantage.
@@ -310,12 +310,12 @@ class MaintenanceLeader:
         # only after a whole ``leader_lease``, stalling every successor by
         # exactly the wait resign exists to remove.  The fence stays sound
         # because the resign DELETE matches ``(worker_id, elected_at)``
-        # exactly — a successor's takeover rewrites both, so a stale fence
+        # exactly, a successor's takeover rewrites both, so a stale fence
         # deletes nothing.
         self._resign_fence: LeaderTerm | None = None
         # The FIRST term of this pod's current won-but-unassumable episode:
         # a run of election wins whose dedicated-conn opens keep failing
-        # (#234). Its ``trusted_until`` is the episode's whole trust
+        # Its ``trusted_until`` is the episode's whole trust
         # budget (the same window ``_renew_failed`` gives a renewing
         # leader to recover a transient failure before standing down),
         # because every re-win mints a fresh full window, so nothing
@@ -340,8 +340,8 @@ class MaintenanceLeader:
 
         Every path that gives up the role calls this FIRST. It must not be
         an ``async def`` and must not follow an await on any of them: the
-        steps that make demotion real at the server — closing the conn that
-        carries the courtesy lock, closing the leader-owned conns — park for
+        steps that make demotion real at the server, closing the conn that
+        carries the courtesy lock, closing the leader-owned conns, park for
         up to a bounded close on a dead PG, and a peer that wins the lock
         during that suspension may take the row legitimately. Anything still
         reading ``leading()`` as true meanwhile would be a second leader.
@@ -408,7 +408,7 @@ class MaintenanceLeader:
                     mid_run=mid_run,
                 )
             # Identity guard: the await above suspends, and the election loop
-            # can run a full cycle during that suspension — creating fresh
+            # can run a full cycle during that suspension, creating fresh
             # conns and re-setting is_leader. Unconditionally nulling would
             # orphan the fresh conn, leaving is_leader set with no cron/monitor
             # conn (a CPU busy-spin until the next leader_conn death). Only
@@ -449,20 +449,20 @@ class MaintenanceLeader:
     async def _open_leader_conn(self) -> asyncpg.Connection:
         """Open or reopen the leader advisory-lock connection.
 
-        Uses ``deps.leader_conn_factory`` when set (credential-provider-
-        backed deployments - AAD/AWS/Vault), so reconnection after a drop
-        re-fetches a fresh credential rather than falling back to a
-        stale/absent DSN. Falls back to ``open_dedicated_conn`` with the
-        DSN only when no factory is available.
+         Uses ``deps.leader_conn_factory`` when set (credential-provider-
+         backed deployments - AAD/AWS/Vault), so reconnection after a drop
+         re-fetches a fresh credential rather than falling back to a
+         stale/absent DSN. Falls back to ``open_dedicated_conn`` with the
+         DSN only when no factory is available.
 
-        The factory call is bounded by ``settings.reload_factory_timeout``
-        — the SAME bound the notify reconnect loop, the bootstrap opens,
-        and the reload path apply to every factory call. Unbounded, a hung
-        token endpoint parks the election loop past every staleness
-        budget and the in-worker watchdog force-exits the whole worker
-        instead of this loop's own retry/backoff handling it; the bound's
-        exhaustion IS the loop's ordinary factory-failure path (logged,
-        heartbeat-interval backoff, retry).
+         The factory call is bounded by ``settings.reload_factory_timeout``
+        , the SAME bound the notify reconnect loop, the bootstrap opens,
+         and the reload path apply to every factory call. Unbounded, a hung
+         token endpoint parks the election loop past every staleness
+         budget and the in-worker watchdog force-exits the whole worker
+         instead of this loop's own retry/backoff handling it; the bound's
+         exhaustion IS the loop's ordinary factory-failure path (logged,
+         heartbeat-interval backoff, retry).
         """
         factory = self._deps.leader_conn_factory
         if factory is not None:
@@ -499,7 +499,7 @@ class MaintenanceLeader:
         ``open_dedicated_conn`` with the DSN otherwise.
 
         The factory call is bounded by ``settings.reload_factory_timeout``,
-        exactly as ``_open_leader_conn`` bounds it — the election loop's
+        exactly as ``_open_leader_conn`` bounds it, the election loop's
         callers already treat any factory failure (including this
         TimeoutError) as retry-with-backoff, never a crash.
         """
@@ -549,7 +549,7 @@ class MaintenanceLeader:
         finally:
             # Hand the lease back before the conns go: a replacement pod then
             # elects on its next cycle instead of waiting out the lease this
-            # one would otherwise leave behind. Best-effort — the lease lapses
+            # one would otherwise leave behind. Best-effort, the lease lapses
             # on its own, so a resign that cannot reach the database costs at
             # most that wait.
             await self.resign()
@@ -566,8 +566,8 @@ class MaintenanceLeader:
         The lease row is what confers the role; this lock is taken by the
         winner only so a pod from a release that knows only the lock cannot
         lead beside a lease holder during a roll. It is never required and
-        never waited on: a miss — or a transient failure asking, or a
-        refused privilege — is logged and leadership proceeds, because a
+        never waited on: a miss, or a transient failure asking, or a
+        refused privilege, is logged and leadership proceeds, because a
         lock that outlives the row behind it (a candidate dead between the
         lock attempt and the election write, a departed leader's lingering
         session) must never again gate the election it used to decide.
@@ -589,7 +589,7 @@ class MaintenanceLeader:
         except PERMANENT_PG_REFUSALS as exc:
             # A managed Postgres restricting advisory-lock functions to
             # admin/superuser roles refuses this probe on every win, for as
-            # long as the grants stand — permanent, not transient (see
+            # long as the grants stand, permanent, not transient (see
             # PERMANENT_PG_REFUSALS). Degrade to a lock miss exactly as a
             # False return would: the lease row is the authority, and a
             # courtesy probe must never cost the leadership the row already
@@ -689,15 +689,15 @@ class MaintenanceLeader:
         pod at most one lease rather than correctness.
 
         Runs at ``run()`` teardown, AFTER the shutdown orchestrator has
-        already closed and nulled a TaskQ-owned ``leader_conn`` — so the
+        already closed and nulled a TaskQ-owned ``leader_conn``, so the
         write rides the leader-owned monitor conn when the primary is gone.
         Both conns are idle by then (the loops that used them have exited),
         and the monitor conn is never the orchestrator's to close.
 
         The fence prefers the live term and falls back to the last election
         this pod won: a mid-run demotion clears ``deps.leader_term`` long
-        before teardown, and without the fallback this pod's own row — never
-        taken over, or the DELETE would fence it out — would sit until the
+        before teardown, and without the fallback this pod's own row, never
+        taken over, or the DELETE would fence it out, would sit until the
         lease lapses while a replacement pod waits on it.
 
         The other caller is ``_hand_back_unassumable_lease``, mid-run and
@@ -712,7 +712,7 @@ class MaintenanceLeader:
         silent by design (at teardown they are normal), while a raised
         write carries its own ``leader-resign-failed`` WARN. A caller
         whose policy REPORTS a hand-back must not do so on a ``False``
-        here, which is why the #234 trust-spent hand-back WARNs only on
+        here, which is why the trust-spent hand-back WARNs only on
         a ``True``.
         """
         term = self._deps.leader_term or self._resign_fence
@@ -758,7 +758,7 @@ class MaintenanceLeader:
         return True
 
     async def _hand_back_unassumable_lease(self, *, reason: str) -> None:
-        """Give back a lease this pod won but could not assume (#234).
+        """Give back a lease this pod won but could not assume.
 
         A won row whose dedicated conns will not open is the worst state
         an election can end in: this pod's name is on the row, so every
@@ -897,7 +897,7 @@ class MaintenanceLeader:
                 # The assume path (courtesy lock probe, dedicated-conn
                 # opens) runs inside the same error boundary as the
                 # election statement: nothing it raises may escape into
-                # the TaskGroup — one election cycle's failure is a retry
+                # the TaskGroup, one election cycle's failure is a retry
                 # next tick, never a cancelled maintenance plane.
                 try:
                     assumed = await self._assume_leadership(elected_at, attempt_started)
@@ -942,14 +942,14 @@ class MaintenanceLeader:
         Applies to the election statement and the assume-leadership path
         alike: the leader conn's state is unknown after either failure, so
         it (and every leader-owned conn) is dropped and the lost attempt
-        recorded. The caller decides what the error class buys the loop —
+        recorded. The caller decides what the error class buys the loop ,
         a transient failure just retries next tick; an unexpected one is
         budgeted by the :class:`UnexpectedLoopErrorGuard` first.
 
         ``won_row`` marks the cycles whose election statement had already
         WON the lease before failing (an exception escaping
         :meth:`_assume_leadership`): those leave this pod's name on a row
-        it may never manage to assume, so the #234 hand-back runs FIRST,
+        it may never manage to assume, so the trust-spent hand-back runs FIRST,
         before the leader conn it rides is dropped.
         """
         if won_row:
@@ -970,7 +970,7 @@ class MaintenanceLeader:
         Contention is a signal about transitions, and the runbook reads it as
         one: brief and intermittent during a handover, sustained only when
         the observed holder keeps changing hands or the row cannot be read
-        at all. Losing to the same live holder every heartbeat is neither —
+        at all. Losing to the same live holder every heartbeat is neither ,
         it is what every pod in a fleet larger than one does for its whole
         life, and recording it made the sustained-rate alert fire
         permanently wherever the fleet was doing exactly what it should.
@@ -978,8 +978,8 @@ class MaintenanceLeader:
         So this records once per *distinct* holder this pod finds in its
         way: the term it observes changing is the transition, and a term
         that keeps answering is the steady state. A lost election with no
-        row to observe at all — the holder resigned between this pod's
-        attempt and this probe — is a handover in flight, a transition too,
+        row to observe at all, the holder resigned between this pod's
+        attempt and this probe, is a handover in flight, a transition too,
         and is recorded once the same way.
         """
         conn = self._deps.leader_conn
@@ -1022,7 +1022,7 @@ class MaintenanceLeader:
         # Captured the moment the row is won, BEFORE the conn opens that
         # complete the assume: even a won-then-unassumable election leaves
         # this pod's name on the row, and the resigns that hand exactly
-        # that row back, the trust-spent hand-back (#234) and the
+        # that row back, the trust-spent hand-back and the
         # teardown resign, fence on it.  Renewals never change
         # ``elected_at``, so the fence stays valid for the life of the
         # term.
@@ -1031,7 +1031,7 @@ class MaintenanceLeader:
         # old-release pod understands the lock and not the lease, so the
         # lease holder takes it to keep such a pod from electing itself
         # beside this one during a roll. A miss changes nothing about this
-        # pod's leadership — the lease is the authority — but the miss must
+        # pod's leadership, the lease is the authority, but the miss must
         # be visible, because during a roll it is the difference between
         # "old pods are excluded" and "they are not".
         if not await self._try_election_lock():
@@ -1045,7 +1045,7 @@ class MaintenanceLeader:
             self._cron_conn = await self._open_dedicated_conn("cron_conn")
         except Exception as exc:
             # Why: ``except Exception`` is deliberate here for the same reason
-            # as the leader_conn reopen path above — factory-built conns
+            # as the leader_conn reopen path above, factory-built conns
             # surface provider (azure/hvac/botocore) and
             # asyncpg.InvalidPasswordError failures, which are transient and
             # must retry, not escape into the worker TaskGroup. CancelledError
@@ -1169,7 +1169,7 @@ class MaintenanceLeader:
         while not shutdown.is_set():
             # Parking on is_leader.wait() alone can never wake when PG is
             # unreachable: the election loop cannot re-elect, so nothing
-            # sets is_leader again — MaintenanceLeader.run's TaskGroup
+            # sets is_leader again, MaintenanceLeader.run's TaskGroup
             # (and with it the whole worker) would hang on exit after
             # isolate_self. Race the park against shutdown.
             leader_wait = asyncio.create_task(self._deps.is_leader.wait())
@@ -1208,7 +1208,7 @@ class MaintenanceLeader:
             # Leaving the inner loop means the gate closed: demotion (the
             # probe-failure break above, which clears is_leader), a dropped
             # monitor conn, or shutdown. Drop the registration HERE, before
-            # re-parking on is_leader.wait() — this loop stops ticking through
+            # re-parking on is_leader.wait(), this loop stops ticking through
             # no fault of its own, and a lingering registration goes stale
             # while parked, so detector 2 would force-exit a healthy
             # non-leader worker ~grace seconds after every ordinary
@@ -1233,7 +1233,7 @@ class MaintenanceLeader:
                     # a healthy leader. asyncio.timeout raises TimeoutError,
                     # which the transient-PG branch below already handles.
                     async with asyncio.timeout(self._deps.settings.dispatcher_command_timeout):
-                        # No `now` argument — the sweep's server-side
+                        # No `now` argument, the sweep's server-side
                         # predicate (scheduled_at <= clock_timestamp()) is
                         # the single arbiter.
                         rows = await self._backend.scheduled_to_pending()
@@ -1254,7 +1254,7 @@ class MaintenanceLeader:
                     # interval. Unguarded it escapes into the worker's
                     # TaskGroup and wedges shutdown (see _leader_sweeps).
                     # rows is None means the awaited sweep call itself was
-                    # cut short — a sweep-timeouts increment. rows bound
+                    # cut short, a sweep-timeouts increment. rows bound
                     # means the sweep COMPLETED and the deadline casualty
                     # was the wake NOTIFY: a different failure (pool
                     # exhaustion / notify timeout), already logged below,
@@ -1337,7 +1337,7 @@ class MaintenanceLeader:
                 # that missed 7 of 12 transient shapes (DeadlockDetectedError,
                 # SerializationError, AdminShutdownError, etc.). Deadlock and
                 # serialization inside a transaction are routine, not
-                # surprises — 5 consecutive killed the worker via the
+                # surprises, 5 consecutive killed the worker via the
                 # backstop guard before this fix.
                 if type(exc) is TimeoutError or isinstance(exc, asyncpg.QueryCanceledError):
                     # Deadline family (iteration deadline or server-side
@@ -1349,7 +1349,7 @@ class MaintenanceLeader:
                     # churn leadership during catch-up bursts.
                     #
                     # Why type(exc) is, not isinstance: TimeoutError is an
-                    # OSError subclass — isinstance would also match raw
+                    # OSError subclass, isinstance would also match raw
                     # OSError here, but the deadline family (asyncio.timeout /
                     # command_timeout) must keep the conn, while a raw OSError
                     # (socket death) must drop it.
@@ -1376,7 +1376,7 @@ class MaintenanceLeader:
                     # Other transient (deadlock, serialization, admin
                     # shutdown, cannot-connect-now, too-many-connections,
                     # idle-session timeouts): retry next tick. The conn may
-                    # or may not be dead — the next tick's transaction()
+                    # or may not be dead, the next tick's transaction()
                     # will surface a conn-state error if it is, and the
                     # transaction rolls back for deadlock/serialization
                     # leaving the conn usable.

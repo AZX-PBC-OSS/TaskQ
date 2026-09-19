@@ -8,7 +8,7 @@ Async-native, Postgres-backed background job library for Python 3.12+.
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Docs](https://img.shields.io/badge/docs-mkdocs-blue.svg)](https://AZX-PBC-OSS.github.io/TaskQ/)
 
-> **Stability:** TaskQ is pre-1.0 and follows SemVer 0.x conventions — breaking
+> **Stability:** TaskQ is pre-1.0 and follows SemVer 0.x conventions, so breaking
 > changes may land in minor version bumps (`0.x.0`), not just majors. Pin an
 > exact or narrow version range in production until 1.0.
 
@@ -21,40 +21,40 @@ Async-native, Postgres-backed background job library for Python 3.12+.
 
 ## Features
 
-- **Actors** — decorate plain `async def` (or sync) functions with `@actor`;
+- **Actors**: decorate plain `async def` (or sync) functions with `@actor`;
   payloads are validated with Pydantic models and dispatched as typed
   `ActorRef` handles.
-- **Postgres-backed** — durable jobs, `SKIP LOCKED` dispatch, advisory-lock
+- **Postgres-backed**: durable jobs, `SKIP LOCKED` dispatch, advisory-lock
   leader election, and a forward-only SQL migration runner. No external
   broker required.
-- **Async-native** — built on `asyncio` and `asyncpg` from the ground up; no
+- **Async-native**: built on `asyncio` and `asyncpg` from the ground up; no
   thread pools or sync wrappers on the hot path.
-- **Rate limiting** — sliding-window and token-bucket algorithms with
+- **Rate limiting**: sliding-window and token-bucket algorithms with
   composition, a provider/registry layer, and Postgres fallback when Redis is
   unavailable.
-- **Dependency injection** — scoped providers (LOOP, TRANSIENT, ...), cycle
+- **Dependency injection**: scoped providers (LOOP, TRANSIENT, ...), cycle
   detection, and validation via the `_di` subsystem.
-- **Admin UI** — FastAPI + htmx dashboard for inspecting jobs, queues, and
+- **Admin UI**: FastAPI + htmx dashboard for inspecting jobs, queues, and
   workers, with live progress streaming over SSE.
-- **Observability** — vendor-neutral OpenTelemetry spans/metrics and
+- **Observability**: vendor-neutral OpenTelemetry spans/metrics and
   structured logging via `structlog`. Wire any OTLP-compatible backend
   (Datadog, Sentry, App Insights, ...) without importing vendor SDKs.
-- **Cron scheduling** — declarative periodic actors with `cron(...)` /
+- **Cron scheduling**: declarative periodic actors with `cron(...)` /
   `ScheduleHandle` and a leader-elected cron loop.
-- **Batch processing** — `enqueue_batch` / `enqueue_batch_fast` for fan-out.
+- **Batch processing**: `enqueue_batch` / `enqueue_batch_fast` for fan-out.
   `wait_for_batch(db, batch_id)` is an in-actor finalizer helper (call it from
   a finalizer actor holding an `asyncpg` connection); client-side code that
   isn't inside an actor should instead poll `BatchHandle.status(db_connection)`.
   See [Jobs & Clients](docs/guides/jobs-clients.md#enqueue_batch).
-- **Cancellation** — cooperative cancellation with grace periods and
+- **Cancellation**: cooperative cancellation with grace periods and
   force-cancel sweeps; `ctx.check_cancelled()` inside actor bodies; bulk
   `cancel_where(filter)` for set-based cancellation by tag, queue, actor,
   or batch ID.
-- **Progress tracking** — `ctx.progress(...)` events buffered and published
+- **Progress tracking**: `ctx.progress(...)` events buffered and published
   to subscribers and the admin UI.
-- **Workgroups** — multi-worker process supervision with a shared heartbeat
+- **Workgroups**: multi-worker process supervision with a shared heartbeat
   and shutdown coordinator.
-- **Retries** — pluggable `RetryPolicy` with backoff, snooze, and
+- **Retries**: pluggable `RetryPolicy` with backoff, snooze, and
   `RetryDecision` control flow.
 
 ## Installation
@@ -81,7 +81,7 @@ Optional extras:
 | `[saml]`       | SAML SSO auth for the admin UI (python3-saml, itsdangerous)        |
 | `[reload]`     | `watchfiles` for autoreload during local development                |
 
-The core install depends only on `opentelemetry-api` — no SDK or exporters
+The core install depends only on `opentelemetry-api`; no SDK or exporters
 (see [Observability](docs/guides/observability.md)).
 
 ```bash
@@ -97,7 +97,7 @@ pip install "taskq-py[redis,fastapi,otel,prometheus]"
 - Docker (for the bundled Postgres 18 / Redis stack)
 - PostgreSQL: tested against **PostgreSQL 18** (CI and `docker-compose.yml`
   both pin PG 18). No PG18-specific SQL has been identified in the bundled
-  migrations, but earlier major versions are not covered by CI — treat
+  migrations, but earlier major versions are not covered by CI, so treat
   PG 18 as the supported baseline until a version matrix is added.
 
 ### Bring up local infra
@@ -115,7 +115,7 @@ uv run taskq migrate status
 uv run taskq migrate up
 ```
 
-`migrate up` is idempotent — re-running is a no-op until new migrations land. It
+`migrate up` is idempotent: re-running is a no-op until new migrations land. It
 takes a Postgres advisory lock, so concurrent invocations (two replicas, a retried
 deploy job) serialize instead of racing; a caller that cannot get the lock within
 `lock_timeout` exits with a clear message rather than blocking indefinitely. Still
@@ -150,7 +150,7 @@ registry = [send_email]
 > **Set a per-attempt timeout before you forget.** `start_to_close` (per
 > enqueue, per actor, or `TASKQ_DEFAULT_START_TO_CLOSE`) is the one knob
 > that bounds a hung actor; it defaults to unbounded so a long job is never
-> killed by surprise. Every real deployment wants one — see
+> killed by surprise. Every real deployment wants one; see
 > [ops.md §2](docs/guides/ops.md#2-timeouts-start_to_close-and-schedule_to_close),
 > and ops.md's [scaling playbook](docs/guides/ops.md) for what to tune as
 > load grows.
@@ -244,7 +244,7 @@ docker-compose.yml     - Postgres 18 + Redis 8 for local dev
 ## Observability
 
 TaskQ never imports vendor SDKs (Sentry, Datadog, PostHog, App Insights).
-Wiring is via OTLP — point `OTEL_EXPORTER_OTLP_ENDPOINT` at the Datadog
+Wiring is via OTLP: point `OTEL_EXPORTER_OTLP_ENDPOINT` at the Datadog
 Agent, Sentry's OTel ingest, App Insights, or PostHog Cloud and the
 spans/metrics flow through unchanged. The `ErrorReporter` Protocol is the
 place to plug vendor-specific error routing without coupling the library to
@@ -253,7 +253,7 @@ any one backend.
 ## Configuration
 
 All runtime config is namespaced with the `TASKQ_` prefix and loaded
-through [`dotenvmodel`](https://pypi.org/project/dotenvmodel/) — drop a
+through [`dotenvmodel`](https://pypi.org/project/dotenvmodel/). Drop a
 `.env` in the project root, or set vars in your environment. Environment
 variables take precedence over `.env` files, and `ENV` (default `dev`)
 selects optional `.env.{env}` files.
@@ -281,7 +281,7 @@ uv run pytest -m "not integration" # skip the testcontainers tier
 ```
 
 A manual-only end-to-end tier (`tests/e2e/`) runs workers as real Docker
-containers — built from the packaged wheel — against testcontainers Postgres
+containers (built from the packaged wheel) against testcontainers Postgres
 and Dragonfly. It requires Docker and the `e2e` dependency group, is excluded
 from default test runs (collection is gated behind pytest's `--e2e` flag), and
 is not wired into CI yet. Run it serially with `make test-e2e` (or

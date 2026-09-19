@@ -62,7 +62,7 @@ async def test_snooze_deterministic_outcome_and_attempt_round_trip(
     """
     backend = InMemoryBackend(clock=FakeClock(_START))
     # Dispatch candidates come FROM the actor_config registry on both
-    # backends (PG's per_actor_capacity CTE) — the worker registers the
+    # backends (PG's per_actor_capacity CTE) - the worker registers the
     # actor it runs, so the twin's registry must carry it too.
     backend.register_actor_config(actor="test_actor")
     delay = timedelta(seconds=delay_seconds)
@@ -112,7 +112,7 @@ async def test_snooze_deterministic_outcome_and_attempt_round_trip(
     assert row is not None
     assert row.attempt == 1
 
-    # attempt= the row's current epoch — the worker presents job.attempt
+    # attempt= the row's current epoch - the worker presents job.attempt
     # from its in-hand row (worker/_consumer.py); the fence refuses a
     # caller that cannot prove which attempt it terminates.
     result = await backend.mark_snoozed(job_id, wid, delay, attempt=row.attempt)

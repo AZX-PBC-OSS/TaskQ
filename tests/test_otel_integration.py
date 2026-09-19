@@ -6,18 +6,19 @@ CONSUMER, INTERNAL attempt.1) with correct attributes, one span link on the
 CONSUMER, and core lifecycle metric data points for instruments 1-4.
 
 Also covers:
-  End-to-end trace — spans + instruments 1-4
+  End-to-end trace - spans + instruments 1-4
   Queue depth gauge (instrument 5)
   Leader gauge + election counters (instruments 9, 14-15)
   Heartbeat metrics (instruments 6-7)
   Reservation, cancellation, and cron metrics (instruments 8, 10, 16, 17)
-  OTel exporter unavailable — no exception propagation
-  Malformed trace_id — link skipped, CONSUMER span still created
+  OTel exporter unavailable - no exception propagation
+  Malformed trace_id - link skipped, CONSUMER span still created
   Enqueue span overhead measurement
 """
 
 import asyncio
 import contextlib
+import sys
 import time
 from contextlib import AsyncExitStack
 from datetime import timedelta
@@ -298,6 +299,74 @@ class TestEndToEndTrace:
             assert len(consumer.links) == 1
             assert consumer.links[0].context.trace_id == prod_ctx.trace_id
             assert consumer.links[0].context.span_id == prod_ctx.span_id
+        finally:
+            await stack.aclose()
+
+    async def test_disabled_otel_dispatch_builds_no_consumer_attrs(
+        self, pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With telemetry off, dispatch never builds the nine-entry consumer
+        attribute dict: safe_start_span drops attributes unread when the
+        flag is off, so the spy standing at the span start must see
+        ``attributes=None`` on every call, the consumer span's included."""
+        setup_tracer(monkeypatch)
+        setup_meter(monkeypatch)
+        stack, deps, backend, client = await _setup_worker(pg_dsn, monkeypatch)
+        otel_mod.set_otel_enabled(False)
+
+        import taskq.worker.dispatch as dispatch_mod
+
+        seen_attrs: list[object] = []
+        real_start = dispatch_mod.safe_start_span  # pyright: ignore[reportPrivateImportUsage]  # Why: the spy must stand at the module attribute the dispatch call site reads; the canonical re-export home is taskq.obs.
+
+        def spy(name: str, **kwargs: object) -> object:
+            seen_attrs.append(kwargs.get("attributes"))
+            return real_start(name, **kwargs)
+
+        monkeypatch.setattr(dispatch_mod, "safe_start_span", spy)
+        try:
+            handle = await client.enqueue(_integration_test_actor, _Payload())
+            worker_id = new_uuid()
+
+            async with deps.dispatcher_pool.acquire() as conn:
+                from taskq.testing.fixtures import _create_worker
+
+                await _create_worker(conn, deps.settings.schema_name, worker_id)
+                await _dispatch_job_to_running(
+                    conn, deps.settings.schema_name, worker_id, handle.job_id
+                )
+
+            job_row = await backend.get(handle.job_id)
+            assert job_row is not None
+
+            registry, process_scope, thread_scope, loop_scope = _make_scopes_for_dispatch(
+                deps.settings
+            )
+            await bootstrap_scopes(registry, process_scope, thread_scope, loop_scope, deps.settings)
+
+            enqueuer = SubJobEnqueuer(
+                loop_scope_resolved=loop_scope.resolved_cache(),
+                worker_pool=deps.worker_pool,
+                backend=backend,
+            )
+
+            await dispatch_one_job(
+                backend=backend,
+                deps=deps,
+                job=job_row,
+                worker_id=worker_id,
+                registry=registry,
+                process_scope=process_scope,
+                thread_scope=thread_scope,
+                loop_scope=loop_scope,
+                actor_ref=_integration_test_actor,
+                actor_config=default_actor_config(),
+                clock=SystemClock(),
+                enqueuer=enqueuer,
+            )
+
+            assert seen_attrs, "spy never saw a span start; the pin is vacuous"
+            assert all(attrs is None for attrs in seen_attrs)
         finally:
             await stack.aclose()
 
@@ -978,7 +1047,7 @@ class TestExporterUnavailable:
 
 
 class TestMalformedTraceId:
-    """Malformed trace_id in DB — link skipped, CONSUMER span still created."""
+    """Malformed trace_id in DB - link skipped, CONSUMER span still created."""
 
     async def test_malformed_trace_id_produces_no_link_consumer_span_still_created(
         self, pg_dsn: str, monkeypatch: pytest.MonkeyPatch
@@ -1063,6 +1132,23 @@ class TestMalformedTraceId:
 class TestEnqueueSpanOverhead:
     """Measure enqueue span overhead with no-op exporter."""
 
+    @staticmethod
+    def _interpreter_is_traced() -> bool:
+        """True when a coverage tool instruments the interpreter right now.
+
+        The coverage lane runs the whole suite unfiltered (the 90 percent
+        floor counts the slow family's lines), so this benchmark executes
+        under tracing there. A per-enqueue timing under an instrumented
+        interpreter measures the tracer, not the enqueue; the guard below
+        is only meaningful untraced.
+        """
+        if sys.gettrace() is not None:
+            return True
+        monitoring = getattr(sys, "monitoring", None)
+        if monitoring is None:
+            return False
+        return any(monitoring.get_tool(i) is not None for i in range(6))
+
     async def test_enqueue_overhead_with_noop_exporter(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1096,6 +1182,12 @@ class TestEnqueueSpanOverhead:
             elapsed = time.monotonic() - t0
             best_batch_us = min(best_batch_us, (elapsed / n) * 1_000_000)
 
+        if self._interpreter_is_traced():
+            # Under coverage tracing the number is the tracer's overhead;
+            # the enqueues above still ran so the coverage lane keeps
+            # exercising the instrumented path. The guard holds only where
+            # it can measure: the untraced lanes (this file's lane and dev).
+            return
         assert best_batch_us < 500, (
             f"Per-enqueue overhead {best_batch_us:.1f}us exceeds 500us threshold"
         )

@@ -3,19 +3,19 @@
 The adjudicated contract (docs/guides/actors.md's "silent no-op"
 disclosure and docs/guides/ops.md's footgun table): ``unique_for``
 without ``identity_key`` is a documented no-op that logs a warn-once
-event (``actor_config_unique_for_ignored``) and enqueues a fresh job —
+event (``actor_config_unique_for_ignored``) and enqueues a fresh job -
 raising instead would break the green pins and docs pages that codify
 the warning contract. What was defective was SILENCE, not leniency: the
 JobsClient actor-declared path warned, but the per-call seam
-(SubJobEnqueuer.enqueue — the only caller-facing enqueue surface that
+(SubJobEnqueuer.enqueue - the only caller-facing enqueue surface that
 takes a per-call ``unique_for``) accepted the knob without a peep.
 
 Two halves, now coherent:
 
-* The warn pins — every caller-facing single-enqueue seam that accepts
+* The warn pins - every caller-facing single-enqueue seam that accepts
   ``unique_for`` emits the warn-once event when ``identity_key`` is
   omitted (per-call and actor-declared, SubJobEnqueuer and JobsClient).
-* The inertness proofs — the same window WITH an identity dedups while
+* The inertness proofs - the same window WITH an identity dedups while
   the identical enqueue WITHOUT one lands duplicate jobs, on the
   in-memory mirror and end-to-end against real PG: the no-op is
   observable, which is exactly what the warning points at.
@@ -73,7 +73,7 @@ def _make_backend() -> InMemoryBackend:
 def _make_enqueuer(backend: InMemoryBackend) -> SubJobEnqueuer:
     # LOOP-scope provenance is the shape ctx.jobs gives actor code: the
     # enqueue joins the consumer's transaction, which the in-memory
-    # backend's simulation buffers — a green handle without a driver.
+    # backend's simulation buffers - a green handle without a driver.
     return SubJobEnqueuer(
         loop_scope_resolved={asyncpg.Connection: object()},
         worker_pool=None,
@@ -87,7 +87,7 @@ def _warning_count(out: str) -> int:
 
     The rendered structlog line names the event twice (as the event and
     as ``kind=``), so this counts WARNING LINES, not substring
-    occurrences — one per emitted warning, regardless of render format.
+    occurrences - one per emitted warning, regardless of render format.
     """
     return sum(1 for line in out.splitlines() if "actor_config_unique_for_ignored" in line)
 
@@ -127,7 +127,7 @@ async def test_sub_enqueuer_actor_declared_unique_for_without_identity_key_warns
 ) -> None:
     """An actor-declared ``unique_for`` with ``identity_key`` omitted at
     the per-call seam (SubJobEnqueuer) warns exactly as the JobsClient
-    path does — the same no-op, the same warning, on every seam that
+    path does - the same no-op, the same warning, on every seam that
     accepts the knob."""
     enqueuer = _make_enqueuer(_make_backend())
 
@@ -158,7 +158,7 @@ async def test_client_enqueue_actor_unique_for_without_identity_key_warns(
 
 
 async def test_build_args_unique_for_with_identity_key_is_accepted() -> None:
-    """``unique_for`` WITH ``identity_key`` crosses the boundary unchanged —
+    """``unique_for`` WITH ``identity_key`` crosses the boundary unchanged -
     the warning pins the missing pairing, never the knob itself."""
     args = build_enqueue_args(
         _plain_actor,
@@ -177,7 +177,7 @@ async def test_build_args_unique_for_with_identity_key_is_accepted() -> None:
 async def test_per_call_unique_for_without_identity_key_lands_duplicate_jobs() -> None:
     """The identical enqueue minus ``identity_key`` enforces nothing: the
     window is accepted and stored on the args, and two enqueues land two
-    fresh jobs — while the same window WITH an identity dedups on the same
+    fresh jobs - while the same window WITH an identity dedups on the same
     backend, isolating the missing identity as the cause."""
     backend = InMemoryBackend(clock=FakeClock(_START))
 
@@ -196,7 +196,7 @@ async def test_per_call_unique_for_without_identity_key_lands_duplicate_jobs() -
     dedup_row_1 = await backend.enqueue(dedup_args_1)
     dedup_row_2 = await backend.enqueue(dedup_args_2)
     assert dedup_row_2.id == dedup_row_1.id, (
-        "precondition: with identity_key the window dedups — the arm works"
+        "precondition: with identity_key the window dedups - the arm works"
     )
 
     bare_args_1 = build_enqueue_args(_plain_actor, _Payload(value=3), unique_for=_WINDOW)
@@ -208,7 +208,7 @@ async def test_per_call_unique_for_without_identity_key_lands_duplicate_jobs() -
     bare_row_1 = await backend.enqueue(bare_args_1)
     bare_row_2 = await backend.enqueue(bare_args_2)
 
-    assert bare_row_1.id != bare_row_2.id, "no dedup happened — the window enforced nothing"
+    assert bare_row_1.id != bare_row_2.id, "no dedup happened - the window enforced nothing"
     assert await backend.get(bare_row_1.id) is not None
     assert await backend.get(bare_row_2.id) is not None
 
@@ -218,7 +218,7 @@ async def test_pg_actor_unique_for_without_identity_key_lands_duplicate_jobs(
     clean_jobs_app: tuple[WorkerDeps, PostgresBackend],
 ) -> None:
     """End-to-end against real PG: the same actor and window that
-    single-flights WITH an identity lands two fresh jobs WITHOUT one — the
+    single-flights WITH an identity lands two fresh jobs WITHOUT one - the
     production gate no-ops, and the caller is handed two green handles."""
     deps, pg_backend = clean_jobs_app
     schema = deps.settings.schema_name
@@ -244,6 +244,6 @@ async def test_pg_actor_unique_for_without_identity_key_lands_duplicate_jobs(
             "rt_uf_declared",
         )
     assert count == 2, (
-        f"two no-identity enqueues of one unique_for actor landed {count} rows — "
+        f"two no-identity enqueues of one unique_for actor landed {count} rows - "
         "the window is stored on the row but enforces nothing"
     )

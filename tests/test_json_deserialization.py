@@ -5,7 +5,7 @@ The principle of least surprise: ``loads`` returns plain Python types
 etc. is the responsibility of the consuming Pydantic model's
 ``model_validate``, not the deserializer. This ensures that a developer
 who declares ``batch_id: str`` gets a ``str``, and a developer who
-declares ``batch_id: UUID`` gets a ``UUID`` — the declared field type
+declares ``batch_id: UUID`` gets a ``UUID`` - the declared field type
 is the source of truth.
 """
 
@@ -55,7 +55,7 @@ class TestLoadsReturnsPlainTypes:
         result = loads(data)
         assert isinstance(result["batch_id"], str), (
             f"loads converted a UUID-like string to {type(result['batch_id']).__name__}; "
-            "loads must return plain str — type coercion is Pydantic's job"
+            "loads must return plain str - type coercion is Pydantic's job"
         )
         assert result["batch_id"] == uid
 

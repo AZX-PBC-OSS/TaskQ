@@ -1,6 +1,6 @@
 """Test fixtures for integration tests.
 
-Provides ``always_failing_factory`` — a payload factory that always raises,
+Provides ``always_failing_factory`` - a payload factory that always raises,
 used by cron auto-disable integration tests.
 """
 

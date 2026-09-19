@@ -1,4 +1,4 @@
-"""Unit tests for taskq._ids — UUIDv7 generation and base62 identifiers."""
+"""Unit tests for taskq._ids - UUIDv7 generation and base62 identifiers."""
 
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -57,7 +57,7 @@ class TestNewJobId:
         assert len(ids) == 1000
 
 
-# ── new_base62 — charset and format ─────────────────────────────────────
+# ── new_base62 - charset and format ─────────────────────────────────────
 
 
 class TestBase62Charset:
@@ -93,7 +93,7 @@ class TestBase62Uniqueness:
         assert len(ids) == 1000
 
     def test_second_14_unique_1000(self) -> None:
-        # 14 chars = 6 timestamp + 8 random (62^8 ≈ 2.2e14 suffix space) —
+        # 14 chars = 6 timestamp + 8 random (62^8 ≈ 2.2e14 suffix space) -
         # the length production call sites use. Shorter lengths (e.g. 10 =
         # only 62^4 ≈ 14.7M suffixes) have a ~3% birthday-collision chance
         # at 1000 IDs/second and CANNOT guarantee uniqueness at this density.

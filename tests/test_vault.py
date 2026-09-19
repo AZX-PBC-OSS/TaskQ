@@ -1,4 +1,4 @@
-"""Tests for taskq.vault — HashiCorp Vault dynamic DB credential providers.
+"""Tests for taskq.vault - HashiCorp Vault dynamic DB credential providers.
 
 Uses a fake hvac client (no real Vault calls) to verify the provider
 implementation. Requires the ``[vault]`` extra (hvac); skips when the
@@ -89,7 +89,7 @@ def test_vault_provider_protocol_matching() -> None:
 
 async def test_vault_provider_propagates_hvac_error() -> None:
     """An hvac error from generate_credentials propagates unchanged through
-    asyncio.to_thread — callers must see the real Vault failure, not a wrapper."""
+    asyncio.to_thread - callers must see the real Vault failure, not a wrapper."""
     client = _fake_hvac_client()
     client.secrets.database.generate_credentials.side_effect = hvac.exceptions.VaultError(
         "permission denied"
@@ -101,7 +101,7 @@ async def test_vault_provider_propagates_hvac_error() -> None:
 
 async def test_vault_provider_missing_data_key_raises_key_error() -> None:
     """A Vault response without a 'data' key raises KeyError (pinned current
-    behavior — the provider does not pre-validate the response shape)."""
+    behavior - the provider does not pre-validate the response shape)."""
     client = _fake_hvac_client()
     client.secrets.database.generate_credentials.return_value = {}
     provider = VaultDynamicDbProvider(client, role="my-role")
@@ -123,7 +123,7 @@ async def test_vault_provider_missing_username_or_password_raises_key_error() ->
 
 
 def _fake_hvac_client_with_distinct_leases() -> Any:
-    """Fake hvac client issuing a NEW username/password lease per call —
+    """Fake hvac client issuing a NEW username/password lease per call -
     exactly what Vault's database secrets engine does."""
     client = MagicMock()
     counter = {"n": 0}

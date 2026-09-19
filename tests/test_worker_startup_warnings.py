@@ -1,6 +1,6 @@
 """Unit tests for the sub-enqueue startup signals.
 
-Pure-Python tests — no PG required. The helpers under test are
+Pure-Python tests - no PG required. The helpers under test are
 synchronous (``_emit_sub_enqueue_startup_warnings`` reads the LoopScope
 resolved cache and WorkerSettings) or drive a stubbed factory
 (``_maybe_open_slot_pool`` opens the per-slot transaction pool only
@@ -9,7 +9,7 @@ and the open-failure refusal are all decidable without Postgres).
 
 These tests assert on *which signal path is taken* (autonomous-fallback,
 dsn-mismatch, the per-slot mode announcement, or none; dsn-mismatch and
-the mode announcement can fire together) via the event name only —
+the mode announcement can fire together) via the event name only -
 never on log message format or field names, which are implementation
 details that change independently of behaviour.
 
@@ -17,8 +17,8 @@ The exception is the ``note=`` remediation text of the two signals that
 tell an operator what each connection configuration means:
 the retired shared-connection guard's note told operators to
 "register a pool instead of a single connection", but a LOOP-scope
-``asyncpg.Pool`` registration silently disables transactional consume —
-the remediation was the defect. Those two notes' load-bearing claims are
+``asyncpg.Pool`` registration silently disables transactional consume -
+the remediation was the defect. Those two notes' critical claims are
 pinned directly (see the ``_NoteSpy`` tests at the bottom).
 """
 
@@ -105,7 +105,7 @@ class _StubConn:
 
 
 class _EventSpy:
-    """Records each warning()/info() event name — WarningSpy counts calls only."""
+    """Records each warning()/info() event name - WarningSpy counts calls only."""
 
     def __init__(self) -> None:
         self.events: list[str] = []
@@ -125,7 +125,7 @@ class _NoteSpy(_EventSpy):
     connection", but a LOOP-scope ``asyncpg.Pool`` registration silently
     DISABLES transactional consume (the transactional path keys on
     ``asyncpg.Connection``). These pins therefore assert on the note's
-    load-bearing claims, not just the event name.
+    critical claims, not just the event name.
     """
 
     def __init__(self) -> None:
@@ -192,7 +192,7 @@ async def _maybe_open(
 
     async def factory() -> Any:
         if factory_hangs:
-            # A pool-factory call that never returns — a wedged credential
+            # A pool-factory call that never returns - a wedged credential
             # fetch is the production shape this stands in for.
             await asyncio.Event().wait()
         if factory_error is not None:
@@ -206,7 +206,7 @@ async def _maybe_open(
             opened = await _maybe_open_slot_pool(
                 loop_scope,
                 settings,
-                deps,  # type: ignore[arg-type]  # Why: duck-typed WorkerDeps stub — the function touches only _exit_stack/slot_pool/slot_pool_factory, mirroring the health-test fakes.
+                deps,  # type: ignore[arg-type]  # Why: duck-typed WorkerDeps stub - the function touches only _exit_stack/slot_pool/slot_pool_factory, mirroring the health-test fakes.
                 factory=factory,
                 pg_credential_provider=None,
                 caller_supplied_pg_pools=caller_supplied_pg_pools,
@@ -235,7 +235,7 @@ async def test_no_loop_conn_emits_autonomous_fallback_warning() -> None:
 async def test_loop_conn_with_dsn_mismatch_emits_warning() -> None:
     """LOOP-scope conn present + DSNs differ → one warning emitted."""
     loop_scope = await _make_loop_scope(resolved={asyncpg.Connection: _StubConn()})
-    # Why: max_concurrency pinned to 1 to isolate the DSN check — the
+    # Why: max_concurrency pinned to 1 to isolate the DSN check - the
     # helper's warnings are concurrency-blind, but pinning keeps this
     # case orthogonal to the per-slot activation tests.
     settings = _make_settings(
@@ -296,7 +296,7 @@ async def test_loop_conn_max_concurrency_one_does_not_activate_slot_pool() -> No
     """LOOP-scope conn + max_concurrency=1 → the per-slot path stays off.
 
     The single-slot worker keeps using the registered connection
-    directly — the legitimate fleet shape — so no pool opens and no
+    directly - the legitimate fleet shape - so no pool opens and no
     mode announcement fires.
     """
     loop_scope = await _make_loop_scope(resolved={asyncpg.Connection: _StubConn()})
@@ -347,7 +347,7 @@ async def test_no_loop_conn_max_concurrency_above_one_does_not_activate_slot_poo
 async def test_slot_pool_open_failure_refuses_boot_naming_host() -> None:
     """A worker that cannot open the pool fails to boot, loudly.
 
-    The refusal names the pool and the DSN host — the alternative is a
+    The refusal names the pool and the DSN host - the alternative is a
     worker that accepts jobs it cannot transact.
     """
     loop_scope = await _make_loop_scope(resolved={asyncpg.Connection: _StubConn()})
@@ -367,7 +367,7 @@ async def test_slot_pool_open_is_bounded_by_reload_factory_timeout() -> None:
 
     Opening the fully-warmed pool means one connection (and, on a
     managed-identity deployment, one credential fetch) per consumer
-    slot; an unbounded wait here would hang worker startup forever —
+    slot; an unbounded wait here would hang worker startup forever -
     the worst failure shape this project ships. The open is bounded by
     ``reload_factory_timeout`` and the expiry refuses boot, loudly,
     naming the host. The outer wait_for keeps a regression (the bound
@@ -387,7 +387,7 @@ async def test_slot_pool_open_is_bounded_by_reload_factory_timeout() -> None:
 
 async def test_slot_pool_open_outside_deps_lifecycle_fails_loudly() -> None:
     """Opening the pool without the deps exit stack is a wiring bug, and
-    it must stop the caller immediately — a pool with no registered
+    it must stop the caller immediately - a pool with no registered
     teardown would leak max_concurrency + 1 connections silently."""
     from taskq.obs import set_slot_pool_occupancy_source
 
@@ -458,7 +458,7 @@ async def test_autonomous_fallback_note_states_pool_registration_disables_transa
 
     The transactional path keys on ``asyncpg.Connection``; an operator who
     registers an ``asyncpg.Pool`` at ``Scope.LOOP`` instead still sees this
-    warning — the pool does not activate transactional consume, it keeps
+    warning - the pool does not activate transactional consume, it keeps
     autonomous commit in force. The retired guard's note said
     "register a pool instead of a single connection", sending exactly that
     operator down the silent-disable path; the note must now name the
@@ -474,7 +474,7 @@ async def test_autonomous_fallback_note_states_pool_registration_disables_transa
     note = spy.notes.get("sub_enqueue_autonomous_fallback")
     assert note is not None, "the autonomous-fallback warning must fire"
     assert "asyncpg.Pool" in note, (
-        "the remediation must name the pool shape operators reach for — a "
+        "the remediation must name the pool shape operators reach for - a "
         "LOOP-scope asyncpg.Pool registration"
     )
     assert "does NOT activate" in note, (
@@ -490,11 +490,11 @@ async def test_per_slot_note_states_actors_transact_on_their_own_slot_connection
     """The per-slot mode announcement must state the actor-visible semantics.
 
     The per-slot pool carries more than TaskQ's own transactional writes:
-    every job's actor resolves its slot connection — the connection that
-    job's transaction runs on — so concurrent slots can never interleave on
+    every job's actor resolves its slot connection - the connection that
+    job's transaction runs on - so concurrent slots can never interleave on
     one connection, and an actor's own writes join its job's transaction.
     The announcement is the boot-time record of that contract, so its note
-    must carry the load-bearing claims (per-slot actor connection, no
+    must carry the critical claims (per-slot actor connection, no
     interleaving, and which shape still inherits the registered
     connection's session state).
     """
@@ -507,7 +507,7 @@ async def test_per_slot_note_states_actors_transact_on_their_own_slot_connection
     assert note is not None, "the per-slot mode announcement must fire"
     assert "slot connection" in note, (
         "the announcement must state that actors receive their slot's "
-        "connection — the connection their job's transaction runs on"
+        "connection - the connection their job's transaction runs on"
     )
     assert "never interleave" in note, (
         "the announcement must state the isolation guarantee: concurrent "

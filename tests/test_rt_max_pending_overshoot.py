@@ -2,7 +2,7 @@
 
 Hypothesis: ``max_pending`` is a check-then-insert count
 (``src/taskq/backend/_enqueue.py``) with no serializing lock and no
-slot-index backstop — unlike ``unique_for``, which takes a
+slot-index backstop - unlike ``unique_for``, which takes a
 transaction-scoped advisory lock, and unlike singleton, which has the
 ``jobs_singleton_uniq`` backstop with a typed ``UniqueViolation``
 catch. Count-then-insert races can be prevented by enforcing partial
@@ -12,7 +12,7 @@ the bounded capacity and prevents the overshoot at insertion time.
 Every batch tier below must refuse an over-cap actor loudly rather than
 admit it silently. The refusal is PARTITIONED per actor: the
 over-cap actor's items are refused as a group (nothing over cap is ever
-admitted — the pinned invariant below), every other actor's items are
+admitted - the pinned invariant below), every other actor's items are
 admitted, and ``BatchMaxPendingExceededError`` raises after the admitted
 rows are durable:
 
@@ -179,7 +179,7 @@ async def test_batch_fast_bypasses_max_pending(
     Same partitioned tier as the streaming path (the COPY runs after the
     aggregated admission check); the actor's ``max_pending=2`` literal is
     carried onto the args by ``build_batch_args``, every item belongs to
-    the over-cap actor, and the pre-COPY check refuses the whole import —
+    the over-cap actor, and the pre-COPY check refuses the whole import -
     the COPY never runs, nothing is written.
     """
     schema = module_pg_schema.schema_name
@@ -209,7 +209,7 @@ async def test_sub_enqueuer_conn_batch_bypasses_max_pending(
     backend tier's partitioned admission. The over-cap actor's items are
     refused after the within-cap actors' items are inserted, and the
     sub-enqueuer converts the refusal to its house ``PartialBatchError``
-    — the same type its autonomous fallback raises — with one
+    - the same type its autonomous fallback raises - with one
     ``MaxPendingExceededError`` per failed item index. Here every item is
     the capped actor's, so nothing is admitted.
     """
@@ -242,7 +242,7 @@ async def test_concurrent_singles_overshoot_max_pending(
 
     Each ``enqueue_with_conn`` counts ``pending + scheduled`` then INSERTs
     with no serializing lock; overlapping counts each see room and all
-    INSERT. The per-actor jobs table must never hold more than the cap —
+    INSERT. The per-actor jobs table must never hold more than the cap -
     anything above it is admitted load the operator explicitly shed.
     """
     import asyncio
@@ -284,7 +284,7 @@ async def test_concurrent_singles_overshoot_max_pending(
         )
         # Serialization is exact, not merely bounded: the per-actor lock
         # orders the twenty transactions, so precisely the first two see
-        # room and the other eighteen are refused loudly — a silent drop
+        # room and the other eighteen are refused loudly - a silent drop
         # would pass the count below while hiding the missing refusal.
         admitted = sum(isinstance(r, JobRow) for r in results)
         refused = sum(isinstance(r, MaxPendingExceededError) for r in results)
@@ -363,7 +363,7 @@ async def test_batch_idempotency_duplicates_do_not_consume_cap(
     One stored row plus a batch of five where four share the stored
     (scope, key) pair: the four dedupe via ``ON CONFLICT`` and write
     nothing, so the aggregate admits (1 existing + 1 new <= cap 2).
-    Counting them would refuse a batch that consumes a single slot —
+    Counting them would refuse a batch that consumes a single slot -
     the single-enqueue path returns idempotency hits before any cap
     accounting, and the batch tier must match.
     """
@@ -400,7 +400,7 @@ async def test_regular_enqueue_batch_rejects_oversized_aggregate() -> None:
     aggregate exceeds the cap.
 
     Documents the boundary of the finding: admission lives wholly in the
-    backend tier (the client-side aggregated pre-check was removed —
+    backend tier (the client-side aggregated pre-check was removed -
     it aborted the whole call for one capped actor), which counts
     once per batch, discounts idempotency pairs, and partitions per
     actor. A single-actor over-cap batch is refused whole with nothing

@@ -12,7 +12,7 @@ Covers all test-plan cases:
 - Good module, bad attr exits nonzero
 
 Integration tests are marked individually with
-``@pytest.mark.integration`` — no file-wide ``pytestmark`` so that unit
+``@pytest.mark.integration``, no file-wide ``pytestmark`` so that unit
 and negative tests pass under ``pytest -m 'not integration'``.
 """
 
@@ -229,7 +229,7 @@ async def test_stop_worker_sigkill_on_timeout() -> None:
 
 
 async def test_stop_worker_clean_exit() -> None:
-    """Worker exits within grace period — no SIGKILL."""
+    """Worker exits within grace period, no SIGKILL."""
     proc = MagicMock(spec=asyncio.subprocess.Process)
     proc.wait = AsyncMock(return_value=0)
     proc.send_signal = Mock()
@@ -242,7 +242,7 @@ async def test_stop_worker_clean_exit() -> None:
 
 
 async def test_stop_worker_already_dead() -> None:
-    """Process already exited — ProcessLookupError on SIGTERM is handled."""
+    """Process already exited, ProcessLookupError on SIGTERM is handled."""
     proc = MagicMock(spec=asyncio.subprocess.Process)
     proc.wait = AsyncMock(return_value=0)
     proc.send_signal = Mock(side_effect=ProcessLookupError)
@@ -255,7 +255,7 @@ async def test_stop_worker_already_dead() -> None:
 
 
 async def test_stop_worker_kill_raises_process_lookup_error() -> None:
-    """Child exits between TimeoutError and proc.kill() — ProcessLookupError swallowed."""
+    """Child exits between TimeoutError and proc.kill(), ProcessLookupError swallowed."""
     call_count = 0
 
     async def _wait() -> int:
@@ -380,7 +380,7 @@ async def test_syntax_error_suppresses_restart(
         path = str(actor_module.tmp_path / _TMP_MODULE_NAME)
         await broken_event.wait()
         yield {(1, path)}
-        # This line runs when the dev loop asks for the NEXT batch —
+        # This line runs when the dev loop asks for the NEXT batch ,
         # i.e. exactly after it finished processing the broken change
         # (validate-fail → continue, no spawn). Signalling here gives the
         # driver a deterministic "suppression decision made" point; a
@@ -581,7 +581,7 @@ def test_dev_valid_import_prints_banner_to_stderr(
     monkeypatch.setattr("taskq.cli.dev_watch_loop", _fake_watch_loop)
     result = cli_runner.invoke(app, ["dev", _VALID_MODULE_ATTR])
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert "TaskQ dev mode — watching" in result.stderr
+    assert "TaskQ dev mode, watching" in result.stderr
     assert "Press Ctrl-C to stop" in result.stderr
 
 

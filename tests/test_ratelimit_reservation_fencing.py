@@ -4,7 +4,7 @@ Failure mode.  Worker W runs a reservation-bound job.  Its heartbeats stall
 (``heartbeat_pool`` is separate from ``worker_pool``, so the dispatch loop and
 the actor keep running), the job's lock and the slot lease expire together,
 sweep 1 flips the job row back to ``pending`` IN PLACE and sweep 4 frees the
-slot.  The job is redispatched — plausibly to the same worker W — and acquires
+slot.  The job is redispatched - plausibly to the same worker W - and acquires
 a slot again.  The original coroutine, never cancelled, eventually finishes
 and its ``finally`` calls ``release(slot_index, worker_id)``, which matched on
 ``(bucket_name, slot_index, held_by_worker_id)`` alone and freed a slot the
@@ -13,7 +13,7 @@ runs over ``max_concurrent``.
 
 Note what does NOT discriminate here: a retry reuses the SAME job row, so the
 zombie and the live attempt share a ``job_id`` and a ``worker_id``.  Fencing
-on ``job_id`` would let every assertion below pass while the bug survives —
+on ``job_id`` would let every assertion below pass while the bug survives -
 the fence has to identify the LEASE, not the job.
 """
 
@@ -127,7 +127,7 @@ async def test_double_release_of_one_lease_is_still_a_no_op_pg(
     await res.release(lease, worker_id, module_pg_pool)
 
     # Same worker, new job: the worker_id gate alone cannot tell the two
-    # leases apart — only the lease fence can.
+    # leases apart - only the lease fence can.
     await res.acquire(new_uuid(), worker_id, module_pg_pool)
 
     await res.release(lease, worker_id, module_pg_pool)  # late duplicate
@@ -140,7 +140,7 @@ async def test_fence_survives_the_registry_handle_round_trip(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """The production path — acquire_for_actor → handle → release_for_actor.
+    """The production path - acquire_for_actor → handle → release_for_actor.
 
     The fence is only worth anything if it survives the hop through
     ``ReservationHandle``, which is how every real release reaches the

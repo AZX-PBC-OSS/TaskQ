@@ -89,7 +89,7 @@ class _FakeWorkerDeps:
             None
         )
         # Why load_from_dict, not WorkerSettings(): the bare constructor
-        # skips post_load, leaving every field None — including the ones
+        # skips post_load, leaving every field None - including the ones
         # the consumer reads on the success path (result_max_bytes).
         self.settings = WorkerSettings.load_from_dict(
             {"TASKQ_PG_DSN": "postgresql://taskq:taskq@127.0.0.1:1/taskq"}
@@ -544,7 +544,7 @@ async def test_dispatch_threads_the_rows_stored_schema_ver(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """dispatch_one_job's pre-scope validation threads the ROW's stored
-    ``payload_schema_ver`` into the ``PayloadValidationError`` — the
+    ``payload_schema_ver`` into the ``PayloadValidationError`` - the
     worker path's half of the schema-drift diagnostic.
 
     The dispatch path routes the failure into the terminal write (the
@@ -552,7 +552,7 @@ async def test_dispatch_threads_the_rows_stored_schema_ver(
     delegate spy on ``taskq.worker.dispatch.validate_actor_payload``: the
     real helper still runs (the terminal write below proves the failure
     path is unchanged), and the spy records the version the call site
-    passed. The row carries 0 — older than the current schema — so a
+    passed. The row carries 0 - older than the current schema - so a
     threaded row version is distinguishable from the helper's
     current-version default.
     """
@@ -607,7 +607,7 @@ async def test_dispatch_threads_the_rows_stored_schema_ver(
 
         assert seen_versions == ["0"], (
             "dispatch_one_job validated the payload without threading the "
-            "row's stored payload_schema_ver — a pre-migration row is then "
+            "row's stored payload_schema_ver - a pre-migration row is then "
             "indistinguishable from caller garbage on the worker path"
         )
         # The failure path itself is unchanged: the real helper raised
@@ -828,7 +828,7 @@ async def test_cooperative_cancel_escape_applies_batch_hook() -> None:
     """A cooperative cancel escaping ``consume_one_job`` still reaches
     the batch policy hook: dispatch's CancelledError handler applies
     :func:`apply_batch_terminal_outcome` with ``cancelled`` best-effort
-    before its re-raise — a batch completes on any terminal member,
+    before its re-raise - a batch completes on any terminal member,
     discarded included, so the finalizer runs immediately instead of
     waiting for a sweep interval. The recorder stands in for the hook
     (the FakeBackend carries no batch stores), pinning the call and its
@@ -879,7 +879,7 @@ async def test_cooperative_cancel_escape_applies_batch_hook() -> None:
 
         assert hook_calls == [(job.id, "cancelled")], (
             "the CancelledError escape must apply the batch hook with the "
-            "cancelled outcome before its re-raise — a batch whose last "
+            "cancelled outcome before its re-raise - a batch whose last "
             "member ends through the escape completes immediately, "
             f"not waiting for the sweep interval; got {hook_calls}"
         )
@@ -890,8 +890,8 @@ async def test_payload_validation_escape_applies_batch_hook() -> None:
     validate call still reaches the batch policy hook: the
     generic-exception escape routes through ``_handle_generic_exception``
     and applies :func:`apply_batch_terminal_outcome` with the handler's
-    terminal outcome — ``failed`` for the non-retryable
-    ``PayloadValidationError`` — before returning. The recorder stands
+    terminal outcome - ``failed`` for the non-retryable
+    ``PayloadValidationError`` - before returning. The recorder stands
     in for the hook, pinning the call and its outcome; a dispatch that
     returns past the hook leaves the recorder empty and turns this pin
     red."""
@@ -941,7 +941,7 @@ async def test_payload_validation_escape_applies_batch_hook() -> None:
 
         assert hook_calls == [(job_with_bad_payload.id, "failed")], (
             "the payload-validation escape must apply the batch hook with "
-            "the handler's terminal outcome — a batch whose last member "
+            "the handler's terminal outcome - a batch whose last member "
             "ends through the escape completes immediately, "
             f"not waiting for the sweep interval; got {hook_calls}"
         )
@@ -1209,7 +1209,7 @@ async def test_queue_wait_is_the_rows_own_eligible_to_claimed_interval(
 ) -> None:
     """taskq.jobs.queue_wait_seconds is started_at - scheduled_at from the
     claimed row's server-clock stamps (eligibility to claim), per (actor,
-    queue) — what every dispatched job actually waited, where the sampled
+    queue) - what every dispatched job actually waited, where the sampled
     oldest_pending_age gauge only shows the head of the line."""
     from taskq.testing.otel import histogram_points
 
@@ -1289,8 +1289,8 @@ async def test_retry_refused_by_the_deadline_arm_counts_as_a_timeout(
 ) -> None:
     """The classifier decided a retry but the backend's deadline arbitration
     landed the row failed (schedule_to_close reached before the next
-    dispatch): the attempt failure is counted as retryable — that was the
-    decision — and the whole-job timeout is counted beside it."""
+    dispatch): the attempt failure is counted as retryable - that was the
+    decision - and the whole-job timeout is counted beside it."""
     from taskq.testing.otel import counter_data_points
 
     class _DeadlineRefusingBackend(FakeBackend):
@@ -1315,7 +1315,7 @@ async def test_dispatch_one_job_counts_a_retried_failure(
 ) -> None:
     """One retryable raise → one taskq.jobs.attempt_failures sample labelled
     by actor, exception class and retryable="true", and the consumed
-    outcome is "scheduled" (the retry went back to the queue) — not
+    outcome is "scheduled" (the retry went back to the queue) - not
     "abandoned", which is what TaskQAbandonedJobs used to page on."""
 
     class _FlakyError(RuntimeError):
@@ -1476,7 +1476,7 @@ async def test_dispatch_one_job_malformed_trace_id_no_link(
 
 async def test_dispatch_one_job_acquires_registered_queue_cap() -> None:
     """End-to-end wiring: with a queue-cap reservation registered for the
-    job's queue, ``dispatch_one_job`` routes it through the acquire path —
+    job's queue, ``dispatch_one_job`` routes it through the acquire path -
     a saturated cap snoozes the job with operator-visible ``awaiting``
     metadata instead of running the actor, and a freed cap lets a later
     dispatch run.
@@ -1556,7 +1556,7 @@ async def test_dispatch_one_job_acquires_registered_queue_cap() -> None:
 
 async def test_dispatch_one_job_nth_plus_one_denied_while_cap_slot_held() -> None:
     """The (N+1)th job on a capped queue is denied while N dispatched jobs
-    hold the cap slots — the e2e proof that ``dispatch_one_job`` ITSELF
+    hold the cap slots - the e2e proof that ``dispatch_one_job`` ITSELF
     acquires the fleet-wide cap through the DI-provided registry, not just
     that an externally saturated cap blocks dispatch.
 
@@ -1631,7 +1631,7 @@ async def test_dispatch_one_job_nth_plus_one_denied_while_cap_slot_held() -> Non
                 ),
             )
 
-        # 1. Job 1 dispatches and blocks inside the actor — it must be
+        # 1. Job 1 dispatches and blocks inside the actor - it must be
         #    HOLDING the queue-cap slot through the real acquire path.
         task1 = asyncio.create_task(_dispatch(blocking_actor))
         await asyncio.wait_for(job1_started.wait(), timeout=5.0)
@@ -1664,7 +1664,7 @@ async def test_dispatch_one_job_nth_plus_one_denied_while_cap_slot_held() -> Non
 
 async def test_dispatch_one_job_actor_declared_tokenbucket_instance_consumed() -> None:
     """End-to-end: an actor declaring a TokenBucket INSTANCE (the primary
-    registration path) dispatches through the DI-provided registry — the
+    registration path) dispatches through the DI-provided registry - the
     actor body runs AND the bucket's token is permanently consumed.
 
     The instance is pre-registered on a fresh RateLimitRegistry (exactly
@@ -1730,7 +1730,7 @@ async def test_dispatch_one_job_actor_declared_tokenbucket_instance_consumed() -
         assert actor_ran == 1
         assert len(fake_backend.mark_succeeded_calls) == 1
 
-        # One token spent — permanently (release_for_actor sets
+        # One token spent - permanently (release_for_actor sets
         # refund_on_release=False after the actor ran). Frozen clock → no
         # refill elapsed, so exactly capacity - 1 remains.
         state = await rl_registry.peek("decl_bucket", clock=clock)
@@ -1743,7 +1743,7 @@ async def test_dispatch_one_job_actor_declared_tokenbucket_instance_consumed() -
 async def test_payload_validation_error_carries_structured_attributes() -> None:
     """``validate_actor_payload`` wraps ``ValidationError`` as
     ``PayloadValidationError`` with ``actor`` and ``validation_errors``
-    populated — pinning the structured attributes the dispatch path
+    populated - pinning the structured attributes the dispatch path
     relies on for non-retryable classification."""
     from taskq._validation import validate_actor_payload
     from taskq.exceptions import PayloadValidationError
@@ -1768,7 +1768,7 @@ class _AcquireFailsPool:
     the context manager's ``__aenter__`` raises from the bounded wait.
 
     ``error`` is injectable because asyncpg surfaces two distinct
-    failure families there — the wait timing out (builtin TimeoutError)
+    failure families there - the wait timing out (builtin TimeoutError)
     and a fresh connection being refused server-side (coded
     PostgresError subclasses like InvalidPasswordError that are NOT
     PostgresConnectionError children). Both are infrastructure, never a
@@ -1783,7 +1783,7 @@ class _AcquireFailsPool:
 
 
 class _FailingAcquireCtx:
-    """Both asyncpg acquire shapes — awaitable and async context manager —
+    """Both asyncpg acquire shapes - awaitable and async context manager -
     failing at the same point the real bounded acquire does."""
 
     def __init__(self, error: BaseException) -> None:
@@ -1795,7 +1795,7 @@ class _FailingAcquireCtx:
         # raises, surfacing the error exactly where the real bounded
         # acquire surfaces it.
         raise self._error
-        yield  # pragma: no cover  # Why: generator marker — unreachable by construction.
+        yield  # pragma: no cover  # Why: generator marker - unreachable by construction.
 
     async def __aenter__(self) -> Any:
         raise self._error
@@ -1817,7 +1817,7 @@ async def test_slot_pool_acquire_failure_raises_outside_job_outcome_accounting(
     acquire_error: BaseException,
 ) -> None:
     """A bounded acquire that fails raises SlotPoolAcquireError before any
-    span or metric exists — for both failure families asyncpg surfaces
+    span or metric exists - for both failure families asyncpg surfaces
     at acquire time.
 
     The acquire is infrastructure: the job is already claimed and
@@ -1881,7 +1881,7 @@ async def _noop_actor(payload: _Payload, ctx: JobContext[_Payload]) -> dict[str,
 async def test_noop_outcome_records_no_consumed_message_nor_duration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A noop terminal write (the row moved underneath this dispatch — a
+    """A noop terminal write (the row moved underneath this dispatch - a
     reclaim race) is not a consumption: the job will be re-consumed and
     re-recorded by its next dispatch, so the consumed-messages counter
     and the process-duration histogram must stay untouched.
@@ -1984,7 +1984,7 @@ class _ReleaseFailsPool:
 
 async def test_slot_pool_release_against_closed_pool_preserves_job_outcome() -> None:
     """A release against a pool closed mid-dispatch (a credential-rotation
-    drain terminated it underneath) is logged and swallowed — the unwind
+    drain terminated it underneath) is logged and swallowed - the unwind
     must never replace the job's real outcome with a release error. The
     job committed; it reports `succeeded`, and the skipped release is
     visible in the logs."""
@@ -2079,7 +2079,7 @@ async def test_slot_pool_release_unwind_failure_preserves_job_outcome(
     part of the same unwind and runs on a connection the pool may have
     terminated or released underneath the dispatch. A committed job whose
     release unwind raises is reported by the drain loop as a dispatch
-    failure — a job failure that never happened.
+    failure - a job failure that never happened.
     """
     import structlog
 
@@ -2145,7 +2145,7 @@ async def test_slot_pool_release_unwind_skip_is_logged_with_its_cause(
     dispatch is named in the logs, per shape, with its cause.
 
     The outcome-preservation tests pin that the unwind survives these
-    states; this pins that the skip is visible — a degraded outcome the
+    states; this pins that the skip is visible - a degraded outcome the
     bounded close owns, hidden behind the job's success, would leave an
     operator nothing to correlate a lost connection with.
     """
@@ -2195,8 +2195,8 @@ async def test_slot_pool_release_unwind_skip_is_logged_with_its_cause(
 async def test_slot_pool_release_unwind_unexpected_error_stays_loud() -> None:
     """The release guard swallows exactly two failure families (a dead
     connection's AttributeError, a closed pool's InterfaceError).
-    Anything else is a programming error and must propagate — replacing
-    the committed outcome loudly — rather than being swallowed behind
+    Anything else is a programming error and must propagate - replacing
+    the committed outcome loudly - rather than being swallowed behind
     the job's success. A well-meaning widening to ``except Exception``
     would hide it; this pins the deliberate narrowness.
     """
@@ -2230,7 +2230,7 @@ async def test_slot_pool_release_unwind_unexpected_error_stays_loud() -> None:
                 ),
             )
 
-        # The job committed before the unwind raised — the loud failure
+        # The job committed before the unwind raised - the loud failure
         # replaces the reported outcome, never the durable state.
         assert len(fake_backend.mark_succeeded_calls) == 1
 
@@ -2257,7 +2257,7 @@ async def test_slot_pool_release_terminates_in_flight_transaction_instead_of_rel
     """A connection still inside its transaction at release time is
     terminated, never released back to the pool.
 
-    Releasing would hand a mid-transaction connection to a sibling slot —
+    Releasing would hand a mid-transaction connection to a sibling slot -
     the shared-connection defect class this whole machinery exists to
     close. The terminated connection rolls back server-side, the job row
     stays `running`, and lease expiry reclaims it: loud and retryable,
@@ -2296,7 +2296,7 @@ async def test_slot_pool_release_terminates_in_flight_transaction_instead_of_rel
         assert outcome == "succeeded"
         assert pool.release_calls == [], (
             "a connection still inside its transaction must never be released "
-            "back to the pool — a sibling slot would acquire it mid-transaction"
+            "back to the pool - a sibling slot would acquire it mid-transaction"
         )
         assert pool.conn.terminated is True
         events = [log.get("event") for log in logs]
@@ -2374,7 +2374,7 @@ async def test_slot_connection_carries_registered_connection_setup() -> None:
     on one connection. A pool the worker bootstrap opens inherits the
     registration's declared init hook at connect time (the pool factory's
     ``init=``), but the dispatch path also accepts pools bootstrap did not
-    open — injected straight onto the deps, as below. Connections such a
+    open - injected straight onto the deps, as below. Connections such a
     pool hands out are bare: any type codec, ``init``/``setup`` callback,
     custom ``connection_class``, or session configuration the registration
     declared is absent from them, so an actor silently reads and writes
@@ -2384,9 +2384,9 @@ async def test_slot_connection_carries_registered_connection_setup() -> None:
 
     Per-slot isolation and registered-connection setup are not in tension:
     dispatch replays the registration's declared hook onto the slot
-    connection — exactly once per physical connection — rather than
+    connection - exactly once per physical connection - rather than
     discarding it. (A raw ``register_value`` connection cannot declare a
-    replayable hook — the driver seals per-connection state — so the
+    replayable hook - the driver seals per-connection state - so the
     registration here declares it through ``with_connection_init``; the raw
     channel's loudly-warned non-inheritance boundary is pinned in
     tests/test_slot_pool.py.)

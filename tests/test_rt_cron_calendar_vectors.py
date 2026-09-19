@@ -4,7 +4,7 @@ Target: ``taskq.cron.compute_next_fire_after`` (croniter-backed, plus custom
 DST gap/overlap handling). ``tests/test_cron.py`` has no Feb-29 / leap-year,
 day-of-month-vs-day-of-week, ``L``, or short-month vectors, and neither
 ``src/taskq/cron.py`` nor ``docs/guides/cron.md`` documents the DOM-vs-DOW
-combining rule or ``L`` support — both are inherited silently from croniter.
+combining rule or ``L`` support - both are inherited silently from croniter.
 
 Oracle: where TaskQ documents semantics, those govern; where semantics are
 undocumented (DOM-vs-DOW combining, ``L``), standard-cron behavior is the
@@ -36,7 +36,7 @@ def _restore_module_globals() -> Iterator[None]:  # pyright: ignore[reportUnused
     The ``L`` test below calls ``cron()``, which appends to the
     module-level registry; without this fixture that entry would leak
     into other test modules. Mirrors the autouse fixture in
-    ``tests/test_cron.py`` (registry only — this file never touches
+    ``tests/test_cron.py`` (registry only - this file never touches
     the factory cache).
     """
     original_registry = list(_CRON_REGISTRY)
@@ -88,7 +88,7 @@ def test_dom_vs_dow_uses_standard_cron_or_rule() -> None:
     """``0 0 1 * 1`` must fire on the 1st-of-month OR Monday (standard cron).
 
     FINDING (ambiguity): neither ``src/taskq/cron.py`` nor
-    ``docs/guides/cron.md`` documents the DOM-vs-DOW combining rule — the
+    ``docs/guides/cron.md`` documents the DOM-vs-DOW combining rule - the
     docs say only "standard 5-field cron expression ... validated via
     ``croniter.is_valid()``". The rule is inherited silently from croniter,
     so an operator reading TaskQ's docs cannot predict this schedule. This
@@ -97,7 +97,7 @@ def test_dom_vs_dow_uses_standard_cron_or_rule() -> None:
     Hand-computed oracle under the standard OR rule: 2024-06-15 is a
     Saturday, so the next fire is Monday 2024-06-17 (DOW matches, DOM does
     not). Under an AND rule the answer would instead be 2024-07-01 (the
-    next date that is both the 1st and a Monday — verified: 2024-07-01 is
+    next date that is both the 1st and a Monday - verified: 2024-07-01 is
     a Monday). The pg_cron AND-rule class.
     """
     seed = datetime(2024, 6, 15, 12, 0, tzinfo=_TZ)
@@ -130,9 +130,9 @@ def test_last_day_of_month_accepted_and_calendar_correct() -> None:
 
     ``croniter.is_valid('0 0 L * *')`` is True and ``cron()`` accepts the
     expression at schedule-creation depth (clean ``ValueError``-or-accept
-    contract — no traceback from deep inside a tick). Hand-computed oracle:
+    contract - no traceback from deep inside a tick). Hand-computed oracle:
     Jan 2024 has 31 days, Feb 2024 (leap) has 29, Feb 2023 has 28, Apr 2024
-    has 30 — the fires must be those exact last days at 00:00 UTC.
+    has 30 - the fires must be those exact last days at 00:00 UTC.
     """
     assert cron("0 0 L * *", actor="rt_probe_last_day").cron_expr == "0 0 L * *"
     cases: list[tuple[datetime, datetime]] = [

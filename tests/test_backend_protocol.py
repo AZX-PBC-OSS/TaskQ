@@ -19,6 +19,7 @@ from typing import Literal, get_type_hints
 import pytest
 
 from taskq._ids import new_uuid
+from taskq._json import dumps_jsonb_str
 from taskq.backend import (
     BACKEND_PROTOCOL_VERSION,
     AttemptOutcome,
@@ -132,7 +133,7 @@ class TestProtocolVersion:
     def test_version_is_three(self) -> None:
         """Pins the current protocol version and the bump rule.
 
-        v3: ``list_jobs`` — ``JobFilter.status`` widened to accept a
+        v3: ``list_jobs`` - ``JobFilter.status`` widened to accept a
         sequence of statuses and the ``active`` meta-filter was added.  A
         backend written against v2 silently returns wrong rows for both
         shapes (0 rows for ``status=[...]``; ``active`` ignored), which is
@@ -341,7 +342,7 @@ class TestReturnAnnotations:
         """The outcome parameter admits exactly the three deferral
         outcomes the statement's arms key on.
 
-        It was previously ``AttemptOutcome`` — eight values, five of
+        It was previously ``AttemptOutcome`` - eight values, five of
         which key no arm: with ``outcome='succeeded'`` at budget, PG
         fired no arm (job stranded ``running``, call returned ``noop``)
         while the in-memory twin silently rescheduled it uncounted. The
@@ -353,9 +354,9 @@ class TestReturnAnnotations:
         outcome = hints.get("outcome")
         expected = {"snoozed", "reservation_denied", "rate_limit_denied"}
         assert outcome is not None and set(get_args(outcome.__value__)) == expected, (  # type: ignore[attr-defined] # Why: PEP 695 type alias introspection
-            f"mark_snoozed's outcome parameter should be SnoozeOutcome — "
+            f"mark_snoozed's outcome parameter should be SnoozeOutcome - "
             f"the Literal{sorted(expected)} deferral outcomes its arms key "
-            f"on — got {outcome!r}"
+            f"on - got {outcome!r}"
         )
 
     def test_mark_retry_after_returns_tri_state(self) -> None:
@@ -388,7 +389,7 @@ class TestFakeBackendMarkSnoozedParity:
     stale annotation on its own seam certifies calls the protocol
     forbids. ``mark_snoozed``'s return Literal previously lacked
     ``"failed:MaxAttemptsExceeded"`` and its ``outcome`` parameter was
-    the wide ``AttemptOutcome`` — both drifted behind the contract the
+    the wide ``AttemptOutcome`` - both drifted behind the contract the
     fake is there to enforce.
     """
 
@@ -473,8 +474,8 @@ class TestTypeAliases:
         assert args == expected
 
     def test_snooze_outcome_literal_values(self) -> None:
-        """SnoozeOutcome — the narrowed outcome set mark_snoozed's arms
-        key on — exists as its own alias so every layer (protocol, PG
+        """SnoozeOutcome - the narrowed outcome set mark_snoozed's arms
+        key on - exists as its own alias so every layer (protocol, PG
         terminal, in-memory twin, FakeBackend) shares one source of
         truth instead of re-declaring a Literal that can drift wide."""
         from taskq.backend._protocol import SnoozeOutcome
@@ -504,7 +505,10 @@ class TestEnqueueArgsRoundTrip:
         # +4 retry-curve scalars (retry_base/retry_cap/retry_backoff/
         # retry_jitter): stamped onto the jobs row at enqueue so the
         # reclaim sweep can reschedule on the job's own policy.
-        expected = 29
+        # +2 jsonb memos (payload_jsonb_memo/metadata_jsonb_memo): lazy
+        # encoding caches the PG binding reuses across statement retries,
+        # never constructor input, compare/repr excluded (see the fields).
+        expected = 31
         assert len(fields(EnqueueArgs)) == expected
 
     def test_frozen(self) -> None:
@@ -537,6 +541,90 @@ class TestEnqueueArgsRoundTrip:
             assert d[key] is None
 
 
+class TestEnqueueArgsJsonbMemo:
+    """The lazy jsonb memos: encode once per args, reuse across bindings.
+
+    The double serialization this closes: build_enqueue_args dumps the
+    payload into the dict form, and the PG INSERT re-encoded the same dict
+    to jsonb text on every statement execution (the bounded retry arms
+    re-execute it). The memo carries the encoding on the args instead.
+    """
+
+    def test_memo_encodes_exactly_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import taskq.backend._records as records_mod
+
+        args = _make_enqueue_args()
+        expected = records_mod.jsonb_param(args.payload)
+
+        count = 0
+        real = dumps_jsonb_str
+
+        def counting(value: object) -> str:
+            nonlocal count
+            count += 1
+            return real(value)
+
+        monkeypatch.setattr(records_mod, "dumps_jsonb_str", counting)
+
+        first = records_mod.payload_jsonb_param(args)
+        second = records_mod.payload_jsonb_param(args)
+
+        assert count == 1
+        assert first == second == expected
+
+    def test_metadata_memo_encodes_exactly_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import taskq.backend._records as records_mod
+
+        args = _make_enqueue_args(metadata={"batch_id": "b1"})
+        expected = records_mod.jsonb_param(args.metadata)
+
+        count = 0
+        real = dumps_jsonb_str
+
+        def counting(value: object) -> str:
+            nonlocal count
+            count += 1
+            return real(value)
+
+        monkeypatch.setattr(records_mod, "dumps_jsonb_str", counting)
+
+        first = records_mod.metadata_jsonb_param(args)
+        second = records_mod.metadata_jsonb_param(args)
+
+        assert count == 1
+        assert first == second == expected
+
+    def test_replace_drops_a_stale_memo(self) -> None:
+        """dataclasses.replace copies every field; a memo computed for the
+        previous payload must not ride onto the replaced struct, or the new
+        payload would bind the old encoding."""
+        import dataclasses
+
+        import taskq.backend._records as records_mod
+
+        args = _make_enqueue_args()
+        memo = records_mod.payload_jsonb_param(args)
+        assert memo is not None
+
+        replaced = dataclasses.replace(args, payload={"key": "changed"})
+        assert replaced.payload_jsonb_memo is None
+        fresh = records_mod.payload_jsonb_param(replaced)
+        assert fresh is not None
+        assert fresh != memo
+        assert "changed" in fresh
+
+    def test_memo_is_not_value_identity(self) -> None:
+        """compare/repr excluded: two args differing only in a memo are
+        equal, so the cache cannot leak into dedup or assertion diffs."""
+        import taskq.backend._records as records_mod
+
+        args = _make_enqueue_args()
+        twin = _make_enqueue_args()
+        records_mod.payload_jsonb_param(twin)
+        assert args == twin
+        assert repr(args) == repr(twin)
+
+
 class TestJobRowRoundTrip:
     def test_construction_and_asdict(self) -> None:
         row = _make_job_row()
@@ -553,7 +641,7 @@ class TestJobRowRoundTrip:
         # field list + tags + the two denial/snooze counters
         # (snooze_count, rate_limit_blocked_count) + the interrupt counter
         # (interrupt_count) + the four retry-curve scalars read back off
-        # the jobs row (retry_base/retry_cap/retry_backoff/retry_jitter —
+        # the jobs row (retry_base/retry_cap/retry_backoff/retry_jitter -
         # the reclaim sweep's policy source) + the assignment-routed
         # marker (re-pend routing by the actor's stored assignment).
         expected = 46

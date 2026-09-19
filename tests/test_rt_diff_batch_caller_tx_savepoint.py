@@ -4,7 +4,7 @@ the caller's transaction usable.
 The bulk tiers' singleton arm is a documented catch-and-continue refusal:
 ``SingletonCollisionError`` is a typed backpressure signal a caller is meant
 to catch and move on from. But the ``jobs_singleton_uniq`` violation that
-produces it is a STATEMENT error — on a caller-owned open transaction it
+produces it is a STATEMENT error - on a caller-owned open transaction it
 aborts the whole transaction, and converting it to the typed error does not
 un-abort anything. The batch tiers therefore wrap the INSERT/COPY in a
 savepoint when the batch carries singleton items
@@ -20,7 +20,7 @@ tests/test_singleton_violation_savepoint_isolation.py. What neither pins is
 the batch tier driven end to end against the real engine: the typed refusal
 out, the caller's transaction still answering statements, a follow-up
 enqueue INSIDE the same transaction committing, and nothing from the
-poisoned batch surviving — with the in-memory twin recording the identical
+poisoned batch surviving - with the in-memory twin recording the identical
 caller-visible outcome (same typed error, same attributed actor, same
 stored state) so a suite validated against it sees the refusal shape
 production produces.
@@ -56,7 +56,7 @@ def _singleton_item(side: DiffSide, token: str, actor: str) -> EnqueueArgs:
 
 
 def _followup_args(side: DiffSide) -> EnqueueArgs:
-    """One plain job enqueued after the refusal — the proof the caller's
+    """One plain job enqueued after the refusal - the proof the caller's
     scope kept working."""
     args = EnqueueArgs(
         id=new_job_id(),
@@ -95,7 +95,7 @@ async def test_diff_batch_singleton_refusal_inside_caller_transaction_keeps_it_u
 ) -> None:
     """The unnest tier: the typed refusal raises, the caller's open
     transaction still answers, the follow-up enqueue inside it commits, and
-    nothing from the batch survives — on both backends."""
+    nothing from the batch survives - on both backends."""
 
     async def scenario(side: DiffSide) -> None:
         batch = _poisoned_batch(side)
@@ -116,7 +116,7 @@ async def test_diff_batch_singleton_refusal_inside_caller_transaction_keeps_it_u
                     # accept statements.
                     alive = await caller.fetchval("SELECT 1")
                     assert alive == 1, (
-                        "the typed refusal aborted the caller's transaction — "
+                        "the typed refusal aborted the caller's transaction - "
                         "the savepoint the batch tier owes the singleton arm "
                         "did not restore the caller's scope"
                     )
@@ -152,7 +152,7 @@ async def test_diff_copy_singleton_refusal_inside_caller_transaction_keeps_it_us
 ) -> None:
     """The COPY tier carries the same savepoint discipline: the typed
     refusal raises with the caller's transaction usable and the whole batch
-    aborted — COPY has no ON CONFLICT arbiter, so all-or-nothing is the
+    aborted - COPY has no ON CONFLICT arbiter, so all-or-nothing is the
     documented bulk-import semantics."""
 
     async def scenario(side: DiffSide) -> None:
@@ -172,7 +172,7 @@ async def test_diff_copy_singleton_refusal_inside_caller_transaction_keeps_it_us
                     alive = await caller.fetchval("SELECT 1")
                     assert alive == 1, (
                         "the COPY tier's typed refusal aborted the caller's "
-                        "transaction — the savepoint around the COPY did not "
+                        "transaction - the savepoint around the COPY did not "
                         "restore the caller's scope"
                     )
                     await side.backend.enqueue_with_conn(caller, followup)

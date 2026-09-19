@@ -1,4 +1,4 @@
-"""Two-tier bounded advisory-lock acquire — zero-dependency leaf module.
+"""Two-tier bounded advisory-lock acquire, zero-dependency leaf module.
 
 Shared by the two single-enqueue serialization sites (max_pending
 admission and unique_for single-flight in
@@ -11,16 +11,16 @@ owners for the wait bound:
 
 - Uncontended (the overwhelmingly common case): one
   ``pg_try_advisory_xact_lock`` statement. Round-trip count on the happy
-  path is exactly one — identical to the pre-bounded era, so the bound
+  path is exactly one, identical to the pre-bounded era, so the bound
   costs the common case nothing.
-- Contended: a server-side bounded blocking acquire —
+- Contended: a server-side bounded blocking acquire ,
   ``pg_advisory_xact_lock`` queued by Postgres' own lock scheduler, which
   hands the lock to the next waiter in ~ms as each holder's transaction
   ends. MEASURED (N same-key racers, ~1.5 ms holder critical section, PG
   18): the server-side queue drains 128 racers in ~0.4 s with zero
   timeouts, while a client-side try-lock poll loop (5 ms->100 ms
   exponential, no jitter) took ~5.1 s with 17-59% of racers exhausting
-  their budget — failed pollers sleep while the lock sits idle between
+  their budget, failed pollers sleep while the lock sits idle between
   poll waves, draining ~1-2 racers per 100 ms against the queue's ~1 per
   few ms. A poll only wins when the holder is black-holed, and the
   client-side backstop below covers that regime more cheaply.
@@ -47,7 +47,7 @@ def __getattr__(name: str) -> tuple[type[BaseException], ...]:
     ``ratelimit._sliding_window_pg``) and must stay importable
     driver-free. A plain function would do, but the ``except
     DEADLINE_ERRORS:`` call sites (cli, backend.postgres,
-    worker._leader_shared) already run driver-present — keeping the
+    worker._leader_shared) already run driver-present, keeping the
     constant's shape keeps them untouched. First access imports the
     driver once and caches the tuple in ``globals()``, so later reads are
     plain attribute lookups. Same lazy-name grain as
@@ -69,8 +69,8 @@ def __getattr__(name: str) -> tuple[type[BaseException], ...]:
 #: The two ways a bounded statement runs out of its deadline, named once
 #: so a caller cannot catch one half and let the other escape untyped.
 #: ``QueryCanceledError`` is the server cancelling at its own
-#: ``statement_timeout``; ``TimeoutError`` is the client-side deadline — a
-#: dropped connection or a cancelled await — firing first. Which one wins
+#: ``statement_timeout``; ``TimeoutError`` is the client-side deadline, a
+#: dropped connection or a cancelled await, firing first. Which one wins
 #: is a race the caller does not control, and both mean the same thing to
 #: it: this statement did not land, whatever committed before it is real
 #: progress, and the action is to run again. Catching only the server half
@@ -98,7 +98,7 @@ _ADVISORY_TRY_LOCK_SQL = "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 
 _ADVISORY_BLOCKING_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
 
 #: Reads the session/transaction's current ``lock_timeout`` so the
-#: contended tier can restore it exactly — never clobbers a caller-set
+#: contended tier can restore it exactly, never clobbers a caller-set
 #: bound on a BYO transaction, never assumes the default is "0".
 _LOCK_TIMEOUT_READ_SQL = "SELECT current_setting('lock_timeout')"
 
@@ -128,13 +128,13 @@ async def acquire_advisory_xact_lock_bounded(
     Returns True once the lock is HELD for the rest of the transaction (a
     transaction-scoped advisory lock acquired inside the savepoint
     survives the savepoint's RELEASE); False when the budget expired
-    first — the caller layers its own typed exhaustion error on the
+    first, the caller layers its own typed exhaustion error on the
     False, keeping each site's documented semantics. A raw driver error
     never surfaces from contention itself, only from non-contention
     failures (network, SQL) which propagate unchanged.
 
     ``timeout_ms <= 0`` waits indefinitely: one plain blocking acquire,
-    no savepoint and no GUC statements — the ``lock_timeout`` GUC
+    no savepoint and no GUC statements, the ``lock_timeout`` GUC
     convention shared with migrate.py, and the documented opt-out for
     callers that want the pre-bound queueing behavior.
 
@@ -142,17 +142,17 @@ async def acquire_advisory_xact_lock_bounded(
 
     1. ``SAVEPOINT`` (asyncpg's nested ``async with conn.transaction()``;
        on a transaction-less connection asyncpg opens a real short
-       transaction instead — the lock then releases at its COMMIT,
+       transaction instead, the lock then releases at its COMMIT,
        matching the bare-connection advisory-only semantics the try-lock
        fast path already has).
     2. Save the prior ``lock_timeout`` (``current_setting``), then
        ``set_config('lock_timeout', '<budget>ms', true)``.
-    3. ``SELECT pg_advisory_xact_lock(...)`` — the bounded blocking wait.
+    3. ``SELECT pg_advisory_xact_lock(...)``, the bounded blocking wait.
        On timeout the statement raises SQLSTATE 55P03
        (:class:`asyncpg.exceptions.LockNotAvailableError`); the savepoint
        context manager rolls back, which (a) restores the transaction to
-       a usable state — a raw statement error would otherwise leave
-       "current transaction is aborted" behind — and (b) undoes the GUC
+       a usable state, a raw statement error would otherwise leave
+       "current transaction is aborted" behind, and (b) undoes the GUC
        set above. The exception is caught OUTSIDE the context manager and
        converted to the False return.
     4. On success, restore the saved ``lock_timeout`` BEFORE the
@@ -167,7 +167,7 @@ async def acquire_advisory_xact_lock_bounded(
     server-side timeout is precise (it fires at the budget even under
     client-side event-loop stalls, keeps the transaction usable via the
     savepoint rollback, and generates no cancel traffic on healthy
-    pools), but it cannot fire if the server is UNREACHABLE — a network
+    pools), but it cannot fire if the server is UNREACHABLE, a network
     black hole where the acquire statement never returns. The backstop's
     cancellation triggers the same savepoint rollback (asyncpg resyncs
     the connection on cancellation; an advisory xact lock granted inside
@@ -178,7 +178,7 @@ async def acquire_advisory_xact_lock_bounded(
     """
     # Why a function-level import: this module is imported by
     # taskq.ratelimit._sliding_window_pg, which taskq.testing imports
-    # transitively — that boundary must stay importable without the
+    # transitively, that boundary must stay importable without the
     # asyncpg driver installed. The acquire only ever runs against a real
     # connection, where asyncpg is guaranteed present.
     from asyncpg.exceptions import LockNotAvailableError

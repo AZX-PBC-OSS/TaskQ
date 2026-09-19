@@ -219,8 +219,8 @@ class TestNulPayloadAttribution:
     """A NUL riding in one item's payload (pydantic accepts NUL in str
     fields, so client-side validation cannot catch it) surfaces through
     ``JobsClient.enqueue_batch`` as the per-item-annotated
-    ``PayloadValidationError`` — the same annotation contract
-    ``_item_payload_error`` established for pydantic failures — with the
+    ``PayloadValidationError`` - the same annotation contract
+    ``_item_payload_error`` established for pydantic failures - with the
     whole batch refused atomically."""
 
     async def test_nul_in_one_item_names_it_through_client(self) -> None:
@@ -228,7 +228,7 @@ class TestNulPayloadAttribution:
         client = _make_client(backend)
 
         # A str field pydantic happily validates (NUL is a legal codepoint
-        # in a str) — so client-side validation cannot catch it; the
+        # in a str) - so client-side validation cannot catch it; the
         # backend serialization layer must.
         items = [_make_item(i) for i in range(3)]
         items[1] = EnqueueItem(

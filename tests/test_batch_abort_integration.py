@@ -467,7 +467,7 @@ class TestApplyBatchTerminalOutcome:
             finalizer_job_id=None,
             originating_actor=None,
         )
-        # No non-terminal jobs — the only job is the one that just failed.
+        # No non-terminal jobs - the only job is the one that just failed.
         from dataclasses import replace
 
         job = make_job_row(status="failed")
@@ -497,7 +497,7 @@ class TestApplyBatchTerminalOutcome:
         )
         from dataclasses import replace
 
-        # The only job in the batch is the cancelled one — no non-terminal remain.
+        # The only job in the batch is the cancelled one - no non-terminal remain.
         job = make_job_row(status="cancelled")
         job = replace(job, metadata={"batch_id": str(bid)})
         backend._jobs[job.id] = job
@@ -532,7 +532,7 @@ class TestApplyBatchTerminalOutcome:
 
         await apply_batch_terminal_outcome(backend, job, "snoozed")
 
-        # Snoozed is non-terminal — no state should change.
+        # Snoozed is non-terminal - no state should change.
         assert backend._batches[bid].consecutive_failures == 1
         assert backend._batches[bid].status == "active"
 
@@ -555,7 +555,7 @@ class TestApplyBatchTerminalOutcome:
 
         await apply_batch_terminal_outcome(backend, job, "scheduled")
 
-        # Scheduled is non-terminal — no state should change.
+        # Scheduled is non-terminal - no state should change.
         assert backend._batches[bid].status == "active"
         assert backend._batches[bid].consecutive_failures == 0
 
@@ -582,7 +582,7 @@ class _IncrementRaisesBackend(InMemoryBackend):
 
 class TestHookFailureGuard:
     """Verify that a failure in the batch policy hook does not affect
-    the job's terminal state — the hook is wrapped in try/except by
+    the job's terminal state - the hook is wrapped in try/except by
     both the in-memory runner and the production dispatch path.
     """
 
@@ -607,7 +607,7 @@ class TestHookFailureGuard:
         )
 
         # run_until_drained should not propagate the RuntimeError from
-        # increment_batch_failures — the runner catches it.
+        # increment_batch_failures - the runner catches it.
         await backend.run_until_drained()
 
         # The job must still reach its terminal state ("failed").

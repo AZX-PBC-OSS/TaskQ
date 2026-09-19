@@ -6,7 +6,7 @@ behavior against a live Postgres backend.
 
 The in-process mechanism was chosen over subprocess spawn because
 orchestrate_shutdown is an async function that needs direct access
-to WorkerDeps pools opened by the fixture — subprocess spawning
+to WorkerDeps pools opened by the fixture - subprocess spawning
 would duplicate pool setup and complicate fixture sharing.
 Known limitation: pool teardown and deregister_worker cleanup are
 not exercised; those paths are covered by unit tests.
@@ -53,9 +53,17 @@ async def _mark_jobs_running(
     deps: WorkerDeps,
     job_ids: list[UUID],
     worker_id: UUID,
+    *,
+    cancel_phase: int = 1,
 ) -> None:
-    """Set job rows to status='running', locked_by_worker, started_at, and cancel_phase=1 for shutdown testing.
-    Also inserts the worker_id into the workers table so foreign key constraints on job_attempts are satisfied."""
+    """Set job rows to status='running', locked_by_worker, started_at, and cancel_phase for shutdown testing.
+
+    Also inserts the worker_id into the workers table so foreign key constraints on job_attempts are satisfied.
+
+    ``cancel_phase`` defaults to 1 (an operator cancel in flight, the shape
+    the shutdown-cancel tests need); pass 0 for a row the production claim
+    CTE leaves alone, where the drain's cancel fence must not refuse it.
+    """
     schema = deps.settings.schema_name
     async with deps.worker_pool.acquire() as conn:
         await conn.execute(
@@ -64,9 +72,10 @@ async def _mark_jobs_running(
         )
         for jid in job_ids:
             await conn.execute(
-                f"UPDATE \"{schema}\".jobs SET status='running', locked_by_worker=$1, started_at=now(), cancel_phase = 1 WHERE id=$2 AND status='pending'",  # noqa: S608 # Why: schema validated by WorkerSettings/conftest; asyncpg has no parameter binding for identifiers.
+                f"UPDATE \"{schema}\".jobs SET status='running', locked_by_worker=$1, started_at=now(), cancel_phase = $3 WHERE id=$2 AND status='pending'",  # noqa: S608 # Why: schema validated by WorkerSettings/conftest; asyncpg has no parameter binding for identifiers.
                 worker_id,
                 jid,
+                cancel_phase,
             )
 
 
@@ -148,14 +157,14 @@ def _immediate() -> None:
 
     Why not an absolute ``datetime.now(timezone.utc)``: the enqueue SQL
     decides status as ``COALESCE($n, clock_timestamp()) >
-    clock_timestamp()`` — an absolute Python-clock timestamp races the
+    clock_timestamp()`` - an absolute Python-clock timestamp races the
     server clock at that boundary. A test-process clock even a few
     microseconds ahead of the database clock lands the row ``'scheduled'``
     instead of ``'pending'``; the ``WHERE status='pending'`` seeding
     updates in these tests then silently no-op, the job never runs, and
     the terminal-status assertions fail on clock skew rather than on
     shutdown behaviour (observed as a load-dependent flake in the parallel
-    suite). ``None`` is the canonical immediate form — the enqueue stamps
+    suite). ``None`` is the canonical immediate form - the enqueue stamps
     the server clock and decides status in the same statement, one clock
     domain.
     """
@@ -358,7 +367,7 @@ async def test_ti4_drain_to_pending(
             )
         )
 
-    # Lock 3 jobs as "dispatched but not started" — use worker_pool to simulate
+    # Lock 3 jobs as "dispatched but not started" - use worker_pool to simulate
     schema = deps.settings.schema_name
     conn = await asyncpg.connect(str(deps.settings.pg_dsn_direct))
     try:
@@ -381,6 +390,78 @@ async def test_ti4_drain_to_pending(
         assert row.locked_by_worker is None
 
 
+async def test_drain_refuses_rows_carrying_a_cancel_phase(
+    clean_jobs_app: JobsApp,
+) -> None:
+    """The drain's hand-back carries the deferral arms' cancel fence.
+
+    Three rows claimed by this worker, one with an operator cancel in
+    flight (cancel_phase = 1, the shape a cancel request stamps on a
+    running row before any consumer poll observes it). The clean two come
+    back to the fleet with their refund; the cancel-carrying row must stay
+    right here (running, locked, attempt standing, audit columns intact):
+    re-pending it would hand the operator's cancel to the next holder's
+    flag poll instead of the cancel ladder, and the refund would re-create
+    the attempt epoch the fenced doctrine forbids. Its lease expiry hands
+    it to sweep-1's cancel arm, which terminalises it with the operator's
+    intent recorded.
+    """
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    schema = deps.settings.schema_name
+
+    job_ids = [new_uuid() for _ in range(3)]
+    for jid in job_ids:
+        await backend.enqueue(
+            EnqueueArgs(
+                id=JobId(jid),
+                actor="test_actor",
+                queue="default",
+                payload={},
+                max_attempts=3,
+                retry_kind="transient",
+                scheduled_at=_immediate(),
+            )
+        )
+
+    worker_id = new_uuid()
+    async with deps.worker_pool.acquire() as conn:
+        await create_worker(conn, schema, worker_id)
+        for jid in job_ids:
+            await conn.execute(
+                f"UPDATE \"{schema}\".jobs SET status='running', locked_by_worker=$1, "  # noqa: S608  # Why: schema validated by WorkerSettings/conftest; asyncpg has no parameter binding for identifiers.
+                "started_at=now(), attempt = 2 WHERE id=$2 AND status='pending'",
+                worker_id,
+                jid,
+            )
+        # The operator cancel lands on the row the drain must refuse.
+        await conn.execute(
+            f'UPDATE "{schema}".jobs SET cancel_phase = 1, cancel_requested_at = now() '  # noqa: S608  # Why: schema validated by WorkerSettings/conftest; asyncpg has no parameter binding for identifiers.
+            f"WHERE id = $1",
+            job_ids[0],
+        )
+
+    drained = await drain_local_queue_to_pending(deps, worker_id)
+    assert drained == 2, f"expected only the clean rows drained, got {drained}"
+
+    fenced = await backend.get(JobId(job_ids[0]))
+    assert fenced is not None
+    assert fenced.status == "running", (
+        f"the cancel-carrying row must stay running, got {fenced.status}"
+    )
+    assert fenced.locked_by_worker == worker_id, (
+        "the fenced row keeps its owner: the cancel ladder owns its fate"
+    )
+    assert fenced.attempt == 2, f"the fenced row keeps its spent attempt, got {fenced.attempt}"
+    assert parse_cancel_phase(fenced.cancel_phase) == CancelPhase.COOPERATIVE
+    assert fenced.cancel_requested_at is not None
+
+    for jid in job_ids[1:]:
+        row = await backend.get(JobId(jid))
+        assert row is not None
+        assert row.status == "pending", f"clean job {jid} expected pending, got {row.status}"
+
+
 async def test_draining_hands_back_only_jobs_no_consumer_is_running(
     clean_jobs_app: JobsApp,
 ) -> None:
@@ -392,7 +473,7 @@ async def test_draining_hands_back_only_jobs_no_consumer_is_running(
     registry exactly as the consumer loop registers it.
 
     The backlog row must come back to pending with its lock cleared so another
-    worker can take it — that is the hand-back, and it happens once. The
+    worker can take it - that is the hand-back, and it happens once. The
     executing row must stay locked and running: publishing it to the fleet
     while its consumer is still in the actor body is how one job becomes two
     executions. Those rows are the cancelling / forcing / abandoning phases'
@@ -423,9 +504,10 @@ async def test_draining_hands_back_only_jobs_no_consumer_is_running(
         )
 
     # Both rows carry the shape the dispatch claim leaves behind: running,
-    # locked by this worker, started_at stamped at claim. The database row
-    # cannot tell the two cases apart — only this process's registry can.
-    await _mark_jobs_running(deps, [backlog_id, executing_id], worker_id)
+    # locked by this worker, started_at stamped at claim, no operator cancel
+    # in flight. The database row cannot tell the two cases apart - only
+    # this process's registry can.
+    await _mark_jobs_running(deps, [backlog_id, executing_id], worker_id, cancel_phase=0)
 
     active = _fake_active_job(job_id=executing_id)
     try:
@@ -458,12 +540,12 @@ async def test_draining_hands_back_only_jobs_no_consumer_is_running(
         )
         assert executing_row.locked_by_worker == worker_id, (
             "unlocking a job that is still executing here publishes it to the "
-            "fleet while the first run is in flight — the same job body then "
+            "fleet while the first run is in flight - the same job body then "
             f"runs twice; locked_by_worker was {executing_row.locked_by_worker!r}"
         )
 
-        # A second pass — a drain-monitor trigger racing a signal, or a retry
-        # after a transient failure — must release nothing further. Hand-back
+        # A second pass - a drain-monitor trigger racing a signal, or a retry
+        # after a transient failure - must release nothing further. Hand-back
         # is once per claim, not once per shutdown attempt.
         again = await drain_local_queue_to_pending(deps, worker_id)
         assert again == 0, (
@@ -945,7 +1027,7 @@ async def test_tn1_signal_handler_must_not_await(
 
     # `add_signal_handler` invokes its callback synchronously, in the signal
     # context: a coroutine function would simply never run. This assertion is
-    # the whole check — a companion scan for `"await " not in getsource(...)`
+    # the whole check - a companion scan for `"await " not in getsource(...)`
     # used to follow it and could not fail. Python rejects `await` in a
     # non-async def at compile time ("SyntaxError: 'await' outside async
     # function"), so given the assertion above, the substring could only ever
@@ -982,14 +1064,14 @@ async def test_tn2_releasing_runs_with_zero_jobs(
     assert result == 0
     assert shutdown_event.is_set()
     # Behavioral: shutdown proceeds through all phases including RELEASING
-    # even with zero active jobs — verified by shutdown_event being set
+    # even with zero active jobs - verified by shutdown_event being set
     # and result == 0 (clean exit).
 
 
 # ── Phase-0 siblings: a deploy with no operator cancel in flight ──────────
 #
 # The suite above seeds rows at ``cancel_phase = 1`` (an operator cancel in
-# flight) — those pins stand. These siblings cover the ordinary deploy:
+# flight) - those pins stand. These siblings cover the ordinary deploy:
 # rows the production claim CTE leaves at ``cancel_phase = 0``. The deploy
 # must release them back to the fleet (never ``cancelled``/``abandoned``)
 # with the interrupted claim's attempt increment standing: the attempt
@@ -1003,7 +1085,7 @@ async def test_deploy_releases_running_work_back_to_the_fleet(
     """Phase-0 rows are released (held), never terminalised, and refunded.
 
     Three jobs claimed through the production claim CTE sit mid-flight
-    when the deploy lands — no operator has asked for anything. Every one
+    when the deploy lands - no operator has asked for anything. Every one
     must come back to the fleet with its attempt refund, an interruption
     counted on the row, and an 'interrupted' transition on its timeline,
     held behind the remaining termination budget because its actor might
@@ -1035,7 +1117,7 @@ async def test_deploy_releases_running_work_back_to_the_fleet(
     attempt_at_claim = {row.id: row.attempt for row in claimed}
 
     # In-flight entries whose actors never unwind (tasks already done, so
-    # the forced cancel lands nowhere) — the rows survive to RELEASING.
+    # the forced cancel lands nowhere) - the rows survive to RELEASING.
     for jid in job_ids:
         active = _fake_active_job(job_id=jid)
         await deps.active_jobs.register(active.job_id, active.task, active.ctx)  # type: ignore[arg-type] # Why: JobContext[PassthroughPayload] is a JobContext[BaseModel]; pyright cannot widen Generic contravariance.
@@ -1083,7 +1165,7 @@ async def test_deploy_release_is_not_reclaimable_until_the_hold(
     """The held row stays out of the fleet's reach until the hold elapses.
 
     A released row whose actor may still be alive in the exiting process
-    must not be claimable elsewhere before the process is provably gone —
+    must not be claimable elsewhere before the process is provably gone -
     that ordering is the whole point of the hold (requeue before kill, and
     never both at once).
     """
@@ -1121,7 +1203,7 @@ async def test_deploy_release_is_not_reclaimable_until_the_hold(
     row = await backend.get(JobId(jid))
     assert row is not None and row.status == "scheduled"
     assert row.scheduled_at > datetime.now(UTC), (
-        "the held row's due time is in the future — the surviving fleet must "
+        "the held row's due time is in the future - the surviving fleet must "
         "not be able to claim it while the departing pod may still be alive"
     )
 
@@ -1132,6 +1214,6 @@ async def test_deploy_release_is_not_reclaimable_until_the_hold(
     batch = await backend.dispatch_batch(surviving, ["default"], 10, timedelta(seconds=60))
     assert batch == [], (
         "a row released behind the termination-budget hold was claimable "
-        "immediately — the hold exists so the row cannot be claimed while "
+        "immediately - the hold exists so the row cannot be claimed while "
         "the interrupted actor might still be alive"
     )

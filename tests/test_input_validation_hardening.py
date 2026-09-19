@@ -5,7 +5,7 @@ caller text sailed past a validator that existed but never ran, or past a
 boundary that had none at all:
 
 - queue names are actually validated where they enter (enqueue and actor
-  declaration) — a malformed name used to be silently accepted, stranding
+  declaration) - a malformed name used to be silently accepted, stranding
   jobs on a queue no worker's ``queue = ANY($1)`` ever matches;
 - the InMemory enqueue mirror rejects a NUL in payload/metadata the same
   way PG's bind-time jsonb guard does, so an app validated against
@@ -64,13 +64,13 @@ async def _hardening_actor(_payload: _Payload) -> None:
 # annotations, so ``enqueue(..., queue="deafult ")`` or
 # ``@actor(queue=...)`` with a malformed name was silently accepted.
 # The job then landed on a queue no worker's ``queue = ANY($1)`` ever
-# matches — stranded pending forever, with no error anywhere.
+# matches - stranded pending forever, with no error anywhere.
 
 
 @pytest.mark.parametrize(
     "bad_queue",
     [
-        "deafult ",  # trailing space — the classic typo class
+        "deafult ",  # trailing space - the classic typo class
         "bad name",  # interior space
         "bad\nname",  # interior newline
         "bad\tname",  # interior tab
@@ -89,7 +89,7 @@ def test_build_enqueue_args_rejects_invalid_queue_name(bad_queue: str) -> None:
 
 def test_build_enqueue_args_rejects_invalid_actor_declared_queue() -> None:
     """The actor-declared default is validated too, not just the per-call
-    override — a ref whose queue was never checked strands every job.
+    override - a ref whose queue was never checked strands every job.
 
     After the fix an invalid queue cannot get onto a ref through the
     decorator at all, so simulate the unchecked-ref state directly.
@@ -106,8 +106,8 @@ def test_build_enqueue_args_rejects_invalid_actor_declared_queue() -> None:
 
 
 def test_actor_declaration_rejects_invalid_queue_name() -> None:
-    """``@actor(queue=...)`` fails at decoration time — import time in the
-    common case — instead of stranding jobs at enqueue time."""
+    """``@actor(queue=...)`` fails at decoration time - import time in the
+    common case - instead of stranding jobs at enqueue time."""
 
     async def handler(payload: _Payload) -> None:
         pass
@@ -169,7 +169,7 @@ def test_actor_declaration_accepts_leading_digit_queue_name() -> None:
 # ``f"{QUEUE_CONCURRENCY_PREFIX}{queue}"`` in one flat, name-keyed
 # registry. ":" is that namespace's segment separator, so a queue named
 # "foo:eu" derives the same cap name as queue "foo" would in an "eu"
-# sub-namespace — two queues, one cap. Assert the collision exists (so
+# sub-namespace - two queues, one cap. Assert the collision exists (so
 # the ban keeps earning its place) and that the validator forecloses it.
 
 
@@ -191,7 +191,7 @@ def test_actor_declaration_rejects_colon_in_queue_name() -> None:
 #
 # The alias is ``Annotated[str, AfterValidator(...)]``, so it validates
 # only inside pydantic model validation. On a plain function parameter or
-# a ``str`` dataclass field it is documentation — which is exactly how the
+# a ``str`` dataclass field it is documentation - which is exactly how the
 # original bug slipped in. Pin both halves so nobody mistakes the
 # annotation for a chokepoint, and so the alias itself stays wired to the
 # canonical validator when it IS used in a model.
@@ -202,7 +202,7 @@ def test_queue_name_annotation_is_inert_on_a_plain_parameter() -> None:
         return q
 
     assert takes_a_queue("foo:eu") == "foo:eu", (
-        "QueueName is an annotation, not a runtime guard — the enforcing "
+        "QueueName is an annotation, not a runtime guard - the enforcing "
         "chokepoints must call _validate_queue_name explicitly"
     )
 
@@ -222,7 +222,7 @@ def test_queue_name_annotation_enforces_inside_a_pydantic_model() -> None:
 # on PG they transit jsonb via ``jsonb_param`` → ``dumps_jsonb_str``, which
 # rejects a NUL at bind time. The InMemory mirror never called
 # ``jsonb_param``, so a NUL payload passed on InMemory and raised
-# ValueError on the first real PG enqueue — an app validated against
+# ValueError on the first real PG enqueue - an app validated against
 # InMemory broke in production.
 
 
@@ -234,7 +234,7 @@ async def test_in_memory_enqueue_rejects_nul_in_payload_value() -> None:
     with pytest.raises(ValueError) as mem_excinfo:
         await backend.enqueue(args)
 
-    # The rejection must equal the PG bind path's for the same value —
+    # The rejection must equal the PG bind path's for the same value -
     # the exact guard jsonb_param runs, not a lookalike message.
     with pytest.raises(ValueError) as pg_excinfo:
         dumps_jsonb_str(payload)
@@ -315,7 +315,7 @@ def test_job_filter_rejects_nul_in_tags() -> None:
 
 
 def test_job_filter_clean_text_predicates_still_construct() -> None:
-    """Valid predicates are unaffected — the guard is a pure prefilter."""
+    """Valid predicates are unaffected - the guard is a pure prefilter."""
     f = JobFilter(
         queue="default", actor="my_actor", identity_key=IdentityKey("tenant-1"), tags=("t1",)
     )
@@ -334,12 +334,12 @@ def test_job_filter_clean_text_predicates_still_construct() -> None:
 
 def test_batch_filter_accepts_a_limit_past_any_page_size() -> None:
     """A limit large enough to reach the whole table stays a legitimate
-    request — capping it is what made batch 501 unreachable before."""
+    request - capping it is what made batch 501 unreachable before."""
     assert BatchFilter(limit=10_000).limit == 10_000
 
 
 def test_batch_filter_limit_boundaries() -> None:
-    """Zero stays allowed (it means 'no rows' — codified in
+    """Zero stays allowed (it means 'no rows' - codified in
     tests/test_batch_protocol.py); negatives stay rejected."""
     assert BatchFilter(limit=0).limit == 0
     with pytest.raises(ValueError, match="limit must be >= 0"):
@@ -410,7 +410,7 @@ def test_schedule_create_args_rejects_nul_in_cron_expr_via_croniter() -> None:
 def test_schedule_create_args_rejects_bogus_dst_strategy() -> None:
     """``dst_strategy`` was an inert Literal on a dataclass: a bogus value
     constructed fine and only died later as a raw asyncpg
-    CheckViolationError from the INSERT — instead of the clean ValueError
+    CheckViolationError from the INSERT - instead of the clean ValueError
     its sibling fields raise."""
     with pytest.raises(ValueError, match="Invalid dst_strategy"):
         ScheduleCreateArgs(
@@ -418,7 +418,7 @@ def test_schedule_create_args_rejects_bogus_dst_strategy() -> None:
             cron_expr="*/5 * * * *",
             timezone="UTC",
             next_fire_at=_START,
-            dst_strategy="bogus",  # type: ignore[arg-type]  # Why: deliberately invalid — the constructor must reject it at parse time.
+            dst_strategy="bogus",  # type: ignore[arg-type]  # Why: deliberately invalid - the constructor must reject it at parse time.
         )
 
 
@@ -440,7 +440,7 @@ def test_schedule_create_args_clean_text_still_constructs() -> None:
 #
 # ``has_snapshot = bool(self._rows)`` misread a SUCCESSFUL refresh of an
 # empty actor_config table as "no snapshot": the next refresh failure
-# then reported ``has_snapshot=False`` / ``degraded_to_literal=True`` — a
+# then reported ``has_snapshot=False`` / ``degraded_to_literal=True`` - a
 # false alarm on the metric built to be alertable, and the wrong
 # stale-vs-literal distinction (empty-but-healthy is stale-serving, not
 # degraded).

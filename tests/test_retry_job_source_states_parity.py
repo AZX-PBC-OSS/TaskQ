@@ -10,7 +10,7 @@ situations replay exists for:
 **A job that succeeded at doing the wrong thing.** A bug ships, a batch of jobs
 runs to completion against it, the bug is fixed. Every one of those jobs is
 ``succeeded``, and every one of them needs to run again. The status records that
-the actor returned without raising — it is not a claim that the work was
+the actor returned without raising - it is not a claim that the work was
 correct, and it is not a reason to refuse to repeat it.
 
 **A job abandoned by a worker restart.** ``abandoned`` is written by the
@@ -19,7 +19,7 @@ was interrupted by a deploy. It is the state most likely to need a manual
 re-run and the one an operator is most likely to reach for the retry button on.
 
 Today both return ``False``, and the admin UI turns that into a 409 telling the
-operator the job "is not in a retryable state" — with nothing in the code or the
+operator the job "is not in a retryable state" - with nothing in the code or the
 docs explaining why these two states are different from the three that are
 allowed.
 
@@ -147,7 +147,7 @@ async def test_retry_job_re_runs_a_succeeded_job(backend_pair: Backend) -> None:
 
     The replay case: a bug shipped, the jobs ran to completion against it, the
     bug is fixed, and the work has to happen again. ``succeeded`` says the
-    actor returned without raising — it does not say the result was right, and
+    actor returned without raising - it does not say the result was right, and
     refusing to repeat it leaves the operator with no supported path.
     """
     job_id = await _enqueue(backend_pair)
@@ -156,8 +156,8 @@ async def test_retry_job_re_runs_a_succeeded_job(backend_pair: Backend) -> None:
     retried = await backend_pair.retry_job(job_id)
     assert retried is True, (
         "an operator asking to re-run a completed job was refused. This is the "
-        "replay path after a bad deploy — the jobs ran, the code was wrong, the "
-        "work must happen again — and refusing it leaves no supported way to do "
+        "replay path after a bad deploy - the jobs ran, the code was wrong, the "
+        "work must happen again - and refusing it leaves no supported way to do "
         "that; the admin UI turns this into a 409 saying the job 'is not in a "
         "retryable state'"
     )
@@ -190,7 +190,7 @@ async def test_retry_job_re_runs_an_abandoned_job(backend_pair: Backend) -> None
     retried = await backend_pair.retry_job(job_id)
     assert retried is True, (
         "an operator asking to re-run a job abandoned by a worker restart was "
-        "refused. The job did not fail — a deploy interrupted it — so this is "
+        "refused. The job did not fail - a deploy interrupted it - so this is "
         "precisely the work an operator needs to put back, and there is no "
         "supported path to do it"
     )
@@ -264,7 +264,7 @@ async def test_retry_job_still_re_runs_a_failed_job(backend_pair: Backend) -> No
 
 
 async def _force_schedule_to_close(backend: Backend, job_id: JobId, deadline: datetime) -> None:
-    """Stamp an absolute deadline directly (time control only — the same
+    """Stamp an absolute deadline directly (time control only - the same
     shape ``create_running_job``'s ``schedule_to_close`` parameter seeds on
     the PG side)."""
     if isinstance(backend, InMemoryBackend):
@@ -286,7 +286,7 @@ def _backend_now(backend: Backend) -> datetime:
     """The clock domain the backend's own predicates arbitrate in: the
     twin's injected clock, or the database server clock (approximated by
     this process's clock with a margin wide enough for the suite's known
-    app↔DB skew — see tests/conftest.py's startup divergence check)."""
+    app↔DB skew - see tests/conftest.py's startup divergence check)."""
     if isinstance(backend, InMemoryBackend):
         return backend._clock.now()  # pyright: ignore[reportPrivateUsage]  # Why: the twin's injected clock is the arbiter of every time predicate, mirroring PG's server clock.
     return datetime.now(UTC)
@@ -296,7 +296,7 @@ async def test_retry_job_clears_an_elapsed_deadline_and_the_row_dispatches(
     backend_pair: Backend,
 ) -> None:
     """An operator retry after the deadline has passed hands back a row a
-    worker can actually claim — the elapsed deadline is a spent epoch's
+    worker can actually claim - the elapsed deadline is a spent epoch's
     artifact, cleared like the spent run's error fields.
 
     The end-to-end PG pin is
@@ -310,7 +310,7 @@ async def test_retry_job_clears_an_elapsed_deadline_and_the_row_dispatches(
     attempt = await _claim(backend_pair, job_id, worker_id)
     await backend_pair.mark_failed_or_retry(job_id, worker_id, _ERROR, None, attempt=attempt)
 
-    # The deadline elapses while the job sits failed — an operator
+    # The deadline elapses while the job sits failed - an operator
     # investigating an incident routinely takes longer than a tight
     # schedule_to_close window.
     past = _backend_now(backend_pair) - timedelta(minutes=5)
@@ -324,11 +324,11 @@ async def test_retry_job_clears_an_elapsed_deadline_and_the_row_dispatches(
         "a retry after the deadline has already passed must clear it: "
         "dispatch's own claim predicate refuses rows whose deadline has "
         "elapsed, so re-pending with the stale deadline intact hands back "
-        "a row no worker can ever claim — and the next deadline-sweep tick "
+        "a row no worker can ever claim - and the next deadline-sweep tick "
         f"silently re-fails it. observed schedule_to_close={row.schedule_to_close!r}"
     )
 
-    # The re-pended row is genuinely claimable — not merely resolvable.
+    # The re-pended row is genuinely claimable - not merely resolvable.
     dispatched = await backend_pair.dispatch_batch(
         worker_id=worker_id,
         queues=["default"],
@@ -358,7 +358,7 @@ async def test_retry_job_preserves_a_future_deadline(backend_pair: Backend) -> N
     assert row is not None
     assert row.status in ("pending", "scheduled")
     assert row.schedule_to_close == future, (
-        "an in-window retry must keep the deadline the operator set — "
+        "an in-window retry must keep the deadline the operator set - "
         f"clearing or extending it silently changes the job's budget. "
         f"observed schedule_to_close={row.schedule_to_close!r}, expected {future!r}"
     )

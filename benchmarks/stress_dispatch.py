@@ -3,15 +3,15 @@
 Simulates, per dispatched job, the pure-Python work the TaskQ worker does
 around each job:
 
-  1. ``solve_dependencies`` — uncached ``get_type_hints`` +
+  1. ``solve_dependencies`` - uncached ``get_type_hints`` +
      ``inspect.signature`` per dispatched job (stub registry/containers
      return cached values, mimicking ``tests/test_di_solver.py`` stubs;
      actor has 2 DI params).
-  2. ``dumps_jsonb_str`` on a ~4KB payload — orjson serialize → decode →
+  2. ``dumps_jsonb_str`` on a ~4KB payload - orjson serialize → decode →
      NUL prefilter.
   3. ``_job_row_from_record`` on a fake wide asyncpg record (dict
-     subclass with ``__getitem__``) — 4 JSON parses per row.
-  4. Every 10th job: ``compute_next_fire_after`` — 1-6 croniter
+     subclass with ``__getitem__``) - 4 JSON parses per row.
+  4. Every 10th job: ``compute_next_fire_after`` - 1-6 croniter
      instances per call, pure Python.
 
 Runs ~STRESS_SECONDS (default 20) and prints jobs/sec.
@@ -135,7 +135,7 @@ async def _bench_actor(db: _DBConn, settings: _Settings) -> None:
 
 
 class _FakeRecord(dict):
-    """dict subclass with ``__getitem__`` — matches asyncpg.Record access."""
+    """dict subclass with ``__getitem__`` - matches asyncpg.Record access."""
 
     def __getitem__(self, key):
         return dict.__getitem__(self, key)

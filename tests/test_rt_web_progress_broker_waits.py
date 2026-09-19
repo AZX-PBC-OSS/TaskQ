@@ -1,19 +1,18 @@
 """Red-team attacks on the SSE progress bridge's broker-facing waits.
 
-Hunt scope: ``src/taskq/web/progress.py`` — the streaming loop's Redis
+Hunt scope: ``src/taskq/web/progress.py`` - the streaming loop's Redis
 dependency, connection lifetime, and the SSE slot cap.
 
 Papered defects and pins
 ------------------------
-1. REAL DEFECT — the loop's only broker wait owns no deadline
+1. REAL DEFECT - the loop's only broker wait owns no deadline
    (progress.py:184-187)::
 
        raw_msg = await pubsub.get_message(
            ignore_subscribe_messages=True,
-           timeout=heartbeat_secs,
-       )
+           timeout=heartbeat_secs,)
 
-   The bound is entirely delegated to the ``pubsub`` object — typed ``Any``
+   The bound is entirely delegated to the ``pubsub`` object - typed ``Any``
    (an erasure boundary, not a guarantee). The project's own rule is that
    TaskQ-initiated waits on a possibly-dead broker are bounded *by this
    codebase*: ``_factory.get_realtime_mode`` wraps even a ``ping()`` in
@@ -21,24 +20,24 @@ Papered defects and pins
    close goes through ``close_redis_bounded``. With redis-py 8.1.0 the
    delegated ``timeout=`` bounds only the *read*; ``PubSub.parse_response``
    re-enters via ``await conn.connect()`` when the connection dropped
-   (redis/asyncio/client.py:1426) — a reconnect with no app-level bound
-   (``socket_connect_timeout`` defaults to None) — so a wedged/tarpitted
+   (redis/asyncio/client.py:1426) - a reconnect with no app-level bound
+   (``socket_connect_timeout`` defaults to None) - so a wedged/tarpitted
    broker can stall the stream far past the heartbeat cadence while the
    Redis subscription, the asyncio task and the SSE slot stay pinned.
    ``test_wedged_broker_read_must_be_app_bounded`` pins the desired
    observable: the loop must own an app-level deadline around the broker
    wait. RED today.
 
-2. GREEN PIN — broker death mid-stream is fail-visible and fully cleaned
-   up: the generator terminates (exception propagates — no silent eternal
+2. GREEN PIN - broker death mid-stream is fail-visible and fully cleaned
+   up: the generator terminates (exception propagates - no silent eternal
    keepalive loop), the pubsub is unsubscribed/closed, and the SSE slot is
    released (progress.py:263-278 finally).
 
-3. GREEN PIN — the per-process SSE connection cap: exhausted cap answers
+3. GREEN PIN - the per-process SSE connection cap: exhausted cap answers
    HTTP 429 before allocating anything, and a disconnected stream's slot is
    returned to the budget (progress.py:417-442 + _sse_limit.py).
 
-4. GREEN PIN (safe-unpinned) — a non-integer ``Last-Event-ID`` header is
+4. GREEN PIN (safe-unpinned) - a non-integer ``Last-Event-ID`` header is
    treated as an initial connection (progress.py:128-133), never a crash
    and never a silently-blackholed cursor.
 """
@@ -149,7 +148,7 @@ class _WedgedPubSub:
 
 class _DyingPubSub:
     """Pubsub double that yields one well-formed event, then raises
-    ConnectionError — a broker that dies mid-stream after a good event."""
+    ConnectionError - a broker that dies mid-stream after a good event."""
 
     def __init__(self, message: dict[str, Any]) -> None:
         self._message = message
@@ -240,7 +239,7 @@ async def _drain(gen: AsyncGenerator[ServerSentEvent, None]) -> list[ServerSentE
 
 
 async def _first_event(gen: AsyncGenerator[ServerSentEvent, None]) -> ServerSentEvent:
-    """Consume exactly one event, then close — never hangs on a live loop."""
+    """Consume exactly one event, then close - never hangs on a live loop."""
     async with asyncio.timeout(2):
         event = await gen.__anext__()
     await gen.aclose()
@@ -254,18 +253,18 @@ async def test_wedged_broker_read_must_be_app_bounded() -> None:
     """A pubsub read that never returns must not pin the stream forever.
 
     CONTRACT: the SSE streaming loop must own an app-level deadline around
-    its broker wait — every TaskQ-initiated wait on a possibly-dead broker
+    its broker wait - every TaskQ-initiated wait on a possibly-dead broker
     is bounded by this codebase's own rule (compare admin/_factory.py:197
     wrapping even ``redis_client.ping()`` in ``asyncio.wait_for(..., 0.5)``,
-    and every close via ``close_redis_bounded``). A read that wedges —
+    and every close via ``close_redis_bounded``). A read that wedges -
     dead/tarpitted broker, a reconnect inside redis-py's
     ``PubSub.parse_response`` with no ``socket_connect_timeout``, or any
-    pubsub double that outlives the delegated ``timeout=`` parameter — must
+    pubsub double that outlives the delegated ``timeout=`` parameter - must
     terminate the stream within a bounded window.
 
     CURRENT VIOLATION: progress.py:184-187 delegates the ONLY bound to
-    ``pubsub.get_message(..., timeout=heartbeat_secs)`` — nothing in this
-    module cancels a read that never returns — so 15 heartbeat intervals
+    ``pubsub.get_message(..., timeout=heartbeat_secs)`` - nothing in this
+    module cancels a read that never returns - so 15 heartbeat intervals
     later the generator task is still pending, holding the Redis
     subscription, the asyncio task and the SSE slot.
     """
@@ -287,12 +286,12 @@ async def test_wedged_broker_read_must_be_app_bounded() -> None:
     )
     task = asyncio.create_task(_drain(gen))
     try:
-        # 0.75s = 15 heartbeats at 50ms — ample slack for any bounded loop.
+        # 0.75s = 15 heartbeats at 50ms - ample slack for any bounded loop.
         await asyncio.sleep(0.75)
         assert task.done() and not task.cancelled(), (
             "CONTRACT: the SSE streaming loop must own an app-level deadline around "
             "its broker wait (project rule: every TaskQ-initiated wait on a possibly-"
-            "dead broker is bounded by this codebase — see admin/_factory.py:197 "
+            "dead broker is bounded by this codebase - see admin/_factory.py:197 "
             "ping and close_redis_bounded). CURRENT VIOLATION: progress.py:184-187 "
             "delegates the only bound to pubsub.get_message(timeout=heartbeat_secs); "
             "a read that never returns is never cancelled, so the generator is still "
@@ -308,7 +307,7 @@ async def test_wedged_broker_read_must_be_app_bounded() -> None:
     assert slot.locked() is False, (
         "CONTRACT: once the stream ends for any reason (including cancellation from "
         "a bounded supervisor), the SSE slot must be released in the generator's "
-        "finally (progress.py:263-269). CURRENT: released on cancel — pinning this "
+        "finally (progress.py:263-269). CURRENT: released on cancel - pinning this "
         "so a fix for the wedged-read bound cannot regress the cleanup path."
     )
 
@@ -318,10 +317,10 @@ async def test_wedged_broker_read_must_be_app_bounded() -> None:
 
 async def test_midstream_broker_death_terminates_and_releases_everything() -> None:
     """A broker that dies mid-stream must terminate the stream visibly and
-    clean up every resource — not hang, and not silently loop keepalives.
+    clean up every resource - not hang, and not silently loop keepalives.
 
     CONTRACT: ConnectionError out of ``get_message`` propagates out of the
-    generator (fail-visible — the browser EventSource reconnects on stream
+    generator (fail-visible - the browser EventSource reconnects on stream
     end), the pubsub is unsubscribed and closed, and the SSE slot is
     released (progress.py:263-278). This pins the current correct behavior
     so the wedged-read fix cannot trade it for a silent swallow.
@@ -356,7 +355,7 @@ async def test_midstream_broker_death_terminates_and_releases_everything() -> No
     assert pubsub.closed is True, "pubsub.aclose must run in the finally"
     assert slot.locked() is False, (
         "CONTRACT: the SSE slot must be released when the stream dies with the "
-        "broker (progress.py:268-269) — otherwise every broker outage leaks one "
+        "broker (progress.py:268-269) - otherwise every broker outage leaks one "
         "slot per open stream until the process-wide cap refuses all clients."
     )
 
@@ -404,14 +403,14 @@ async def test_progress_stream_cap_429_and_slot_reuse_after_disconnect() -> None
         assert exc_info.value.status_code == 429, (
             "CONTRACT: the SSE cap must refuse the (cap+1)-th concurrent stream with "
             "429 before allocating a pubsub subscription or a task "
-            "(progress.py:417 + _sse_limit.py) — an uncapped endpoint lets any "
+            "(progress.py:417 + _sse_limit.py) - an uncapped endpoint lets any "
             "principal who can reach the route exhaust Redis connections and file "
             "descriptors on the app hosting the pipeline."
         )
 
         # Client disconnect on both in-flight streams. Starting each generator
-        # (one __anext__: the PG snapshot event) mirrors the real ASGI flow — a
-        # disconnect always arrives mid-iteration, never before the first — and
+        # (one __anext__: the PG snapshot event) mirrors the real ASGI flow - a
+        # disconnect always arrives mid-iteration, never before the first - and
         # makes aclose run the generator's finally, which releases each slot.
         for response in (first, second):
             started = await asyncio.wait_for(response.body_iterator.__anext__(), 5)  # pyright: ignore[reportUnknownMemberType, reportAny]  # Why: sse-starlette is untyped; body_iterator is the async generator passed in.
@@ -423,7 +422,7 @@ async def test_progress_stream_cap_429_and_slot_reuse_after_disconnect() -> None
         third = await endpoint(job_id=job_id, request=request, last_event_id=None)
         assert third.status_code == 200, (
             "CONTRACT: slots released by disconnected streams must return to the "
-            "budget — a leaked slot turns the cap into a denial-of-service against "
+            "budget - a leaked slot turns the cap into a denial-of-service against "
             "the admin UI itself (first 2 disconnects permanently brick the "
             "endpoint)."
         )

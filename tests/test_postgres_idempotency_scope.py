@@ -175,7 +175,7 @@ class TestSameKeySameScope:
 class TestConcurrentEnqueueSameScope:
     """Fire 2+ concurrent PostgresBackend.enqueue() calls with the same
     actor, idempotency_scope, and idempotency_key.  Exactly one job should
-    be created — both calls return the same job id.
+    be created - both calls return the same job id.
 
     This exercises the real ON CONFLICT race in Postgres, not a mock.
     """

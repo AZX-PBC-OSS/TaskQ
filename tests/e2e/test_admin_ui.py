@@ -197,7 +197,7 @@ async def admin_server(e2e_schema: E2ESchema) -> AsyncIterator[httpx.AsyncClient
             except RuntimeError as exc:
                 await client.aclose()
                 if "address already in use" in str(exc).lower() and attempt < _MAX_BIND_ATTEMPTS:
-                    continue  # lost the bind race — fresh port, fresh child
+                    continue  # lost the bind race - fresh port, fresh child
                 raise
             break
 

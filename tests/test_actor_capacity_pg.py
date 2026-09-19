@@ -5,7 +5,7 @@ mechanics against InMemoryBackend; this tier proves the real wiring:
 ``sync_actor_config`` seeds the row, ``set_actor_config_capacity`` is the
 operator's out-of-band write (exactly what ``taskq actor-config set``
 issues), and a ``JobsClient`` over a real ``PostgresBackend`` enforces
-the stored value — with no worker restart and no client recreation.
+the stored value - with no worker restart and no client recreation.
 
 Mirrors test_dispatch_pg.py::test_live_capacity_change_takes_effect_without_restart,
 which proves the same property for ``max_concurrent`` on the dispatch side.
@@ -71,7 +71,7 @@ async def test_live_max_pending_change_takes_effect_without_restart(
     jobs_app: JobsApp,
 ) -> None:
     """Stored max_pending=2 beats the literal 100 on the very next enqueue
-    after the operator's out-of-band UPDATE — no sync re-run, no restart,
+    after the operator's out-of-band UPDATE - no sync re-run, no restart,
     no client recreation (ttl=0 disables snapshot reuse)."""
     await _sync(
         jobs_app,
@@ -96,7 +96,7 @@ async def test_live_max_pending_change_visible_after_invalidation(
     jobs_app: JobsApp,
 ) -> None:
     """Default-TTL client: the operator's change is picked up after
-    explicit invalidation — the mechanism standing in for TTL expiry."""
+    explicit invalidation - the mechanism standing in for TTL expiry."""
     await _sync(
         jobs_app,
         _configs(
@@ -143,7 +143,7 @@ async def test_cleared_override_reverts_to_literal_pg(
     jobs_app: JobsApp,
 ) -> None:
     """`set --clear-max-pending` (stored NULL) reverts enforcement to the
-    @actor literal — it does NOT make the actor unlimited."""
+    @actor literal - it does NOT make the actor unlimited."""
     await _sync(
         jobs_app,
         _configs(
@@ -168,7 +168,7 @@ async def test_two_clients_enforce_the_same_stored_limit_pg(
     jobs_app: JobsApp,
 ) -> None:
     """Multi-process agreement: two independent clients (two 'processes')
-    read the same actor_config row — a job enqueued through one counts
+    read the same actor_config row - a job enqueued through one counts
     against the other's enforcement."""
     await _sync(
         jobs_app,

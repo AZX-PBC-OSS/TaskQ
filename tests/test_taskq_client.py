@@ -69,7 +69,7 @@ _RA: TypeAdapter[None] = TypeAdapter(type(None))
 async def _migrate(dsn: str, schema: str = _SCHEMA_LABEL) -> None:
     """Drop the test schema and apply all migrations.
 
-    pg_conn fixture drops the schema but does NOT recreate it — migrations
+    pg_conn fixture drops the schema but does NOT recreate it - migrations
     must be applied before TaskQ can use the schema.
     """
     conn = await asyncpg.connect(dsn)
@@ -142,7 +142,7 @@ class TestLifecycle:
             await tq.cancel(new_job_id())
 
     async def test_close_when_already_closed_is_noop(self, pg_dsn: str) -> None:
-        """close() on a closed (never opened) TaskQ is a no-op — does not raise."""
+        """close() on a closed (never opened) TaskQ is a no-op - does not raise."""
         tq = TaskQ(dsn=pg_dsn, schema=_SCHEMA_LABEL)
         await tq.close()  # must not raise
 
@@ -160,7 +160,7 @@ class TestLifecycle:
             TaskQ()
 
     def test_both_dsn_and_pool_raises_value_error(self, pg_dsn: str) -> None:
-        """TaskQ(dsn=..., pool=...) raises ValueError — they are mutually exclusive."""
+        """TaskQ(dsn=..., pool=...) raises ValueError - they are mutually exclusive."""
         # We only need a pool object for the constructor check; we never open it.
         import unittest.mock as mock
 
@@ -169,7 +169,7 @@ class TestLifecycle:
             TaskQ(dsn=pg_dsn, pool=fake_pool)
 
     def test_both_redis_url_and_redis_client_raises_value_error(self, pg_dsn: str) -> None:
-        """TaskQ(redis_url=..., redis_client=...) raises ValueError —
+        """TaskQ(redis_url=..., redis_client=...) raises ValueError -
         they are mutually exclusive.
         """
         fake_redis = MagicMock()
@@ -194,7 +194,7 @@ class TestLifecycle:
 
     async def test_caller_owned_pool_not_closed_by_taskq(self, pg_dsn: str) -> None:
         """When TaskQ is constructed with a caller-owned pool, close() does not
-        close that pool — it remains usable after TaskQ.close().
+        close that pool - it remains usable after TaskQ.close().
         """
         await _migrate(pg_dsn)
         # Open a pool that the caller owns.
@@ -213,7 +213,7 @@ class TestLifecycle:
 
 
 # ---------------------------------------------------------------------------
-# TestSchemaResolution — the client and the fleet read one schema truth
+# TestSchemaResolution - the client and the fleet read one schema truth
 # ---------------------------------------------------------------------------
 
 
@@ -221,14 +221,14 @@ class TestSchemaResolution:
     """``TaskQ(schema=None)`` resolves the schema the way the worker and CLI
     resolve it: explicit argument, then ``TASKQ_SCHEMA_NAME``, then the model
     default. A client hardwired to ``"taskq"`` while the fleet listens on the
-    env-configured schema is a silent job-loss vector — the enqueue succeeds
+    env-configured schema is a silent job-loss vector - the enqueue succeeds
     into a schema no worker reads and ``wait()`` reports a bare timeout.
     """
 
     def test_schema_from_env_var_when_not_passed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """TASKQ_SCHEMA_NAME set, no constructor arg: the client lands in the
         fleet's schema. DOTENV_READ_DOTFILES=false keeps the resolution
-        hermetic — a developer's local .env must not decide the outcome."""
+        hermetic - a developer's local .env must not decide the outcome."""
         monkeypatch.setenv("TASKQ_SCHEMA_NAME", "adopter_trial")
         monkeypatch.setenv("DOTENV_READ_DOTFILES", "false")
 
@@ -237,7 +237,7 @@ class TestSchemaResolution:
         assert tq._schema == "adopter_trial"
 
     def test_explicit_schema_wins_over_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The constructor argument is authoritative — same precedence the
+        """The constructor argument is authoritative - same precedence the
         CLI's ``--schema`` option has over TASKQ_SCHEMA_NAME."""
         monkeypatch.setenv("TASKQ_SCHEMA_NAME", "adopter_trial")
 
@@ -258,7 +258,7 @@ class TestSchemaResolution:
         self, pg_dsn: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """End to end: a schema-less client enqueues into the env-configured
-        schema its workers migrated — the finding's reproduced divergence
+        schema its workers migrated - the finding's reproduced divergence
         (job in `taskq`, worker listening on the adopter's schema) pinned
         shut at the row level."""
         schema = f"ttc_env_{new_base62()}".lower()
@@ -271,7 +271,7 @@ class TestSchemaResolution:
         conn = await asyncpg.connect(pg_dsn)
         try:
             count = await conn.fetchval(
-                f'SELECT COUNT(*) FROM "{schema}".jobs WHERE id = $1',  # noqa: S608 — schema is a per-test generated identifier (new_base62), not user input; the id is $1-bound
+                f'SELECT COUNT(*) FROM "{schema}".jobs WHERE id = $1',  # noqa: S608 - schema is a per-test generated identifier (new_base62), not user input; the id is $1-bound
                 handle.job_id,
             )
         finally:
@@ -280,14 +280,14 @@ class TestSchemaResolution:
 
 
 # ---------------------------------------------------------------------------
-# TestCloseBounded — owned-pool close is bounded
+# TestCloseBounded - owned-pool close is bounded
 # ---------------------------------------------------------------------------
 
 
 class _FakeHungClosePool:
     """Hand-rolled pool stand-in whose close() hangs while close_wait is cleared.
 
-    asyncpg is a C extension — spec-mocks cannot express a hang gate — so
+    asyncpg is a C extension - spec-mocks cannot express a hang gate - so
     this mirrors the _FakePool conventions in tests/test_cli_ui.py.
     terminate() releases the gate, mirroring the real Pool whose terminate()
     kills connections immediately.
@@ -312,7 +312,7 @@ class _FakeHungClosePool:
 
 
 class TestCloseBounded:
-    """TaskQ.close() bounds the owned-pool close — a dead PG cannot wedge it."""
+    """TaskQ.close() bounds the owned-pool close - a dead PG cannot wedge it."""
 
     async def test_close_bounds_hung_owned_pool_close(
         self, monkeypatch: pytest.MonkeyPatch
@@ -342,19 +342,19 @@ class TestCloseBounded:
 
 
 # ---------------------------------------------------------------------------
-# TestRedisUrlWiring — redis_url is coerced via settings, never stored raw
+# TestRedisUrlWiring - redis_url is coerced via settings, never stored raw
 # ---------------------------------------------------------------------------
 
 
 class TestRedisUrlWiring:
     """TaskQ(redis_url=...) routes the URL through TaskQSettings' RedisDsn
-    field type instead of storing a raw str — and rejects empty URLs at
+    field type instead of storing a raw str - and rejects empty URLs at
     construction rather than silently disabling Redis.
     """
 
     async def test_open_invalid_redis_url_raises_type_coercion_error(self) -> None:
         """open() with a non-Redis redis_url raises TypeCoercionError
-        referencing redis_url — the field's RedisDsn type rejects the
+        referencing redis_url - the field's RedisDsn type rejects the
         scheme at startup, not at first publish."""
         fake_pool = MagicMock(spec=asyncpg.Pool)
         tq = TaskQ(pool=fake_pool, redis_url="http://not-redis", schema=_SCHEMA_LABEL)
@@ -366,7 +366,7 @@ class TestRedisUrlWiring:
     ) -> None:
         """After open() the wired settings carry a dotenvmodel RedisDsn
         instance (coerced from the str argument), which _open_redis
-        receives — never a raw str."""
+        receives - never a raw str."""
         from taskq.client._jobs import JobsClient
         from taskq.settings import TaskQSettings
 
@@ -391,7 +391,7 @@ class TestRedisUrlWiring:
 
     def test_constructor_blank_redis_url_raises_value_error(self) -> None:
         """redis_url="" (the os.getenv(..., "") anti-pattern) and a
-        whitespace-only URL fail at construction — dotenvmodel would
+        whitespace-only URL fail at construction - dotenvmodel would
         coerce "" to None and silently disable Redis otherwise."""
         fake_pool = MagicMock(spec=asyncpg.Pool)
         for blank in ("", "   "):
@@ -487,7 +487,7 @@ class TestEnqueue:
             try:
                 # TaskQ.enqueue() has no connection= param, so the holder's
                 # insert is driven directly via the client's underlying SQL
-                # contract against this held-open transaction — the same
+                # contract against this held-open transaction - the same
                 # approach tests/test_rt_locks_actor_tx_enqueue_serialization.py
                 # uses for its holder side.
                 sql = render_sql(_SCHEMA_LABEL)
@@ -530,7 +530,7 @@ class TestEnqueue:
         ``command_timeout`` upward so the server-side ``lock_timeout``
         still fires first. If an operator could widen the lock-wait budget
         past the client's (fixed) network timeout, the exact same bare
-        ``TimeoutError`` regression this issue reports would resurface —
+        ``TimeoutError`` regression this issue reports would resurface -
         just at a different, operator-chosen threshold instead of the
         shipped default.
         """
@@ -539,7 +539,7 @@ class TestEnqueue:
 
         # Operator widens the idempotency lock-wait budget well past its
         # 5000ms shipped default and past the client pool's shipped
-        # command_timeout floor (10.0s) — the exact scenario the ordering
+        # command_timeout floor (10.0s) - the exact scenario the ordering
         # guarantee exists to cover.
         monkeypatch.setenv("TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS", "15000")
 
@@ -589,7 +589,7 @@ class TestEnqueue:
         """Enqueueing with a future scheduled_at stores the correct timestamp.
 
         The PG backend always inserts with status='pending' (no trigger flips
-        it to 'scheduled' at insert time — that transition is done by the
+        it to 'scheduled' at insert time - that transition is done by the
         scheduled-to-pending sweep at dispatch). What we can assert is that the
         stored scheduled_at matches the value we supplied.
         """
@@ -627,7 +627,7 @@ class TestGet:
         assert found.job_id == enqueued.job_id
 
     async def test_get_unknown_id_returns_none(self, pg_dsn: str) -> None:
-        """get(unknown_id) returns None — does not raise."""
+        """get(unknown_id) returns None - does not raise."""
         await _migrate(pg_dsn)
         async with TaskQ(dsn=pg_dsn, schema=_SCHEMA_LABEL) as tq:
             result = await tq.get(new_job_id(), result_adapter=_RA)
@@ -641,7 +641,7 @@ class TestGet:
 
 
 class TestGetRow:
-    """TaskQ.get_row public-behaviour tests — raw JobRow, no handle."""
+    """TaskQ.get_row public-behaviour tests - raw JobRow, no handle."""
 
     async def test_get_row_existing_job_returns_row(self, pg_dsn: str) -> None:
         """get_row(job_id) returns the raw JobRow for an existing job."""
@@ -657,7 +657,7 @@ class TestGetRow:
         assert row.payload == {"value": 10}
 
     async def test_get_row_unknown_id_returns_none(self, pg_dsn: str) -> None:
-        """get_row(unknown_id) returns None — does not raise."""
+        """get_row(unknown_id) returns None - does not raise."""
         await _migrate(pg_dsn)
         async with TaskQ(dsn=pg_dsn, schema=_SCHEMA_LABEL) as tq:
             result = await tq.get_row(new_job_id())
@@ -842,14 +842,14 @@ class TestStream:
 
 
 # ---------------------------------------------------------------------------
-# TestStreamPgInternals — direct exercise of the PG LISTEN/NOTIFY transport
+# TestStreamPgInternals - direct exercise of the PG LISTEN/NOTIFY transport
 # ---------------------------------------------------------------------------
 
 
 async def _set_job_status(pool: asyncpg.Pool, schema: str, job_id: UUID, status: str) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
-            f'UPDATE "{schema}".jobs SET status = $1 WHERE id = $2',  # noqa: S608 — schema is a worker-scoped constant, not user input; values are $N-bound
+            f'UPDATE "{schema}".jobs SET status = $1 WHERE id = $2',  # noqa: S608 - schema is a worker-scoped constant, not user input; values are $N-bound
             status,
             job_id,
         )
@@ -858,7 +858,7 @@ async def _set_job_status(pool: asyncpg.Pool, schema: str, job_id: UUID, status:
 async def _delete_job(pool: asyncpg.Pool, schema: str, job_id: UUID) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
-            f'DELETE FROM "{schema}".jobs WHERE id = $1',  # noqa: S608 — schema is a worker-scoped constant, not user input; values are $N-bound
+            f'DELETE FROM "{schema}".jobs WHERE id = $1',  # noqa: S608 - schema is a worker-scoped constant, not user input; values are $N-bound
             job_id,
         )
 
@@ -909,7 +909,7 @@ class TestStreamPgInternals:
 
     async def test_stream_via_taskq_multiple_pg_events(self, pg_dsn: str) -> None:
         """TaskQ.stream() (PG transport, no redis_client) yields more than one
-        JobEvent across successive status transitions before terminating —
+        JobEvent across successive status transitions before terminating -
         exercises the ``_stream_pg`` delegation branch in ``TaskQ.stream()``.
         """
         await _migrate(pg_dsn)
@@ -964,7 +964,7 @@ class TestStreamPgInternals:
 
 
 # ---------------------------------------------------------------------------
-# TestStreamRedisInternals — direct unit tests for _stream_redis
+# TestStreamRedisInternals - direct unit tests for _stream_redis
 # ---------------------------------------------------------------------------
 
 
@@ -1022,7 +1022,7 @@ class TestStreamRedisInternals:
         async def _get_message(
             *,
             ignore_subscribe_messages: bool = True,
-            timeout: float = 0,  # noqa: ASYNC109 — mirrors redis-py's get_message signature to monkeypatch it in a test
+            timeout: float = 0,  # noqa: ASYNC109 - mirrors redis-py's get_message signature to monkeypatch it in a test
         ) -> dict[str, object] | None:
             nonlocal message_calls
             message_calls += 1

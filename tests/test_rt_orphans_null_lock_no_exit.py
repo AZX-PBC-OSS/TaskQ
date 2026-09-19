@@ -5,12 +5,12 @@ Every maintenance path that can exit a ``running`` row is gated on something
 this cell cannot satisfy:
 
 * Sweep 1 (``_SWEEP_1_SQL``, src/taskq/backend/_sweeps.py:234-237) selects
-  ``status = 'running' AND lock_expires_at < statement_timestamp()`` — a NULL
+  ``status = 'running' AND lock_expires_at < statement_timestamp()`` - a NULL
   lock makes the comparison NULL-false at every age, so the reclaim sweep is
   blind to the row forever. The in-memory twin shares the guard
   (src/taskq/testing/_sweeps.py:162-166, ``row.lock_expires_at is not None``).
 * Phase-2 escalation is owner-worker-scoped (``locked_by_worker = $2 AND
-  cancel_phase = 1`` — only the live holder can write phase 2; a dead holder
+  cancel_phase = 1`` - only the live holder can write phase 2; a dead holder
   never does), and ``mark_abandoned`` is phase-2-scoped
   (src/taskq/backend/_sql_templates.py:460), so the cancel protocol can land
   phase 1 and then stall forever.
@@ -127,7 +127,7 @@ async def test_in_memory_null_lock_running_row_has_no_reachable_exit() -> None:
     ok = await backend.retry_job(job_id)
     exits.append(f"retry_job={ok}")
 
-    # Advance the clock arbitrarily — a decade past every grace and margin.
+    # Advance the clock arbitrarily - a decade past every grace and margin.
     clock.advance(timedelta(days=3650))
     n = await backend.reclaim_expired_locks(_GRACE, _GRACE)
     exits.append(f"reclaim_expired_locks(+10y)={n}")
@@ -140,11 +140,11 @@ async def test_in_memory_null_lock_running_row_has_no_reachable_exit() -> None:
     assert final is not None
     assert final.status != "running", (
         "Contract: every non-terminal job row must have a reachable exit (or a detector that "
-        "alarms on the no-exit shape) — a running row whose lock never expires is unreclaimable "
+        "alarms on the no-exit shape) - a running row whose lock never expires is unreclaimable "
         "forever. Current behavior violates it: after every exit the system offers "
         f"({'; '.join(exits)}) and a 10-year clock advance, the row is still "
         f"status={final.status!r} with dead holder locked_by_worker={final.locked_by_worker!r} "
-        f"and lock_expires_at={final.lock_expires_at!r} — the twin's NULL guard "
+        f"and lock_expires_at={final.lock_expires_at!r} - the twin's NULL guard "
         "(src/taskq/testing/_sweeps.py:164, `row.lock_expires_at is not None`) makes the reclaim "
         "sweep blind to it, and every other exit is owner-worker- or phase-2-scoped."
     )
@@ -156,7 +156,7 @@ async def test_in_memory_null_lock_running_row_has_no_reachable_exit() -> None:
 @pytest.mark.integration
 async def test_pg_null_lock_running_row_survives_every_sweep(pg_dsn: str) -> None:
     """On real Postgres, a running row whose lock is NULLed survives every
-    sweep and every cancel entry point — while an identical expired-lock row
+    sweep and every cancel entry point - while an identical expired-lock row
     is reclaimed, proving the sweep ran and the NULL comparison is the blind
     spot (``lock_expires_at < statement_timestamp()`` is NULL-false,
     src/taskq/backend/_sweeps.py:235).
@@ -170,7 +170,7 @@ async def test_pg_null_lock_running_row_survives_every_sweep(pg_dsn: str) -> Non
 
         dead_holder = new_uuid()
         past = datetime.now(UTC) - timedelta(hours=1)
-        # Control: same dead holder, expired NON-NULL lock — sweep 1 reclaims it.
+        # Control: same dead holder, expired NON-NULL lock - sweep 1 reclaims it.
         control_id: UUID = await create_running_job(
             conn,
             schema,
@@ -181,7 +181,7 @@ async def test_pg_null_lock_running_row_survives_every_sweep(pg_dsn: str) -> Non
             attempt=1,
             with_events=False,
         )
-        # Victim: identical shape, then the lock column is NULLed (direct SQL —
+        # Victim: identical shape, then the lock column is NULLed (direct SQL -
         # the only writer that can plant the cell today).
         victim_id: UUID = await create_running_job(
             conn,
@@ -238,7 +238,7 @@ async def test_pg_null_lock_running_row_survives_every_sweep(pg_dsn: str) -> Non
             "that alarms on the no-exit shape). Current behavior violates it: the control row "
             f"with an expired NON-NULL lock was reclaimed ({control_status!r}) while the "
             "identical row with lock_expires_at = NULL survived every exit "
-            f"({'; '.join(exits)}) — `lock_expires_at < statement_timestamp()` "
+            f"({'; '.join(exits)}) - `lock_expires_at < statement_timestamp()` "
             "(src/taskq/backend/_sweeps.py:235) is NULL-false, so sweep 1 can never select it, "
             f"and the row is still status={victim['status']!r}, "
             f"locked_by_worker={victim['locked_by_worker']!r} (dead holder), "

@@ -522,7 +522,7 @@ async def test_plain_clock_receives_system_clock() -> None:
     """actor with plain clock: Clock receives registered SystemClock.
 
     Acceptance link (W-4): this test, together with proves the
-    acceptance definition — "an actor declared as
+    acceptance definition - "an actor declared as
     async def my_actor(ctx: JobContext, clock: Clock) receives a
     SystemClock instance in production and a FakeClock instance in
     tests."
@@ -566,7 +566,7 @@ async def test_plain_clock_receives_pre_registered_fake_clock() -> None:
     """actor with plain clock: Clock receives pre-registered FakeClock.
 
     Acceptance link (W-4): this test, together with proves the
-    acceptance definition — "an actor declared as
+    acceptance definition - "an actor declared as
     async def my_actor(ctx: JobContext, clock: Clock) receives a
     SystemClock instance in production and a FakeClock instance in
     tests."

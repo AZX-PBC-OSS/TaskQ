@@ -1,4 +1,4 @@
-"""Demo actor for the FastAPI example app — demonstrates ctx.progress() with TaskQ.stream()."""
+"""Demo actor for the FastAPI example app - demonstrates ctx.progress() with TaskQ.stream()."""
 
 import asyncio
 

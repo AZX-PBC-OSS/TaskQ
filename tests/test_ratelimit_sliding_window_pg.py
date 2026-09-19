@@ -1,16 +1,16 @@
 """Integration tests for SlidingWindow log-style and GCRA PG backends against testcontainers Postgres.
 
-PG fallback — real PG. 60 acquires all allowed; 61st denied;
+PG fallback - real PG. 60 acquires all allowed; 61st denied;
 row count in rate_limit_window_entries is 60 after burst and still 60 after
 denial (denial path issues no INSERT). Sleep retry_after → allowed.
 
 PG fallback pruning. Acquire once, wait window + 100 ms,
-acquire again. Row count == 1 — first row DELETE-pruned by Statement 1.
+acquire again. Row count == 1 - first row DELETE-pruned by Statement 1.
 
 (style="log" slice): backend="postgres" never touches Redis.
 Completes against a real PG container without resolving the Redis DI provider.
 
-GCRA PG fallback — real PG. Burst 60 acquires; assert all allowed.
+GCRA PG fallback - real PG. Burst 60 acquires; assert all allowed.
 61st denied; retry_after ≈ 1 s. Sleep → allowed. Verify rate_limit_buckets
 row has kind='gcra' and state contains tat float.
 
@@ -57,14 +57,14 @@ def _settings(module_pg_schema: ModulePgSchema) -> WorkerSettings:
     )
 
 
-# ── PG fallback — real PG — burst → denial → row invariant → retry ──
+# ── PG fallback - real PG - burst → denial → row invariant → retry ──
 
 
 async def test_log_pg_fallback_burst_and_deny(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """backend="postgres", style="log". Acquire 30 — all allowed.
+    """backend="postgres", style="log". Acquire 30 - all allowed.
     31st denied with retry_after > 0. Row count is 30 after burst, still 30
     after denial (no INSERT on denial). Sleep retry_after + 50 ms → allowed.
     """
@@ -110,7 +110,7 @@ async def test_log_pg_fallback_burst_and_deny(
     assert count_after_deny == 30
 
 
-# ── PG fallback pruning — DELETE removes expired rows ──────────────
+# ── PG fallback pruning - DELETE removes expired rows ──────────────
 
 
 async def test_log_pg_fallback_pruning(
@@ -118,7 +118,7 @@ async def test_log_pg_fallback_pruning(
     module_pg_pool: asyncpg.Pool,
 ) -> None:
     """acquire once, wait window + 100 ms real time, acquire again.
-    Row count == 1 — the first row was DELETE-pruned by Statement 1; the
+    Row count == 1 - the first row was DELETE-pruned by Statement 1; the
     second row is the new INSERT.
     """
     schema = module_pg_schema.schema_name
@@ -166,7 +166,7 @@ async def test_postgres_never_touches_redis(
     module_pg_pool: asyncpg.Pool,
 ) -> None:
     """(log slice): backend="postgres" acquire succeeds against real PG
-    without ever touching Redis — no redis_client= kwarg supplied.
+    without ever touching Redis - no redis_client= kwarg supplied.
     """
     settings = _settings(module_pg_schema)
     clock = SystemClock()
@@ -185,14 +185,14 @@ async def test_postgres_never_touches_redis(
     assert r.backend == "postgres"
 
 
-# ── GCRA PG fallback — burst → denial → retry → row invariant ──────
+# ── GCRA PG fallback - burst → denial → retry → row invariant ──────
 
 
 async def test_gcra_pg_fallback_burst_and_deny(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """backend="postgres", style="gcra". Burst 60 acquires — all
+    """backend="postgres", style="gcra". Burst 60 acquires - all
     allowed. 61st denied with retry_after ≈ 1 s. Sleep retry_after +
     50 ms of REAL time → allowed. Verify rate_limit_buckets row has
     kind='gcra' and state tat float.
@@ -306,7 +306,7 @@ async def test_gcra_postgres_never_touches_redis(
     module_pg_pool: asyncpg.Pool,
 ) -> None:
     """(gcra slice): backend="postgres", style="gcra" acquire succeeds
-    against real PG without ever touching Redis — no redis_client= kwarg supplied.
+    against real PG without ever touching Redis - no redis_client= kwarg supplied.
     """
     settings = _settings(module_pg_schema)
     clock = SystemClock()
@@ -334,7 +334,7 @@ async def test_acquire_and_peek_without_clock_on_postgres_backend(
 ) -> None:
     """A postgres-backend acquire/peek runs entirely on the PG server
     clock (clock_timestamp()), so it must not require a Python clock at
-    all — TokenBucket's contract. Both styles, acquire and peek."""
+    all - TokenBucket's contract. Both styles, acquire and peek."""
     settings = _settings(module_pg_schema)
 
     sw_log = SlidingWindow(
@@ -360,12 +360,12 @@ async def test_acquire_and_peek_without_clock_on_postgres_backend(
     assert state.backend == "postgres"
 
 
-# ── Concurrency pins — first-use and at-limit races ──────────────────
+# ── Concurrency pins - first-use and at-limit races ──────────────────
 #
 # Both pins race two acquire transactions on two DEDICATED single-connection
 # pools, each pre-warmed by a sacrificial acquire. Why the warm-up: asyncpg
 # plans a statement per connection on first use, and a cold plan costs
-# ~1.5 ms — enough to push the losing transaction's decisive statement past
+# ~1.5 ms - enough to push the losing transaction's decisive statement past
 # the winner's commit and silently SERIALISE the very race these pins
 # assert (observed: cold-second-connection gathers never overlap, warm
 # ones overlap 40/40). Pre-warming both connections makes the pre-fix
@@ -449,7 +449,7 @@ async def test_log_pg_concurrent_acquires_respect_limit(
     one is allowed and the window count never exceeds the limit.
 
     Pre-fix the DELETE+INSERT ... WHERE count < N pair is unserialised
-    under READ COMMITTED — both acquires count 2 in-window entries, both
+    under READ COMMITTED - both acquires count 2 in-window entries, both
     insert, and the window reaches 4 > limit. Post-fix a per-bucket
     ``pg_advisory_xact_lock`` at the top of the acquire transaction
     serialises them (the cron loop's idiom).
@@ -494,7 +494,7 @@ async def test_log_pg_concurrent_acquires_respect_limit(
     )
 
 
-# ── Injection-error branches — pg_pool/settings/request_id None ────
+# ── Injection-error branches - pg_pool/settings/request_id None ────
 
 
 def _fake_settings() -> WorkerSettings:
@@ -650,12 +650,12 @@ async def test_acquire_gcra_settings_none(
         await sw.acquire(pg_pool=module_pg_pool, clock=SystemClock(), settings=None)
 
 
-# ── Refund gcra — previous_state None / pg_pool None / settings None ────
+# ── Refund gcra - previous_state None / pg_pool None / settings None ────
 
 
 async def test_refund_gcra_previous_state_none(module_pg_schema: ModulePgSchema) -> None:
     """refund() returns immediately when decision.previous_state is None
-    (line 189-190) — no pg_pool/settings validation is even attempted."""
+    (line 189-190) - no pg_pool/settings validation is even attempted."""
     sw = SlidingWindow(
         name=_gcra_unique_name(),
         limit=10,
@@ -764,7 +764,7 @@ class _FakeConn:
         return self._fetchrow_returns.pop(0)
 
     async def fetchval(self, sql: str, *args: object) -> object:
-        # The per-bucket advisory try-lock: uncontended in these fakes —
+        # The per-bucket advisory try-lock: uncontended in these fakes -
         # the fast-path try-lock acquires, so the locked window sequence
         # runs and the contended tier is never entered.
         if "pg_try_advisory_xact_lock" in sql:
@@ -807,7 +807,7 @@ class _FakePgPool:
 
 async def test_peek_log_oldest_row_none() -> None:
     """peek_pg_log: count query reports the bucket exhausted, but the
-    oldest-row query races to no rows — the peek still returns
+    oldest-row query races to no rows - the peek still returns
     is_exhausted=True with retry_after=None (the retry estimate and the
     window boundary both come from clock_timestamp() server-side)."""
     sw = SlidingWindow(

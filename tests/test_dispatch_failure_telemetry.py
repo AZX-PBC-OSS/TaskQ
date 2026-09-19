@@ -277,7 +277,7 @@ async def test_dispatch_failure_counter_names_the_failure_class(
                 "use case this counter exists to serve"
             )
             assert attrs["error_type"] == "ConnectionResetError", (
-                f"error_type must name the failure class, got {attrs!r} — a "
+                f"error_type must name the failure class, got {attrs!r} - a "
                 "constant or empty value would leave a transient reset "
                 "indistinguishable from a permanent auth failure"
             )

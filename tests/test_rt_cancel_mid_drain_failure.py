@@ -1,7 +1,7 @@
 """Non-deadlock mid-drain failure and re-run semantics of the bounded cancel.
 
 The bounded drain's contract for a failure that is NOT a deadlock (so
-no retry): the operation RAISES — no partial-success result object —
+no retry): the operation RAISES - no partial-success result object -
 the failed batch's driving UPDATE and event writes roll back together
 (per-batch atomicity: a batch's events can never commit without the
 state change they describe, and vice versa), every EARLIER batch stays
@@ -46,7 +46,7 @@ async def _seed_jobs(
 
 class _FailingConn:
     """Delegates to a real connection except the Nth event INSERT, which
-    raises before touching the connection — a statement-level failure
+    raises before touching the connection - a statement-level failure
     arriving after the batch's driving UPDATE has already executed."""
 
     def __init__(self, conn: Any, state: _FailingState) -> None:
@@ -111,9 +111,9 @@ async def test_mid_drain_statement_failure_raises_keeps_batch1_and_rerun_complet
     await _seed_jobs(clean_pg_conn, schema, job_ids)
     batch1, batch2 = set(sorted(job_ids)[:100]), set(sorted(job_ids)[100:])
 
-    # Batch 1 writes event INSERTs #1 (state_change) and #2
+    # Batch 1 writes event INSERTs (state_change) and
     # (cancel_request); the failure lands on batch 2's first INSERT
-    # (#3) — after batch 2's driving UPDATE has already mutated and
+    # - after batch 2's driving UPDATE has already mutated and
     # locked its rows inside the open transaction.
     state = _FailingState(fail_at=3)
     pool = _FailingPool(module_pg_pool, state)
@@ -127,7 +127,7 @@ async def test_mid_drain_statement_failure_raises_keeps_batch1_and_rerun_complet
             batch_size=100,
         )
 
-    # Batch 1: committed — cancelled with its full event pair.
+    # Batch 1: committed - cancelled with its full event pair.
     b1_rows = await clean_pg_conn.fetch(
         f'SELECT status::text AS status, finished_at FROM "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() above.
         "WHERE id = ANY($1::uuid[])",
@@ -142,7 +142,7 @@ async def test_mid_drain_statement_failure_raises_keeps_batch1_and_rerun_complet
     )
     assert {r["kind"]: r["n"] for r in b1_events} == {"state_change": 100, "cancel_request": 100}
 
-    # Batch 2: rolled back in full — the driving UPDATE and the event
+    # Batch 2: rolled back in full - the driving UPDATE and the event
     # writes left the same trace as if the batch never ran.
     b2_rows = await clean_pg_conn.fetch(
         f'SELECT status::text AS status, finished_at FROM "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() above.
@@ -150,7 +150,7 @@ async def test_mid_drain_statement_failure_raises_keeps_batch1_and_rerun_complet
         list(batch2),
     )
     assert {r["status"] for r in b2_rows} == {"pending"}, (
-        "batch 2's driving UPDATE must roll back with its failed event write — a "
+        "batch 2's driving UPDATE must roll back with its failed event write - a "
         "committed cancel without its events would be an untracked state change"
     )
     assert all(r["finished_at"] is None for r in b2_rows)
@@ -166,7 +166,7 @@ async def test_mid_drain_statement_failure_raises_keeps_batch1_and_rerun_complet
     assert total_after_failure == 200
 
     # Re-run: completes the drain, exactly-once events per job across
-    # both runs — the EPQ predicates skip batch 1's committed rows.
+    # both runs - the EPQ predicates skip batch 1's committed rows.
     result, _notify = await _cancel_where(
         module_pg_pool,
         schema,
@@ -191,7 +191,7 @@ async def test_mid_drain_statement_failure_raises_keeps_batch1_and_rerun_complet
     assert len(events) == 2 * 200
     assert all(r["n"] == 1 for r in events), (
         "across the failed run and its re-run, every job must carry exactly one "
-        "event of each kind — no duplicates from the re-run's re-selection"
+        "event of each kind - no duplicates from the re-run's re-selection"
     )
     assert {r["kind"] for r in events} == {"state_change", "cancel_request"}
 
@@ -220,8 +220,8 @@ async def test_running_drain_failure_after_ps_completion_leaves_ps_committed(
     )
 
     # The ps drain's single batch writes two batched event INSERTs
-    # (#1 state_change, #2 cancel_request); the running drain's single
-    # batch writes one (#3) — that is the failing statement.
+    # (state_change, cancel_request); the running drain's single
+    # batch writes one - that is the failing statement.
     state = _FailingState(fail_at=3)
     pool = _FailingPool(module_pg_pool, state)
     with pytest.raises(RuntimeError, match="injected statement failure"):

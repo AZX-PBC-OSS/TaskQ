@@ -34,7 +34,7 @@ def _make_deps(settings: WorkerSettings) -> WorkerDeps:
     )
 
 
-# ── redis_configured reports truthfully ────────────────────────────
+# ── redis_configured reports the real state ────────────────────────
 
 
 async def test_redis_configured_false_when_no_redis_url() -> None:

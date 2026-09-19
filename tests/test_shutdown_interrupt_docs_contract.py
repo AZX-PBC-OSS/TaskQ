@@ -2,10 +2,10 @@
 
 The operator-facing surfaces named here carry the behaviour contract for
 what a deploy does to in-flight work: release (interrupt) it back to the
-fleet with the attempt refunded, never terminalise it, and never lose an
-operator cancel inside one. A doc edit that drifts from the shipped
-behaviour fails these pins — the pattern the docs-contract suite
-established (see tests/test_outbox_exemption_docs_contract.py).
+fleet with the spent attempt standing, never terminalise it, and never
+lose an operator cancel inside one. A doc edit that drifts from the
+shipped behaviour fails these pins (the pattern the docs-contract suite
+established; see tests/test_outbox_exemption_docs_contract.py).
 
 Surfaces pinned: ``docs/guides/cancellation.md``, ``docs/guides/ops.md``,
 ``docs/guides/deployment.md``, ``docs/guides/jobs-clients.md`` (the four
@@ -29,7 +29,7 @@ def test_cancellation_guide_teaches_shutdown_origin_and_the_no_refund() -> None:
     text = _normalized(_DOCS / "guides" / "cancellation.md")
     assert "cancel_origin" in text and "CancelOrigin.SHUTDOWN" in text, (
         "cancellation.md must document ctx.cancel_origin so an actor can tell "
-        "a deploy (checkpoint and raise — the fleet re-runs the attempt) from "
+        "a deploy (checkpoint and raise - the fleet re-runs the attempt) from "
         "an operator cancel (the partial result returned is the one kept)"
     )
     assert "released" in text and "not refunded" in text, (
@@ -45,7 +45,7 @@ def test_cancellation_guide_teaches_shutdown_origin_and_the_no_refund() -> None:
 def test_ops_guide_abandoned_definition_excludes_shutdown() -> None:
     text = _normalized(_DOCS / "guides" / "ops.md")
     assert "shutdown never produces it either" in text, (
-        "ops.md's `abandoned` definition must say shutdown never produces it — "
+        "ops.md's `abandoned` definition must say shutdown never produces it - "
         "a deploy releases (interrupts) the job back to the fleet instead"
     )
     assert "interrupt_count" in text, (
@@ -59,7 +59,7 @@ def test_ops_guide_abandoned_definition_excludes_shutdown() -> None:
 def test_deployment_guide_names_the_release_phase_and_write() -> None:
     text = _normalized(_DOCS / "guides" / "deployment.md")
     assert "FORCING → RELEASING" in text, (
-        "deployment.md's shutdown-phase list must name the RELEASING phase — "
+        "deployment.md's shutdown-phase list must name the RELEASING phase - "
         "the phase no longer abandons anything"
     )
     assert "ABANDONING" not in text, (
@@ -74,7 +74,7 @@ def test_deployment_guide_names_the_release_phase_and_write() -> None:
 def test_jobs_clients_guide_corrects_the_abandoned_definition() -> None:
     text = _normalized(_DOCS / "guides" / "jobs-clients.md")
     # The pre-existing definition described `crashed` under the `abandoned`
-    # label — the broken window this design's docs pass corrects.
+    # label - the broken window this design's docs pass corrects.
     assert "Heartbeat expired and no worker reclaimed" not in text, (
         "jobs-clients.md's `abandoned` definition described the crashed shape; "
         "`abandoned` is the operator-cancel terminal (escalation past the "
@@ -144,5 +144,5 @@ def test_phase_labels_in_architecture_and_cli_tables() -> None:
         )
         assert "ABANDONING" not in text, (
             f"{name} still names ABANDONING; the phase is RELEASING (value 4 "
-            "unchanged — /health JSON and the CLI keep their numbers)"
+            "unchanged - /health JSON and the CLI keep their numbers)"
         )

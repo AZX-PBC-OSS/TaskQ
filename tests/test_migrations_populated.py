@@ -1,6 +1,6 @@
 """Bundled migrations applied STEPWISE onto a POPULATED database.
 
-Owner requirement: every bundled migration — present AND future — must run
+Owner requirement: every bundled migration - present AND future - must run
 cleanly as an end user against a database that already holds data. The
 stepwise test below applies migrations one at a time (``max_steps=1``) and
 seeds a full slice of realistic rows after each step, so migration N+1
@@ -10,18 +10,18 @@ key in the assertion message.
 
 Two tiers live here:
 
-* ``test_seed_data_is_deterministic`` — pure (no PG) contract for the row
+* ``test_seed_data_is_deterministic`` - pure (no PG) contract for the row
   generator: identical output across calls, globally-unique idempotency
   keys, exact status distribution, and no singleton-metadata on
   active-status rows (which ``jobs_singleton_uniq`` would reject).
-* ``test_bundled_migrations_apply_stepwise_onto_populated_database`` — the
+* ``test_bundled_migrations_apply_stepwise_onto_populated_database`` - the
   integration harness: stepwise apply + per-step invariants + per-step
   seeding, then a final integrity pass and a functional smoke through the
   REAL backend API, ending with the end-user CLI contract (``migrate up``
   on a fully-migrated populated DB is a safe no-op).
 
 Runtime budget: the module must stay under ~45s (CI runs ``pytest -n 2``).
-Tune ONLY via the ``SEED_*`` volume knobs below — halve ``SEED_JOBS``
+Tune ONLY via the ``SEED_*`` volume knobs below - halve ``SEED_JOBS``
 first, trim ``SEED_EVENTS_PER_JOB`` second.
 """
 
@@ -141,7 +141,7 @@ def _job_row(
 ) -> dict[str, object]:
     """One canonical ``jobs`` row (every column any schema version knows).
 
-    ``idempotency_scope`` is included unconditionally — the seeder's runtime
+    ``idempotency_scope`` is included unconditionally - the seeder's runtime
     column intersection drops it against pre-``01.00.03_01:pre`` schemas.
     """
     terminal = status in _TERMINAL_STATUSES
@@ -167,7 +167,7 @@ def _job_row(
     if terminal and i % 97 == 0:
         # Singleton metadata is legal ONLY on terminal rows (the partial
         # unique index covers active statuses); the generator never puts it
-        # on active rows — pinned by test_seed_data_is_deterministic.
+        # on active rows - pinned by test_seed_data_is_deterministic.
         metadata["singleton"] = True
 
     # scheduled rows are genuinely future-due; pending rows are long since due
@@ -234,7 +234,7 @@ def _job_row(
 
 @dataclass(frozen=True, slots=True)
 class _SliceSeed:
-    """All rows one slice contributes, keyed by table. Pure data — no PG."""
+    """All rows one slice contributes, keyed by table. Pure data - no PG."""
 
     workers: list[dict[str, object]]
     jobs: list[dict[str, object]]
@@ -252,7 +252,7 @@ def _generate_slice(slice_id: int, *, now: datetime) -> _SliceSeed:
     """Deterministically generate one slice of seed rows.
 
     Pure: same ``(slice_id, now)`` in → identical rows out. No unseeded RNG
-    anywhere — ids are uuid5 over a fixed namespace, keys are counter-based,
+    anywhere - ids are uuid5 over a fixed namespace, keys are counter-based,
     timestamps spread over the trailing ``_SPREAD_DAYS`` days relative to
     ``now``.
     """
@@ -513,7 +513,7 @@ _RESERVATION_COLUMNS: tuple[str, ...] = (
     "lease_expires_at",
 )
 
-# asyncpg's binary COPY encodes jsonb from str — dict values must be
+# asyncpg's binary COPY encodes jsonb from str - dict values must be
 # serialized (dumps_str) before they go into a record.
 _JSONB_COLUMNS: dict[str, frozenset[str]] = {
     "workers": frozenset({"metadata"}),
@@ -549,7 +549,7 @@ async def _seed_slice(
     The runtime column intersection (live ``information_schema.columns`` ∩
     canonical superset) is deliberate: when a future migration adds a
     column, the seeder adapts and keeps loading; when a future migration
-    adds a NOT NULL-without-default column the seeder FAILS — and that
+    adds a NOT NULL-without-default column the seeder FAILS - and that
     failure is the CI alarm, because the harness's job is precisely to
     surface migrations that cannot run against a populated database.
 
@@ -585,7 +585,7 @@ async def _seed_slice(
             for row in rows
         ]
         # The tr_notify_job_insert trigger fires pg_notify per COPY'd
-        # pending row; with no listener Postgres discards them — harmless.
+        # pending row; with no listener Postgres discards them - harmless.
         await conn.copy_records_to_table(
             table, records=records, columns=columns, schema_name=schema
         )
@@ -631,7 +631,7 @@ async def _assert_table_counts(
 
 # ── Migration-specific checks ─────────────────────────────────────────────
 # Generic per-step invariants (runner order, no INVALID indexes, ledger
-# use_transaction) apply to EVERY discovered key — unknown keys get ONLY
+# use_transaction) apply to EVERY discovered key - unknown keys get ONLY
 # those, so future migrations (including future CIC index rebuilds)
 # automatically join this harness the day they land. Entries below are for
 # migrations whose populated-DB effect deserves a sharper assertion.
@@ -645,7 +645,7 @@ async def _noop_check(conn: asyncpg.Connection, schema: str) -> None:
 
 async def _check_idempotency_scope_post(conn: asyncpg.Connection, schema: str) -> None:
     """After ``01.00.03_01:post``: the legacy global-unique index is GONE
-    and the composite scope-key index is VALID — with seeded idempotency
+    and the composite scope-key index is VALID - with seeded idempotency
     keys present in the table while the swap happened."""
     assert await _index_validity(conn, schema, "jobs_idempotency_key_uniq") is None, (
         "01.00.03_01:post must drop the legacy single-column idempotency index"
@@ -658,7 +658,7 @@ async def _check_idempotency_scope_post(conn: asyncpg.Connection, schema: str) -
 async def _check_keyed_row_fleet_reclaim_pre(conn: asyncpg.Connection, schema: str) -> None:
     """After ``01.00.10_02:pre``: both keyed-row tables carry the
     fleet-reclaim marking columns and their window partial indexes are
-    VALID, and every PRE-EXISTING row reads keyed=false — the migration
+    VALID, and every PRE-EXISTING row reads keyed=false - the migration
     must never mark a live fleet's rows fleet-reclaimable on arrival
     (a static bucket's rows deleted by the new leader sweep would leave
     a permanently denying limiter)."""
@@ -666,7 +666,7 @@ async def _check_keyed_row_fleet_reclaim_pre(conn: asyncpg.Connection, schema: s
         marked = await conn.fetchval(f'SELECT count(*) FROM "{schema}"."{table}" WHERE keyed')
         assert marked == 0, (
             f"{table}: pre-existing rows must read keyed=false after "
-            "01.00.10_02:pre — the migration adds the mark for FUTURE "
+            "01.00.10_02:pre - the migration adds the mark for FUTURE "
             "keyed materialisations only, never for rows already in the "
             "fleet (whose lifecycle origin the migration cannot know)"
         )
@@ -705,7 +705,7 @@ def test_seed_data_is_deterministic() -> None:
     assert [r["idempotency_key"] for r in first.jobs] == [r["idempotency_key"] for r in second.jobs]
     assert first == second
 
-    # Idempotency keys must be globally unique ACROSS slices — the old
+    # Idempotency keys must be globally unique ACROSS slices - the old
     # single-column unique index spans every seeded generation until the
     # :post migration drops it.
     keys = [
@@ -722,7 +722,7 @@ def test_seed_data_is_deterministic() -> None:
     assert counts == {status: SEED_JOBS * weight // 100 for status, weight in _STATUS_MIX}
 
     # jobs_singleton_uniq forbids active-status rows carrying singleton
-    # metadata — the seeder must never produce one.
+    # metadata - the seeder must never produce one.
     for row in first.jobs:
         if str(row["status"]) in _ACTIVE_STATUSES:
             metadata = row["metadata"]
@@ -747,7 +747,7 @@ def test_bundled_migrations_apply_stepwise_onto_populated_database(
     contract. CliRunner runs in-process, so the monkeypatched env vars
     apply to the real CLI; it is synchronous, so this test drives async
     phases through asyncio.run and must itself stay sync (asyncpg
-    connections are bound to the loop that created them — one asyncio.run
+    connections are bound to the loop that created them - one asyncio.run
     per phase, like conftest's _pg_admin and tests/test_migrate_no_transaction.py).
     """
     schema = f"mig_pop_{new_base62()}".lower()
@@ -761,7 +761,7 @@ def test_bundled_migrations_apply_stepwise_onto_populated_database(
                 applied = await migrate_mod.apply_pending(conn, schema=schema, max_steps=1)
                 assert [m.key for m in applied] == [migration.key], (
                     f"step {slice_id}: expected exactly {migration.key!r} to apply, got "
-                    f"{[m.key for m in applied]} — runner order drifted or the "
+                    f"{[m.key for m in applied]} - runner order drifted or the "
                     "migration failed against a populated database"
                 )
                 assert await migrate_mod.list_invalid_indexes(conn, schema) == [], (
@@ -832,7 +832,7 @@ def test_bundled_migrations_apply_stepwise_onto_populated_database(
         The real API is used ONLY here, against the final schema: the
         current enqueue SQL inserts ``idempotency_scope``, which raises
         UndefinedColumnError against pre-``01.00.03_01:pre`` schemas, and
-        ``job_events`` has no public append API at all — intermediate
+        ``job_events`` has no public append API at all - intermediate
         schemas are therefore seeded raw (schema-shaped), never via enqueue.
         """
         settings = WorkerSettings.load_from_dict(make_integration_settings_dict(pg_dsn))
@@ -867,7 +867,7 @@ def test_bundled_migrations_apply_stepwise_onto_populated_database(
                 )
             )
             assert scoped.id != row.id, (
-                "the SAME key under a SECOND scope must insert a second row — only legal "
+                "the SAME key under a SECOND scope must insert a second row - only legal "
                 "after 01.00.03_01:post dropped the legacy global-unique index; the "
                 "sharpest end-to-end proof the deploy sequence landed on populated data"
             )
@@ -924,15 +924,15 @@ async def test_assignment_routed_backfill_marks_exactly_the_repend_population(
 
     The proxy probed ``pending`` rows with ``started_at IS NOT NULL``, and a
     re-pended row still sleeping off a deferral (``scheduled`` with
-    ``started_at`` set — a snooze, a retry-after, or a reclaim with budget
+    ``started_at`` set - a snooze, a retry-after, or a reclaim with budget
     left) joined that probe the moment the promotion sweep flipped it to
     pending. Both halves of that population must read
     ``assignment_routed = true`` after the upgrade or they route by their
     stale queue label and strand on a retired source queue; the promotion
     sweep itself writes no marker (it re-dates a row, it does not learn its
     origin), so the backfill is the only place the sleeping half can get
-    the flag. Producer-placed rows — including future-dated scheduled
-    enqueues — always have ``started_at IS NULL`` and must stay false, as
+    the flag. Producer-placed rows - including future-dated scheduled
+    enqueues - always have ``started_at IS NULL`` and must stay false, as
     must rows the arm can never visit (running, terminal).
     """
     schema = f"mig_bf_{new_base62()}".lower()
@@ -992,7 +992,7 @@ async def test_assignment_routed_backfill_marks_exactly_the_repend_population(
             )
             assert actual is expected, (
                 f"{name} (status={status}): assignment_routed must be {expected} after the "
-                f"backfill, found {actual} — the backfill's population is exactly "
+                f"backfill, found {actual} - the backfill's population is exactly "
                 "dispatchable-or-promotable rows claimed at least once"
             )
     finally:

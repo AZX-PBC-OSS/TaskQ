@@ -2,14 +2,14 @@
 
 TaskQ instruments itself with OpenTelemetry (vendor-neutral) and structured
 logging (structlog). No vendor SDK is bundled. You export data to any
-OTLP-compatible backend — Jaeger, Grafana Tempo, Honeycomb, Datadog, Sentry,
-Azure Monitor, PostHog — by pointing the standard OTel environment variables
+OTLP-compatible backend (Jaeger, Grafana Tempo, Honeycomb, Datadog, Sentry,
+Azure Monitor, PostHog) by pointing the standard OTel environment variables
 at your collector or agent.
 
 ## Contents
 
-1. [OpenTelemetry — setup](#1-opentelemetry-setup)
-2. [Traces — span hierarchy](#2-traces-span-hierarchy)
+1. [OpenTelemetry: setup](#1-opentelemetry-setup)
+2. [Traces: span hierarchy](#2-traces-span-hierarchy)
 3. [Metrics reference](#3-metrics-reference)
 4. [Structured logging](#4-structured-logging)
 5. [Log format examples](#5-log-format-examples)
@@ -20,7 +20,7 @@ at your collector or agent.
 
 ---
 
-## 1. OpenTelemetry — setup
+## 1. OpenTelemetry: setup
 
 ### Prerequisites
 
@@ -46,7 +46,7 @@ TaskGroup opens. No application code needs to call this directly.
 
 TaskQ emits through the OpenTelemetry **API**; the SDK and its exporters
 are what turn that into data at a backend. Configure them with the standard
-OTel environment variables — TaskQ does not override them:
+OTel environment variables; TaskQ does not override them:
 
 | Variable | Example |
 |---|---|
@@ -58,8 +58,8 @@ OTel environment variables — TaskQ does not override them:
 
 **Under `taskq worker` the variables are enough.** With the `[otel]` extra
 installed, the CLI installs SDK tracer and meter providers from them at
-startup — through the SDK's own configurator, the same machinery
-`opentelemetry-instrument` uses — whenever any of
+startup through the SDK's own configurator (the same machinery
+`opentelemetry-instrument` uses) whenever any of
 `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_TRACES_EXPORTER`,
 `OTEL_METRICS_EXPORTER` or `OTEL_LOGS_EXPORTER` is set. A bare endpoint
 selects `otlp` for traces and metrics (the specification's default; logs
@@ -74,10 +74,10 @@ and `source=none` when nothing asked for an exporter. Two other startup
 lines matter:
 
 - `otel-exporter-unavailable` (WARNING, with `extra=otel` or
-  `extra=prometheus`) — the variables are set but the package that
+  `extra=prometheus`); the variables are set but the package that
   provides the exporter is not installed. Nothing is exported; install the
   named extra.
-- `otel-exporter-preconfigured` (INFO) — a provider was already installed
+- `otel-exporter-preconfigured` (INFO): a provider was already installed
   before the worker started (an embedding application, a vendor distro
   such as `configure_azure_monitor(...)`, or `opentelemetry-instrument`).
   The worker never replaces it.
@@ -86,7 +86,7 @@ An exporter the SDK cannot build (a misspelled name, a protocol no
 installed exporter speaks) fails startup with the reason, so the mistake
 is visible at deploy time rather than as a pipeline that looks configured
 and exports nothing. `OTEL_SDK_DISABLED=true` is honoured, and
-`TASKQ_OTEL_AUTOCONFIGURE=false` opts out entirely — set it when your
+`TASKQ_OTEL_AUTOCONFIGURE=false` opts out entirely: set it when your
 application configures the SDK itself.
 
 The alternative is the SDK's own launcher, which reads the identical
@@ -94,7 +94,7 @@ variables: `opentelemetry-instrument taskq worker --actors ...` (the
 `[otel]` extra installs it). The worker detects the providers it set and
 changes nothing. Embedding applications that run `worker_main` without
 the CLI call `taskq.obs.configure_exporters(settings)` at process start,
-or configure the SDK directly — either way, before the worker records
+or configure the SDK directly; either way, before the worker records
 anything, because measurements taken before a provider exists are dropped,
 not replayed.
 
@@ -176,7 +176,7 @@ spec work without renaming.
 
 ---
 
-## 2. Traces — span hierarchy
+## 2. Traces: span hierarchy
 
 A complete job lifecycle produces four spans:
 
@@ -210,7 +210,7 @@ Emitted by `JobsClient.enqueue` and `SubJobEnqueuer.enqueue`.
 The enqueue span's `trace_id` and `span_id` are stored in the `jobs` table row
 (`trace_id`, `span_id` columns). At dispatch time the worker reads them and
 attaches them to the consumer span as a **span link**
-(`links=[Link(...)]`) — it does not parent the consumer span to them. The
+(`links=[Link(...)]`); it does not parent the consumer span to them. The
 consumer span therefore starts a **new root trace**, and a backend such as
 Application Insights shows enqueue and execution under two unrelated
 `operation_Id` values, joined only by the link. Parenting instead of linking is
@@ -324,7 +324,7 @@ not just the route: at startup the process installs a
 `PrometheusMetricReader`-backed `MeterProvider` as the process-global OTel
 provider when nothing configured one, and logs
 `prometheus-metrics-provider-wired`. The wiring happens at startup because
-OTel drops measurements recorded before a provider exists — a provider
+OTel drops measurements recorded before a provider exists; a provider
 installed at first scrape would serve an empty page forever. If you saw a
 200 response with valid Prometheus text but zero `taskq_*` series, that is
 the failure this wiring exists to remove; check the startup log lines below
@@ -333,12 +333,12 @@ before anything else.
 **If you configure your own provider, TaskQ never replaces it.** Two shapes:
 
 - Your `MeterProvider` includes a `PrometheusMetricReader` (bound to the
-  default `prometheus_client` registry — the one the endpoint scrapes): the
+  default `prometheus_client` registry, the one the endpoint scrapes): the
   router detects the bridge and changes nothing.
 - Your provider is OTLP-only (no `PrometheusMetricReader`): the route stays
   mounted, the scrape serves zero `taskq_*` series, and startup logs a
   `prometheus-metrics-reader-missing` WARNING. The shipped `rules.yaml`
-  alert set references those series and can never fire in this state — add
+  alert set references those series and can never fire in this state; add
   the reader yourself:
 
   ```python
@@ -356,7 +356,7 @@ With `TASKQ_OTEL_ENABLED=false` no provider is installed and the mount logs
 configuration statement, not a defect. One edge remains:
 `prometheus-metrics-provider-blocked` (WARNING) means a *non-SDK* global
 provider was set before the router was created, so OTel's set-once guard made
-the constructed bridge inert — set the provider once, at process start, with
+the constructed bridge inert: set the provider once, at process start, with
 a `PrometheusMetricReader` attached.
 
 **Metrics are per-process.** A scrape of a process shows what *that process*
@@ -364,7 +364,7 @@ recorded. The `taskq ui serve` process records only its own activity
 (admin-triggered enqueues and cancels), so leader-sampled gauges
 (`taskq.jobs.by_status`, `taskq.jobs.stranded`, `taskq.queue.depth`, the
 sweep gauges) and worker-path counters (dispatch duration, consumed
-messages, attempt failures) are **not in its scrape** — they live in the
+messages, attempt failures) are **not in its scrape**: they live in the
 worker processes. Scrape the workers for them, every pod: series are
 per-process, so a scrape of one pod says nothing about another.
 
@@ -382,7 +382,7 @@ TASKQ_METRICS_PORT=9464 taskq worker --actors myapp.actors:registry
 
 The startup line reads `otel-exporter-configured metrics=prometheus
 source=prometheus prometheus_port=9464`; with an OTLP endpoint set as well,
-`metrics=otlp,prometheus source=env,prometheus` — both exporters share one
+`metrics=otlp,prometheus source=env,prometheus`: both exporters share one
 provider. `OTEL_METRICS_EXPORTER=prometheus` with
 `OTEL_EXPORTER_PROMETHEUS_PORT`/`_HOST` is the SDK's own spelling of the
 same thing and works identically; `TASKQ_METRICS_PORT` is authoritative
@@ -393,14 +393,14 @@ installed by the embedding application, the worker wires nothing and the
 port stays unbound behind an `otel-exporter-scrape-not-served` WARNING.
 
 > **The scrape endpoint is unauthenticated.** It exposes actor names,
-> queue names, and exception class names — never payloads or credentials,
+> queue names, and exception class names; never payloads or credentials,
 > but real operational metadata. The listener binds the health host
 > (`TASKQ_HEALTH_HOST`, `0.0.0.0` by default): keep it on the pod network,
 > behind a network policy or an authenticating proxy if your cluster is
 > shared.
 
 - The worker's health socket separately serves three hand-rendered process
-  gauges — `taskq_active_jobs`, `taskq_is_leader`, `taskq_shutdown_phase` —
+  gauges (`taskq_active_jobs`, `taskq_is_leader`, `taskq_shutdown_phase`)
   via `taskq health metrics` (or `GET /metrics` on the optional TCP health
   listener). Those three are independent of OTel and need no extra; the
   OTel twins `taskq.worker.active_jobs` and `taskq.worker.max_concurrency`
@@ -416,7 +416,7 @@ port stays unbound behind an `otel-exporter-scrape-not-served` WARNING.
 ### A saturated rate limit is not a promotion stall
 
 A growing `scheduled` count beside a flat `pending` count on
-`taskq.jobs.by_status` is the promotion-stall signature — but a saturated
+`taskq.jobs.by_status` is the promotion-stall signature, but a saturated
 rate limit produces exactly that shape: denied jobs are rescheduled
 (`scheduled` with a future `scheduled_at`) without ever becoming `pending`.
 The two need different responses (unstick the promotion sweep vs. add
@@ -425,14 +425,14 @@ Discriminators:
 
 - **Denial counters move only under rate limiting.** Watch
   `rate(taskq_ratelimit_denials_total[5m])` and
-  `rate(taskq_reservation_denials_total[5m])` — a saturated bucket drives
+  `rate(taskq_reservation_denials_total[5m])`: a saturated bucket drives
   these; a promotion stall does not. The per-job record is the aggregated
   `rate_limit_blocked_count` column on `jobs` (a denial writes no
   `job_events` row; see the tip under Counters below).
 - **The stall alert keys on the sweep, not the backlog.** The shipped
   `TaskQPromotionStalled` rule fires on
   `taskq_maintenance_leader_sweep_last_success_seconds{sweep_name="scheduled_to_pending"}`
-  going stale — promotion not *running* — which a healthy worker deferring
+  going stale: promotion not *running*, which a healthy worker deferring
   rate-limited jobs never trips. Backlog shape rising while that sweep's
   last-success timestamp keeps advancing is saturation, not a stall.
 
@@ -446,45 +446,45 @@ you *which* jobs absorbed them.
 | Metric name | Unit | Attributes | Description | Conditional? |
 |---|---|---|---|---|
 | `messaging.client.published.messages` | `1` | `actor`, `queue` | Jobs successfully enqueued. | yes |
-| `messaging.client.consumed.messages` | `1` | `actor`, `queue`, `outcome` | Attempts consumed. `outcome` is one of `succeeded`, `failed` (terminal: a non-retryable class or the retry budget exhausted), `cancelled`, `scheduled` (the row went back to the queue — a retryable failure, a `Snooze`/`RetryAfter`, or an admission denial). Abandonment is never a consumer outcome; it has its own counter below. `taskq.jobs.attempt_failures` separates the failure share of `scheduled`. | yes |
-| `taskq.jobs.attempt_failures` | `1` | `actor`, `error_type`, `retryable` | Attempts that ended in an actor failure, recorded at the failure handler once per handled exception. `retryable="true"` — the classifier rescheduled the attempt for another try (Dramatiq's `message_retries_total`); `"false"` — the failure is terminal. `error_type` is the exception class name. `TaskQRetryRateHigh` reads the `retryable="true"` share. | yes |
-| `taskq.jobs.timeouts` | `1` | `actor`, `kind` | Jobs that exceeded a time budget. `kind="start_to_close"` — the per-attempt budget, counted at the timeout handler once per attempt whether or not it is retried; `kind="schedule_to_close"` — the whole-job deadline, counted at the deadline sweep and at the handler arms where the backend refused a retry, snooze or requeue with `DeadlineExceeded`. `taskq.deadline_exceeded_sweep.jobs_failed` remains the sweep's own (unconditional) count. | yes |
+| `messaging.client.consumed.messages` | `1` | `actor`, `queue`, `outcome` | Attempts consumed. `outcome` is one of `succeeded`, `failed` (terminal: a non-retryable class or the retry budget exhausted), `cancelled`, `scheduled` (the row went back to the queue: a retryable failure, a `Snooze`/`RetryAfter`, or an admission denial). Abandonment is never a consumer outcome; it has its own counter below. `taskq.jobs.attempt_failures` separates the failure share of `scheduled`. | yes |
+| `taskq.jobs.attempt_failures` | `1` | `actor`, `error_type`, `retryable` | Attempts that ended in an actor failure, recorded at the failure handler once per handled exception. `retryable="true"`: the classifier rescheduled the attempt for another try (Dramatiq's `message_retries_total`); `"false"`: the failure is terminal. `error_type` is the exception class name. `TaskQRetryRateHigh` reads the `retryable="true"` share. | yes |
+| `taskq.jobs.timeouts` | `1` | `actor`, `kind` | Jobs that exceeded a time budget. `kind="start_to_close"`: the per-attempt budget, counted at the timeout handler once per attempt whether or not it is retried; `kind="schedule_to_close"`: the whole-job deadline, counted at the deadline sweep and at the handler arms where the backend refused a retry, snooze or requeue with `DeadlineExceeded`. `taskq.deadline_exceeded_sweep.jobs_failed` remains the sweep's own (unconditional) count. | yes |
 | `taskq.jobs.abandoned` | `1` | `actor` | Jobs abandoned: an operator cancel outlasted both grace periods and the running attempt was taken from the actor. Recorded by `mark_abandoned` itself on both backends; a shutdown interrupts instead and never produces it. `TaskQAbandonedJobs` reads this series. | yes |
-| `taskq.cancellation.requested` | — | — | Incremented once per `JobsClient.cancel()` call regardless of outcome. | unconditional |
-| `taskq.cancellation.phase_transitions` | `1` | — | Cancel phase transitions (0→1, 1→2, etc.). | yes |
-| `taskq.backpressure.errors` | — | `actor`, `kind` | Synchronous refusals raised at enqueue. `kind` is the bounded enum `max_pending` / `max_pending_lock_timeout` (capacity admission) or `unique_for_lock_timeout` / `idempotency_lock_timeout` (identity-serialization refusals, counted beside their typed errors — not capacity signals, so alerting keyed on the capacity kinds is not tripped by them). | unconditional |
+| `taskq.cancellation.requested` | n/a | n/a | Incremented once per `JobsClient.cancel()` call regardless of outcome. | unconditional |
+| `taskq.cancellation.phase_transitions` | `1` | n/a | Cancel phase transitions (0→1, 1→2, etc.). | yes |
+| `taskq.backpressure.errors` | n/a | `actor`, `kind` | Synchronous refusals raised at enqueue. `kind` is the bounded enum `max_pending` / `max_pending_lock_timeout` (capacity admission) or `unique_for_lock_timeout` / `idempotency_lock_timeout` (identity-serialization refusals, counted beside their typed errors, not capacity signals, so alerting keyed on the capacity kinds is not tripped by them). | unconditional |
 | `taskq.backpressure.capacity_refresh_failures` | `1` | `degraded`, `error_type` | Failed refreshes of the enqueue-side `actor_config` capacity cache. `degraded` is `"stale_snapshot"` (a previous snapshot is still being served) or `"no_snapshot"` (the cache never loaded and every enqueue is enforcing the `@actor` literal). `error_type` is the exception class name of the failed read. | unconditional |
 | `taskq.deadline_exceeded_sweep.jobs_failed` | `1` | `actor` | Jobs failed by the deadline-exceeded sweep. | unconditional |
-| `taskq.jobs.reclaimed` | `1` | `actor`, `disposition` | Running jobs reclaimed by the expired-locks sweep (the holder broke its liveness promise — lease expiry or heartbeat timeout). `disposition` is the code-fixed enum `repended` (attempts remained, the row went back to pending on its retry curve), `crashed` (budget exhausted, terminal), `cancelled` (a cancel request was in-flight when the holder died — the honest terminal label), plus `unknown` — the fallback a post-update status no CASE branch writes counts under, so map/code drift shows up as its own series instead of rolling the reclaim batch back. The per-actor crash split beside the sweep-name total `taskq.maintenance_leader.sweep_rows`; recorded once per (actor, disposition) pair after the sweep's transaction, by the Postgres sweep and the in-memory twin alike. | unconditional |
-| `taskq.dispatch.failures` | `1` | `queue`, `error_type` | Dispatch rounds that raised before returning a claim set. A producer failing every round is otherwise silent on every dispatch signal — indistinguishable from an idle queue. `error_type` is the exception class name, separating a self-healing failure class (a lock timeout, a connection reset) from a permanent one (an auth failure, schema drift). | yes |
+| `taskq.jobs.reclaimed` | `1` | `actor`, `disposition` | Running jobs reclaimed by the expired-locks sweep (the holder broke its liveness promise: lease expiry or heartbeat timeout). `disposition` is the code-fixed enum `repended` (attempts remained, the row went back to pending on its retry curve), `crashed` (budget exhausted, terminal), `cancelled` (a cancel request was in-flight when the holder died: the honest terminal label), plus `unknown`, the fallback a post-update status no CASE branch writes counts under, so map/code drift shows up as its own series instead of rolling the reclaim batch back. The per-actor crash split beside the sweep-name total `taskq.maintenance_leader.sweep_rows`; recorded once per (actor, disposition) pair after the sweep's transaction, by the Postgres sweep and the in-memory twin alike. | unconditional |
+| `taskq.dispatch.failures` | `1` | `queue`, `error_type` | Dispatch rounds that raised before returning a claim set. A producer failing every round is otherwise silent on every dispatch signal: indistinguishable from an idle queue. `error_type` is the exception class name, separating a self-healing failure class (a lock timeout, a connection reset) from a permanent one (an auth failure, schema drift). | yes |
 | `taskq.enqueue.dedups` | `1` | `dedup_reason` | Enqueue dedup hits (an enqueue returned an existing row instead of writing one). `dedup_reason` is `unique_for` or `idempotency_key`. The per-hit log lines are budget-bounded at batch scale; this counter is the rate signal that survives the bound. | yes |
-| `taskq.heartbeat.misses` | `1` | — | Heartbeat renewal failures (a tick whose renewal statement failed on a transient Postgres error). A miss is this counter plus the `heartbeat-tick-failure` log line only: no `job_events` row is written for it, although the schema's column comment lists a `heartbeat_miss` kind — the kinds actually written are `state_change`, `cancel_request` and `progress`. | yes |
-| `taskq.worker.slot_pool.acquire_failures` | `1` | `error_type` | Bounded acquires from the per-slot transaction pool that failed (timeout or connection error) — infrastructure, not a job outcome: the claimed job is left for lock-lease reclaim. `error_type` is the exception class name; the per-occurrence job id and full error stay in the `slot-pool-acquire-failed` log event. | yes |
-| `taskq.leader.election_attempts` | `1` | — | Leader election attempts. | yes |
-| `taskq.leader.election_failures` | `1` | — | Election attempts that did not win the lock. | yes |
+| `taskq.heartbeat.misses` | `1` | n/a | Heartbeat renewal failures (a tick whose renewal statement failed on a transient Postgres error). A miss is this counter plus the `heartbeat-tick-failure` log line only: no `job_events` row is written for it, although the schema's column comment lists a `heartbeat_miss` kind: the kinds actually written are `state_change`, `cancel_request` and `progress`. | yes |
+| `taskq.worker.slot_pool.acquire_failures` | `1` | `error_type` | Bounded acquires from the per-slot transaction pool that failed (timeout or connection error); infrastructure, not a job outcome: the claimed job is left for lock-lease reclaim. `error_type` is the exception class name; the per-occurrence job id and full error stay in the `slot-pool-acquire-failed` log event. | yes |
+| `taskq.leader.election_attempts` | `1` | n/a | Leader election attempts. | yes |
+| `taskq.leader.election_failures` | `1` | n/a | Election attempts that did not win the lock. | yes |
 | `taskq.error_reporter.failures` | `1` | `reporter_type` | `ErrorReporter` invocation failures. | yes |
 | `taskq.progress.publish_failures` | `1` | `channel`, `error_type` | Redis publish failures for progress fanout. `channel` is `per_job` or `global`; `error_type` is the exception class name. | yes |
 | `taskq.ratelimit.refund_failures` | `1` | `bucket`, `backend`, `error_type` | Rate-limit refund/rollback failures. `error_type` is the exception class name. | yes |
 | `taskq.ratelimit.denials` | `1` | `backend` | Rate-limit decisions that denied admission. Bucket names are not a dimension (caller-controlled cardinality). | yes |
-| `taskq.ratelimit.acquire_dependency_failures` | `1` | `error_type` | Rate-limit acquires that failed on a store dependency (Redis or the PG fallback) and were failed closed as denials — an availability signal, distinct from `taskq.reservation.denials` (admission decisions). Read the two together before scaling a bucket; `error_type` is the exception class name. | yes |
+| `taskq.ratelimit.acquire_dependency_failures` | `1` | `error_type` | Rate-limit acquires that failed on a store dependency (Redis or the PG fallback) and were failed closed as denials: an availability signal, distinct from `taskq.reservation.denials` (admission decisions). Read the two together before scaling a bucket; `error_type` is the exception class name. | yes |
 | `taskq.reservation.denials` | `1` | `source` | Reservation/rate-limit admission denials surfaced to a worker handler. `source` is `reservation` or `rate_limit`. Bucket names are not a dimension. | yes |
-| `taskq.sub_enqueue.failures` | `1` | `actor`, `error_type` | Sub-enqueue flush failures after the parent job committed — each counted unit is one child job that was reported as enqueued but was not. `actor` is the parent's actor; `error_type` is the exception class name. | yes |
-| `taskq.worker.loop_stall_attributions` | `1` | `actor`, `kind` | Event-loop scheduling stalls attributed to the synchronous work holding the interpreter while the loop could not schedule, recorded by the lag watchdog's daemon thread at the warn and trip tiers. `kind="blocking_call"` — a synchronous call that released the GIL (I/O wait, a subprocess); `kind="gil_held"` — synchronous work that held it (a C extension without GIL release, or a hot pure-Python loop). `actor` names the registered actor whose frame sat under the stall, or the `_other_` overflow when no registered actor appeared in the sampled stack. See [The watchdog family](#the-watchdog-family). | yes |
+| `taskq.sub_enqueue.failures` | `1` | `actor`, `error_type` | Sub-enqueue flush failures after the parent job committed: each counted unit is one child job that was reported as enqueued but was not. `actor` is the parent's actor; `error_type` is the exception class name. | yes |
+| `taskq.worker.loop_stall_attributions` | `1` | `actor`, `kind` | Event-loop scheduling stalls attributed to the synchronous work holding the interpreter while the loop could not schedule, recorded by the lag watchdog's daemon thread at the warn and trip tiers. `kind="blocking_call"`: a synchronous call that released the GIL (I/O wait, a subprocess); `kind="gil_held"`: synchronous work that held it (a C extension without GIL release, or a hot pure-Python loop). `actor` names the registered actor whose frame sat under the stall, or the `_other_` overflow when no registered actor appeared in the sampled stack. See [The watchdog family](#the-watchdog-family). | yes |
 | `taskq.pruned.jobs` | `1` | `actor`, `status` | Jobs moved from `jobs` to `jobs_archive` by the prune sweep (Sweep 5). | yes |
 | `taskq.archived.jobs` | `1` | `status` | Same prune-sweep event, status-only view (no actor dimension). | yes |
 | `taskq.expired_archive.jobs` | `1` | `status` | Jobs hard-deleted from `jobs_archive` by the archive expiry sweep (Sweep 6). | yes |
-| `taskq.maintenance_leader.sweep_rows` | — | `sweep_name` | Rows affected per sweep tick. | yes |
+| `taskq.maintenance_leader.sweep_rows` | n/a | `sweep_name` | Rows affected per sweep tick. | yes |
 | `taskq.maintenance_leader.sweep_timeouts` | `1` | `sweep_name` | Sweep calls aborted by a deadline or server-side statement cancel, and gauge-sampler reads that did not complete for ANY reason (the sampler `sweep_name`s are `queue_depth` / `backlog_detection` / `actor_backlog` / `reservation_slots`). A non-zero rate means work is being aborted or going unobserved, not completing slowly. | yes |
 | `taskq.leader.lock_contention` | `1` | `lock` | Advisory-lock acquisitions lost to another session, recorded by the losing side. | yes |
-| `taskq.cron.lock_contention` | `1` | — | Cron ticks that returned without firing because another session held the cron advisory lock. A sustained rate equal to the tick rate means cron is not running anywhere (a partitioned holder never releasing the transaction-scoped lock); a brief low rate is leader-handover overlap. | yes |
-| `taskq.cron.budget_deferrals` | `1` | `actor` | Cron fires deferred because the tick's funded factory budget had no fundable grant left for them — a schedule planned ahead consumed the budget, or the leftover fell below the minimum fundable grant. A brief burst is catch-up draining in tick-sized batches; a SUSTAINED rate means one schedule's payload factory is monopolizing the tick budget every tick: a slow-but-successful factory never strikes and never auto-disables, so its peers retry every tick without ever being funded (delayed, not lost — the deferral advances `next_fire_at` one leader tick). Per-schedule attribution is on the `cron-fire-budget-deferred` log line; the operator resolution (tighten `TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT` below the monopolizer's duration, or raise `TASKQ_DISPATCHER_COMMAND_TIMEOUT`) is the cron guide's tick-budget section and the `TaskQCronBudgetDeferrals` runbook. The `actor` label is capped like `taskq.cron.consecutive_failures`. | yes |
+| `taskq.cron.lock_contention` | `1` | n/a | Cron ticks that returned without firing because another session held the cron advisory lock. A sustained rate equal to the tick rate means cron is not running anywhere (a partitioned holder never releasing the transaction-scoped lock); a brief low rate is leader-handover overlap. | yes |
+| `taskq.cron.budget_deferrals` | `1` | `actor` | Cron fires deferred because the tick's funded factory budget had no fundable grant left for them: a schedule planned ahead consumed the budget, or the leftover fell below the minimum fundable grant. A brief burst is catch-up draining in tick-sized batches; a SUSTAINED rate means one schedule's payload factory is monopolizing the tick budget every tick: a slow-but-successful factory never strikes and never auto-disables, so its peers retry every tick without ever being funded (delayed, not lost; the deferral advances `next_fire_at` one leader tick). Per-schedule attribution is on the `cron-fire-budget-deferred` log line; the operator resolution (tighten `TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT` below the monopolizer's duration, or raise `TASKQ_DISPATCHER_COMMAND_TIMEOUT`) is the cron guide's tick-budget section and the `TaskQCronBudgetDeferrals` runbook. The `actor` label is capped like `taskq.cron.consecutive_failures`. | yes |
 
 !!! tip "Which job is starving? The denial counters live on the row"
 
     The denial counters above are fleet-wide rates: they tell you the fleet is shedding
     admissions, not which job has been waiting. Because an admission denial writes no
-    `job_events` and no `job_attempts` row — per-denial rows grow without bound under
-    sustained contention — the per-job record is the aggregated `rate_limit_blocked_count`
+    `job_events` and no `job_attempts` row (per-denial rows grow without bound under
+    sustained contention); the per-job record is the aggregated `rate_limit_blocked_count`
     column on `jobs` (and `snooze_count` for actor-requested deferrals). Query it when one
     job is mysteriously slow while the fleet looks healthy:
 
@@ -500,75 +500,75 @@ you *which* jobs absorbed them.
 
 | Metric name | Unit | Attributes | Description |
 |---|---|---|---|
-| `messaging.process.duration` | `s` | `actor`, `queue`, `outcome` | Job execution duration from dispatch to the attempt's end, labelled with the same `outcome` as `messaging.client.consumed.messages` (`succeeded` / `failed` / `cancelled` / `scheduled`), so a `start_to_close` timeout — which lands at exactly the budget — or a failure does not drag the success percentiles. |
+| `messaging.process.duration` | `s` | `actor`, `queue`, `outcome` | Job execution duration from dispatch to the attempt's end, labelled with the same `outcome` as `messaging.client.consumed.messages` (`succeeded` / `failed` / `cancelled` / `scheduled`), so a `start_to_close` timeout, which lands at exactly the budget, or a failure does not drag the success percentiles. |
 | `taskq.dispatch.duration` | `s` | `queue` | Batch dispatch SQL query latency (SQL execution only). |
-| `taskq.jobs.queue_wait_seconds` | `s` | `actor`, `queue` | Seconds a job waited between becoming eligible (`scheduled_at`) and being claimed (`started_at`), both server-clock stamps on the dispatched row — Oban's `queue_time`. Recorded once per dispatch, retries and re-pends included: the per-job companion of the sampled `taskq.jobs.oldest_pending_age_seconds`, which only shows the head of the line. |
-| `taskq.lock.expires_in_seconds` | `s` | — | Lease remaining on this worker's job locks at the moment the heartbeat renewed them: `lock_lease` minus the measured gap since the previous renewal (nothing on the first), so a late or failed tick lowers the sample and `TaskQLockExpiringSoon` can fire; 0 when the renewal landed after expiry. A healthy worker reads `lock_lease − heartbeat_interval`. Buckets: 0, 5, 10, 15, 20, 30, 45, 60 s. |
-| `taskq.heartbeat.tick_duration_seconds` | `s` | — | Wall-clock seconds per heartbeat tick. |
-| `taskq.worker.event_loop_lag_seconds` | `s` | — | Event-loop scheduling latency measured by the lag watchdog: seconds between the watchdog thread asking the loop to run a callback and the loop running it — one sample per landed beat (about one per `TASKQ_WATCHDOG_CHECK_INTERVAL` on a healthy loop, microseconds each) plus the stall observed at a trip. The continuous signal under the warn/trip thresholds: a rising p99 is a loop being blocked (a sync call without `asyncio.to_thread`, a GC pause, a saturated CPU) before it is blocked long enough to page; the lock-TTL histogram and `TaskQLockExpiringSoon` follow it. See [The watchdog family](#the-watchdog-family). |
-| `taskq.worker.shutdown_duration_seconds` | `s` | — | Wall-clock seconds from the first shutdown signal to clean worker teardown; recorded only on a clean exit (a watchdog trip force-exits without recording). |
-| `taskq.maintenance_leader.sweep_duration_ms` | `ms` | — | Per-sweep-tick wall-clock duration. |
+| `taskq.jobs.queue_wait_seconds` | `s` | `actor`, `queue` | Seconds a job waited between becoming eligible (`scheduled_at`) and being claimed (`started_at`), both server-clock stamps on the dispatched row (Oban's `queue_time`). Recorded once per dispatch, retries and re-pends included: the per-job companion of the sampled `taskq.jobs.oldest_pending_age_seconds`, which only shows the head of the line. |
+| `taskq.lock.expires_in_seconds` | `s` | n/a | Lease remaining on this worker's job locks at the moment the heartbeat renewed them: `lock_lease` minus the measured gap since the previous renewal (nothing on the first), so a late or failed tick lowers the sample and `TaskQLockExpiringSoon` can fire; 0 when the renewal landed after expiry. A healthy worker reads `lock_lease − heartbeat_interval`. Buckets: 0, 5, 10, 15, 20, 30, 45, 60 s. |
+| `taskq.heartbeat.tick_duration_seconds` | `s` | n/a | Wall-clock seconds per heartbeat tick. |
+| `taskq.worker.event_loop_lag_seconds` | `s` | n/a | Event-loop scheduling latency measured by the lag watchdog: seconds between the watchdog thread asking the loop to run a callback and the loop running it: one sample per landed beat (about one per `TASKQ_WATCHDOG_CHECK_INTERVAL` on a healthy loop, microseconds each) plus the stall observed at a trip. The continuous signal under the warn/trip thresholds: a rising p99 is a loop being blocked (a sync call without `asyncio.to_thread`, a GC pause, a saturated CPU) before it is blocked long enough to page; the lock-TTL histogram and `TaskQLockExpiringSoon` follow it. See [The watchdog family](#the-watchdog-family). |
+| `taskq.worker.shutdown_duration_seconds` | `s` | n/a | Wall-clock seconds from the first shutdown signal to clean worker teardown; recorded only on a clean exit (a watchdog trip force-exits without recording). |
+| `taskq.maintenance_leader.sweep_duration_ms` | `ms` | n/a | Per-sweep-tick wall-clock duration. |
 
 ### Observable gauges (polled)
 
 | Metric name | Unit | Attributes | Description |
 |---|---|---|---|
 | `taskq.queue.depth` | `1` | `queue` | Pending and scheduled jobs per queue. Sampled by the leader every 15 s; the 100 deepest queues keep their series, the rest collapse onto `_other_`. |
-| `taskq.queue.live_workers` | `1` | `queue` | Workers whose `last_seen_at` is inside the liveness window (`TASKQ_ADMIN_WORKER_LIVENESS_SECONDS`), per queue they subscribe to — sampled in the same leader tick as `taskq.queue.depth`, same cap, so the two join on `queue`. A queue with depth and no live worker is unserved (`TaskQQueueUnserved`); a dead-but-unswept worker row does not count. |
+| `taskq.queue.live_workers` | `1` | `queue` | Workers whose `last_seen_at` is inside the liveness window (`TASKQ_ADMIN_WORKER_LIVENESS_SECONDS`), per queue they subscribe to, sampled in the same leader tick as `taskq.queue.depth`, same cap, so the two join on `queue`. A queue with depth and no live worker is unserved (`TaskQQueueUnserved`); a dead-but-unswept worker row does not count. |
 | `taskq.reservation.slots_used` | `1` | `bucket` | In-use reservation slots per rate-limit bucket. Sampled by the leader every 15 s. |
 | `taskq.maintenance_leader.is_leader` | `1` | `worker_id` | `1` on the elected leader pod, `0` on all others. |
-| `taskq.cron.disabled_schedules` | `1` | — | Count of currently disabled cron schedules. |
-| `taskq.heartbeat.consecutive_failures` | — | — | Consecutive heartbeat tick failures for this worker (sample-on-scrape). |
-| `taskq.worker.active_jobs` | `1` | — | Jobs in flight on this worker process — the OTel twin of the health socket's hand-rendered `taskq_active_jobs`, which no scrape reaches. One series per process; divide by `taskq.worker.max_concurrency` for utilisation. |
-| `taskq.worker.max_concurrency` | `1` | — | This process's configured `TASKQ_MAX_CONCURRENCY`, the ceiling `active_jobs` saturates against. One series per process. |
+| `taskq.cron.disabled_schedules` | `1` | n/a | Count of currently disabled cron schedules. |
+| `taskq.heartbeat.consecutive_failures` | n/a | n/a | Consecutive heartbeat tick failures for this worker (sample-on-scrape). |
+| `taskq.worker.active_jobs` | `1` | n/a | Jobs in flight on this worker process: the OTel twin of the health socket's hand-rendered `taskq_active_jobs`, which no scrape reaches. One series per process; divide by `taskq.worker.max_concurrency` for utilisation. |
+| `taskq.worker.max_concurrency` | `1` | n/a | This process's configured `TASKQ_MAX_CONCURRENCY`, the ceiling `active_jobs` saturates against. One series per process. |
 | `taskq.jobs.running` | `1` | `actor` | Running jobs per actor, fleet-wide, sampled by every worker beside `taskq.jobs.by_status` from one grouped read over the running population. Which actors hold the slots while pending work waits; an actor with nothing running is absent, not 0. |
-| `taskq.jobs.oldest_running_age_seconds` | `s` | `actor` | Seconds since the oldest running attempt of each actor started (`started_at`, server clock), from the same grouped read as `taskq.jobs.running`. Running age past the actor's p99 (`messaging.process.duration`) with `taskq.jobs.timeouts` flat is an actor with no `start_to_close` — nothing will end the attempt, and `running_lease_expired` stays 0 while the heartbeat renews it. |
-| `taskq.worker.slot_pool.connections_in_use` | `1` | — | Connections of the per-slot transaction pool currently held by dispatching jobs (reported only when the worker runs one). A pool pinned at its maximum with zero acquire failures is saturation — visible below the acquire-failure cliff. |
+| `taskq.jobs.oldest_running_age_seconds` | `s` | `actor` | Seconds since the oldest running attempt of each actor started (`started_at`, server clock), from the same grouped read as `taskq.jobs.running`. Running age past the actor's p99 (`messaging.process.duration`) with `taskq.jobs.timeouts` flat is an actor with no `start_to_close`: nothing will end the attempt, and `running_lease_expired` stays 0 while the heartbeat renews it. |
+| `taskq.worker.slot_pool.connections_in_use` | `1` | n/a | Connections of the per-slot transaction pool currently held by dispatching jobs (reported only when the worker runs one). A pool pinned at its maximum with zero acquire failures is saturation: visible below the acquire-failure cliff. |
 | `taskq.maintenance_leader.sweep_last_success_seconds` | `s` | `sweep_name` | Unix timestamp of each sweep's last successful call. `time() - this value` is sweep staleness; a value that never moves while the process runs is a stalled sweep. |
 | `taskq.maintenance_leader.sweep_batch_size` | `1` | `sweep_name` | Rows per committed batch each sweep is currently using. A value below `event_writer_batch_size` is the reduced (degraded) tier. |
 | `taskq.maintenance_leader.sweep_batch_size_configured` | `1` | `sweep_name` | The batch size this worker's `event_writer_batch_size` configures for each sweep; emitted at the same call site as `sweep_batch_size` so the sweep-degraded alert compares the two label-matched. |
-| `taskq.maintenance_leader.lease_expires_in_seconds` | `s` | — | Seconds until the leader lease expires, as stamped by the holder's last successful election or renewal (`leader_lease` seconds out, re-stamped every `heartbeat_interval`). Present only on the pod holding the lease and cleared on demotion, so a series that goes stale or vanishes is a leader that stopped renewing — the per-pod evidence behind the split-brain/no-leader alert. |
+| `taskq.maintenance_leader.lease_expires_in_seconds` | `s` | n/a | Seconds until the leader lease expires, as stamped by the holder's last successful election or renewal (`leader_lease` seconds out, re-stamped every `heartbeat_interval`). Present only on the pod holding the lease and cleared on demotion, so a series that goes stale or vanishes is a leader that stopped renewing: the per-pod evidence behind the split-brain/no-leader alert. |
 | `taskq.jobs.by_status` | `1` | `status` | Jobs per live status, counted exactly and sampled by every worker; terminal statuses are not sampled. A growing `scheduled` count next to a flat `pending` count is the promotion-stall signature. |
-| `taskq.jobs.scheduled_count` | `1` | — | Count of `scheduled`-status jobs — the label-less twin of `taskq.jobs.by_status{status="scheduled"}`, sampled at the same tick. Exists so `TaskQScheduledBacklogGrowing` can compare a growth signal against `taskq.jobs.oldest_due_age_seconds` (also label-less) without a PromQL join modifier; a `status`-labeled series never matches a label-less one under vector `and`. |
-| `taskq.jobs.oldest_due_age_seconds` | `s` | — | Seconds since the oldest scheduled job became due for promotion. Grows monotonically while promotion is stalled. |
-| `taskq.jobs.actor_backlog` | `1` | `actor`, `queue` | Pending jobs per (actor, queue). No worker refuses to start because an actor's queue has no consumer — in a multi-worker fleet no supervisor can know what consumes a queue — so a misrouted actor piles up pending rows while every probe stays green. A queue-summed depth cannot tell that apart from a busy shared queue; this actor's own series rises while its queue-mates stay flat. Exact below the sampler's 1000-row per-pair cap and reading 1000 — a lower bound, never an under-count — at or above it (a series pinned at 1000 means "at least this deep"); the companion `oldest_pending_age_seconds` carries the part that grows without bound. |
-| `taskq.jobs.oldest_pending_age_seconds` | `s` | `actor`, `queue` | Seconds since the oldest PENDING job became eligible, per (actor, queue). Depth alone is ambiguous — a deep queue that drains is healthy throughput — but an actor nobody consumes has a pending job whose age grows with wall clock. Distinct from `oldest_due_age_seconds`, which measures promotion (scheduled → pending) and reads 0 for pending work no consumer takes. Sampled from the same grouped snapshot as `actor_backlog`, so depth and age can never describe two different moments. When the per-actor read fails, both series go ABSENT for the interval — the honest state, never a stale value — and the failure counts on `taskq.maintenance_leader.sweep_timeouts` under `sweep_name="actor_backlog"`: an absent age series beside a rising timeouts rate is a dead sampler (the queue-depth alert's operand is gone, `TaskQSweepTimeouts` carries the truth), not a resolved alert. |
-| `taskq.jobs.running_lease_expired` | `1` | — | Running jobs whose lock lease is past expiry (the zombie-running shape), with rows in a cancel phase (`cancel_phase != 0`) carved out — the reclaim sweep deliberately waits out the cancel grace ladder for those, so an expired lease mid-cancel is the protocol working, not a zombie; a cancel that never completes pages elsewhere: `TaskQAbandonedJobs` when its worker is alive to escalate through the phases, `TaskQHeartbeatMisses` when it died mid-cancel — reclaim honors the row to `cancelled` either way. Healthy reads 0 — the reclaim sweep drains expired leases within a tick or two — so a sustained non-zero reading means reclaim is not draining. Sampled by every worker with `taskq.jobs.by_status`; the per-job truth (`locked_by_worker`, `lock_expires_at`) is on the admin `/jobs` lease column, not on a label. |
-| `taskq.jobs.stranded` | `1` | `actor`, `reason` | Pending/scheduled jobs that can never be dispatched, sampled by the leader. `reason` is `no_actor_config` (the actor has no `actor_config` row) or `unserved_queue` (the queue dispatch routes the actor on has no **live** worker subscribed — a worker whose heartbeat has gone stale does not serve a queue, even before the stale-worker sweep removes its row). An empty reading means recovery; `TaskQStrandedJobs` reads this series. |
+| `taskq.jobs.scheduled_count` | `1` | n/a | Count of `scheduled`-status jobs: the label-less twin of `taskq.jobs.by_status{status="scheduled"}`, sampled at the same tick. Exists so `TaskQScheduledBacklogGrowing` can compare a growth signal against `taskq.jobs.oldest_due_age_seconds` (also label-less) without a PromQL join modifier; a `status`-labeled series never matches a label-less one under vector `and`. |
+| `taskq.jobs.oldest_due_age_seconds` | `s` | n/a | Seconds since the oldest scheduled job became due for promotion. Grows monotonically while promotion is stalled. |
+| `taskq.jobs.actor_backlog` | `1` | `actor`, `queue` | Pending jobs per (actor, queue). No worker refuses to start because an actor's queue has no consumer: in a multi-worker fleet no supervisor can know what consumes a queue, so a misrouted actor piles up pending rows while every probe stays green. A queue-summed depth cannot tell that apart from a busy shared queue; this actor's own series rises while its queue-mates stay flat. Exact below the sampler's 1000-row per-pair cap and reading 1000 (a lower bound, never an under-count) at or above it (a series pinned at 1000 means "at least this deep"); the companion `oldest_pending_age_seconds` carries the part that grows without bound. |
+| `taskq.jobs.oldest_pending_age_seconds` | `s` | `actor`, `queue` | Seconds since the oldest PENDING job became eligible, per (actor, queue). Depth alone is ambiguous: a deep queue that drains is healthy throughput, but an actor nobody consumes has a pending job whose age grows with wall clock. Distinct from `oldest_due_age_seconds`, which measures promotion (scheduled → pending) and reads 0 for pending work no consumer takes. Sampled from the same grouped snapshot as `actor_backlog`, so depth and age can never describe two different moments. When the per-actor read fails, both series go ABSENT for the interval: the honest state, never a stale value, and the failure counts on `taskq.maintenance_leader.sweep_timeouts` under `sweep_name="actor_backlog"`: an absent age series beside a rising timeouts rate is a dead sampler (the queue-depth alert's operand is gone, `TaskQSweepTimeouts` carries the truth), not a resolved alert. |
+| `taskq.jobs.running_lease_expired` | `1` | n/a | Running jobs whose lock lease is past expiry (the zombie-running shape), with rows in a cancel phase (`cancel_phase != 0`) carved out: the reclaim sweep deliberately waits out the cancel grace ladder for those, so an expired lease mid-cancel is the protocol working, not a zombie; a cancel that never completes pages elsewhere: `TaskQAbandonedJobs` when its worker is alive to escalate through the phases, `TaskQHeartbeatMisses` when it died mid-cancel; reclaim honors the row to `cancelled` either way. Healthy reads 0: the reclaim sweep drains expired leases within a tick or two, so a sustained non-zero reading means reclaim is not draining. Sampled by every worker with `taskq.jobs.by_status`; the per-job truth (`locked_by_worker`, `lock_expires_at`) is on the admin `/jobs` lease column, not on a label. |
+| `taskq.jobs.stranded` | `1` | `actor`, `reason` | Pending/scheduled jobs that can never be dispatched, sampled by the leader. `reason` is `no_actor_config` (the actor has no `actor_config` row) or `unserved_queue` (the queue dispatch routes the actor on has no **live** worker subscribed; a worker whose heartbeat has gone stale does not serve a queue, even before the stale-worker sweep removes its row). An empty reading means recovery; `TaskQStrandedJobs` reads this series. |
 
 ### The watchdog family
 
-The in-worker watchdog (`taskq.worker._watchdog`; [workers.md — In-worker watchdog](workers.md)) emits one instrument per detector so a hang is attributable without a shell on the pod. All are recorded by the worker process itself; none carry identity labels.
+The in-worker watchdog (`taskq.worker._watchdog`; [workers.md: In-worker watchdog](workers.md)) emits one instrument per detector so a hang is attributable without a shell on the pod. All are recorded by the worker process itself; none carry identity labels.
 
 | Metric name | Kind | Unit | Attributes | Description |
 |---|---|---|---|---|
-| `taskq.worker.event_loop_lag_seconds` | histogram | `s` | — | Per-beat event-loop scheduling latency (above). Healthy: microseconds; a blocked loop yields one sample the length of the block once it recovers. |
-| `taskq.worker.watchdog_loop_lag_warns_total` | counter | `1` | `detector` (`event-loop-lag-warn`) | Tier-1 lag warnings: the loop exceeded `TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET` — once per stall (the latch clears on the next beat), with a thread dump and a deferred task-stack dump. Non-terminal. |
+| `taskq.worker.event_loop_lag_seconds` | histogram | `s` | n/a | Per-beat event-loop scheduling latency (above). Healthy: microseconds; a blocked loop yields one sample the length of the block once it recovers. |
+| `taskq.worker.watchdog_loop_lag_warns_total` | counter | `1` | `detector` (`event-loop-lag-warn`) | Tier-1 lag warnings: the loop exceeded `TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET`: once per stall (the latch clears on the next beat), with a thread dump and a deferred task-stack dump. Non-terminal. |
 | `taskq.worker.watchdog_trips_total` | counter | `1` | `detector` (`event-loop-lag`, `stale-loop-tick`, `shutdown-deadline`) | Terminal trips: the worker force-exited with `EXIT_WATCHDOG` because the loop exceeded `TASKQ_WATCHDOG_LOOP_LAG_BUDGET`, an interval-driven loop stopped ticking, or shutdown outlived `TASKQ_TERMINATION_GRACE_PERIOD`. In-flight jobs are reclaimed by the leader on lock-lease expiry. |
-| `taskq.worker.loop_tick_age_seconds` | gauge | `s` | `loop` | Seconds since each interval-driven sibling loop (heartbeat, producer, the leader loops, ...) last ticked — the `/ready` body's `loop_tick_ages`, exported. A loop whose age grows past its period × grace factor is the stale-loop-tick trip in the making. |
+| `taskq.worker.loop_tick_age_seconds` | gauge | `s` | `loop` | Seconds since each interval-driven sibling loop (heartbeat, producer, the leader loops, ...) last ticked: the `/ready` body's `loop_tick_ages`, exported. A loop whose age grows past its period × grace factor is the stale-loop-tick trip in the making. |
 | `taskq.worker.loop_stall_attributions` | counter | `1` | `actor` (bounded), `kind` (`blocking_call`, `gil_held`) | Attributed event-loop stalls: each warn-tier and trip-tier stall names the registered actor whose frame sat under the work holding the interpreter, and classifies it (below). |
 | `taskq.worker.sibling_crashes_total` | counter | `1` | `loop` | Sibling task exits by exception (never cancellations): the crash that sets the shutdown event and takes the worker down. |
-| `taskq.worker.shutdown_duration_seconds` | histogram | `s` | — | Clean shutdown wall-clock time; a trip records nothing here, so a missing sample beside a `shutdown-deadline` trip is the expected shape. |
+| `taskq.worker.shutdown_duration_seconds` | histogram | `s` | n/a | Clean shutdown wall-clock time; a trip records nothing here, so a missing sample beside a `shutdown-deadline` trip is the expected shape. |
 
-Read them together: `event_loop_lag_seconds` rising → `watchdog_loop_lag_warns_total` → `watchdog_trips_total{detector="event-loop-lag"}` is one stall escalating through the tiers; `loop_tick_age_seconds{loop="heartbeat"}` climbing while the lag histogram stays flat is a loop that is scheduling but not ticking (blocked on an await — a pool acquire, a wedged connection), the `stale-loop-tick` shape.
+Read them together: `event_loop_lag_seconds` rising → `watchdog_loop_lag_warns_total` → `watchdog_trips_total{detector="event-loop-lag"}` is one stall escalating through the tiers; `loop_tick_age_seconds{loop="heartbeat"}` climbing while the lag histogram stays flat is a loop that is scheduling but not ticking (blocked on an await: a pool acquire, a wedged connection), the `stale-loop-tick` shape.
 
 ### Stall attribution: which actor is blocking the loop
 
 The lag watchdog's daemon thread joins two signals while a stall persists, sampling the event-loop thread's stack every poll into a small ring (the last 16 samples):
 
 - **Loop lag** (the beat gap): the loop is not scheduling.
-- **The watchdog thread's own wakeup gap**: how far each poll wait overshoots the requested interval. An overshoot beyond one full extra interval means the watchdog thread itself was starved of the GIL — what synchronous work that never releases the interpreter does to a bystander thread.
+- **The watchdog thread's own wakeup gap**: how far each poll wait overshoots the requested interval. An overshoot beyond one full extra interval means the watchdog thread itself was starved of the GIL: what synchronous work that never releases the interpreter does to a bystander thread.
 
 Loop lag with a quiet watchdog thread classifies the stall `blocking_call`: a synchronous call that released the GIL (an I/O wait, a subprocess), where `sys._current_frames` sampling from the still-running watchdog thread lands exactly on the blocking frame. Loop lag with a starved watchdog thread classifies it `gil_held`: the interpreter is held (a C extension that does not detach, or a hot pure-Python loop); that sample is approximate and its line points at or just after the C call.
 
-Each attribution is emitted as the `event-loop-stall-attributed` WARNING (with `actor`, `job_id` when exactly one running job matched the actor, `frame` as `file:line:function` of the deepest non-taskq frame, `kind`, `lag_seconds`, the sample count, a truncated stack, and the remedy in `remedy`), bumps `taskq.worker.loop_stall_attributions`, and records into the rolling tally the heartbeat merges into the worker's `workers` row metadata — which is what `/admin/workers`' Stall hotspots column and `taskq doctor` read. No span event is recorded on the running attempt's span: span operations are not thread-safe, and the attempt's span lives on the loop thread, so writing to it from the watchdog's daemon thread would risk corrupting it mid-block.
+Each attribution is emitted as the `event-loop-stall-attributed` WARNING (with `actor`, `job_id` when exactly one running job matched the actor, `frame` as `file:line:function` of the deepest non-taskq frame, `kind`, `lag_seconds`, the sample count, a truncated stack, and the remedy in `remedy`), bumps `taskq.worker.loop_stall_attributions`, and records into the rolling tally the heartbeat merges into the worker's `workers` row metadata, which is what `/admin/workers`' Stall hotspots column and `taskq doctor` read. No span event is recorded on the running attempt's span: span operations are not thread-safe, and the attempt's span lives on the loop thread, so writing to it from the watchdog's daemon thread would risk corrupting it mid-block.
 
 ### Sweep samples: rows and duration are different populations
 
 `taskq.maintenance_leader.sweep_rows` and
 `taskq.maintenance_leader.sweep_duration_ms` share a call site but not a
 sample population: a timed-out sweep records its duration and bumps
-`taskq.maintenance_leader.sweep_timeouts`, but records no row sample — the
+`taskq.maintenance_leader.sweep_timeouts`, but records no row sample; the
 batch was aborted, so no rows were committed. Read row counts with the
 `sweep_timeouts` counter in hand before drawing conclusions from a missing
 or zero row sample.
@@ -577,13 +577,13 @@ or zero row sample.
 
 | Metric name | Unit | Attributes | Description |
 |---|---|---|---|
-| `taskq.cron.consecutive_failures` | `1` | `actor` | Per-actor count of consecutive cron execution failures. Between ticks the deltas are `+1` per failed fire and `-count` on a successful reset, but the series is not left to accumulate those deltas: each tick reconciles it against the database's own per-actor sum over the whole `cron_schedules` table, so enables, disables, and deletes performed by any process (a client, the CLI, the admin UI — none of them emit metric deltas) self-correct on the next tick with due work, and the value returns to zero once no schedule is failing. The authoritative per-schedule counts are the `cron_schedules.consecutive_failures` column and the `cron fired` / `cron fire failed` / `cron schedule auto-disabled` logs (plus the `taskq.cron_schedule_id` attribute on the `cron fire` span); alert on `taskq.cron.disabled_schedules > 0` (the shipped `rules.yaml` alert) for the auto-disabled condition. The `actor` label is capped: the first 100 distinct names a process sees keep their series, later names collapse onto `_other_`. |
+| `taskq.cron.consecutive_failures` | `1` | `actor` | Per-actor count of consecutive cron execution failures. Between ticks the deltas are `+1` per failed fire and `-count` on a successful reset, but the series is not left to accumulate those deltas: each tick reconciles it against the database's own per-actor sum over the whole `cron_schedules` table, so enables, disables, and deletes performed by any process (a client, the CLI, the admin UI; none of them emit metric deltas) self-correct on the next tick with due work, and the value returns to zero once no schedule is failing. The authoritative per-schedule counts are the `cron_schedules.consecutive_failures` column and the `cron fired` / `cron fire failed` / `cron schedule auto-disabled` logs (plus the `taskq.cron_schedule_id` attribute on the `cron fire` span); alert on `taskq.cron.disabled_schedules > 0` (the shipped `rules.yaml` alert) for the auto-disabled condition. The `actor` label is capped: the first 100 distinct names a process sees keep their series, later names collapse onto `_other_`. |
 
 ### Dimension cardinality
 
 No metric carries `worker_id`, `schedule_id`, `job_id` or any other identity
 value as a dimension, and new instruments must not add one. The
-maintenance-sweep labels (`sweep_name`, `lock`, `status`) are bounded enums —
+maintenance-sweep labels (`sweep_name`, `lock`, `status`) are bounded enums:
 a handful of values fixed by the code, not identity values, so they are
 allowed as dimensions.
 
@@ -593,17 +593,17 @@ The `queue` label on the job-side emitters (`messaging.client.published.messages
 queue names a process sees keep their own series, and every later name
 collapses onto the fixed `_other_` value. The cap never evicts, so the series
 count is hard-bounded at 101 per metric regardless of how many queue names the
-deployment mints — unbounded, 5,000 distinct names produced 100k+ time series
+deployment mints; unbounded, 5,000 distinct names produced 100k+ time series
 in the cardinality benchmark. Per-queue attribution is not lost: the queue
 name still rides on the enqueue/dispatch/consume span attributes and log
 lines, where cardinality is free. `actor` remains user-defined and unbounded
-on those emitters — keep actor names a bounded enum.
+on those emitters: keep actor names a bounded enum.
 
 The cron counter's `actor` label is the exception, and it is capped the same
 way `queue` is: `create_schedule` accepts any string actor at creation time
 (validation is deferred to fire time by design), and a dangling, misspelled
-or tenant-generated name fails every tick's planning loop — each failure
-emitting the raw string as a label value — so
+or tenant-generated name fails every tick's planning loop (each failure
+emitting the raw string as a label value), so
 `taskq.cron.consecutive_failures` admits only the first 100 distinct actor
 names a process sees and collapses the rest onto `_other_`. Every other
 actor-labeled instrument receives actors that flowed through registration
@@ -618,15 +618,15 @@ practical ceiling (up to 300 is a grey area; beyond that, use custom logs).
 `worker_id` is a fresh UUID per worker *process*, so on Kubernetes every deploy,
 restart and autoscale event mints new series. Exceeding the cap throttles
 ingestion for *every* custom metric in the subscription, and throttled points
-are not backfilled — the data is gone, so this is not repairable after the fact.
+are not backfilled: the data is gone, so this is not repairable after the fact.
 
 Per-worker and per-schedule attribution is on the channels where cardinality is
 free:
 
-- **Logs** — `worker_id` is bound via contextvars onto every log line;
+- **Logs**: `worker_id` is bound via contextvars onto every log line;
   `schedule_id` is on the `cron fired`, `cron schedule auto-disabled`,
   `cron-tick-lock-contended` and `cron-fire-budget-deferred` lines.
-- **Spans** — `taskq.worker_id` and `taskq.cron_schedule_id` are attributes
+- **Spans**: `taskq.worker_id` and `taskq.cron_schedule_id` are attributes
   of the `cron fire` span.
 
 The `record_*` helpers still *accept* `worker_id` / `schedule_id`: they are part
@@ -636,7 +636,7 @@ They are simply not recorded as dimensions.
 The one exception is `taskq.maintenance_leader.is_leader`, which is still
 labeled by `worker_id`: the shipped Prometheus alert
 (`sum(taskq_maintenance_leader_is_leader) != 1`) detects split-brain by summing
-one series per pod, so the dimension is load-bearing there. Operators exporting
+one series per pod, so the dimension is essential to that invariant. Operators exporting
 to Azure Monitor should drop it with an SDK View.
 
 ### Metric recording and sampling independence
@@ -647,15 +647,15 @@ span does not inflate metric counts relative to a partially-sampled trace.
 
 ### Ready-made alert rules
 
-The repo ships alert rules for the metrics above — import them instead of
+The repo ships alert rules for the metrics above: import them instead of
 writing from scratch:
 
-- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml) — 21 rules (queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth, promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, cron budget deferrals, unserved queue, stranded jobs, expired-lease zombies)
-- `src/taskq/contrib/kubernetes/prometheus_rule.yaml` — the same rules as a PrometheusRule CRD for Kubernetes
+- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml): 21 rules (queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth, promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, cron budget deferrals, unserved queue, stranded jobs, expired-lease zombies)
+- `src/taskq/contrib/kubernetes/prometheus_rule.yaml`: the same rules as a PrometheusRule CRD for Kubernetes
 
 The rules fire on the series above, so they only work where those series are
 scraped: see [Serving the metrics: the Prometheus endpoint](#serving-the-metrics-the-prometheus-endpoint)
-for the (zero-config) wiring and its per-process caveat — rules that read
+for the (zero-config) wiring and its per-process caveat; rules that read
 leader-sampled gauges or worker-path counters must be evaluated against
 **worker** scrapes, not the `ui serve` process.
 
@@ -695,7 +695,7 @@ alert on purpose; both are read off the gauges in the playbook table.
 ### Setup
 
 `worker_main` calls `setup_logging(level=settings.log_level, log_format=settings.log_format)`.
-`setup_logging` is idempotent — calling it a second time is a no-op.
+`setup_logging` is idempotent: calling it a second time is a no-op.
 
 ### Configuration
 
@@ -711,13 +711,13 @@ alert on purpose; both are read off the gauges in the playbook table.
 
 The structlog processor chain applied to every log call (in order):
 
-1. `merge_contextvars` — pulls in `worker_id` (and any other context vars bound by the worker)
+1. `merge_contextvars`: pulls in `worker_id` (and any other context vars bound by the worker)
 2. `add_log_level`
 3. `add_logger_name`
 4. `StackInfoRenderer`
-5. `TimeStamper(fmt="iso", utc=True)` — ISO 8601 UTC timestamp in `timestamp` field
-6. `_otel_span_processor` — injects `trace_id` and `span_id` from the active OTel span, if any
-7. `EventRenamer("event")` — ensures the event key is always `event`
+5. `TimeStamper(fmt="iso", utc=True)`: ISO 8601 UTC timestamp in `timestamp` field
+6. `_otel_span_processor`: injects `trace_id` and `span_id` from the active OTel span, if any
+7. `EventRenamer("event")`: ensures the event key is always `event`
 8. `JSONRenderer` (production) or `ConsoleRenderer` (development)
 
 Every processor is wrapped in a no-raise safety wrapper. A failing
@@ -749,21 +749,21 @@ propagates to actor or user code.
 |---|---|---|---|---|
 | `state_change` | info | `state_change` | `from_state`, `to_state` | Any job status transition |
 | `cancel_phase_change` | info | `cancel_phase_change` | `from_phase`, `to_phase` | Cancel phase escalation |
-| `heartbeat-tick-success` | debug | — | `worker_id`, `tick_duration_ms`, `jobs_extended`, `is_leader` | Each successful heartbeat tick |
-| `heartbeat-tick-failure` | warning | — | `worker_id`, `consecutive_failures`, `error_class`, `error` | Each failed heartbeat tick |
+| `heartbeat-tick-success` | debug | n/a | `worker_id`, `tick_duration_ms`, `jobs_extended`, `is_leader` | Each successful heartbeat tick |
+| `heartbeat-tick-failure` | warning | n/a | `worker_id`, `consecutive_failures`, `error_class`, `error` | Each failed heartbeat tick |
 | `heartbeat-hook-failure` | warning | `state_change` | `worker_id`, `cause`, `error` | Cancel controller failure inside heartbeat transaction |
-| `heartbeat-tick-unexpected-error` | error | — | `worker_id` | Unexpected exception in heartbeat loop |
-| `terminal-write-retry` | warning | `terminal_write_retry` | `job_id`, `actor`, `write`, `attempt`, `max_attempts`, `retry_in_ms`, `infra_error_class`, `infra_error_message` | A terminal write hit an infrastructure error (connection reset, pool-acquire timeout) and is about to be retried — one line per retried attempt (waits of 50, 200 and 800 ms, jittered, up to four attempts) |
-| `terminal-write-retry-budget-exhausted` | warning | `terminal_write_retry_budget_exhausted` | `job_id`, `actor`, `write`, `attempt`, `elapsed_ms`, `budget_ms`, `infra_error_class`, `infra_error_message` | The write's retries ran out of wall time (5 s from the first attempt) before they ran out of attempts — each attempt was itself slow, the shape of a black-holed Postgres — so no further retry is made and `terminal-write-failed` follows |
-| `pool-release-failed` | warning | `pool_release_failed` | `operation`, `error` | A pooled connection's release failed or timed out (5 s bound) after an enqueue/bulk-cancel op — the pool's release-time reset against a dead or parked connection. asyncpg terminates the connection either way and the op's own result stands; the WARNING is the operator's signal that the database is killing connections (mass count during a failover or restart) |
-| `pool-conn-dead-on-acquire` | warning | `pool_conn_dead_on_acquire` | `operation`, `error` | The pool handed an enqueue/bulk-cancel op a connection the server had already killed; its first statement failed locally with asyncpg's `InternalClientError` and the op was retried once on a fresh connection — one line per retry, the failover/restart tax an operator can count per call site |
+| `heartbeat-tick-unexpected-error` | error | n/a | `worker_id` | Unexpected exception in heartbeat loop |
+| `terminal-write-retry` | warning | `terminal_write_retry` | `job_id`, `actor`, `write`, `attempt`, `max_attempts`, `retry_in_ms`, `infra_error_class`, `infra_error_message` | A terminal write hit an infrastructure error (connection reset, pool-acquire timeout) and is about to be retried: one line per retried attempt (waits of 50, 200 and 800 ms, jittered, up to four attempts) |
+| `terminal-write-retry-budget-exhausted` | warning | `terminal_write_retry_budget_exhausted` | `job_id`, `actor`, `write`, `attempt`, `elapsed_ms`, `budget_ms`, `infra_error_class`, `infra_error_message` | The write's retries ran out of wall time (5 s from the first attempt) before they ran out of attempts: each attempt was itself slow, the shape of a black-holed Postgres, so no further retry is made and `terminal-write-failed` follows |
+| `pool-release-failed` | warning | `pool_release_failed` | `operation`, `error` | A pooled connection's release failed or timed out (5 s bound) after an enqueue/bulk-cancel op: the pool's release-time reset against a dead or parked connection. asyncpg terminates the connection either way and the op's own result stands; the WARNING is the operator's signal that the database is killing connections (mass count during a failover or restart) |
+| `pool-conn-dead-on-acquire` | warning | `pool_conn_dead_on_acquire` | `operation`, `error` | The pool handed an enqueue/bulk-cancel op a connection the server had already killed; its first statement failed locally with asyncpg's `InternalClientError` and the op was retried once on a fresh connection: one line per retry, the failover/restart tax an operator can count per call site |
 | `terminal-write-failed` | error | `terminal-write-failed` | `job_id`, `actor`, `actor_succeeded`, `job_error_class`, `infra_error_class`, `infra_error_traceback` | Every attempt of a terminal write failed; the row stays `running`, the worker disowns it (its lease is no longer renewed) and lock-lease expiry reclaims it |
 | `dispatch` | info | `dispatch` | `from_state`, `to_state`, `count`, `worker_id`, `queues`, `limit_n` | Each dispatch batch |
-| `slot-pool-acquire-failed` | error | `slot_pool_acquire_failed` | `pool`, `acquire_timeout`, `job_id`, `error_class`, `error_message` | A job's bounded acquire from the per-slot transaction pool failed — the job is left for lock-lease reclaim, not failed |
-| `slot-conn-terminated-transaction-in-flight` | warning | `slot_conn_terminated_transaction_in_flight` | `job_id` | A cancelled slot's connection was still inside its transaction at release time, so it was terminated instead of returned to the pool — the server rolls the transaction back, the job row stays `running`, and lock-lease expiry reclaims it |
-| `slot-pool-release-skipped-pool-closed` | warning | `slot_pool_release_skipped_pool_closed` | `job_id`, `error_class`, `error_message` | The slot pool was closed underneath the job (credential-rotation drain or teardown); release is refused or the proxy was already released back — the connection is already gone and the job's real outcome is preserved |
-| `slot-pool-release-skipped-conn-dead` | warning | `slot_pool_release_skipped_conn_dead` | `job_id`, `error_class`, `error_message` | The slot connection was terminated underneath the job (credential-rotation drain or teardown close-timeout) — even the transaction probe cannot run on it; the terminator owns its disposal and the job's real outcome is preserved |
-| `consume-rate-limit-denied-noop` | debug | — | `from_state`, `to_state`, `cause` | Reservation denied but no state transition occurred |
+| `slot-pool-acquire-failed` | error | `slot_pool_acquire_failed` | `pool`, `acquire_timeout`, `job_id`, `error_class`, `error_message` | A job's bounded acquire from the per-slot transaction pool failed: the job is left for lock-lease reclaim, not failed |
+| `slot-conn-terminated-transaction-in-flight` | warning | `slot_conn_terminated_transaction_in_flight` | `job_id` | A cancelled slot's connection was still inside its transaction at release time, so it was terminated instead of returned to the pool: the server rolls the transaction back, the job row stays `running`, and lock-lease expiry reclaims it |
+| `slot-pool-release-skipped-pool-closed` | warning | `slot_pool_release_skipped_pool_closed` | `job_id`, `error_class`, `error_message` | The slot pool was closed underneath the job (credential-rotation drain or teardown); release is refused or the proxy was already released back: the connection is already gone and the job's real outcome is preserved |
+| `slot-pool-release-skipped-conn-dead` | warning | `slot_pool_release_skipped_conn_dead` | `job_id`, `error_class`, `error_message` | The slot connection was terminated underneath the job (credential-rotation drain or teardown close-timeout): even the transaction probe cannot run on it; the terminator owns its disposal and the job's real outcome is preserved |
+| `consume-rate-limit-denied-noop` | debug | n/a | `from_state`, `to_state`, `cause` | Reservation denied but no state transition occurred |
 | `prune` | info | `prune` | `status`, `count`, `cutoff_time`, `duration_ms` | Per-status batch result from the prune sweep (Sweep 5) |
 | `archive_expiry` | info | `archive_expiry` | `status`, `count`, `expire_before`, `duration_ms` | Per-status batch result from the archive expiry sweep (Sweep 6) |
 
@@ -794,7 +794,7 @@ telemetry backend is configured. Before it does, TaskQ drops Postgres
 `DETAIL:` lines and masks credentials in URI-shaped text.
 
 Only `DETAIL` is dropped. It is the line that quotes caller-supplied row
-values — `Key (idempotency_key)=(tenant-4417) already exists.` — and TaskQ's
+values: `Key (idempotency_key)=(tenant-4417) already exists.`, and TaskQ's
 `idempotency_key`, `identity_key` and `fairness_key` routinely hold tenant or
 subject identifiers. `HINT:` (Postgres's suggested fix) and `CONTEXT:` (the
 PL/pgSQL call stack) are structural, carry no row values, and are kept.
@@ -814,8 +814,8 @@ CONTEXT:  PL/pgSQL function taskq.enqueue(text) line 12 at SQL statement
 
 Setting it to `false` is a debugging aid, not a production setting. What you
 gain is the offending row value, usually the fastest way to identify which
-caller collided. What you expose is that value — a tenant or subject
-identifier — written to spans, to logs, and to every configured telemetry
+caller collided. What you expose is that value (a tenant or subject
+identifier) written to spans, to logs, and to every configured telemetry
 vendor, where it is retained under that vendor's policy rather than yours.
 The worker logs an `exception-redaction-disabled` WARNING on every startup
 while it is off, so an audit of startup logs will find it.
@@ -946,8 +946,8 @@ Metric query helpers:
 `taskq.testing.otel` exports two `autouse` pytest fixtures that are imported
 into `conftest.py`:
 
-- `_otel_enabled_guard` — snapshots and restores `_otel_enabled` around each test
-- `_logging_configured_guard` — resets structlog configuration and removes
+- `_otel_enabled_guard`: snapshots and restores `_otel_enabled` around each test
+- `_logging_configured_guard`: resets structlog configuration and removes
   `ProcessorFormatter` handlers around each test
 
 These fixtures run automatically for any test that imports from
@@ -995,7 +995,7 @@ receives spans and metrics on the standard OTLP gRPC port and forwards them
 to your backend.
 
 ```yaml
-# docker-compose.yml — collector service only
+# docker-compose.yml: collector service only
 services:
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
@@ -1008,7 +1008,7 @@ services:
 ```
 
 Point the worker at the collector (the `[otel]` extra installed; the
-worker wires the OTLP exporters from the endpoint at startup — see
+worker wires the OTLP exporters from the endpoint at startup; see
 [Exporter configuration](#exporter-configuration)):
 
 ```bash
@@ -1023,8 +1023,8 @@ taskq worker --actors myapp.actors:registry
 ## 9. Error reporting (ErrorReporter Protocol)
 
 OTel exception events and structured logs cover most error-observability
-needs. For error handling that needs vendor-specific routing — DLQ to Sentry,
-a custom alerting webhook, or an external audit log — TaskQ defines an
+needs. For error handling that needs vendor-specific routing (DLQ to Sentry,
+a custom alerting webhook, or an external audit log), TaskQ defines an
 `ErrorReporter` Protocol that you implement and register as a DI provider.
 
 ### The Protocol
@@ -1042,21 +1042,21 @@ class ErrorReporter(Protocol):
 
 The worker invokes `report()` after a job reaches a terminal `failed` state,
 passing the final `JobRow` and the exception that caused the failure. The
-argument order is `(job, exception)` — matching `OnRetryExhausted` (see
-[Retries — `on_retry_exhausted` hook](retries.md#8-on_retry_exhausted-hook)).
-The call is fire-and-forget with respect to the job lifecycle — a failing
+argument order is `(job, exception)`: matching `OnRetryExhausted` (see
+[Retries: `on_retry_exhausted` hook](retries.md#8-on_retry_exhausted-hook)).
+The call is fire-and-forget with respect to the job lifecycle; a failing
 reporter does not alter the job's terminal state.
 
 The invocation is wrapped by `invoke_error_reporter`, which guards the call
 with `asyncio.wait_for` using a timeout of 3 seconds (the `error_reporter_timeout`
 default). `TimeoutError` and all other exceptions raised by `report()` are
 caught, logged at `WARNING`, and counted on the `taskq.error_reporter.failures`
-counter — they never propagate to the consumer loop.
+counter; they never propagate to the consumer loop.
 
 ### NullErrorReporter (default)
 
 When no `ErrorReporter` is registered, the worker uses `NullErrorReporter`,
-whose `report()` is a no-op. This is the default out of the box — no error
+whose `report()` is a no-op. This is the default out of the box: no error
 reporting happens beyond OTel exception events and structured logs.
 
 ### Registering a custom reporter
@@ -1097,7 +1097,7 @@ connection that should be reused for the event-loop lifetime.
     timeout (the `error_reporter_timeout` default) and catches all exceptions,
     so a hanging or crashing reporter cannot block the terminal-state write
     indefinitely or crash the worker. Even so, keep external calls short and
-    catch internal exceptions — a reporter that consistently times out delays
+    catch internal exceptions; a reporter that consistently times out delays
     terminal writes by up to 3 seconds per failure and increments the
     `taskq.error_reporter.failures` counter on each miss.
 
@@ -1120,10 +1120,10 @@ custom reporter is installed and failing.
 
 ## Related documentation
 
-- [actors.md](actors.md) — `@actor` decorator, `JobContext`, `ctx.log`, `ctx.span`
-- [workers.md](workers.md) — worker lifecycle, `WorkerSettings`, pool configuration
-- [ops.md](ops.md) — operations & adoption: which metrics catch which failure mode
-- [maintenance-sweeps.md](maintenance-sweeps.md) — why the sweep instruments exist and how to read them together
-- [runbooks.md](runbooks.md) — the alerts these metrics feed, with confirm/remediate steps
-- [../api-reference/testing.md](../api-reference/testing.md) — test fixtures, `setup_tracer`, `setup_meter`
-- [cancellation.md](cancellation.md) — cancel phases, `cancel_phase_change` log events
+- [actors.md](actors.md): `@actor` decorator, `JobContext`, `ctx.log`, `ctx.span`
+- [workers.md](workers.md): worker lifecycle, `WorkerSettings`, pool configuration
+- [ops.md](ops.md): operations & adoption: which metrics catch which failure mode
+- [maintenance-sweeps.md](maintenance-sweeps.md): why the sweep instruments exist and how to read them together
+- [runbooks.md](runbooks.md): the alerts these metrics feed, with confirm/remediate steps
+- [../api-reference/testing.md](../api-reference/testing.md): test fixtures, `setup_tracer`, `setup_meter`
+- [cancellation.md](cancellation.md): cancel phases, `cancel_phase_change` log events

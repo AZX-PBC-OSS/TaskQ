@@ -28,7 +28,7 @@ from taskq._json import loads, sanitize_nul_str
 from taskq.backend._protocol import Backend, DstStrategy, EnqueueArgs, IdentityKey, parse_retry_kind
 from taskq.backend._records import parse_rowcount
 from taskq.backend._sweeps import (
-    _validate_positive,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical pre-SQL bound validation, shared by every bounded batch path — a degenerate cap is a caller configuration bug and belongs at the boundary, not inside a tick.
+    _validate_positive,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical pre-SQL bound validation, shared by every bounded batch path, a degenerate cap is a caller configuration bug and belongs at the boundary, not inside a tick.
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
@@ -70,7 +70,7 @@ class ActorFirePolicy:
 
     The client enqueue path stamps both onto :class:`EnqueueArgs` at build
     time (``client/_args.py``); the tick builds its own args directly, so
-    it needs the flags here to reach parity — a cron fire for a singleton
+    it needs the flags here to reach parity, a cron fire for a singleton
     actor must carry ``metadata["singleton"]`` (the ``jobs_singleton_uniq``
     partial index keys on exactly that flag) and respect ``max_pending``
     like any client enqueue.
@@ -83,7 +83,7 @@ class ActorFirePolicy:
 @dataclass(frozen=True, slots=True)
 class _ActorConfig:
     """The actor_config columns the tick reads for one actor.  ``max_pending``
-    is the OPERATOR-stored cap — NULL stored means no stored override, so the
+    is the OPERATOR-stored cap, NULL stored means no stored override, so the
     registry literal stands (the seed-resolution rule); a non-NULL stored
     value is authoritative over it, exactly as it is for every client
     enqueue arm (``client/_capacity.py``)."""
@@ -100,8 +100,8 @@ _TICK_WRITE_RESERVE_FRACTION: Final = 0.1
 The leader wraps the whole tick in one ``asyncio.timeout`` and the
 factory call sits inside it.  Armed with the same duration, the two
 deadlines race with no deterministic winner, and when the outer one
-wins it delivers ``CancelledError`` — a ``BaseException``, so the
-per-schedule ``except Exception`` cannot catch it — aborting the tick
+wins it delivers ``CancelledError``, a ``BaseException``, so the
+per-schedule ``except Exception`` cannot catch it, aborting the tick
 and rolling back every healthy peer planned beside the hung schedule.
 ``next_fire_at`` never advances, the identical batch is selected again,
 and the hung schedule accrues no strike: a livelock with no telemetry.
@@ -118,12 +118,12 @@ may be granted; a smaller leftover funds no wait at all (the schedule
 defers: see :class:`_TickBudgetExhaustedError`).
 
 A REFUSAL threshold, never a guaranteed minimum: the distinction
-#174's "no floor" invariant turns on.  A guaranteed minimum grant lets
+The "no floor" invariant turns on.  A guaranteed minimum grant lets
 simultaneously-due hung factories SUM past the whole-tick deadline (N
-factories x floor > budget): the livelock #174 closed.  This threshold
+factories x floor > budget): the livelock the clamp closed.  This threshold
 only refuses grants, never enlarges one: every granted wait still fits
 the remaining budget, so the aggregate bound strictly strengthens (a
-subset of the waits #174's clamp would have granted).
+subset of the waits the clamp would have granted).
 
 Why refuse at all: the leftover a near-monopolizing factory leaves is a
 lottery ticket, not a budget.  Granted a 0.08s micro-grant, a factory
@@ -152,14 +152,14 @@ class _TickBudgetExhaustedError(TimeoutError):
     not struck.
 
     The planning loop awaits each schedule's factory in turn, so the
-    batch's AGGREGATE factory wait — not any single factory's — is what
+    batch's AGGREGATE factory wait, not any single factory's, is what
     races the leader's whole-tick ``asyncio.timeout``.  Any guaranteed
     minimum grant lets enough simultaneously-due hung factories sum past
     that deadline: the outer cancellation then rolls back every strike
     the tick recorded, and the identical batch is re-selected on the
     next tick.  Refusing the wait the moment no fundable grant remains
     keeps the tick inside its deadline however many hung factories share
-    the batch (#174), and the refusal only shrinks the set of granted
+    the batch, and the refusal only shrinks the set of granted
     waits, so that aggregate bound is untouched.
 
     No fundable grant means one of two leftovers, and both are the
@@ -169,7 +169,7 @@ class _TickBudgetExhaustedError(TimeoutError):
     is a lottery ticket that would strike, via a plain ``TimeoutError``,
     any factory slower than itself, manufacturing evidence against a
     schedule whose only defect was planning behind a slow neighbour.
-    Striking the never-funded schedules was #235: a HUNG monopolizer
+    Striking the never-funded schedules was the hung-actor fix: a HUNG monopolizer
     marches its peers to auto-disable in lockstep, and a
     slow-SUCCESSFUL one (which never strikes, never auto-disables and
     never frees the budget) marches them just as surely on manufactured
@@ -190,7 +190,7 @@ leader cadence, NOT the schedule's next cron slot.
 
 The deferred slot is still owed, only its funding was missing, so
 skipping to the next cron slot would silently drop a healthy schedule's
-fire because a NEIGHBOUR hung (#235's harm, one period later).  One
+fire because a NEIGHBOUR hung (the same harm, one period later).  One
 second matches the leader loop's tick cadence, and the due read's
 ``next_fire_at <= statement_timestamp()`` bound makes the schedule due
 again on the very next tick, whose ``server_now`` sits at least one
@@ -225,7 +225,7 @@ the statement starts, before the MATERIALIZED CTE evaluates: with the
 probe and the due read folded, a commit landing between the snapshot and
 the probe handed the contender the lock together with a snapshot from
 before the winner's ``next_fire_at`` advance was visible, and the loser
-re-fired the batch the lock had just granted to the winner — seen once
+re-fired the batch the lock had just granted to the winner, seen once
 in CI as two concurrent ticks firing 3 + 3 for a 3-schedule due set,
 reproducibly only on a runner slow enough to deschedule the Postgres
 backend inside that gap. Reading due in a later statement puts the read
@@ -245,7 +245,7 @@ CRON_DUE_SQL_TEMPLATE: Final = (
 """The tick's second statement: the planning clock and the due read
 ($1 = the batch limit), issued only after the lock is held.
 
-``statement_timestamp()`` (STABLE) — not ``clock_timestamp()`` (VOLATILE) —
+``statement_timestamp()`` (STABLE), not ``clock_timestamp()`` (VOLATILE) ,
 for the due bound: a volatile comparison cannot be a btree index condition,
 so cron_schedules_next_fire_idx (partial on enabled, keyed on
 next_fire_at) would degrade from an Index Cond that stops at the boundary
@@ -271,31 +271,31 @@ LIMIT.  The index-audit test pins that shape.
 
 
 def cron_lock_sql(schema: str) -> str:
-    """The tick's lock statement for *schema* — token replacement, like every
+    """The tick's lock statement for *schema*, token replacement, like every
     other schema interpolation, so a literal brace in the template can
     never turn a tick into a ``KeyError``."""
     return CRON_LOCK_SQL_TEMPLATE.replace("{schema}", schema)
 
 
 def cron_due_sql(schema: str) -> str:
-    """The tick's due statement for *schema* — same token replacement
+    """The tick's due statement for *schema*, same token replacement
     discipline as :func:`cron_lock_sql`; the plan-shape audit
     (``tests/test_index_audit.py``) explains this statement, so the
     index-servable due bound cannot drift there unnoticed."""
     return CRON_DUE_SQL_TEMPLATE.replace("{schema}", schema)
 
 
-# The commit-gate channel — ``cron_commit_gate_channel(schema)`` in
-# ``taskq.constants`` — is the self-addressed channel the tick uses to
+# The commit-gate channel, ``cron_commit_gate_channel(schema)`` in
+# ``taskq.constants``, is the self-addressed channel the tick uses to
 # learn that its own transaction committed. Postgres delivers a ``NOTIFY``
 # to its own session only if the emitting transaction commits, and never
-# if it rolls back — the only commit signal available to a function that
+# if it rolls back, the only commit signal available to a function that
 # runs INSIDE the caller's transaction and returns before the ``COMMIT``.
 # The notification rides back on the same packet as the ``COMMIT``
 # response, so the tick's telemetry lands while the caller is still inside
 # its transaction block. Schema-scoped because channels share one
 # database-wide namespace: a foreign schema's cron session on the same
-# channel would not only hear this one's signals — its notification would
+# channel would not only hear this one's signals, its notification would
 # mark THIS session confirmed-listening (the gate records the sender's
 # pid) without this session's LISTEN ever having survived a commit.
 
@@ -304,7 +304,7 @@ _armed_commit_emits: dict[int, tuple[str, Callable[[], None]]] = {}
 """The emission waiting on each cron session's commit, keyed by that
 session's backend pid and tagged with the arming tick's nonce.
 
-One entry per live cron session — one in the shipped worker — because
+One entry per live cron session, one in the shipped worker, because
 each tick replaces its own session's entry.  The pid keys the map rather
 than the connection object because a pooled connection is a proxy that
 cannot be weak-referenced, and a strong key would pin it past its
@@ -342,7 +342,7 @@ retires this module's per-pid gate state (:func:`_forget_commit_gate_session`).
 
 One hook per connection, marked here so a tick re-arms rather than stacks
 a second listener on the same connection.  The set is swept by the same
-hook it gates, so it stays proportional to LIVE cron sessions — without
+hook it gates, so it stays proportional to LIVE cron sessions, without
 the hook, a tick that armed an emission and then lost its connection (a
 rollback the server will never answer) would leave the entry behind, and
 every confirmed ``LISTEN`` would outlive its session: under cron
@@ -369,7 +369,7 @@ def _commit_gate_termination_hook(pid: int) -> Callable[[object], None]:
 
     The callback takes ``object`` rather than ``asyncpg.Connection``:
     asyncpg invokes it with the connection (or the pool proxy standing in
-    for one), neither of which the hook needs — the pid is captured here.
+    for one), neither of which the hook needs, the pid is captured here.
     """
 
     def _drop(_conn: object) -> None:
@@ -401,8 +401,8 @@ async def _emit_on_commit(
 ) -> None:
     """Arrange for *emit* to run only if the caller's transaction commits.
 
-    Every claim the tick's telemetry makes — a strike, an auto-disable, a
-    published message, a failure-count reset — describes a row the tick
+    Every claim the tick's telemetry makes, a strike, an auto-disable, a
+    published message, a failure-count reset, describes a row the tick
     wrote and the caller has yet to commit.  Emitting before that commit
     lets a failed ``COMMIT`` leave operators reading an auto-disable for a
     schedule the database still has enabled, and a failure count for a
@@ -420,8 +420,8 @@ async def _emit_on_commit(
     asyncpg already holds the callback, so ``add_listener`` costs no
     round trip.
 
-    A connection that cannot carry a session-scoped ``LISTEN`` — a
-    transaction-pooling proxy in front of Postgres, say — gets the
+    A connection that cannot carry a session-scoped ``LISTEN``, a
+    transaction-pooling proxy in front of Postgres, say, gets the
     emission inline instead.  Losing the gate costs the commit-time
     precision; losing the telemetry would cost the whole failure trail,
     and a tick that struck a schedule must always say so.
@@ -452,7 +452,7 @@ async def _emit_on_commit(
             _confirmed_listening.discard(pid)
         # The fallback trades the commit gate away: the emission below can
         # describe a transaction still in flight. A degraded outcome must
-        # not be silent — the warning names why the gate is absent.
+        # not be silent, the warning names why the gate is absent.
         log.warning(
             "cron-commit-gate-unavailable",
             kind="cron_commit_gate_fallback",
@@ -464,7 +464,7 @@ async def _emit_on_commit(
 def _factory_deadline(settings: WorkerSettings, elapsed_s: float) -> float | None:
     """The per-factory deadline for a factory called *elapsed_s* into the
     tick: the configured budget, clamped to stay strictly inside what is
-    left of the leader's whole-tick deadline — or ``None`` when that
+    left of the leader's whole-tick deadline, or ``None`` when that
     leftover cannot fund a grant.
 
     See :data:`_TICK_WRITE_RESERVE_FRACTION` for why the clamp is not
@@ -496,7 +496,7 @@ def _factory_deadline(settings: WorkerSettings, elapsed_s: float) -> float | Non
 def _resolve_max_pending(stored: int | None, literal: int | None) -> int | None:
     """The capacity resolution rule as one pure function: a non-NULL
     operator-stored ``actor_config.max_pending`` wins over the registry
-    literal — tightening or loosening it — while a NULL stored value
+    literal, tightening or loosening it, while a NULL stored value
     leaves the literal as the cap and neither means no cap.  The same rule
     the client path's ``ActorCapacityCache`` applies to every client
     enqueue, applied here so the tick's admission control answers the
@@ -532,7 +532,7 @@ class _FireFailure:
     from an uncontrolled exception and feeds the batched failures
     UPDATE's ``unnest($2::text[])``: a raw NUL aborts that whole
     statement (SQLSTATE 22021), losing the ``consecutive_failures`` and
-    auto-disable bookkeeping for every schedule in the tick — the same
+    auto-disable bookkeeping for every schedule in the tick, the same
     rationale as ``worker/_handlers.py``'s terminal-write sanitization.
     """
 
@@ -554,7 +554,7 @@ class _BufferedFailureTelemetry:
     exported at failure time: a strike persists only if the tick's
     failures UPDATE executes AND the caller's transaction commits, so
     exporting at strike time claims schedule failures (and auto-disables)
-    the database can still roll back — see the emission section in
+    the database can still roll back, see the emission section in
     :func:`tick_cron`.
     """
 
@@ -581,7 +581,7 @@ class _SuppressedFire:
     ``tick_budget`` advances only :data:`_TICK_BUDGET_RETRY_DELAY`: the
     slot is still owed and perfectly landable, only its funding was
     missing, so the schedule retries on the very next tick instead of
-    losing the slot (#235).
+    losing the slot.
     """
 
     schedule_id: UUID
@@ -617,15 +617,15 @@ def _compute_fire_failure(
     """The pure half of the per-failure except-branch: bump the failure
     count, decide auto-disable, sanitize the error text.
 
-    No span, no export — the telemetry half (:func:`_mark_failure_span`)
+    No span, no export, the telemetry half (:func:`_mark_failure_span`)
     runs from the end-of-tick emission only, after every statement of the
     tick has executed; see :class:`_BufferedFailureTelemetry`.
 
     ``error_text`` is NUL-sanitized (see :class:`_FireFailure`) because it
     is bound as ``text`` by the batched failures UPDATE, and carries the
     exception's class name as a fallback when the message is empty:
-    ``str(TimeoutError())`` is ``''`` — exactly what ``resolve_payload``'s
-    ``wait_for`` raises for a payload factory that never returns — and
+    ``str(TimeoutError())`` is ``''``, exactly what ``resolve_payload``'s
+    ``wait_for`` raises for a payload factory that never returns, and
     without the fallback a schedule can be failing (and auto-disabled)
     with an empty reason in the column, the log event and the exported
     span status.
@@ -651,7 +651,7 @@ def _mark_failure_span(
     (already-open) failure span ERROR and attach ``cron.auto_disabled``.
 
     The span status description and the event carry
-    :func:`safe_exception_message` — span text is exported to third-party
+    :func:`safe_exception_message`, span text is exported to third-party
     telemetry backends, and ``str()`` of a constraint violation quotes row
     values.  Both fall back to the exception's class name when the message
     is empty, for the same reason as :func:`_compute_fire_failure`.
@@ -688,7 +688,7 @@ async def _suppress_policy_collisions(
     as typed *errors*: a singleton fire reaching the batched INSERT while
     a blocker is active violates ``jobs_singleton_uniq`` and aborts the
     whole statement, landing every planned fire in the tick's generic
-    failure path — striking schedules whose only defect is a busy actor
+    failure path, striking schedules whose only defect is a busy actor
     (the auto-disable trap).
 
     The second singleton gate is in memory, not a query: two due
@@ -700,23 +700,23 @@ async def _suppress_policy_collisions(
     The ``max_pending`` gate carries the same in-memory second half: a
     kept plan's enqueue args are pending or scheduled the moment the
     batch commits, so every later plan for the same capped actor is
-    evaluated against the DB count PLUS the tick's own kept plans — the
+    evaluated against the DB count PLUS the tick's own kept plans, the
     count a second, sequential client enqueue would see.  The DB count
     alone (still zero mid-tick) admits every plan in the batch and lands
     cap+N jobs from one tick.  A plan whose own args exceed the remaining
     capacity (the DST ``allof`` pair: one immediate occurrence plus one
     future-scheduled) is trimmed to what fits, with the dropped
     future-dated occurrence deferred to its own instant via the plan's
-    ``next_fire_at`` — delivered later at capacity, never silently
+    ``next_fire_at``, delivered later at capacity, never silently
     dropped and never past the cap.
 
     Each capped actor's effective cap is RESOLVED here, not taken from
     the policy map alone: a non-NULL operator-stored
     ``actor_config.max_pending`` (carried by *actor_configs*, from the
     ac-rows SELECT the tick already runs) is authoritative over the
-    registry literal the policy map carries — it can tighten a declared
+    registry literal the policy map carries, it can tighten a declared
     literal or cap an actor declared without one, including the stored-0
-    emergency drain — while a NULL stored value leaves the literal
+    emergency drain, while a NULL stored value leaves the literal
     standing and neither means uncapped, exactly as today.  The singleton
     flag stays registry-only: it is not a stored actor_config field.
     """
@@ -729,7 +729,7 @@ async def _suppress_policy_collisions(
     )
     blocking: dict[str, UUID] = {}
     if singleton_actors:
-        # ``min(id::text)`` — Postgres has no ``min(uuid)`` aggregate; the
+        # ``min(id::text)``, Postgres has no ``min(uuid)`` aggregate; the
         # text form orders identically for the UUIDv7 ids TaskQ mints
         # (timestamp in the leading bits), so the blocker picked is the
         # oldest active singleton job, same choice the enqueue path's
@@ -774,7 +774,7 @@ async def _suppress_policy_collisions(
     suppressed: list[_SuppressedFire] = []
     fired_singleton_job: dict[str, UUID] = {}
     # Pending/scheduled occupancy this tick itself is about to create for a
-    # capped actor — the rows do not exist at preflight time, but a second
+    # capped actor, the rows do not exist at preflight time, but a second
     # sequential client enqueue would see them (the first has committed).
     intra_pending: dict[str, int] = {}
     for plan in successes:
@@ -850,7 +850,7 @@ _DETAIL_KEY_RE = re.compile(r"^Key \((?P<cols>[^)]*)\)=\((?P<vals>.*)\) already 
 """Postgres' unique-violation detail line: the index's columns and the
 colliding values.  ``jobs_singleton_uniq`` is keyed on ``(actor)`` and
 ``jobs_pkey`` on ``(id)`` (the initial migration), so the values name the
-colliding actor or the collided job id — the one fact per-plan
+colliding actor or the collided job id, the one fact per-plan
 attribution needs without re-inserting anything."""
 
 _ATTRIBUTABLE_CONSTRAINTS: Final[frozenset[str]] = frozenset({"jobs_pkey", "jobs_singleton_uniq"})
@@ -868,14 +868,14 @@ def _attributable_violation(exc: Exception) -> UniqueViolationError | None:
 
     The enqueue paths convert a server-side ``jobs_singleton_uniq``
     violation into a typed refusal (:class:`SingletonCollisionError`)
-    raised ``from`` the driver's error — the caller-facing contract for
+    raised ``from`` the driver's error, the caller-facing contract for
     client enqueues.  For the tick's per-plan attribution that wrapper is
     opaque: the constraint name and the ``Key (cols)=(vals)`` detail the
     attribution parses live on the wrapped violation, and the wrapper's
     own text (``BackpressureError: actor=…, pending=0, max_pending=None``)
-    names neither — a strike recorded from it loses the committed
+    names neither, a strike recorded from it loses the committed
     outcome's identity.  Walking the explicit cause chain (``__cause__``
-    only — the conversion's documented intent, never ``__context__``,
+    only, the conversion's documented intent, never ``__context__``,
     which can name an unrelated exception merely being handled) lets
     attribution and the strike text follow the violation that COMMITTED,
     not the conversion.  Bounded: a pathological chain must not loop the
@@ -897,10 +897,10 @@ def _attribute_violation(
 ) -> tuple[UniqueViolationError, list[_FireSuccess], list[_FireSuccess]] | None:
     """Map a batched-INSERT unique violation to the plan(s) that caused it.
 
-    Returns ``(violation, offenders, survivors)`` — the unwrapped
+    Returns ``(violation, offenders, survivors)``, the unwrapped
     violation the strike text and span status are recorded from, the
-    plan(s) it convicts, and the plans cleared to retry — or ``None``
-    when the error cannot be attributed SAFELY — any other exception
+    plan(s) it convicts, and the plans cleared to retry, or ``None``
+    when the error cannot be attributed SAFELY, any other exception
     type, a violation of a constraint TaskQ does not own, an unparsable
     or truncated detail line, or a value naming no pending plan.  The
     caller isolates per plan on ``None`` rather than guessing: striking
@@ -910,23 +910,23 @@ def _attribute_violation(
     Every attribution is verified against the pending plans before it is
     trusted: an ``id`` value must be a job id some pending plan actually
     mints, and an ``actor`` value must name a plan whose args carry the
-    ``singleton`` stamp — the partial index covers only stamped rows, so
+    ``singleton`` stamp, the partial index covers only stamped rows, so
     an unstamped plan for the same actor cannot be the violator.  A value
     that verifies against nothing pending means the detail is not telling
     us which of OUR rows collided (PG truncates long detail values;
-    indexes can be added by an operator) — unattributable, on purpose.
+    indexes can be added by an operator), unattributable, on purpose.
     """
     violation = _attributable_violation(exc)
     if violation is None:
         return None
     # Why: gate on the constraint NAME, not just the detail's column list.
     # Today only jobs_pkey (id) and jobs_singleton_uniq (actor, partial)
-    # can produce the detail shapes parsed below — but an operator-added
+    # can produce the detail shapes parsed below, but an operator-added
     # non-partial unique index on (actor) raises the same "Key
     # (actor)=(x) already exists." detail under its own name, and
     # attributing from the detail alone would strike a singleton-stamped
     # plan of that actor when the violator was an unstamped row the
-    # operator's index (not TaskQ's) rejected — a wrong strike toward
+    # operator's index (not TaskQ's) rejected, a wrong strike toward
     # auto-disable.  A None/unknown constraint name falls back too: only
     # the two names TaskQ ships are attributable.
     if violation.constraint_name not in _ATTRIBUTABLE_CONSTRAINTS:
@@ -971,8 +971,8 @@ def _strike_plans(
     *failures*, and buffer their telemetry in *telemetry* for the
     end-of-tick emission.
 
-    The failure RECORD must exist at strike time — the tick's failures
-    UPDATE binds it — but the span, auto-disable event and metric delta
+    The failure RECORD must exist at strike time, the tick's failures
+    UPDATE binds it, but the span, auto-disable event and metric delta
     must not be exported here: the strikes only persist if that UPDATE
     executes AND the caller's transaction commits, and a TRANSIENT error
     from any later statement of the tick rolls them all back (the
@@ -1006,7 +1006,7 @@ async def _enqueue_planned_fires(
     """Enqueue the planned fires and return the plans whose jobs landed.
 
     The whole batch is ONE ``INSERT ... SELECT`` statement, so Postgres
-    aborts the entire statement when a single row violates a constraint —
+    aborts the entire statement when a single row violates a constraint ,
     and a statement error poisons the surrounding transaction (every later
     statement fails with SQLSTATE 25P02 until rollback).  Both halves of
     that sentence are what the pre-batching per-row enqueue never had to
@@ -1015,8 +1015,8 @@ async def _enqueue_planned_fires(
     * The enqueue runs inside a SAVEPOINT (asyncpg's nested
       ``conn.transaction()`` on the caller's already-open transaction): a
       failed batch rolls back to the savepoint, leaving the caller's
-      transaction alive and the tick's remaining bookkeeping — the
-      survivors' advance, the suppression UPDATE, the strikes — committable.
+      transaction alive and the tick's remaining bookkeeping, the
+      survivors' advance, the suppression UPDATE, the strikes, committable.
       Without it, the failure UPDATE below the old inline except-branch
       raised ``InFailedSQLTransactionError`` itself: no strike ever
       persisted, while the span/metric telemetry still claimed every
@@ -1025,12 +1025,12 @@ async def _enqueue_planned_fires(
     * A unique violation is attributed from the error itself
       (:func:`_attribute_violation`): the colliding plan(s) take one
       strike each and the SURVIVORS retry as a batch.  The preflight is
-      advisory — a client enqueue committing between the preflight SELECT
+      advisory, a client enqueue committing between the preflight SELECT
       and this INSERT (READ COMMITTED: the INSERT takes a fresh snapshot)
       is a race the tick lost for that one actor, not a defect of every
       schedule in the batch.  Each retry strikes at least one plan, so
       the loop is bounded by the batch size.
-    * Transient PG errors (:data:`TRANSIENT_PG_ERRORS` — statement
+    * Transient PG errors (:data:`TRANSIENT_PG_ERRORS`, statement
       timeout, connection drop, server shutdown) re-raise without
       recording a single failure: the caller's transaction rolls back and
       the leader's transient handling retries the tick.  A strike is a
@@ -1040,7 +1040,7 @@ async def _enqueue_planned_fires(
       plan retries in its own savepoint: the plans that individually fail
       take their own strike with their own exception; the plans that
       individually succeed land.  This is the fallback for shapes like a
-      check violation or a NUL that escaped to the server — per-plan cost
+      check violation or a NUL that escaped to the server, per-plan cost
       is paid only on the failure path.
     """
     pending = list(plans)
@@ -1060,8 +1060,8 @@ async def _enqueue_planned_fires(
                     # the preflight exists to prevent). Accepted converse cost:
                     # a client commit landing between the preflight SELECT and
                     # this INSERT overshoots the cap by that commit, bounded by
-                    # one tick's kept plans — liveness over strictness, stated.
-                    # That same commit can violate jobs_singleton_uniq — the
+                    # one tick's kept plans, liveness over strictness, stated.
+                    # That same commit can violate jobs_singleton_uniq, the
                     # attribution + survivor-retry below is the backstop for
                     # exactly that window.
                     enforce_max_pending=False,
@@ -1077,7 +1077,7 @@ async def _enqueue_planned_fires(
                 # wrapper: a converted refusal's own text (the typed
                 # SingletonCollisionError) names no constraint, so the
                 # recorded strike would not identify the committed
-                # outcome — the racer's row must carry
+                # outcome, the racer's row must carry
                 # jobs_singleton_uniq itself, exactly as an unconverted
                 # jobs_pkey collision does.
                 violation, offenders, survivors = attributed
@@ -1115,7 +1115,7 @@ async def tick_cron(
     ``pg_try_advisory_xact_lock`` on the schema-qualified cron lock name to
     prevent double-fire during leader handover.
 
-    *conn* MUST already be in an open transaction — the advisory lock is
+    *conn* MUST already be in an open transaction, the advisory lock is
     transaction-scoped and releases on COMMIT/ROLLBACK.
 
     One tick is a bounded batch: at most *limit* due schedules (ordered by
@@ -1128,15 +1128,15 @@ async def tick_cron(
     The catch-up cutoff and the beyond-window recompute seed are read from
     the PG server clock in the same statement as the due read: the
     due-check (``next_fire_at <= statement_timestamp()``) is server-side,
-    so every croniter seed must come from the same domain — and from the
+    so every croniter seed must come from the same domain, and from the
     same instant, so a due row's ``next_fire_at`` never exceeds the seed.
     Seeding from the leader's Python clock shifts every recomputed fire by
     the app↔DB skew and can recompute ``next_fire_at`` into the server's
     past (a fire loop).
 
     *actor_policies* carries the worker's ``actor_registry`` singleton /
-    ``max_pending`` flags (``None`` — the default, and every pre-plumbing
-    caller — stamps nothing and enforces nothing, exactly the previous
+    ``max_pending`` flags (``None``, the default, and every pre-plumbing
+    caller, stamps nothing and enforces nothing, exactly the previous
     behavior).  With flags present, planned fires carry the same stamps a
     client enqueue would get, and a fire blocked by an active singleton
     job or a full pending cap is SUPPRESSED: dropped from the batch,
@@ -1144,10 +1144,10 @@ async def tick_cron(
     slots are absent from the return count).  A factory-backed schedule
     the tick's funded budget could not pay for is suppressed the same
     way: one leader cadence of retry, no strike, because its factory
-    never ran (#235).  The ``max_pending`` cap is
+    never ran.  The ``max_pending`` cap is
     resolved per actor against the operator-stored ``actor_config`` row
-    the tick already reads — a non-NULL stored value is authoritative
-    over the registry literal, the client path's own rule — so a stored
+    the tick already reads, a non-NULL stored value is authoritative
+    over the registry literal, the client path's own rule, so a stored
     cap (including the stored-0 emergency drain) bounds the tick exactly
     like the same literal cap.
     """
@@ -1159,7 +1159,7 @@ async def tick_cron(
     lock_name = schema_lock_name("cron", schema)
     # Two statements: the try-lock, then the planning clock + due read. The
     # leader ticks once a second and is idle almost always, so the idle
-    # tick's cost is the round-trip count — but the read cannot share the
+    # tick's cost is the round-trip count, but the read cannot share the
     # probe's statement: under READ COMMITTED the statement's snapshot is
     # taken before the probe evaluates, so a commit landing in that gap
     # handed the contender the lock with a pre-advance snapshot and the
@@ -1199,7 +1199,7 @@ async def tick_cron(
     rows = tick_rows
 
     # One round trip for every distinct actor in the batch.  A missing actor
-    # is not an error here — the planning loop turns each affected schedule
+    # is not an error here, the planning loop turns each affected schedule
     # into a per-schedule failure with the same message the per-row lookup
     # raised before batching.
     actors: list[str] = sorted({str(row["actor"]) for row in rows})
@@ -1228,7 +1228,7 @@ async def tick_cron(
     suppressed: list[_SuppressedFire] = []
     # Failure telemetry (spans, auto-disable events, metric deltas) is
     # buffered here and exported ONLY after every statement of the tick
-    # has executed — see the emission section at the end of this function.
+    # has executed, see the emission section at the end of this function.
     failure_telemetry: list[_BufferedFailureTelemetry] = []
 
     for row in rows:
@@ -1268,7 +1268,7 @@ async def tick_cron(
                 # the only schedule with evidence against it is the one
                 # whose factory consumed the budget ahead of this one,
                 # and that schedule took its own strike through the
-                # generic branch.  Striking here too was #235: the
+                # generic branch.  Striking here too was the hung-actor fix: the
                 # failure UPDATE never advances next_fire_at, so the
                 # identical batch returned in the identical order every
                 # tick and healthy factory-backed schedules rode a hung
@@ -1292,7 +1292,7 @@ async def tick_cron(
                 # records the planning ATTEMPT and closes UNSET; the failure
                 # claim (ERROR status, auto-disable event) belongs to the
                 # emission span, which opens only once the transaction has
-                # committed — a rollback takes this failure with it.
+                # committed, a rollback takes this failure with it.
                 failure = _compute_fire_failure(row, exc, settings)
                 failures.append(failure)
                 failure_telemetry.append(
@@ -1305,13 +1305,13 @@ async def tick_cron(
                 )
 
     # Policy preflight (singleton / max_pending parity with the client
-    # enqueue path) — before the batched enqueue, and only when a planned
+    # enqueue path), before the batched enqueue, and only when a planned
     # success carries a flag, so ticks without flagged actors spend zero
     # extra statements.  Suppressed plans leave the enqueue list here and
     # never reach the failure path below.
     # Overlap-twin delivery is settled BEFORE the policy preflight: a
     # suppressed plan leaves the success list here, and its next_fire
-    # flows into the suppression UPDATE below — whether the fold-1 twin
+    # flows into the suppression UPDATE below, whether the fold-1 twin
     # was already delivered by an earlier tick is independent of any
     # policy, and both UPDATE paths must carry the same advance.
     successes = await _skip_already_delivered_overlap_twins(conn, schema, successes, actor_policies)
@@ -1344,7 +1344,7 @@ async def tick_cron(
         # next_fire_at ONLY: suppression says nothing about the actor's
         # health, so no last_fired_at stamp (nothing fired), no
         # last_fire_error write, no consecutive_failures increment and no
-        # reset either — a suppressed slot must neither punish nor amnesty.
+        # reset either, a suppressed slot must neither punish nor amnesty.
         # Advancing next_fire_at alone keeps sequential catch-up moving and
         # prevents a hot re-fire loop against the active blocker; a
         # budget-deferred entry rides the same statement with its
@@ -1362,7 +1362,7 @@ async def tick_cron(
     disabled_count_after: int | None = None
     if failures:
         # One statement for both failure flavours.  The CASE, not
-        # ``enabled = NOT f.disable``, is load-bearing: a plain NOT would
+        # ``enabled = NOT f.disable``, is essential: a plain NOT would
         # re-enable a schedule someone re-enabled between read and write.
         # ``AND s.enabled = true`` keeps the pre-batching guard, so a
         # schedule disabled by anyone else mid-tick is left alone and shows
@@ -1408,17 +1408,17 @@ async def tick_cron(
     # schedules, so an actor whose failing schedule was disabled or
     # deleted between ticks never re-enters a batch, and a batch-scoped
     # read would strand its reported level at its last value forever.
-    # One aggregate over the operator-sized cron_schedules table — and
+    # One aggregate over the operator-sized cron_schedules table, and
     # skipped when telemetry is off, the reconcile it feeds being its
     # only consumer.
     failure_totals: dict[str, int] = (
         await _actor_failure_totals(conn, schema) if otel_enabled() else {}
     )
 
-    # ── Telemetry emission — gated on the caller's COMMIT ─────────────
+    # ── Telemetry emission, gated on the caller's COMMIT ─────────────
     #
-    # Why: every claim below describes a row this tick wrote — a strike,
-    # an auto-disable, a published message, a failure-count reset — and
+    # Why: every claim below describes a row this tick wrote, a strike,
+    # an auto-disable, a published message, a failure-count reset, and
     # those rows persist only if the caller's transaction commits. Emitted
     # inline, a failed COMMIT would leave operators reading an
     # auto-disable for a schedule the database still has enabled, and a
@@ -1449,7 +1449,7 @@ async def tick_cron(
         for entry in failure_telemetry:
             # Span shape matches the strike-time export (PRODUCER kind, the
             # link captured at failure time, the cron_schedule_name /
-            # worker_id / cron_schedule_id attributes) — only the emission
+            # worker_id / cron_schedule_id attributes), only the emission
             # TIME moved.
             with safe_start_span(
                 "cron fire",
@@ -1491,7 +1491,7 @@ async def tick_cron(
 
         for entry in suppressed:
             if entry.reason == "singleton_collision":
-                # Mirrors the enqueue path's own event shape (log only — the
+                # Mirrors the enqueue path's own event shape (log only, the
                 # enqueue path does not count singleton collisions), with the
                 # cron attribution fields.
                 log.info(
@@ -1546,8 +1546,8 @@ async def _actor_failure_totals(conn: asyncpg.Connection, schema: str) -> dict[s
     DUE schedules, so an actor whose failing schedule was disabled or
     deleted with nothing left due never appears in a batch again, and a
     batch-scoped read would leave its reported level stranded at its last
-    value.  ``cron_schedules`` is an operator-sized configuration table —
-    bounded by the schedules an operator creates, never by backlog depth —
+    value.  ``cron_schedules`` is an operator-sized configuration table ,
+    bounded by the schedules an operator creates, never by backlog depth ,
     so one aggregate over it is a constant-cost read on a path that runs
     once a second.  The reconcile this feeds reads an actor's ABSENCE
     here as a true zero (no failing schedule anywhere), which is what
@@ -1582,20 +1582,20 @@ async def _skip_already_delivered_overlap_twins(
     delivered, when the plan's next fire lands inside a repeated range.
 
     Under ``allof`` a fire's computed next can land inside the repeated
-    range — the fired slot's own twin (a single-match range), or the
+    range, the fired slot's own twin (a single-match range), or the
     fold-1 pass's first match (a multi-match range, once the fold-0
     pass is spent).  But the twin chain may already have delivered
     those instants: a tick that fires a fold-0 slot pre-schedules the
     NEXT slot's fold-1 occurrence, so by the time the last fold-0 slot
-    fires, every fold-1 slot can already hold a queued job — firing
+    fires, every fold-1 slot can already hold a queued job, firing
     the schedule into that pass would double-deliver it.  The
     distinguishing fact is a query away and only on this rare shape
     (twice a year per schedule per timezone): the schedule's OWN queued
     jobs inside the range tell exactly which instants are already in
-    flight — scoped by the ``cron_schedule_id`` metadata stamp, because
+    flight, scoped by the ``cron_schedule_id`` metadata stamp, because
     two schedules on one actor are independent (each owes its own
     delivery of every occurrence) and a neighbour's twin chain is not
-    this schedule's coverage — and the plan advances past the delivered
+    this schedule's coverage, and the plan advances past the delivered
     prefix to the first instant nothing holds: the uncovered remainder
     is then delivered by the schedule's own later ticks, each exactly
     once.  ``identity_key`` cannot serve as the scope: it defaults to
@@ -1605,7 +1605,7 @@ async def _skip_already_delivered_overlap_twins(
     Singleton-flagged actors are excluded: their delivery is sequential
     by design (nothing is ever pre-scheduled for them), and the singleton
     preflight on each occurrence's own tick already suppresses a fire
-    against any active blocker — including one at that instant — while
+    against any active blocker, including one at that instant, while
     leaving the slot retryable, which a permanent skip here would not.
     """
     adjusted: dict[UUID, _FireSuccess] = {}
@@ -1641,7 +1641,7 @@ async def _skip_already_delivered_overlap_twins(
     )
     # Instants, not raw datetimes: the row comes back from the database in
     # UTC and the plans' next fires are schedule-timezone-local, and a
-    # cross-zone aware equality is not reliable in this runtime —
+    # cross-zone aware equality is not reliable in this runtime ,
     # normalize both sides.
     delivered: dict[int, set[datetime]] = {}
     for row in rows:
@@ -1655,7 +1655,7 @@ async def _skip_already_delivered_overlap_twins(
             )[0]
             if nxt.astimezone(UTC) <= current.astimezone(UTC):
                 # Monotonicity belt: the computation is pinned to answer
-                # strictly after its seed, so this cannot fire — but a
+                # strictly after its seed, so this cannot fire, but a
                 # regression there must not turn this hop into a loop.
                 break
             current = nxt
@@ -1684,7 +1684,7 @@ async def _plan_fire(
     tick_started: float,
 ) -> _FireSuccess:
     """Plan one due schedule's fire: resolve the fire time (miss handling),
-    payload and enqueue args, and the next ``next_fire_at`` — all in memory,
+    payload and enqueue args, and the next ``next_fire_at``, all in memory,
     inside the caller's per-schedule span.
 
     *server_now* is the PG server clock read inside the caller's tick
@@ -1699,7 +1699,7 @@ async def _plan_fire(
     whole-tick budget from it (see :func:`_factory_deadline`).  When no
     fundable grant remains, the leftover is spent, or below the minimum
     fundable grant, a factory-backed schedule raises
-    :class:`_TickBudgetExhaustedError` — the factory is never called — so
+    :class:`_TickBudgetExhaustedError`, the factory is never called, so
     a batch of hung factories cannot sum past the whole-tick deadline;
     the planning loop routes that exception into the suppression bucket
     (a one-cadence retry, no strike: the factory never ran, so there is
@@ -1717,7 +1717,7 @@ async def _plan_fire(
     catch_up_cutoff = server_now - settings.cron_catch_up_window
     fire_at: datetime = row["next_fire_at"]
     # Subscript, not .get(default): the tick's SELECT is contracted to provide
-    # this column, and a defaulting read is exactly what hid its absence —
+    # this column, and a defaulting read is exactly what hid its absence ,
     # every schedule silently fired with 'skip' semantics, whatever it stored,
     # and the DST-overlap branch below was unreachable.
     dst_strategy_raw: str = row["dst_strategy"]
@@ -1749,7 +1749,7 @@ async def _plan_fire(
     # jobs_singleton_uniq partial index (keyed on the flag) never covers a
     # cron fire and no cap applies.  "cron_schedule_id" is provenance: the
     # twin-coverage walk scopes delivered instants to the schedule that
-    # enqueued them — identity_key cannot serve that scope (it defaults to
+    # enqueued them, identity_key cannot serve that scope (it defaults to
     # NULL and is a user-facing dedup handle shared with on-demand jobs).
     stamped_metadata: dict[str, object] = {"cron_schedule_id": str(row["id"])}
     if policy is not None and policy.singleton:
@@ -1783,7 +1783,7 @@ async def _plan_fire(
             # None = immediate: the enqueue SQL stamps the server clock
             # (COALESCE($n, now())) and decides status in the same
             # statement. Passing a Python-clock stamp here would shift
-            # the job's scheduled_at by the app↔DB skew — a leader
+            # the job's scheduled_at by the app↔DB skew, a leader
             # skewed ahead lands every cron fire 'scheduled' and
             # dispatch-ineligible for the skew duration.
             scheduled_at=None,
@@ -1804,7 +1804,7 @@ async def _plan_fire(
             # Why no second args: both occurrences of the repeated hour
             # would sit active at once (the first pending, the second
             # scheduled) and both carry the singleton flag, so
-            # jobs_singleton_uniq — the very guarantee the flag turns on —
+            # jobs_singleton_uniq, the very guarantee the flag turns on ,
             # aborts the whole batched INSERT from inside the batch.
             # Singleton semantics are served sequentially instead:
             # next_fire_at lands on the first occurrence, and the repeated
@@ -1842,7 +1842,7 @@ async def _plan_fire(
     # No singleton twin-override here: the computation itself owns the
     # fold handoff.  A fired fold-0 slot whose fold-0 pass is spent
     # makes ``compute_next_fire_after`` answer the fold-1 pass's first
-    # match — for a single-match range that IS the fired slot's own
+    # match, for a single-match range that IS the fired slot's own
     # twin (the sequential delivery the deferral promised), and for a
     # multi-match range it is the pass's first unspent occurrence.  An
     # override on the fired slot's own twin alone would send a minutely

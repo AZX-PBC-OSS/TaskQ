@@ -1,8 +1,8 @@
 """Integration tests for TokenBucket Redis backend against testcontainers Redis.
 
-100-burst acceptance — all allowed, remaining decreases monotonically;
+100-burst acceptance - all allowed, remaining decreases monotonically;
         then 10 denied with retry_after≈1s; sleep 2s → 2 more allowed.
-EVALSHA caching — register_script called exactly once across acquires.
+EVALSHA caching - register_script called exactly once across acquires.
 TTL set correctly after one acquire.
 Key format matches ``taskq:{schema}:rl:tb:{bucket_name}`` with hash tag.
 """
@@ -55,7 +55,7 @@ def _settings(redis_url: str) -> WorkerSettings:
     )
 
 
-# ── acceptance definition — 100 burst + 10 denied + 10 after refill ──
+# ── acceptance definition - 100 burst + 10 denied + 10 after refill ──
 
 
 async def test_burst_acceptance(redis_url: str) -> None:
@@ -86,7 +86,7 @@ async def test_burst_acceptance(redis_url: str) -> None:
         elapsed = time.perf_counter() - start
         mean_per_acquire = elapsed / 100
         # Smoke gate against catastrophic regressions only (e.g. one
-        # EVALSHA round trip accidentally becoming N sequential calls) —
+        # EVALSHA round trip accidentally becoming N sequential calls) -
         # NOT a perf gate: under full-suite parallel load the Docker VM
         # is contended enough that a 1ms mean flakes. 10ms still catches
         # a 20x+ round-trip regression.
@@ -109,7 +109,7 @@ async def test_burst_acceptance(redis_url: str) -> None:
         await client.aclose()
 
 
-# ── EVALSHA caching — register_script called once ─────────────
+# ── EVALSHA caching - register_script called once ─────────────
 
 
 async def test_evalsha_caching(redis_url: str) -> None:

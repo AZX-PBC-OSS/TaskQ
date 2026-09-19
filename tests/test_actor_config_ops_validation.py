@@ -4,11 +4,11 @@ The integration tier (test_actor_config_ops.py) covers the SQL path on
 real Postgres; these tests pin the guards that must reject a bad value
 *before anything is written*:
 
-* ``bool`` — ``False`` is an ``int`` and would be written as 0 (asyncpg
+* ``bool`` - ``False`` is an ``int`` and would be written as 0 (asyncpg
   pre-types the parameter and coerces it), flooring the dispatch
   residual ``GREATEST(cap - in_flight, 0)`` and silently pausing the
   actor.
-* NaN / ±inf ``result_ttl`` — ``nan < 0`` is False so a negative guard
+* NaN / ±inf ``result_ttl`` - ``nan < 0`` is False so a negative guard
   cannot see it, but ``clock_timestamp() + NaN * interval '1 second'``
   raises ``interval out of range`` in the terminal-write UPDATE, failing
   every completion for the actor.
@@ -82,5 +82,5 @@ async def test_unset_and_none_and_zero_pass_validation() -> None:
     )
     await set_actor_config_capacity(conn, "a", max_concurrent=None, result_ttl=None)
     await set_actor_config_capacity(conn, "a", max_concurrent=0, max_pending=0, result_ttl=0)
-    # Validation passed — statements were attempted (and the stub saw them).
+    # Validation passed - statements were attempted (and the stub saw them).
     assert len(conn.statements) == 3

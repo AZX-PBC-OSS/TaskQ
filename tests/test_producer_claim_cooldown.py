@@ -1,9 +1,9 @@
 """The producer coalesces bursts of claim triggers instead of claiming per trigger.
 
 A wake NOTIFY is schema-wide and every completion frees a slot, so without
-a floor between rounds a burst of either drives one full dispatch round —
+a floor between rounds a burst of either drives one full dispatch round -
 the most expensive statement in the system, plus window expansions for
-every loser — per trigger. After a round that came back short (fewer rows
+every loser - per trigger. After a round that came back short (fewer rows
 than asked, or none) the producer waits a small jittered cooldown before
 the next round and folds every trigger that lands meanwhile into that one
 round. A full round
@@ -46,7 +46,7 @@ class _WakeBackend:
         self.wake = asyncio.Event()
         self.round_gate: asyncio.Event | None = None
 
-    def subscribe_wake(self) -> _WakeSubscription:
+    def subscribe_wake(self, queues: object = None) -> _WakeSubscription:
         return _WakeSubscription(self.wake)
 
     async def dispatch_batch(
@@ -85,7 +85,7 @@ def _deps(*, maxsize: int, notify_enabled: bool) -> SimpleNamespace:
         settings=settings,
         liveness=SimpleNamespace(tick=lambda *a, **k: None, forget=lambda *a, **k: None),
         disowned_jobs=set(),
-        # The producer's availability subtracts active jobs (#229); the
+        # The producer's availability subtracts active jobs; the
         # cooldown tests hold zero active throughout.
         active_jobs=SimpleNamespace(count=lambda: 0),
     )
@@ -111,7 +111,7 @@ class _Producer:
     async def __aenter__(self) -> _Producer:
         self.task = asyncio.create_task(
             producer_loop(
-                _deps(maxsize=self._maxsize, notify_enabled=self._notify_enabled),  # type: ignore[arg-type]  # Why: the established producer-loop unit pattern — a namespace with the fields the loop reads.
+                _deps(maxsize=self._maxsize, notify_enabled=self._notify_enabled),  # type: ignore[arg-type]  # Why: the established producer-loop unit pattern - a namespace with the fields the loop reads.
                 self.local_queue,
                 self.shutdown_event,
                 self.stop_event,
@@ -157,7 +157,7 @@ async def test_a_wake_storm_collapses_into_a_few_claim_rounds() -> None:
         rounds_after_burst = len(backend.rounds) - rounds_before
         assert rounds_after_burst <= _coalesced_round_bound(burst_elapsed), (
             f"{rounds_after_burst} claim rounds for 20 wakes over {burst_elapsed * 1000:.0f} ms "
-            "— every NOTIFY still drives its own dispatch round; the wake storm is "
+            "- every NOTIFY still drives its own dispatch round; the wake storm is "
             "not coalesced"
         )
         assert rounds_after_burst >= 1
@@ -165,7 +165,7 @@ async def test_a_wake_storm_collapses_into_a_few_claim_rounds() -> None:
 
 async def test_a_wake_during_a_round_yields_exactly_one_follow_up_round() -> None:
     """A NOTIFY that lands while a round is in flight may announce a row the
-    round's snapshot predates: it must produce one follow-up round — not
+    round's snapshot predates: it must produce one follow-up round - not
     zero (lost) and not one per NOTIFY (duplicated)."""
     backend = _WakeBackend()
     gate = asyncio.Event()
@@ -189,7 +189,7 @@ async def test_a_wake_during_a_round_yields_exactly_one_follow_up_round() -> Non
 async def test_a_short_round_waits_out_the_cooldown_before_the_next() -> None:
     """A round that returns fewer rows than it asked for is the signal the
     backlog is (nearly) drained; the next round starts no sooner than the
-    cooldown after it — a re-claim on its heels would only pay for window
+    cooldown after it - a re-claim on its heels would only pay for window
     expansions."""
     backend = _WakeBackend(script=[[make_job_row(status="pending")]])
     async with _Producer(backend, maxsize=4):
@@ -201,7 +201,7 @@ async def test_a_short_round_waits_out_the_cooldown_before_the_next() -> None:
     assert first_limit == 4
     assert second_started - first_started >= _COOLDOWN_MIN_S, (
         f"the round after a short one started {(second_started - first_started) * 1000:.1f} ms "
-        "later — inside the cooldown"
+        "later - inside the cooldown"
     )
 
 
@@ -223,7 +223,7 @@ async def test_a_full_round_re_claims_without_a_cooldown() -> None:
         second_started, _ = backend.rounds[1]
 
     assert second_started - freed_at < _COOLDOWN_MIN_S, (
-        "a full round was followed by a cooldown — backlog drain must stay immediate"
+        "a full round was followed by a cooldown - backlog drain must stay immediate"
     )
 
 
@@ -243,7 +243,7 @@ async def test_a_poll_timed_round_owes_no_cooldown(monkeypatch: object) -> None:
     async def _recording_sleep(delay: float, result: object = None) -> object:
         # Signature mirrors asyncio.sleep(delay, result); records and yields
         # once without waiting, so the producer cycles through many polls
-        # and every timer wait it takes — poll or cooldown — lands here.
+        # and every timer wait it takes - poll or cooldown - lands here.
         sleeps.append(delay)
         await real_sleep(0)
         if len(sleeps) >= 6:

@@ -1,14 +1,14 @@
 """Chaos tests: concurrent terminal writes, transaction rollback, cancel race.
 
-concurrent terminal writes from two workers — only one wins.
+concurrent terminal writes from two workers - only one wins.
 Covers all five terminal writes (mark_succeeded, mark_failed_or_retry,
 mark_cancelled, mark_abandoned, mark_snoozed) plus write_cancel_request
 so the "from two concurrent workers against the
 same job" clause is satisfied for every method.
 
-PG fails mid-way through a terminal write — nothing lands. The mark_*
+PG fails mid-way through a terminal write - nothing lands. The mark_*
 terminal writes are ONE fused statement (jobs UPDATE + job_attempts
-INSERT + job_events INSERT in a single data-modifying-CTE statement —
+INSERT + job_events INSERT in a single data-modifying-CTE statement -
 see _terminal.py's module docstring), so the mid-flight seam is inside
 the statement itself; this test is the executable proof that "Every
 running-state terminal transition atomically emits one job_events row
@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
     type _Conn = asyncpg.Connection | PoolConnectionProxy
 else:
-    type _Conn = object  # pyright: ignore[reportInvalidTypeForm] # Why: runtime fallback — asyncpg is TYPE_CHECKING-only to avoid transitive import
+    type _Conn = object  # pyright: ignore[reportInvalidTypeForm] # Why: runtime fallback - asyncpg is TYPE_CHECKING-only to avoid transitive import
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -53,7 +53,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 
 class TestConcurrentTerminalWrites:
-    """concurrent terminal writes from two workers — only one wins.
+    """concurrent terminal writes from two workers - only one wins.
 
     Parametrized over the six methods: mark_succeeded,
     mark_failed_or_retry, mark_cancelled, mark_abandoned, mark_snoozed,
@@ -245,7 +245,7 @@ class TestConcurrentTerminalWrites:
 
         elif method == "mark_snoozed":
             # Exactly one snooze landed (status scheduled); it wrote no
-            # rows — a deferral is not an execution — so the loser's
+            # rows - a deferral is not an execution - so the loser's
             # predicate miss and the winner's write agree on zero attempt
             # rows, and the only event is the dispatch seed.
             assert row["status"] == "scheduled"
@@ -255,7 +255,7 @@ class TestConcurrentTerminalWrites:
 
         elif method == "mark_retry_after":
             # consume_budget=True: the winner's deferral IS a real
-            # execution — one attempt row, one event of its own.
+            # execution - one attempt row, one event of its own.
             assert row["status"] == "scheduled"
             assert len(attempts) == 1
             assert attempts[0]["outcome"] == "snoozed"
@@ -274,31 +274,31 @@ class TestConcurrentTerminalWrites:
 
 
 class TestTransactionRollbackOnMidFlightFailure:
-    """PG fails mid-way through the terminal write — nothing lands.
+    """PG fails mid-way through the terminal write - nothing lands.
 
     Failure-model note (the re-scope): the previous injector poisoned the
     att CTE's (job_id, attempt) PK with a pre-seeded job_attempts row and
     relied on UniqueViolationError aborting the fused statement. That
-    premise no longer exists — every job_attempts insert now carries
+    premise no longer exists - every job_attempts insert now carries
     ``ON CONFLICT (job_id, attempt) DO NOTHING`` (backend/_sql_templates.py):
     a claim-clamped attempt number repeats at the smallint ceiling, and the
     deliberate doctrine is to keep the first record of the number rather
     than roll the terminal transition back on a collision. A poisoned row
-    is therefore absorbed, not fatal — by design.
+    is therefore absorbed, not fatal - by design.
 
     What still must hold, and what this test pins: the mark_* terminal
     writes are ONE fused statement (jobs UPDATE + job_attempts INSERT +
-    job_events INSERT in a single data-modifying-CTE statement — see
+    job_events INSERT in a single data-modifying-CTE statement - see
     _terminal.py's module docstring), so a failure anywhere in it commits
     nothing. The surviving genuine mid-flight failure is the death of the
     connection itself while the statement executes. This test injects
     exactly that: a second session holds a FOR UPDATE row lock on the jobs
     row, the fused statement blocks on that lock mid-execution (observed
-    lock-waiting in pg_stat_activity — the statement has started, taken
+    lock-waiting in pg_stat_activity - the statement has started, taken
     its snapshot, and reached the row), and an admin session then
     pg_terminate_backend()s the blocked backend. Asserts the caller sees
     the connection die, and the statement's atomicity leaves the job row
-    still ``running`` with no job_attempts or terminal job_events rows —
+    still ``running`` with no job_attempts or terminal job_events rows -
     the executable proof that the fused UPDATE cannot commit without its
     attempt/event INSERTs. Single-statement atomicity itself is a
     PostgreSQL engine guarantee with no unfenced application seam to run
@@ -307,9 +307,9 @@ class TestTransactionRollbackOnMidFlightFailure:
     report a backend was killed, and the death must be connection-level,
     not a statement/lock timeout) plus the nothing-landed assertions,
     which fail the moment the terminal write is ever de-fused into
-    separate statements. The worker-level halves of the same property —
+    separate statements. The worker-level halves of the same property -
     the actor's side effects never commit, the job is never reported
-    succeeded, batch hooks never fire over a dead attempt — are pinned by
+    succeeded, batch hooks never fire over a dead attempt - are pinned by
     the runner/consumer families (test_runner_escape_batch_hook_parity.py,
     test_runner_force_cancel_absorption.py).
     """
@@ -350,7 +350,7 @@ class TestTransactionRollbackOnMidFlightFailure:
             )
 
             # Deadline-based wait for the victim statement to be observed
-            # blocked on the row lock — proof the failure lands
+            # blocked on the row lock - proof the failure lands
             # mid-statement, not before it starts. Scoped to the current
             # database per the pg_stat_activity hygiene rule. If the victim
             # never reaches the lock wait the injection silently did
@@ -380,26 +380,26 @@ class TestTransactionRollbackOnMidFlightFailure:
             )
             assert victim_pid is not None, (
                 "the admin session never observed the terminal write "
-                "lock-waiting — the mid-statement injection did not "
+                "lock-waiting - the mid-statement injection did not "
                 "happen, so a pass would prove nothing"
             )
 
             terminated = await admin.fetchval("SELECT pg_terminate_backend($1)", victim_pid)
             assert terminated is True, (
                 "pg_terminate_backend found no live backend for the blocked "
-                "statement — the injection did not happen"
+                "statement - the injection did not happen"
             )
 
             # The raises tuple deliberately excludes builtin OSError:
             # builtin TimeoutError IS an OSError, so catching OSError here
             # would let a wait_for timeout (the injection never landing)
             # masquerade as the victim's connection death. The observed
-            # death shape is asyncpg's ConnectionDoesNotExistError — a
-            # PostgresError subclass — so the two asyncpg families suffice.
+            # death shape is asyncpg's ConnectionDoesNotExistError - a
+            # PostgresError subclass - so the two asyncpg families suffice.
             with pytest.raises((asyncpg.PostgresError, asyncpg.InterfaceError)) as exc_info:
                 await asyncio.wait_for(victim_task, timeout=5.0)
             # The death must be the terminated connection, not a statement
-            # or lock timeout beating the injector to it — those abort the
+            # or lock timeout beating the injector to it - those abort the
             # statement just as atomically, but they are a different
             # failure mode than the one this test exists to pin.
             assert not isinstance(
@@ -407,7 +407,7 @@ class TestTransactionRollbackOnMidFlightFailure:
                 (asyncpg.QueryCanceledError, asyncpg.LockNotAvailableError),
             ), (
                 f"expected connection death mid-statement, got "
-                f"{type(exc_info.value).__name__} — the timeout path fired "
+                f"{type(exc_info.value).__name__} - the timeout path fired "
                 "instead of pg_terminate_backend"
             )
         finally:
@@ -424,7 +424,7 @@ class TestTransactionRollbackOnMidFlightFailure:
             )
             assert row is not None
             assert row["status"] == "running", (
-                "failed terminal write must leave the job 'running' — the fused "
+                "failed terminal write must leave the job 'running' - the fused "
                 "statement aborted whole (at-least-once reclaim contract)"
             )
 
@@ -432,7 +432,7 @@ class TestTransactionRollbackOnMidFlightFailure:
                 f'SELECT * FROM "{schema}".job_attempts WHERE job_id = $1', job_id
             )
             assert len(attempts) == 0, (
-                "no attempt row may persist from the killed statement — the "
+                "no attempt row may persist from the killed statement - the "
                 "jobs UPDATE, the attempt INSERT, and the event INSERT are "
                 "one statement and roll back together"
             )

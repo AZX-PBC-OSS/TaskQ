@@ -145,7 +145,7 @@ async def test_jobs_client_enqueue_translates_undefined_table_error() -> None:
 
 def test_actor_config_drift_error_exposes_remedy_hint() -> None:
     """ActorConfigDriftError is only ever raised wrapped in
-    ActorConfigDriftList (see worker/startup.py) — its own __str__ stays a
+    ActorConfigDriftList (see worker/startup.py) - its own __str__ stays a
     plain per-actor diff line so ActorConfigDriftList doesn't double-print
     the hint once per drift. It still exposes the hint via .hint so
     standalone callers/tests can access it directly."""
@@ -209,7 +209,7 @@ async def test_sync_actor_with_loop_scoped_dep_logs_warning(
     registry.register_value(_LoopDep, Scope.LOOP, _LoopDep())
 
     # Why plain `def` (no `async def`): ActorRef.is_sync is auto-detected
-    # from `not inspect.iscoroutinefunction(fn)` — there is no explicit
+    # from `not inspect.iscoroutinefunction(fn)` - there is no explicit
     # is_sync kwarg on the @actor decorator.
     @actor(name="sync_actor_with_loop_dep")
     def _sync_actor(
@@ -243,7 +243,7 @@ async def test_health_server_stop_skips_unlink_when_socket_replaced(
         sock_path = str(Path(tmpdir) / "taskq_health.sock")
 
         srv = HealthServer()
-        srv._socket_path = sock_path  # pyright: ignore[reportPrivateUsage]  # Why: test seam — exercising stop()'s unlink guard without a full asyncio.start_unix_server bind.
+        srv._socket_path = sock_path  # pyright: ignore[reportPrivateUsage]  # Why: test seam - exercising stop()'s unlink guard without a full asyncio.start_unix_server bind.
 
         # Simulate: server bound, captured inode 111 at bind time...
         srv._socket_inode = 111  # pyright: ignore[reportPrivateUsage]

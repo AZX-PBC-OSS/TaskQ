@@ -21,6 +21,7 @@ import asyncpg
 import pytest
 from asyncpg.exceptions import InternalClientError
 
+import taskq.backend._records as _records
 from taskq._ids import new_job_id
 from taskq.backend._enqueue import (
     _enqueue,
@@ -102,7 +103,7 @@ def _full_record(*, job_id: UUID | None = None) -> dict[str, object]:
 
 
 class _Record:
-    """Duck-typed asyncpg.Record — supports ``rec[key]`` and ``key in rec``."""
+    """Duck-typed asyncpg.Record - supports ``rec[key]`` and ``key in rec``."""
 
     def __init__(self, data: dict[str, object]) -> None:
         self._data = data
@@ -356,7 +357,7 @@ async def test_idempotency_key_conflict_returns_existing_row() -> None:
     existing_rec = _Record(_full_record(job_id=existing_id))
     conn = _FakeEnqueueConn(
         fetchrow_map={"idempotency_key = $2": existing_rec},
-        # INSERT RETURNING returns None (conflict) — default fetchrow returns None.
+        # INSERT RETURNING returns None (conflict) - default fetchrow returns None.
     )
     args = _make_args(idempotency_key="idem-1")
     clock = FakeClock(_NOW)
@@ -574,6 +575,25 @@ async def test_memory_enqueue_batch_nul_metadata_annotated_and_atomic() -> None:
     assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: test-only admission check
 
 
+async def test_memory_enqueue_with_memoized_args_still_stores_dict_payload() -> None:
+    """The jsonb memos are a PG-binding cache, the args' payload/metadata
+    fields stay the dict form: an InMemoryBackend enqueue of args whose
+    encodings were already memoized (as a PG enqueue would have) still
+    stores and dispatches the dicts, the memo never becomes the stored
+    value."""
+    backend = InMemoryBackend(clock=FakeClock(_NOW))
+    args = _make_args()
+    args_jsonb = _records.payload_jsonb_param(args)
+    meta_jsonb = _records.metadata_jsonb_param(args)
+    assert args_jsonb is not None and meta_jsonb is not None
+
+    row = await backend.enqueue(args)
+
+    stored = backend._jobs[row.id]  # type: ignore[reportPrivateUsage]  # Why: the pin reads the stored row directly, the dict form is the storage contract.
+    assert stored.payload == {"value": 1}
+    assert isinstance(stored.payload, dict)
+
+
 # ── _enqueue_batch_fast: schedule_to_close_interval + result_ttl ────────
 
 
@@ -607,7 +627,7 @@ async def test_enqueue_batch_fast_schedule_interval_and_result_ttl() -> None:
 
 async def test_enqueue_batch_fast_immediate_job_is_pending() -> None:
     """A job with ``scheduled_at <= now`` lands ``pending`` (not
-    ``scheduled``) — decided by the post-COPY fixup UPDATE's server CASE,
+    ``scheduled``) - decided by the post-COPY fixup UPDATE's server CASE,
     never in Python."""
     conn = _FakeEnqueueConn(copy_result="COPY 1")
     pool = _FakePool(conn)
@@ -753,7 +773,7 @@ async def test_enqueue_with_conn_legacy_violation_converts_without_retry() -> No
     assert isinstance(exc_info.value.__cause__, asyncpg.UniqueViolationError)
 
 
-# ── _enqueue under the dead-connection retry guard (#236) ────────────────
+# ── _enqueue under the dead-connection retry guard ────────────────
 #
 # The retry wrapper must absorb the dead-on-acquire race WITHOUT ever
 # re-running a write that was already acknowledged. Three orderings:
@@ -829,7 +849,7 @@ class _ParkedAfterInsertConn(_CountingInsertConn):
 class _ReleaseFailPool(_FakePool):
     """Pool whose release fails the way asyncpg's does on a parked
     connection: the reset raises, the holder terminates the connection and
-    re-raises (issue #236's release path)."""
+    re-raises (the release path)."""
 
     def __init__(self, conn: _FakeEnqueueConn, exc: BaseException) -> None:
         super().__init__(conn)
@@ -865,7 +885,7 @@ async def test_enqueue_poisoned_before_the_insert_retries_and_succeeds() -> None
 
 
 async def test_enqueue_committed_insert_survives_a_failed_release() -> None:
-    """Ordering 2 (#236's duplication half): the INSERT is acknowledged and
+    """Ordering 2 (the duplication half): the INSERT is acknowledged and
     committed (autocommit), then the release's reset fails on the parked
     connection. The caller must get the committed row -- an error here is
     exactly what invited the caller-side re-enqueue that duplicated the
@@ -905,7 +925,7 @@ async def test_enqueue_post_insert_statement_error_never_re_runs_the_write() -> 
         "a retry after an acknowledged write re-issues the INSERT with the "
         "same id: a UniqueViolationError for work that succeeded, and the "
         "invitation for the caller's fresh-id re-enqueue that runs the job "
-        "twice (#236)"
+        "twice"
     )
     assert conn.insert_calls == 1
 

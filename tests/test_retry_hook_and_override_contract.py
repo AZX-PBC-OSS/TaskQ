@@ -7,7 +7,7 @@ Two behaviours that ran under test with nothing pinning them:
 * ``invoke_on_retry_exhausted`` awaits the hook result only when it is
   actually awaitable.  Every covering test used an async hook, so the
   ``result is not None and inspect.isawaitable(result)`` guard was never
-  exercised with a synchronous hook that returns a value — the case the
+  exercised with a synchronous hook that returns a value - the case the
   ``isawaitable`` half exists for.  Awaiting a non-awaitable raises
   ``TypeError`` from ``asyncio.wait_for`` itself; the hook's own
   ``except Exception`` then swallows it, so the only visible trace is a
@@ -66,7 +66,7 @@ def test_retry_override_delay_documents_that_it_does_not_extend_the_job_budget()
     reconciles it with the job's own ``schedule_to_close``: if the next
     attempt lands past that deadline, the deadline sweep fails the job
     terminally before any worker looks at it. The actor did the polite,
-    documented thing — obeyed the upstream's backoff — and lost the work
+    documented thing - obeyed the upstream's backoff - and lost the work
     for it.
 
     The clamp is not the answer, because the two bounds mean different
@@ -100,7 +100,7 @@ def _sync_hook_returning_a_value(calls: list[str]) -> OnRetryExhausted:
 
     Why the cast: ``OnRetryExhausted`` is declared to return
     ``Awaitable[None] | None``, and this hook deliberately returns
-    something else — that is precisely the off-contract shape the runtime
+    something else - that is precisely the off-contract shape the runtime
     ``isawaitable`` guard defends against.
     """
 
@@ -112,11 +112,11 @@ def _sync_hook_returning_a_value(calls: list[str]) -> OnRetryExhausted:
 
 
 async def test_sync_hook_returning_value_is_not_awaited() -> None:
-    """A non-awaitable return is dropped, not awaited — and not reported failed.
+    """A non-awaitable return is dropped, not awaited - and not reported failed.
 
     Why the log assertion: awaiting the value raises ``TypeError``, which the
     hook's own ``except Exception`` swallows, so the run still *completes*.
-    The only observable difference is the warning it emits — a hook that ran
+    The only observable difference is the warning it emits - a hook that ran
     cleanly being reported as failed.
     """
     calls: list[str] = []

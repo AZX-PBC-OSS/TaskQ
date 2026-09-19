@@ -16,13 +16,13 @@ a ``taskq_*`` / ``messaging_*`` series.
 
 The failure mode these tests pin against regression: the endpoint
 answering 200 with valid Prometheus text while serving ZERO ``taskq_*``
-series — no error, no warning log, no doctor finding, only absent time
+series - no error, no warning log, no doctor finding, only absent time
 series, so an operator believes they have alerting and has none.
 
 The contract now held:
 
-1. ``create_metrics_router`` — the exact call ``taskq ui serve`` makes
-   (src/taskq/cli.py) — wires a ``PrometheusMetricReader``-backed
+1. ``create_metrics_router`` - the exact call ``taskq ui serve`` makes
+   (src/taskq/cli.py) - wires a ``PrometheusMetricReader``-backed
    ``MeterProvider`` itself at router creation when nothing is
    configured, so the scrape of the documented endpoint contains the
    series real ``taskq.obs`` ``record_*`` calls emit (the second test
@@ -90,7 +90,7 @@ def test_metrics_endpoint_should_serve_taskq_series_under_documented_setup() -> 
     from scratch") together promise a working scrape target once the
     ``[prometheus]`` extra is installed. This mounts the router exactly as
     `taskq ui serve` does (src/taskq/cli.py: `create_metrics_router(None)`,
-    no `registry=` override) in a subprocess with NO OTel env vars set —
+    no `registry=` override) in a subprocess with NO OTel env vars set -
     the default state after `pip install taskq-py[prometheus]` per
     docs/guides/admin-ui.md's Docker Compose example, which sets only
     TASKQ_PG_DSN / TASKQ_REDIS_URL / TASKQ_ADMIN_HOST / TASKQ_ADMIN_PORT
@@ -100,20 +100,20 @@ def test_metrics_endpoint_should_serve_taskq_series_under_documented_setup() -> 
     creation happens at process start (``taskq ui serve`` builds its
     routers inside the FastAPI lifespan, before uvicorn accepts a
     connection), and worker activity is recorded afterwards. The order is
-    load-bearing, not incidental: OTel's proxy instruments DROP
+    critical, not incidental: OTel's proxy instruments DROP
     measurements recorded before a provider exists (they rebind on
     ``set_meter_provider`` without replaying), so a scrape can only ever
-    contain series recorded after startup — which is exactly why the
+    contain series recorded after startup - which is exactly why the
     wiring lives in router creation and not at first scrape. A regression
     that removes the auto-wiring turns this red: the scrape returns 200
-    with valid Prometheus text and none of the four series — the original
+    with valid Prometheus text and none of the four series - the original
     silent-failure shape.
     """
     # Run in a clean subprocess: the module-level instruments in
     # taskq.obs._otel bind to whichever MeterProvider is active at first
     # import (get_meter() called at module load, per obs/_otel.py), and
     # create_metrics_router's auto-wiring sets the process-GLOBAL provider
-    # behind OTel's set-once guard — neither may share process state with
+    # behind OTel's set-once guard - neither may share process state with
     # anything a prior test in this suite configured.
     script = """
 from fastapi import FastAPI
@@ -160,7 +160,7 @@ missing = [
 print("MISSING:" + ",".join(missing))
 print("SCRAPE_LEN:" + str(len(text)))
 """
-    result = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell — the current interpreter running this file's own literal script; no untrusted input.
+    result = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell - the current interpreter running this file's own literal script; no untrusted input.
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,

@@ -1,4 +1,4 @@
-"""Unit tests for MaintenanceLeader — pure-Python, no PG required.
+"""Unit tests for MaintenanceLeader - pure-Python, no PG required.
 
 Covers election, watchdog, sweep-loop gating, pg_notify, prune/expiry
 scheduling, and retention-config helpers against InMemoryBackend.
@@ -110,7 +110,7 @@ def _is_lease_statement(sql: str) -> bool:
     """Whether *sql* is one of the maintenance-lease statements.
 
     The elect and renew statements return a timestamp column, so a double
-    must answer them with one — see :meth:`FakeConn.fetchval`.
+    must answer them with one - see :meth:`FakeConn.fetchval`.
     """
     return "maintenance_leader" in sql
 
@@ -141,7 +141,7 @@ class FakeConn:
         self.close_wait.set()  # close() completes instantly by default
         self.terminated = False
         # Why an event alongside the flag: the flag is the assertion
-        # surface; the event is the WAIT surface — the watchdog closes
+        # surface; the event is the WAIT surface - the watchdog closes
         # leader-owned conns on its own task, and a test that needs
         # "closed" can await this instead of polling a fixed interval
         # that races the close under load (same convention as the fakes
@@ -387,7 +387,7 @@ async def test_election_win_sets_is_leader(monkeypatch: Any) -> None:  # type: i
     )  # type: ignore[method-assign]  # Why: test-only instrumentation to observe OTel counter calls.
 
     task = asyncio.create_task(leader._election_loop(shutdown))
-    # is_leader IS an asyncio.Event — a bounded event wait (never a
+    # is_leader IS an asyncio.Event - a bounded event wait (never a
     # sleep-poll that races the election under load).
     await wait_for_leader(deps)
     shutdown.set()
@@ -417,14 +417,14 @@ async def test_election_loop_degrades_when_advisory_lock_privilege_is_refused(
     itself), and out of ``_election_loop`` entirely unhandled. In production
     that loop runs inside ``MaintenanceLeader.run()``'s ``TaskGroup``
     alongside the watchdog, cron, sweep, prune, and every other leader-gated
-    loop — one task raising cancels every sibling and tears down the whole
+    loop - one task raising cancels every sibling and tears down the whole
     maintenance plane, exactly the failure this project's own docstring
     on ``_try_election_lock`` says a courtesy probe must never cause
     ("a miss ... must never again gate the election it used to decide").
 
     This is the same defect shape reported for the retired
     ``pg_terminate_backend`` recovery path (a refused privilege escaping as
-    a raw driver error instead of degrading to follower) — it has resurfaced
+    a raw driver error instead of degrading to follower) - it has resurfaced
     at the new call site the row-lease redesign introduced.
     """
 
@@ -482,7 +482,7 @@ async def test_election_loop_degrades_when_advisory_lock_probe_fails_transiently
 ) -> None:
     """The transient sibling of the privilege-refusal pin: a probe that
     raises a TRANSIENT_PG_ERRORS member (the conn dying under the probe)
-    must also degrade to a lock miss — the lease row already granted the
+    must also degrade to a lock miss - the lease row already granted the
     role, and a courtesy probe riding a dying conn must not cost it."""
 
     class _TransientFailingConn(FakeConn):
@@ -516,8 +516,8 @@ async def test_advisory_lock_refusal_logs_once_per_refusal_streak(
 ) -> None:
     """A refused deployment refuses every probe for as long as the grants
     stand: the WARN naming the refused function must fire on the first
-    refusal of a streak, not on every one — a fleet re-electing on every
-    lease lapse must not WARN-spam — and must re-arm once a probe succeeds
+    refusal of a streak, not on every one - a fleet re-electing on every
+    lease lapse must not WARN-spam - and must re-arm once a probe succeeds
     again (the grant appearing is a new operational fact)."""
 
     class _RefusingConn(FakeConn):
@@ -545,7 +545,7 @@ async def test_advisory_lock_refusal_logs_once_per_refusal_streak(
 
     refusals = [e for e in captured if e["event"] == "leader-advisory-lock-refused"]
     assert len(refusals) == 1, (
-        f"two consecutive refusals produced {len(refusals)} WARN events — the "
+        f"two consecutive refusals produced {len(refusals)} WARN events - the "
         "refusal is permanent until the grants change, so one WARN per streak "
         "is the whole signal"
     )
@@ -575,7 +575,7 @@ async def test_lease_gauge_is_stamped_on_election_and_each_renewal(
     """``taskq.maintenance_leader.lease_expires_in_seconds`` is the
     lease's freshness signal: stamped with the full TTL at election win
     and re-stamped at every successful renewal, so a leader that stops
-    renewing is a series that stops moving. Both arms are pinned here —
+    renewing is a series that stops moving. Both arms are pinned here -
     a dropped call site leaves the gauge frozen on a live leader, which
     is exactly the lie the gauge exists to refute."""
     import taskq.obs._otel as otel_mod
@@ -597,7 +597,7 @@ async def test_lease_gauge_is_stamped_on_election_and_each_renewal(
     assert otel_mod._leader_lease_expires_in_seconds_cache == lease  # pyright: ignore[reportPrivateUsage]  # Why: the pin is the gauge's cached value, not an SDK round trip.
 
     # Renew arm: poison the stamp, then drive one renewal through the
-    # loop's own method (the trust-spent test's seam — deterministic, no
+    # loop's own method (the trust-spent test's seam - deterministic, no
     # polling) and the stamp must be restored.
     otel_mod._leader_lease_expires_in_seconds_cache = -1.0  # pyright: ignore[reportPrivateUsage]
     term = deps.leader_term
@@ -780,7 +780,7 @@ async def test_leader_conn_replaced_after_watchdog(monkeypatch: Any) -> None:  #
 
 
 async def test_watchdog_reopen_uses_leader_conn_factory_not_dsn(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
-    """When deps.leader_conn_factory is set, the watchdog reopens through it —
+    """When deps.leader_conn_factory is set, the watchdog reopens through it -
     never through open_dedicated_conn's raw DSN path. Regression test for a bug
     where the watchdog hardcoded pg_dsn_direct, bypassing WorkerConnections
     entirely (broken for AAD/AWS/Vault deployments with no DSN configured)."""
@@ -797,7 +797,7 @@ async def test_watchdog_reopen_uses_leader_conn_factory_not_dsn(monkeypatch: Any
     factory_calls: list[None] = []
     factory_conns: list[
         object
-    ] = []  # Why: identity bag — members are compared with `is`/`in` against deps.leader_conn (asyncpg.Connection), so element typing as FakeConn makes pyright report no-overlap.
+    ] = []  # Why: identity bag - members are compared with `is`/`in` against deps.leader_conn (asyncpg.Connection), so element typing as FakeConn makes pyright report no-overlap.
 
     async def fake_factory() -> FakeConn:
         factory_calls.append(None)
@@ -807,7 +807,7 @@ async def test_watchdog_reopen_uses_leader_conn_factory_not_dsn(monkeypatch: Any
 
     deps.leader_conn_factory = fake_factory  # type: ignore[assignment]
 
-    # open_dedicated_conn must NOT be called when a factory is set — fail loud
+    # open_dedicated_conn must NOT be called when a factory is set - fail loud
     # if the watchdog falls back to the DSN path instead of the factory.
     import taskq.worker.leader as leader_mod
 
@@ -819,7 +819,7 @@ async def test_watchdog_reopen_uses_leader_conn_factory_not_dsn(monkeypatch: Any
         command_timeout: float | None = None,
     ) -> FakeConn:
         raise AssertionError(
-            f"open_dedicated_conn called with dsn={dsn!r} label={label!r} — "
+            f"open_dedicated_conn called with dsn={dsn!r} label={label!r} - "
             "leader_conn_factory should have been used instead"
         )
 
@@ -832,7 +832,7 @@ async def test_watchdog_reopen_uses_leader_conn_factory_not_dsn(monkeypatch: Any
     await task
 
     # leader_conn_factory backs leader_conn AND the leader's other dedicated
-    # connections (leader_monitor_conn, cron_conn) — all must route through
+    # connections (leader_monitor_conn, cron_conn) - all must route through
     # it, never through the raw-DSN open_dedicated_conn path.
     assert len(factory_calls) >= 1
     assert deps.leader_conn in factory_conns
@@ -843,15 +843,15 @@ async def test_reload_credentials_rebuilds_leader_monitor_and_cron_conns(
 ) -> None:
     """SIGHUP reload (reload_credentials nulling leader_conn) causes the
     election loop's re-election cascade to rebuild leader_monitor_conn and
-    cron_conn through leader_conn_factory too — not just leader_conn itself.
+    cron_conn through leader_conn_factory too - not just leader_conn itself.
 
     reload_credentials() only directly touches deps.leader_conn (closing it
-    and setting it to None so the watchdog/election loop reopens it — see
+    and setting it to None so the watchdog/election loop reopens it - see
     deps.py's reload_credentials docstring). This test verifies the
     downstream effect: _election_loop's re-election path, triggered by
     leader_conn becoming None while is_leader is still set, also rebuilds
     the leader's other dedicated connections (_leader_monitor_conn,
-    _cron_conn) via the SAME leader_conn_factory — so a hot-reloaded leader
+    _cron_conn) via the SAME leader_conn_factory - so a hot-reloaded leader
     doesn't keep querying with monitor/cron connections opened under a
     stale credential until they separately fail.
     """
@@ -871,13 +871,13 @@ async def test_reload_credentials_rebuilds_leader_monitor_and_cron_conns(
 
     # Drive the election loop through a REAL election first (is_leader=True
     # at construction is an artificial state _election_loop's re-election
-    # path never produces — genuine leadership always flows through
+    # path never produces - genuine leadership always flows through
     # `if got_lock:`, which is what populates _leader_monitor_conn /
     # _cron_conn in the first place).
     task = asyncio.create_task(leader._election_loop(shutdown))
     # The election loop opens BOTH dedicated conns before it sets
     # is_leader (leader.py: UPSERT → monitor conn → cron conn → set), so
-    # the is_leader event wait subsumes polling the conn attributes —
+    # the is_leader event wait subsumes polling the conn attributes -
     # and it is a bounded wait on the event itself, never a sleep-poll.
     await wait_for_leader(deps)
     assert deps.is_leader.is_set()
@@ -891,7 +891,7 @@ async def test_reload_credentials_rebuilds_leader_monitor_and_cron_conns(
     # it and null it while is_leader remains set (deps.py:599-606).
     deps.leader_conn = None
 
-    # The rebuilt conns are plain attributes the election loop assigns —
+    # The rebuilt conns are plain attributes the election loop assigns -
     # no event to wait on, so a bounded, deadline-based poll.
     await wait_for_condition(
         lambda: (
@@ -1076,7 +1076,7 @@ async def test_pg_notify_issued_after_promotion(monkeypatch: Any) -> None:  # ty
 
     task = asyncio.create_task(leader._scheduled_wake_loop(shutdown))
     try:
-        # The notify execute lands on a pool-internal conn — no event to
+        # The notify execute lands on a pool-internal conn - no event to
         # wait on, so a bounded, deadline-based poll on the recording.
         await wait_for_condition(
             lambda: bool(fake_dp.execute_calls),
@@ -1117,7 +1117,7 @@ async def test_pg_notify_not_issued_when_zero(monkeypatch: Any) -> None:  # type
     task = asyncio.create_task(leader._scheduled_wake_loop(shutdown))
     await wait_for(promote_attempted)
     # The notify decision is made in the same loop step as the awaited
-    # count — one yield for the loop to finish that step, then stop it.
+    # count - one yield for the loop to finish that step, then stop it.
     await asyncio.sleep(0)
     shutdown.set()
     with contextlib.suppress(asyncio.CancelledError):
@@ -1239,7 +1239,7 @@ async def test_otel_metrics_emitted(monkeypatch: Any) -> None:  # type: ignore[r
     sweep_rows_calls.clear()
     shutdown_2 = asyncio.Event()
     task_2 = asyncio.create_task(leader._sweep_loop(shutdown_2))
-    # Bounded poll for both sweeps' non-empty row counters — the wake of
+    # Bounded poll for both sweeps' non-empty row counters - the wake of
     # the completion asserts, never a fixed 0.05s hoping the tick ran.
     await wait_for_condition(
         lambda: (
@@ -1354,7 +1354,7 @@ async def test_prune_loop_gates_on_is_leader() -> None:
 
 async def test_scheduled_wake_passes_no_clock_to_sweep() -> None:
     """_scheduled_wake_loop drives scheduled_to_pending with NO clock
-    value — the backend's own clock is the arbiter (seam removal: a
+    value - the backend's own clock is the arbiter (seam removal: a
     caller-supplied ``now`` was ignored by PG and honored by InMemory, so
     the two backends never exercised the same contract)."""
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
@@ -1373,7 +1373,7 @@ async def test_scheduled_wake_passes_no_clock_to_sweep() -> None:
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._scheduled_wake_loop(shutdown))
     # The capture closure sets the event exactly where the sweep call is
-    # entered — the bounded wait, never a sleep hoping the loop reached it.
+    # entered - the bounded wait, never a sleep hoping the loop reached it.
     await wait_for(called)
     shutdown.set()
     task.cancel()
@@ -1385,7 +1385,7 @@ async def test_scheduled_wake_passes_no_clock_to_sweep() -> None:
 
 async def test_sweep_loop_passes_no_clock_to_sweeps() -> None:
     """_sweep_loop drives reclaim_expired_locks and deadline_sweep with NO
-    clock value — the backend's own clock is the arbiter (same seam
+    clock value - the backend's own clock is the arbiter (same seam
     removal as the scheduled-wake loop)."""
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
@@ -1409,7 +1409,7 @@ async def test_sweep_loop_passes_no_clock_to_sweeps() -> None:
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._sweep_loop(shutdown))
     # The capture closures set their events exactly where each sweep call
-    # is entered — bounded event waits, never sleeps hoping the loop
+    # is entered - bounded event waits, never sleeps hoping the loop
     # reached them.
     await wait_for(reclaim_called)
     await wait_for(deadline_called)
@@ -1541,7 +1541,7 @@ class _FakeConnForPrune(FakeConn):
         self.fetch_calls: list[tuple[str, tuple[object, ...]]] = []
         # 7565d3f anchors prune cutoffs and the expiry reference instant to
         # the database clock via a dedicated fetchval, while fetchval_result
-        # keeps answering the advisory-lock probes — one scalar cannot serve
+        # keeps answering the advisory-lock probes - one scalar cannot serve
         # both, so the fake answers the DB-now query with a datetime.
         self._db_now = db_now
 
@@ -1573,7 +1573,7 @@ async def test_prune_terminal_jobs_returns_prune_result() -> None:
 
     Cutoffs are anchored to the database clock (7565d3f): each terminal
     status's cutoff is exactly ``db_now - retention``, never an app-clock
-    instant — the caller feeds ``max(cutoffs.values())`` into
+    instant - the caller feeds ``max(cutoffs.values())`` into
     ``prune_old_batches``, so skew here would prune batches early or late.
     """
     rows = [
@@ -1896,13 +1896,13 @@ async def test_archive_expiry_loop_gates_on_is_leader() -> None:
 
 
 def _full_batch_record(batch_size: int) -> _FakeRecord:
-    """One aggregate row reporting a full batch — the drain must continue."""
+    """One aggregate row reporting a full batch - the drain must continue."""
     return _FakeRecord({"actor": "a", "status": "succeeded", "cnt": batch_size})
 
 
 class _HookedPruneBatchConn(_FakeConnForPrune):
     """Answers every prune batch with one full batch, invoking *on_batch*
-    first — a backlog no drain can exhaust, with an observation seam at
+    first - a backlog no drain can exhaust, with an observation seam at
     each batch."""
 
     def __init__(self, *, batch_size: int, on_batch: Callable[[], None]) -> None:
@@ -1939,7 +1939,7 @@ class _HookedExpiryBatchConn(_FakeConnForPrune):
 async def test_prune_drain_stops_when_gate_closes() -> None:
     """A drain gate returning False stops the drain between batches:
     committed batches stay counted, the unbounded remainder is left for
-    the next attempt — a stopped drain is a pause, not a rollback."""
+    the next attempt - a stopped drain is a pause, not a rollback."""
     conn = _HookedPruneBatchConn(batch_size=10, on_batch=lambda: None)
     allowed = 3
 
@@ -1989,8 +1989,8 @@ async def test_archive_expiry_drain_stops_when_gate_closes() -> None:
 
 
 async def test_prune_batches_run_under_server_statement_timeout() -> None:
-    """Every prune batch — including the empty probe batch each status
-    runs — applies the server-side statement_timeout via SET LOCAL inside
+    """Every prune batch - including the empty probe batch each status
+    runs - applies the server-side statement_timeout via SET LOCAL inside
     the batch's transaction and restores the session value afterwards
     (the same capture/restore contract the backend sweeps pin in
     tests/test_rt_sweeps_timeout_leak.py)."""
@@ -2032,7 +2032,7 @@ async def test_archive_expiry_batches_run_under_server_statement_timeout() -> No
 async def test_prune_timeout_latches_sizer_and_degrades_next_attempt() -> None:
     """A server-side batch abort (QueryCanceledError) counts against the
     breaker: the sizer latches and the NEXT attempt's windows run at the
-    reduced tier — the degradation that makes a loaded database drainable
+    reduced tier - the degradation that makes a loaded database drainable
     under a timeout smaller than its backlog."""
 
     class _TimeoutConn(_FakeConnForPrune):
@@ -2056,7 +2056,7 @@ async def test_prune_timeout_latches_sizer_and_degrades_next_attempt() -> None:
         "a cancelled batch must latch the breaker to the reduced tier"
     )
 
-    # The latched tier sizes the next attempt's windows — the retry path's
+    # The latched tier sizes the next attempt's windows - the retry path's
     # whole point.
     conn2 = _FakeConnForPrune(batch_rows=[[_full_batch_record(5)]])
     await prune_terminal_jobs(
@@ -2096,7 +2096,7 @@ def _soon_then_far_croniter() -> type:
 
 
 class _AlwaysFailsPruneConn(_FakeConnForPrune):
-    """Every prune batch statement raises — the failed-attempt shape."""
+    """Every prune batch statement raises - the failed-attempt shape."""
 
     async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
         if "candidate_ids" in sql:
@@ -2166,7 +2166,7 @@ async def test_prune_loop_backoff_doubles_to_cap(monkeypatch: Any) -> None:  # t
 
     attempts = _lock_attempts(leader_conn)
     assert 3 <= attempts <= 7, (
-        f"{attempts} attempts in 1 s — a doubling ladder from 0.05 s lands "
+        f"{attempts} attempts in 1 s - a doubling ladder from 0.05 s lands "
         "at ~5 (attempts at 0.05, 0.1, 0.2, 0.4, 0.8 s); ~20 means a fixed "
         "cadence, 1 means no retry at all"
     )
@@ -2174,7 +2174,7 @@ async def test_prune_loop_backoff_doubles_to_cap(monkeypatch: Any) -> None:  # t
 
 async def test_prune_loop_success_stops_retry_for_the_day(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """Fail once, succeed on the retry, then the day is done: no further
-    attempts — the once-per-SUCCESSFUL-prune-per-day guard holds through
+    attempts - the once-per-SUCCESSFUL-prune-per-day guard holds through
     the retry change (a retried day never gets a second successful
     prune)."""
     import taskq.worker._leader_sweeps as _leader_sweeps_mod
@@ -2215,7 +2215,7 @@ async def test_prune_loop_success_stops_retry_for_the_day(monkeypatch: Any) -> N
         # (wrongly) attempt again, then hold it to exactly two.
         await asyncio.sleep(0.3)
         assert _lock_attempts(leader_conn) == 2, (
-            "a successful prune must end the day's attempts — the retry "
+            "a successful prune must end the day's attempts - the retry "
             "must not become a second prune"
         )
     finally:
@@ -2316,7 +2316,7 @@ async def test_prune_loop_bounds_batches_under_pool_command_timeout(
 async def test_prune_loop_drain_stops_on_shutdown_and_ticks_liveness(
     monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
 ) -> None:
-    """SIGTERM mid-drain ends the attempt between batches — the loop task
+    """SIGTERM mid-drain ends the attempt between batches - the loop task
     finishes without cancel, after a bounded number of batches, not after
     the whole backlog. The drain registers with detector 2 while it runs
     (so a wedged batch loop is visible to the watchdog) and forgets the
@@ -2355,12 +2355,12 @@ async def test_prune_loop_drain_stops_on_shutdown_and_ticks_liveness(
     monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
     deps.settings.prune_cron_expr = "* * * * *"
     # The hooked conn reports 10-row full batches, so the effective window
-    # must be 10 too — the sizer's default tier comes from this setting.
+    # must be 10 too - the sizer's default tier comes from this setting.
     deps.settings.prune_batch_size = 10
 
     task = asyncio.create_task(leader._prune_loop(shutdown))
     # No cancel, no suppress: a shutdown-responsive drain lets the loop
-    # task COMPLETE on its own — the property the TaskGroup hang lacked.
+    # task COMPLETE on its own - the property the TaskGroup hang lacked.
     await asyncio.wait_for(task, timeout=5.0)
 
     assert leader_conn.batches == 3, (
@@ -2369,12 +2369,12 @@ async def test_prune_loop_drain_stops_on_shutdown_and_ticks_liveness(
         "advisory lock and its pool connection for at most one batch"
     )
     assert any("leader.prune" in ages for ages in liveness_snapshots), (
-        "the drain must register with detector 2 while batches flow — a "
+        "the drain must register with detector 2 while batches flow - a "
         "wedged once-a-day drain is otherwise invisible to the watchdog"
     )
     assert "leader.prune" not in deps.liveness.ages(), (
         "the attempt-scoped liveness registration must be forgotten when "
-        "the attempt ends — a once-a-day loop must not read as a stale "
+        "the attempt ends - a once-a-day loop must not read as a stale "
         "sibling between attempts"
     )
 
@@ -2412,7 +2412,7 @@ async def test_archive_expiry_loop_drain_stops_on_shutdown(
     monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
     deps.settings.archive_expiry_cron_expr = "* * * * *"
     # The hooked conn reports 10-row full batches, so the effective window
-    # must be 10 too — the sizer's default tier comes from this setting.
+    # must be 10 too - the sizer's default tier comes from this setting.
     deps.settings.prune_batch_size = 10
 
     task = asyncio.create_task(leader._archive_expiry_loop(shutdown))
@@ -2546,7 +2546,7 @@ async def test_prune_loop_wakes_on_shutdown() -> None:
 
     shutdown.set()
     task = asyncio.create_task(leader._prune_loop(shutdown))
-    # The loop observes the pre-set shutdown immediately — awaiting the
+    # The loop observes the pre-set shutdown immediately - awaiting the
     # task IS the bounded wait for its exit (and it re-raises if the loop
     # died of an error instead of exiting cleanly).
     await asyncio.wait_for(task, timeout=2.0)
@@ -2571,7 +2571,7 @@ async def test_archive_expiry_loop_wakes_on_shutdown() -> None:
 
     shutdown.set()
     task = asyncio.create_task(leader._archive_expiry_loop(shutdown))
-    # The loop observes the pre-set shutdown immediately — awaiting the
+    # The loop observes the pre-set shutdown immediately - awaiting the
     # task IS the bounded wait for its exit (and it re-raises if the loop
     # died of an error instead of exiting cleanly).
     await asyncio.wait_for(task, timeout=2.0)
@@ -2860,12 +2860,12 @@ async def test_archive_expiry_loop_survives_unlock_failure(monkeypatch: Any) -> 
 class _FakeProviderError(RuntimeError):
     """Stand-in for azure/hvac/botocore credential-fetch failures, which are
     NOT asyncpg.PostgresConnectionError subclasses (and neither is
-    asyncpg.InvalidPasswordError — a fresh-but-rejected token)."""
+    asyncpg.InvalidPasswordError - a fresh-but-rejected token)."""
 
 
 async def test_election_reopen_retries_on_provider_exception(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """A leader_conn_factory raising a provider-style exception once (IdP
-    outage) then succeeding must be retried by the election loop — the
+    outage) then succeeding must be retried by the election loop - the
     exception must NOT escape and crash the worker TaskGroup."""
     leader, deps, _backend, _, _, shutdown = await _make_leader(monkeypatch=monkeypatch)
     deps.leader_conn = None
@@ -2893,7 +2893,7 @@ async def test_election_reopen_retries_on_provider_exception(monkeypatch: Any) -
 
 async def test_dedicated_conn_reopen_retries_on_provider_exception(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """A provider exception while opening the monitor/cron dedicated conns
-    (after the advisory lock is won) must be caught and retried — a
+    (after the advisory lock is won) must be caught and retried - a
     transient IdP failure mid-election must not crash the worker."""
     leader, deps, _backend, _, _, shutdown = await _make_leader(monkeypatch=monkeypatch)
     deps.leader_conn = None
@@ -2928,7 +2928,7 @@ async def test_watchdog_does_not_close_caller_owned_leader_conn(monkeypatch: Any
     """Caller-owned leader_conn that dies is abandoned, never closed.
 
     The ownership contract ("TaskQ never closes caller-owned resources")
-    forbids close() even on the dead-conn path — the caller owns the
+    forbids close() even on the dead-conn path - the caller owns the
     corpse. The watchdog must still drop our reference so the election
     loop rebuilds via the factory/DSN path and re-establishes leadership.
     """
@@ -2950,7 +2950,7 @@ async def test_watchdog_does_not_close_caller_owned_leader_conn(monkeypatch: Any
 
     factory_conns: list[
         object
-    ] = []  # Why: identity bag — members are compared with `is`/`in` against deps.leader_conn (asyncpg.Connection), so element typing as FakeConn makes pyright report no-overlap.
+    ] = []  # Why: identity bag - members are compared with `is`/`in` against deps.leader_conn (asyncpg.Connection), so element typing as FakeConn makes pyright report no-overlap.
 
     async def factory() -> FakeConn:
         conn = FakeConn(fetchval_result=True)
@@ -2990,7 +2990,7 @@ async def test_watchdog_does_not_close_caller_owned_leader_conn(monkeypatch: Any
 
 
 async def test_watchdog_closes_taskq_owned_leader_conn() -> None:
-    """TaskQ-owned leader_conn IS closed on the watchdog failure path — the
+    """TaskQ-owned leader_conn IS closed on the watchdog failure path - the
     ownership guard must not change TaskQ-owned behaviour."""
     leader_conn = FakeConn(fetchval_result=True)
     leader, deps, _backend, _, _, shutdown = await _make_leader(leader_conn=leader_conn)
@@ -3021,7 +3021,7 @@ async def test_watchdog_closes_taskq_owned_leader_conn() -> None:
 # ── Bounded closes: hung close is terminated, fast close is not ─────────
 #
 # The election/watchdog/cron paths closed leader-owned dedicated
-# conns with a bare ``await conn.close()`` — a dead PG can block that
+# conns with a bare ``await conn.close()`` - a dead PG can block that
 # indefinitely, stalling the watchdog. These tests pin the bounded-close
 # discipline (asyncio.wait_for + terminate on timeout) applied via
 # ``close_conn_bounded``; the shrink seam is the same module-global
@@ -3060,7 +3060,7 @@ async def test_close_leader_owned_conns_terminates_hung_close(
 
 
 async def test_close_leader_owned_conns_fast_close_not_terminated() -> None:
-    """Healthy close(): both leader-owned conns close gracefully — nothing is
+    """Healthy close(): both leader-owned conns close gracefully - nothing is
     terminated; attrs nulled; is_leader cleared. Pins the no-regression
     behaviour (passes pre- and post-fix)."""
     leader, deps, _backend, _, _, _shutdown = await _make_leader()
@@ -3104,7 +3104,7 @@ async def test_close_leader_owned_conns_clears_is_leader_before_closes_complete(
     """Demotion is observable IMMEDIATELY: is_leader clears before the
     bounded closes complete, not after. On a dead PG the closes can park
     for seconds, and is_leader backs the taskq.maintenance_leader.is_leader
-    gauge, /metrics, and the health report — a pod parked in a hung close
+    gauge, /metrics, and the health report - a pod parked in a hung close
     must not keep advertising leadership while its replacement should be
     taking over (review N2)."""
     import taskq.worker.leader as leader_mod
@@ -3179,7 +3179,7 @@ async def test_close_leader_owned_conns_default_mid_run_logs_mid_run_family(
     """The default stays the mid-run family: the watchdog/election/cron
     demotion paths call without mid_run, and a conn so dead that even
     close() hung while the worker is alive must keep paging as
-    ``conn-close-*`` (existing behaviour pinned — passes pre- and
+    ``conn-close-*`` (existing behaviour pinned - passes pre- and
     post-fix)."""
     import taskq.worker.leader as leader_mod
 
@@ -3213,7 +3213,7 @@ async def test_run_final_teardown_closes_leader_conns_with_teardown_family(
     """run()'s finally is final teardown, not a mid-run demotion: it must
     close leader-owned conns with the ``conn-teardown-close-*`` family so an
     ordinary shutdown of a leader pod never pages as a mid-run close
-    failure. Drives run() end-to-end with shutdown pre-set — every loop
+    failure. Drives run() end-to-end with shutdown pre-set - every loop
     observes the set event and exits immediately, so only the finally's
     close path does any work (review N6 wiring pin)."""
     import taskq.worker.leader as leader_mod
@@ -3331,7 +3331,7 @@ async def test_factory_built_leader_conns_get_keepalive(monkeypatch: Any) -> Non
 
 async def test_open_leader_conn_fails_fast_without_factory_or_dsn(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """With no leader_conn_factory and pg_dsn_direct None, _open_leader_conn
-    must fail fast with RuntimeError — never asyncpg.connect(str(None)),
+    must fail fast with RuntimeError - never asyncpg.connect(str(None)),
     which would DNS-retry the literal host 'None' forever. Unreachable via
     open_worker_deps (startup validation forbids it); belt-and-braces for
     hand-built WorkerDeps."""
@@ -3418,7 +3418,7 @@ async def test_step_down_stops_leading_before_the_lock_can_be_released(
     await task
 
     assert leading_during_close == [False], (
-        "the leader conn was closed — releasing the courtesy lock — while this "
+        "the leader conn was closed - releasing the courtesy lock - while this "
         "pod still reported leading()"
     )
     assert not deps.is_leader.is_set()
@@ -3431,7 +3431,7 @@ async def test_step_down_stops_leading_before_the_lock_can_be_released(
 async def test_leading_narrows_false_once_the_trust_window_closes() -> None:
     """``leading()`` answers by the monotonic deadline, not the event.
 
-    The event can still be set — the election loop has not noticed yet —
+    The event can still be set - the election loop has not noticed yet -
     but past ``trusted_until`` a peer may legally hold the row, so every
     leader-gated loop must already read the role as gone.
     """
@@ -3453,7 +3453,7 @@ async def test_renew_term_with_spent_trust_steps_down_without_touching_the_datab
     monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
 ) -> None:
     """A loop that wakes with its trust window already spent stands down
-    locally — the step-down is the split-brain guard, and issuing a renewal
+    locally - the step-down is the split-brain guard, and issuing a renewal
     against a row a peer may already hold would defeat it."""
     leader_conn = FakeConn(fetchval_result=True)
     leader, deps, _backend, _, _, shutdown = await _make_leader(
@@ -3477,7 +3477,7 @@ async def test_renew_term_with_spent_trust_steps_down_without_touching_the_datab
     assert not deps.is_leader.is_set()
     assert deps.leader_term is None
     assert leader_conn.fetchval_calls == [] and leader_conn.execute_calls == [], (
-        "the trust-spent step-down must not touch the database — a peer may already hold the row"
+        "the trust-spent step-down must not touch the database - a peer may already hold the row"
     )
     assert any(
         e.get("kind") == "leadership_lost" and e.get("reason") == "trust_expired" for e in captured
@@ -3491,7 +3491,7 @@ async def test_resign_falls_back_to_the_monitor_conn_when_leader_conn_is_gone(
     monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
 ) -> None:
     """The shutdown orchestrator closes a TaskQ-owned leader_conn before the
-    leader's teardown runs; the resign must still land — fenced on the term —
+    leader's teardown runs; the resign must still land - fenced on the term -
     through the leader-owned monitor conn, which nothing else closes first."""
     leader, deps, _backend, leader_conn, _, shutdown = await _make_leader(
         monkeypatch=monkeypatch,
@@ -3521,7 +3521,7 @@ async def test_resign_without_a_term_or_a_live_conn_is_a_noop(
     monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
 ) -> None:
     """A follower, or a leader whose conns are all gone, has nothing to
-    resign and nothing to resign it through — the lapse covers it."""
+    resign and nothing to resign it through - the lapse covers it."""
     leader, deps, _backend, leader_conn, _, shutdown = await _make_leader(
         monkeypatch=monkeypatch,
     )
@@ -3531,14 +3531,14 @@ async def test_resign_without_a_term_or_a_live_conn_is_a_noop(
     await leader.resign()
     assert leader_conn.execute_calls == []
 
-    # A term with no live conn anywhere: same — the lease lapses on its own.
+    # A term with no live conn anywhere: same - the lease lapses on its own.
     deps.leader_conn = None
     deps.lead(LeaderTerm(elected_at=datetime.now(UTC), trusted_until=60.0))
     await leader.resign()
     assert leader_conn.execute_calls == []
 
 
-# ── A won-but-unassumable lease goes back (#234) ─────────────────────────
+# ── A won-but-unassumable lease goes back ─────────────────────────
 
 
 class _ElectRecordingConn(FakeConn):
@@ -3584,7 +3584,7 @@ def _resign_deletes(conns: Iterable[FakeConn]) -> list[tuple[str, tuple[object, 
 async def test_persistent_dedicated_conn_failure_hands_the_won_lease_back(
     monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
 ) -> None:
-    """#234: a pod that keeps WINNING the row but can never open its
+    """A pod that keeps WINNING the row but can never open its
     dedicated conns must resign the row once its episode's trust budget
     is spent, and keep resigning on every later re-win, because the
     anchor survives the resign (a still-broken pod buying a fresh window
@@ -3644,7 +3644,7 @@ async def test_persistent_dedicated_conn_failure_hands_the_won_lease_back(
         await task
 
     elects = [term for event, term in timeline if event == "elect"]
-    assert elects, "sanity: the pod must have won elects for this to be #234's shape"
+    assert elects, "sanity: the pod must have won elects for this to be the shape"
     assert not deps.is_leader.is_set(), "a pod that cannot open its conns never led"
     assert not any(e.get("event") == "leader-elected" for e in captured), (
         "leader-elected is the successful-assume record; this pod never assumed"
@@ -3672,9 +3672,9 @@ async def test_persistent_dedicated_conn_failure_hands_the_won_lease_back(
 async def test_transient_dedicated_conn_failure_keeps_the_lease_and_recovers(
     monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
 ) -> None:
-    """The blip half of the #234 budget: ONE failed conn open inside the
+    """The blip half of the budget: ONE failed conn open inside the
     episode's trust window must not resign: the own-row arm's cheap
-    route back (the #218 case: a credential reload, a momentary
+    route back (the case: a credential reload, a momentary
     ``TooManyConnections``) is exactly the re-win this window preserves,
     and resigning per blip would thrash leadership on every flake.
     """
@@ -3730,7 +3730,7 @@ async def test_transient_dedicated_conn_failure_keeps_the_lease_and_recovers(
 async def test_escaped_assume_failure_also_hands_the_won_lease_back(
     monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
 ) -> None:
-    """The sibling entry point into #234: an exception ESCAPING
+    """The sibling entry point into : an exception ESCAPING
     ``_assume_leadership`` after a won elect (here, a courtesy-lock
     probe whose conn dies with a transient error the probe's own catch
     reclassifies as a miss-then-raise) leaves the same held-but-never-led
@@ -3836,7 +3836,7 @@ async def test_a_blip_after_a_peer_takeover_gets_a_fresh_trust_window(
     ended) and hits ONE failed dedicated-conn open. The stale anchor,
     cleared only by a successful assume in the code under review, is
     long spent, so that single blip resigned the fresh term immediately:
-    the per-blip leadership thrash the #234 design explicitly rejected,
+    the per-blip leadership thrash the design explicitly rejected,
     arriving through the back door for exactly the pods that once had an
     unassumable episode.
 
@@ -3986,7 +3986,7 @@ async def test_reelection_after_conn_loss_never_waits_on_the_courtesy_lock(
     monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
 ) -> None:
     """After reload closes leader_conn, the rebuilt conn's
-    pg_try_advisory_lock can return False — the old session's lock release
+    pg_try_advisory_lock can return False - the old session's lock release
     is still propagating, or a stranger session holds it. The lease row is
     the authority, so the election must WIN anyway: the courtesy miss is
     logged, leadership is taken, and the loop does not retry the election
@@ -4001,8 +4001,8 @@ async def test_reelection_after_conn_loss_never_waits_on_the_courtesy_lock(
     await wait_for_leader(deps)
     assert deps.is_leader.is_set()
 
-    # The lease statement on the rebuilt conn wins immediately — the
-    # departed session's row is this pod's own to re-elect — while the
+    # The lease statement on the rebuilt conn wins immediately - the
+    # departed session's row is this pod's own to re-elect - while the
     # courtesy lock refuses every attempt: the shape of a stale lock that
     # outlives the row behind it.
     lock_attempts = 0
@@ -4032,12 +4032,12 @@ async def test_reelection_after_conn_loss_never_waits_on_the_courtesy_lock(
     # The demotion is latched on the leader_conn_died event, not sampled on
     # is_leader: the fast path logs it and clears is_leader in the same step
     # (no await between the log and the clear), while the re-win can re-set
-    # the flag within one 10ms heartbeat — the transient False window can
+    # the flag within one 10ms heartbeat - the transient False window can
     # close between 0.01s samples under load (same class as the tc2 gate
     # flake, tests/test_leader_chaos.py).
     with structlog.testing.capture_logs() as captured:
         # Bounded poll on the captured entries (a capture_logs list is
-        # append-only state — no event exists to wait on).
+        # append-only state - no event exists to wait on).
         await wait_for_condition(
             lambda: any(e.get("kind") == "leader_conn_died" for e in captured),
             description="election loop never took the leader-conn-died demotion path after the null",
@@ -4045,7 +4045,7 @@ async def test_reelection_after_conn_loss_never_waits_on_the_courtesy_lock(
         # ...and the re-election must not wait for the courtesy lock at all.
         await wait_for_condition(
             lambda: deps.is_leader.is_set(),
-            description="re-election waited on the courtesy lock — the lease row alone decides",
+            description="re-election waited on the courtesy lock - the lease row alone decides",
         )
 
     shutdown.set()
@@ -4056,14 +4056,14 @@ async def test_reelection_after_conn_loss_never_waits_on_the_courtesy_lock(
     )
     assert deps.leader_conn is gap_conn
     assert any(e.get("event") == "leader-advisory-lock-unavailable" for e in captured), (
-        "the courtesy miss must be logged — during a roll it is the difference "
+        "the courtesy miss must be logged - during a roll it is the difference "
         "between old-release pods being excluded and not"
     )
     assert lock_attempts == 1, (
-        "the lock is attempted once, after the win — never consulted to decide "
+        "the lock is attempted once, after the win - never consulted to decide "
         "the election, never retried over"
     )
-    # The rebuilt conn is reused — the factory runs once per conn ROLE
+    # The rebuilt conn is reused - the factory runs once per conn ROLE
     # (leader + monitor + cron), not per attempt.
     assert factory_calls == 3
 
@@ -4078,7 +4078,7 @@ async def test_watchdog_loop_exits_on_shutdown_while_awaiting_leadership() -> No
     parks on ``is_leader.wait()``; the election loop cannot re-elect (PG
     down), so nothing ever sets ``is_leader`` again. The TaskGroup in
     ``MaintenanceLeader.run`` then waits forever and the worker cannot
-    exit — the hang the PG-restart chaos path exposes.
+    exit - the hang the PG-restart chaos path exposes.
     """
     leader, _deps, _backend, _conn, _pool, shutdown = await _make_leader(is_leader=False)
     task = asyncio.create_task(leader._watchdog_loop(shutdown))
@@ -4092,7 +4092,7 @@ async def test_watchdog_loop_exits_on_shutdown_while_awaiting_leadership() -> No
 #
 # Regression (PG-restart chaos): a maintenance loop that lets an infra
 # connection error escape crashes MaintenanceLeader.run's TaskGroup, which
-# propagates into the worker's TaskGroup and cancels every sibling —
+# propagates into the worker's TaskGroup and cancels every sibling -
 # WITHOUT setting shutdown_event. The heartbeat is cancelled before it can
 # reach isolate_self, so no job is re-pended and no phase log is written.
 # Every one of these loops must treat PG loss as transient, exactly as
@@ -4166,7 +4166,7 @@ async def test_scheduled_wake_loop_survives_connection_loss() -> None:
 
     task = asyncio.create_task(leader._scheduled_wake_loop(shutdown))
     # The wake loop attempts its first sweep at loop entry, then parks
-    # on its 1s tick — the bounded wait proves the attempt happened
+    # on its 1s tick - the bounded wait proves the attempt happened
     # before the survival assert speaks.
     await wait_for_condition(
         lambda: dead_pg_calls >= 1,
@@ -4219,7 +4219,7 @@ async def test_election_upsert_survives_connection_loss(monkeypatch: Any) -> Non
 
     task = asyncio.create_task(leader._election_loop(shutdown))
     # The double records the statement before the failure hook fires, so the
-    # recording is the proof the loop reached (and lost) the lease write —
+    # recording is the proof the loop reached (and lost) the lease write -
     # the failure this test exists for.
     await wait_for_condition(
         lambda: any("maintenance_leader" in sql for sql, _ in leader_conn.fetchval_calls),
@@ -4243,7 +4243,7 @@ async def test_scheduled_wake_loop_survives_transient_pg_errors() -> None:
         class, counting attempts so the survival assert is preceded by
         proof the loop faced the failure.
 
-        Argless to match the production call site — the sweep's
+        Argless to match the production call site - the sweep's
         server-side clock predicate is the single arbiter, so a ``now``
         parameter would TypeError into the generic backstop instead of
         the transient branch this test pins.
@@ -4324,7 +4324,7 @@ async def test_watchdog_loop_forgets_tick_registration_on_demotion() -> None:
 
 async def test_close_leader_owned_conns_identity_guard() -> None:
     """_close_leader_owned_conns must only null the attribute if it still
-    points to the SAME connection object — not a fresh one created by the
+    points to the SAME connection object - not a fresh one created by the
     election loop during the close suspension.
 
     Simulates the race directly: start the bounded close of the stale
@@ -4335,7 +4335,7 @@ async def test_close_leader_owned_conns_identity_guard() -> None:
     """
     leader, _deps, _backend, _leader_conn, _dp, _shutdown = await _make_leader()
 
-    # _CloseEntryConn marks the exact point close() is entered — the
+    # _CloseEntryConn marks the exact point close() is entered - the
     # bounded wait for the suspended close, never a sleep-poll hoping
     # the loop reached it.
     stale_conn = _CloseEntryConn()

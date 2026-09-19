@@ -25,16 +25,16 @@ the SDK directly.
 
 Common deployment shapes:
 
-- **Datadog Agent** — accepts OTLP on ``localhost:4317``. Set
+- **Datadog Agent**, accepts OTLP on ``localhost:4317``. Set
   ``OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317``.
-- **Sentry** — Sentry Spotlight / Sentry OTel ingest, ditto.
-- **App Insights** — set ``OTEL_EXPORTER_OTLP_ENDPOINT`` to the Azure Monitor
+- **Sentry**, Sentry Spotlight / Sentry OTel ingest, ditto.
+- **App Insights**, set ``OTEL_EXPORTER_OTLP_ENDPOINT`` to the Azure Monitor
   connection string-derived OTLP URL (typically via the App Insights agent).
-- **PostHog** — currently via PostHog Cloud OTLP endpoint, same env var.
+- **PostHog**, currently via PostHog Cloud OTLP endpoint, same env var.
 
 For error reporting that doesn't fit OTel exception events (e.g., DLQ routing
 to Sentry), users implement the ``ErrorReporter`` Protocol
-as a DI provider — vendor-neutral and added with the observability surface.
+as a DI provider, vendor-neutral and added with the observability surface.
 
 The library depends only on ``opentelemetry-api`` at runtime. Operators
 who want to configure providers programmatically (or use the in-process
@@ -50,7 +50,7 @@ attribute names (``messaging.operation.type=publish``,
 ``messaging.operation.type=process``, ``messaging.consumer.group.name``, etc.)
 so that operators who set ``OTEL_SEMCONV_STABILITY_OPT_IN=messaging`` get
 consistent behavior. No runtime conditional branching on this env var is
-needed — the attribute values are correct by construction.
+needed, the attribute values are correct by construction.
 """
 
 from taskq.obs._exporter import (

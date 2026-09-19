@@ -3,14 +3,14 @@
 ``taskq.retry._invoke_hook`` gives every actor-supplied lifecycle hook the
 same contract: user code runs beside a terminal write that has already been
 decided, so neither a raising hook nor a hanging one may change what the job
-does — failures are logged at WARNING under a name-keyed event and never
+does - failures are logged at WARNING under a name-keyed event and never
 propagate, and a hook that outlives its timeout is abandoned with a
 ``*-hook-timeout`` warning carrying the bound it exceeded.
 
 The on_success sibling pins that event surface (``on-success-hook-timeout`` /
 ``on-success-hook-failed`` in tests/test_on_success_hook.py); the on_cancel
 suite (tests/test_on_cancel_hook.py) pins the absorption and the bound
-themselves — the row still terminalises, the call still returns — but not the
+themselves - the row still terminalises, the call still returns - but not the
 signal an operator reads when cleanup goes wrong. A hook that hangs or raises
 and leaves no WARNING is a failure that looks like a success: the job went
 ``cancelled``, the external reservation the hook existed to release silently
@@ -18,7 +18,7 @@ never was, and nothing in the logs says the cleanup did not run.
 
 These pins assert the events the cooperative-cancel path emits on its failure
 paths: the timeout warning with the configured bound, the failure warning with
-the hook's error, and — the no-noise direction — neither event for a hook that
+the hook's error, and - the no-noise direction - neither event for a hook that
 returns inside its bound.
 """
 
@@ -33,7 +33,7 @@ from taskq.testing.jobs import make_job_row
 async def test_timed_out_on_cancel_hook_emits_the_timeout_warning() -> None:
     """A hook abandoned at its bound logs ``on-cancel-hook-timeout`` at
     WARNING, naming the job, the actor, the hook, and the configured
-    timeout — the same shape the on_success sibling's pin asserts."""
+    timeout - the same shape the on_success sibling's pin asserts."""
     from taskq.backend._protocol import JobRow
 
     fired_before_cutoff: list[JobRow] = []
@@ -65,7 +65,7 @@ async def test_timed_out_on_cancel_hook_emits_the_timeout_warning() -> None:
 
 async def test_raising_on_cancel_hook_emits_the_failure_warning() -> None:
     """A hook that raises is logged ``on-cancel-hook-failed`` at WARNING with
-    the error rendered, and never propagates — the terminal write beside it
+    the error rendered, and never propagates - the terminal write beside it
     has already been decided."""
     from taskq.backend._protocol import JobRow
 
@@ -95,7 +95,7 @@ async def test_raising_on_cancel_hook_emits_the_failure_warning() -> None:
 
 async def test_a_hook_within_its_bound_emits_no_warning() -> None:
     """The no-noise direction: a hook that returns inside its bound must
-    emit neither the timeout nor the failure warning — a hook that logs on
+    emit neither the timeout nor the failure warning - a hook that logs on
     the happy path is pager noise on every cancelled job."""
     from taskq.backend._protocol import JobRow
 

@@ -44,7 +44,7 @@ def test_max_attempts_zero_raises() -> None:
 
 
 def test_max_attempts_one_is_valid() -> None:
-    """max_attempts=1 is valid at construction (boundary — means no retries: first attempt is final)."""
+    """max_attempts=1 is valid at construction (boundary - means no retries: first attempt is final)."""
     p = RetryPolicy(max_attempts=1)
     assert p.max_attempts == 1
 

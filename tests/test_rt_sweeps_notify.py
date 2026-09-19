@@ -2,16 +2,16 @@
 
 Sweep 1's single-notify-per-call contract is pinned
 (``test_postgres_sweeps.py``'s ``test_single_pg_notify_per_sweep_with_rows``);
-sweep 3's is not, and sweep 3 runs every second on the leader — a
+sweep 3's is not, and sweep 3 runs every second on the leader - a
 per-row notify regression there is a wake storm on the hottest cadence
 in the system.  This file pins:
 
 * sweep 3 fires exactly ONE notification per call that promotes at
   least one row, NONE on an empty call, on the schema-qualified
-  ``wake_channel`` — the channel ``subscribe_wake`` consumers listen on;
+  ``wake_channel`` - the channel ``subscribe_wake`` consumers listen on;
 * sweep 2 fires NO notification at all: it is not a wake-channel writer
   today, and the channel's meaning ("new dispatchable work or something
-  changed on job_events") is a documented semantic — bolting a notify
+  changed on job_events") is a documented semantic - bolting a notify
   onto the deadline sweep would wake every dispatch worker in the fleet
   for jobs that will never dispatch again.
 """
@@ -46,7 +46,7 @@ async def _listen(dsn: str, channel: str) -> tuple[asyncpg.Connection, list[str]
 
     await conn.add_listener(
         channel,
-        _on_notify,  # type: ignore[arg-type]  # Why: asyncpg stubs over-narrow the callback type — same suppression as the notify tests under attack.
+        _on_notify,  # type: ignore[arg-type]  # Why: asyncpg stubs over-narrow the callback type - same suppression as the notify tests under attack.
     )
     return conn, seen
 
@@ -94,7 +94,7 @@ async def test_sweep3_fires_exactly_one_schema_qualified_wake_per_call(
         await asyncio.sleep(_DELIVERY_BEAT)
         assert seen == [channel], (
             f"a 5-row promotion must fire exactly one wake notification on "
-            f"{channel!r}, saw {seen} — a per-row notify is a wake storm on the "
+            f"{channel!r}, saw {seen} - a per-row notify is a wake storm on the "
             "leader's every-second cadence"
         )
 
@@ -116,7 +116,7 @@ async def test_sweep2_fires_no_notifications(
 ) -> None:
     """Sweep 2 is not a wake-channel writer and must stay one.
 
-    The deadline sweep's victims are terminal ('failed') — waking
+    The deadline sweep's victims are terminal ('failed') - waking
     dispatch workers for them is pure cost, and the wake channel's
     meaning is a documented contract (see sweep 1's channel-semantics
     note).  This pin makes any addition of a notify to sweep 2 a
@@ -125,7 +125,7 @@ async def test_sweep2_fires_no_notifications(
     Observation hygiene: seeding the corpus inserts 'pending' jobs rows
     directly, and the schema's ``tr_notify_job_insert`` trigger (the wake
     source for every insert, TaskQ's own or direct SQL) fires the SAME
-    wake channel for them — deduplicated by PostgreSQL to
+    wake channel for them - deduplicated by PostgreSQL to
     one delivery per transaction, since duplicate (channel, payload)
     notifications inside one transaction coalesce.  The seed's delivery
     is drained and discarded before the sweep runs, so ``seen`` below
@@ -147,7 +147,7 @@ async def test_sweep2_fires_no_notifications(
         await asyncio.sleep(_DELIVERY_BEAT)
         assert seen == [], (
             f"the deadline sweep fired {len(seen)} notification(s) on {channel!r} "
-            "— it is not a wake-channel writer today"
+            "- it is not a wake-channel writer today"
         )
     finally:
         await listener.close()

@@ -30,7 +30,7 @@ Worker-specific variables (pool sizes, heartbeat timing, cancellation grace peri
 ## `taskq dev`
 
 Starts a worker in development mode with automatic restart on file changes. Useful during
-local development — saves manually killing and restarting the worker after every code edit.
+local development: it saves manually killing and restarting the worker after every code edit.
 
 ```shell
 taskq dev MODULE:ATTR [OPTIONS]
@@ -40,7 +40,7 @@ taskq dev MODULE:ATTR [OPTIONS]
 
 | Argument | Description |
 |---|---|
-| `MODULE:ATTR` | `module:attr` reference to the actor registry — same syntax as `taskq worker --actors`. |
+| `MODULE:ATTR` | `module:attr` reference to the actor registry, same syntax as `taskq worker --actors`. |
 
 **Options:**
 
@@ -63,7 +63,7 @@ taskq dev MODULE:ATTR [OPTIONS]
    change rather than crashing.
 5. `Ctrl-C` (SIGINT) stops the worker cleanly and exits with code 0.
 
-Each restart gets a **fresh Python interpreter** — no `importlib.reload()` is involved, so
+Each restart gets a **fresh Python interpreter**; no `importlib.reload()` is involved, so
 module-level state (Pydantic models, actor registries, config objects) is always clean.
 
 **Requirements:**
@@ -101,7 +101,7 @@ taskq dev myapp.actors:registry --grace-period 0
 | `0` | Clean exit via Ctrl-C |
 | `1` | Bad `MODULE:ATTR` syntax, import failure, or `watchfiles` not installed |
 
-> **Note:** `taskq dev` is intended for local development only. Do not run it in production —
+> **Note:** `taskq dev` is intended for local development only. Do not run it in production;
 > use `taskq worker` directly under a process supervisor (systemd, Docker, Kubernetes).
 
 ---
@@ -145,11 +145,11 @@ taskq migrate up [OPTIONS]
 | `--phase` | `pre \| post \| None` | `None` | Restrict to only `pre` or only `post` phase migrations. When absent, applies both phases in order. |
 | `--target` | `str \| None` | `None` | Stop after applying this migration version (inclusive). Version format matches the filename prefix, e.g. `01.00.00_01`. |
 | `--max-steps` | `int \| None` | `None` | Maximum number of migrations to apply in this invocation. |
-| `--ddl-lock-timeout` | `float` | `30` | Seconds a transactional migration waits for a table lock before it fails and rolls back (`SET LOCAL lock_timeout`; see [Upgrading — the migration gave up waiting for a table lock](upgrading.md#the-migration-gave-up-waiting-for-a-table-lock)). `0` waits indefinitely, parking every statement on the table behind the queued DDL. |
+| `--ddl-lock-timeout` | `float` | `30` | Seconds a transactional migration waits for a table lock before it fails and rolls back (`SET LOCAL lock_timeout`; see [Upgrading: the migration gave up waiting for a table lock](upgrading.md#the-migration-gave-up-waiting-for-a-table-lock)). `0` waits indefinitely, parking every statement on the table behind the queued DDL. |
 
 The command is idempotent: each migration is recorded in `{schema}.schema_migrations` and is skipped on subsequent runs. Running `taskq migrate up` with no options applies all pending migrations.
 
-On failure (exit code 1) the command never prints a traceback. When a migration fails during apply, the command diagnoses itself: it names the failed migration, reports the state the schema was left in — a clean rollback for transactional migrations, or for `-- taskq:no-transaction` migrations the statements that remain applied plus any INVALID indexes found — and prints the single action to take. When the database connection itself cannot be established, there is nothing to diagnose, so it prints a short report naming the connection error and the same re-run action.
+On failure (exit code 1) the command never prints a traceback. When a migration fails during apply, the command diagnoses itself: it names the failed migration, reports the state the schema was left in: a clean rollback for transactional migrations, or for `-- taskq:no-transaction` migrations the statements that remain applied plus any INVALID indexes found, and prints the single action to take. When the database connection itself cannot be established, there is nothing to diagnose, so it prints a short report naming the connection error and the same re-run action.
 
 **Example: apply all pending:**
 
@@ -191,7 +191,7 @@ taskq worker --actors MODULE:ATTR [OPTIONS]
 
 | Option | Type | Default | Env var override | Description |
 |---|---|---|---|---|---|
-| `--actors` | `str` | *required* | — | `module:attr` reference to the actor registry |
+| `--actors` | `str` | *required* | n/a | `module:attr` reference to the actor registry |
 | `--queues` | `list[str]` | `None` | `TASKQ_QUEUES` | Queue names to consume; repeat the flag once per queue name |
 | `--max-concurrency` | `int` | `None` | `TASKQ_MAX_CONCURRENCY` | Upper bound on concurrent jobs |
 | `--poll-interval` | `float` | `None` | `TASKQ_POLL_INTERVAL` | Producer loop fallback polling cadence (seconds) |
@@ -200,7 +200,7 @@ taskq worker --actors MODULE:ATTR [OPTIONS]
 | `--workgroup-instance` | `str` | `None` | `TASKQ_WORKGROUP_INSTANCE` | UUIDv7 identifying the workgroup orchestrator that launched this worker |
 | `--health-socket-path` | `str` | `None` | `TASKQ_HEALTH_SOCKET_PATH` | Unix socket path for the health server (use unique paths when running multiple workers) |
 | `--force-update-actor-config` | `bool` | `False` | `TASKQ_FORCE_UPDATE_ACTOR_CONFIG` | Overwrite metadata-drifted actor-config rows at startup (queue and capacity are never boot-rewritten) |
-| `--until-idle` | `bool` | `False` | — | Run until all subscribed queues are drained, then exit. Exit 0 if all jobs succeeded, 3 if any failed, 4 if idle-max-runtime was exceeded. Incompatible with cron-driven workloads. |
+| `--until-idle` | `bool` | `False` | n/a | Run until all subscribed queues are drained, then exit. Exit 0 if all jobs succeeded, 3 if any failed, 4 if idle-max-runtime was exceeded. Incompatible with cron-driven workloads. |
 | `--idle-settle-window` | `float` | `None` | `TASKQ_IDLE_SETTLE_WINDOW` | Seconds to wait after queues appear empty before declaring drained. Default 2.0. Only used with `--until-idle`. |
 | `--idle-poll-interval` | `float` | `None` | `TASKQ_IDLE_POLL_INTERVAL` | How often to check queue depth. Default 1.0. Only used with `--until-idle`. |
 | `--idle-max-runtime` | `float` | `None` | `TASKQ_IDLE_MAX_RUNTIME` | Maximum wall-clock seconds before forcing exit (code 4). Only used with `--until-idle`. |
@@ -218,8 +218,8 @@ myapp.workers.email:handlers   # module=myapp.workers.email, attr=handlers
 
 The module is imported at startup via `importlib.import_module`. The attribute must resolve to one of:
 
-- `Mapping[str, ActorRef]` — keys are actor names, values are `ActorRef` instances.
-- `Iterable[ActorRef]` — names are read from `ActorRef.name` on each element.
+- `Mapping[str, ActorRef]`: keys are actor names, values are `ActorRef` instances.
+- `Iterable[ActorRef]`: names are read from `ActorRef.name` on each element.
 
 Any other type (including a plain list of non-`ActorRef` objects) prints an error and exits with code 1.
 
@@ -283,9 +283,9 @@ ActorConfigDriftList: ...
 Re-run with --force-update-actor-config to overwrite, or set TASKQ_FORCE_UPDATE_ACTOR_CONFIG=true.
 ```
 
-`max_concurrent`, `max_pending`, `result_ttl`, and `queue` never appear in this error — they are operator-owned once a stored row exists (the `@actor(...)` literal only seeds them the first time) and can never drift into a refusal. A differing `queue` literal logs `actor-config-queue-override` at WARNING and the boot adopts the stored assignment (the rolling-deploy window of `taskq actor-config move-queue`); a differing capacity literal logs `actor-config-capacity-override` at info. Use `taskq actor-config set` to change capacity, `taskq actor-config move-queue` to move an actor's queue; see [ActorConfig sync](workers.md#actorconfig-sync).
+`max_concurrent`, `max_pending`, `result_ttl`, and `queue` never appear in this error: they are operator-owned once a stored row exists (the `@actor(...)` literal only seeds them the first time) and can never drift into a refusal. A differing `queue` literal logs `actor-config-queue-override` at WARNING and the boot adopts the stored assignment (the rolling-deploy window of `taskq actor-config move-queue`); a differing capacity literal logs `actor-config-capacity-override` at info. Use `taskq actor-config set` to change capacity, `taskq actor-config move-queue` to move an actor's queue; see [ActorConfig sync](workers.md#actorconfig-sync).
 
-Use this flag on the first new pod of a rolling deploy when an actor's `metadata` has changed. Remove it for subsequent pods — it is not safe to run permanently as it allows silent metadata drift. See [workers.md](workers.md#actorconfig-sync) for the full drift protocol.
+Use this flag on the first new pod of a rolling deploy when an actor's `metadata` has changed. Remove it for subsequent pods; it is not safe to run permanently as it allows silent metadata drift. See [workers.md](workers.md#actorconfig-sync) for the full drift protocol.
 
 ### `taskq actor-config`
 
@@ -299,9 +299,9 @@ taskq actor-config set checkout_charge --max-pending 5000
 taskq actor-config set checkout_charge --clear-max-pending
 ```
 
-All three capacity fields are live. `--max-concurrent` and `--result-ttl` take effect immediately for every worker in the fleet — the dispatch query re-reads `max_concurrent` every dispatch cycle, and the terminal-write path re-reads `result_ttl` on every job completion. `--max-pending` is enforced by every enqueue-side process (your web app, your workers' sub-job enqueues) through a TTL-bounded cache of the table (default 5s staleness), so a change propagates fleet-wide within seconds — no redeploy, no worker restart.
+All three capacity fields are live. `--max-concurrent` and `--result-ttl` take effect immediately for every worker in the fleet: the dispatch query re-reads `max_concurrent` every dispatch cycle, and the terminal-write path re-reads `result_ttl` on every job completion. `--max-pending` is enforced by every enqueue-side process (your web app, your workers' sub-job enqueues) through a TTL-bounded cache of the table (default 5s staleness), so a change propagates fleet-wide within seconds, with no redeploy and no worker restart.
 
-Clearing a field writes NULL, which means different things per field on purpose: `--clear-max-concurrent` makes the actor *unlimited* (the dispatch SQL cannot see the code literal once a row exists), while `--clear-max-pending` / `--clear-result-ttl` *revert to the `@actor(...)` literal* — clearing undoes your override and restores the code default. For `result_ttl` the reverted literal is applied from each job's **completion** timestamp by the completing worker (never re-pinned to the enqueue time), so a job that sat in the queue longer than its TTL still gets its full result lifetime.
+Clearing a field writes NULL, which means different things per field on purpose: `--clear-max-concurrent` makes the actor *unlimited* (the dispatch SQL cannot see the code literal once a row exists), while `--clear-max-pending` / `--clear-result-ttl` *revert to the `@actor(...)` literal*; clearing undoes your override and restores the code default. For `result_ttl` the reverted literal is applied from each job's **completion** timestamp by the completing worker (never re-pinned to the enqueue time), so a job that sat in the queue longer than its TTL still gets its full result lifetime.
 
 To see why a change is (or isn't) taking effect, diff the stored rows against the code literals in your registry:
 
@@ -309,7 +309,7 @@ To see why a change is (or isn't) taking effect, diff the stored rows against th
 taskq actor-config diff --actors myapp.actors:registry
 ```
 
-Per actor and capacity field this prints the `@actor(...)` literal, the stored value, and the value the engine currently enforces (`effective`). It also flags `queue` mismatches (assignment drift — boot adopts the stored queue, but the cron leader's fires follow it while producers enqueue by their own literal, so the two routing halves disagree until you run `taskq actor-config move-queue` or deploy the matching literal), `metadata` mismatches (startup-blocking), actors with no stored row yet, and leftover rows whose actor is no longer registered. Note the no-row case is field-dependent: an actor with no stored row **does not dispatch at all** (`max_concurrent` shows `effective=0` — the dispatch capacity gate reads only `actor_config` rows until a worker startup seeds it), while `max_pending` / `result_ttl` fall back to the code literal.
+Per actor and capacity field this prints the `@actor(...)` literal, the stored value, and the value the engine currently enforces (`effective`). It also flags `queue` mismatches (assignment drift: boot adopts the stored queue, but the cron leader's fires follow it while producers enqueue by their own literal, so the two routing halves disagree until you run `taskq actor-config move-queue` or deploy the matching literal), `metadata` mismatches (startup-blocking), actors with no stored row yet, and leftover rows whose actor is no longer registered. Note the no-row case is field-dependent: an actor with no stored row **does not dispatch at all** (`max_concurrent` shows `effective=0`; the dispatch capacity gate reads only `actor_config` rows until a worker startup seeds it), while `max_pending` / `result_ttl` fall back to the code literal.
 
 `taskq actor-config set` requires the actor to have a stored row already (created by a worker startup that registered it). `queue` is moved by `taskq actor-config move-queue`; `metadata` is structural and only ever changes by redeploying a new `@actor(...)` registration (plus `--force-update-actor-config` if a stored row already exists).
 
@@ -321,17 +321,17 @@ Deregister an actor: delete its `actor_config` row with safety checks.
 taskq actor-config deregister <ACTOR> [--force] [--purge-queue]
 ```
 
-- `<ACTOR>` — actor name (positional argument)
-- `--force` — cancel pending/scheduled jobs, disable enabled cron schedules,
+- `<ACTOR>`: actor name (positional argument)
+- `--force`: cancel pending/scheduled jobs, disable enabled cron schedules,
   and proceed despite non-terminal jobs. Running jobs still block.
-- `--purge-queue` — also delete the orphaned `queues` row if no other actor
+- `--purge-queue`: also delete the orphaned `queues` row if no other actor
   references it.
 
 Exit code 0 on success, 2 on refusal (with error message), 3 on unknown actor.
 
 ### `taskq actor-config move-queue`
 
-Move an actor to a different queue in one operator action — the one-step
+Move an actor to a different queue in one operator action, the one-step
 replacement for the old four-write lockstep (code literal + stored row +
 consumed-queue set + target `queues` row) whose fail-closed half refused
 worker boot mid-move:
@@ -343,7 +343,7 @@ taskq actor-config move-queue <ACTOR> <NEW_QUEUE>
 The actor's pending/scheduled backlog is rewritten onto the target queue as
 bounded committed batches, then one final transaction locks the stored
 assignment, carries the old queue's `queues` row (mode + `max_concurrent`) to
-the target when the target has no row of its own, and flips it — so
+the target when the target has no row of its own, and flips it;
 old-queue strays drain through the target's consumers, and a crash mid-drain
 re-runs cleanly (the abort logs `actor-queue-move-aborted` with the count
 already committed). Running jobs finish on the workers that claimed them;
@@ -355,20 +355,20 @@ on the old queue are untouched; cron fires follow the moved assignment from
 the flip on.
 
 Deploy the matching `@actor(queue=...)` literal before, during, or after
-the move — in any order. Workers boot on either side of the window (a
+the move, in any order. Workers boot on either side of the window (a
 stale literal logs `actor-config-queue-override` and adopts the stored
 assignment). Ensure workers consume the new queue, and keep consuming the
-old queue until every producer runs the new literal — stale producers
+old queue until every producer runs the new literal; stale producers
 keep enqueueing to it.
 
 The command reports how many pending jobs still carry the old queue label.
 That count is the residual stale producers keep adding to, and it is what
-tells you when the retired queue can stop being consumed — keep its
+tells you when the retired queue can stop being consumed; keep its
 consumers up until it reaches zero.
 
 Exit code 0 on success, 2 on refusal (invalid queue name, the actor is
 already on that queue, the assignment changed concurrently, or a drain
-batch exceeded its statement timeout — batches committed before the abort
+batch exceeded its statement timeout: batches committed before the abort
 are kept, so the move is incomplete and safe to re-run), 3 on unknown
 actor.
 
@@ -384,7 +384,7 @@ taskq queue migrate <ACTOR> --to <QUEUE>
 
 The target queue is named by an explicit `--to` rather than positionally.
 Both arguments of a move are plain strings, and two bare positionals are
-easy to transpose under pressure — with the consequence that the backlog
+easy to transpose under pressure, with the consequence that the backlog
 drains onto a queue that was never the target.
 
 Behaviour, reporting and exit codes are identical to
@@ -400,12 +400,12 @@ taskq doctor --actors myapp.actors:registry
 ```
 
 TaskQ refuses boot only on structural stored-config drift, so a whole
-family of capacity and configuration problems fails silently — their only
+family of capacity and configuration problems fails silently, so their only
 symptom is work that quietly does not happen. `doctor` names them together:
 
 - a registered actor with **no stored row**, which never dispatches (the
   dispatch capacity gate reads only `actor_config` rows);
-- a **stale `queues` row** whose queue no actor is assigned to — inert
+- a **stale `queues` row** whose queue no actor is assigned to; it is inert
   now, but silently applied to the next actor moved onto that name;
 - **incoherent capacity combinations**: a `max_pending` below
   `max_concurrent` (the actor may queue fewer jobs than it may run at
@@ -414,10 +414,10 @@ symptom is work that quietly does not happen. `doctor` names them together:
 
 When a live worker's `workers` row metadata carries a non-empty event-loop
 stall tally, `doctor` reports one finding per attributed actor: which
-worker recorded it, the actor, the kind counts (`blocking_call` — a sync
-call that released the GIL; `gil_held` — sync work that held it), and the
+worker recorded it, the actor, the kind counts (`blocking_call`: a sync
+call that released the GIL; `gil_held`: sync work that held it), and the
 remedy. The tally is the rolling top-20 the worker's lag watchdog
-attributed (see [runbooks.md — Event-loop stall attribution](runbooks.md#event-loop-stall-attribution-worker-warnings));
+attributed (see [runbooks.md: Event-loop stall attribution](runbooks.md#event-loop-stall-attribution-worker-warnings));
 the worker's own `event-loop-stall-attributed` warnings name the exact
 file:line.
 
@@ -430,7 +430,7 @@ an ACA/ECS stop timeout, compose `stop_grace_period`, systemd
 `TimeoutStopSec`) and doctor compares it against the worker's modelled
 worst-case shutdown: a platform grace below the worst case gets SIGKILLed
 mid-teardown, degrading every shutdown to crash reclaim (leases expire,
-in-flight work re-runs) — the report names the shortfall and the fix. The
+in-flight work re-runs); the report names the shortfall and the fix. The
 worker itself cannot see the platform's number, so this is the one check
 that needs the operator to supply it.
 
@@ -455,7 +455,7 @@ in `|| true` and then ignored. Gate CI on drift with
 
 ## `taskq job show`
 
-Shows one job's stored row, reading `{schema}.jobs` first and falling back to `{schema}.jobs_archive` — a pruned terminal job is shown from the archive, not reported missing.
+Shows one job's stored row, reading `{schema}.jobs` first and falling back to `{schema}.jobs_archive`: a pruned terminal job is shown from the archive, not reported missing.
 
 ```shell
 taskq job show JOB_ID
@@ -467,9 +467,9 @@ taskq job show JOB_ID
 |---|---|---|
 | `JOB_ID` | `UUID` | The job's id. A non-UUID value is rejected as a usage error before any database access. |
 
-Prints the operator-facing fields of the stored row — id, actor, queue, status, priority, attempt, max_attempts, retry_kind, the four timestamps, and (only when set) `error_class`/`error_message` and `idempotency_key`. `payload`, `result` and `error_traceback` are deliberately not printed, keeping a terminal read from dragging arbitrarily large blobs onto the wire. A row found in `jobs_archive` is marked `archived: yes`; see [jobs-clients.md](jobs-clients.md) for the archival lifecycle.
+Prints the operator-facing fields of the stored row: id, actor, queue, status, priority, attempt, max_attempts, retry_kind, the four timestamps, and (only when set) `error_class`/`error_message` and `idempotency_key`. `payload`, `result` and `error_traceback` are deliberately not printed, keeping a terminal read from dragging arbitrarily large blobs onto the wire. A row found in `jobs_archive` is marked `archived: yes`; see [jobs-clients.md](jobs-clients.md) for the archival lifecycle.
 
-Under `retry_kind="indefinite"` the stored `max_attempts` ceiling is inert — the retry path never consults it — so the command renders it as `— (indefinite)`, the same framing the admin UI uses; a bare number would advertise a budget the job is not enforcing. See [retries.md](retries.md#2-retry-kinds).
+Under `retry_kind="indefinite"` the stored `max_attempts` ceiling is inert: the retry path never consults it, so the command renders it as `(indefinite)`, the same framing the admin UI uses; a bare number would advertise a budget the job is not enforcing. See [retries.md](retries.md#2-retry-kinds).
 
 **Example output:**
 
@@ -480,7 +480,7 @@ queue: default
 status: succeeded
 priority: 0
 attempt: 168
-max_attempts: — (indefinite)
+max_attempts: (indefinite)
 retry_kind: indefinite
 created_at: 2026-01-01 00:00:00+00:00
 scheduled_at: 2026-01-01 00:00:00+00:00
@@ -524,8 +524,8 @@ livenessProbe:
 
 | Code | Condition |
 |---|---|
-| `0` | HTTP 2xx — event loop is responsive (`{"status":"ok"}`) |
-| `1` | HTTP 5xx — event loop unresponsive or timeout exceeded |
+| `0` | HTTP 2xx: event loop is responsive (`{"status":"ok"}`) |
+| `1` | HTTP 5xx: event loop unresponsive or timeout exceeded |
 | `1` | Socket unreachable (worker not running or wrong socket path) |
 
 **Example:**
@@ -582,8 +582,8 @@ All conditions must pass for the response to be `200`. During any shutdown phase
 
 | Code | Condition |
 |---|---|
-| `0` | HTTP 200 — worker is ready |
-| `1` | HTTP 503 — not ready (shutting down or PG ping failed) |
+| `0` | HTTP 200: worker is ready |
+| `1` | HTTP 503, not ready (shutting down or PG ping failed) |
 | `1` | Socket unreachable |
 
 **Example (Kubernetes readiness probe via exec):**
@@ -626,7 +626,7 @@ taskq_shutdown_phase 0
 
 | Code | Condition |
 |---|---|
-| `0` | HTTP 200 — metrics returned |
+| `0` | HTTP 200: metrics returned |
 | `1` | Socket unreachable or request timed out |
 
 ---
@@ -692,9 +692,9 @@ taskq workgroup validate CONFIG
 |---|---|---|
 | `CONFIG` | `PATH` | Path to the workgroup TOML configuration file. |
 
-Prints a summary of each worker's configuration. Exits 1 if the config is missing, malformed, contains invalid values (e.g. negative poll interval, misconfigured health check thresholds), or names an `actors` reference that cannot be resolved — an unimportable module, a module that raises on import, or a missing attribute.
+Prints a summary of each worker's configuration. Exits 1 if the config is missing, malformed, contains invalid values (e.g. negative poll interval, misconfigured health check thresholds), or names an `actors` reference that cannot be resolved: an unimportable module, a module that raises on import, or a missing attribute.
 
-Validation **imports the `actors` module**, so it must run where the application is importable — the same interpreter and `PYTHONPATH` the workgroup would start under. Resolving the reference here is what makes the check worth having: every child imports it the moment it is spawned, so an unresolvable reference crashes each one at import and the supervisor sees only a run of child exits, restarting them on backoff until the burst budget is spent. A CI or lint invocation that runs without the application on `sys.path` will report a valid config as invalid; run it from the deployment image instead.
+Validation **imports the `actors` module**, so it must run where the application is importable: the same interpreter and `PYTHONPATH` the workgroup would start under. Resolving the reference here is what makes the check worth having: every child imports it the moment it is spawned, so an unresolvable reference crashes each one at import and the supervisor sees only a run of child exits, restarting them on backoff until the burst budget is spent. A CI or lint invocation that runs without the application on `sys.path` will report a valid config as invalid; run it from the deployment image instead.
 
 Resolving the reference is also what lets validate warn about an actor whose queue no `[[workers]]` entry consumes. That is a warning, never an exit-1 condition: another workgroup or deployment may consume the queue, and no single supervisor can know the whole fleet.
 
@@ -702,7 +702,7 @@ Resolving the reference is also what lets validate warn about an actor whose que
 
 ```shell
 taskq workgroup validate workgroup.toml
-# config OK — 2 worker(s), actors='billing.actors:registry'
+# config OK: 2 worker(s), actors='billing.actors:registry'
 #   api: queues=['default'] poll=0.5s concurrency=8 health=off
 #   batch: queues=['email', 'report'] poll=5.0s concurrency=2 health=on
 ```
@@ -763,7 +763,7 @@ taskq workgroup start workgroup.toml
 |---|---|
 | `0` | Success |
 | `1` | Any failure: bad arguments, import errors, config drift, PG connection failures, health probe negative result |
-| `2` | Watchdog force-exit (wedged worker) — not returned by `taskq worker` itself; emitted by `os._exit(EXIT_WATCHDOG)` |
+| `2` | Watchdog force-exit (wedged worker), not returned by `taskq worker` itself; emitted by `os._exit(EXIT_WATCHDOG)` |
 | `3` | `taskq worker --until-idle`: some jobs failed during the drain |
 | `4` | `taskq worker --until-idle`: idle-max-runtime exceeded before drain completed |
 

@@ -1,18 +1,18 @@
 """Contract: the leader election loop's connection rebuilds are bounded.
 
 ``MaintenanceLeader._open_leader_conn`` and ``_open_dedicated_conn`` await
-``deps.leader_conn_factory()`` — a caller-supplied callable — when rebuilding
+``deps.leader_conn_factory()`` - a caller-supplied callable - when rebuilding
 the advisory-lock, monitor, and cron connections. The notify listener's
 identical rebuild factory call is bounded with ``settings.reload_factory_timeout``
 (``taskq/worker/notify.py``); unbounded, a hung token endpoint parks the
 election loop past every staleness budget, and the in-worker watchdog's
 stale-loop detector force-exits the whole worker instead of the loop's own
 retry/backoff handling it. The bound's exhaustion is the loop's ordinary
-factory-failure path: logged, heartbeat-interval backoff, retry — never a
+factory-failure path: logged, heartbeat-interval backoff, retry - never a
 crash and never a stall.
 
 Docker-free: hand-rolled fakes driving the REAL ``_election_loop`` (fake
-conventions mirror ``tests/test_leader.py``). No ``pytestmark`` — must run
+conventions mirror ``tests/test_leader.py``). No ``pytestmark`` - must run
 under ``pytest -m "not integration"``.
 """
 
@@ -108,7 +108,7 @@ class _FakeConn:
 
 
 class _FakePool:
-    """Fake asyncpg.Pool placeholder — the election loop never acquires."""
+    """Fake asyncpg.Pool placeholder - the election loop never acquires."""
 
     def __init__(self) -> None:
         self.closed = False
@@ -143,7 +143,7 @@ def _make_leader(deps: WorkerDeps) -> MaintenanceLeader:
 async def _factory_calls_reach(factory_calls: list[int], n: int) -> None:
     """Bounded wait until the hanging factory has been entered n times.
 
-    RED pre-fix: the loop is parked inside the FIRST factory() call — no
+    RED pre-fix: the loop is parked inside the FIRST factory() call - no
     retry ever happens and this bounded wait fails by name.
     """
     deadline = asyncio.get_running_loop().time() + _TEST_BUDGET_SECS
@@ -165,8 +165,8 @@ async def _factory_calls_reach(factory_calls: list[int], n: int) -> None:
 async def test_election_leader_conn_rebuild_factory_hang_is_bounded_and_retried() -> None:
     """A leader_conn_factory that never returns is bounded by
     reload_factory_timeout: the timeout flows into the election loop's
-    existing open-failure handling (logged, heartbeat backoff, retry) —
-    the factory is entered again — and the loop stays responsive to
+    existing open-failure handling (logged, heartbeat backoff, retry) -
+    the factory is entered again - and the loop stays responsive to
     shutdown instead of parking forever."""
     settings = _make_settings()
     factory_calls = [0]
@@ -187,12 +187,12 @@ async def test_election_leader_conn_rebuild_factory_hang_is_bounded_and_retried(
     try:
         await asyncio.wait_for(factory_entered.wait(), timeout=_TEST_BUDGET_SECS)
         # Two entries prove the first call's bound fired and the loop's own
-        # retry took over — pre-fix the loop parks inside call one.
+        # retry took over - pre-fix the loop parks inside call one.
         await _factory_calls_reach(factory_calls, 2)
         assert not deps.is_leader.is_set(), "no conn, no leadership"
 
         # The loop must stay responsive: shutdown set between retries ends
-        # it on the next while-check — a loop still parked in factory()
+        # it on the next while-check - a loop still parked in factory()
         # would hang here.
         shutdown.set()
         await asyncio.wait_for(task, timeout=_TEST_BUDGET_SECS)

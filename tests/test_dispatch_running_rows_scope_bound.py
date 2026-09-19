@@ -2,13 +2,13 @@
 
 The axis this module isolates: RUNNING rows. Pending backlog is held
 fixed (the round's own small due backlog only), and only the fleet's
-running population grows — unrelated actors' rows this round never
+running population grows - unrelated actors' rows this round never
 admits, plus (in the capped shape) the polled actor's own running rows.
-The pre-#226 statement paid this axis on every round through the
+The pre-fix statement paid this axis on every round through the
 ``running_per_actor`` CTE: referenced three times, so materialized once
 per round, scanning and aggregating EVERY running row in the fleet
 (``SELECT actor, count(*) FROM jobs WHERE status='running' GROUP BY
-actor``) whether or not any actor declared ``max_concurrent`` — the
+actor``) whether or not any actor declared ``max_concurrent`` - the
 cost rode every claim round at O(fleet running rows).
 
 The shipped statement counts running rows per capped actor instead: a
@@ -16,8 +16,8 @@ correlated count gated on ``ac.max_concurrent IS NOT NULL`` inside the
 CASE that computes the residual (and the same gate in
 ``eligible_candidates``' post-lock re-check), so the count subplan is
 evaluated only for actors that declared a cap, reading only that
-actor's own ``jobs_actor_running_idx`` entries. An uncapped fleet — the
-default — does zero running-row work per round, and a capped fleet pays
+actor's own ``jobs_actor_running_idx`` entries. An uncapped fleet - the
+default - does zero running-row work per round, and a capped fleet pays
 its own capped actors' running rows, never the fleet's.
 
 Oracle: EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) of the production
@@ -65,13 +65,13 @@ _VARIANTS = (
 )
 
 # The round's own slice: one polled actor, one polled queue, a small
-# fixed due backlog — identical at every running-rows size below.
+# fixed due backlog - identical at every running-rows size below.
 _POLLED_QUEUE = "running_scope_polled_q"
 _POLLED_ACTOR = "running_scope_polled_actor"
 _OWN_PENDING = 60
 
 # The running-row axis: rows of actors this round never polls (and
-# never could admit — their actor_config rows name other queues). Pure
+# never could admit - their actor_config rows name other queues). Pure
 # running-population bloat, the exact population the fleet-wide
 # running_per_actor CTE paid for on every round.
 _UNRELATED_RUNNING_ACTORS = 50
@@ -117,7 +117,7 @@ async def _seed(
 
     ``running_rows`` rows are spread over
     ``_UNRELATED_RUNNING_ACTORS`` never-polled actors (running, lease
-    live, no identity_key) — the fleet's running load. The polled
+    live, no identity_key) - the fleet's running load. The polled
     actor's own cap is applied to its actor_config row so the caller can
     exercise the gated count's taken branch (a capped actor with its own
     running rows) beside the untaken one. Returns the worker id the
@@ -161,7 +161,7 @@ async def _seed(
     )
     if running_rows:
         # The running population: never-polled actors, live leases. On
-        # the pre-#226 statement this is the population the
+        # the pre-fix statement this is the population the
         # running_per_actor CTE scanned and aggregated per round.
         per_actor = running_rows // _UNRELATED_RUNNING_ACTORS
         await conn.execute(
@@ -226,8 +226,8 @@ async def test_uncapped_round_ignores_the_fleet_running_population(
     """An uncapped actor's dispatch round does zero running-row work,
     whether the fleet holds zero running rows or a thousand.
 
-    The pre-#226 statement materialized the fleet-wide running count on
-    every round regardless of caps — this is the axis that made it a
+    The pre-fix statement materialized the fleet-wide running count on
+    every round regardless of caps - this is the axis that made it a
     per-round tax proportional to fleet concurrency. The gated count's
     branch is never taken for an uncapped actor, so no plan node may
     carry the running population's rows.
@@ -246,8 +246,8 @@ async def test_uncapped_round_ignores_the_fleet_running_population(
                 f"{variant}: with {running_rows} unrelated running rows and "
                 f"no actor declaring a cap, the dispatch plan's widest node "
                 f"({label}) did {widest:.0f} rows of work (bound "
-                f"{_NODE_ROW_BOUND}) — the round is counting or scanning the "
-                "fleet's running population it must not touch (the #226 "
+                f"{_NODE_ROW_BOUND}) - the round is counting or scanning the "
+                "fleet's running population it must not touch (the "
                 "running_per_actor CTE regression). Widest nodes: "
                 f"{nodes[:5]}; execution {execution_ms:.2f} ms."
             )
@@ -255,7 +255,7 @@ async def test_uncapped_round_ignores_the_fleet_running_population(
         full_widest = widest_by_running[_RUNNING_SIZES[-1]]
         assert full_widest <= _RUNNING_RATIO_BOUND * max(empty_widest, 1.0), (
             f"{variant}: the dispatch plan's widest node grows with the "
-            f"fleet's running population — {empty_widest:.0f} rows of work "
+            f"fleet's running population - {empty_widest:.0f} rows of work "
             f"with {_RUNNING_SIZES[0]} running rows vs {full_widest:.0f} with "
             f"{_RUNNING_SIZES[-1]}, while the round's own pending backlog "
             f"never changed (ratio bound {_RUNNING_RATIO_BOUND}x). An "
@@ -273,8 +273,8 @@ async def test_capped_round_pays_only_its_own_running_rows(
     taken branch) and still never the fleet's.
 
     The polled actor declares ``max_concurrent`` and holds two of its
-    own running rows, so the gated count executes — a scan of that
-    actor's running-row partial-index entries — while the fleet's
+    own running rows, so the gated count executes - a scan of that
+    actor's running-row partial-index entries - while the fleet's
     unrelated running population must not move the widest node: the
     count is correlated per actor, not a fleet-wide aggregate.
     """
@@ -292,7 +292,7 @@ async def test_capped_round_pays_only_its_own_running_rows(
             )
             # The polled actor's own running rows: held under a live
             # lease, so the residual arithmetic must count them (the
-            # gate's taken branch) — capped at 5 with 2 running, the
+            # gate's taken branch) - capped at 5 with 2 running, the
             # round admits at most 3 more.
             await conn.execute(
                 f'INSERT INTO "{running_schema}".jobs '
@@ -317,18 +317,18 @@ async def test_capped_round_pays_only_its_own_running_rows(
                 f"{variant}: with {running_rows} unrelated running rows, a "
                 f"capped polled actor, and 2 of its own running rows, the "
                 f"dispatch plan's widest node ({label}) did {widest:.0f} rows "
-                f"of work (bound {_NODE_ROW_BOUND}) — the capped count must "
+                f"of work (bound {_NODE_ROW_BOUND}) - the capped count must "
                 "read only its own actor's running rows, never the fleet's "
-                "(the #226 running_per_actor CTE regression). Widest nodes: "
+                "(the running_per_actor CTE regression). Widest nodes: "
                 f"{nodes[:5]}; execution {execution_ms:.2f} ms."
             )
         empty_widest = widest_by_running[_RUNNING_SIZES[0]]
         full_widest = widest_by_running[_RUNNING_SIZES[-1]]
         assert full_widest <= _RUNNING_RATIO_BOUND * max(empty_widest, 1.0), (
             f"{variant}: the capped round's widest node grows with the "
-            f"fleet's running population — {empty_widest:.0f} rows of work "
+            f"fleet's running population - {empty_widest:.0f} rows of work "
             f"with {_RUNNING_SIZES[0]} running rows vs {full_widest:.0f} with "
-            f"{_RUNNING_SIZES[-1]} — the count is per capped actor and must "
+            f"{_RUNNING_SIZES[-1]} - the count is per capped actor and must "
             f"not move with the fleet's running rows (ratio bound "
             f"{_RUNNING_RATIO_BOUND}x)."
         )

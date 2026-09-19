@@ -105,7 +105,7 @@ PAYLOADS: dict[str, callable[[], object]] = {  # type: ignore[assignment]
 def main() -> None:
     print("== correctness: B output byte-identical to A (str-keyed inputs) ==")
     for name, factory in PAYLOADS.items():
-        payload = factory()  # one instance — A and B must see identical input
+        payload = factory()  # one instance - A and B must see identical input
         a_out = dumps_a(payload)
         b_out = dumps_b(payload)
         assert a_out == b_out, f"{name}: outputs differ"
@@ -114,7 +114,7 @@ def main() -> None:
 
     # Edge cases that distinguish the flags (not timed):
     #   int/bool/None keys: A coerces silently, B raises TypeError.
-    #   bytes keys: BOTH raise TypeError — the flag does not license bytes keys.
+    #   bytes keys: BOTH raise TypeError - the flag does not license bytes keys.
     print("== edge cases (behaviour, not timing) ==")
     try:
         dumps_a({1: "x"})
@@ -157,7 +157,7 @@ def main() -> None:
     print()
     report(results)
     print(
-        "\nnote: orjson docs — OPT_NON_STR_KEYS 'slows serialization';\n"
+        "\nnote: orjson docs - OPT_NON_STR_KEYS 'slows serialization';\n"
         "speedup > 1.0 means dropping the flag is faster (B wins)."
     )
 

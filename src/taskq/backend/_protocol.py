@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     type ConnLike = asyncpg.Connection | PoolConnectionProxy  # pyright: ignore[reportUnusedImport]  # Why: PoolConnectionProxy is only used in the type alias; pyright may not see it
 
 else:
-    type ConnLike = object  # pyright: ignore[reportInvalidTypeForm]  # Why: runtime fallback — asyncpg is TYPE_CHECKING-only to avoid transitive import
+    type ConnLike = object  # pyright: ignore[reportInvalidTypeForm]  # Why: runtime fallback, asyncpg is TYPE_CHECKING-only to avoid transitive import
 
 from pydantic import AfterValidator, BaseModel, ConfigDict
 
@@ -104,18 +104,18 @@ __all__ = [
 # implementation can ignore without producing incorrect behaviour do not
 # require a bump.  See docs/architecture.md §Backend protocol.
 # v3 (unreleased; folds in every protocol change since the last shipped
-#     release): list_jobs — JobFilter.status widened to accept a sequence
+#     release): list_jobs, JobFilter.status widened to accept a sequence
 #     and the `active` meta-filter was added; a v2 implementation returns
 #     wrong rows for both shapes without erroring. get_actor_max_pending
-#     added (required) — a v2 implementation lacks the method, and the
+#     added (required), a v2 implementation lacks the method, and the
 #     client capacity cache's fail-open would otherwise swallow the
 #     AttributeError and silently enforce code literals forever.
 #     mark_succeeded / mark_succeeded_with_conn gained the
-#     `fallback_result_ttl` keyword — without it a v2 implementation
+#     `fallback_result_ttl` keyword, without it a v2 implementation
 #     keeps the enqueue-pinned result_expires_at when the stored
 #     result_ttl is cleared, silently expiring results at completion.
 #     mark_succeeded / mark_succeeded_with_conn also gained the
-#     `result_bytes` keyword — the result's orjson encoding, produced
+#     `result_bytes` keyword, the result's orjson encoding, produced
 #     once by the worker consumer. An implementation that ignores it
 #     stores a NULL result (and NULL result_size_bytes) for every
 #     consumer-completed job, silently; it must bind
@@ -123,20 +123,20 @@ __all__ = [
 #     result_size_bytes = len(result_bytes) when it is given, reject a
 #     call passing both result and result_bytes, and NUL-guard the
 #     bytes exactly as the dict form is guarded.
-#     EnqueueArgs.scheduled_at is now optional — None means immediate
+#     EnqueueArgs.scheduled_at is now optional, None means immediate
 #     and the backend's server stamps/decides it. A v2-era implementation
 #     fails LOUDLY on None ('>' not supported between NoneType and
 #     datetime at its scheduled_at > now checks) rather than silently
 #     misbehaving, so per the bump rule above this is a documented
 #     no-bump incompatibility.
 #     mark_failed_or_retry's next_scheduled_at (datetime | None) is
-#     replaced by retry_delay (timedelta | None) — the backend derives
+#     replaced by retry_delay (timedelta | None), the backend derives
 #     scheduled_at, the scheduled/pending status, AND the
 #     schedule_to_close deadline outcome from its own clock (single
 #     arbiter); a v2-era implementation binding a datetime into the
 #     interval slot fails loudly at the driver instead of silently
 #     misbehaving.
-#     list_jobs — every JobFilter.order_by now tie-breaks on `id` in the
+#     list_jobs, every JobFilter.order_by now tie-breaks on `id` in the
 #     SAME direction as its primary column (`created_at DESC, id DESC`,
 #     not `id ASC`) and accepts a cursor, whose shape is the ordering's
 #     own columns. A v2-era implementation still ordering `id ASC` pages
@@ -144,7 +144,7 @@ __all__ = [
 #     same unreleased bump rather than being additive.
 #     The vestigial `now` parameters are REMOVED from
 #     scheduled_to_pending / deadline_sweep / reclaim_expired_locks and
-#     the PostgresBackend.sweep_* statics — PG ignored them (the server
+#     the PostgresBackend.sweep_* statics, PG ignored them (the server
 #     clock is the arbiter); an implementation still declaring them fails
 #     loudly with TypeError on the call.
 #     mark_snoozed's `outcome` parameter is narrowed from AttemptOutcome
@@ -154,17 +154,17 @@ __all__ = [
 #     passing one left PG firing no arm (job stranded 'running', the
 #     call returning 'noop') while the in-memory twin silently
 #     rescheduled it uncounted.  Both backends now raise ValueError
-#     naming the legal set — loud, not silent, so it folds into the
+#     naming the legal set, loud, not silent, so it folds into the
 #     unreleased v3 rather than bumping.
 #     The non-consuming deferral arms (mark_snoozed's snoozed arm and
 #     mark_retry_after's consume_budget=False arm) floor the effective
 #     delay at MIN_DEFERRAL_INTERVAL (taskq.constants): a zero-delay
 #     deferral reschedules at least that far out instead of parking the
 #     job 'pending' at clock_timestamp() at the head of the dispatch
-#     order — a claim/refund hot loop monopolising a worker slot.
+#     order, a claim/refund hot loop monopolising a worker slot.
 #     consume_budget=True keeps the raw delay (an immediate consuming
 #     retry is a real execution, bounded by the budget it spends).
-#     mark_interrupted added (required) — the shutdown release primitive:
+#     mark_interrupted added (required), the shutdown release primitive:
 #     a pre-v3 implementation lacks the method, and the consumer's
 #     shutdown routing would otherwise raise AttributeError mid-cancel
 #     (loud, not silent), so it folds into the unreleased v3.
@@ -184,7 +184,7 @@ type JobStatus = Literal[
 ]
 
 # PEP-695 ``type`` aliases are ``TypeAliasType`` objects; ``get_args``
-# returns ``()`` on the alias itself — unwrap via ``__value__`` to reach
+# returns ``()`` on the alias itself, unwrap via ``__value__`` to reach
 # the ``Literal[...]`` and enumerate its members at runtime.
 JOB_STATUS_VALUES: Final[frozenset[str]] = frozenset(get_args(JobStatus.__value__))
 """Runtime membership set of every :data:`JobStatus` literal value.
@@ -208,7 +208,7 @@ period", and the reason a caller reaches for it is that the work is not
 safe to repeat. ``succeeded`` is therefore in the set: it is the state
 that says the work already happened, which is the precise condition the
 window exists to detect. Leaving it out would free the identity the
-instant the first job completed — so the faster the work succeeds, the
+instant the first job completed, so the faster the work succeeds, the
 wider the unguarded remainder of the window, and the failure would be
 likeliest exactly when the system is healthy.
 
@@ -237,10 +237,10 @@ type SnoozeOutcome = Literal["snoozed", "reservation_denied", "rate_limit_denied
 
 Why narrower than :data:`AttemptOutcome`: the snooze statement's arms
 branch on exactly these three values (the snooze arm's refund/counter
-CASE, the denial-keyed counters, and the deadline arm's terminal exit —
+CASE, the denial-keyed counters, and the deadline arm's terminal exit ,
 a deferral's only way to fail, since a denial never spends budget and
 never terminalises on its own).  The five execution outcomes key no arm
-— a caller passing
+, a caller passing
 one on a running job left PG firing no arm at all (the row stranded
 ``running`` until the lease sweep, the call returning ``"noop"``) while
 the in-memory twin silently rescheduled the job with no counter
@@ -248,7 +248,7 @@ increment, so the two backends disagreed on the same input.  The
 parameter carries this alias at every layer (protocol, both terminals,
 the wrappers, ``FakeBackend``) and
 :func:`validate_snooze_outcome` rejects anything else at the Python
-boundary — PG cannot express a bind-value rejection inside the
+boundary, PG cannot express a bind-value rejection inside the
 statement, so the boundary owns it.
 """
 
@@ -258,7 +258,7 @@ SNOOZE_OUTCOME_VALUES: Final[frozenset[SnoozeOutcome]] = frozenset(
 """Runtime membership set of every :data:`SnoozeOutcome` literal value.
 
 Derived from the ``SnoozeOutcome`` Literal itself (the canonical
-declaration) so the guard's legal set can never drift from the type —
+declaration) so the guard's legal set can never drift from the type ,
 the same single-source pattern as :data:`JOB_STATUS_VALUES` and
 :data:`DST_STRATEGIES`.
 """
@@ -270,13 +270,13 @@ def validate_snooze_outcome(outcome: str) -> None:
     Raises :class:`ValueError` naming the legal set and the rejected
     value.  Called by both backends' ``mark_snoozed`` before any state
     is touched, so they fail identically on an illegal outcome whatever
-    the job's state — never degrading to the ``"noop"`` a fenced-out
+    the job's state, never degrading to the ``"noop"`` a fenced-out
     write would return.
     """
     if outcome not in SNOOZE_OUTCOME_VALUES:
         raise ValueError(
             f"mark_snoozed outcome must be one of {sorted(SNOOZE_OUTCOME_VALUES)}; "
-            f"got {outcome!r} — the snooze arms key on exactly these deferral "
+            f"got {outcome!r}, the snooze arms key on exactly these deferral "
             "outcomes; an execution outcome has no arm here"
         )
 
@@ -285,13 +285,13 @@ type DenialReason = Literal["capacity", "unavailable"]
 """Why a denial-class snooze write (:meth:`Backend.mark_snoozed` with a
 denial *outcome*) was denied.
 
-``capacity`` is a real saturation denial — the limiter's store answered
+``capacity`` is a real saturation denial, the limiter's store answered
 and the answer was "full".  The denial is legitimate backpressure about
 a job the system chose not to run yet; an operator scaling a bucket on
 denial counts is the intended response.
 
 ``unavailable`` is the limiter's store failing to answer at all (Redis
-unreachable, the PG fallback dead or unwired) — infrastructure
+unreachable, the PG fallback dead or unwired), infrastructure
 backpressure about a job whose actor never executed.
 
 Both reasons take the identical non-consuming path: every denial
@@ -312,7 +312,7 @@ DENIAL_REASON_VALUES: Final[frozenset[DenialReason]] = frozenset(get_args(Denial
 """Runtime membership set of every :data:`DenialReason` literal value.
 
 Derived from the :data:`DenialReason` Literal itself so the guard's
-legal set can never drift from the type — the same single-source
+legal set can never drift from the type, the same single-source
 pattern as :data:`SNOOZE_OUTCOME_VALUES`.
 """
 
@@ -330,9 +330,9 @@ def validate_denial_reason(reason: str) -> None:
     if reason not in DENIAL_REASON_VALUES:
         raise ValueError(
             f"mark_snoozed denial_reason must be one of {sorted(DENIAL_REASON_VALUES)}; "
-            f"got {reason!r} — 'capacity' is a saturation denial (the store "
+            f"got {reason!r}, 'capacity' is a saturation denial (the store "
             "answered 'full'), 'unavailable' is the store failing to answer; "
-            "both are non-consuming and non-terminal — the reason only keeps "
+            "both are non-consuming and non-terminal, the reason only keeps "
             "the two causes distinguishable on the row"
         )
 
@@ -352,14 +352,14 @@ type RateLimitBackend = Literal["redis", "postgres", "memory"]
 
 type DstStrategy = Literal["skip", "firstof", "allof"]
 
-#: Runtime membership set of every :data:`DstStrategy` literal value — the
+#: Runtime membership set of every :data:`DstStrategy` literal value, the
 #: single source of truth the schedule-write validation
 #: (:meth:`ScheduleCreateArgs.__post_init__`) and the row-value coercions
 #: (worker cron loop, admin ops) all consult, so none can drift from the
 #: Literal or from each other. Re-exported via :mod:`taskq.cron` (the cron
 #: public surface those callers already import from).
 #:
-#: Why: annotated as ``frozenset[DstStrategy]`` (not ``frozenset[str]``) —
+#: Why: annotated as ``frozenset[DstStrategy]`` (not ``frozenset[str]``) ,
 #: pyright narrows ``raw in DST_STRATEGIES`` to the Literal union only with
 #: the parameterised element type, which is what lets the coercion sites
 #: assign the checked value without a cast.
@@ -373,7 +373,7 @@ class JobSortField(Enum):
     """Sort ordering for :meth:`Backend.list_jobs` via :attr:`JobFilter.order_by`.
 
     ``SCHEDULED_AT_ASC`` (and the default ``None``) preserve the canonical
-    dispatch-friendly ordering — ``priority DESC, scheduled_at ASC, id ASC`` —
+    dispatch-friendly ordering, ``priority DESC, scheduled_at ASC, id ASC`` ,
     so existing ``list_jobs`` callers see no behaviour change.
 
     ``CREATED_AT_DESC`` and ``FINISHED_AT_DESC`` serve "latest run by business
@@ -408,7 +408,7 @@ class CancelPhase(IntEnum):
     transition counters) and prevents bare-int values like ``99`` from
     slipping past the type checker.
 
-    Values ``NONE``, ``COOPERATIVE``, and ``FORCED`` are persistable —
+    Values ``NONE``, ``COOPERATIVE``, and ``FORCED`` are persistable ,
     they map directly to the PG ``cancel_phase`` column whose check
     constraint is ``BETWEEN 0 AND 2``. ``ABANDON_PENDING`` is an
     in-process sentinel only: the cancel-poll loop sets it on
@@ -426,7 +426,7 @@ class CancelPhase(IntEnum):
 # ── Opaque identifier types ────────────────────────────────────────────
 
 JobId = NewType("JobId", UUID)
-"""Opaque job identifier — prevents ``UUID`` mixups across the API."""
+"""Opaque job identifier, prevents ``UUID`` mixups across the API."""
 
 IdempotencyKey = NewType("IdempotencyKey", str)
 """Distinguishes idempotency keys from identity keys at call sites."""
@@ -444,23 +444,23 @@ _QUEUE_NAME_REST: Final = "[A-Za-z0-9_.-]"
 _QUEUE_NAME_RE: Final[re.Pattern[str]] = re.compile(rf"\A{_QUEUE_NAME_FIRST}{_QUEUE_NAME_REST}*\Z")
 # \A/\Z, not ^/$: Python's `$` also matches immediately before a trailing
 # newline, so "default\n" satisfied ^...$ (see _IDENT_RE's docstring in
-# taskq.constants for the full rationale — same trap, same fix).
+# taskq.constants for the full rationale, same trap, same fix).
 #
-# Why ":" is excluded — this is the load-bearing restriction, not the
+# Why ":" is excluded, this is the essential restriction, not the
 # charset's general tidiness. A queue's fleet-wide concurrency cap is
 # registered under the flat name
 # `f"{QUEUE_CONCURRENCY_PREFIX}{queue}"` (ratelimit/registry.py's
 # `queue_concurrency_reservation_name`), where the prefix is the
 # `taskq:global:queue:` namespace and ":" is that namespace's segment
 # separator. A queue named "foo:eu" would therefore register as
-# `taskq:global:queue:foo:eu` — indistinguishable, in a namespace that is
+# `taskq:global:queue:foo:eu`, indistinguishable, in a namespace that is
 # one flat dict keyed by concrete name, from queue "foo" in an "eu"
 # sub-namespace. Two queues could then share (or steal) one cap's slots.
 # The same separator ambiguity is why `taskq.ratelimit.refs` rejects a
 # keyed `base_name` that derives into this prefix. Keep ":" out.
 #
-# Why the FIRST character allows a digit — the leading-letter rule was
-# copied from `_IDENT_RE` (taskq.constants), where it is load-bearing
+# Why the FIRST character allows a digit, the leading-letter rule was
+# copied from `_IDENT_RE` (taskq.constants), where it is essential
 # because a Postgres identifier genuinely cannot start with a digit and
 # `_IDENT_RE` guards names that are INTERPOLATED into SQL as identifiers.
 # A queue name is not an identifier: it is always bound as a `$n`
@@ -516,7 +516,7 @@ def parse_retry_kind(value: str) -> RetryKind:
     Pyright cannot narrow ``str`` to a ``Literal`` union by membership
     test alone; this helper performs the runtime check and returns a
     statically-typed ``RetryKind``. Raises :class:`ValueError` if the
-    value is not one of the three allowed kinds — that signals schema
+    value is not one of the three allowed kinds, that signals schema
     drift between PG and Python.
     """
     if value not in _RETRY_KINDS:
@@ -551,7 +551,7 @@ def parse_batch_status(value: str) -> BatchStatus:
     Pyright cannot narrow ``str`` to a ``Literal`` union by membership
     test alone; this helper performs the runtime check and returns a
     statically-typed ``BatchStatus``. Raises :class:`ValueError` if the
-    value is not one of the three allowed statuses — that signals schema
+    value is not one of the three allowed statuses, that signals schema
     drift between PG and Python.
     """
     if value not in _BATCH_STATUSES:
@@ -560,10 +560,10 @@ def parse_batch_status(value: str) -> BatchStatus:
 
 
 QueueName = Annotated[str, AfterValidator(_validate_queue_name)]
-"""Validator alias for queue names — accepts plain ``str`` literals.
+"""Validator alias for queue names, accepts plain ``str`` literals.
 
 Why ``Annotated`` and not ``NewType``: queue names are plain strings
-requiring validation — no nominal type because no other ``str`` field
+requiring validation, no nominal type because no other ``str`` field
 at any call site could be confused with ``queue``. ``Annotated`` gives
 runtime validation in Pydantic models without forcing every caller to
 wrap literals in ``QueueName("default")``.
@@ -576,9 +576,9 @@ wrap literals in ``QueueName("default")``.
 class EnqueueArgs:
     """Input struct for :meth:`Backend.enqueue`.  Carries every column the
     caller specifies at enqueue time.  ``scheduled_at=None`` means
-    immediate — the backend's server stamps ``now()`` and decides
+    immediate, the backend's server stamps ``now()`` and decides
     ``status``; a non-None value is the caller's explicit absolute intent
-    (deprecated cross-domain residue, kept only for explicit scheduling —
+    (deprecated cross-domain residue, kept only for explicit scheduling ,
     prefer delay/interval forms where available).
     """
 
@@ -611,19 +611,33 @@ class EnqueueArgs:
     # registration at enqueue time (taskq.client._args builds this from
     # ``ref.retry``). Crash/heartbeat reclaim reads these columns to
     # reschedule on the job's own curve instead of a hardcoded flat
-    # interval — the reclaim sweep runs on a leader that need not have
+    # interval, the reclaim sweep runs on a leader that need not have
     # the actor registered at all, so the row is the only source it can
     # reach. Defaults reproduce RetryPolicy's own field defaults.
     retry_base: timedelta = timedelta(seconds=5)
     retry_cap: timedelta = timedelta(hours=1)
     retry_backoff: Literal["exponential", "linear", "fixed"] = "exponential"
     retry_jitter: float = 0.2
+    # Lazy jsonb-encoding memos (backend/_records.payload_jsonb_param and
+    # metadata_jsonb_param), never constructor input. compare/repr excluded:
+    # a cache must not take part in value identity. __post_init__ resets
+    # them, see there for why that is not optional.
+    payload_jsonb_memo: str | None = field(default=None, compare=False, repr=False)
+    metadata_jsonb_memo: str | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
+        # Why the memos reset here: ``dataclasses.replace`` feeds every
+        # current field value back through __init__, so a memo computed for
+        # the PREVIOUS payload or metadata would ride along onto the
+        # replaced struct and re-bind a stale encoding. The memos are
+        # call-time caches, so a replace drops them and the next jsonb
+        # binding re-encodes from the live fields.
+        object.__setattr__(self, "payload_jsonb_memo", None)
+        object.__setattr__(self, "metadata_jsonb_memo", None)
         if self.schedule_to_close is not None and self.schedule_to_close_interval is not None:
             raise ValueError(
                 "schedule_to_close and schedule_to_close_interval are mutually exclusive; "
-                "if both are desired, pass only schedule_to_close (datetime) — "
+                "if both are desired, pass only schedule_to_close (datetime), "
                 "the interval form is the actor-declaration default."
             )
         self._check_column_domains()
@@ -641,8 +655,8 @@ class EnqueueArgs:
 
         Without it the two backends disagree at runtime. Postgres refuses
         an out-of-domain smallint with a raw driver error naming a
-        constraint or a column — a bare exception no caller has a handler
-        for — while the in-memory twin stores the value, so a suite
+        constraint or a column, a bare exception no caller has a handler
+        for, while the in-memory twin stores the value, so a suite
         validated in memory certifies an enqueue production rejects. The
         negative durations are worse than either: both backends store
         them, and every dispatch of that job is instantly past its own
@@ -676,7 +690,7 @@ class EnqueueArgs:
         Enforced here, at construction, rather than per enqueue path: every
         path (single, batch, the ``COPY``-based fast batch, the atomic batch,
         and the InMemory mirror) funnels through this struct, so a new path
-        cannot reintroduce the gap — and each of the previous four
+        cannot reintroduce the gap, and each of the previous four
         occurrences of this class of bug was exactly a path the fix had not
         reached.  ``payload`` and ``metadata`` need no check here: they
         transit jsonb via :func:`~taskq.backend._records.jsonb_param`, whose
@@ -687,7 +701,7 @@ class EnqueueArgs:
         ``CharacterNotInRepertoireError`` (SQLSTATE 22021), a
         ``PostgresError`` subclass that
         ``worker._handlers._TERMINAL_WRITE_INFRA_EXCEPTIONS`` reads as
-        transient infrastructure failure — so an unguarded NUL retries
+        transient infrastructure failure, so an unguarded NUL retries
         forever instead of failing.  ``ValueError`` here keeps that
         classification honest.
         """
@@ -711,11 +725,11 @@ def batch_cap_groups(args_list: list[EnqueueArgs]) -> dict[str, tuple[int, int]]
     """Group carried ``max_pending`` caps per actor: actor -> (item count, cap).
 
     Items without a cap are invisible to backpressure. When one batch
-    carries different caps for one actor (mixed direct-backend use — the
+    carries different caps for one actor (mixed direct-backend use, the
     clients resolve a single effective cap per actor), the strictest wins:
     admitting up to a looser cap would violate the tighter one. Pure
     function over the args; lives here (not in the PG bulk path) so the
-    in-memory mirror — which must not import driver-bound modules —
+    in-memory mirror, which must not import driver-bound modules ,
     enforces the identical grouping.
     """
     counts: dict[str, int] = {}
@@ -735,11 +749,11 @@ def first_duplicate_idempotency_pair(
     stored_pairs: Container[tuple[str, str]],
 ) -> tuple[str, str] | None:
     """The ``(idempotency_scope, idempotency_key)`` pair a batch write
-    aborts on, derived from the batch itself — never from driver text.
+    aborts on, derived from the batch itself, never from driver text.
 
     A bulk insert with no ``ON CONFLICT`` arbiter (the COPY fast path)
     aborts at the FIRST item whose pair the unique index already holds,
-    and items are written in batch order — so the offending pair is the
+    and items are written in batch order, so the offending pair is the
     first one that repeats an earlier item or appears among
     *stored_pairs*. Postgres renders the violation's detail with raw,
     unquoted values (a scope containing ``", "`` makes it positionally
@@ -750,7 +764,7 @@ def first_duplicate_idempotency_pair(
     statement hits first, deterministically.
 
     Pure function over the args; lives here (not in the PG bulk path) so
-    the in-memory mirror — which must not import driver-bound modules —
+    the in-memory mirror, which must not import driver-bound modules ,
     attributes the identical pair (its ``stored_pairs`` is its own
     idempotency index; the PG path's is a targeted post-abort SELECT).
     """
@@ -777,7 +791,7 @@ def duplicate_pair_actor_mismatch(
     (*stored_actor*) already holds it, and otherwise at the second item
     holding it, whose predecessor in batch order is the holder. The same
     pure rule serves the COPY tier and the in-memory mirror, so the two
-    backends name the same actors for the same batch — a cross-actor hit
+    backends name the same actors for the same batch, a cross-actor hit
     is the misuse the single and batch tiers refuse with the typed
     mismatch error, not a same-actor duplicate.
     """
@@ -801,7 +815,7 @@ def first_singleton_collision_actor(
     stored_actors: Container[str],
 ) -> str | None:
     """The singleton actor a batch write aborts on, derived from the batch
-    itself — never from driver text.
+    itself, never from driver text.
 
     ``jobs_singleton_uniq`` is keyed on ``(actor)`` over live
     singleton-flagged rows, and a bulk insert writes items in batch order,
@@ -811,10 +825,10 @@ def first_singleton_collision_actor(
     :func:`first_duplicate_idempotency_pair`: the batch's own contents
     carry the answer losslessly, where the server's detail text renders
     values raw and unquoted. The ``is True`` predicate matches the partial
-    index's ``metadata @> '{"singleton": true}'`` exactly — a
+    index's ``metadata @> '{"singleton": true}'`` exactly, a
     truthy-but-not-true value never armed the index on either backend.
     Pure function over the args; lives here (not in the PG bulk path) so
-    the in-memory mirror — which must not import driver-bound modules —
+    the in-memory mirror, which must not import driver-bound modules ,
     attributes the identical actor.
     """
     seen: set[str] = set()
@@ -881,7 +895,7 @@ class JobRow:
     tags: tuple[str, ...] = ()
     snooze_count: int = 0
     """Coalesced count of non-consuming deferrals (``Snooze`` and
-    ``RetryAfter(consume_budget=False)``) since enqueue — the job-row
+    ``RetryAfter(consume_budget=False)``) since enqueue, the job-row
     record of reschedules that consumed no retry budget.  Trailing
     default: rows materialised before the counters existed read 0.
     """
@@ -892,13 +906,13 @@ class JobRow:
     """
     interrupt_count: int = 0
     """Coalesced count of infrastructure interruptions (a running attempt
-    released back to the queue by a worker shutdown) since enqueue — the
+    released back to the queue by a worker shutdown) since enqueue, the
     interruptions write no ``job_attempts`` rows and are not execution
     outcomes, so ``attempt`` alone cannot count them.  Trailing default:
     rows materialised before the counter existed read 0.
     """
     retry_base: timedelta = timedelta(seconds=5)
-    """``RetryPolicy.base`` stamped at enqueue time — the source crash
+    """``RetryPolicy.base`` stamped at enqueue time, the source crash
     and heartbeat reclaim read to reschedule on this job's own curve.
     Trailing default: rows materialised before the column existed read
     ``RetryPolicy``'s own default.
@@ -960,12 +974,12 @@ class EventRow:
 @dataclass(frozen=True, slots=True)
 class LongRunningJobEventsWriter:
     """A transaction holding a lock on ``job_events`` for longer than a
-    ``poll_reclaim_events`` visibility-delay margin — a candidate cause of
+    ``poll_reclaim_events`` visibility-delay margin, a candidate cause of
     a silently missed reclaim event (see
     ``taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY``). Diagnostic only:
     reported by ``PostgresBackend.check_reclaim_visibility_delay_risk``,
     not a guarantee that this specific transaction will write to
-    ``job_events`` again or actually cause a miss — a proxy signal for an
+    ``job_events`` again or actually cause a miss, a proxy signal for an
     operator to investigate, not proof of an incident.
 
     Not directly ``json.dumps``-safe: ``xact_start`` is a
@@ -1008,15 +1022,15 @@ class JobFilter:
     :meth:`Backend.cancel_where`.
 
     For ``cancel_where``, the ``limit``, ``cursor``, and ``order_by``
-    fields are ignored — a bulk cancel is not paginated. It is still not
-    paginated in outcome — every matching row is cancelled — but the
+    fields are ignored, a bulk cancel is not paginated. It is still not
+    paginated in outcome, every matching row is cancelled, but the
     write executes as internally bounded committed batches, so a
     mid-operation failure leaves partial progress rather than rolling
     back everything (re-running continues; already-cancelled rows are
     skipped). Use :meth:`has_predicates` to check whether the filter has
     at least one predicate before passing it to ``cancel_where``.
 
-    Heads-up: ``active=True`` means 'not yet finished' — a superset of
+    Heads-up: ``active=True`` means 'not yet finished', a superset of
     non-terminal statuses (``pending`` + ``scheduled`` + ``running``),
     not just 'currently executing'. Read the ``active`` section below
     before relying on the name.
@@ -1037,9 +1051,9 @@ class JobFilter:
     ``str(uuid)`` coercion.
 
     ``status`` accepts either a single :data:`JobStatus` (backwards
-    compatible — e.g. ``JobFilter(status="pending")``) or a sequence of
+    compatible, e.g. ``JobFilter(status="pending")``) or a sequence of
     statuses (e.g. ``JobFilter(status=["pending", "running"])``).
-    An empty sequence (``status=[]``) matches no jobs — it is not
+    An empty sequence (``status=[]``) matches no jobs, it is not
     treated as 'no filter'.  Unknown status values raise
     :class:`ValueError` in :meth:`__post_init__`, so untrusted input
     fails identically on both backends instead of surfacing as a PG
@@ -1048,7 +1062,7 @@ class JobFilter:
     sequence as ``status = ANY($n)``; the in-memory backend performs a
     membership check in both cases.
 
-    ``active`` is a meta-filter that selects statuses by terminality —
+    ``active`` is a meta-filter that selects statuses by terminality ,
     use it to filter by whether a job is still running or has reached
     a terminal state. Here, 'not yet finished' means a superset that
     includes both work currently executing and work not yet started:
@@ -1060,7 +1074,7 @@ class JobFilter:
 
     The non-terminal set is derived from
     :data:`~taskq.backend.statemachine.ACTIVE_STATUSES`, which is itself
-    derived from the state machine — adding a new non-terminal state
+    derived from the state machine, adding a new non-terminal state
     updates this filter automatically.
 
     ``status`` and ``active`` are mutually exclusive; specifying both
@@ -1110,7 +1124,7 @@ class JobFilter:
             )
         # A NUL in a text predicate binds as text on PG (queue/actor/
         # identity_key) or text[] (tags) and surfaces as a raw asyncpg
-        # CharacterNotInRepertoireError (SQLSTATE 22021) — the same trap
+        # CharacterNotInRepertoireError (SQLSTATE 22021), the same trap
         # EnqueueArgs._check_no_nul_text guards on the write path.
         # Rejecting here makes both backends' list_jobs/cancel_where
         # paths fail identically with a clean ValueError; cancel_where
@@ -1131,7 +1145,7 @@ class JobFilter:
         Used by ``JobsClient.cancel_where`` to reject empty filters that
         would match the entire table. New predicate fields added to
         ``JobFilter`` MUST be added here and in
-        ``build_filter_conditions`` — the two are kept in sync manually.
+        ``build_filter_conditions``, the two are kept in sync manually.
         Non-predicate fields (``limit``, ``cursor``, ``order_by``) are
         excluded by design.
         """
@@ -1155,7 +1169,7 @@ class ScheduleCreateArgs:
     :func:`~taskq.cron.compute_next_fire_after`, seeded from the clock
     that arbitrates the schedule's due-check: a PG-backed client anchors
     on the PG server clock (one-row ``SELECT clock_timestamp()`` via
-    ``JobsClient._schedule_seed_now`` — the same clock domain as the
+    ``JobsClient._schedule_seed_now``, the same clock domain as the
     server-side due-check), an in-memory client on its injected ``Clock``.
     The seed is exact, not approximate: the cron loop's normal path
     recomputes every subsequent fire from the STORED fire time (only a
@@ -1193,7 +1207,7 @@ class ScheduleCreateArgs:
         in the ``create_schedule`` INSERT is caller text, and an unguarded
         NUL surfaces as asyncpg ``CharacterNotInRepertoireError``
         (SQLSTATE 22021) instead of a clean ``ValueError``.
-        ``cron_expr`` needs no check here — ``croniter.is_valid`` above
+        ``cron_expr`` needs no check here, ``croniter.is_valid`` above
         already rejects it. ``metadata`` transits jsonb via
         ``jsonb_param``, which guards it at bind time.
         """
@@ -1218,7 +1232,7 @@ class ScheduleUpdateArgs:
     :func:`~taskq.cron.compute_next_fire_after`).
 
     To explicitly clear ``payload_factory`` (set the column to NULL),
-    set ``clear_payload_factory=True`` — ``None`` for payload_factory
+    set ``clear_payload_factory=True``, ``None`` for payload_factory
     means "don't change this field."
     """
 
@@ -1343,20 +1357,20 @@ class ErrorInfo:
         columns, and every construction site funnels through this struct,
         so a new site cannot reintroduce the gap. Text DERIVED from an
         uncontrolled exception is sanitized before construction by
-        ``worker._handlers`` — this guard is what makes an unsanitized
+        ``worker._handlers``, this guard is what makes an unsanitized
         value fail loudly instead of silently.
 
         Postgres rejects a NUL in ``text`` with
         ``CharacterNotInRepertoireError`` (SQLSTATE 22021), a
         ``PostgresError`` subclass that the terminal-write infra error
-        classification misreads as transient — so an unguarded value
+        classification misreads as transient, so an unguarded value
         retries forever instead of failing.  ``ValueError`` here keeps
         that classification honest.
 
         Oversized values are truncated (not rejected): a failure must
         still record, just bounded.  The bounds here live at this same
         construction boundary (Python, not SQL CHECK constraints), so
-        every construction site — present and future — inherits them,
+        every construction site, present and future, inherits them,
         and the columns stay schemaless for existing rows a CHECK would
         reject on sight.  A plain slice (no marker): length is the
         contract the suite pins.
@@ -1429,7 +1443,7 @@ class BatchFilter:
     Unlike JobFilter, this only carries fields relevant to batch queries:
     queue, active (status terminality), batch_id, limit, and cursor.
     Job-oriented fields (status, actor, tags, order_by, identity_key) are
-    intentionally absent — using JobFilter for batch queries would
+    intentionally absent, using JobFilter for batch queries would
     silently ignore those fields, which is a type trap.
 
     ``cursor`` is the same mechanism as :attr:`JobFilter.cursor`: an
@@ -1437,7 +1451,7 @@ class BatchFilter:
     both backends must decode identically
     (:func:`~taskq.backend._cursor.encode_batch_cursor`). It encodes
     ``(created_at, id)`` where the job cursor encodes ``(priority,
-    scheduled_at, id)`` — one field fewer, same ``|``-delimited shape.
+    scheduled_at, id)``, one field fewer, same ``|``-delimited shape.
     ``created_at`` alone is not a total order (the column defaults to
     ``now()``, the *transaction* timestamp, so one
     ``enqueue_batch_atomic`` stamps every row it writes identically), so
@@ -1469,7 +1483,7 @@ class BatchFilter:
 # ── Backend deps protocol ───────────────────────────────────────────────
 # Worker-layer dependencies consumed by PostgresBackend at construction time.
 # Typed as a Protocol (not object) so pyright can verify attribute access
-# without union-attr suppresssions — WorkerDeps satisfies this at runtime.
+# without union-attr suppresssions, WorkerDeps satisfies this at runtime.
 
 
 @runtime_checkable
@@ -1521,7 +1535,7 @@ class BackendSettings(Protocol):
 
 @runtime_checkable
 class BackendDeps(Protocol):
-    """Protocol satisfied by WorkerDeps — consumed by PostgresBackend.__init__."""
+    """Protocol satisfied by WorkerDeps, consumed by PostgresBackend.__init__."""
 
     @property
     def settings(self) -> BackendSettings:
@@ -1544,7 +1558,7 @@ class BackendDeps(Protocol):
 
         WorkerDeps provides a non-optional Pool.  Client-side usage
         (``_ClientDeps``) may provide ``None`` when no dispatcher pool
-        is needed — the constructor handles this via ``getattr``.
+        is needed, the constructor handles this via ``getattr``.
         """
         ...
 
@@ -1579,12 +1593,12 @@ class Backend(Protocol):
     """Whether this backend simulates transactional sub-enqueue via a
     buffer (True) or relies on real database transactions (False).
 
-    ``PostgresBackend`` returns False — its real PG transaction provides
+    ``PostgresBackend`` returns False, its real PG transaction provides
     the atomicity guarantee directly: sub-job INSERTs run on the open
     LOOP-scope connection and are rolled back along with the parent's
     writes if the actor raises.
 
-    ``InMemoryBackend`` returns True — it has no real transaction
+    ``InMemoryBackend`` returns True, it has no real transaction
     concept, so ``SubJobEnqueuer`` buffers ``EnqueueArgs`` and flushes on
     actor success / discards on failure. A third-party ``Backend``
     implementation that wants transactional simulation in tests can opt
@@ -1604,17 +1618,17 @@ class Backend(Protocol):
         """Insert multiple jobs in a single batched operation.
 
         All items in *args_list* must be validated before calling this
-        method — the backend does not re-validate payloads.  The list
+        method, the backend does not re-validate payloads.  The list
         must be non-empty and contain at most 1000 items (enforced by the
         client layer).
 
         When *enforce_max_pending* is true (the default), items carrying a
         resolved ``max_pending`` cap are admission-checked as one
-        aggregate — existing pending+scheduled per actor plus this batch —
+        aggregate, existing pending+scheduled per actor plus this batch ,
         and admission PARTITIONS per actor: an over-cap actor's items are
         refused as a whole group, every other actor's items are inserted,
         and :class:`~taskq.exceptions.BatchMaxPendingExceededError` raises
-        at the transaction boundary — after the admitted items commit when
+        at the transaction boundary, after the admitted items commit when
         this call owns the transaction, immediately after the insert on a
         caller-supplied connection with an open transaction (that
         transaction's commit/rollback decides their durability). Pass
@@ -1626,7 +1640,7 @@ class Backend(Protocol):
         Returns one :class:`JobRow` per item in *args_list*, in the same
         order.  For idempotency-key collisions the existing row is
         returned; its ``id`` will differ from the requested ``args.id``.
-        On a cap refusal no rows are returned — the typed error carries
+        On a cap refusal no rows are returned, the typed error carries
         the refused item indices and the admitted count instead.
         """
         ...
@@ -1644,28 +1658,28 @@ class Backend(Protocol):
         is two statements inside one transaction: a bare COPY of the
         domain-insensitive columns, then a corrective UPDATE
         (``enqueue_batch_fast_fixup``) that stamps/decides the
-        clock-sensitive ones — ``status``, ``scheduled_at``,
-        ``schedule_to_close``, ``result_expires_at`` — from the database
+        clock-sensitive ones, ``status``, ``scheduled_at``,
+        ``schedule_to_close``, ``result_expires_at``, from the database
         clock (``clock_timestamp()``); ``created_at`` takes its DDL
         default (``now()``).  Nothing is observable half-fixed: both
         statements commit or abort together.
 
         Consequences of the COPY-no-conflicts shape:
 
-        - ``scheduled_at=None`` means immediate — the fixup's server-side
+        - ``scheduled_at=None`` means immediate, the fixup's server-side
           CASE stamps it and decides ``pending``/``scheduled`` (the same
           single-arbiter contract as :meth:`enqueue`/:meth:`enqueue_batch`).
         - ``schedule_to_close_interval``/``result_ttl`` are anchored to the
-          server clock at ENQUEUE time by the fixup — a future-scheduled
+          server clock at ENQUEUE time by the fixup, a future-scheduled
           item with a short interval can therefore fail DeadlineExceeded
           before it is ever dispatched.
-        - A duplicate ``idempotency_key`` — within the batch or already
-          stored — violates the unique index and aborts the ENTIRE batch
+        - A duplicate ``idempotency_key``, within the batch or already
+          stored, violates the unique index and aborts the ENTIRE batch
           (all-or-nothing atomicity; nothing is written), surfacing as
           :class:`~taskq.exceptions.DuplicateIdempotencyKeyError`.
         - Items carrying a resolved ``max_pending`` cap are
           admission-checked as one aggregate before the COPY, with the
-          same per-actor partition as :meth:`enqueue_batch` — within-cap
+          same per-actor partition as :meth:`enqueue_batch`, within-cap
           actors' rows are COPY'd, an over-cap actor's items are refused
           and raise
           :class:`~taskq.exceptions.BatchMaxPendingExceededError` after
@@ -1673,7 +1687,7 @@ class Backend(Protocol):
           only for pre-admitted internal callers.
 
         Returns the count of rows written.  On success this is exactly
-        ``len(args_list)`` — this path never deduplicates, so the count
+        ``len(args_list)``, this path never deduplicates, so the count
         never includes pre-existing rows.  The in-memory mirror implements
         the same contract: duplicates raise
         :class:`~taskq.exceptions.DuplicateIdempotencyKeyError` before
@@ -1695,7 +1709,7 @@ class Backend(Protocol):
         """Enqueue a job using the supplied connection.
 
         The connection MUST already be in an open transaction managed by
-        the caller — this method does NOT issue BEGIN/COMMIT. The
+        the caller, this method does NOT issue BEGIN/COMMIT. The
         autonomous variant ``enqueue(args)`` acquires its own connection
         and opens a transaction internally.
         """
@@ -1719,7 +1733,7 @@ class Backend(Protocol):
         disowned: Collection[UUID] = (),
     ) -> int:
         """Renew the lock lease of every running job *worker_id* holds,
-        except the *disowned* ids — rows the worker could not record an
+        except the *disowned* ids, rows the worker could not record an
         outcome for, whose leases must lapse for the reclaim sweep. Returns
         the number of rows renewed."""
         ...
@@ -1753,18 +1767,18 @@ class Backend(Protocol):
 
         *attempt* is the attempt-identity epoch: the handler's
         dispatch-time job-row ``attempt`` snapshot. The terminal fence is
-        one epoch deeper than the worker fence — the write lands only on
+        one epoch deeper than the worker fence, the write lands only on
         a row whose current ``attempt`` matches, so a stale handler's
         write after a same-worker reclaim/redispatch (the row re-dispatched
         at ``attempt + 1`` on the same worker) no-ops exactly like a
-        different worker's late write. ``None`` — a caller that cannot
-        present the epoch — also no-ops: a terminal write that cannot
+        different worker's late write. ``None``, a caller that cannot
+        present the epoch, also no-ops: a terminal write that cannot
         prove which attempt it terminates must not terminate any attempt.
 
         The result reaches the backend in exactly one of two forms:
-        ``result`` — the actor's result dict, which the backend serializes
+        ``result``, the actor's result dict, which the backend serializes
         exactly once (orjson via :func:`taskq._json.dumps_jsonb_str`,
-        NUL-guarded) — or ``result_bytes`` — the result already serialized
+        NUL-guarded), or ``result_bytes``, the result already serialized
         to orjson bytes (the exact output of :func:`taskq._json.dumps`),
         which the backend reuses as-is: bound as
         ``result_bytes.decode("utf-8")`` with ``result_size_bytes =
@@ -1777,11 +1791,11 @@ class Backend(Protocol):
 
         Expiry resolution, first match wins: a non-NULL stored
         ``actor_config.result_ttl`` (operator-owned) applies; otherwise
-        *fallback_result_ttl* — the worker-side ``@actor(result_ttl=...)``
-        literal, which the terminal-write SQL cannot see — applies;
+        *fallback_result_ttl*, the worker-side ``@actor(result_ttl=...)``
+        literal, which the terminal-write SQL cannot see, applies;
         otherwise the row's existing ``result_expires_at`` is kept. The
-        computed arms use ``clock_timestamp()`` — the wall-clock time the
-        write executes, not the transaction start — so neither a long
+        computed arms use ``clock_timestamp()``, the wall-clock time the
+        write executes, not the transaction start, so neither a long
         queue wait nor a long actor runtime can make a job complete
         already expired and have its result reaped immediately.
         """
@@ -1810,7 +1824,7 @@ class Backend(Protocol):
         ``mark_succeeded(...)`` acquires its own connection.
 
         ``result`` / ``result_bytes`` follow the same two-form contract as
-        :meth:`mark_succeeded` — pass exactly one, or neither for a NULL
+        :meth:`mark_succeeded`, pass exactly one, or neither for a NULL
         result.  ``fallback_result_ttl`` follows the same resolution rule
         as :meth:`mark_succeeded`.  ``attempt`` follows the same
         attempt-epoch fence as :meth:`mark_succeeded`.
@@ -1833,20 +1847,20 @@ class Backend(Protocol):
         ``retry_delay=None`` is the terminal-fail arm (``status='failed'``,
         the original ``error_info`` persisted).  A non-None delay is applied
         by the backend's own clock, never the caller's: ``scheduled_at =
-        now() + delay`` — floored at
+        now() + delay``, floored at
         :data:`taskq.constants.MIN_DEFERRAL_INTERVAL`, the same bound the
         deferral arms apply, so a failure-retry decision can never requeue
-        below the deferral floor — and the ``scheduled``/``pending`` status
+        below the deferral floor, and the ``scheduled``/``pending`` status
         derives from the effective delay alone (a sub-floor delay still
         lands ``scheduled`` at least the floor out).  The same statement
-        arbitrates the ``schedule_to_close`` deadline server-side — when
+        arbitrates the ``schedule_to_close`` deadline server-side, when
         ``clock_timestamp() + effective delay`` would land past the
         deadline, the row is failed with ``error_class='DeadlineExceeded'``
-        instead of retried — so app↔DB clock skew can neither void the
+        instead of retried, so app↔DB clock skew can neither void the
         retry backoff nor kill a job whose deadline has not actually
         passed.
 
-        *attempt* is the attempt-identity epoch — see
+        *attempt* is the attempt-identity epoch, see
         :meth:`mark_succeeded`. A fenced-out write (stale epoch, wrong
         worker, or a row that moved) raises
         :class:`~taskq.exceptions.WorkerOwnershipMismatch`, which
@@ -1895,18 +1909,18 @@ class Backend(Protocol):
         """Release a running job back to the queue without consuming retry
         budget.
 
-        *attempt* is the attempt-identity epoch — see
+        *attempt* is the attempt-identity epoch, see
         :meth:`mark_succeeded`; a fenced-out write returns ``"noop"``.
 
         A non-terminal snooze/denial writes NO ``job_attempts`` /
-        ``job_events`` rows — it is admission control or a voluntary
-        deferral, not an execution — and is counted on the job row
+        ``job_events`` rows, it is admission control or a voluntary
+        deferral, not an execution, and is counted on the job row
         (``snooze_count``, or ``rate_limit_blocked_count`` when *outcome*
         is a denial) plus OTEL.  ``max_attempts`` is never raised: the
         ceiling is a bound, not a counter.
 
         *outcome* admits only the three deferral outcomes
-        (:data:`SnoozeOutcome`) — the statement's arms key on exactly
+        (:data:`SnoozeOutcome`), the statement's arms key on exactly
         those; an execution outcome has no arm (PG would leave the job
         stranded ``running``) and raises ``ValueError`` at the boundary
         on both backends instead.  *delay* is floored at
@@ -1915,8 +1929,8 @@ class Backend(Protocol):
         cannot park the job at the head of the dispatch order.
 
         Every deferral shape refunds the claim's attempt increment
-        (floored at 0), so no deferral — actor-requested or admission
-        denial — spends retry budget.  An admission denial carries HTTP
+        (floored at 0), so no deferral, actor-requested or admission
+        denial, spends retry budget.  An admission denial carries HTTP
         429 semantics: it reports that the fleet had no slot, which says
         nothing about the work, so it can neither charge the budget nor
         decide the outcome.  A denied job reschedules until capacity
@@ -1925,7 +1939,7 @@ class Backend(Protocol):
         are how sustained contention stays visible.
 
         *denial_reason* names the cause of a denial-class outcome
-        (:data:`DenialReason`) for the caller's own observability —
+        (:data:`DenialReason`) for the caller's own observability ,
         ``"capacity"`` (the default) is a saturation denial, the store
         answering "full"; ``"unavailable"`` is the store failing to
         answer.  Both take the identical non-consuming path; the value is
@@ -1975,7 +1989,7 @@ class Backend(Protocol):
                *hold* > 0 parks the row ``scheduled`` until the releasing process
                is provably gone (a job released while its coroutine may still be
                alive in this process must not be claimable elsewhere until then);
-               *hold* = 0 lands the row ``pending`` at the head of the order — the
+               *hold* = 0 lands the row ``pending`` at the head of the order, the
                row is genuinely free and the actor is gone, so no deferral floor
                applies. A hold that would push the row past its
                ``schedule_to_close`` fails the job on the deadline instead
@@ -1989,7 +2003,7 @@ class Backend(Protocol):
                a row whose ``cancel_attempted_at`` is set terminalises as
                cancelled, never as available).
 
-               *attempt* is the attempt-identity epoch — see
+               *attempt* is the attempt-identity epoch, see
                :meth:`mark_succeeded`. Here it is required, not optional: a
                release that cannot prove which attempt it is handing back must
                not touch the row (``"noop"``).
@@ -2011,16 +2025,16 @@ class Backend(Protocol):
         visibility_delay: timedelta | None = None,
     ) -> list[EventRow]:
         """Return up to *limit* crash-reclaim events with ``event_id >
-        after_id``, ascending — the durable cursor behind
+        after_id``, ascending, the durable cursor behind
         ``TaskQ.watch_reclaims``.
 
         **An event can be silently missed if a ``job_events`` writer
         transaction stays open longer than the visibility-delay margin
-        between its INSERT and its COMMIT** — ids are allocated at INSERT
+        between its INSERT and its COMMIT**, ids are allocated at INSERT
         time but transactions commit out of order, so a late-committing
         lower-id row can land behind an already-advanced cursor.  Rows
         are therefore held back by a trailing-watermark filter
-        (*visibility_delay*; backend-configured default when ``None`` —
+        (*visibility_delay*; backend-configured default when ``None`` ,
         see :data:`taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY` for
         the exact assumption and its violation modes, and
         ``PostgresBackend.check_reclaim_visibility_delay_risk`` for the
@@ -2046,8 +2060,8 @@ class Backend(Protocol):
         Running jobs → cancel_phase=1 (cooperative cancel + NOTIFY).
 
         The filter's ``limit``, ``cursor``, and ``order_by`` fields are
-        ignored — this is a bulk write, not a paginated read. The write is
-        still not paginated in outcome — every matching row is cancelled —
+        ignored, this is a bulk write, not a paginated read. The write is
+        still not paginated in outcome, every matching row is cancelled ,
         but it executes as internally bounded committed batches, so a
         mid-operation failure leaves partial progress rather than rolling
         back everything (re-running continues; already-cancelled rows are
@@ -2058,7 +2072,7 @@ class Backend(Protocol):
         :class:`EmptyFilterError`. Backend implementations receive a
         filter that has already been validated. A direct backend call
         with ``JobFilter()`` renders ``WHERE TRUE`` and cancels the
-        entire table — callers using the backend directly are
+        entire table, callers using the backend directly are
         responsible for validating the filter.
 
         Returns a :class:`BulkCancelResult` with counts and affected IDs.
@@ -2076,14 +2090,14 @@ class Backend(Protocol):
 
         An operator re-run is "run this again", so every terminal status
         is a valid source: ``failed``/``crashed``/``cancelled``, and also
-        ``succeeded`` (the replay path after a bad deploy — the status
+        ``succeeded`` (the replay path after a bad deploy, the status
         records that the actor returned, never that its side effects were
         right) and ``abandoned`` (an infrastructure interruption, not a
         failure). ``running`` is excluded on correctness grounds:
         re-pending a row while an attempt is live races that attempt's
         terminal write and the job can execute twice concurrently.
         ``pending``/``scheduled`` are excluded because the job is already
-        queued — there is nothing to put back, and re-pending would
+        queued, there is nothing to put back, and re-pending would
         discard its place in the dispatch order.
 
         The attempt counter is NOT reset: an idempotent admin operation
@@ -2096,7 +2110,7 @@ class Backend(Protocol):
         mid-budget re-run keeps its remaining budget.
 
         Returns ``True`` if the job was retried, ``False`` if it was not
-        in a retryable state — or the smallint-bound ceiling cannot rise
+        in a retryable state, or the smallint-bound ceiling cannot rise
         past the spent attempt, in which case the row stays terminal
         rather than re-pending a job whose next claim would overflow.
         """
@@ -2105,7 +2119,7 @@ class Backend(Protocol):
     # ── Scheduling / sweeps ─────────────────────────────────────────────
     # The sweep methods take no ``now`` parameter: the arbiter is the
     # backend's own clock (PG: ``clock_timestamp()`` in the statement;
-    # InMemory: the injected Clock) — a caller-supplied timestamp would be
+    # InMemory: the injected Clock), a caller-supplied timestamp would be
     # a second, skewable domain mixed into the predicate.
     async def scheduled_to_pending(self) -> int:
         """Promote ``scheduled`` jobs whose ``scheduled_at`` has passed.
@@ -2148,7 +2162,7 @@ class Backend(Protocol):
 
         ``filters.status`` accepts a single :data:`JobStatus` or a
         sequence of statuses; ``filters.active`` is a meta-filter for
-        non-terminal (``True``) or terminal (``False``) statuses —
+        non-terminal (``True``) or terminal (``False``) statuses ,
         'active' here means 'not yet finished' (pending, scheduled, or
         running).  See :class:`JobFilter` for details.
         """
@@ -2160,7 +2174,7 @@ class Backend(Protocol):
         Returns a dict mapping actor name to count.  Only actors with
         at least one pending or scheduled job appear in the result.
         Actors not in the result have a count of zero.  The ``actors``
-        list is used as an ``IN``/``ANY`` filter — pass all distinct actor
+        list is used as an ``IN``/``ANY`` filter, pass all distinct actor
         names from a batch to fetch all counts in one round-trip.
         """
         ...
@@ -2183,7 +2197,7 @@ class Backend(Protocol):
         NULL (a cleared override). Key absent: no stored row. Client-side
         capacity resolution
         (:class:`taskq.client._capacity.ActorCapacityCache`) treats
-        "absent" and "NULL" identically — both fall back to the
+        "absent" and "NULL" identically, both fall back to the
         ``@actor(...)`` literal; the distinction is preserved here only
         so observability callers can tell them apart.
 
@@ -2195,7 +2209,9 @@ class Backend(Protocol):
         ...
 
     # ── NOTIFY hook ─────────────────────────────────────────────────────
-    def subscribe_wake(self) -> AsyncContextManager[asyncio.Event]: ...
+    def subscribe_wake(
+        self, queues: Iterable[str] | None = None
+    ) -> AsyncContextManager[asyncio.Event]: ...
 
     def subscribe_cancel_wake(self) -> AsyncContextManager[asyncio.Event]:
         """Return an async context manager yielding a fresh ``asyncio.Event``

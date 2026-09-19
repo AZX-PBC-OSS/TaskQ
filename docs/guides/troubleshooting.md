@@ -17,7 +17,7 @@ Jobs show `status = 'pending'` but no worker picks them up. The pending count gr
 | No worker running | No `taskq worker` process is consuming the queue. |
 | Wrong queue name | The actor declares `@actor(queue="email")` but the worker's `TASKQ_QUEUES` does not include `email`. |
 | Actor not in registry | The job's `actor` field matches no `ActorRef.name` in the registry. The consumer logs `dispatch-actor-not-found` and leaves the row in `running` until the lock expires. |
-| Stranded jobs | The actor was removed from the registry but jobs still reference it — no `actor_config` row exists. |
+| Stranded jobs | The actor was removed from the registry but jobs still reference it: no `actor_config` row exists. |
 | `max_concurrent` saturated | All dispatch slots for the actor are occupied by in-flight jobs. |
 
 ### Diagnosis
@@ -42,15 +42,15 @@ GROUP BY j.actor;
 SELECT id, hostname, pid, last_seen_at FROM {schema}.workers ORDER BY last_seen_at DESC;
 ```
 
-Check worker logs for `dispatch-actor-not-found` or `stranded-jobs-no-actor-config`. For the "wrong queue name" cause, the worker also logs `actors-on-unconsumed-queues` **at bootstrap** when a registered actor targets a queue that worker does not consume — see [workers.md](workers.md#actors-on-unconsumed-queues) for the warning's semantics (it fires even in legitimate split-queue topologies). A worker logging `worker-consumes-no-queues` at bootstrap has an empty `TASKQ_QUEUES` and will never dispatch anything — see [workers.md](workers.md#worker-consumes-no-queues).
+Check worker logs for `dispatch-actor-not-found` or `stranded-jobs-no-actor-config`. For the "wrong queue name" cause, the worker also logs `actors-on-unconsumed-queues` **at bootstrap** when a registered actor targets a queue that worker does not consume; see [workers.md](workers.md#actors-on-unconsumed-queues) for the warning's semantics (it fires even in legitimate split-queue topologies). A worker logging `worker-consumes-no-queues` at bootstrap has an empty `TASKQ_QUEUES` and will never dispatch anything; see [workers.md](workers.md#worker-consumes-no-queues).
 
 ### Fix
 
-- **No worker:** start one — `taskq worker --actors myapp.actors:registry`.
-- **Wrong queue:** add the actor's queue — `TASKQ_QUEUES=default,email taskq worker --actors myapp.actors:registry`.
+- **No worker:** start one: `taskq worker --actors myapp.actors:registry`.
+- **Wrong queue:** add the actor's queue: `TASKQ_QUEUES=default,email taskq worker --actors myapp.actors:registry`.
 - **Actor not in registry:** ensure the actor is decorated with `@actor` and exported from the registry module. Verify the `module:attr` string resolves to a `Mapping[str, ActorRef]` or `Iterable[ActorRef]` at import time.
-- **Stranded jobs:** re-add the actor to the registry and restart, or cancel the orphaned jobs via `JobsClient.cancel()`. The detector only warns — it does not delete or reassign.
-- **`max_concurrent` saturated:** run `taskq actor-config set <actor> --max-concurrent N` — takes effect on the next dispatch cycle, no restart. See [workers.md](workers.md#actorconfig-sync).
+- **Stranded jobs:** re-add the actor to the registry and restart, or cancel the orphaned jobs via `JobsClient.cancel()`. The detector only warns; it does not delete or reassign.
+- **`max_concurrent` saturated:** run `taskq actor-config set <actor> --max-concurrent N`; takes effect on the next dispatch cycle, no restart. See [workers.md](workers.md#actorconfig-sync).
 - **Generator registry:** if the registry attribute is a generator, the CLI iterates it twice and silently builds an empty registry. Use a `list`, `tuple`, or `dict` instead.
 
 ---
@@ -70,54 +70,54 @@ The `scheduled_to_pending` sweep (Sweep 3) runs every 1 second **on the leader o
 | No leader elected | No worker holds the `taskq:maintenance_leader:<schema>` advisory lock. |
 | Leader process died | Watchdog released the lock but no other worker has won election. |
 | PgBouncer in transaction mode | `leader_conn` drops the session-scoped advisory lock between transactions. |
-| Sweep batches keep timing out | A leader **is** healthy, but the database cannot finish bounded batches inside the batch `statement_timeout` — promotion still progresses batch by batch, but slower than jobs arrive. See the warning below and [TaskQSweepTimeouts](runbooks.md#taskqsweeptimeouts). |
+| Sweep batches keep timing out | A leader **is** healthy, but the database cannot finish bounded batches inside the batch `statement_timeout`; promotion still progresses batch by batch, but slower than jobs arrive. See the warning below and [TaskQSweepTimeouts](runbooks.md#taskqsweeptimeouts). |
 
 !!! danger "A growing `scheduled` backlog with a healthy leader means promotion is not keeping up"
     Each one-second tick promotes at most one bounded batch of due jobs
     (default 100 rows) in its own committed transaction, with a server-side
-    `statement_timeout` (default 1750 ms) as the enforcement — a batch that
+    `statement_timeout` (default 1750 ms) as the enforcement: a batch that
     cannot finish is aborted by the server and retried on the next tick, and a
     larger backlog drains across ticks. The unbounded-livelock failure this
-    section used to document — one transaction doing one `job_events` round
+    section used to document: one transaction doing one `job_events` round
     trip per promoted row, rolling back entirely past
-    `dispatcher_command_timeout` and retrying forever while the backlog grew —
+    `dispatcher_command_timeout` and retrying forever while the backlog grew,
     is gone; see [maintenance-sweeps.md](maintenance-sweeps.md) for the design.
 
     What can still stall promotion, in order of likelihood:
 
-    - **Sustained batch timeouts** — the database cannot finish even bounded
+    - **Sustained batch timeouts**: the database cannot finish even bounded
       batches inside the per-batch `statement_timeout` (a lock pile-up, or
       plain slowness: I/O, bloat, plan regression). Aborted batches make no
       progress; if aborts outpace the one-batch-per-second drain, the overdue
       count grows.
-    - **The reduced tier** — after repeated batch cancellations the
+    - **The reduced tier**: after repeated batch cancellations the
       batch-size breaker latches to quarter-size batches (25 rows at
       defaults). Promotion still progresses, just slower; the latch does not
       clear until the worker restarts.
-    - **No leader / stale leader** — the cause table above.
+    - **No leader / stale leader**: the cause table above.
 
-    **Recognising it** — this remains the dangerous part, because the fleet
+    **Recognising it**: this remains the dangerous part, because the fleet
     looks healthy from the outside. Workers heartbeat normally, dispatch runs
     cleanly reporting `count: 0`, and no job is in a failed state. The
     signature is all four of:
 
     - `scheduled-wake-failed` repeating on the leader about **once a second**
-      — `_scheduled_wake_loop` sleeps `1.0s` between ticks, so an aborted
-      batch is retried at that cadence. The error is `"TimeoutError()"`
+      (`_scheduled_wake_loop` sleeps `1.0s` between ticks, so an aborted
+      batch is retried at that cadence). The error is `"TimeoutError()"`
       (client deadline) or a `QueryCanceledError` (the server-side batch
       timeout).
     - `taskq_maintenance_leader_sweep_timeouts_total{sweep_name="scheduled_to_pending"}`
-      rising — the metric counterpart of the log line, and the one the
+      rising, the metric counterpart of the log line, and the one the
       `TaskQSweepTimeouts` alert fires on.
     - workers heartbeating normally (`last_seen_at` fresh)
     - the `scheduled` overdue count **flat or growing**, never falling
       (`taskq_jobs_by_status{status="scheduled"}` climbing while
       `{status="pending"}` is flat, `taskq_jobs_oldest_due_age_seconds`
-      climbing — the `TaskQPromotionStalled` and
+      climbing; the `TaskQPromotionStalled` and
       `TaskQScheduledBacklogGrowing` alerts)
 
-    All four shipped alerts — `TaskQSweepTimeouts`, `TaskQSweepDegraded`,
-    `TaskQPromotionStalled`, `TaskQScheduledBacklogGrowing` — are documented
+    All four shipped alerts (`TaskQSweepTimeouts`, `TaskQSweepDegraded`,
+    `TaskQPromotionStalled`, `TaskQScheduledBacklogGrowing`) are documented
     with confirm/remediate steps in [runbooks.md](runbooks.md).
 
     Do not look for a `leader-retry` line alongside it: that event belongs to
@@ -127,7 +127,7 @@ The `scheduled_to_pending` sweep (Sweep 3) runs every 1 second **on the leader o
 
     Sweep 2 (`sweep_deadline_exceeded`) fails with the same shape and has its
     own signal: it runs in the 30-second sweep loop (no `asyncio.timeout`
-    wrapper — each batch is bounded by the server-side `statement_timeout`
+    wrapper: each batch is bounded by the server-side `statement_timeout`
     and the pool's `command_timeout` instead) and logs
     `sweep-deadline-exceeded-failed` with the `sweep_name="deadline_exceeded"`
     timeout metric. A mass-expiry cohort (many jobs sharing a
@@ -138,7 +138,7 @@ The `scheduled_to_pending` sweep (Sweep 3) runs every 1 second **on the leader o
     this: deferred jobs, retry-heavy actors, a paused-then-resumed fleet, or a
     concurrency increase that reschedules a large backlog at once.
 
-    **Mitigation:** fix the database, not the knobs' direction — identify the
+    **Mitigation:** fix the database, not the knobs' direction: identify the
     wait from the SQL in [TaskQSweepTimeouts](runbooks.md#taskqsweeptimeouts)
     (lock pile-up: clear the blocker; slowness: bloat/indexes). If the
     database is genuinely slower than the batch budget, lower
@@ -146,7 +146,7 @@ The `scheduled_to_pending` sweep (Sweep 3) runs every 1 second **on the leader o
     more batches) rather than raising
     `TASKQ_EVENT_WRITER_STATEMENT_TIMEOUT_MS` past the
     `reclaim_event_visibility_delay` margin. Do **not** raise
-    `dispatcher_command_timeout` — it
+    `dispatcher_command_timeout`;
     [cannot be raised far](configuration.md#dispatcher-command-timeout-vs-staleness-budget-watchdog-on)
     and will fail settings validation and crash-loop the worker. Do not scale
     out: promotion is a leader-side sweep, and extra workers add database
@@ -174,7 +174,7 @@ The `scheduled_to_pending` sweep (Sweep 3) runs every 1 second **on the leader o
 
     `FOR UPDATE SKIP LOCKED` keeps this from contending with the leader's own
     retrying sweep. Verify the overdue count falls between runs. This skips the
-    per-row `job_events` audit rows the sweep would have written — the state
+    per-row `job_events` audit rows the sweep would have written;
     transition itself is complete and correct, but those promotions will not
     appear in job event history.
 
@@ -200,11 +200,11 @@ shows the same verdict.
 
 ### Fix
 
-- **No leader:** ensure at least one worker is running. Failover is bounded by `leader_lease + heartbeat_interval` plus one round trip — 50s at defaults — for a leader that went silent, and by `heartbeat_interval + 1s` for one that exited cleanly. For one that kept winning the row but could not open its leader connections the bound is the same pair **plus one failing cycle's connection attempts** (each bounded by `TASKQ_RELOAD_FACTORY_TIMEOUT`, 30s at defaults — so roughly 80s, not 50s; the bound rests on the hand-back, not the lapse, because sub-lease re-wins keep refreshing `expires_at` so the row never lapses while the pod keeps winning). See `leader-resigned-unassumable` below.
+- **No leader:** ensure at least one worker is running. Failover is bounded by `leader_lease + heartbeat_interval` plus one round trip (50s at defaults) for a leader that went silent, and by `heartbeat_interval + 1s` for one that exited cleanly. For one that kept winning the row but could not open its leader connections the bound is the same pair **plus one failing cycle's connection attempts** (each bounded by `TASKQ_RELOAD_FACTORY_TIMEOUT`, 30s at defaults, so roughly 80s, not 50s; the bound rests on the hand-back, not the lapse, because sub-lease re-wins keep refreshing `expires_at` so the row never lapses while the pod keeps winning). See `leader-resigned-unassumable` below.
 - **PgBouncer:** set `TASKQ_PG_DSN_DIRECT` to bypass PgBouncer. See [PgBouncer compatibility](workers.md#pgbouncer-compatibility).
-- **Lapsed lease nobody takes:** the surviving pods cannot reach or write `{schema}.maintenance_leader`. Check their logs for `election-attempt-failed`, and check that the application role still holds `INSERT`/`UPDATE`/`DELETE` on that table. Nothing else is needed to recover the role — no privilege over other sessions, and no manual intervention in the database.
-- **`leader-resigned-unassumable` in the logs:** that pod won elections but could not open the dedicated leader connections (connection-count pressure, a credential-factory outage), and the WARN means the hand-back **landed** — the lease row was actually deleted, so a peer takes over on its next election cycle (bounded by `leader_lease + heartbeat_interval` plus one failing cycle's connection attempts, each capped by `TASKQ_RELOAD_FACTORY_TIMEOUT` — roughly 80s at defaults, since a slow-failing factory open stretches the horizon past the flat 50s). If the WARN keeps repeating on one pod, that pod's connection budget or credential factory is the fault to fix — the fleet is leading from elsewhere. The shape to tell apart: repeated `leader-dedicated-conn-failed` **without** `leader-resigned-unassumable` (often with `leader-resign-failed`) means the hand-back could not reach the database — the row is still that pod's, it goes back on the next won cycle whose resign can land, and if the pod stops re-winning the row lapses as the backstop (sub-lease re-wins keep refreshing `expires_at`, so the lapse alone cannot fire while it keeps winning).
-- **`leader-advisory-lock-refused` in the logs:** a managed Postgres that restricts advisory-lock functions to admin/superuser roles refuses the election winner's courtesy `pg_try_advisory_lock` probe. The WARN names the refused function and logs once per refusal streak; leadership proceeds on the lease row alone, and election, watchdog, cron, sweep, and prune all keep running. The one exposure is a version roll alongside a release that predates the lease design and knows only the advisory lock — such a pod could lead beside the lease holder. Grant `EXECUTE` on `pg_try_advisory_lock` to the application role to restore the roll protection, or schedule the cutover so old and new releases never run together.
+- **Lapsed lease nobody takes:** the surviving pods cannot reach or write `{schema}.maintenance_leader`. Check their logs for `election-attempt-failed`, and check that the application role still holds `INSERT`/`UPDATE`/`DELETE` on that table. Nothing else is needed to recover the role: no privilege over other sessions, and no manual intervention in the database.
+- **`leader-resigned-unassumable` in the logs:** that pod won elections but could not open the dedicated leader connections (connection-count pressure, a credential-factory outage), and the WARN means the hand-back **landed**: the lease row was actually deleted, so a peer takes over on its next election cycle (bounded by `leader_lease + heartbeat_interval` plus one failing cycle's connection attempts, each capped by `TASKQ_RELOAD_FACTORY_TIMEOUT`, roughly 80s at defaults, since a slow-failing factory open stretches the horizon past the flat 50s). If the WARN keeps repeating on one pod, that pod's connection budget or credential factory is the fault to fix: the fleet is leading from elsewhere. The shape to tell apart: repeated `leader-dedicated-conn-failed` **without** `leader-resigned-unassumable` (often with `leader-resign-failed`) means the hand-back could not reach the database; the row is still that pod's, it goes back on the next won cycle whose resign can land, and if the pod stops re-winning the row lapses as the backstop (sub-lease re-wins keep refreshing `expires_at`, so the lapse alone cannot fire while it keeps winning).
+- **`leader-advisory-lock-refused` in the logs:** a managed Postgres that restricts advisory-lock functions to admin/superuser roles refuses the election winner's courtesy `pg_try_advisory_lock` probe. The WARN names the refused function and logs once per refusal streak; leadership proceeds on the lease row alone, and election, watchdog, cron, sweep, and prune all keep running. The one exposure is a version roll alongside a release that predates the lease design and knows only the advisory lock, could lead beside the lease holder beside the lease holder. Grant `EXECUTE` on `pg_try_advisory_lock` to the application role to restore the roll protection, or schedule the cutover so old and new releases never run together.
 - **A lease that never lapses while nothing runs:** the holder is alive and renewing but its leader-gated loops are not progressing. That is a different fault; see [`TaskQPromotionStalled`](runbooks.md).
 
 ---
@@ -244,7 +244,7 @@ Check container/OS logs for OOM kills or SIGKILL on the worker host.
 
 - **OOM kills:** increase the container memory limit or reduce `TASKQ_MAX_CONCURRENCY`.
 - **Retry crashed jobs:** use the admin UI Retry button (`TASKQ_ADMIN_ACTIONS_ENABLED=true`) or `backend.retry_job()`.
-- **Prevent recurrence:** set `retry_kind="transient"` with appropriate `max_attempts` so the sweep re-pends instead of crashing. The reclaim sweep is **leader-only** (it runs in the leader's sweep loop, every `TASKQ_SWEEP_INTERVAL`); its SQL keeps `FOR UPDATE SKIP LOCKED` so it stays row-safe if a sweep is ever run concurrently — e.g. two leaders of the same schema during a rolling deploy across the advisory-lock rename.
+- **Prevent recurrence:** set `retry_kind="transient"` with appropriate `max_attempts` so the sweep re-pends instead of crashing. The reclaim sweep is **leader-only** (it runs in the leader's sweep loop, every `TASKQ_SWEEP_INTERVAL`); its SQL keeps `FOR UPDATE SKIP LOCKED` so it stays row-safe if a sweep is ever run concurrently, e.g. two leaders of the same schema during a rolling deploy across the advisory-lock rename.
 
 ---
 
@@ -276,20 +276,21 @@ SELECT kind, detail, created_at FROM {schema}.job_events
 WHERE job_id = $1 ORDER BY created_at DESC;
 ```
 
-Check whether the actor suppresses `asyncio.CancelledError` — a `try/except asyncio.CancelledError: pass` pattern prevents the forced-cancel path from working.
+Check whether the actor suppresses `asyncio.CancelledError`: a `try/except asyncio.CancelledError: pass` pattern prevents the forced-cancel path from working.
 
 ### Fix
 
 - **Always re-raise `asyncio.CancelledError`:** never swallow it. Let it propagate so the consumer can call `mark_cancelled`.
 - **Check cancellation boundaries:** ensure the actor observes `ctx.cancellation_requested` at natural loop boundaries. For single long `await` calls, use `ctx.cancel_event.wait()`.
 - **Increase grace periods:** if the actor needs more cleanup time, raise `TASKQ_CANCELLATION_GRACE_PERIOD` and `TASKQ_CLEANUP_GRACE_PERIOD`. Constraints: `cancellation + cleanup < lock_lease` and `< termination_grace_period - 5.0`.
-- **Re-running an abandoned job:** `abandoned` jobs — an operator cancel the actor did not honour within the cancellation and cleanup grace periods, so the worker gave up on the attempt (not a worker restart: that releases the job as `pending`/`scheduled`, see below) — can be retried via `backend.retry_job()` or the admin UI's Retry button, the same as `failed`, `crashed`, `cancelled`, and `succeeded` jobs. Only a `running` job (a live attempt) or one already queued as `pending`/`scheduled` is refused.
+- **Re-running an abandoned job:** `abandoned` jobs: an operator cancel the actor did not honour within the cancellation and cleanup grace periods, so the worker gave up on the attempt (not a worker restart: that releases the job as `pending`/`scheduled`, see below), can be retried via `backend.retry_job()` or the admin UI's Retry button, the same as `failed`, `crashed`, `cancelled`, and `succeeded` jobs. Only a `running` job (a live attempt) or one already queued as `pending`/`scheduled` is refused.
 
-### Shutdown never lands here — read `interrupt_count` instead
+### Shutdown never lands here: read `interrupt_count` instead
 
 A deploy that interrupts a running job does not produce `abandoned`: the job is released back to
 the fleet (`pending`, or `scheduled` behind the remaining termination budget when the actor never
-unwound) with its attempt refunded. You see it on the row and the timeline, not in a terminal
+unwound) with the spent attempt standing and `interrupt_count` bumped. You see it on the row and
+the timeline, not in a terminal
 state:
 
 ```sql
@@ -299,8 +300,8 @@ SELECT id, status, attempt, interrupt_count FROM {schema}.jobs WHERE id = $1;
 
 A job whose `interrupt_count` climbs without ever finishing is too long for your deploy cadence:
 it is re-run from scratch on every deploy. Bound it with `schedule_to_close` (the deadline fails
-it terminally instead of releasing it forever), or checkpoint through `ctx.progress()` — the
-released row carries the last checkpoint — and resume on re-claim.
+it terminally instead of releasing it forever), or checkpoint through `ctx.progress(),
+released row carries the last checkpoint, and resume on re-claim.
 
 ---
 
@@ -369,7 +370,7 @@ Search worker logs for `migration-checksum-drift`.
 ### Fix
 
 - **Schema not migrated:** `taskq migrate up` against the correct `TASKQ_PG_DSN` and `TASKQ_SCHEMA_NAME`.
-- **Checksum mismatch:** restore the original migration file from git. Migration files are append-only — never modify an applied migration. If intentional, restore the database from backup and re-apply. Checksums are SHA-256 of the rendered SQL; a mismatch risks silent query failures at runtime.
+- **Checksum mismatch:** restore the original migration file from git. Migration files are append-only; never modify an applied migration. If intentional, restore the database from backup and re-apply. Checksums are SHA-256 of the rendered SQL; a mismatch risks silent query failures at runtime.
 - **Forward-only revert:** restore from a pre-migration backup snapshot. There is no rollback.
 - **Concurrent races:** `apply_pending_locked` uses `pg_advisory_lock(1234567)` to serialize. If stuck (a worker crashed mid-migration):
 
@@ -404,7 +405,7 @@ A healthy worker's `stale_for` should be under `heartbeat_interval` (default 10s
 - **Connection issues:** verify `TASKQ_PG_DSN_DIRECT` resolves to a reachable Postgres. Check `heartbeat_pool_size` (default 4) is sufficient.
 - **Increase tolerance:** set `TASKQ_MAX_HEARTBEAT_FAILURES` higher (e.g. `5`) to absorb transient blips. Keep `lock_lease >= (max_heartbeat_failures + 1) * (heartbeat_interval + 2 * heartbeat_command_timeout)`, raising `TASKQ_MAX_HEARTBEAT_FAILURES` or `TASKQ_HEARTBEAT_COMMAND_TIMEOUT` raises the floor with it.
 - **Pool exhaustion:** if `heartbeat_pool.acquire()` times out, increase `TASKQ_HEARTBEAT_POOL_SIZE`.
-- **After self-isolation:** restart the worker via your process supervisor. Its running jobs were already transitioned — retryable jobs are re-pended with a 5s delay. `HeartbeatLost` is intentionally distinct from `WorkerCrashed` (Sweep 1): a heartbeat-lost worker may still be alive but partitioned.
+- **After self-isolation:** restart the worker via your process supervisor. Its running jobs were already transitioned: retryable jobs are re-pended with a 5s delay. `HeartbeatLost` is intentionally distinct from `WorkerCrashed` (Sweep 1): a heartbeat-lost worker may still be alive but partitioned.
 
 ---
 
@@ -429,13 +430,13 @@ SELECT ml.*, ml.expires_at >= clock_timestamp() AS lease_live
 FROM {schema}.maintenance_leader ml;
 ```
 
-Check the admin UI at `/admin/workers` — the `is_leader` column and `/admin/leader`'s `watchdog_healthy` reflect the same lease verdict this query computes.
+Check the admin UI at `/admin/workers`: the `is_leader` column and `/admin/leader`'s `watchdog_healthy` reflect the same lease verdict this query computes.
 
 ### Fix
 
 - **No leader:** ensure at least one worker is running with a valid `TASKQ_PG_DSN_DIRECT`. Election is attempted every `heartbeat_interval`.
 - **PgBouncer:** set `TASKQ_PG_DSN_DIRECT` to bypass PgBouncer. See [PgBouncer compatibility](workers.md#pgbouncer-compatibility).
-- **Lapsed lease nobody takes:** the surviving pods cannot reach or write `{schema}.maintenance_leader`. Check their logs for `election-attempt-failed`, and check that the application role still holds `INSERT`/`UPDATE`/`DELETE` on that table. Recovery needs no privilege over the previous holder's session and no manual intervention in the database — a stuck or dead leader is displaced on the lease alone.
+- **Lapsed lease nobody takes:** the surviving pods cannot reach or write `{schema}.maintenance_leader`. Check their logs for `election-attempt-failed`, and check that the application role still holds `INSERT`/`UPDATE`/`DELETE` on that table. Recovery needs no privilege over the previous holder's session and no manual intervention in the database: a stuck or dead leader is displaced on the lease alone.
 - **Multiple schemas:** each schema gets its own `maintenance_leader` row. Verify `TASKQ_SCHEMA_NAME` is consistent across all workers. Failover is bounded by `leader_lease + heartbeat_interval` plus one round trip (50s at defaults) for a leader that went silent, and by `heartbeat_interval + 1s` for one that exited cleanly; if slower, check that `leader_conn` uses a direct DSN and the watchdog health check (every 5s) is not blocked.
 
 ---
@@ -451,7 +452,7 @@ Check the admin UI at `/admin/workers` — the `is_leader` column and `/admin/le
 | Issue | Detail |
 |---|---|
 | Auth failure | `create_router()` raises `RuntimeError` if no `auth_dependency` and `TASKQ_ENVIRONMENT` is not `dev`/`development`. Fail-closed by default. |
-| Redis not configured | `TASKQ_REDIS_URL` not set. UI falls back to polling mode — functional but less fresh. |
+| Redis not configured | `TASKQ_REDIS_URL` not set. UI falls back to polling mode: functional but less fresh. |
 | `[fastapi]` extra missing | Admin UI requires the `fastapi` optional dependency. |
 | Health token required | In non-dev, `taskq ui serve` fails closed if `TASKQ_HEALTH_TOKEN` is empty and `TASKQ_HEALTH_REQUIRE_TOKEN=true`. |
 
@@ -482,7 +483,7 @@ Rate limits are not enforced, jobs are denied with `ReservationUnavailable` unex
 |---|---|
 | Redis not available | Backend raises `ConnectionError`; PG fallback (if enabled) kicks in but is slower. |
 | `[redis]` extra missing | `TokenBucket(backend="redis")` without the `redis` package raises `ImportError` at acquire time. |
-| In-memory backend | `backend="memory"` is per-process only — state not shared across workers. |
+| In-memory backend | `backend="memory"` is per-process only; state not shared across workers. |
 | Primitives not registered | Actor references names not in the `RateLimitRegistry`. DI validation raises `MissingProvider` at startup. |
 | Reservation slots not synced | `reservation_slots` table has the wrong row count for the configured `slots`. |
 
@@ -520,7 +521,7 @@ LIMIT 50;
 - **Missing `[redis]` extra:** `uv add "taskq-py[redis]"`.
 - **In-memory backend:** switch to `backend="redis"` or `backend="postgres"` for multi-worker deployments. Memory is for tests only.
 - **Primitives not registered:** register all primitives on the `registry` singleton before the worker starts. DI validation checks each actor's `rate_limits`/`reservations` names at startup.
-- **Reservation slots out of sync:** call `sync_slots()` after changing slot counts. Sustained rate limiting accumulates jobs as `scheduled` (no retry budget consumed — a denied job is rescheduled until capacity frees or its `schedule_to_close` deadline expires through the ordinary deadline path; no denial terminalises a job on its own) — monitor queue depth, as there is no built-in backpressure beyond `max_pending`.
+- **Reservation slots out of sync:** call `sync_slots()` after changing slot counts. Sustained rate limiting accumulates jobs as `scheduled` (no retry budget consumed: a denied job is rescheduled until capacity frees or its `schedule_to_close` deadline expires through the ordinary deadline path; no denial terminalises a job on its own); monitor queue depth, as there is no built-in backpressure beyond `max_pending`.
 - **One job is slow while the fleet looks healthy:** a denial writes no `job_events` and no `job_attempts` row, so the aggregated `rate_limit_blocked_count` column on the job row is the per-job record of how much contention that job absorbed. Order by it to find the starving job; the fleet-wide OTel denial counters only tell you the fleet is shedding admissions.
 
 ```python
@@ -544,7 +545,7 @@ The worker process exits immediately with a non-zero exit code and an error or t
 | Migration not applied | TaskQ tables do not exist; queries raise `UndefinedTableError`. |
 | Actor registry import error | `module:attr` does not resolve: module not found, attribute missing, or wrong type. |
 | DI validation failure | `MissingProvider`, `ScopeViolation`, or `DependencyCycle` during `registry.validate()`. |
-| `ActorConfigDriftList` | Registered `queue` or `metadata` differs from the stored `actor_config` row (structural drift); `--force-update-actor-config` not set. `max_concurrent` / `max_pending` / `result_ttl` never cause this — those are operator-owned and cannot drift; see [ActorConfig sync](workers.md#actorconfig-sync). |
+| `ActorConfigDriftList` | Registered `queue` or `metadata` differs from the stored `actor_config` row (structural drift); `--force-update-actor-config` not set. `max_concurrent` / `max_pending` / `result_ttl` never cause this: those are operator-owned and cannot drift; see [ActorConfig sync](workers.md#actorconfig-sync). |
 | Timing invariant violation | `lock_lease < (max_heartbeat_failures + 1) * (heartbeat_interval + 2 * heartbeat_command_timeout)`, or `cancellation + cleanup >= termination_grace - 5.0` or `>= lock_lease`. |
 
 ### Diagnosis
@@ -569,7 +570,7 @@ SELECT actor, max_concurrent, max_pending, queue FROM {schema}.actor_config ORDE
   python -c "from myapp.actors import registry; print(type(registry))"
   ```
 - **DI validation failure:** `MissingProvider` = missing provider. `ScopeViolation` = wider scope depends on narrower. `DependencyCycle` = provider cycle. Register the missing provider or fix the scope/cycle. See [dependency-injection.md](dependency-injection.md).
-- **ActorConfigDriftList:** this is always a `queue` or `metadata` mismatch. Deploy the first pod with `--force-update-actor-config`, then remaining pods without it. Do not leave it set permanently. If you only meant to change `max_concurrent` / `max_pending` / `result_ttl`, you don't need this flag at all — deploy normally, then run `taskq actor-config set <actor> ...`.
+- **ActorConfigDriftList:** this is always a `queue` or `metadata` mismatch. Deploy the first pod with `--force-update-actor-config`, then remaining pods without it. Do not leave it set permanently. If you only meant to change `max_concurrent` / `max_pending` / `result_ttl`, you don't need this flag at all: deploy normally, then run `taskq actor-config set <actor> ...`.
 - **Timing invariant violations:** adjust settings so `lock_lease >= (max_heartbeat_failures + 1) * (heartbeat_interval + 2 * heartbeat_command_timeout)` and `cancellation + cleanup < termination_grace - 5.0` and `< lock_lease`.
 
 ---
@@ -614,12 +615,12 @@ Check dispatch latency via OTel or the `/metrics` endpoint (`taskq health metric
   ```bash
   taskq queues set-mode multi round_robin
   ```
-  Takes effect within the queue-mode cache's 5 s TTL — no worker restart
+  Takes effect within the queue-mode cache's 5 s TTL; no worker restart
   needed (dispatch resolves queue modes through a per-worker TTL cache; the
   process running `set-mode` invalidates its own caches immediately, and
   out-of-process workers pick the flip up on their next cache refill). In
   SQL, note the
-  **UPSERT**: queues are implicit — no runtime path inserts a `queues` row (only
+  **UPSERT**: queues are implicit; no runtime path inserts a `queues` row (only
   the admin surface does, and `set-mode` above is itself an upsert), so a plain
   `UPDATE ... WHERE name = ...` matches zero rows and silently does nothing on a
   fresh deployment.
@@ -630,9 +631,9 @@ Check dispatch latency via OTel or the `/metrics` endpoint (`taskq health metric
   **This is inert on its own.** Cohorts come from `fairness_key`, which is set at
   enqueue time; with no keys every job lands in one `__null__` cohort and the
   queue behaves exactly like `strict_fifo`. See
-  [workers.md — Queue dispatch modes](workers.md#queue-dispatch-modes).
+  [workers.md: Queue dispatch modes](workers.md#queue-dispatch-modes).
 - **Scale horizontally:** add worker processes. `FOR UPDATE SKIP LOCKED` prevents duplicate dispatch. Use unique `--health-socket-path` per worker on the same host.
-- **Offload CPU-bound work:** the worker is asyncio-based — CPU-bound actors block the event loop. Use `run_in_executor()`. Monitor `taskq.dispatch.duration` and `messaging.process.duration` via OTel: rising dispatch duration with flat process duration = DB contention; rising process duration = actor bottleneck.
+- **Offload CPU-bound work:** the worker is asyncio-based: CPU-bound actors block the event loop. Use `run_in_executor()`. Monitor `taskq.dispatch.duration` and `messaging.process.duration` via OTel: rising dispatch duration with flat process duration = DB contention; rising process duration = actor bottleneck.
 
 ---
 
@@ -674,7 +675,7 @@ curl --unix-socket /tmp/taskq_health.sock http://localhost/tasks
 
 ### Symptom
 
-Logs are clean — telemetry emits, no exceptions, and a shutdown (if any) looked orderly — yet no jobs complete. Dashboards built on log volume look normal.
+Logs are clean: telemetry emits, no exceptions, and a shutdown (if any) looked orderly, yet no jobs complete. Dashboards built on log volume look normal.
 
 ### Cause
 
@@ -684,8 +685,8 @@ Logs are clean — telemetry emits, no exceptions, and a shutdown (if any) looke
 
 | Cause | Detail |
 |---|---|
-| Worker not actually registered | No row in `{schema}.workers`, or `last_seen_at` is stale — the process is up but its heartbeat is not. |
-| No state transitions | Workers fresh, but no job has changed state — dispatch is finding nothing eligible (see §1) or capacity is zero. |
+| Worker not actually registered | No row in `{schema}.workers`, or `last_seen_at` is stale: the process is up but its heartbeat is not. |
+| No state transitions | Workers fresh, but no job has changed state: dispatch is finding nothing eligible (see §1) or capacity is zero. |
 | Capacity pinned to zero | A stored `actor_config.max_concurrent = 0` is drain mode; a queue cap of `0` is rejected, but an actor's is not. |
 | Queue mismatch | `TASKQ_QUEUES` does not include the queue jobs are enqueued on, so this worker is healthy and irrelevant. |
 
@@ -715,21 +716,21 @@ Re-run query 2 a minute apart: **unchanged counts mean no progress**, whatever t
 
 ### Fix
 
-- **Stale or missing worker rows:** the process is not heartbeating — treat it as down and restart it, then see [Heartbeat failures](#7-heartbeat-failures).
-- **Workers fresh but nothing progressing:** work through [Jobs stuck in `pending`](#1-jobs-stuck-in-pending) and [Jobs stuck in `scheduled`](#2-jobs-stuck-in-scheduled) — including the promotion stall, whose whole signature is healthy workers plus zero promotion.
+- **Stale or missing worker rows:** the process is not heartbeating; treat it as down and restart it, then see [Heartbeat failures](#7-heartbeat-failures).
+- **Workers fresh but nothing progressing:** work through [Jobs stuck in `pending`](#1-jobs-stuck-in-pending) and [Jobs stuck in `scheduled`](#2-jobs-stuck-in-scheduled), including the promotion stall, whose whole signature is healthy workers plus zero promotion.
 - **`max_concurrent = 0`:** drain mode. `taskq actor-config set <actor> --max-concurrent N` to restore; effective next dispatch cycle.
-- **`max_concurrent` unexpectedly `NULL`:** the decorator literal never reached this deployment — capacity fields are seed-only. See [ActorConfig sync](workers.md#actorconfig-sync).
+- **`max_concurrent` unexpectedly `NULL`:** the decorator literal never reached this deployment: capacity fields are seed-only. See [ActorConfig sync](workers.md#actorconfig-sync).
 - **Queue mismatch:** align `TASKQ_QUEUES` with the queues actually used, and confirm via `workers.queues`.
-- **Alert on the DB, not on logs:** page on `max(clock_timestamp() - last_seen_at)` across `{schema}.workers` and on job-completion throughput. A log-based liveness alert cannot detect this failure mode — it is what let it run unnoticed.
+- **Alert on the DB, not on logs:** page on `max(clock_timestamp() - last_seen_at)` across `{schema}.workers` and on job-completion throughput. A log-based liveness alert cannot detect this failure mode, which is what let it run unnoticed.
 
 ---
 
 ## See also
 
-- [ops.md](ops.md) — operations & adoption guide: sizing, timeout policy, fan-out patterns, and the footgun index (the preventive counterpart of this page)
-- [workers.md](workers.md) — worker internals, settings, PgBouncer
-- [cancellation.md](cancellation.md) — cancellation protocol
-- [rate-limiting.md](rate-limiting.md) — rate-limit backends
-- [admin-ui.md](admin-ui.md) — admin UI routes and auth
-- [observability.md](observability.md) — OTel metrics and logging
-- [architecture.md](../architecture.md) — state machine, dispatch, leader election
+- [ops.md](ops.md): operations & adoption guide: sizing, timeout policy, fan-out patterns, and the footgun index (the preventive counterpart of this page)
+- [workers.md](workers.md): worker internals, settings, PgBouncer
+- [cancellation.md](cancellation.md): cancellation protocol
+- [rate-limiting.md](rate-limiting.md): rate-limit backends
+- [admin-ui.md](admin-ui.md): admin UI routes and auth
+- [observability.md](observability.md): OTel metrics and logging
+- [architecture.md](../architecture.md): state machine, dispatch, leader election

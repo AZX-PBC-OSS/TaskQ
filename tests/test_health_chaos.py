@@ -105,7 +105,7 @@ def _make_deps(**overrides: object) -> WorkerDeps:  # pyright: ignore[reportRetu
         "is_leader": SimpleNamespace(is_set=lambda: False),
         "active_jobs": SimpleNamespace(count=lambda: 2),
         "heartbeat_failures": 0,
-        # WorkerDeps.redis_client (default None) — health reads it for redis_configured.
+        # WorkerDeps.redis_client (default None) - health reads it for redis_configured.
         "redis_client": None,
         # Watchdog observability fields read by compute_health.
         "liveness": LoopLiveness(),
@@ -128,7 +128,7 @@ def test_tc1_wedged_loop_unresponsive() -> None:
     both the probe callback and the 1 s timeout callback are queued
     behind the wedge, so ``_check_live`` cannot return until the
     wedge releases. The test verifies the subprocess wall-clock
-    elapsed time exceeds 1.5 s — the signal that the loop was
+    elapsed time exceeds 1.5 s - the signal that the loop was
     unresponsive.
 
     The return value of ``_check_live`` is NOT gated because
@@ -387,7 +387,7 @@ async def test_tp1_cross_transport_parity() -> None:
     ]
 
     for scenario in scenarios:
-        pg_pool = _StubPool(error=scenario["pg_error"])  # type: ignore[arg-type] # Why: None means no error — healthy pool; BaseException means raise on acquire.
+        pg_pool = _StubPool(error=scenario["pg_error"])  # type: ignore[arg-type] # Why: None means no error - healthy pool; BaseException means raise on acquire.
         deps = _make_deps(
             shutdown_phase=scenario["shutdown_phase"],
             dispatcher_pool=pg_pool,

@@ -8,13 +8,13 @@ own books:
  started executing, so it is spent;, no attempt row is
   written (an interruption is not an execution outcome), one
   ``reason='interrupted'`` event records it, and ``interrupt_count`` bumps.
-* the crash-reclaim sweep — the holding worker died mid-attempt, so the
+* the crash-reclaim sweep - the holding worker died mid-attempt, so the
   attempt IS spent (left as claimed), a ``'crashed'`` attempt row and a
   ``reason='lock_expired'`` event are written, and the row reschedules on
   the retry curve stamped on it at enqueue time
   (``retry_base_seconds``/``retry_cap_seconds``/``retry_backoff``/
-  ``retry_jitter``), with the delay's jitter derived — md5 of
-  ``'<job id>:<attempt>'`` — never drawn.
+  ``retry_jitter``), with the delay's jitter derived - md5 of
+  ``'<job id>:<attempt>'`` - never drawn.
 
 The composition is what a rolling deploy actually produces: pod A's SIGTERM
 interrupts the job mid-flight, pod B claims the row at the NEXT attempt epoch
@@ -31,7 +31,7 @@ reclaim.
 
 The cross-backend comparison rides the shared differential harness
 (tests/test_rt_diff_harness.py): identical scenario, identical normalized
-observables — statuses, attempt rows, event trails, and the row counters —
+observables - statuses, attempt rows, event trails, and the row counters -
 or the in-memory twin certifies a recovery Postgres does not perform.
 """
 
@@ -49,7 +49,7 @@ from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF
 from taskq.retry import (
     RetryPolicy,
     # The pin asserts the sweep stamped exactly the twin's value for this
-    # row — the same cross-module consumption taskq.testing._sweeps performs.
+    # row - the same cross-module consumption taskq.testing._sweeps performs.
     _compute_reclaim_backoff,
 )
 from taskq.testing.in_memory import InMemoryBackend
@@ -74,14 +74,14 @@ _POLICY = RetryPolicy(
 )
 
 #: Slack for the gap between the test's server-clock reads and the sweep's
-#: own clock_timestamp() — orders of magnitude below the 120 s miss a
+#: own clock_timestamp() - orders of magnitude below the 120 s miss a
 #: shifted curve produces, so the bracket stays decisive.
 _CLOCK_GAP_SLACK = timedelta(seconds=30)
 
 
 def _curve_args(side: DiffSide, *, jitter: float) -> EnqueueArgs:
     """One due batch-free job carrying the protective retry curve on the row
-    — the scalars a real enqueue stamps from the actor's live ActorRef."""
+    - the scalars a real enqueue stamps from the actor's live ActorRef."""
     args = EnqueueArgs(
         id=new_job_id(),
         actor="test_actor",
@@ -230,7 +230,7 @@ async def test_diff_operator_cancel_between_release_and_reclaim_keeps_the_fence(
     """The cancel-wins fence holds on the re-claimed epoch: an operator
     cancel landing after the interrupt's release makes the next shutdown
     release read back ``noop``; no second release, no second interruption
-    counted, no interrupted event — and the operator's terminal write owns
+    counted, no interrupted event - and the operator's terminal write owns
     the outcome."""
 
     async def scenario(side: DiffSide) -> None:
@@ -253,7 +253,7 @@ async def test_diff_operator_cancel_between_release_and_reclaim_keeps_the_fence(
         side.record("cancel_request", await side.write_cancel_request("j1", "operator stop"))
 
         # The same deploy's release reaches the row a beat later: the fence
-        # must decline it — the operator's request owns the outcome, never
+        # must decline it - the operator's request owns the outcome, never
         # the deploy's.
         row2 = await side.backend.get(args.id)
         assert row2 is not None
@@ -332,7 +332,7 @@ async def test_interrupt_does_not_advance_the_reclaim_curve_with_jitter_on(
     backend_pair: Backend,
 ) -> None:
     """With jitter armed, the interrupted-then-crash-reclaimed job's delay
-        is exactly the derived curve value for the re-claimed attempt — the
+        is exactly the derived curve value for the re-claimed attempt - the
         re-claim advanced the epoch past the interrupted one (no refund,
     , and the jitter is the row's deterministic md5 fraction,
         not a fresh draw."""

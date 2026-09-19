@@ -21,7 +21,7 @@ Prerequisites
 
        TASKQ_PG_DSN=postgresql://my-mi@my-pg.postgres.database.azure.com:5432/taskq
        TASKQ_REDIS_URL=rediss://my-cache.redis.cache.windows.net:6380
-       # No password in the DSN — the AAD token is injected at connect time.
+       # No password in the DSN - the AAD token is injected at connect time.
 
 Run the worker::
 
@@ -39,7 +39,7 @@ import contextlib
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
-# FastAPI / uvicorn are optional — guard the import so this module is
+# FastAPI / uvicorn are optional - guard the import so this module is
 # import-safe for the worker-only path.
 try:
     import uvicorn
@@ -102,7 +102,7 @@ def main() -> None:
         from azure.identity.aio import DefaultAzureCredential
 
         # worker_main() drives its own asyncio.Runner with a private event
-        # loop, so the credential cannot be closed cleanly from here — its
+        # loop, so the credential cannot be closed cleanly from here - its
         # aiohttp session is created on that loop, and __aexit__ from a
         # different loop would be a cross-loop close. Construct it plainly
         # and rely on process exit for cleanup.

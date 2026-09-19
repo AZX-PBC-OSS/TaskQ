@@ -1,4 +1,4 @@
-"""Stale worker cleanup e2e — dead worker's row removed by leader sweep.
+"""Stale worker cleanup e2e - dead worker's row removed by leader sweep.
 
 Scenario:
 kill a worker, verify ``cleanup_stale_workers`` sweep removes its row
@@ -169,7 +169,7 @@ async def test_stale_worker_row_removed_by_sweep(
     e2e_pg_pool: asyncpg.Pool,
     e2e_schema: E2ESchema,
 ) -> None:
-    """Kill worker #1 with SIGKILL; ``cleanup_stale_workers`` removes its row.
+    """Kill worker with SIGKILL; ``cleanup_stale_workers`` removes its row.
 
     (a) Before the kill, both workers have rows in ``{schema}.workers``.
     (b) After SIGKILL, the killed worker stops heartbeating.  Its
@@ -177,7 +177,7 @@ async def test_stale_worker_row_removed_by_sweep(
         (``heartbeat_interval * (max_heartbeat_failures + 3)`` = 3.0 s).
     (c) The surviving worker's leader sweep runs ``cleanup_stale_workers``
         which DELETEs the stale row.
-    (d) The surviving worker's row is still present — the sweep's
+    (d) The surviving worker's row is still present - the sweep's
         ``id != $2`` clause protects the leader's own row.
     """
     schema = e2e_schema.schema_name
@@ -191,8 +191,8 @@ async def test_stale_worker_row_removed_by_sweep(
     dead_worker_id = worker_rows[0]["id"]
     alive_worker_id = worker_rows[1]["id"]
 
-    # ── SIGKILL worker #1 ─────────────────────────────────────────────
-    # Use the Docker API's container.kill rather than exec_run — the
+    # ── SIGKILL worker ─────────────────────────────────────────────
+    # Use the Docker API's container.kill rather than exec_run - the
     # daemon delivers the signal directly and tears down the container's
     # network namespace, which releases PG advisory locks promptly so
     # the surviving worker can acquire leadership and run the sweep.
@@ -219,6 +219,6 @@ async def test_stale_worker_row_removed_by_sweep(
         alive_worker_id,
     )
     assert alive_count == 1, (
-        "surviving worker's row should still be present — "
+        "surviving worker's row should still be present - "
         "cleanup_stale_workers protects the leader's own row (id != $2)"
     )

@@ -16,7 +16,7 @@ from tests._import_discipline import couples_to_at_import_time, has_future_annot
 
 from . import _StubPool
 
-# Signature mirrors taskq.web.admin.sse._sse_generator exactly — a double that
+# Signature mirrors taskq.web.admin.sse._sse_generator exactly - a double that
 # outlives the real signature stops standing in for anything.
 pytestmark = [pytest.mark.fastapi]
 

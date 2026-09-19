@@ -5,8 +5,8 @@ TaskQ provides a real-time progress pipeline: actors emit structured updates via
 pub/sub bridge delivers events to subscribers immediately. Consumers can receive events
 server-to-client via:
 
-- **`JobHandle.progress_stream()`** — Python async iterator (worker or service process)
-- **HTTP SSE endpoint** — browser or HTTP client via `GET /api/job/{job_id}/progress/stream`
+- **`JobHandle.progress_stream()`**: Python async iterator (worker or service process)
+- **HTTP SSE endpoint**: browser or HTTP client via `GET /api/job/{job_id}/progress/stream`
   relative to wherever the router is mounted. Under `taskq ui serve` (the admin UI), the
   admin router mounts this progress router at `/jobs`, and the admin router itself mounts
   at `/admin`, so the effective path is `GET /admin/jobs/api/job/{job_id}/progress/stream`
@@ -15,7 +15,7 @@ server-to-client via:
 !!! info "Redis is optional"
     When the `[redis]` extra is not installed or `TASKQ_REDIS_URL` is not set:
 
-    - `ctx.progress()` still works — updates are coalesced and flushed to Postgres.
+    - `ctx.progress()` still works: updates are coalesced and flushed to Postgres.
     - `JobHandle.progress_stream()` falls back to 500 ms Postgres polling (higher latency, same data).
     - The HTTP SSE endpoint returns HTTP 503 with `{"error": "redis_not_configured"}`.
     - `TaskQ.stream()` falls back to 500 ms Postgres polling of the job row (a transition is seen within half a second, no Redis required).
@@ -48,25 +48,27 @@ server-to-client via:
 2. The per-job in-memory buffer is updated synchronously (last-writer-wins per field) and `seq` is
    incremented.
 3. A `kind="progress"` event is scheduled as a background task to publish to the Redis channel
-   `{schema}:progress:{job_id}`. `ctx.progress()` returns as soon as the buffer is updated — it
+   `{schema}:progress:{job_id}`. `ctx.progress()` returns as soon as the buffer is updated;
    does not wait for the publish to complete or even start.
 4. A periodic flush loop writes the latest coalesced state to the `jobs.progress_state` JSONB
    column and `jobs.progress_seq` counter.
 5. At job completion or crash, the buffer is flushed one final time before the terminal status
    is written.
 
-This means **Redis subscribers see every `ctx.progress()` call** while **Postgres retains only
-the most recent snapshot**. Clients reconnecting via `Last-Event-ID` receive a catch-up
-snapshot from Postgres and then resume the live Redis stream.
+Redis publishes are coalesced: at most one publish per job is in flight at a time; a call racing
+a running publish is latched onto the buffer and the running task re-publishes the latch when its
+round trip lands, so the final publish always lands. **Postgres retains only the most recent
+snapshot**, intermediate events are replaceable by a later seq, and clients reconnecting via
+`Last-Event-ID` receive a catch-up snapshot from Postgres and then resume the live Redis stream.
 
 **The Redis publish is fire-and-forget.** Because it runs as a background task, `ctx.progress()`
-never blocks the calling actor code on the network — this holds even when an actor calls
+never blocks the calling actor code on the network; this holds even when an actor calls
 `ctx.progress()` at high frequency in a tight loop. It is safe by design for the publish to
 complete out of order relative to other in-flight publishes for the same job, or to be dropped
 outright (e.g. on a transient Redis error): consumers of the SSE/pub-sub stream already discard
 any event whose `seq` is not strictly greater than the last one they've seen, so an out-of-order
 or missing event never corrupts displayed state. The Postgres-persisted `progress_state` /
-`progress_seq` — flushed on the periodic coalesce interval described above — remains the durable
+`progress_seq` (flushed on the periodic coalesce interval described above) remains the durable
 source of truth regardless of what happens on the Redis side. Failures publishing to Redis are
 logged and recorded as a metric, never raised to the caller.
 
@@ -109,7 +111,7 @@ handle = await client.enqueue(transcode_video, payload)
 
 async for event in handle.progress_stream():
     if event.percent is not None:
-        print(f"  {event.percent:.0f}% — {event.detail}")
+        print(f"  {event.percent:.0f}%: {event.detail}")
     if event.terminal:
         print(f"finished: {event.status}")
         break
@@ -167,7 +169,7 @@ GET /api/job/{job_id}/progress/stream
 | `progress` | yes (`seq`) | Incremental progress update. `data` is a JSON-serialised `ProgressEvent`. |
 | `terminal` | yes (`seq`) | Job reached a terminal state. `data` is a JSON-serialised `ProgressEvent`. Close the connection after receiving this. |
 | `done` | no | Stream is closing. Close the connection. |
-| `: keepalive` | — | SSE comment emitted every 15 s (configurable). No `event` field. |
+| `: keepalive` | n/a | SSE comment emitted every 15 s (configurable). No `event` field. |
 
 **HTTP status codes:**
 
@@ -210,16 +212,16 @@ app.include_router(progress_router, prefix="/jobs")
 **Fail-closed outside dev.** The `auth_dependency=None` default is not usable
 in a non-dev environment: `create_router()` raises `RuntimeError` when
 `TASKQ_ENVIRONMENT` is anything other than `dev` or `development` (the same
-fail-closed gate as the admin UI — see
+fail-closed gate as the admin UI; see
 [admin-ui.md](admin-ui.md#fail-closed-by-default)). Opt out only when an
 authenticating ingress covers the mount point:
 
 ```sh
 export TASKQ_PROGRESS_REQUIRE_AUTH=false
-# WARNING log: progress-router-no-auth — but the router is created
+# WARNING log: progress-router-no-auth: but the router is created
 ```
 
-Serving without auth in *any* environment — dev included — logs the
+Serving without auth in *any* environment (dev included) logs the
 `progress-router-no-auth` warning: each anonymous stream holds a Redis pubsub
 subscription and an asyncio task for as long as the client stays connected.
 
@@ -227,7 +229,7 @@ subscription and an asyncio task for as long as the client stays connected.
 same progress router internally at `/jobs` (`src/taskq/web/admin/_factory.py`), and the admin
 router is itself mounted at `/admin` (`taskq ui serve` / `docs/guides/admin-ui.md`). The
 resulting paths are `GET /admin/jobs/api/job/{job_id}/progress/stream` and
-`GET /admin/jobs/api/job/{job_id}/state` — not the bare `/api/job/...` or `/jobs/api/job/...`
+`GET /admin/jobs/api/job/{job_id}/state`, not the bare `/api/job/...` or `/jobs/api/job/...`
 paths shown above, which only apply when you mount `taskq.web.progress.create_router()`
 yourself at a different prefix. Without Redis configured, the stream endpoint returns
 `503 {"error": "redis_not_configured"}` while the `/state` poll endpoint still works.
@@ -239,7 +241,7 @@ yourself at a different prefix. Without Redis configured, the stream endpoint re
 | `pg_pool` | `asyncpg.Pool` | required | Connection pool for snapshot reads. |
 | `redis_client` | `redis.asyncio.Redis \| None` | required | Redis client. Pass `None` to disable streaming (SSE returns 503). |
 | `schema` | `str` | `"taskq"` | PostgreSQL schema; must match the backend. |
-| `auth_dependency` | `Callable \| None` | `None` | FastAPI `Depends`-compatible callable applied to all routes. Outside dev (`TASKQ_ENVIRONMENT` not `dev`/`development`) the factory raises `RuntimeError` when omitted — the default is not usable in non-dev unless `TASKQ_PROGRESS_REQUIRE_AUTH=false` suppresses the check (only for mounts behind an authenticating ingress). Serving without auth always logs a `progress-router-no-auth` warning. |
+| `auth_dependency` | `Callable \| None` | `None` | FastAPI `Depends`-compatible callable applied to all routes. Outside dev (`TASKQ_ENVIRONMENT` not `dev`/`development`) the factory raises `RuntimeError` when omitted: the default is not usable in non-dev unless `TASKQ_PROGRESS_REQUIRE_AUTH=false` suppresses the check (only for mounts behind an authenticating ingress). Serving without auth always logs a `progress-router-no-auth` warning. |
 | `sse_heartbeat_interval` | `timedelta` | `timedelta(seconds=15)` | Interval for keepalive SSE comments. |
 
 ---
@@ -255,7 +257,7 @@ const es = new EventSource(url);
 es.addEventListener("progress", (e) => {
   const event = JSON.parse(e.data);
   document.getElementById("progress").textContent =
-    `${event.percent ?? "?"}% — ${event.detail ?? ""}`;
+    `${event.percent ?? "?"}%: ${event.detail ?? ""}`;
 });
 
 es.addEventListener("terminal", (e) => {
@@ -314,12 +316,12 @@ between polls.
     per second. The trade-off is that individual Redis publishes may arrive out of order or be
     dropped. This is safe: SSE/pub-sub consumers discard any event whose `seq` does not exceed
     the last one seen, and the periodically-flushed Postgres `progress_state`/`progress_seq`
-    is always the durable source of truth — a dropped Redis publish never loses progress data,
+    is always the durable source of truth: a dropped Redis publish never loses progress data,
     it only delays a subscriber's view of it until the next successful publish or the next poll.
 
 - **Redis is optional, not required.** Without `TASKQ_REDIS_URL` configured (or the `[redis]`
   extra installed), `ctx.progress()` still coalesces and flushes to Postgres exactly as
-  described above — only the Redis publish step is skipped. `JobHandle.progress_stream()`
+  described above; only the Redis publish step is skipped. `JobHandle.progress_stream()`
   transparently falls back to 500 ms Postgres polling, and the HTTP SSE endpoint returns
   `503 {"error": "redis_not_configured"}` (the poll-state endpoint still works).
 - **`InMemoryBackend` does not support streaming.** `progress_stream()` raises
@@ -328,9 +330,9 @@ between polls.
   end to end.
 - **High-frequency progress in tight loops is fine.** Because the Redis publish never blocks the
   actor and the coalesce buffer collapses intermediate values, calling `ctx.progress()` on every
-  iteration of a hot loop is safe — only the periodic flush interval (`TASKQ_PROGRESS_COALESCE_INTERVAL`)
-  bounds how much Postgres write traffic this generates, and Redis subscribers see every call
-  regardless.
+  iteration of a hot loop is safe; only the periodic flush interval (`TASKQ_PROGRESS_COALESCE_INTERVAL`)
+  bounds how much Postgres write traffic this generates, and each superseding call is latched so
+  the latest state is what publishes.
 
 ---
 
@@ -339,7 +341,7 @@ between polls.
 | Environment variable | Default | Description |
 |---|---|---|
 | `TASKQ_REDIS_URL` | `None` | Redis connection URL. Required for real-time progress delivery. |
-| `TASKQ_PROGRESS_DATA_MAX_BYTES` | `16384` (16 KiB) | Maximum serialised size of the `data` dict passed to `ctx.progress()`. Range: 1 KiB – 1 MiB. Exceeding this raises `ProgressTooLarge`. |
+| `TASKQ_PROGRESS_DATA_MAX_BYTES` | `16384` (16 KiB) | Maximum serialised size of the `data` dict passed to `ctx.progress()`. Range: 1 KiB to 1 MiB. Exceeding this raises `ProgressTooLarge`. |
 | `TASKQ_PROGRESS_COALESCE_INTERVAL` | `0.5` | Seconds between periodic flush ticks that write coalesced state to Postgres. Minimum: 0.1 s. |
 | `TASKQ_PROGRESS_PUBLISH_GLOBAL` | `true` | When `true`, every event is also published to a schema-wide fanout channel in addition to the per-job channel. Disable in high-throughput deployments without a global subscriber. |
 

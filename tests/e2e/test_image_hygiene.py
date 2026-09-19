@@ -3,7 +3,7 @@
 The Docker I/O wrappers in :mod:`tests.e2e._image_hygiene` are exercised by
 every e2e session (the sweeps run at ``e2e_network`` setup, the teardown by
 ``e2e_worker_image``); these tests pin the pure keep/remove decisions those
-wrappers rely on — the same split ``tests/test_shared_containers.py`` applies
+wrappers rely on - the same split ``tests/test_shared_containers.py`` applies
 to ``taskq.testing._shared_containers``.
 
 This module requests none of the shared infra fixtures, so the autouse
@@ -75,7 +75,7 @@ def test_pid_owned_image_sweeps_iff_owner_dead() -> None:
 
 def test_pid_owned_image_age_backstop_beats_recycled_pid() -> None:
     """Over the 24 h age limit a pid-owned image is swept even if its pid
-    number now belongs to an unrelated live process — pid recycling must not
+    number now belongs to an unrelated live process - pid recycling must not
     shield a stray forever (same backstop the container sweep carries)."""
     live_owner = worker_image_target(os.getpid())
     assert (
@@ -87,7 +87,7 @@ def test_pid_owned_image_age_backstop_beats_recycled_pid() -> None:
 def test_legacy_and_foreign_repositories_are_never_auto_swept() -> None:
     """The automatic sweep never touches legacy exact-name images (a
     concurrent checkout running pre-ownership code can still build into that
-    name — ``make clean-e2e`` owns them) or any unrecognized name shape."""
+    name - ``make clean-e2e`` owns them) or any unrecognized name shape."""
     repositories = [
         WORKER_IMAGE_PREFIX,  # legacy, pre-pid-ownership
         f"{WORKER_IMAGE_PREFIX}-r12x",  # suffix is not a pid
@@ -124,8 +124,8 @@ def test_wheel_scratch_dir_sweeps_iff_owner_dead_or_old() -> None:
 
 
 def test_cached_wheel_entry_is_age_swept_only() -> None:
-    """Cached wheel entries carry no owner identity — identical content is
-    legitimately reusable by any live session — so only the age backstop
+    """Cached wheel entries carry no owner identity - identical content is
+    legitimately reusable by any live session - so only the age backstop
     applies."""
     assert should_sweep_stale_wheel_cache_entry(created=_NOW - _FRESH, now=_NOW) is False
     assert should_sweep_stale_wheel_cache_entry(created=_NOW - SWEEP_AGE_LIMIT, now=_NOW) is False

@@ -3,12 +3,12 @@
 The upgrading guide tells consumers to rewrite ``actor_name=`` as
 ``actor=`` at ``taskq.validate_actor_payload`` call sites, and warns that
 the exception no longer carries payload values or the pydantic ``input``
-/ ``url`` keys. Those are load-bearing migration instructions: if the
+/ ``url`` keys. Those are critical migration instructions: if the
 signature or the error shape drifts back, the guide sends every consumer
 of this release to the wrong call-site edit.
 
 These assert the *API surface and behaviour* via ``inspect.signature``
-and a real validation failure — they do not read the prose. The
+and a real validation failure - they do not read the prose. The
 sanitization itself (no payload values in the message) and the
 single-implementation identity are already covered by
 test_exceptions.py; what is pinned here is the parameter naming and
@@ -35,13 +35,13 @@ from taskq.exceptions import PayloadValidationError
 
 
 class _IntFieldPayload(BaseModel):
-    """Payload whose only field is an int — a str value fails validation."""
+    """Payload whose only field is an int - a str value fails validation."""
 
     count: int
 
 
 def test_validate_actor_payload_third_parameter_is_named_actor() -> None:
-    """The third parameter is ``actor`` — the rename upgrading.md documents.
+    """The third parameter is ``actor`` - the rename upgrading.md documents.
 
     ``actor_name`` was the pre-rename name in the deleted exceptions.py
     duplicate; it must not come back, or the guide's before/after is
@@ -70,7 +70,7 @@ def test_validate_actor_payload_accepts_third_positional() -> None:
 
 
 def test_validate_actor_payload_actor_is_optional() -> None:
-    """``actor`` defaults to ``None`` — omitting it no longer raises TypeError."""
+    """``actor`` defaults to ``None`` - omitting it no longer raises TypeError."""
     assert inspect.signature(taskq.validate_actor_payload).parameters["actor"].default is None
 
     with pytest.raises(PayloadValidationError) as exc_info:
@@ -110,14 +110,14 @@ def test_validate_actor_payload_accepts_a_basemodel_as_raw_payload() -> None:
 
 def test_terminal_statuses_reexport_is_the_statemachine_object() -> None:
     """``taskq.backend.TERMINAL_STATUSES`` is the exact object the internal
-    ``taskq.backend.statemachine`` module defines — the identity the
+    ``taskq.backend.statemachine`` module defines - the identity the
     guide's before/after promises (a switch, not a copy)."""
     assert taskq.backend.TERMINAL_STATUSES is TERMINAL_STATUSES
 
 
 def test_terminal_statuses_is_a_declared_backend_export() -> None:
     """The public path is a declared ``__all__`` entry, not an accidental
-    attribute — what makes it the covered surface the guide points at."""
+    attribute - what makes it the covered surface the guide points at."""
     assert "TERMINAL_STATUSES" in taskq.backend.__all__
 
 
@@ -136,14 +136,14 @@ def test_state_machine_constants_reexported_from_backend() -> None:
 
 def test_top_level_reexports_are_the_backend_objects() -> None:
     """The guide's top-level note (``from taskq import TERMINAL_STATUSES,
-    JobStatus``) promises the same objects as the ``taskq.backend`` path —
+    JobStatus``) promises the same objects as the ``taskq.backend`` path -
     identity, not equality, so the two import paths can never diverge."""
     assert taskq.TERMINAL_STATUSES is taskq.backend.TERMINAL_STATUSES
     assert taskq.JobStatus is taskq.backend.JobStatus
 
 
 def test_top_level_reexports_are_declared_taskq_exports() -> None:
-    """The top-level path is a declared ``taskq.__all__`` entry — the
+    """The top-level path is a declared ``taskq.__all__`` entry - the
     covered surface the guide's note points at, same rule as the backend
     path above."""
     assert "TERMINAL_STATUSES" in taskq.__all__

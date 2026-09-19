@@ -190,7 +190,7 @@ async def test_ctx_progress_snooze_preserves_seq_and_redispatch_continues() -> N
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="test_actor")
     job_id = new_job_id()
     worker_id = new_uuid()
@@ -374,7 +374,7 @@ async def test_seq_and_state_after_flush_attempt_dirty_zero_delta() -> None:
 
 async def test_terminal_seq_and_state_clean_buffer_returns_base_seq() -> None:
     """When the buffer is clean (post-flush, base_seq=5, pending_seq_delta=0),
-    _terminal_seq_and_state returns (5, state) — NOT (0, {}).
+    _terminal_seq_and_state returns (5, state) - NOT (0, {}).
     This is the exact window where _snapshot_progress would incorrectly
     return 0, clobbering the previously-flushed sequence."""
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=5, pending_seq_delta=0, dirty=False)

@@ -1,7 +1,7 @@
-"""Unit tests for RateLimitRegistry — data structure, register, acquire context manager.
+"""Unit tests for RateLimitRegistry - data structure, register, acquire context manager.
 
 Tests All tests use in-memory backends
-(``backend="memory"``) with ``FakeClock`` — no
+(``backend="memory"``) with ``FakeClock`` - no
 Redis or PG instance required.
 """
 
@@ -100,7 +100,7 @@ async def test_duplicate_rate_limit_identical_is_noop() -> None:
     a conflicting config for the same name raises ValueError."""
     reg = RateLimitRegistry()
     reg.register(_token_bucket("dup"))
-    reg.register(_token_bucket("dup"))  # identical — no-op
+    reg.register(_token_bucket("dup"))  # identical - no-op
     with pytest.raises(ValueError, match="rate-limit name already registered"):
         reg.register(_token_bucket("dup", capacity=99.0))
 
@@ -111,7 +111,7 @@ async def test_duplicate_reservation_identical_is_noop() -> None:
     clock = FakeClock(_START)
     reg = RateLimitRegistry()
     reg.register(_reservation("dup", clock=clock))
-    reg.register(_reservation("dup", clock=clock))  # identical — no-op
+    reg.register(_reservation("dup", clock=clock))  # identical - no-op
     with pytest.raises(ValueError, match="reservation name already registered"):
         reg.register(_reservation("dup", slots=99, clock=clock))
 
@@ -121,7 +121,7 @@ async def test_duplicate_sliding_window_identical_is_noop() -> None:
     a conflicting config for the same name raises ValueError."""
     reg = RateLimitRegistry()
     reg.register(_sliding_window("dup"))
-    reg.register(_sliding_window("dup"))  # identical — no-op
+    reg.register(_sliding_window("dup"))  # identical - no-op
     with pytest.raises(ValueError, match="rate-limit name already registered"):
         reg.register(_sliding_window("dup", limit=99))
 
@@ -158,7 +158,7 @@ async def test_acquire_returns_decision() -> None:
 
 
 async def test_acquire_no_release_on_exit() -> None:
-    """Tokens consumed permanently — no release on context exit."""
+    """Tokens consumed permanently - no release on context exit."""
     reg = RateLimitRegistry()
     reg.register(_token_bucket("tb", capacity=5.0, refill=0.0))
     clock = FakeClock(_START)
@@ -252,7 +252,7 @@ async def test_acquire_unregistered_name_raises_keyerror() -> None:
 
 async def test_duplicate_name_mismatched_kind_raises() -> None:
     """Registering a SlidingWindow under a name already holding a TokenBucket
-    is a config mismatch (different types never compare equal) —
+    is a config mismatch (different types never compare equal) -
     _same_config falls through to False and register() raises ValueError."""
     reg = RateLimitRegistry()
     reg.register(_token_bucket("dup"))
@@ -296,7 +296,7 @@ async def test_peek_sliding_window() -> None:
 
 async def test_peek_all_catches_and_logs_failures() -> None:
     """peek_all() catches per-bucket exceptions, logs a warning, and
-    continues — a redis-backend bucket peeked without a redis_client raises
+    continues - a redis-backend bucket peeked without a redis_client raises
     RuntimeError internally, which peek_all() must swallow while still
     returning results for the other (healthy) buckets."""
     reg = RateLimitRegistry()
@@ -353,7 +353,7 @@ class _FakeConn:
     """Connection double for the publish statement.
 
     ``execute`` mirrors asyncpg's variadic ``(sql, *args)`` contract; the
-    publish binds ``(name, kind, keyed)`` — the fleet-reclaim mark — so
+    publish binds ``(name, kind, keyed)`` - the fleet-reclaim mark - so
     the recorded calls carry all three bind values.
     """
 
@@ -399,7 +399,7 @@ async def test_sync_rate_limit_buckets_writes_token_bucket_and_gcra() -> None:
     reg = RateLimitRegistry()
     reg.register(_token_bucket("tb"))
     reg.register(SlidingWindow(name="gcra_sw", limit=5, window=timedelta(minutes=1), style="gcra"))
-    reg.register(_sliding_window("log_sw"))  # style="log" — should be skipped
+    reg.register(_sliding_window("log_sw"))  # style="log" - should be skipped
 
     pool = _FakePool()
     await sync_rate_limit_buckets(reg, pool, schema="taskq")  # type: ignore[arg-type]
@@ -410,6 +410,6 @@ async def test_sync_rate_limit_buckets_writes_token_bucket_and_gcra() -> None:
     # must be False on every row it writes (a static row is never
     # deletable by the keyed-row sweep).
     assert all(mark == [False] for _sql, _name, _kind, *mark in pool.conn.calls), (
-        "sync_rate_limit_buckets must publish static rows with keyed=False — a "
+        "sync_rate_limit_buckets must publish static rows with keyed=False - a "
         "statically declared bucket's rate_limit_buckets row is never fleet-reclaimable"
     )

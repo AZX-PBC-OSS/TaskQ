@@ -4,13 +4,13 @@
 NO timeout (``async with pool.acquire() as conn:``) and
 ``backend/postgres.py`` routes ``mark_cancelled`` to the HEARTBEAT pool,
 while the heartbeat loop's own acquire is bounded
-(``worker/heartbeat.py`` — ``acquire(timeout=interval)``) and its
+(``worker/heartbeat.py`` - ``acquire(timeout=interval)``) and its
 ``TimeoutError`` is classified transient (``worker/_transient.py``), so
 each starved tick increments ``heartbeat_failures`` and crossing
-``max_heartbeat_failures`` escalates to ``isolate_self`` — worker
+``max_heartbeat_failures`` escalates to ``isolate_self`` - worker
 self-shutdown.
 
-A cancel storm (``heartbeat_pool_size`` — default 4, ``settings.py`` —
+A cancel storm (``heartbeat_pool_size`` - default 4, ``settings.py`` -
 concurrent consumer ``mark_cancelled`` writes holding/gating the pool)
 therefore starves the heartbeat loop into self-shutdown while the worker
 was merely cancelling jobs. The RED contract: terminal-write pool
@@ -61,7 +61,7 @@ class _NullConn:
 
 
 def _starved_pool() -> ChaosPool:
-    """A pool with no connection to hand over — every acquire queues.
+    """A pool with no connection to hand over - every acquire queues.
 
     ``acquire_delay=math.inf`` models a pool whose every connection
     (``heartbeat_pool_size``, default 4) is held by an in-flight gated
@@ -75,7 +75,7 @@ def _starved_pool() -> ChaosPool:
 
 
 #: Elapsed margin (seconds) below which a TimeoutError counts as the
-#: system's DESIGNED bounded failure rather than an unbounded queue —
+#: system's DESIGNED bounded failure rather than an unbounded queue -
 #: the discrimination pattern of the sibling deliverable
 #: ``tests/test_rt_locks_sweep_notify_pool_unbounded.py``: fail only when
 #: the call took unboundedly long (nothing internal ended the wait), so
@@ -118,10 +118,10 @@ async def test_mark_cancelled_pool_acquire_must_be_bounded() -> None:
     exhausted pool.
 
     Contract: terminal-write pool acquires must be bounded (or routed off
-    the heartbeat pool) — a cancel storm saturating the heartbeat pool must
+    the heartbeat pool) - a cancel storm saturating the heartbeat pool must
     fail the individual write within a bound, not queue it forever. Today
     the contract is violated: backend/_terminal.py's ``_mark_cancelled``
-    acquires with ``async with pool.acquire() as conn:`` — NO timeout= —
+    acquires with ``async with pool.acquire() as conn:`` - NO timeout= -
     (and backend/postgres.py routes mark_cancelled onto the heartbeat
     pool), so the write below was still queued at the test's own 0.5 s
     bound and would never resolve while the pool stays exhausted.
@@ -144,13 +144,13 @@ async def test_mark_cancelled_pool_acquire_must_be_bounded() -> None:
         # TimeoutError is the system's DESIGNED failure mode
         # (worker/_handlers.py's _TERMINAL_WRITE_INFRA_EXCEPTIONS
         # anticipates "timeout acquiring a pool connection") and passes;
-        # only a wait that outlived the margin — nothing internal ended
-        # it — violates the contract.
+        # only a wait that outlived the margin - nothing internal ended
+        # it - violates the contract.
         elapsed = time.monotonic() - started
         if elapsed >= _UNBOUNDED_MARGIN_S:
             pytest.fail(
                 "Contract: terminal-write pool acquires must be bounded (or routed off "
-                "the heartbeat pool) — a starved pool must fail the write within a bound. "
+                "the heartbeat pool) - a starved pool must fail the write within a bound. "
                 "Today backend/_terminal.py's _mark_cancelled acquires with "
                 "`async with pool.acquire() as conn:` (no timeout=), routed to the "
                 "heartbeat pool by backend/postgres.py's mark_cancelled, so the "
@@ -164,17 +164,17 @@ async def test_cancel_storm_starves_heartbeat_loop_into_isolate_self(
 ) -> None:
     """PIN of today's starvation spiral: heartbeat_pool_size gated cancel
     writes starve the heartbeat loop's bounded acquire past the failure
-    threshold into isolate_self — worker self-shutdown.
+    threshold into isolate_self - worker self-shutdown.
 
     Contract this pin motivates (the RED twin above asserts it):
     terminal writes routed to the heartbeat pool with unbounded acquires
-    (backend/_terminal.py — no timeout on pool.acquire) let a cancel storm
+    (backend/_terminal.py - no timeout on pool.acquire) let a cancel storm
     of heartbeat_pool_size (default 4, settings.py) writes hold the whole
     pool; the heartbeat loop's own acquire is bounded
-    (worker/heartbeat.py — acquire(timeout=interval)) and its TimeoutError
+    (worker/heartbeat.py - acquire(timeout=interval)) and its TimeoutError
     is transient (worker/_transient.py), so failures escalate
-    (worker/heartbeat.py) to isolate_self — self-shutdown while merely
-    cancelling jobs. The storm's own writes never resolved either — both
+    (worker/heartbeat.py) to isolate_self - self-shutdown while merely
+    cancelling jobs. The storm's own writes never resolved either - both
     the writers and the liveness loop wedge on the same pool. A fix that
     bounds terminal acquires (or routes them off the heartbeat pool) must
     make this spiral unreachable.
@@ -210,20 +210,20 @@ async def test_cancel_storm_starves_heartbeat_loop_into_isolate_self(
         assert all(task.done() for task in storm), (
             "Contract (the landed bounded terminal acquire): every storm "
             "write resolves within its acquire bound instead of queueing "
-            "forever on the starved pool — a still-pending cancel write "
+            "forever on the starved pool - a still-pending cancel write "
             "here means an unbounded terminal acquire regressed "
             "(backend/_terminal.py: pool.acquire(timeout=...))"
         )
         assert isolate_calls, (
             "Contract: the starved heartbeat loop must have escalated to isolate_self "
             f"(failures={deps.heartbeat_failures}, "
-            f"max={deps.settings.max_heartbeat_failures}) — today's spiral: cancel "
+            f"max={deps.settings.max_heartbeat_failures}) - today's spiral: cancel "
             "storm holds the heartbeat pool, the loop's bounded acquire times out, "
             "TimeoutError counts transient (worker/_transient.py), failures cross "
             "max_heartbeat_failures, isolate_self shuts the worker down"
         )
         assert shutdown.is_set(), (
-            "Contract: isolate_self must signal worker shutdown — the spiral's endpoint"
+            "Contract: isolate_self must signal worker shutdown - the spiral's endpoint"
         )
         assert deps.heartbeat_failures > deps.settings.max_heartbeat_failures, (
             "Contract: the escalation must fire past the failure threshold "

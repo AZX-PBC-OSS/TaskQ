@@ -1,4 +1,4 @@
-"""Tests for ActorsClient — the pool-wrapping facade over actor_config_ops.
+"""Tests for ActorsClient - the pool-wrapping facade over actor_config_ops.
 
 These tests use a fake pool to verify the delegation wiring without
 requiring real Postgres (the ops functions themselves are integration-tested
@@ -20,7 +20,7 @@ pytestmark = [pytest.mark.asyncio]
 
 
 class _FakeConn:
-    """Fake connection — just needs to be passable to the ops functions."""
+    """Fake connection - just needs to be passable to the ops functions."""
 
 
 class _FakePool:
@@ -151,7 +151,7 @@ async def test_actors_client_set_capacity_delegates(monkeypatch: pytest.MonkeyPa
 
 
 async def test_actors_client_deregister_propagates_errors(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Exceptions from the ops function must propagate through the pool-wrapper —
+    """Exceptions from the ops function must propagate through the pool-wrapper -
     not be silently swallowed. This is a lifecycle concern, not a delegation one."""
     from taskq.client._actors import ActorsClient
 

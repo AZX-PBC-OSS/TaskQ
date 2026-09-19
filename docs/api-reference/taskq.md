@@ -17,7 +17,7 @@ from taskq.di import ProviderRegistry, Scope
 
 `taskq.cron` is both a submodule (`src/taskq/cron.py`) and, via `from taskq.cron import
 cron`, the name of a re-exported function on the `taskq` package. This name collision means
-the `cron()` function does not render under the `::: taskq` package-level directive above —
+the `cron()` function does not render under the `::: taskq` package-level directive above
 mkdocstrings resolves `taskq.cron` to the submodule. The explicit directive below documents
 the function itself; see the [Cron Scheduling guide](../guides/cron.md) for usage.
 

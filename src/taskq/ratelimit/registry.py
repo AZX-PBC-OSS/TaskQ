@@ -17,7 +17,7 @@ primitive from the job payload on first acquisition; registry growth from
 high key cardinality is bounded by the per-worker sweep eviction methods.
 
 Every worker's 30-second sweep calls ``evict_idle_keyed_reservations`` /
-``evict_idle_keyed_rate_limits`` against that worker's OWN registry —
+``evict_idle_keyed_rate_limits`` against that worker's OWN registry ,
 eviction is process-local bookkeeping and deliberately NOT leader-gated
 (a non-leader's registry would otherwise receive no periodic eviction),
 so it always runs in any topology that is capable of materializing keyed
@@ -28,7 +28,7 @@ every 30 seconds).  This is not a silent-forever-leak bug.
 As a defence-in-depth measure, the acquisition path
 (``_resolve_reservation_name`` / ``_resolve_rate_limit_name``) also
 performs an *opportunistic* eviction when the keyed-entry cap would
-otherwise be hit — so reclaiming idle capacity never depends solely on
+otherwise be hit, so reclaiming idle capacity never depends solely on
 sweep timing.  The opportunistic scan is amortized to at most one per
 ``_OPPORTUNISTIC_EVICT_MIN_INTERVAL`` (30 s), so a registry at cap under
 sustained denials stays O(1) per request instead of rescanning the whole
@@ -37,11 +37,11 @@ reclaimed within the sweep's own 30-second SLA.  A cap hit after
 opportunistic eviction is a genuine sustained-high-cardinality denial,
 not an artefact of when the sweep last ran.  Both eviction call sites
 (the per-worker sweep and the opportunistic path) record evicted buckets
-for row reclamation — reservation buckets' ``reservation_slots`` rows
+for row reclamation, reservation buckets' ``reservation_slots`` rows
 under ``WorkerSettings.max_keyed_reservations``, rate-limit buckets'
 published ``rate_limit_buckets`` rows (the schema captured at publish
 time) under ``WorkerSettings.max_keyed_rate_limits`` on the
-opportunistic path and the shared constant ceiling on the sweep path —
+opportunistic path and the shared constant ceiling on the sweep path ,
 so each pending-reclaim set is bounded by a configured ceiling
 whichever path evicts.
 
@@ -51,7 +51,7 @@ Over-acquisition window on rollback failure:
   (the ``EXPIRE`` TTL).
 - SlidingWindow (Redis): ``2 * window_ms + 60_000`` ms (the ``PEXPIRE`` TTL
   ).
-- ConcurrencyReservation (PG): ``lease_duration`` — reclaimed by sweep 4
+- ConcurrencyReservation (PG): ``lease_duration``, reclaimed by sweep 4
   within 30 seconds at most.
 """
 
@@ -66,7 +66,7 @@ import structlog
 from pydantic import BaseModel, ValidationError
 
 from taskq._validation import CURRENT_PAYLOAD_SCHEMA_VER
-from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the eviction drain and the fleet sweep must agree exactly on which rows still hold consumed quota — one predicate, no second hand-maintained copy.
+from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the eviction drain and the fleet sweep must agree exactly on which rows still hold consumed quota, one predicate, no second hand-maintained copy.
     _no_consumed_quota_sql,
 )
 from taskq.constants import (
@@ -142,7 +142,7 @@ _OPPORTUNISTIC_EVICT_MIN_INTERVAL = timedelta(seconds=30)
 
 The scan itself is O(number of tracked keyed entries). Without a gate, a
 registry sitting at its keyed-entry cap under sustained denials would pay
-that O(n) scan on EVERY denied acquisition — at the default 10k-entry cap
+that O(n) scan on EVERY denied acquisition, at the default 10k-entry cap
 and 1k denials/sec that is ~10M dict entries scanned per second on the
 hottest path in the system, reclaiming nothing. Entries only become
 evictable as wall-clock time passes (idle ≥ ``_KEYED_IDLE_THRESHOLD``),
@@ -160,7 +160,7 @@ _KEYED_RECLAIM_HEAL_WINDOW = timedelta(seconds=60)
 A keyed bucket whose ``reservation_slots`` rows were deleted by a
 sibling worker's pending-reclaim drain keeps denying acquisitions until
 it is re-materialised (the registered-bucket-with-zero-rows trap). The
-heal on the denial path re-materialises it — but a genuinely BUSY bucket
+heal on the denial path re-materialises it, but a genuinely BUSY bucket
 denies constantly, and probing it on every denial would add one PG round
 trip per denied acquisition on the hottest path. The window bounds that
 cost: at most one heal probe per contended keyed bucket per window per
@@ -174,7 +174,7 @@ The drain runs on the sweep cadence; each statement's write set is
 bounded by this slice x each bucket's configured slot count, keeping one
 drain tick a constant-size statement against any evicted-key backlog. At
 the default 256-name slice and 30 s sweep interval this drains 512
-names/min — if the eviction rate ever exceeds that, pending fills to its
+names/min, if the eviction rate ever exceeds that, pending fills to its
 cap and evictions are vetoed (the fail-closed bound) until the drain
 catches up. The lever for a faster drain is this batch size, not the
 sweep cadence.
@@ -199,7 +199,7 @@ def _ref_display(ref: "str | KeyedRateLimitRef | KeyedReservationRef") -> str:
     """Log-safe display string for a rate-limit / reservation ref.
 
     Refs are pydantic ``BaseModel``s, which orjson (the structlog JSON
-    serializer used in production) cannot serialize — passing a ref
+    serializer used in production) cannot serialize, passing a ref
     instance as a log kwarg raises ``TypeError`` inside the logging
     handler and the event is silently dropped. Plain names pass through
     unchanged; refs render as ``ClassName(base_name)``.
@@ -220,7 +220,7 @@ def _same_config(
     comparison), so two distinct instances built from the same config
     (e.g. a module re-imported under ``importlib.reload``, or a config
     reconstructed on worker restart) would never compare equal via
-    ``==``.  Compares only the public, immutable config surface —  not
+    ``==``.  Compares only the public, immutable config surface,  not
     internal state such as cached Lua scripts or the in-memory bucket.
     """
     if isinstance(a, TokenBucket) and isinstance(b, TokenBucket):
@@ -251,7 +251,7 @@ def _preserves_fixed_quota_state(prim: TokenBucket | SlidingWindow) -> bool:
     """Eviction-exemption predicate for keyed rate limits.
 
     Exempts a fixed-quota TokenBucket whose state an eviction cycle would
-    discard (see :meth:`TokenBucket.holds_consumed_quota`) — whether that
+    discard (see :meth:`TokenBucket.holds_consumed_quota`), whether that
     state lives on the instance or in the row the reclaim drain deletes,
     losing it hands back a budget the tenant already spent.
     """
@@ -263,7 +263,7 @@ class RateLimitRegistry:
 
     Stores two separate dicts: ``_rate_limits`` for ``TokenBucket`` /
     ``SlidingWindow`` and ``_reservations`` for ``ConcurrencyReservation``.
-    Cross-dict name collision is allowed — they live in separate namespaces.
+    Cross-dict name collision is allowed, they live in separate namespaces.
 
     **Ownership.** A registry is an ordinary ownable object: construct one
     per process and pass it to ``worker_main(..., rate_limit_registry=...)``
@@ -272,7 +272,7 @@ class RateLimitRegistry:
     Actor-declared primitive instances are registered by the worker
     bootstrap's collection pass; use explicit ``.register()`` for
     primitives shared outside actor dispatch. :meth:`clear` resets all
-    state and is a test aid only — NOT safe while a worker is running.
+    state and is a test aid only, NOT safe while a worker is running.
     """
 
     def __init__(self) -> None:
@@ -280,18 +280,18 @@ class RateLimitRegistry:
         self._reservations: dict[str, ConcurrencyReservation] = {}
         # Names of reservations materialized from a KeyedReservationRef
         # (as opposed to a static @actor(reservations=["name"]) entry),
-        # and the monotonic time each was last acquired — used only by
+        # and the monotonic time each was last acquired, used only by
         # evict_idle_keyed_reservations() to bound registry growth under
         # high key cardinality. Never consulted by acquire_for_actor.
         self._keyed_reservation_last_used: dict[str, float] = {}
         # Names of rate limits materialized from a KeyedRateLimitRef
         # (as opposed to a static @actor(rate_limits=["name"]) entry),
-        # and the monotonic time each was last acquired — used only by
+        # and the monotonic time each was last acquired, used only by
         # evict_idle_keyed_rate_limits() to bound registry growth under
         # high key cardinality. Never consulted by acquire_for_actor.
         self._keyed_rate_limit_last_used: dict[str, float] = {}
         # Schema of the rate_limit_buckets row each keyed rate limit
-        # published, captured at publish time — a TokenBucket carries no
+        # published, captured at publish time, a TokenBucket carries no
         # schema of its own (unlike ConcurrencyReservation), so this is
         # the only record of where the row landed. Read by
         # evict_idle_keyed_rate_limits() to record the bucket's row for
@@ -315,7 +315,7 @@ class RateLimitRegistry:
         # drain_pending_reservation_reclaims() deletes.
         self._pending_reservation_reclaims: dict[str, dict[str, None]] = {}
         # Evicted keyed rate-limit bucket names whose published
-        # rate_limit_buckets rows are still to be deleted — the
+        # rate_limit_buckets rows are still to be deleted, the
         # rate-limit twin of _pending_reservation_reclaims: same
         # insertion-ordered per-schema sets, same cap-vetoed recording,
         # same drain (which deletes the front slice per schema; a bucket
@@ -324,7 +324,7 @@ class RateLimitRegistry:
         # records; drain_pending_reservation_reclaims() deletes.
         self._pending_rate_limit_reclaims: dict[str, dict[str, None]] = {}
         # Monotonic time of the last acquire-path heal attempt per keyed
-        # reservation name — gates the existence probe in the
+        # reservation name, gates the existence probe in the
         # ReservationUnavailable heal to one attempt per
         # _KEYED_RECLAIM_HEAL_WINDOW per bucket. Rides the keyed
         # registration's lifecycle: discarded on re-registration, pruned
@@ -344,7 +344,7 @@ class RateLimitRegistry:
         # denials (see the constant's docstring). -inf so the first cap-hit
         # after startup always scans. evict_idle_keyed_*() are synchronous
         # with no await points, so check-and-stamp is atomic within the
-        # event loop — concurrent scanners cannot pile up.
+        # event loop, concurrent scanners cannot pile up.
         self._keyed_reservation_last_eviction_scan: float = float("-inf")
         self._keyed_rate_limit_last_eviction_scan: float = float("-inf")
 
@@ -368,7 +368,7 @@ class RateLimitRegistry:
     def has_pending_reservation_reclaims(self) -> bool:
         """Whether any evicted keyed bucket still awaits its row deletion.
 
-        Covers both pending sets — reservation slot rows and published
+        Covers both pending sets, reservation slot rows and published
         rate-limit bucket rows. The sweep loop uses this single gate to
         skip the drain entirely (no connection acquired) when there is
         nothing to reclaim, so a pending set the gate cannot see would
@@ -388,7 +388,7 @@ class RateLimitRegistry:
         """O(1) membership test against the live reservations dict.
 
         Unlike the :attr:`reservations` property this does NOT defensively
-        copy the dict — use it on per-job hot paths (e.g. the dispatch
+        copy the dict, use it on per-job hot paths (e.g. the dispatch
         queue-cap check), where copying the whole registry per call is
         prohibitive at high keyed-entry cardinality.
         """
@@ -397,7 +397,7 @@ class RateLimitRegistry:
     def has_rate_limit(self, name: str) -> bool:
         """O(1) membership test against the live rate-limits dict.
 
-        See :meth:`has_reservation` — the same no-copy guarantee applies.
+        See :meth:`has_reservation`, the same no-copy guarantee applies.
         """
         return name in self._rate_limits
 
@@ -408,7 +408,7 @@ class RateLimitRegistry:
         if primitive.name.startswith(QUEUE_CONCURRENCY_PREFIX):
             raise ValueError(
                 f"name {primitive.name!r} starts with the reserved prefix "
-                f"{QUEUE_CONCURRENCY_PREFIX!r} — internal queue-cap reservations "
+                f"{QUEUE_CONCURRENCY_PREFIX!r}, internal queue-cap reservations "
                 f"must be registered via register_queue_cap_reservation()"
             )
         if isinstance(primitive, ConcurrencyReservation):
@@ -427,7 +427,7 @@ class RateLimitRegistry:
                 return
             raise ValueError(
                 f"rate-limit name already registered with a different config: "
-                f"{name!r} — existing={existing!r}, new={primitive!r}"
+                f"{name!r}, existing={existing!r}, new={primitive!r}"
             )
         self._rate_limits[name] = primitive
         logger.debug(
@@ -459,7 +459,7 @@ class RateLimitRegistry:
                 return
             raise ValueError(
                 f"reservation name already registered with a different config: "
-                f"{name!r} — existing={existing!r}, new={primitive!r}"
+                f"{name!r}, existing={existing!r}, new={primitive!r}"
             )
         self._reservations[name] = primitive
         logger.debug(
@@ -513,7 +513,7 @@ class RateLimitRegistry:
     ) -> AsyncGenerator[RateLimitDecision, None]:
         if name in self._reservations:
             raise TypeError(
-                f"name {name!r} is a ConcurrencyReservation — "
+                f"name {name!r} is a ConcurrencyReservation, "
                 f"registry.acquire() is only for rate limits; "
                 f"reservation acquisition requires a job_id"
             )
@@ -557,12 +557,12 @@ class RateLimitRegistry:
         The error deliberately does NOT embed the payload (or its
         ``model_dump()``): this ``ValueError`` propagates into the
         persisted ``error_message`` (job row / web admin) via generic
-        exception handling, and payload values are attacker-controlled —
+        exception handling, and payload values are attacker-controlled ,
         the same sanitization contract ``PayloadValidationError`` follows
         in :mod:`taskq._validation`.
 
         ``isinstance`` (not an exact-type check) accepts ``str``
-        subclasses — a ``class Tenant(str, Enum)`` member or a domain
+        subclasses, a ``class Tenant(str, Enum)`` member or a domain
         wrapper deriving from ``str`` is a natural ``key_fn`` return value
         and behaves identically to a plain ``str`` for namespacing, Redis
         keys, and dict lookups.
@@ -610,31 +610,31 @@ class RateLimitRegistry:
     ) -> BaseModel:
         """Convert payload to a validated BaseModel for key_fn.
 
-        Three cases:
-        - Same type (isinstance check): zero-cost pass-through
-        - Different BaseModel type: re-validate via
-          ``ref.payload_type.model_validate(payload.model_dump(by_alias=True))``
-        - Raw dict: validate via ``ref.payload_type.model_validate(dict)``
+         Three cases:
+         - Same type (isinstance check): zero-cost pass-through
+         - Different BaseModel type: re-validate via
+           ``ref.payload_type.model_validate(payload.model_dump(by_alias=True))``
+         - Raw dict: validate via ``ref.payload_type.model_validate(dict)``
 
-        Why the different-type case is a dump→validate round-trip rather
-        than a cheap copy: this is type CONVERSION, not duplication —
-        ``model_copy`` cannot change the model type, so one full validation
-        against ``ref.payload_type`` is load-bearing here (pinned by
-        ``test_resolve_keyed_ref_wrong_model_type_raises_validation_error``).
-        ``by_alias=True`` keeps the dumped keys matching what the source
-        model publishes; ``from_attributes`` would read attribute names
-        instead and silently diverge for alias-carrying payload models.
-        The common per-acquire case pays none of this cost: the worker
-        hands ``acquire_for_actor`` an already-validated model of the
-        actor's payload type, and when that matches ``ref.payload_type``
-        the isinstance guard above passes the object through by identity —
-        no dump, no validate. No per-call ``TypeAdapter`` is constructed on
-        any path: ``BaseModel.model_validate`` reuses the core validator
-        cached on the model class.
+         Why the different-type case is a dump→validate round-trip rather
+         than a cheap copy: this is type CONVERSION, not duplication ,
+         ``model_copy`` cannot change the model type, so one full validation
+         against ``ref.payload_type`` is essential here (pinned by
+         ``test_resolve_keyed_ref_wrong_model_type_raises_validation_error``).
+         ``by_alias=True`` keeps the dumped keys matching what the source
+         model publishes; ``from_attributes`` would read attribute names
+         instead and silently diverge for alias-carrying payload models.
+         The common per-acquire case pays none of this cost: the worker
+         hands ``acquire_for_actor`` an already-validated model of the
+         actor's payload type, and when that matches ``ref.payload_type``
+         the isinstance guard above passes the object through by identity ,
+         no dump, no validate. No per-call ``TypeAdapter`` is constructed on
+         any path: ``BaseModel.model_validate`` reuses the core validator
+         cached on the model class.
 
-        A ValidationError from conversion is re-raised as
-        :class:`~taskq.exceptions.PayloadValidationError` (non-retryable)
-        — it is a payload error, not a limiter fault.
+         A ValidationError from conversion is re-raised as
+         :class:`~taskq.exceptions.PayloadValidationError` (non-retryable)
+        , it is a payload error, not a limiter fault.
         """
         if isinstance(payload, ref.payload_type):
             return payload
@@ -647,7 +647,7 @@ class RateLimitRegistry:
             raise PayloadValidationError(
                 f"Payload validation failed for {type(ref).__name__}(base_name={ref.base_name!r}): "
                 f"payload_type={ref.payload_type.__name__}, received={type(payload).__name__}. {exc.title}",
-                # No job row exists on this path — the version in scope is
+                # No job row exists on this path, the version in scope is
                 # the one ``ref.payload_type`` is being validated against,
                 # i.e. the schema version the system writes today.
                 payload_schema_ver=str(CURRENT_PAYLOAD_SCHEMA_VER),
@@ -668,27 +668,27 @@ class RateLimitRegistry:
         :meth:`register`). A :class:`KeyedReservationRef` derives
         ``f"{ref.base_name}:{key}"`` by calling ``ref.key_fn(validated_model)``
         and lazily registers a matching :class:`ConcurrencyReservation` on
-        first use — subsequent calls for the same key reuse it. Two reuse
+        first use, subsequent calls for the same key reuse it. Two reuse
         cases are distinguished:
 
         - **Keyed-materialized entry** (tracked in
           ``_keyed_reservation_last_used``): recency is refreshed, and the
           existing entry's ``slots``/``lease`` are checked against the
-          ref's — a mismatch means two refs collided on the same concrete
+          ref's, a mismatch means two refs collided on the same concrete
           name with different configs (one ref's ``base_name`` is a prefix
           of the other's concrete name, since ``:`` is an allowed key
           character), which raises ``ValueError`` rather than silently
           over- or under-admitting relative to one ref's declared config.
           The guard covers live tracked entries only: if the colliding
           entry was idle-evicted in between, the second ref re-materializes
-          its own config without error — eviction resets the guard.
+          its own config without error, eviction resets the guard.
         - **Statically pre-registered entry** (not tracked): reused as-is,
           and deliberately NOT stamped into ``_keyed_reservation_last_used``
           so the idle-eviction sweep can never evict a user's static entry.
 
         The ``key_fn`` return value is validated: it must be non-empty, at
         most ``_MAX_KEYED_KEY_LEN`` characters, and match
-        ``_KEYED_KEY_RE`` (alphanumeric plus ``_ - : .``) — this
+        ``_KEYED_KEY_RE`` (alphanumeric plus ``_ - : .``), this
         prevents control characters in PG text columns and bounds storage
         growth from attacker-controlled keys. When ``settings`` is provided
         and the number of tracked keyed reservations reaches
@@ -696,10 +696,10 @@ class RateLimitRegistry:
         :class:`~taskq.exceptions.ReservationUnavailable`.
 
         Capacity is normally reclaimed by each worker's own 30-second
-        sweep (``evict_idle_keyed_reservations`` — per-worker, not
+        sweep (``evict_idle_keyed_reservations``, per-worker, not
         leader-gated).  However, an acquisition that
         would otherwise be denied purely because idle entries haven't been
-        swept yet gets one *opportunistic* eviction attempt first — so
+        swept yet gets one *opportunistic* eviction attempt first, so
         hitting the cap is never purely an artefact of sweep timing, only a
         genuine sustained-high-cardinality condition.  Only if the cap is
         still exceeded after the opportunistic eviction does the method
@@ -717,7 +717,7 @@ class RateLimitRegistry:
         freshly-registered keyed reservation has no such startup hook, so
         :meth:`~ConcurrencyReservation.ensure_slots` is called here,
         immediately after registration, before the name is ever handed to
-        ``acquire()`` — otherwise every acquisition would fail with
+        ``acquire()``, otherwise every acquisition would fail with
         ``ReservationUnavailable`` against an empty slot table. The
         ``_keyed_reservation_last_used`` entry is stamped *before* the
         ``ensure_slots`` await so that a concurrent
@@ -737,7 +737,7 @@ class RateLimitRegistry:
         key = self._derive_keyed_key(ref, payload, empty_key_msg="an empty key or non-string value")
         concrete_name = f"{ref.base_name}:{key}"
         # The cap bounds keyed-materialized GROWTH. It must not fire when
-        # the concrete name already exists — neither for a tracked keyed
+        # the concrete name already exists, neither for a tracked keyed
         # entry (recency refresh grows nothing) nor for a statically
         # pre-registered entry (reused as-is, never tracked, grows nothing).
         if (
@@ -762,8 +762,8 @@ class RateLimitRegistry:
         if concrete_name not in self._reservations:
             # A PG-backed materialization needs the schema the slot rows
             # live in, and settings is its only source. Falling back to the
-            # ConcurrencyReservation default ("taskq") here — as this path
-            # once did — silently targets a schema the caller never
+            # ConcurrencyReservation default ("taskq") here, as this path
+            # once did, silently targets a schema the caller never
             # configured: slot rows land in whatever "taskq".reservation_
             # slots exists in that database. The in-memory path (no pool)
             # stays settings-free: its slot table is process-local and the
@@ -784,7 +784,7 @@ class RateLimitRegistry:
                 # bucket's rows carry their own staleness (keyed +
                 # last_used_at, stamped by the reservation's own
                 # acquire/release/ensure statements), so the maintenance
-                # leader can reclaim them after this process dies — the
+                # leader can reclaim them after this process dies, the
                 # in-process bookkeeping below cannot survive that.
                 keyed=True,
             )
@@ -805,7 +805,7 @@ class RateLimitRegistry:
                     await new_reservation.ensure_slots(pg_pool)
                 except Exception:
                     # Unwind the materialization: leaving the entry
-                    # registered would poison this key permanently — the
+                    # registered would poison this key permanently, the
                     # reuse branch below would skip ensure_slots forever,
                     # acquire() would find no slot rows and keep denying,
                     # and each attempt would re-stamp recency so the entry
@@ -825,21 +825,21 @@ class RateLimitRegistry:
             # can be a prefix of another's concrete name since ':' is an
             # allowed key character). Silently reusing the existing entry
             # would over- or under-admit relative to the colliding ref's
-            # declared config — fail loudly instead.
+            # declared config, fail loudly instead.
             existing = self._reservations[concrete_name]
             if existing.slots != ref.slots or existing.lease != ref.lease:
                 raise ValueError(
                     f"KeyedReservationRef(base_name={ref.base_name!r}) resolved to "
                     f"{concrete_name!r}, which is already materialized with a different "
                     f"config (existing slots={existing.slots}, lease={existing.lease}; "
-                    f"ref declares slots={ref.slots}, lease={ref.lease}) — concrete-name "
+                    f"ref declares slots={ref.slots}, lease={ref.lease}), concrete-name "
                     f"collision between keyed refs; choose distinct base_names "
                     f"(':' in keys can make one ref's base_name a prefix of another's "
                     f"concrete name)"
                 )
             self._keyed_reservation_last_used[concrete_name] = monotonic()
         # else: the concrete name was STATICALLY pre-registered (not keyed-
-        # materialized) — reuse it as-is and never stamp the tracking dict,
+        # materialized), reuse it as-is and never stamp the tracking dict,
         # so the sweep can never evict a user's static entry.
         return concrete_name
 
@@ -857,11 +857,11 @@ class RateLimitRegistry:
         ``str`` is returned as-is (must already be registered via
         :meth:`register`). A :class:`KeyedRateLimitRef` derives
         ``f"{ref.base_name}:{key}"`` by calling ``ref.key_fn(validated_model)``
-        and lazily registers a matching :class:`TokenBucket` on first use —
+        and lazily registers a matching :class:`TokenBucket` on first use ,
         subsequent calls for the same key reuse it. As in
         :meth:`_resolve_reservation_name`, two reuse cases are
         distinguished: a keyed-materialized (tracked) entry has its
-        recency refreshed and its config checked against the ref's — a
+        recency refreshed and its config checked against the ref's, a
         ``capacity``/``refill_per_second``/``backend`` mismatch means a
         concrete-name collision between refs and raises ``ValueError``;
         a statically pre-registered (untracked) entry is reused as-is and
@@ -873,17 +873,17 @@ class RateLimitRegistry:
         ``_MAX_KEYED_KEY_LEN`` characters, and match
         ``_KEYED_KEY_RE`` (alphanumeric plus ``_ - : .``). A
         ``key_fn`` that returns ``None`` or any non-``str`` value is treated
-        as an invalid key and raises ``ValueError`` — a broken ``key_fn``
+        as an invalid key and raises ``ValueError``, a broken ``key_fn``
         can never silently resolve to a shared/global bucket. When
         ``settings`` is provided and the number of tracked keyed rate
         limits reaches ``settings.max_keyed_rate_limits``, a new key
         raises :class:`~taskq.exceptions.ReservationUnavailable`.
 
         Capacity is normally reclaimed by each worker's own 30-second
-        sweep (``evict_idle_keyed_rate_limits`` — per-worker, not
+        sweep (``evict_idle_keyed_rate_limits``, per-worker, not
         leader-gated).  However, an acquisition that
         would otherwise be denied purely because idle entries haven't been
-        swept yet gets one *opportunistic* eviction attempt first — so
+        swept yet gets one *opportunistic* eviction attempt first, so
         hitting the cap is never purely an artefact of sweep timing, only a
         genuine sustained-high-cardinality condition.  Only if the cap is
         still exceeded after the opportunistic eviction does the method
@@ -893,7 +893,7 @@ class RateLimitRegistry:
         stay O(1) on this hot path (see
         :meth:`_opportunistic_evict_rate_limits`).
 
-        Unlike reservations there is no PG slot pre-allocation step — a
+        Unlike reservations there is no PG slot pre-allocation step, a
         :class:`TokenBucket` is immediately usable after ``register()``
         (there is no ``ensure_slots`` equivalent). Note that when the
         underlying ``TokenBucket`` uses the Redis backend, per-key Redis
@@ -905,7 +905,7 @@ class RateLimitRegistry:
         On materialization with a ``pg_pool`` available, the new bucket is
         also published to the ``rate_limit_buckets`` table (best-effort,
         idempotent) so the admin UI can surface keyed buckets discovered
-        after worker startup — see the inline note at the publish site.
+        after worker startup, see the inline note at the publish site.
         """
         if isinstance(ref, str):
             return ref
@@ -918,7 +918,7 @@ class RateLimitRegistry:
         key = self._derive_keyed_key(ref, payload)
         concrete_name = f"{ref.base_name}:{key}"
         # The cap bounds keyed-materialized GROWTH. It must not fire when
-        # the concrete name already exists — neither for a tracked keyed
+        # the concrete name already exists, neither for a tracked keyed
         # entry (recency refresh grows nothing) nor for a statically
         # pre-registered entry (reused as-is, never tracked, grows nothing).
         if (
@@ -952,7 +952,7 @@ class RateLimitRegistry:
                 # rate_limit_buckets row, so only there is the row's
                 # last_used_at a truthful liveness signal. A
                 # redis-backend keyed bucket's PG row (admin metadata +
-                # outage-fallback state) must never be swept — its
+                # outage-fallback state) must never be swept, its
                 # stamp cannot speak for Redis-side use.
                 keyed=ref.backend == "postgres",
             )
@@ -963,12 +963,12 @@ class RateLimitRegistry:
             # topology: statically registered buckets are published at
             # worker startup by sync_rate_limit_buckets, but a keyed bucket
             # materialized long after startup would otherwise be invisible
-            # to a standalone admin process — whose registry singleton
-            # never dispatches jobs — making an active per-tenant throttle
+            # to a standalone admin process, whose registry singleton
+            # never dispatches jobs, making an active per-tenant throttle
             # look like "no limiter configured". Unlike ensure_slots for
             # keyed reservations (a correctness precondition for acquire),
             # this row is observability metadata, so a publish failure
-            # must NOT fail the acquisition — warn and continue.
+            # must NOT fail the acquisition, warn and continue.
             if pg_pool is not None:
                 try:
                     await _upsert_rate_limit_bucket_row(
@@ -989,7 +989,7 @@ class RateLimitRegistry:
                 # publish: the acquire path preseeds one for
                 # backend="postgres" (and for the redis backend's PG
                 # fallback) whatever the publish did, so keying the
-                # capture on publish success orphans that row — its idle
+                # capture on publish success orphans that row, its idle
                 # eviction records nothing (the pending-reclaim set is the
                 # only code path that can name it) and steady state is one
                 # row per key whose first publish failed, unbounded in the
@@ -1020,7 +1020,7 @@ class RateLimitRegistry:
                     f"{concrete_name!r}, which is already materialized with a different "
                     f"config (existing {existing_config}; ref declares "
                     f"capacity={ref.capacity}, refill_per_second={ref.refill_per_second}, "
-                    f"backend={ref.backend}) — concrete-name collision between keyed "
+                    f"backend={ref.backend}), concrete-name collision between keyed "
                     f"refs; choose distinct base_names "
                     f"(':' in keys can make one ref's base_name a prefix of another's "
                     f"concrete name)"
@@ -1032,7 +1032,7 @@ class RateLimitRegistry:
                 # publish, so the admin-UI row is missing AND the reclaim
                 # capture is missing. Publish now (the same idempotent,
                 # best-effort statement the materialisation arm uses) and
-                # capture whatever the publish's outcome — the acquire
+                # capture whatever the publish's outcome, the acquire
                 # path can preseed the row regardless (see the capture
                 # comment above). Self-limiting: once captured, this arm
                 # is a dict membership check on the reuse hot path and
@@ -1054,7 +1054,7 @@ class RateLimitRegistry:
                     )
                 self._keyed_rate_limit_row_schemas[concrete_name] = schema
         # else: the concrete name was STATICALLY pre-registered (not keyed-
-        # materialized) — reuse it as-is and never stamp the tracking dict,
+        # materialized), reuse it as-is and never stamp the tracking dict,
         # so the sweep can never evict a user's static entry.
         return concrete_name
 
@@ -1075,10 +1075,10 @@ class RateLimitRegistry:
 
         ``reservations`` entries may be plain names (resolved against
         statically pre-registered primitives), :class:`KeyedReservationRef`
-        instances (resolved dynamically per job from ``payload`` — see
+        instances (resolved dynamically per job from ``payload``, see
         :meth:`_resolve_reservation_name`), or
         :class:`ConcurrencyReservation` instances (normalized to their
-        ``.name`` up front — the instance must already be registered,
+        ``.name`` up front, the instance must already be registered,
         e.g. by the worker bootstrap's actor-declaration collection
         pass; an unregistered instance raises ``KeyError`` exactly like
         an unknown name). ``rate_limits`` entries may likewise be plain
@@ -1091,11 +1091,11 @@ class RateLimitRegistry:
         via ``model_dump()`` → ``model_validate()``).
 
         Returns the list of ``AcquiredResource`` handles on full success.
-        Raises ``ReservationUnavailable`` on any denial — rollback is performed
+        Raises ``ReservationUnavailable`` on any denial, rollback is performed
         internally before re-raising (already-acquired resources released in
         reverse order, each failure logged at ERROR).
         """
-        # Normalize primitive instances to their names BEFORE any use —
+        # Normalize primitive instances to their names BEFORE any use ,
         # _ref_display (below) only handles str | keyed refs and would
         # AttributeError on a primitive instance, and every dict lookup
         # and handle construction sees names only. No acquisition-time
@@ -1200,13 +1200,13 @@ class RateLimitRegistry:
             # asyncio.CancelledError derives from BaseException, not
             # Exception, so a cancellation landing mid-composition leaves
             # any already-acquired handles in place. That is an accepted,
-            # bounded, self-healing leak — NOT an oversight: leaked
+            # bounded, self-healing leak, NOT an oversight: leaked
             # reservation slots are reclaimed by lease expiry (the
             # lock-expiry sweep, within ~30s), and consumed rate-limit
             # tokens are bounded by the bucket's Redis EXPIRE TTL. Rolling
             # back here would mean network I/O (handle.release()) while the
-            # task is being torn down — delaying cancellation, with a
-            # second cancel able to interrupt the release itself — which is
+            # task is being torn down, delaying cancellation, with a
+            # second cancel able to interrupt the release itself, which is
             # worse than a leak with an existing reclaim path.
             for handle in reversed(acquired):
                 try:
@@ -1240,10 +1240,10 @@ class RateLimitRegistry:
         Wraps :meth:`ConcurrencyReservation.acquire` for every
         reservation in the composition. On denial, a KEYED-materialized
         bucket gets one gated existence probe (see
-        :meth:`_heal_deleted_keyed_reservation_rows`): zero rows — its
+        :meth:`_heal_deleted_keyed_reservation_rows`): zero rows, its
         ``reservation_slots`` rows were deleted out from under a still-
         registered bucket, the cross-worker trap the reclamation drain
-        creates — re-materialises the rows and retries the acquire
+        creates, re-materialises the rows and retries the acquire
         exactly once. Every other denial re-raises unchanged: static
         reservations never reach the probe, and the busy case (rows
         present, all held) is ordinary contention.
@@ -1264,7 +1264,7 @@ class RateLimitRegistry:
 
         Returns True when the heal re-materialised the rows and the
         caller should retry the acquire once; False when the denial
-        stands. A heal FAILURE never raises — it is recorded (its own
+        stands. A heal FAILURE never raises, it is recorded (its own
         failure counter, an AVAILABILITY signal distinct from the drain's
         storage counter, plus a window-gated warning) and the original
         ``ReservationUnavailable`` propagates from the caller; a
@@ -1273,31 +1273,31 @@ class RateLimitRegistry:
 
         False (deny) cases, in evaluation order:
 
-        - the bucket is STATIC (untracked) — no keyed lifecycle, no
+        - the bucket is STATIC (untracked), no keyed lifecycle, no
           cross-worker row-deletion hazard, and the hot path pays only
           one dict lookup;
-        - no PG pool — the in-memory backend's acquire already re-ensures
+        - no PG pool, the in-memory backend's acquire already re-ensures
           its rows on every call;
-        - inside ``_KEYED_RECLAIM_HEAL_WINDOW`` of the last attempt — a
+        - inside ``_KEYED_RECLAIM_HEAL_WINDOW`` of the last attempt, a
           genuinely busy bucket denies constantly, and probing it per
           denial would put a PG round trip on the hottest path; the
           window bounds it to one probe per bucket per window. The
           stamp from a BUSY attempt also defers a later zero-rows heal
-          that lands inside the same window — a bounded availability
+          that lands inside the same window, a bounded availability
           blip (the first denial after the window heals) accepted
           deliberately: un-stamping on busy would reintroduce the
           probe-per-denial stampede the window exists to prevent;
-        - the probe found rows — ordinary contention; the window stamp
+        - the probe found rows, ordinary contention; the window stamp
           STANDS (this is the cost the window exists to bound);
-        - the probe or ``ensure_slots`` raised — the stamp is rolled
+        - the probe or ``ensure_slots`` raised, the stamp is rolled
           back so the next denial retries the heal, the failure is
-          counted (every attempt — metrics aggregate), and the denial
+          counted (every attempt, metrics aggregate), and the denial
           propagates. The failure WARNING is gated to one per bucket per
           heal window by its own stamp: a busy bucket with a broken
           probe denies on every acquisition, and a warning line per
           denial is a log flood, not a signal;
         - the probe or ``ensure_slots`` was cancelled (a
-          ``BaseException`` — task teardown, not a heal outcome) — the
+          ``BaseException``, task teardown, not a heal outcome), the
           stamp is rolled back exactly like a failed attempt (the next
           denial probes immediately) and the cancellation propagates
           unchanged.
@@ -1357,7 +1357,7 @@ class RateLimitRegistry:
         """Look up a rate-limit primitive by name and return its current state."""
         if name in self._reservations:
             raise TypeError(
-                f"name {name!r} is a ConcurrencyReservation — "
+                f"name {name!r} is a ConcurrencyReservation, "
                 f"peek() on reservations is not supported via this method"
             )
         if name not in self._rate_limits:
@@ -1391,11 +1391,11 @@ class RateLimitRegistry:
         """Peek all registered rate limits. Returns {name: RateLimitState}.
 
         Each bucket's read is a separate Redis/PG round trip, so a call
-        costs O(buckets) round trips — and the registry can hold up to
+        costs O(buckets) round trips, and the registry can hold up to
         ``max_keyed_rate_limits`` keyed-materialised buckets. *timeout*
         bounds the WHOLE pass: a bucket whose store hangs (a black-holed
         broker answers no read) must not park the caller past it. Raises
-        :class:`TimeoutError` when the bound fires — per-bucket failures
+        :class:`TimeoutError` when the bound fires, per-bucket failures
         are still caught and logged per bucket, but a read that never
         RETURNS is indistinguishable from a dead registry at page-render
         time, so the caller learns of the bound instead of rendering a
@@ -1453,7 +1453,7 @@ class RateLimitRegistry:
         """
         if name in self._reservations:
             raise TypeError(
-                f"name {name!r} is a ConcurrencyReservation — "
+                f"name {name!r} is a ConcurrencyReservation, "
                 f"reset() on reservations is not supported"
             )
         if name not in self._rate_limits:
@@ -1527,7 +1527,7 @@ class RateLimitRegistry:
         request and reclaim nothing (see
         ``_OPPORTUNISTIC_EVICT_MIN_INTERVAL``). Registry ENTRIES are
         still reclaimed within max(sweep cadence, min-interval) of
-        becoming idle — the scan just can't be stampeded; the evicted
+        becoming idle, the scan just can't be stampeded; the evicted
         buckets' ``reservation_slots`` ROWS are reclaimed separately, on
         the sweep cadence, by the pending-reclaim drain. Pending records
         carry the caller's settings-derived cap when settings are in
@@ -1588,14 +1588,14 @@ class RateLimitRegistry:
         with the evicted count, and returns the evicted names.
 
         *preserve*, when given, exempts an entry from eviction when the
-        predicate returns True for its primitive — the entry keeps its
+        predicate returns True for its primitive, the entry keeps its
         tracking timestamp and is re-scanned on the next sweep. Use for
         primitives whose in-instance state eviction would destroy
         irrecoverably (see :meth:`evict_idle_keyed_rate_limits`).
 
         *admit*, when given, is consulted immediately before an entry is
         removed: it records the eviction's downstream work and may veto
-        it by returning False — a vetoed entry keeps its primitive, its
+        it by returning False, a vetoed entry keeps its primitive, its
         tracking timestamp, and is re-scanned on the next sweep (the
         pending-reclaim cap works this way; see
         :meth:`evict_idle_keyed_reservations`). Both the scan and the
@@ -1632,7 +1632,7 @@ class RateLimitRegistry:
         """Drop registry entries for keyed reservations idle at least ``idle_for``.
 
         Reservations derived from a :class:`KeyedReservationRef` are
-        registered lazily and never removed automatically — under high key
+        registered lazily and never removed automatically, under high key
         cardinality (e.g. one reservation per import session over a long
         worker lifetime) this dict grows without bound. Each worker's
         30-second sweep calls this automatically against its own registry
@@ -1644,7 +1644,7 @@ class RateLimitRegistry:
         its ``reservation_slots`` rows are deleted by
         :meth:`drain_pending_reservation_reclaims` on the same sweep
         cadence. The lock-expiry sweep is an ``UPDATE ... SET job_id =
-        NULL`` — it clears a row's holder but never deletes the row, and
+        NULL``, it clears a row's holder but never deletes the row, and
         ``sync_slots`` iterates only currently-registered reservations,
         so without the pending-reclaim drain an evicted bucket's rows
         would be orphaned permanently (steady-state cardinality: slots x
@@ -1654,24 +1654,24 @@ class RateLimitRegistry:
 
         *max_pending_reclaims* caps the pending-reclaim set (default:
         :data:`taskq.constants.DEFAULT_MAX_KEYED_RESERVATIONS`; both
-        production call sites — the per-worker sweep and the acquisition
-        path's opportunistic eviction — pass the settings-derived
+        production call sites, the per-worker sweep and the acquisition
+        path's opportunistic eviction, pass the settings-derived
         ``WorkerSettings.max_keyed_reservations``, so the pending set is
         bounded by the same ceiling that bounds the tracked entries;
         direct callers without a settings object get the constant). At
-        the cap the eviction is VETOED — the entry stays registered and
+        the cap the eviction is VETOED, the entry stays registered and
         re-scanned on the next sweep, so no structure grows unbounded
         and no rows are orphaned by an eviction that could not be
         recorded. The visible signals are the pending-depth gauge
         (``taskq.ratelimit.reclaim_pending``, the steady signal), the
         ``registry-keyed-reclaim-pending-cap-veto`` warning (one
-        aggregated line per eviction call that shed evictions — pending
+        aggregated line per eviction call that shed evictions, pending
         at cap means reclamation is falling behind), and, if the veto
         persists up to the registry's own entry cap, the existing
         ``registry-keyed-reservation-limit-exceeded`` soft-cap warning.
 
         A key that is acquired again after eviction is simply
-        re-registered on next use (idempotent — see
+        re-registered on next use (idempotent, see
         :meth:`_resolve_reservation_name`), and the drain drops its name
         from the pending set without deleting anything (a re-activated
         key owns its rows again), so eviction is always safe to call,
@@ -1727,11 +1727,11 @@ class RateLimitRegistry:
     ) -> bool:
         """Record one evicted keyed bucket for row reclamation, under the cap.
 
-        Shared by both eviction kinds — *pending* is the kind's own
+        Shared by both eviction kinds, *pending* is the kind's own
         per-schema set (``_pending_reservation_reclaims`` for slot rows,
         ``_pending_rate_limit_reclaims`` for published bucket rows), so
         each kind's cap bounds its own set. Returns True (the caller's
-        eviction proceeds) after recording *name* under *schema* — the
+        eviction proceeds) after recording *name* under *schema*, the
         drain's DELETE is a harmless no-op for a bucket that has no rows.
         A name still pending from an earlier eviction wave keeps its
         position (it has not been served a drain pass yet). At the cap,
@@ -1752,7 +1752,7 @@ class RateLimitRegistry:
         """Drop registry entries for keyed rate limits idle at least ``idle_for``.
 
         Rate limits derived from a :class:`KeyedRateLimitRef` are registered
-        lazily and never removed automatically — under high key cardinality
+        lazily and never removed automatically, under high key cardinality
         (e.g. one token bucket per tenant over a long worker lifetime) this
         dict grows without bound. Each worker's 30-second sweep calls this
         automatically against its own registry (not leader-gated) with a
@@ -1762,17 +1762,17 @@ class RateLimitRegistry:
         tracking. The underlying Redis hash is deliberately NOT touched:
         per-key Redis memory is already self-bounding via the Lua script's
         ``EXPIRE`` TTL on the bucket's hash (see
-        :meth:`_resolve_rate_limit_name`) — that TTL governs Redis, not
+        :meth:`_resolve_rate_limit_name`), that TTL governs Redis, not
         the PG ``rate_limit_buckets`` row the materialization path
         publishes, so a bucket resolved with a PG pool has its schema
-        captured at resolution time (publish outcome irrelevant — the
+        captured at resolution time (publish outcome irrelevant, the
         acquire path can preseed the row) and is recorded here for row
         reclamation: :meth:`drain_pending_reservation_reclaims` deletes
         the published row on the same sweep cadence, the exact shape of
         the reservation-side reclamation (steady state without it: one
         ``rate_limit_buckets`` row per key ever seen, unbounded in the
         caller-controlled key space). A key that is acquired again after
-        eviction is simply re-registered on next use (idempotent — see
+        eviction is simply re-registered on next use (idempotent, see
         :meth:`_resolve_rate_limit_name`), and the drain drops its name
         from the pending set without deleting anything (a re-activated
         key owns its row again), so eviction is always safe to call,
@@ -1785,7 +1785,7 @@ class RateLimitRegistry:
         opportunistic eviction passes the settings-derived
         ``WorkerSettings.max_keyed_rate_limits``, so the pending set is
         bounded by the same ceiling that bounds the tracked entries). At
-        the cap the eviction is VETOED — the entry stays registered and
+        the cap the eviction is VETOED, the entry stays registered and
         re-scanned on the next sweep, so no structure grows unbounded
         and no published row is orphaned by an eviction that could not
         be recorded (the same fail-closed bound as the reservation
@@ -1818,7 +1818,7 @@ class RateLimitRegistry:
         preseeds ``ON CONFLICT DO NOTHING`` and reads the surviving state).
         Evicting the registry entry is pure bookkeeping recycling, which is
         what keeps the ``max_keyed_rate_limits`` cap from filling with
-        never-again-used fixed-quota keys and refusing every new key (#244).
+        never-again-used fixed-quota keys and refusing every new key.
 
         Returns the number of entries evicted.
         """
@@ -1833,7 +1833,7 @@ class RateLimitRegistry:
             if schema is None:
                 # Never resolved with a PG pool on this worker: no publish,
                 # no preseed (a pool-less acquire cannot touch PG), so this
-                # registry created no row — nothing to reclaim from it. A
+                # registry created no row, nothing to reclaim from it. A
                 # pool-bearing sibling that resolved the same key holds its
                 # own capture for the concrete name and reclaims the row
                 # through its own eviction+drain.
@@ -1856,7 +1856,7 @@ class RateLimitRegistry:
         # The publish-schema capture rides the registration's lifecycle:
         # an evicted bucket's schema must not survive into a future
         # re-registration of the same concrete name (a vetoed entry keeps
-        # its capture — it is still registered and still owns its row).
+        # its capture, it is still registered and still owns its row).
         for name in evicted:
             self._keyed_rate_limit_row_schemas.pop(name, None)
         update_keyed_reclaim_pending(self._pending_reclaim_total())
@@ -1888,21 +1888,21 @@ class RateLimitRegistry:
         the keyed evictions that feed it; a no-op (no connection
         acquired) when nothing is pending on either side.
 
-        Semantics — what stays pending and why:
+        Semantics, what stays pending and why:
 
         - A name that re-registered since eviction is dropped from its
           pending set WITHOUT a statement: a re-activated key owns its
           rows again.
         - The reservation DELETE removes only free or lease-expired rows
-          — a slot still held by a live lease survives (the
+         , a slot still held by a live lease survives (the
           over-admission invariant). A HELD slot is therefore the only
           reason a reservation name stays pending after its slice ran:
           the existence probe names the buckets whose rows survived the
-          DELETE, and those names rotate to the BACK of the queue — the
+          DELETE, and those names rotate to the BACK of the queue, the
           lease expires, the holder's release or the lock-expiry sweep
           frees the row, and a later drain (at most one full rotation
-          away) deletes it. A name with no rows left — fully deleted
-          this tick, or never materialized at all — leaves the pending
+          away) deletes it. A name with no rows left, fully deleted
+          this tick, or never materialized at all, leaves the pending
           set.
         - The rate-limit DELETE needs no HOLDER guard and no survivor
           probe, a bucket row has no holder or lease, so nothing
@@ -1930,10 +1930,10 @@ class RateLimitRegistry:
         path: duration in a ``finally`` (a timed-out drain still leaves
         a duration sample), deleted rows only as RETURNING-confirmed
         (a timed-out statement cannot masquerade as an empty drain),
-        the drain-failure counter on exception (a STORAGE signal — a
+        the drain-failure counter on exception (a STORAGE signal, a
         failing drain strands rows; the pending-depth gauge shows the
         backlog forming), and the pending-depth gauge after each drain.
-        Raises on failure — callers guard (the sweep loop warns and
+        Raises on failure, callers guard (the sweep loop warns and
         continues on the next tick).
 
         *acquire_timeout* bounds the pool wait, for callers on a loop
@@ -1965,7 +1965,7 @@ class RateLimitRegistry:
                     for name in candidates:
                         if name in self._reservations or name in self._keyed_reservation_last_used:
                             # Re-registered since eviction: the bucket is
-                            # live again and owns its rows — drop the
+                            # live again and owns its rows, drop the
                             # pending entry, touch nothing in PG.
                             pending.pop(name, None)
                         else:
@@ -1988,7 +1988,7 @@ class RateLimitRegistry:
                         )
                     }
                     # Tolerant pops: the DELETE/probe awaits can interleave
-                    # with another drain pass on the same registry — a
+                    # with another drain pass on the same registry, a
                     # missing key means the name was already removed, and
                     # re-removing it must not turn into a spurious drain
                     # failure.
@@ -2010,14 +2010,14 @@ class RateLimitRegistry:
                         )
                         continue
                     # Front batch, same as the reservation pass; with no
-                    # survivors there is nothing to rotate — the names
+                    # survivors there is nothing to rotate, the names
                     # that fit the slice are served in insertion order.
                     candidates = list(pending)[:batch_names]
                     slice_names: list[str] = []
                     for name in candidates:
                         if name in self._rate_limits or name in self._keyed_rate_limit_last_used:
                             # Re-registered since eviction: the bucket is
-                            # live again and owns its published row — drop
+                            # live again and owns its published row, drop
                             # the pending entry, touch nothing in PG.
                             pending.pop(name, None)
                         else:
@@ -2057,7 +2057,7 @@ class RateLimitRegistry:
             pending.pop(schema, None)
 
     def clear(self) -> None:
-        """Reset ALL mutable registry state — a test aid, NOT safe while running.
+        """Reset ALL mutable registry state, a test aid, NOT safe while running.
 
         Clears the nine dicts (``_rate_limits``, ``_reservations``,
         ``_keyed_reservation_last_used``, ``_keyed_rate_limit_last_used``,
@@ -2075,12 +2075,12 @@ class RateLimitRegistry:
         omitting a pending-reclaim set, a publish-schema capture, or a
         heal stamp would leak one test's evictions into the next.
 
-        **Not safe to call while a worker is running** — concurrent
+        **Not safe to call while a worker is running**, concurrent
         dispatch / sweep iteration over the dicts would observe
         inconsistent state. Use for per-test isolation only.
 
         Like the eviction methods, this resets IN-PROCESS bookkeeping
-        only — it does NOT touch Redis bucket hashes or Postgres
+        only, it does NOT touch Redis bucket hashes or Postgres
         ``reservation_slots`` / ``rate_limit_buckets`` rows; backend
         state persists and will be observed on next acquire.
         """
@@ -2101,17 +2101,17 @@ class RateLimitRegistry:
 # The reclaim drain's rate-limit statement, beside the publish statement
 # whose rows it reclaims (the same locality as the reservation reclaim
 # templates in ratelimit/reservation.py). A rate_limit_buckets row has no
-# holder, so there is no lease guard like the reservation twin's — but
+# holder, so there is no lease guard like the reservation twin's, but
 # idleness is still not evidence the row is safe to delete. For a
 # PG-backed bucket the row IS the state, so deleting one that still holds
 # consumed fixed quota lets the next acquire re-preseed at full capacity
-# and re-admit a budget the tenant already spent — the exact damage the
+# and re-admit a budget the tenant already spent, the exact damage the
 # memory backend's eviction exemption prevents on the instance side.
 # Idle eviction exists to bound registry growth, not to reset quotas, so
 # it must do neither. The guard is shared with the fleet sweep
 # (_no_consumed_quota_sql) so the two cannot disagree about which rows
-# are safe. A vetoed name still leaves the pending set — every sliced
-# name does — and the fleet sweep is its backstop once the quota is no
+# are safe. A vetoed name still leaves the pending set, every sliced
+# name does, and the fleet sweep is its backstop once the quota is no
 # longer consumed.
 _RECLAIM_RATE_LIMIT_SLICE_DELETE_SQL_TEMPLATE = f"""\
 DELETE FROM "{{schema}}".rate_limit_buckets
@@ -2130,20 +2130,20 @@ async def _upsert_rate_limit_bucket_row(
 ) -> None:
     """Insert one ``rate_limit_buckets`` row (idempotent).
 
-    Shared by :func:`sync_rate_limit_buckets` (startup bulk publish of
-    statically registered primitives — ``keyed`` stays False, a static
-    row is never fleet-reclaimable) and the keyed-materialization paths
-    in :meth:`RateLimitRegistry._resolve_rate_limit_name` (publish on
-    first acquisition and on the first pool-bearing reuse), so both
-    write identical rows — the keyed paths pass the bucket's
-    fleet-reclaimable mark, which is True only for PG-state-backed
-    keyed buckets (see :class:`TokenBucket`'s ``keyed`` docstring).
+     Shared by :func:`sync_rate_limit_buckets` (startup bulk publish of
+     statically registered primitives, ``keyed`` stays False, a static
+     row is never fleet-reclaimable) and the keyed-materialization paths
+     in :meth:`RateLimitRegistry._resolve_rate_limit_name` (publish on
+     first acquisition and on the first pool-bearing reuse), so both
+     write identical rows, the keyed paths pass the bucket's
+     fleet-reclaimable mark, which is True only for PG-state-backed
+     keyed buckets (see :class:`TokenBucket`'s ``keyed`` docstring).
 
-    Uses ``ON CONFLICT DO NOTHING`` so concurrent workers and restarts
-    are idempotent. The row is born with a fresh ``last_used_at`` (the
-    horizon starts ticking at publish time), so a keyed bucket that is
-    published but never acquired is still reclaimable after the horizon
-    — the acquire path's own stamps take over from the first acquire.
+     Uses ``ON CONFLICT DO NOTHING`` so concurrent workers and restarts
+     are idempotent. The row is born with a fresh ``last_used_at`` (the
+     horizon starts ticking at publish time), so a keyed bucket that is
+     published but never acquired is still reclaimable after the horizon
+    , the acquire path's own stamps take over from the first acquire.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
@@ -2169,7 +2169,7 @@ async def sync_rate_limit_buckets(
     configured buckets from PG without depending on the in-memory
     singleton being populated in the admin process.  Keyed buckets
     materialized lazily AFTER startup are published individually by the
-    acquisition path — see
+    acquisition path, see
     :meth:`RateLimitRegistry._resolve_rate_limit_name`.
 
     Uses ``ON CONFLICT DO NOTHING`` so concurrent workers and restarts

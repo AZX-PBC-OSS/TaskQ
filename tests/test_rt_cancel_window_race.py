@@ -2,15 +2,15 @@
 
 The bounded drains terminate on a short batch: a batch that came in under
 ``batch_size`` means the eligible set is exhausted.  The termination
-signal must be the WINDOW count — how many rows the driving statement's
-MATERIALIZED ``matching`` CTE admitted — not the UPDATE's affected-row
+signal must be the WINDOW count - how many rows the driving statement's
+MATERIALIZED ``matching`` CTE admitted - not the UPDATE's affected-row
 count.  Under READ COMMITTED, a row windowed by the CTE that a dispatcher
 claims (``pending→running``) between the statement's snapshot and the
 UPDATE's row lock fails the EPQ re-check on the target and is dropped
 from the affected count: the batch then reports fewer rows than its
 window while matching rows remain beyond the window, and a drain that
 terminates on the AFFECTED count abandons the tail of the match set
-silently — for ``deregister_actor(force=True)`` the early break is
+silently - for ``deregister_actor(force=True)`` the early break is
 followed by deleting the ``actor_config`` row, stranding every
 uncancelled pending job.
 
@@ -20,7 +20,7 @@ connection takes the MIDDLE windowed job's row lock with an UNCOMMITTED
 dispatch-claim UPDATE before the drain's first driving statement runs.
 The statement's snapshot cannot see the uncommitted claim, so the window
 still admits the claimed row; the UPDATE must lock that row to finish,
-so the statement parks on the claimer's lock — provably between its
+so the statement parks on the claimer's lock - provably between its
 snapshot and its row lock (observed via a database-scoped
 ``pg_stat_activity`` poll, the same discipline as
 ``test_rt_cancel_deadlock.py``'s
@@ -33,7 +33,7 @@ Both tests assert the contract on the raced row, the tail, and the
 totals: the claimed job ends exactly where the two-statement design
 promises (running, cooperative cancel for ``_cancel_where``; untouched
 by ``deregister_actor``, which refuses running jobs outright), every
-OTHER matching row is still cancelled — the tail is not abandoned — and
+OTHER matching row is still cancelled - the tail is not abandoned - and
 the result totals count AFFECTED rows only (an EPQ-dropped row was not
 cancelled and must not be counted as one).
 """
@@ -116,7 +116,7 @@ async def _wait_for_drain_parked_on_row_lock(
     (``query LIKE '%matching AS MATERIALIZED%'``).  ``pg_stat_activity``
     is cluster-wide and the invocation's one shared container hosts every
     xdist worker's per-module database, so the database scope is what
-    makes the gate mean "our drain parked" — the shape alone never could:
+    makes the gate mean "our drain parked" - the shape alone never could:
     every bulk-cancel/deregister driving statement in the suite shares
     it, and a concurrently parked one in another worker's database
     satisfied this gate as written, landing the raced COMMIT before
@@ -150,7 +150,7 @@ async def _claim_middle_window_job_uncommitted(
 
     Returns ``(connection, transaction)``; the caller COMMITs the
     transaction once the drain's driving statement is parked on the lock
-    — that commit is the race landing between the statement's snapshot
+    - that commit is the race landing between the statement's snapshot
     (which saw the row still pending) and its UPDATE's EPQ re-check.
     """
     claimer = await asyncpg.connect(pg_dsn)
@@ -174,7 +174,7 @@ async def test_short_batch_under_epq_contention_does_not_abandon_the_match_set_t
 ) -> None:
     """A full window whose middle row is claimed between the CTE snapshot
     and the UPDATE's row lock: the EPQ drop makes the batch's AFFECTED
-    count short while the window was full — the drain must continue on
+    count short while the window was full - the drain must continue on
     the WINDOW count and cancel the whole tail, the claimed job must land
     in cooperative cancel via statement 2's fresh snapshot, and the
     totals must count only rows actually cancelled."""
@@ -206,14 +206,14 @@ async def test_short_batch_under_epq_contention_does_not_abandon_the_match_set_t
 
         # The commit lands the race: the parked UPDATE's EPQ re-check now
         # sees the claimed row as running and drops it from the affected
-        # count — batch 1 reports 2 of a full 3-row window.
+        # count - batch 1 reports 2 of a full 3-row window.
         await claim_tx.commit()
     finally:
         await claimer.close()
     result, notify_targets = await asyncio.wait_for(cancel_task, timeout=30)
 
     # The claimed job: never terminalised by the ps batch, caught by the
-    # running drain's fresh snapshot — cooperative cancel, exactly one
+    # running drain's fresh snapshot - cooperative cancel, exactly one
     # cancel_request event, nothing else.
     claimed = await clean_pg_conn.fetchrow(
         f"SELECT status::text AS status, cancel_phase, cancel_requested_at, finished_at "  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() above.
@@ -244,7 +244,7 @@ async def test_short_batch_under_epq_contention_does_not_abandon_the_match_set_t
         other_ids,
     )
     assert {r["status"] for r in rows} == {"cancelled"}, (
-        "an EPQ-dropped row in a full window must not stop the drain — every "
+        "an EPQ-dropped row in a full window must not stop the drain - every "
         "matching row beyond the window must still be cancelled"
     )
     assert all(r["finished_at"] is not None for r in rows)
@@ -252,7 +252,7 @@ async def test_short_batch_under_epq_contention_does_not_abandon_the_match_set_t
     # Totals count AFFECTED rows only: the EPQ-dropped row was not
     # cancelled and must not be counted as one.
     assert result.cancelled_directly == _TOTAL - 1, (
-        f"cancelled_directly={result.cancelled_directly} — the drain abandoned the "
+        f"cancelled_directly={result.cancelled_directly} - the drain abandoned the "
         f"match-set tail after a short AFFECTED count on a full window"
     )
     assert set(result.cancelled_ids) == set(other_ids)
@@ -279,7 +279,7 @@ async def test_deregister_claimed_in_window_row_does_not_stop_the_drain(
     """The same race through ``deregister_actor(force=True)``: a claimed
     row inside a full first window must not break the drain before the
     tail is cancelled, and the ``actor_config`` delete (which follows the
-    drain) must only happen once the whole match set is retired — the
+    drain) must only happen once the whole match set is retired - the
     early break strands every uncancelled pending job against a deleted
     config row."""
     schema = module_pg_schema.schema_name
@@ -316,17 +316,17 @@ async def test_deregister_claimed_in_window_row_does_not_stop_the_drain(
 
     # Totals count AFFECTED rows only; the full drain retires the tail.
     assert result.jobs_cancelled == _TOTAL - 1, (
-        f"jobs_cancelled={result.jobs_cancelled} — the drain broke on a short "
+        f"jobs_cancelled={result.jobs_cancelled} - the drain broke on a short "
         f"AFFECTED count over a full window and abandoned the match-set tail"
     )
     assert result.actor_config_deleted is True
     assert result.terminal_jobs_remaining == _TOTAL - 1, (
-        "the claimed job is running, not terminal — only the drained rows count"
+        "the claimed job is running, not terminal - only the drained rows count"
     )
     assert result.schedules_disabled == 0
     assert result.queue_purged is False
 
-    # The claimed job: untouched — deregistration's force path refuses
+    # The claimed job: untouched - deregistration's force path refuses
     # running jobs, so the raced row stays running with no events (the
     # documented TOCTOU, not a silent running-job cancellation).
     claimed = await clean_pg_conn.fetchrow(
@@ -352,7 +352,7 @@ async def test_deregister_claimed_in_window_row_does_not_stop_the_drain(
     )
     assert {r["status"] for r in rows} == {"cancelled"}, (
         "the actor_config row was deleted while pending jobs of the actor were "
-        "still uncancelled — the drain broke early and stranded the tail"
+        "still uncancelled - the drain broke early and stranded the tail"
     )
 
     # Exactly one state_change per drained row, each carrying its row's

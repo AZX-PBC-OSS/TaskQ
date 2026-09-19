@@ -1,4 +1,4 @@
-"""Tests for taskq.aad — Microsoft Entra ID credential providers.
+"""Tests for taskq.aad - Microsoft Entra ID credential providers.
 
 Uses fake credentials (no real Azure calls) to verify the provider
 implementations satisfy the Protocols and return the right credential
@@ -54,7 +54,7 @@ class _FakeCredential:
 
 
 class _FakeAsyncCredential:
-    """Fake async credential — get_token returns an awaitable."""
+    """Fake async credential - get_token returns an awaitable."""
 
     def __init__(self, token: str = "fake-async-token-456") -> None:  # noqa: S107  # Why: test fixture token, not a real password.
         self.token = token
@@ -183,7 +183,7 @@ def test_aad_credential_protocol_matches_sync_and_async() -> None:
 
 
 async def test_default_credential_constructs_aio_default_azure_credential() -> None:
-    """_default_credential must reach azure.identity.aio — a plain
+    """_default_credential must reach azure.identity.aio - a plain
     ``import azure.identity`` does NOT pull in the ``aio`` subpackage,
     so the import must be explicit."""
     cred = _default_credential()
@@ -195,7 +195,7 @@ async def test_default_credential_constructs_aio_default_azure_credential() -> N
 
 async def test_pg_provider_reuses_one_default_credential_across_calls() -> None:
     """With credential=None the provider must create ONE default credential
-    and reuse it — per-call construction leaks unclosed aiohttp sessions
+    and reuse it - per-call construction leaks unclosed aiohttp sessions
     and cold-caches every token fetch."""
     fake = _FakeAsyncCredential(token="cached-tok")
     with patch("taskq.aad._default_credential", return_value=fake) as mock_default:
@@ -254,7 +254,7 @@ async def test_get_token_sync_credential_runs_off_the_event_loop() -> None:
 
 
 async def test_get_token_async_credential_stays_on_the_event_loop() -> None:
-    """Async credentials await inline — no thread offload needed."""
+    """Async credentials await inline - no thread offload needed."""
     import threading
 
     loop_thread = threading.get_ident()

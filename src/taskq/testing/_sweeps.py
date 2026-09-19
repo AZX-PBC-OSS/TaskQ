@@ -5,14 +5,14 @@ live here as module-level functions taking ``self: InMemoryBackend`` as
 the first parameter, following the :mod:`taskq.testing._runner` pattern.
 
 No caller-supplied ``now``: the backend's injected ``Clock`` is the single
-arbiter — the InMemory mirror of PG's server-side ``clock_timestamp()``
+arbiter, the InMemory mirror of PG's server-side ``clock_timestamp()``
 predicates (parity by construction).
 
 Each twin processes at most ``batch_size`` eligible rows per call,
 mirroring the Postgres sweeps' bounded batch: one call makes a bounded
 amount of progress, repeated calls drain.  The twins walk the corpus in
 dict-iteration order while the Postgres snaps drain oldest-eligible-first
-(their ORDER BY pins) — row ORDER is not a parity property, so the twins
+(their ORDER BY pins), row ORDER is not a parity property, so the twins
 deliberately do not fake one; the parity contract is the total rows
 drained and the per-row state and audit trail left behind (pinned by
 ``tests/test_rt_sweeps_parity.py``).  ``batch_size`` is validated at the
@@ -34,11 +34,11 @@ from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Wh
 )
 from taskq.constants import DEFAULT_EVENT_WRITER_BATCH_SIZE
 from taskq.obs import record_deadline_exceeded_swept, record_reclaimed_jobs
-from taskq.retry import (  # pyright: ignore[reportPrivateUsage]  # Why: the twin must compute the identical reclaim delay the SQL fragment computes — one curve twin, one hash fraction, no drift surface.
+from taskq.retry import (  # pyright: ignore[reportPrivateUsage]  # Why: the twin must compute the identical reclaim delay the SQL fragment computes, one curve twin, one hash fraction, no drift surface.
     RetryPolicy,
     _compute_reclaim_backoff,
 )
-from taskq.testing._terminal import (  # pyright: ignore[reportPrivateUsage]  # Why: the sweep twin's attempt write must carry the identical keep-first guard the PG batched INSERT carries — one guarded write, no drift surface.
+from taskq.testing._terminal import (  # pyright: ignore[reportPrivateUsage]  # Why: the sweep twin's attempt write must carry the identical keep-first guard the PG batched INSERT carries, one guarded write, no drift surface.
     _write_attempt,
 )
 
@@ -67,7 +67,7 @@ async def _scheduled_to_pending(
             break
         if row.status == "scheduled" and row.scheduled_at <= now:
             self._jobs[job_id] = replace(row, status="pending")
-            # Mirrors PG's sweep_scheduled_to_pending: no job_events row —
+            # Mirrors PG's sweep_scheduled_to_pending: no job_events row ,
             # scheduled→pending is scheduler bookkeeping, and it is one of
             # the two acts every admission-denial cycle repeats (claim +
             # promote), so a row per promotion is the same
@@ -100,7 +100,7 @@ async def _deadline_sweep(
     # counter can never climb again and this sweep is the only thing that can
     # resolve the job. The existing row is the truthful record of what the
     # actor actually did; the deadline lapsing afterwards is not a second
-    # execution, so the synthetic row yields to it — the twin of PG's
+    # execution, so the synthetic row yields to it, the twin of PG's
     # ON CONFLICT (job_id, attempt) DO NOTHING, which also keeps one
     # already-attempted row from rolling back every sibling swept with it.
     selected: list[tuple[JobId, JobRow]] = []
@@ -169,34 +169,34 @@ async def _reclaim_expired_locks(
     batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
 ) -> int:
     # Mirrors PostgresBackend._SWEEP_1_SQL exactly, in both directions:
-    # * eligibility arms — the lease arm (lock_expires_at passed) and the
+    # * eligibility arms, the lease arm (lock_expires_at passed) and the
     #   heartbeat arm (a per-job heartbeat_timeout whose holder has been
     #   silent past it while the lease is still valid), disjoint by the
     #   same lock_expires_at >= now exclusion the SQL's UNION ALL uses,
     #   with NULL last_heartbeat_at never eligible (NULL + interval is
     #   NULL in PG; the twin's None-guard mirrors it) and a beat not in
     #   the past never eligible either (the SQL's
-    #   last_heartbeat_at < statement_timestamp() index range bound —
+    #   last_heartbeat_at < statement_timestamp() index range bound ,
     #   the twin states the conjunct itself, not just the deadline
     #   arithmetic it implies for positive timeouts);
-    # * bounded batches — each arm transitions at most batch_size rows
+    # * bounded batches, each arm transitions at most batch_size rows
     #   per call (the SQL's per-arm LIMIT), so one call reclaims at most
     #   2 x batch_size rows, exactly like the UNION ALL;
-    # * carve-out — a job with an in-flight cancel request
+    # * carve-out, a job with an in-flight cancel request
     #   (cancel_phase != 0) is normally left for the cancellation
     #   protocol to finish, but is still reclaimed once its arm's
     #   deadline has been past for cancel_grace + cleanup_grace + a flat
-    #   60s safety margin (see _sweeps.py's _SWEEP_1_SQL comment) —
+    #   60s safety margin (see _sweeps.py's _SWEEP_1_SQL comment) ,
     #   otherwise a worker that died mid-cancellation would never be
     #   recovered;
-    # * terminal labels — the retry branch resets cancel state (clean
+    # * terminal labels, the retry branch resets cancel state (clean
     #   slate for the next dispatch); the exhausted branch lands on
     #   'cancelled' when a cancel was in-flight, 'crashed' otherwise,
     #   while the attempt row records outcome='crashed' either way, its
     #   error_message naming the deadline that fired (the same
-    #   _ATTEMPT_MESSAGES map the PG sweep feeds its batched INSERT —
+    #   _ATTEMPT_MESSAGES map the PG sweep feeds its batched INSERT ,
     #   no drift surface);
-    # * outbox channel — both arms' events carry reason='lock_expired'
+    # * outbox channel, both arms' events carry reason='lock_expired'
     #   (the slice poll_reclaim_events tails) with a cause key naming
     #   which deadline fired.
     # * reclaimed-jobs counter: both backends aggregate (actor,
@@ -231,7 +231,7 @@ async def _reclaim_expired_locks(
         # one but it is the only gate and the column carries no CHECK, so
         # a direct write can leave a zero or negative interval behind,
         # and with one the deadline is already past the instant the row
-        # is written — a healthy holder beating right now would be
+        # is written, a healthy holder beating right now would be
         # reclaimed as a false crash. The lease governs instead.
         heartbeat_deadline: datetime | None = (
             row.last_heartbeat_at + row.heartbeat_timeout
@@ -241,7 +241,7 @@ async def _reclaim_expired_locks(
             else None
         )
         # One if/elif, conjuncts ordered so each None-guard precedes the
-        # arithmetic it guards — the same inline-narrowing shape the
+        # arithmetic it guards, the same inline-narrowing shape the
         # original single-conjunction predicate used.
         cause: str | None = None
         if (
@@ -259,7 +259,7 @@ async def _reclaim_expired_locks(
             # The SQL's index range bound, stated as its own conjunct: a
             # beat not in the past is never holder silence, however the
             # row-exact deadline arithmetic reads (a FUTURE-stamped beat
-            # plus a degenerate negative timeout — direct-SQL-reachable —
+            # plus a degenerate negative timeout, direct-SQL-reachable ,
             # makes the deadline alone admit a row the SQL provably never
             # reclaims). The None-guard is implied by heartbeat_deadline
             # but kept so the conjunct stays SQL-verbatim and narrows the
@@ -294,14 +294,14 @@ async def _reclaim_expired_locks(
             metadata={},
         )
         # Through the shared keep-first write (the twin of the batched
-        # INSERT's ON CONFLICT (job_id, attempt) DO NOTHING — see
+        # INSERT's ON CONFLICT (job_id, attempt) DO NOTHING, see
         # _SWEEP_1_ATTEMPTS_BATCH_SQL): an attempt number can already have
-        # its row when the reclaim fires — a claim-clamped repeat at the
-        # smallint ceiling, a spent attempt left behind by a re-pend — and
+        # its row when the reclaim fires, a claim-clamped repeat at the
+        # smallint ceiling, a spent attempt left behind by a re-pend, and
         # the existing record is the truthful one, so the synthetic crash
         # row yields to it rather than accumulating a duplicate PG refused
         # to store. The same guard the deadline twin states inline above
-        # and _terminal._write_attempt carries for the terminal paths —
+        # and _terminal._write_attempt carries for the terminal paths ,
         # one doctrine, one guarded write. Pinned by
         # tests/test_rt_sweeps_parity.py::test_sweep1_double_reclaim_keeps_one_attempt_row_on_both_backends.
         await _write_attempt(self, attempt_row)
@@ -371,11 +371,11 @@ async def _reclaim_expired_locks(
             # branch, same min(row cap, max_retry_backoff) effective
             # ceiling (the value the PG statement binds as its
             # {max_backoff_seconds} parameter), and the SAME jitter
-            # fraction the SQL derives — a deterministic md5 of the row's
+            # fraction the SQL derives, a deterministic md5 of the row's
             # own '<id>:<attempt>', never an RNG draw. A reclaim delay is
             # computed by more than one path for the same row (the leader's
             # sweep, a partitioned worker's isolate_self, a replayed sweep,
-            # this mirror), and every one must stamp the same instant —
+            # this mirror), and every one must stamp the same instant ,
             # replay idempotence the old per-statement random() could not
             # provide. A fleet-wide event still spreads: a whole cohort
             # handed back at once lands across the jitter band because
@@ -398,12 +398,12 @@ async def _reclaim_expired_locks(
             # The raw stamped attempt goes in UNCLAMPED: the twin floors
             # the exponential arm's exponent itself (mirroring the SQL's
             # GREATEST(j.attempt - 1, 0)) and hashes the raw attempt exactly
-            # as j.attempt::text does — clamping here (the old
+            # as j.attempt::text does, clamping here (the old
             # max(row.attempt, 1) for compute_backoff's attempt >= 1 guard)
             # would hash a different attempt than the SQL for a
             # direct-construction attempt=0 row (dispatch always stamps
-            # attempt >= 1 — see _dispatch_sql.py's `attempt = j.attempt +
-            # 1` — so the distinction is direct-SQL-reachable only, the
+            # attempt >= 1, see _dispatch_sql.py's `attempt = j.attempt +
+            # 1`, so the distinction is direct-SQL-reachable only, the
             # same class the heartbeat arm's NULL last_heartbeat_at guard
             # documents), and for the linear arm it would also miscompute
             # the raw value (SQL multiplies by j.attempt itself).
@@ -454,7 +454,7 @@ async def _reclaim_expired_locks(
             # dead holder for every locked_by_worker-scoped reader.
             # assignment_routed is set on every arm for the same reason
             # (the SQL sets it unconditionally): on a terminal row the
-            # flag is inert — the row is never dispatchable again — but
+            # flag is inert, the row is never dispatchable again, but
             # the stored value must match the contract source.
             self._jobs[job_id] = replace(
                 row,

@@ -46,7 +46,7 @@ CLOSE_TIMEOUT_SECS: float = 5.0
 #
 # The slot pool is conditional (it exists only when a LOOP-scope
 # connection is registered and max_concurrency > 1), but this constant
-# models the WORST case — a deployment's SIGTERM budget must not be
+# models the WORST case, a deployment's SIGTERM budget must not be
 # silently short one close timeout because its worker happens to run
 # the per-slot path. The providers follow the same rule: a managed-
 # identity deployment resolves at most one pg provider and one redis
@@ -56,7 +56,7 @@ CLOSE_TIMEOUT_SECS: float = 5.0
 # Scope note: this models the BOOT-time stack. Each credential reload
 # pushes one more bounded close per factory-backed pool onto the same
 # stack, so a worker that has rotated K times unwinds (this count + K)
-# sequential closes — a pre-existing property of the reload
+# sequential closes, a pre-existing property of the reload
 # registration pattern, shared by the role pools; size crash budgets on
 # rotation-heavy deployments accordingly.
 #
@@ -99,7 +99,7 @@ def worst_case_teardown_tail(close_timeout: float = CLOSE_TIMEOUT_SECS) -> float
     Sibling-crash caveat: on the path where a sibling crash (not an
     orchestrated shutdown) tears the worker down, the orchestrator's
     early leader-conn close never ran and the exit stack's leader guard
-    closes a TaskQ-owned leader conn sequentially as well — nine
+    closes a TaskQ-owned leader conn sequentially as well, nine
     bounded closes, ~47s at the default bound, understated by the 42s
     modelled here.
     """
@@ -109,7 +109,7 @@ def worst_case_teardown_tail(close_timeout: float = CLOSE_TIMEOUT_SECS) -> float
 async def close_pool_bounded(pool: "asyncpg.Pool", label: str, close_timeout: float) -> None:
     """Close a pool during final teardown, bounded by ``close_timeout``.
 
-    NEVER raises: on timeout the pool is *terminated* — ``close()`` waits
+    NEVER raises: on timeout the pool is *terminated*, ``close()`` waits
     for checked-out connections to be released, which a dead PG can block
     indefinitely (the CI chaos hang this helper exists to prevent), so
     ``terminate()`` kills them immediately. Any other error is logged and
@@ -144,8 +144,8 @@ async def close_conn_bounded(
     ``conn-teardown-close-*`` family marks final teardown (where a dead PG
     at shutdown is expected-ish); mid-run callers (leader watchdog/
     election, notify reconnect, isolate-self) pass ``mid_run=True`` for
-    the ``conn-close-*`` family so an unexpected mid-run close timeout —
-    worker alive, conn so dead that even close() hung — stays
+    the ``conn-close-*`` family so an unexpected mid-run close timeout ,
+    worker alive, conn so dead that even close() hung, stays
     distinguishable in log alerts. Event names are kept as literals in
     both branches so they remain grep-able.
     """
@@ -176,7 +176,7 @@ class _AsyncCloseable(Protocol):
 
     Covers ``redis.asyncio.Redis`` clients and ``redis.asyncio.client.PubSub``
     (pub/sub closes are bounded by the same helper) without a runtime import
-    of the optional ``[redis]`` extra — this module must stay a leaf.
+    of the optional ``[redis]`` extra, this module must stay a leaf.
     """
 
     async def aclose(self) -> None: ...
@@ -185,12 +185,12 @@ class _AsyncCloseable(Protocol):
 async def close_redis_bounded(client: _AsyncCloseable, label: str, close_timeout: float) -> None:
     """Close a Redis client/pubsub during teardown, bounded by ``close_timeout``.
 
-    On timeout log-and-continue (Redis has no ``terminate()``); any other
-    error is logged and swallowed so teardown keeps unwinding. Never raises
-    — ``CancelledError`` (a ``BaseException``) still propagates. ``label``
-    identifies which resource hung/errored and is carried on both log
-    events, matching the pool/conn siblings' ``resource, label, timeout``
-    signature order.
+     On timeout log-and-continue (Redis has no ``terminate()``); any other
+     error is logged and swallowed so teardown keeps unwinding. Never raises
+    , ``CancelledError`` (a ``BaseException``) still propagates. ``label``
+     identifies which resource hung/errored and is carried on both log
+     events, matching the pool/conn siblings' ``resource, label, timeout``
+     signature order.
     """
     try:
         await asyncio.wait_for(client.aclose(), timeout=close_timeout)

@@ -98,7 +98,7 @@ async def _enqueue_batch_pg(
 
 
 class TestAllChildrenTerminal:
-    """All children terminal — returns BatchCompletionStatus, no Snooze."""
+    """All children terminal - returns BatchCompletionStatus, no Snooze."""
 
     async def test_all_succeeded(self) -> None:
         backend = _make_backend()
@@ -117,7 +117,7 @@ class TestAllChildrenTerminal:
 
 
 class TestOneChildInFlight:
-    """One child in-flight — raises Snooze with default interval."""
+    """One child in-flight - raises Snooze with default interval."""
 
     async def test_raises_snooze(self) -> None:
         backend = _make_backend()
@@ -152,7 +152,7 @@ class TestCustomSnoozeInterval:
 
 
 class TestMixedTerminalWithInFlight:
-    """Mixed terminal + one running — still raises Snooze."""
+    """Mixed terminal + one running - still raises Snooze."""
 
     async def test_mixed_statuses_raises_snooze(self) -> None:
         backend = _make_backend()
@@ -170,7 +170,7 @@ class TestMixedTerminalWithInFlight:
 
 
 class TestAllTerminalWithFailures:
-    """All terminal with failures — returns correct counts."""
+    """All terminal with failures - returns correct counts."""
 
     async def test_succeeded_and_failed(self) -> None:
         backend = _make_backend()
@@ -190,7 +190,7 @@ class TestAllTerminalWithFailures:
 
 
 class TestEmptyBatchId:
-    """Empty batch_id — returns total=0 with is_complete=True (on_empty='ok')."""
+    """Empty batch_id - returns total=0 with is_complete=True (on_empty='ok')."""
 
     async def test_empty_batch_returns_zero(self) -> None:
         backend = _make_backend()
@@ -244,7 +244,7 @@ class TestSnoozeIntervalZeroClamped:
 
 
 class TestAbandonedChildIsTerminal:
-    """Abandoned child is terminal — pending drops to 0."""
+    """Abandoned child is terminal - pending drops to 0."""
 
     async def test_abandoned_counts_as_terminal(self) -> None:
         backend = _make_backend()
@@ -264,7 +264,7 @@ class TestAbandonedChildIsTerminal:
 
 
 class TestCrashedChildIsTerminal:
-    """Crashed child is terminal — pending drops to 0."""
+    """Crashed child is terminal - pending drops to 0."""
 
     async def test_crashed_counts_as_terminal(self) -> None:
         backend = _make_backend()
@@ -284,7 +284,7 @@ class TestCrashedChildIsTerminal:
 
 
 class TestBatchCompletionInvariant:
-    """Batch completion invariant — Snooze iff any non-terminal."""
+    """Batch completion invariant - Snooze iff any non-terminal."""
 
     @given(
         statuses=st.lists(
@@ -485,7 +485,7 @@ class TestExpectAtLeast:
 
 @pytest.mark.integration
 class TestFullRoundTrip:
-    """Full round-trip — Snooze while in-flight, BatchCompletionStatus when all terminal."""
+    """Full round-trip - Snooze while in-flight, BatchCompletionStatus when all terminal."""
 
     async def test_snooze_then_complete(self, pg_dsn: str) -> None:
         schema = f"taskq_test_wfb_ti1_{new_base62()}".lower()
@@ -524,7 +524,7 @@ class TestFullRoundTrip:
 
 @pytest.mark.integration
 class TestWithFailedChild:
-    """End-to-end with failed child — mixed terminal counts."""
+    """End-to-end with failed child - mixed terminal counts."""
 
     async def test_succeeded_and_failed(self, pg_dsn: str) -> None:
         schema = f"taskq_test_wfb_ti2_{new_base62()}".lower()
@@ -655,7 +655,7 @@ class TestTUGINinIndexUsed:
 
 @pytest.mark.integration
 class TestFinalizerSnoozePattern:
-    """Finalizer pattern — Snooze raised while children in-flight, BatchCompletionStatus returned after completion."""
+    """Finalizer pattern - Snooze raised while children in-flight, BatchCompletionStatus returned after completion."""
 
     async def test_snooze_then_succeed(self, pg_dsn: str) -> None:
         schema = f"taskq_test_wfb_ti3_{new_base62()}".lower()
@@ -698,7 +698,7 @@ class TestFinalizerSnoozePattern:
 
 @pytest.mark.integration
 class TestChildFailsAndRetries:
-    """Child fails then returns to pending — Snooze during retry window."""
+    """Child fails then returns to pending - Snooze during retry window."""
 
     async def test_retry_keeps_pending_positive(self, pg_dsn: str) -> None:
         schema = f"taskq_test_wfb_ti4_{new_base62()}".lower()
@@ -789,12 +789,12 @@ class TestBlockingForm:
         assert status.succeeded == 2
 
 
-# ── Race guard — enqueue-before-wait ordering ───────────────────
+# ── Race guard - enqueue-before-wait ordering ───────────────────
 
 
 @pytest.mark.integration
 class TestRaceGuardEnqueueBeforeWait:
-    """Race guard — uncommitted batch not visible to wait_for_batch."""
+    """Race guard - uncommitted batch not visible to wait_for_batch."""
 
     async def test_uncommitted_batch_invisible(self, pg_dsn: str) -> None:
         schema = f"taskq_test_wfb_ti6_{new_base62()}".lower()
@@ -831,7 +831,7 @@ class TestRaceGuardEnqueueBeforeWait:
 
 @pytest.mark.integration
 class TestInvalidBatchIdAgainstPG:
-    """UUID matching no PG rows — returns total=0, is_complete=True."""
+    """UUID matching no PG rows - returns total=0, is_complete=True."""
 
     async def test_unknown_batch_id_pg(self, pg_dsn: str) -> None:
         schema = f"taskq_test_wfb_tn1_{new_base62()}".lower()
@@ -849,12 +849,12 @@ class TestInvalidBatchIdAgainstPG:
         assert status.is_complete is True
 
 
-# ── PG unavailable — error propagates ────────────────────────────
+# ── PG unavailable - error propagates ────────────────────────────
 
 
 @pytest.mark.integration
 class TestPGUnavailable:
-    """PG connection error propagates — not masked as Snooze."""
+    """PG connection error propagates - not masked as Snooze."""
 
     async def test_connection_error_propagates(self) -> None:
         batch_id = new_uuid()

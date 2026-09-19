@@ -3,7 +3,7 @@
 
 The PG variant blocks via ``asyncio.sleep`` and rescans until every
 member is terminal; the mirror must honor the same flag rather than
-always raising :class:`~taskq.exceptions.Snooze` — code written against
+always raising :class:`~taskq.exceptions.Snooze` - code written against
 the blocking mode gets a returned status in memory exactly as it does
 against PG. Both snooze modes are pinned here, including the
 snooze-interval clamp, which must govern the blocking sleep exactly as
@@ -146,7 +146,7 @@ class TestBlockingMode:
     async def test_aborted_batch_raises_batch_aborted_error_once_settled(self) -> None:
         """Blocking mode on an aborted batch sleeps through the in-flight
         window and surfaces BatchAbortedError when the last member turns
-        terminal — the same terminal state the PG poll loop reaches."""
+        terminal - the same terminal state the PG poll loop reaches."""
         backend = _make_backend()
         batch_id = new_uuid()
         job_ids = _seed_batch(backend, 1, batch_id, status="pending")

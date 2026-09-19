@@ -490,7 +490,7 @@ class TestDispatchBatchAcquireIsBounded:
         The discriminator is deliberately NOT "a TimeoutError was raised".
         An unbounded acquire hanging inside an outer `wait_for` guard also
         raises TimeoutError, so `pytest.raises(TimeoutError)` around a
-        guarded call passes either way — it cannot fail, which is the
+        guarded call passes either way - it cannot fail, which is the
         exact defect this file's harness had. Instead `asyncio.wait`
         reports the task as *still pending*, which only an unbounded
         acquire can produce, and that is asserted directly.
@@ -502,7 +502,7 @@ class TestDispatchBatchAcquireIsBounded:
 
         async def _run() -> None:
             task = asyncio.create_task(backend.dispatch_batch(_FIXED_UUID, ["default"], 10, _GRACE))
-            # asyncio.wait never raises on expiry — it reports what is
+            # asyncio.wait never raises on expiry - it reports what is
             # still pending, keeping "the bound fired" and "nothing
             # bounded it" distinguishable.
             _done, pending = await asyncio.wait({task}, timeout=bound * 20)

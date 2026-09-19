@@ -214,7 +214,7 @@ class TestListSchedules:
                 enabled=True,
             )
         )
-        # actor_b: enabled=True, actor_c: enabled=False — crossed filter
+        # actor_b: enabled=True, actor_c: enabled=False - crossed filter
         await backend.create_schedule(
             ScheduleCreateArgs(
                 actor="actor_b",
@@ -306,7 +306,7 @@ class TestUpdateSchedule:
             record.id,
         )
 
-        # Now enable — should reset failures
+        # Now enable - should reset failures
         updated = await backend.update_schedule(record.id, ScheduleUpdateArgs(enabled=True))
         assert updated.enabled is True
         assert updated.consecutive_failures == 0
@@ -371,7 +371,7 @@ class TestUpdateSchedule:
             )
         )
 
-        # Empty update — should return current row unchanged
+        # Empty update - should return current row unchanged
         updated = await backend.update_schedule(record.id, ScheduleUpdateArgs())
         assert updated.id == record.id
         assert updated.actor == record.actor

@@ -5,7 +5,7 @@ The regression: a cancel that escalated to ``cancel_phase = 2`` in the
 same moment the actor raised an ordinary retryable exception used to
 survive the retry write, leaving ``cancel_phase`` and
 ``cancel_requested_at`` on the row.  Retries reuse the SAME job row, so
-the next attempt was dispatched already at FORCED — the cancel
+the next attempt was dispatched already at FORCED - the cancel
 controller's fast-advance then skipped straight past phase 2 without
 ever calling ``task.cancel()``, and the job could no longer be
 cancelled.
@@ -17,7 +17,7 @@ cancel is in flight:
   clears both columns (pinned below on both backends), and the
   crash-reclaim sweep and ``isolate_self`` do the same on theirs.
 - The three deferral arms refuse a row carrying a cancel phase entirely
-  (``noop``; the operator's cancel wins over the snooze) — the refuse
+  (``noop``; the operator's cancel wins over the snooze) - the refuse
   leaves the audit columns intact for the cancel ladder to finish, and
   the clean slate comes from the interrupt release, not the deferral.
   These pins cover the FORCED escalation state; the COOPERATIVE twins
@@ -121,8 +121,8 @@ async def _force_cancel_escalated(backend: Backend, job_id: JobId) -> None:
 async def _make_deferred_row_dispatchable(backend: Backend, job_id: JobId) -> None:
     """A zero-delay non-consuming deferral is floored one interval out as
     ``scheduled`` (the deferral floor keeps it from monopolizing dispatch
-    order), so make it due and promote it — exactly the wake + promotion
-    pair the leader performs — before the next dispatch claims it."""
+    order), so make it due and promote it - exactly the wake + promotion
+    pair the leader performs - before the next dispatch claims it."""
     if isinstance(backend, InMemoryBackend):
         cast("FakeClock", backend._clock).advance(  # pyright: ignore[reportPrivateUsage]  # Why: the in-memory fixture backends are FakeClock-backed; the Clock protocol does not carry advance().
             MIN_DEFERRAL_INTERVAL
@@ -204,7 +204,7 @@ async def test_mark_retry_after_refuses_a_row_carrying_a_cancel_phase(
 
 
 async def test_terminal_failure_preserves_cancel_state(backend_pair: Backend) -> None:
-    """The reset is scoped to retries — a terminal fail keeps the audit trail."""
+    """The reset is scoped to retries - a terminal fail keeps the audit trail."""
     job_id, worker_id = await _enqueue_and_dispatch(backend_pair)
     await _force_cancel_escalated(backend_pair, job_id)
 

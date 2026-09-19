@@ -1,5 +1,5 @@
-"""The assignment-routed marker round's lock-scope split (#250), the dead
-probe index pair's removal (#243), and the unrouted probe indexes (#243).
+"""The assignment-routed marker round's lock-scope split, the dead
+probe index pair's removal, and the unrouted probe indexes.
 
 Three pin families:
 
@@ -16,9 +16,9 @@ Three pin families:
    What the split bounds is the window per file plus the lock MODE:
    the original single-file form held ACCESS EXCLUSIVE, which blocks
    reads too, across the ALTERs, the backfill and both builds in ONE
-   window (#250). The dead pair (01.00.11_01's create +
+   window. The dead pair (01.00.11_01's create +
    01.00.12_05:post's drop of ``jobs_repended_probe_idx``, referenced by
-   no code at HEAD) is gone from the bundled set entirely (#243).
+   no code at HEAD) is gone from the bundled set entirely.
 
 2. Schema equivalence (PG): the consumer upgrade path (a ledger at the
    pinned-consumer baseline, the bundled set ends at 01.00.05_01,
@@ -30,7 +30,7 @@ Three pin families:
    name so the restructure cannot silently drop or reshape a structure
    the frozen files below it declare.
 
-3. Plan oracles (PG): the #243 measurement shape (re-pended rows ahead
+3. Plan oracles (PG): the measurement shape (re-pended rows ahead
    of producer-placed rows on the same (actor, queue)): the production
    candidates laterals' probes ride the new marker-partial indexes,
    ``NOT assignment_routed`` is served by the index predicate instead of
@@ -116,7 +116,7 @@ def test_dead_probe_index_pair_is_gone_from_the_bundled_set() -> None:
     """01.00.11_01's create and 01.00.12_05:post's drop of
     jobs_repended_probe_idx are removed: no code at HEAD reads that
     predicate, so the pair only made every upgrade pay one write-blocking
-    full-table build for an index nothing uses (#243)."""
+    full-table build for an index nothing uses."""
     keys = {m.key for m in migrate_mod.discover()}
     assert "01.00.11_01:pre" not in keys
     assert "01.00.12_05:post" not in keys, (
@@ -145,7 +145,7 @@ def test_marker_round_is_split_into_single_purpose_files_in_order() -> None:
 def test_columns_file_holds_only_the_two_metadata_alters() -> None:
     """The ACCESS EXCLUSIVE window is exactly the two catalog writes plus
     the commit: nothing table-sized may share the columns file's
-    transaction (#250)."""
+    transaction."""
     sql = _rendered("01.00.12_05_pre_assignment_routed_columns.sql")
     kinds = _statement_kinds(sql)
     assert kinds == ["ALTER TABLE", "ALTER TABLE"], kinds
@@ -181,7 +181,7 @@ def test_probe_index_files_hold_only_their_builds() -> None:
     states), so the write-block window is the file's builds summed and
     drains only between files; what the split bounds is the window per
     FILE and the lock MODE (SHARE blocks writes only; the original
-    ACCESS EXCLUSIVE blocked reads too) (#250). The end-state
+    ACCESS EXCLUSIVE blocked reads too). The end-state
     definitions are byte-preserved from the original single-file round."""
     routed = _rendered("01.00.12_08_pre_assignment_routed_probe_indexes.sql")
     assert _statement_kinds(routed) == ["CREATE INDEX", "CREATE INDEX"]
@@ -207,7 +207,7 @@ def test_unrouted_index_predicates_match_the_dispatch_arms_exactly() -> None:
     """A partial index serves a query only when the planner can prove the
     query's quals imply the index predicate, and the probe must not
     reorder around the marker: the arms' conjuncts and the indexes'
-    predicates must stay the same population, VERBATIM (#243's
+    predicates must stay the same population, VERBATIM (the
     coordination requirement, the predicates match the dispatch SQL as
     it exists, sibling worktrees' semantics changes renumber here)."""
     for lateral in (_STRICT_FIFO_CANDIDATES_LATERAL, _ROUND_ROBIN_CANDIDATES_LATERAL):
@@ -250,6 +250,10 @@ _PINNED_JOBS_INDEXES: frozenset[str] = frozenset(
         "jobs_running_lock_expires_idx",
         "jobs_schedule_to_close_idx",
         "jobs_identity_active_idx",
+        # 01.00.15_01 (pre): the unique-preflight probe's index over every
+        # status, serving caller-configured unique_states that fold
+        # terminal states into the dedup answer.
+        "jobs_identity_status_idx",
         "jobs_singleton_uniq",
         "jobs_actor_running_idx",
         "jobs_actor_pending_idx",
@@ -361,8 +365,8 @@ async def test_consumer_upgrade_path_reaches_the_pinned_end_state(pg_dsn: str) -
     gated deploy shape (pre phase, then post), ends on EXACTLY the fresh
     install's schema: same index definitions, columns, constraints and
     ledger keys, the restructure is invisible to taskq_migrate state and
-    to any fresh install (#250's adversarial review: restructuring must be
-    end-state-preserving; #243's dead pair and new indexes are the only
+    to any fresh install (the adversarial review: restructuring must be
+    end-state-preserving; the dead pair and new indexes are the only
     sanctioned deltas, both pinned by name here)."""
     fresh = f"mig_eq_fresh_{new_base62()}".lower()
     upgraded = f"mig_eq_up_{new_base62()}".lower()
@@ -449,7 +453,7 @@ async def test_consumer_upgrade_path_reaches_the_pinned_end_state(pg_dsn: str) -
 
 # ── 3. Plan oracles: the label-routed probes never walk re-pended rows ─────
 
-# The #243 measurement shape: re-pended pending rows AHEAD of the
+# The measurement shape: re-pended pending rows AHEAD of the
 # producer-placed rows in the probes' (priority DESC, ...) order on the
 # same (actor, queue), so the pending-only twins' ordered scans must walk
 # them all before reaching an admissible row.
@@ -533,7 +537,7 @@ def _params_wrapper(lateral: str, schema: str, *, rr_keys: bool) -> str:
     ``queue_cap_headroom`` is literalized as the empty relation (the
     uncapped-pair shape this pin has always exercised): the laterals'
     scalar probes select from it, the probe yields NULL and LEAST ignores
-    it, so the residual bound is untouched (#242).
+    it, so the residual bound is untouched.
     """
     ctes = [
         "params AS (SELECT $1::text[] AS queues, $2::int AS limit_n, "
@@ -572,7 +576,7 @@ async def test_strict_fifo_lateral_probe_rides_the_unrouted_index(
     pg_dsn: str, mixed_population_schema: str
 ) -> None:
     """EXPLAIN ANALYZE the production strict-FIFO candidates lateral over
-    the #243 shape: the probe must ride jobs_unrouted_actor_dispatch_idx
+    the shape: the probe must ride jobs_unrouted_actor_dispatch_idx
     (the marker is in the index predicate), so not one re-pended row is
     visited, the pending-only twin would walk all _REPEND_ROWS of them
     as "Rows Removed by Filter" before the first admissible row."""

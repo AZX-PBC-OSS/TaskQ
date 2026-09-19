@@ -2,13 +2,13 @@
 for a running job whose started_at is NULL.
 
 That shape is reachable only via direct SQL (dispatch always stamps
-started_at = clock_timestamp() — see _dispatch_sql.py), but it is a
+started_at = clock_timestamp() - see _dispatch_sql.py), but it is a
 legal row, and the crash-reclaim sweep is exactly the path that meets
 the first direct-SQL author's orphan: pre-fix, the batched attempt
 INSERT writes a.started_at raw, the INSERT dies on a non-transient
 NotNullViolation inside the sweep's transaction (deliberately
 non-transient per taskq.worker._transient), and the orphan is left
-unreclaimed with no live worker to reclaim it — while the in-memory
+unreclaimed with no live worker to reclaim it - while the in-memory
 twin COALESCEs NULL started_at to its injected now
 (taskq/testing/_sweeps.py), so the same corpus also silently diverges
 the two backends' parity contract. The twin's COALESCE is therefore the
@@ -72,7 +72,7 @@ async def test_sweep1_lands_attempt_row_for_null_started_at_running_job(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """Pre-fix red: the sweep raises NotNullViolationError on the batched
-    attempt INSERT and the transaction rolls back — the job is left
+    attempt INSERT and the transaction rolls back - the job is left
     running (still unreclaimable), with no audit rows. Post-fix the
     sweep completes and the attempt row carries the per-row clock
     fallback for started_at, the in-memory twin's contract."""
@@ -117,7 +117,7 @@ async def test_sweep1_lands_attempt_row_for_null_started_at_running_job(
     assert attempt["finished_at"] >= attempt["started_at"]
     # duration is unknowable for a never-started attempt: the twin records
     # NULL (no started_at to measure from), and the sweep computes
-    # duration_ms in Python from the job's NULL started_at — None.
+    # duration_ms in Python from the job's NULL started_at - None.
     assert attempt["duration_ms"] is None
     assert attempt["outcome"] == "crashed"
     assert attempt["worker_id"] == worker_id, "the live holder must be recorded"
@@ -136,11 +136,11 @@ async def test_sweep1_null_started_at_fallback_is_per_row_distinct_within_a_batc
     """A batch of SEVERAL NULL-started_at running jobs must not collapse onto
     one fallback stamp.
 
-    The fallback is ``clock_timestamp() + (ord - 1) * 1us`` — the per-row
+    The fallback is ``clock_timestamp() + (ord - 1) * 1us`` - the per-row
     ladder.  A single-row test (the pin above) cannot see the ladder: ord
     is always 1.  With three NULL-started_at rows in one batch, a fallback
     written as a bare per-statement ``clock_timestamp()`` would pass the
-    single-row test while stamping every attempt identically — the exact
+    single-row test while stamping every attempt identically - the exact
     collapse the ladder exists to prevent (see the comment above
     _SWEEP_1_ATTEMPTS_BATCH_SQL)."""
     schema = module_pg_schema.schema_name
@@ -167,7 +167,7 @@ async def test_sweep1_null_started_at_fallback_is_per_row_distinct_within_a_batc
     stamps = [r["started_at"] for r in attempts]
     assert len(set(stamps)) == 3, (
         f"the per-row fallback ladder collapsed: three NULL-started_at rows got "
-        f"{len(set(stamps))} distinct started_at stamps — the ord term in the "
+        f"{len(set(stamps))} distinct started_at stamps - the ord term in the "
         "COALESCE fallback is what keeps the audit trail per-row distinct"
     )
     assert all(s is not None for s in stamps)
@@ -177,7 +177,7 @@ async def test_sweep1_null_started_at_contract_is_the_in_memory_twin() -> None:
     """The in-memory twin's COALESCE-to-now is the contract both backends
     must satisfy: for the same NULL-started_at corpus the twin leaves one
     attempt row with a non-NULL started_at (its injected now), NULL
-    duration_ms, 'crashed' outcome, and the lock bookkeeping cleared —
+    duration_ms, 'crashed' outcome, and the lock bookkeeping cleared -
     the observable the Postgres path is hardened to match (pinned by the
     test above)."""
     memory = InMemoryBackend(

@@ -22,7 +22,7 @@ def stub_deps(stub: SimpleNamespace, *, term: LeaderTerm | None = None) -> Worke
     """Complete *stub*'s leadership surface and present it as ``WorkerDeps``.
 
     ``term`` defaults to ``None``, which the predicate treats as a role
-    held with no expiry to narrow it — the state a stub that sets the
+    held with no expiry to narrow it - the state a stub that sets the
     event by hand is modelling.
 
     A stub that lists no ``is_leader`` is left alone: it stands in for a
@@ -33,7 +33,7 @@ def stub_deps(stub: SimpleNamespace, *, term: LeaderTerm | None = None) -> Worke
         stub.leader_term = term
         # Bound to the real implementations so the stub cannot answer the
         # per-iteration gate, or move the role, differently from a live
-        # worker — the coupling of the event and the term is the invariant
+        # worker - the coupling of the event and the term is the invariant
         # these seams exist to exercise.
         leading: Any = WorkerDeps.leading
         lead: Any = WorkerDeps.lead

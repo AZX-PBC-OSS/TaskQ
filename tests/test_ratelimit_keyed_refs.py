@@ -4,10 +4,10 @@ Tests ``KeyedReservationRef`` validation, ``RateLimitRegistry._resolve_reservati
 dynamic key resolution/lazy registration, ``acquire_for_actor`` composing static and
 keyed reservations, and ``evict_idle_keyed_reservations``. Mirrors the in-memory
 (``FakeClock``-backed ``ConcurrencyReservation``) conventions of
-``tests/test_ratelimit_registry.py`` and ``tests/test_ratelimit_composition.py`` — no
+``tests/test_ratelimit_registry.py`` and ``tests/test_ratelimit_composition.py`` - no
 Redis or PG instance required, so every call passes ``pg_pool=None`` (skipping the
 ``ensure_slots()`` call ``_resolve_reservation_name`` makes when a real pool is
-given — that path is exercised against real Postgres in
+given - that path is exercised against real Postgres in
 ``tests/test_ratelimit_keyed_refs_pg.py``).
 """
 
@@ -99,7 +99,7 @@ class TestKeyedReservationRefValidation:
     def test_rejects_base_name_inside_reserved_queue_cap_prefix(self) -> None:
         """A base_name already inside the reserved queue-cap namespace would
         derive concrete names (f"{base_name}:{key}") that the register()
-        prefix guard rejects — failing at CONSTRUCTION surfaces the
+        prefix guard rejects - failing at CONSTRUCTION surfaces the
         misconfiguration at startup instead of a per-job ValueError for
         every job on the actor, forever."""
         with pytest.raises(ValueError, match="reserved queue-cap namespace"):
@@ -153,7 +153,7 @@ async def test_resolve_plain_string_returns_unchanged() -> None:
 
 
 async def test_resolve_plain_string_ignores_payload() -> None:
-    """A plain str ref does not consult payload at all — works even with payload=None."""
+    """A plain str ref does not consult payload at all - works even with payload=None."""
     reg = RateLimitRegistry()
     reg.register(_reservation("gpu"))
 
@@ -183,7 +183,7 @@ async def test_resolve_keyed_ref_produces_base_name_colon_key() -> None:
 
 
 async def test_resolve_keyed_ref_reuses_same_instance_for_same_key() -> None:
-    """Two resolutions for the same key reuse the same registered primitive —
+    """Two resolutions for the same key reuse the same registered primitive -
     not a duplicate registration."""
     reg = RateLimitRegistry()
     ref = _keyed_ref(base_name="session-cap")
@@ -224,10 +224,10 @@ async def test_resolve_keyed_ref_different_keys_register_independently() -> None
 
 async def test_different_keys_do_not_share_slot_capacity() -> None:
     """Two different keys for the same KeyedReservationRef are independent
-    concurrency pools — exhausting one key's slots does not affect the other's.
+    concurrency pools - exhausting one key's slots does not affect the other's.
 
     Pre-registers both concrete reservations with a FakeClock (in-memory
-    table) for deterministic, fast slot-exhaustion assertions — the lazy
+    table) for deterministic, fast slot-exhaustion assertions - the lazy
     PG-backed construction path itself is exercised separately in
     ``tests/test_ratelimit_keyed_refs_pg.py``.
     """
@@ -300,7 +300,7 @@ async def test_resolve_keyed_ref_empty_key_raises_value_error() -> None:
 
 
 async def test_resolve_keyed_ref_key_fn_exception_propagates() -> None:
-    """An exception raised by key_fn itself is not swallowed — it propagates to the
+    """An exception raised by key_fn itself is not swallowed - it propagates to the
     caller of _resolve_reservation_name / acquire_for_actor."""
     reg = RateLimitRegistry()
 
@@ -317,7 +317,7 @@ async def test_resolve_keyed_ref_key_fn_exception_propagates() -> None:
 
 async def test_resolve_keyed_ref_wrong_model_type_raises_validation_error() -> None:
     """A BaseModel payload of a different type is re-validated against the
-    ref's payload_type — a missing required field raises ValidationError,
+    ref's payload_type - a missing required field raises ValidationError,
     not AttributeError from key_fn accessing a non-existent attribute."""
     reg = RateLimitRegistry()
     ref = _keyed_ref(base_name="session-cap")  # key_fn does p.session_id
@@ -333,8 +333,8 @@ async def test_resolve_keyed_ref_wrong_model_type_raises_validation_error() -> N
 
 async def test_resolve_keyed_ref_validation_errors_are_sanitized() -> None:
     """The cross-type conversion path (model_dump() → model_validate()) is
-    load-bearing — it is how a foreign BaseModel payload becomes an instance
-    of ref.payload_type — and its ValidationError details follow the
+    critical - it is how a foreign BaseModel payload becomes an instance
+    of ref.payload_type - and its ValidationError details follow the
     documented sanitization contract (include_url=False, include_input=False):
     the attacker-controlled payload value and pydantic doc URLs must not
     ride into error_message / web admin on validation_errors."""
@@ -359,7 +359,7 @@ async def test_resolve_keyed_ref_validation_errors_are_sanitized() -> None:
 
 
 async def test_resolve_keyed_ref_key_fn_returning_non_str_raises_value_error() -> None:
-    """key_fn returning a non-str (e.g. int) raises ValueError — a broken
+    """key_fn returning a non-str (e.g. int) raises ValueError - a broken
     key_fn can never silently resolve to a shared/global reservation."""
     reg = RateLimitRegistry()
     ref = _keyed_ref(base_name="session-cap", key_fn=lambda p: 42)
@@ -394,12 +394,12 @@ async def test_resolve_keyed_ref_str_subclass_key_uses_value_content() -> None:
 
 async def test_resolve_keyed_ref_str_enum_key_uses_member_value_not_repr() -> None:
     """A key_fn returning a ``str``-derived Enum member resolves to the
-    member's VALUE (``'acme'``), not its Enum rendering — dict lookups,
+    member's VALUE (``'acme'``), not its Enum rendering - dict lookups,
     Redis keys, and PG text columns would all treat the member as its
     value, so the registry name must match.
 
     Covers both flavors: the classic ``(str, Enum)`` mixin (whose
-    ``__str__``/``__format__`` render ``'Tenant.ACME'`` — the exact trap
+    ``__str__``/``__format__`` render ``'Tenant.ACME'`` - the exact trap
     the key normalization guards against) and ``StrEnum``.
     """
 
@@ -427,11 +427,11 @@ async def test_resolve_keyed_ref_str_enum_key_uses_member_value_not_repr() -> No
 
 async def test_acquire_for_actor_composes_static_and_keyed_reservations() -> None:
     """A static name and a KeyedReservationRef in the same reservations list are
-    both acquired — AND-composition holds for mixed static/keyed lists.
+    both acquired - AND-composition holds for mixed static/keyed lists.
 
     The dynamic reservation is pre-registered here with a FakeClock so that
     resolution reuses it via the existing idempotent-register path (register()
-    no-ops for identical config) — deterministic and fast, in-memory only.
+    no-ops for identical config) - deterministic and fast, in-memory only.
     """
     clock = FakeClock(_START)
     reg = RateLimitRegistry()
@@ -460,7 +460,7 @@ async def test_acquire_for_actor_composes_static_and_keyed_reservations() -> Non
     assert acquired[0].name == "global-cap"
     assert acquired[1].name == "session-cap:abc"
 
-    # session-cap:abc had only 1 slot and it is now held — a second acquisition
+    # session-cap:abc had only 1 slot and it is now held - a second acquisition
     # for the same key must be denied, proving the keyed reservation's own
     # capacity was actually consumed (not just recorded as a handle).
     from taskq.exceptions import ReservationUnavailable
@@ -527,7 +527,7 @@ async def test_evict_idle_keyed_reservations_removes_only_stale_entries(
         ref, payload=_DefaultPayload(session_id="stale"), pg_pool=None, settings=None
     )  # pyright: ignore[reportPrivateUsage]
 
-    fake_time = 1100.0  # 100s later — "stale" key untouched since
+    fake_time = 1100.0  # 100s later - "stale" key untouched since
     await reg._resolve_reservation_name(
         ref, payload=_DefaultPayload(session_id="fresh"), pg_pool=None, settings=None
     )  # pyright: ignore[reportPrivateUsage]
@@ -543,7 +543,7 @@ async def test_evict_idle_keyed_reservations_leaves_static_reservations_untouche
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A statically-registered (non-keyed) reservation is never evicted, even
-    when it has been present far longer than idle_for — eviction only ever
+    when it has been present far longer than idle_for - eviction only ever
     consults _keyed_reservation_last_used, which static registrations never
     populate."""
     from importlib import import_module
@@ -564,7 +564,7 @@ async def test_evict_idle_keyed_reservations_leaves_static_reservations_untouche
 async def test_evict_idle_keyed_reservations_returns_zero_when_nothing_stale(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No entries idle beyond the threshold — returns 0, registry unchanged."""
+    """No entries idle beyond the threshold - returns 0, registry unchanged."""
     from importlib import import_module
 
     registry_mod = import_module("taskq.ratelimit.registry")
@@ -584,7 +584,7 @@ async def test_evict_idle_keyed_reservations_returns_zero_when_nothing_stale(
 
 
 async def test_evict_idle_keyed_reservations_re_registration_after_eviction_is_idempotent() -> None:
-    """A key evicted and then acquired again is simply re-registered — no error,
+    """A key evicted and then acquired again is simply re-registered - no error,
     and the registry converges back to one entry for that key."""
     reg = RateLimitRegistry()
     ref = _keyed_ref(base_name="session-cap", slots=3, lease=timedelta(minutes=5))
@@ -622,7 +622,7 @@ def test_singleton_keyed_tracking_dicts_empty_at_start() -> None:
     no prior test leaked tracking state into this one.  Every test in
     this file uses a fresh local ``RateLimitRegistry()`` to avoid the
     singleton, but the fixture is the safety net for any future test
-    that does not — this test guards that safety net.
+    that does not - this test guards that safety net.
     """
     from taskq.ratelimit.registry import registry as _rl
 
@@ -651,7 +651,7 @@ class _AliasedPayload(BaseModel):
 
 async def test_resolve_typed_res_ref_passes_validated_model_to_key_fn() -> None:
     """A dict payload is validated via ref.payload_type.model_validate before
-    being passed to key_fn — key_fn receives a BaseModel with attribute access,
+    being passed to key_fn - key_fn receives a BaseModel with attribute access,
     not a raw dict."""
     captured: list[BaseModel] = []
     reg = RateLimitRegistry()
@@ -674,7 +674,7 @@ async def test_resolve_typed_res_ref_passes_validated_model_to_key_fn() -> None:
 
 async def test_resolve_typed_res_ref_applies_pydantic_defaults() -> None:
     """A dict payload missing a defaulted field gets the default applied
-    during validation — key_fn can read the default value."""
+    during validation - key_fn can read the default value."""
     reg = RateLimitRegistry()
     captured: list[_TypedPayload] = []
 
@@ -700,7 +700,7 @@ async def test_resolve_typed_res_ref_applies_pydantic_defaults() -> None:
 
 async def test_resolve_typed_res_ref_applies_aliases() -> None:
     """A dict payload using wire aliases (e.g. 'sessionId') is validated
-    with alias resolution — key_fn accesses the field by its Python name
+    with alias resolution - key_fn accesses the field by its Python name
     (p.session_id)."""
     reg = RateLimitRegistry()
     ref = KeyedReservationRef.typed(
@@ -720,7 +720,7 @@ async def test_resolve_typed_res_ref_applies_aliases() -> None:
 
 async def test_resolve_typed_res_ref_accepts_basemodel_payload_directly() -> None:
     """A BaseModel payload of the same type as ref.payload_type is accepted
-    directly — zero-cost pass-through, no re-validation."""
+    directly - zero-cost pass-through, no re-validation."""
     reg = RateLimitRegistry()
     ref = KeyedReservationRef.typed(
         _TypedPayload,
@@ -785,7 +785,7 @@ async def test_resolve_typed_res_ref_wrong_model_type_re_validates() -> None:
 
 async def test_resolve_typed_res_ref_same_model_type_zero_cost_passthrough() -> None:
     """A BaseModel payload of the SAME type as ref.payload_type is passed
-    directly to key_fn without re-validation — the exact same object (identity
+    directly to key_fn without re-validation - the exact same object (identity
     check)."""
     reg = RateLimitRegistry()
     captured: list[_TypedPayload] = []
@@ -845,7 +845,7 @@ async def test_acquire_for_actor_accepts_basemodel_payload_with_typed_reservatio
 
 
 async def test_acquire_for_actor_typed_reservation_ref_with_dict_payload_validates() -> None:
-    """acquire_for_actor accepts a dict payload with a typed reservation ref —
+    """acquire_for_actor accepts a dict payload with a typed reservation ref -
     the dict is validated via model_validate before key_fn is called."""
     clock = FakeClock(_START)
     reg = RateLimitRegistry()

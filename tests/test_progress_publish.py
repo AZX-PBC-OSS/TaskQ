@@ -34,8 +34,8 @@ def _make_redis_mock(*, raise_on_publish: Exception | None = None) -> AsyncMock:
 class _RecordingPipeline:
     """Pipeline double: records queued publish commands and execute round trips.
 
-    Queuing is a local buffer append on a real pipeline — no await per
-    command — and the round trip happens only at ``execute``, so both
+    Queuing is a local buffer append on a real pipeline - no await per
+    command - and the round trip happens only at ``execute``, so both
     methods here are synchronous bar ``execute``.
     """
 
@@ -65,7 +65,7 @@ class _RecordingRedisClient:
 
     ``pipelines`` / ``pipeline_kwargs`` record what the dual-channel path
     built; ``direct_publishes`` records single ``client.publish`` round
-    trips — the sequential shape the dual-channel path must not use.
+    trips - the sequential shape the dual-channel path must not use.
     ``execute_error`` wires a failing round trip for failure-path tests.
     """
 
@@ -125,7 +125,7 @@ async def test_terminal_flush_before_mark_succeeded_drains_buffer() -> None:
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="test_actor")
     job_id = new_job_id()
     worker_id = new_uuid()
@@ -245,6 +245,105 @@ async def test_ctx_progress_publishes_to_schema_scoped_channel() -> None:
         assert call[0][0] == expected_channel
 
 
+class _CountingPublishRedis:
+    """Client double counting single-channel publish round trips.
+
+    Stands in for the non-global publish path (``progress_publish_global``
+    off): one ``publish`` await per event, the round trip the coalescing
+    gate is measured against.
+    """
+
+    def __init__(self) -> None:
+        self.published: list[tuple[str, str]] = []
+
+    async def publish(self, channel: str, payload: str) -> int:
+        self.published.append((channel, payload))
+        return 1
+
+
+# ── ctx.progress() coalesces publishes while one is in flight ──────
+
+
+async def test_rapid_progress_calls_coalesce_in_flight_publishes() -> None:
+    """N rapid progress() calls publish at most twice; the LAST publish
+    carries the final call's seq.
+
+    Why: ctx.progress() fires at actor call rate and each uncoalesced
+    publish is one Redis round trip. The in-flight gate keeps one publish
+    per job in the air at a time; calls racing a running publish latch on
+    the buffer and the running task re-publishes the latch. The final
+    call must never be the dropped one: it reaches the channel either
+    directly or through the latch."""
+    from taskq.progress._buffer import _ProgressBuffer
+    from taskq.settings import WorkerSettings
+
+    redis_client = _CountingPublishRedis()
+    settings = WorkerSettings.load_from_dict(
+        {
+            "TASKQ_SCHEMA_NAME": "testschema",
+            "TASKQ_PROGRESS_PUBLISH_GLOBAL": "false",
+        }
+    )
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
+    buffers = {_JOB_ID: buf}
+    publish_tasks: set[asyncio.Task[None]] = set()
+
+    ctx = make_progress_context(
+        buffers,
+        _JOB_ID,
+        settings=settings,
+        redis_client=redis_client,
+        pending_publish_tasks=publish_tasks,
+    )
+
+    for i in range(10):
+        await ctx.progress(step=i + 1)
+
+    if publish_tasks:
+        await asyncio.gather(*publish_tasks)
+
+    assert len(redis_client.published) <= 2
+    last_event = json.loads(redis_client.published[-1][1])
+    assert last_event["seq"] == 10
+    assert last_event["step"] == 10
+
+
+async def test_progress_call_after_gate_releases_publishes_directly() -> None:
+    """A call landing once the gate is free publishes immediately: the
+    latch is a coalescing mechanism for racing calls, never a delay the
+    next call has to wait behind."""
+    from taskq.progress._buffer import _ProgressBuffer
+    from taskq.settings import WorkerSettings
+
+    redis_client = _CountingPublishRedis()
+    settings = WorkerSettings.load_from_dict(
+        {
+            "TASKQ_SCHEMA_NAME": "testschema",
+            "TASKQ_PROGRESS_PUBLISH_GLOBAL": "false",
+        }
+    )
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
+    buffers = {_JOB_ID: buf}
+    publish_tasks: set[asyncio.Task[None]] = set()
+
+    ctx = make_progress_context(
+        buffers,
+        _JOB_ID,
+        settings=settings,
+        redis_client=redis_client,
+        pending_publish_tasks=publish_tasks,
+    )
+
+    await ctx.progress(step=1)
+    await asyncio.sleep(0)  # let the publish task run to completion
+    assert buf.publish_in_flight is False
+    await ctx.progress(step=2)
+    await asyncio.gather(*publish_tasks)
+
+    seqs = [json.loads(payload)["seq"] for _, payload in redis_client.published]
+    assert seqs == [1, 2]
+
+
 # ── OTel counter incremented with correct attributes on failure ─────
 
 
@@ -313,8 +412,8 @@ async def test_ctx_progress_no_publish_when_redis_client_none() -> None:
 
 async def test_publish_progress_event_global_channel_when_enabled() -> None:
     """progress_publish_global=True (the default): the per-job and global
-    publishes share ONE pipelined round trip — one pipeline, one execute,
-    both channels queued — never two sequential client.publish awaits,
+    publishes share ONE pipelined round trip - one pipeline, one execute,
+    both channels queued - never two sequential client.publish awaits,
     which doubled every progress call's round trips and worst-case
     timeout budget."""
     client = _RecordingRedisClient()
@@ -359,7 +458,7 @@ async def test_publish_progress_event_global_channel_when_enabled() -> None:
 async def test_publish_dual_channel_delivers_to_both_subscribers() -> None:
     """Behavioural delivery pin for the pipelined dual publish: real
     pub/sub subscribers on the per-job and global channels each receive
-    the identical event payload — pipelining the two PUBLISH commands
+    the identical event payload - pipelining the two PUBLISH commands
     must not change what subscribers see."""
     fakeredis = pytest.importorskip("fakeredis.aioredis")
     server = fakeredis.FakeServer()
@@ -417,7 +516,7 @@ async def test_publish_dual_channel_pipeline_failure_counts_both_channels(
 ) -> None:
     """A failed pipelined execute never raises and counts one delivery
     failure for EACH channel: one execute serves both, so both
-    channel-level counters are true statements — and a hard Redis outage
+    channel-level counters are true statements - and a hard Redis outage
     totals the same two increments the sequential shape produced."""
     import taskq.obs._otel as otel_mod
 
@@ -438,7 +537,7 @@ async def test_publish_dual_channel_pipeline_failure_counts_both_channels(
         }
     )
 
-    # Must not raise — the publish is fire-and-forget.
+    # Must not raise - the publish is fire-and-forget.
     await _publish_progress_event(
         client,  # type: ignore[arg-type]  # Why: pipeline-shape double standing in for redis.asyncio.Redis; only the failure path is exercised.
         s,
@@ -673,7 +772,7 @@ async def test_cancel_discards_buffer_no_flush_terminal_state_change() -> None:
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="test_actor")
     job_id = new_job_id()
     worker_id = new_uuid()
@@ -842,7 +941,7 @@ async def test_cancel_clean_buffer_passes_base_seq_not_zero() -> None:
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="test_actor")
     job_id = new_job_id()
     worker_id = new_uuid()

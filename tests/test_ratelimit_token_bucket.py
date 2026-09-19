@@ -4,10 +4,10 @@ In-memory tests use ``FakeClock`` injected via ``clock=`` so that refill is
 deterministic and zero-real-time.
 
 Redis unit tests use a lightweight fake that records calls to
-``register_script`` and the script ``__call__`` — no network, no
+``register_script`` and the script ``__call__`` - no network, no
 testcontainers.
 
-Postgres-backend dispatch tests verify routing only — the SQL behaviour
+Postgres-backend dispatch tests verify routing only - the SQL behaviour
 is exercised in the integration test file.
 """
 
@@ -146,7 +146,7 @@ async def test_fixed_quota_retry_after_none() -> None:
     assert r.backend == "memory"
 
 
-# ── memory backend — no redis/pg; result.backend="memory" ─────────────
+# ── memory backend - no redis/pg; result.backend="memory" ─────────────
 
 
 async def test_memory_backend_no_external_deps() -> None:
@@ -266,14 +266,14 @@ async def test_acquire_postgres_without_pg_pool_raises() -> None:
 
 async def test_acquire_postgres_no_pool_raises_typed_dependency_error() -> None:
     """The no-pool branch raises the typed ``RateLimitDependencyUnavailable``
-    — the store-dependency family member the consumer's acquire boundary
-    recognises — instead of a bare ``RuntimeError`` that escapes the family
+    - the store-dependency family member the consumer's acquire boundary
+    recognises - instead of a bare ``RuntimeError`` that escapes the family
     and is misattributed to the job as a failure. A ``RuntimeError``
     subclass, so the wording pins above and the chaos tier's
     ``pytest.raises(RuntimeError)`` hold unchanged."""
     tb = _pg_bucket(name="pg-typed-test")
     with pytest.raises(RateLimitDependencyUnavailable, match="pg_pool not injected"):
-        await tb.acquire(  # type: ignore[arg-type]  # Why: duck-typed settings stand-in, the same seam the wording pin above uses — the acquire only reads schema_name, and no connection is ever made.
+        await tb.acquire(  # type: ignore[arg-type]  # Why: duck-typed settings stand-in, the same seam the wording pin above uses - the acquire only reads schema_name, and no connection is ever made.
             clock=FakeClock(_START), settings=_FakeSettings()
         )
 
@@ -286,8 +286,8 @@ async def test_acquire_postgres_without_settings_raises() -> None:
 
 
 async def test_acquire_postgres_works_without_python_clock() -> None:
-    """C8 pin: the postgres acquire path never consults a Python clock —
-    the epoch math runs on the server clock folded into the locked read —
+    """C8 pin: the postgres acquire path never consults a Python clock -
+    the epoch math runs on the server clock folded into the locked read -
     so a missing *clock* argument is not an error (the memory backend is
     the only path that requires one)."""
     pool = _FakeFullPgPool(fetchrow_result={"tokens_after": 9.0, "granted": True})
@@ -409,8 +409,8 @@ async def test_acquire_redis_without_settings_raises() -> None:
 
 
 async def test_acquire_redis_works_without_python_clock() -> None:
-    """C8 pin: the redis acquire path never consults a Python clock — the
-    script derives now from redis TIME — so a missing *clock* argument is
+    """C8 pin: the redis acquire path never consults a Python clock - the
+    script derives now from redis TIME - so a missing *clock* argument is
     not an error (the memory backend is the only path that requires one)."""
     tb = _redis_bucket()
     r = await tb.acquire(redis_client=_FakeRedisClient(), settings=_FakeSettings())
@@ -728,7 +728,7 @@ async def test_refund_postgres_without_pg_pool_raises() -> None:
 
 
 async def test_refund_postgres_works_without_python_clock() -> None:
-    """C8 pin: the postgres refund path never consults a Python clock —
+    """C8 pin: the postgres refund path never consults a Python clock -
     a missing *clock* argument is not an error (the memory backend is the
     only path that requires one). Row-absent refund is a no-op."""
     tb = _pg_bucket()
@@ -966,8 +966,8 @@ async def test_refund_redis_without_client_raises() -> None:
 
 
 async def test_refund_redis_works_without_python_clock() -> None:
-    """C8 pin: the redis refund path never consults a Python clock — the
-    script reads redis TIME — so a missing *clock* argument is not an
+    """C8 pin: the redis refund path never consults a Python clock - the
+    script reads redis TIME - so a missing *clock* argument is not an
     error."""
     tb = _redis_bucket()
     decision = RateLimitDecision(
@@ -1029,7 +1029,7 @@ async def test_peek_redis_without_client_raises() -> None:
 
 
 async def test_peek_redis_works_without_python_clock() -> None:
-    """C8 pin: the redis peek path never consults a Python clock — the
+    """C8 pin: the redis peek path never consults a Python clock - the
     elapsed estimate runs on the store's clock (TIME)."""
     client = _FakeRedisClient()
     client.hmget_return = ["5.0", str(_START.timestamp())]
@@ -1116,7 +1116,7 @@ async def test_peek_pg_without_settings_raises() -> None:
 
 
 async def test_peek_pg_works_without_python_clock() -> None:
-    """C8 pin: the postgres peek path never consults a Python clock — the
+    """C8 pin: the postgres peek path never consults a Python clock - the
     elapsed estimate runs on the server epoch returned with the state."""
     now = _START.timestamp()
     pool = _FakeFullPgPool(

@@ -418,7 +418,7 @@ class TestBackendOnlyConstruction:
 
 class TestClientOnlyConstruction:
     """JobHandle(client=..., backend=None) fills _backend from
-    client.backend — existing behavior preserved.
+    client.backend - existing behavior preserved.
     """
 
     async def test_client_only_fills_backend(self) -> None:

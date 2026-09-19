@@ -3,7 +3,7 @@ until its in-memory-vs-Postgres *behaviour* is classified.
 
 The class this file guards: a seam where ``InMemoryBackend`` and
 ``PostgresBackend`` return DIFFERENT RESULTS for the same inputs. Not
-different objects — different answers. Three instances were found this
+different objects - different answers. Three instances were found this
 way, and all three passed every existing guard until each was discovered
 by hand. All three are fixed and behaviourally pinned in
 ``tests/test_in_memory_dispatch_parity.py``; this registry exists so the
@@ -34,7 +34,7 @@ read as though they implement all of it. This file guards the remaining
 half: SEMANTICS.
 
 Precedent: ``tests/test_sweepaudit_bounded_writes.py`` and
-``tests/test_web_router_factories_fail_closed.py`` — per-site behavioural
+``tests/test_web_router_factories_fail_closed.py`` - per-site behavioural
 pins guard each known site, a registry over the walked surface catches the
 next one.
 
@@ -42,8 +42,8 @@ What to do when the completeness check fails on a seam you added:
 
 * If the seam SELECTS or ORDERS rows (a dispatch, a filtered read, a bulk
   mutation returning ids), add a behavioural parity test driving BOTH
-  backends through identical inputs — the shape lives in
-  ``tests/test_in_memory_dispatch_parity.py`` — and register the pin here.
+  backends through identical inputs - the shape lives in
+  ``tests/test_in_memory_dispatch_parity.py`` - and register the pin here.
 * If the seam cannot diverge (it returns a scalar, or it has no in-memory
   counterpart at all), register it in ``_NO_SEMANTIC_SURFACE`` with the
   reason. That sentence is the review.
@@ -51,7 +51,7 @@ What to do when the completeness check fails on a seam you added:
 One constraint this file encodes, learned by building the parity tests:
 parity at the dispatch seam is definable as SELECTION parity, not ORDERING
 parity. ``DISPATCH_*_SQL`` ends in ``UPDATE ... RETURNING j.*``, and
-``UPDATE ... RETURNING`` carries no row-order guarantee — the ``ORDER BY``
+``UPDATE ... RETURNING`` carries no row-order guarantee - the ``ORDER BY``
 inside the CTE governs which rows the ``LIMIT`` admits, not the order they
 come back. A parity assertion on returned sequence is flaky against PG
 itself. Compare claimed SETS under a discriminating bound.
@@ -78,7 +78,7 @@ _SEMANTIC_SEAMS: dict[str, str] = {
 #:
 #: Moving an entry out of here means writing its parity test. Do not move
 #: one into _NO_SEMANTIC_SURFACE without establishing that the seam makes no
-#: selection or ordering decision — that claim is what the registry exists
+#: selection or ordering decision - that claim is what the registry exists
 #: to force someone to make explicitly.
 _SEMANTIC_SEAMS_UNPINNED: dict[str, str] = {
     "list_jobs": "filter predicates, cursor ordering, pagination bounds",
@@ -156,7 +156,7 @@ def test_every_shared_seam_is_classified_for_semantic_parity() -> None:
 
     This is the completeness half. It walks the intersection of the two
     backends' public surfaces, so the next seam that can answer differently
-    in the mirror than in production fails here on arrival — rather than
+    in the mirror than in production fails here on arrival - rather than
     passing every aliasing guard and being discovered in a production
     incident, which is how all three known instances were found.
     """
@@ -168,7 +168,7 @@ def test_every_shared_seam_is_classified_for_semantic_parity() -> None:
     unclassified = [name for name in shared if name not in classified]
 
     assert not unclassified, (
-        "Unclassified backend seam(s) — each can silently answer differently "
+        "Unclassified backend seam(s) - each can silently answer differently "
         "in InMemoryBackend than in PostgresBackend, and no existing guard "
         "would notice:\n  "
         + "\n  ".join(unclassified)
@@ -183,7 +183,7 @@ def test_registered_parity_pins_exist() -> None:
     """Every seam registered as pinned names a parity test file that exists.
 
     A registry entry pointing at a deleted file is a guard that silently
-    stopped guarding — the failure mode this whole file exists to prevent,
+    stopped guarding - the failure mode this whole file exists to prevent,
     reproduced one level up.
     """
     from pathlib import Path
@@ -219,12 +219,12 @@ def test_no_seam_is_registered_twice() -> None:
 def test_no_confirmed_divergence_lingers_unpinned() -> None:
     """A CONFIRMED DIVERGENT seam cannot sit in ``_SEMANTIC_SEAMS_UNPINNED``.
 
-    The unpinned registry holds unaudited seams — places that MIGHT answer
+    The unpinned registry holds unaudited seams - places that MIGHT answer
     differently, nobody has checked. A divergence someone has confirmed is
     past prose: it is fixed and pinned, or its parity pin sits red in
     ``_SEMANTIC_SEAMS`` until the fix lands. Parking it as an unpinned note
     reads as a TODO nobody owes, and parking it in ``_NO_SEMANTIC_SURFACE``
-    would assert the opposite of what the code does — the failure mode
+    would assert the opposite of what the code does - the failure mode
     that let the sweepaudit registry justify an unbounded statement on a
     bound that does not hold.
     """
@@ -234,7 +234,7 @@ def test_no_confirmed_divergence_lingers_unpinned() -> None:
         if "CONFIRMED DIVERGENT" in note
     }
     assert not lingering, (
-        "Confirmed-divergent seam(s) parked unpinned — a confirmed "
+        "Confirmed-divergent seam(s) parked unpinned - a confirmed "
         "divergence owes a behavioural parity test (it may sit red until "
         "the fix lands), registered in _SEMANTIC_SEAMS:\n  "
         + "\n  ".join(f"{seam}: {note}" for seam, note in lingering.items())

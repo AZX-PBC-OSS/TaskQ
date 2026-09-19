@@ -34,7 +34,7 @@ async def test_retry_exhausted_with_idempotency_dedup() -> None:
        'failed' after the second attempt.
     5. Assert final state: status='failed', 2 attempts, 1 event with
        kind='state_change', to_state='failed'.
-    6. Enqueue again with idempotency_key="idem-1" — the existing
+    6. Enqueue again with idempotency_key="idem-1" - the existing
        failed job's row is returned (no new row).
     """
     clock = FakeClock(start=_START)

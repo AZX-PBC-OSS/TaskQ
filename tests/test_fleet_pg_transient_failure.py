@@ -6,7 +6,7 @@ connection reset by something in the network path. Every one of those closes
 the connections a worker is holding, and none of them is a reason for a job to
 be lost, duplicated, or silently stranded.
 
-The interruption is delivered the way the database delivers it — the server
+The interruption is delivered the way the database delivers it - the server
 terminates the worker's backends, which is what a restart or failover does to a
 client that is holding connections. The worker finds out at its next statement,
 in whatever call happens to be in flight.
@@ -68,7 +68,7 @@ def _interrupt_scoped_dsn(pg_dsn: str, schema: str) -> str:
     The tag is what makes the interruption below scoped: the testcontainers
     Postgres hosts every xdist worker's databases, and a database-wide
     terminate lands inside whatever statement the OTHER worker is running
-    mid-flight — the flakes that produced were self-inflicted cross-worker
+    mid-flight - the flakes that produced were self-inflicted cross-worker
     kills, not product behavior. The pod's pools inherit the tag from this
     DSN, so a scoped kill drops exactly this test's pod connections.
     """
@@ -83,7 +83,7 @@ def _interrupt_scoped_dsn(pg_dsn: str, schema: str) -> str:
 
 def _enqueue_args(job_id: JobId, round_index: int, index: int) -> EnqueueArgs:
     """One plain (un-keyed, un-capped) enqueue: the autocommit INSERT arm
-    whose retry-duplication risk #236 describes."""
+    whose retry-duplication risk the retry guard describes."""
     return EnqueueArgs(
         id=job_id,
         actor=_ACTOR,
@@ -169,7 +169,7 @@ async def test_a_pod_keeps_working_after_the_database_drops_its_connections(
         # Enqueueing is the first thing a caller does after an interruption,
         # and it is the seam where a pool hands out a connection the server has
         # already closed. It may fail once, but it must fail as a recognisable
-        # database error that a caller can retry — not as an internal driver
+        # database error that a caller can retry - not as an internal driver
         # state error, which tells the caller nothing and matches no except
         # clause written against the database's own error types.
         after_ids: list[JobId] = []
@@ -282,7 +282,7 @@ async def test_a_job_in_flight_across_an_interruption_is_not_destroyed(
         try:
             await asyncio.wait_for(attempt, timeout=30.0)
         except (TimeoutError, Exception):
-            # The attempt's own outcome is not the contract — its terminal
+            # The attempt's own outcome is not the contract - its terminal
             # write had nowhere to land. Where the job ends up is.
             attempt.cancel()
 
@@ -290,7 +290,7 @@ async def test_a_job_in_flight_across_an_interruption_is_not_destroyed(
         assert status not in _TERMINAL_WITHOUT_RETRY, (
             f"a job that was mid-attempt when the database dropped its "
             f"connections was left {status!r}, a state that never re-dispatches. "
-            f"The work was not tried and found wanting — a routine restart, "
+            f"The work was not tried and found wanting - a routine restart, "
             f"failover or maintenance window destroyed it, and nothing alerts "
             f"because nothing failed"
         )
@@ -402,8 +402,8 @@ async def test_bulk_cancel_recovers_typed_after_the_database_drops_its_connectio
 ) -> None:
     """``cancel_where`` must not hand the caller a raw driver error either.
 
-    ``_with_fresh_connection_retry`` — shared from ``taskq.connections``
-    by every acquire-then-use call site — absorbs the dead-on-acquire
+    ``_with_fresh_connection_retry`` - shared from ``taskq.connections``
+    by every acquire-then-use call site - absorbs the dead-on-acquire
     race: a poisoned connection's first statement fails locally with
     ``asyncpg.InternalClientError`` right after a server-side
     interruption, before ``connection_lost`` has run and marked it
@@ -455,7 +455,7 @@ async def test_bulk_cancel_recovers_typed_after_the_database_drops_its_connectio
 async def test_enqueue_racing_the_interruption_never_duplicates_committed_work(
     pg_dsn: str,
 ) -> None:
-    """#236's refusal and durability sides, against a real interrupted
+    """The refusal and durability sides, against a real interrupted
     Postgres.
 
     An enqueue is one autocommit INSERT under the dead-on-acquire retry

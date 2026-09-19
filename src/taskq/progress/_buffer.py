@@ -5,6 +5,7 @@ from uuid import UUID
 
 __all__ = [
     "_EncodedProgressData",
+    "_PendingPublish",
     "_ProgressBuffer",
     "_progress_after_flush",
     "_seq_and_state_after_flush_attempt",
@@ -29,11 +30,29 @@ class _EncodedProgressData:
     json: bytes
 
 
+@dataclass(frozen=True, slots=True)
+class _PendingPublish:
+    """A progress event latched while another publish is in flight.
+
+    The fields are the publish's own arguments, captured at the
+    superseding ``ctx.progress`` call: publishing the latch reproduces
+    exactly the event that call would have published uncoalesced, so the
+    last event a subscriber sees is byte-for-byte the one the final
+    progress call produced.
+    """
+
+    step: int | None
+    percent: float | None
+    detail: str | None
+    data: dict[str, object] | None
+    seq: int
+
+
 @dataclass
 class _ProgressBuffer:
     """Mutable per-job accumulator; not part of the public API.
 
-    Intentionally not frozen — ``pending_seq_delta``, ``dirty``, and
+    Intentionally not frozen, ``pending_seq_delta``, ``dirty``, and
     ``last_flush_at`` are mutated on every progress call and flush.
     """
 
@@ -45,7 +64,7 @@ class _ProgressBuffer:
     # attempt must no-op instead of clobbering the new epoch's progress.
     # Fail-closed by construction: dispatch stamps ``attempt + 1`` on
     # claiming, so a running row always carries attempt >= 1 and an
-    # unseeded epoch of 0 matches no running row — the flush no-ops
+    # unseeded epoch of 0 matches no running row, the flush no-ops
     # rather than writing. Production buffers are seeded from the
     # dispatched ``JobRow.attempt``; only direct test construction omits
     # it (against statement doubles that ignore the bound values).
@@ -55,6 +74,16 @@ class _ProgressBuffer:
     encoded_data: _EncodedProgressData | None = None
     dirty: bool = False
     last_flush_at: float = 0.0
+    # The Redis publish gate (``JobContext.progress``): at most one publish
+    # task per job is in flight at a time; a progress call that lands while
+    # one is running only latches its event on ``pending_publish`` for the
+    # in-flight task to re-publish when its round trip lands. The latch is
+    # the no-lost-final guarantee: a trailing progress call always reaches
+    # the channel either directly or through it. Mutable like the rest of
+    # the accumulator; the publish task runs on the same event loop as the
+    # progress calls, so the flag never needs a lock.
+    publish_in_flight: bool = False
+    pending_publish: _PendingPublish | None = None
 
 
 def _snapshot_progress(
@@ -62,7 +91,7 @@ def _snapshot_progress(
 ) -> tuple[int, dict[str, object]]:
     """Return (seq, state) from a progress buffer for a terminal write.
 
-    If the buffer is None or clean, returns (0, {}) — the caller's default.
+    If the buffer is None or clean, returns (0, {}), the caller's default.
     If dirty, returns the full accumulated seq (base_seq + pending_seq_delta)
     and a copy of pending_state so the terminal write carries all progress.
     """
@@ -91,7 +120,7 @@ def _terminal_seq_and_state(
     """Return (seq, state) for a terminal write that directly SETs progress_seq.
 
     Unlike :func:`_snapshot_progress`, which returns ``(0, {})`` when the buffer
-    is clean, this helper always computes ``base_seq + pending_seq_delta`` —
+    is clean, this helper always computes ``base_seq + pending_seq_delta`` ,
     the authoritative current sequence regardless of flush state.  All
     ``mark_*`` SQL uses direct assignment (``SET progress_seq = $N``), so
     returning 0 for a clean buffer with ``base_seq > 0`` would clobber the
@@ -109,7 +138,7 @@ def _seq_and_state_after_flush_attempt(
 
     If the flush succeeded (buffer is clean), reads ``base_seq`` and
     ``pending_state`` directly via :func:`_progress_after_flush`.  If the
-    flush failed silently (buffer still dirty — connection error, pool
+    flush failed silently (buffer still dirty, connection error, pool
     timeout, etc.), falls back to :func:`_snapshot_progress` which returns
     ``base_seq + pending_seq_delta`` and a copy of ``pending_state`` so
     the pending delta is not lost in the terminal write.

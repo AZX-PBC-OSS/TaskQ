@@ -48,7 +48,7 @@ class ReservationHandle:
     ``release()`` calls ``ConcurrencyReservation.release(slot_index, worker_id, pool)``
     which sets the slot row's ``job_id`` to ``NULL``.  Idempotent.
 
-    ``slot_index`` is whatever ``acquire()`` returned — in practice a
+    ``slot_index`` is whatever ``acquire()`` returned, in practice a
     :class:`~taskq.ratelimit.reservation.SlotLease`, an ``int`` subclass that
     also carries the lease fence.  Storing and handing it back unchanged is
     what makes ``release()`` safe against a zombie attempt: a handle from a
@@ -74,7 +74,7 @@ class RateLimitHandle:
     """Handle for a successfully acquired rate-limit token.
 
     ``release()`` is a no-op when ``refund_on_release`` is ``False`` (post-actor
-    path — token consumption is permanent).  When ``refund_on_release`` is
+    path, token consumption is permanent).  When ``refund_on_release`` is
     ``True`` (rollback path), ``release()`` refunds ``count`` tokens via
     ``primitive.refund()``.
     """

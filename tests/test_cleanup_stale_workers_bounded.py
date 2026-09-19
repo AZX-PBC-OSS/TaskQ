@@ -1,7 +1,7 @@
 """``cleanup_stale_workers``: one call = one bounded, committed batch.
 
 The stale-worker sweep used to be an UNBOUNDED single DELETE whose DDL
-``ON DELETE`` clauses fan out per deleted worker — each removed worker
+``ON DELETE`` clauses fan out per deleted worker - each removed worker
 rewrites every ``job_attempts`` row it holds (``ON DELETE SET NULL``) in
 the same transaction, so a whole-fleet crash is one multi-second
 transaction. The rewrite windows stale ids in a MATERIALIZED CTE
@@ -67,7 +67,7 @@ async def _insert_attempt_owner(
     schema: str,
     worker_id: UUID,
 ) -> UUID:
-    """One terminal job + one job_attempts row owned by *worker_id* — the
+    """One terminal job + one job_attempts row owned by *worker_id* - the
     rows the ``ON DELETE SET NULL`` clause rewrites when the worker goes."""
     job_id = new_uuid()
     job_sql = (
@@ -96,7 +96,7 @@ def test_signature_carries_batch_size() -> None:
     hope: ``cleanup_stale_workers`` exposes a keyword-only ``batch_size``."""
     params = inspect.signature(cleanup_stale_workers).parameters
     assert "batch_size" in params, (
-        "cleanup_stale_workers has no batch_size parameter — one call is an "
+        "cleanup_stale_workers has no batch_size parameter - one call is an "
         "unbounded DELETE again; signature is "
         f"{inspect.signature(cleanup_stale_workers)}"
     )
@@ -184,7 +184,7 @@ async def test_statement_carries_the_limit(
     assert recorder.execute_calls, "cleanup_stale_workers must issue its statement"
     sql, args = recorder.execute_calls[0]
     assert "LIMIT $3" in sql, (
-        f"the deletion statement carries no parameterized LIMIT — one call is "
+        f"the deletion statement carries no parameterized LIMIT - one call is "
         f"unbounded again; got: {sql!r}"
     )
     assert args == (_STALENESS, caller_id, 1), (

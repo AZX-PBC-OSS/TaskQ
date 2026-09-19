@@ -27,8 +27,8 @@ SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata
 # unlisted column at its current value on conflict, so an existing row's
 # capacity fields and queue assignment survive every subsequent startup
 # untouched no matter what the ``@actor(...)`` literal says. The capacity
-# columns are only ever populated via the ``INSERT`` list — i.e. the first
-# time a row is created (seeding) — or via `taskq actor-config set`
+# columns are only ever populated via the ``INSERT`` list, i.e. the first
+# time a row is created (seeding), or via `taskq actor-config set`
 # (operator override); the queue assignment via the ``INSERT`` list or
 # `taskq actor-config move-queue` (the one-step operator move). Keeping the
 # assignment out of the conflict clause is what makes a move durable across
@@ -53,8 +53,8 @@ ON CONFLICT (actor) DO UPDATE SET
 # ``@actor(...)`` literal only seeds the row on first registration
 # (`stored_row is None` branch below); on every subsequent startup the
 # stored value wins and a differing literal is *expected*, not an error.
-# The queue assignment belongs to this family too — moved by
-# `taskq actor-config move-queue`, never by a boot — but is surfaced at
+# The queue assignment belongs to this family too, moved by
+# `taskq actor-config move-queue`, never by a boot, but is surfaced at
 # WARNING (`actor-config-queue-override`) rather than info, because cron
 # fires follow the stored queue while producers enqueue by their own
 # literal: the disagreement is real drift to surface. The check is written
@@ -63,22 +63,22 @@ ON CONFLICT (actor) DO UPDATE SET
 _CAPACITY_FIELDS = ("max_concurrent", "max_pending", "result_ttl")
 
 # Fields where a stored/registered mismatch indicates a real correctness
-# bug rather than a deliberate operator override — no operator surface can
-# move them, so any mismatch is one — and therefore still raises unless
+# bug rather than a deliberate operator override, no operator surface can
+# move them, so any mismatch is one, and therefore still raises unless
 # ``force=True``.
 _STRUCTURAL_FIELDS = ("metadata",)
 
 
 def capacity_field_diverges(registered_value: object, stored_value: object) -> bool:
     """Whether a capacity field's ``@actor(...)`` literal disagrees with its
-    stored ``actor_config`` value — the single predicate every capacity
+    stored ``actor_config`` value, the single predicate every capacity
     -divergence surface in the codebase shares (`sync_actor_config`'s
     ``actor-config-capacity-override`` event below, and the boot-time
     ``actor-config-capacity-divergence`` line in ``worker/run.py``).
 
     Plain inequality: unlike ``max_pending``/``result_ttl`` (which fall
     back to the literal when the stored value is ``NULL``), the
-    comparison itself is symmetric — a literal of ``None`` (uncapped)
+    comparison itself is symmetric, a literal of ``None`` (uncapped)
     against a stored numeric cap is exactly as much a divergence as the
     reverse, so no side gets an early-exit guard that the other lacks.
     """
@@ -96,7 +96,7 @@ async def read_stored_queue_assignments(
     The stored assignment, not the ``@actor(queue=...)`` literal, is what
     routes a job: the cron leader fires onto it and every re-pend follows
     it, and `taskq actor-config move-queue` rewrites it without touching
-    any code. Actors with no row yet are absent from the mapping — their
+    any code. Actors with no row yet are absent from the mapping, their
     literal is what the first sync will seed.
 
     Never raises on a connection that cannot answer schema questions: the
@@ -129,13 +129,13 @@ async def sync_actor_config(
          - **Capacity fields** (``max_concurrent``, ``max_pending``,
            ``result_ttl``) are operator-owned once a row exists. A
            differing registered literal is logged at
-           ``actor-config-capacity-override`` (info level — this is an
+           ``actor-config-capacity-override`` (info level, this is an
            expected operator override, not a bug) and never raises. The
            stored value is left untouched by the UPSERT below.
          - **The queue assignment** is likewise operator-owned once a row
            exists (moved by `taskq actor-config move-queue`): a differing
            literal is logged at ``actor-config-queue-override`` (warning
-           level — cron fires follow the stored queue while producers
+           level, cron fires follow the stored queue while producers
            enqueue by their own literal, so the disagreement is real drift
            to surface) and never raises. This is the rolling-deploy window
            of a queue move: old-literal and new-literal workers both boot,
@@ -148,7 +148,7 @@ async def sync_actor_config(
            the UPSERT overwrites the stored value.
       3. Upsert all registered rows via ``INSERT ... ON CONFLICT (actor)
          DO UPDATE SET metadata = EXCLUDED.metadata, updated_at =
-         clock_timestamp()`` — the capacity columns and the queue
+         clock_timestamp()``, the capacity columns and the queue
          assignment are omitted from the ``SET`` clause so an existing
          row's ``max_concurrent`` / ``max_pending`` / ``result_ttl`` /
          ``queue`` survive unchanged; they are populated by the
@@ -212,10 +212,10 @@ async def sync_actor_config(
             if cfg.queue != stored_row["queue"]:
                 # Warning, never an error: this is either the rolling-deploy
                 # window of `taskq actor-config move-queue` (stored row
-                # moved, this process's literal not yet redeployed — or the
+                # moved, this process's literal not yet redeployed, or the
                 # reverse) or a literal that has not followed the fleet's
                 # assignment. The stored queue routes the cron leader's
-                # fires; producers enqueue by their own literal — so the
+                # fires; producers enqueue by their own literal, so the
                 # disagreement is real drift to surface, but refusing boot
                 # here is exactly what made a queue move need lockstep
                 # coordination. The newest assignment (the stored row)

@@ -5,8 +5,8 @@ caller connection) re-chunks the caller's stream INSIDE the backend:
 ``enqueue_batch_atomic`` consumes the lazy args generator chunk by
 chunk, and every per-item error the bulk core raises from a chunk
 carries a position in SOME chunk. The class defect this file pins
-closed: those positions crossed as CHUNK-LOCAL indices — a NUL at
-stream position 23 with chunk_size=10 surfaced as "item 3" — and no
+closed: those positions crossed as CHUNK-LOCAL indices - a NUL at
+stream position 23 with chunk_size=10 surfaced as "item 3" - and no
 client layer can repair that (the boundary that remaps the chunked
 arm's errors sees only its own per-chunk calls; it cannot know the
 backend's internal chunk base). The fix lives at the source: the
@@ -17,11 +17,11 @@ CALLER's stream.
 The in-memory mirror answers identically: it consumes the same chunks
 and preflights each through the same shared jsonb guards at the same
 base, where it previously surfaced a BARE ``ValueError(NUL_JSONB_ERROR)``
-with no attribution at all — a divergence the in-memory equivalence
+with no attribution at all - a divergence the in-memory equivalence
 rule forbids (same observable answer on both backends).
 
-The position is also pinned as a FIELD —
-``PayloadValidationError.item_index`` — at every raise site that knows
+The position is also pinned as a FIELD -
+``PayloadValidationError.item_index`` - at every raise site that knows
 an index (the bulk build loops, the mirror's chunk preflight, the
 client's annotation helper and its remapping re-raises), so retries
 and tooling read the coordinate instead of parsing the message. The
@@ -50,7 +50,7 @@ from taskq.testing.in_memory import InMemoryBackend
 _START = datetime(2025, 1, 1, tzinfo=UTC)
 
 # The scenario every atomic-arm case shares: 25 items, chunk_size=10,
-# the NUL at stream position 23 — chunk 3 (items 20-24), chunk-local
+# the NUL at stream position 23 - chunk 3 (items 20-24), chunk-local
 # position 3. Pre-fix, both backends named an index in the WRONG
 # coordinate space ("item 3" on PG, a bare ValueError in memory).
 _COUNT = 25
@@ -93,12 +93,12 @@ def _make_client(backend: InMemoryBackend) -> JobsClient:
 
 
 def _stored_for(backend: InMemoryBackend, actor_name: str) -> int:
-    return sum(1 for row in backend._jobs.values() if row.actor == actor_name)  # pyright: ignore[reportPrivateUsage]  # Why: test-only observation of the atomic arm's rollback — the nothing-stored contract the caller's retry decision rests on
+    return sum(1 for row in backend._jobs.values() if row.actor == actor_name)  # pyright: ignore[reportPrivateUsage]  # Why: test-only observation of the atomic arm's rollback - the nothing-stored contract the caller's retry decision rests on
 
 
 def _text_items(count: int, *, bad_at: int | None = None) -> Iterable[EnqueueItem]:
     """A ``count``-item stream whose item ``bad_at`` (if given) carries a
-    NUL byte in its payload — valid to pydantic, rejected by the shared
+    NUL byte in its payload - valid to pydantic, rejected by the shared
     jsonb NUL guard at the backend's per-chunk build/preflight."""
     for i in range(count):
         text = "bad\x00value" if i == bad_at else f"value-{i}"
@@ -110,8 +110,8 @@ def _text_items(count: int, *, bad_at: int | None = None) -> Iterable[EnqueueIte
 
 async def test_atomic_nul_at_later_stream_position_names_stream_global_index() -> None:
     """A NUL at stream position 23 of a 25-item stream (chunk_size=10)
-    raises ``PayloadValidationError`` naming item 23 — the position in
-    the CALLER's stream, not chunk-local position 3 — with the position
+    raises ``PayloadValidationError`` naming item 23 - the position in
+    the CALLER's stream, not chunk-local position 3 - with the position
     carried in ``item_index``, and the atomic rollback leaves nothing
     stored.
 
@@ -134,7 +134,7 @@ async def test_atomic_nul_at_later_stream_position_names_stream_global_index() -
     assert err.item_index == _BAD_AT
     # The annotation preserves the guard's field attribution.
     assert "payload" in str(err)
-    # The atomic contract: one transaction, rolled back whole — nothing
+    # The atomic contract: one transaction, rolled back whole - nothing
     # stored, so the caller retries the entire stream safely.
     assert _stored_for(backend, _nul_target.name) == 0
 
@@ -142,9 +142,9 @@ async def test_atomic_nul_at_later_stream_position_names_stream_global_index() -
 async def test_atomic_pydantic_failure_names_stream_global_index() -> None:
     """A payload that fails pydantic validation at stream position 23 of
     the atomic arm raises ``PayloadValidationError`` naming item 23 with
-    ``item_index == 23`` — the client's lazy generator enumerates the
+    ``item_index == 23`` - the client's lazy generator enumerates the
     WHOLE stream, so its annotation site is stream-global by
-    construction — and the rollback leaves nothing stored."""
+    construction - and the rollback leaves nothing stored."""
     backend = _make_backend()
     client = _make_client(backend)
 
@@ -153,7 +153,7 @@ async def test_atomic_pydantic_failure_names_stream_global_index() -> None:
             payload: BaseModel = (
                 _ForeignPayload() if i == _BAD_AT else _TextPayload(text=f"value-{i}")
             )
-            yield EnqueueItem(actor_ref=_nul_target, payload=payload)  # type: ignore[arg-type]  # Why: the wrong-model instance is the defect under test — build_enqueue_args must reject it
+            yield EnqueueItem(actor_ref=_nul_target, payload=payload)  # type: ignore[arg-type]  # Why: the wrong-model instance is the defect under test - build_enqueue_args must reject it
 
     with pytest.raises(PayloadValidationError, match=r"for item 23") as exc_info:
         await client.enqueue_batch_streaming(
@@ -170,7 +170,7 @@ async def test_atomic_nul_at_later_stream_position_names_stream_global_index_on_
     clean_pg_conn: asyncpg.Connection,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """The same pin against real Postgres — the seam the in-memory
+    """The same pin against real Postgres - the seam the in-memory
     backend cannot reach: PG's ``enqueue_batch_atomic`` re-chunks the
     stream inside the backend and each chunk crosses the bulk build
     loop, whose per-item NUL guard now annotates at ``index_base`` +
@@ -214,7 +214,7 @@ async def test_atomic_nul_at_later_stream_position_names_stream_global_index_on_
 async def test_chunked_arm_nul_remap_populates_item_index() -> None:
     """The CHUNKED (non-atomic) arm's registry remap re-raises the
     located NUL item at its stream-global index through the shared
-    ``_nul_item_payload_error`` helper — the field must ride along
+    ``_nul_item_payload_error`` helper - the field must ride along
     (``item_index == 4`` for the precedent scenario: NUL at position 4
     of a 6-item stream, chunk_size=2), with the committed prefix
     durable exactly as the precedent file pins."""
@@ -230,7 +230,7 @@ async def test_chunked_arm_nul_remap_populates_item_index() -> None:
 
 async def test_chunked_arm_pydantic_remap_populates_item_index() -> None:
     """The chunked arm's pydantic remap re-annotates through the
-    client's ``_item_payload_error`` at ``chunk_offset + position`` —
+    client's ``_item_payload_error`` at ``chunk_offset + position`` -
     the field must ride along there too."""
     backend = _make_backend()
     client = _make_client(backend)
@@ -238,7 +238,7 @@ async def test_chunked_arm_pydantic_remap_populates_item_index() -> None:
     def _stream() -> Iterable[EnqueueItem]:
         for i in range(6):
             payload: BaseModel = _ForeignPayload() if i == 4 else _TextPayload(text=f"value-{i}")
-            yield EnqueueItem(actor_ref=_nul_target, payload=payload)  # type: ignore[arg-type]  # Why: the wrong-model instance is the defect under test — build_batch_args must reject it
+            yield EnqueueItem(actor_ref=_nul_target, payload=payload)  # type: ignore[arg-type]  # Why: the wrong-model instance is the defect under test - build_batch_args must reject it
 
     with pytest.raises(PayloadValidationError, match=r"for item 4") as exc_info:
         await client.enqueue_batch_streaming(_stream(), chunk_size=2)
@@ -250,7 +250,7 @@ async def test_chunked_arm_pydantic_remap_populates_item_index() -> None:
 async def test_item_index_defaults_to_none_without_an_item_coordinate() -> None:
     """Backward compatibility of the field's default: raise sites with
     no item coordinate (single-item enqueue validation) leave
-    ``item_index`` as ``None`` — the field is additive, not a new
+    ``item_index`` as ``None`` - the field is additive, not a new
     requirement on every constructor call."""
     from taskq._validation import validate_actor_payload
 
@@ -262,7 +262,7 @@ async def test_item_index_defaults_to_none_without_an_item_coordinate() -> None:
 
 @pytest.mark.integration
 async def test_fast_arm_nul_names_item_index_on_pg(clean_jobs_app: JobsApp) -> None:
-    """The COPY arm's build loop populates the field too — driven
+    """The COPY arm's build loop populates the field too - driven
     straight at the backend (its caller always passes the whole list,
     so the index is the list position; the ``index_base`` plumbing is
     the same shared-guard call the atomic arm shifts). A NUL at list

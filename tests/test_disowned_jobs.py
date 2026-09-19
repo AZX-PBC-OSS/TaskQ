@@ -5,7 +5,7 @@ the row is left ``running`` and the documented recovery is lock-lease
 expiry. That recovery only works if this worker's heartbeat stops
 extending the row's lease: the renewal is keyed by ``locked_by_worker``,
 so without a per-worker disowned set the row would be renewed for as long
-as the process lived. These tests pin the disowned set at both ends —
+as the process lived. These tests pin the disowned set at both ends -
 the consumer records it, the heartbeat honours and prunes it, and the
 producer clears it when the fleet hands the row back to this worker.
 """
@@ -48,7 +48,7 @@ _ACTOR = "disowning_actor"
 
 
 class _DeadWriteBackend(InMemoryBackend):
-    """Every terminal write fails with an infra error — the DB is gone for
+    """Every terminal write fails with an infra error - the DB is gone for
     the duration of the dispatch, so no retry attempt can land."""
 
     async def mark_failed_or_retry(
@@ -124,7 +124,7 @@ async def _succeeding_actor(job_row: object, ctx: object) -> object:
 @pytest.mark.parametrize("actor", [_failing_actor, _succeeding_actor], ids=["failure", "success"])
 async def test_exhausted_terminal_write_disowns_the_job(actor: object) -> None:
     """After the write budget is spent on either terminal path the row is
-    still running and this worker has recorded it as disowned — the
+    still running and this worker has recorded it as disowned - the
     heartbeat's cue to stop renewing it."""
     backend = _DeadWriteBackend(clock=FakeClock(start=_START))
     job, worker_id = await _running_job(backend)
@@ -146,7 +146,7 @@ async def test_exhausted_terminal_write_disowns_the_job(actor: object) -> None:
     assert row is not None and row.status == "running"
     assert job.id in deps.disowned_jobs, (
         "the terminal write failed and the row is still running, yet the job "
-        "was not disowned — the heartbeat will keep renewing its lease and the "
+        "was not disowned - the heartbeat will keep renewing its lease and the "
         "sweep can never reclaim it while this worker lives"
     )
 
@@ -300,7 +300,7 @@ class _RecordingConn:
 
 class _NoopTransaction:
     """Explicit-API transaction stand-in (the heartbeat tick drives the
-    transaction explicitly since the #227 fix round's command budget)."""
+    transaction explicitly since the fix round's command budget)."""
 
     def __init__(self) -> None:
         self.started = False
@@ -401,7 +401,7 @@ async def test_heartbeat_excludes_disowned_jobs_from_lease_renewal() -> None:
     assert len(renewals) == 1
     sql, args = renewals[0]
     # $4 is the renewal threshold the loop binds since the gated
-    # renewal (#227): (worker_id, lease, disowned, threshold).
+    # renewal: (worker_id, lease, disowned, threshold).
     assert len(args) == 4 and list(cast(list[UUID], args[2])) == [disowned], (
         f"the lease renewal ran with {args!r}: the disowned ids are not bound, so "
         "the statement still renews every row this worker holds"
@@ -554,7 +554,7 @@ async def test_producer_reowns_a_disowned_job_it_claims_again() -> None:
         settings=settings,
         liveness=SimpleNamespace(tick=lambda *a, **k: None, forget=lambda *a, **k: None),
         disowned_jobs=disowned,
-        # The producer's availability subtracts active jobs (#229); this
+        # The producer's availability subtracts active jobs; this
         # test's single claimed job is never registered.
         active_jobs=SimpleNamespace(count=lambda: 0),
     )
@@ -564,7 +564,7 @@ async def test_producer_reowns_a_disowned_job_it_claims_again() -> None:
 
     task = asyncio.create_task(
         producer_loop(
-            deps,  # type: ignore[arg-type]  # Why: the established producer-loop unit pattern — a namespace with the fields the loop reads.
+            deps,  # type: ignore[arg-type]  # Why: the established producer-loop unit pattern - a namespace with the fields the loop reads.
             local_queue,
             shutdown_event,
             stop_event,
@@ -617,7 +617,7 @@ async def test_disowned_row_lease_lapses_and_the_sweep_reclaims_it(
         return value
 
     assert await _lease(disowned_id) == lease_end, (
-        "the heartbeat renewed the disowned row's lease — the sweep can never "
+        "the heartbeat renewed the disowned row's lease - the sweep can never "
         "reclaim it while this worker lives"
     )
     assert await _lease(sibling_id) > lease_end
@@ -689,7 +689,12 @@ async def test_failed_actor_not_found_release_disowns_the_job() -> None:
 
     await asyncio.wait_for(
         di_consumer_loop(
-            SimpleNamespace(producer_stop_event=asyncio.Event(), disowned_jobs=disowned),  # type: ignore[arg-type]  # Why: the fields the loop reads on this path; the signature still requires the full WorkerDeps.
+            SimpleNamespace(
+                producer_stop_event=asyncio.Event(),
+                disowned_jobs=disowned,
+                active_jobs=ActiveJobRegistry(),
+                drain_failures=0,
+            ),  # type: ignore[arg-type]  # Why: the fields the loop reads on this path; the signature still requires the full WorkerDeps.
             local_queue,
             shutdown_event,
             backend=cast(Backend, _DeadSnoozeBackend()),  # type: ignore[arg-type]  # Why: structural stand-in satisfying the one call the loop makes.

@@ -1,5 +1,5 @@
 """A shutdown release is held back until the interrupted actor has provably
-exited (#232).
+exited.
 
 ``task.cancel()`` on a sync actor cancels the *await* on the executor
 thread, never the thread: the consumer's cancellation handler used to write
@@ -18,7 +18,7 @@ production ``consume_one_job`` cancellation arm against the recording
 first worker's sync thread is provably still running: lives in
 ``tests/test_shutdown_interrupts_running_work.py``.
 
-The companion fix for #233's first half is pinned here too: an infra-failed
+The companion fix for the first half is pinned here too: an infra-failed
 release write must propagate the *cancellation* out of ``consume_one_job``,
 never the infra error: a bare ``raise`` in that except arm replaced the
 CancelledError with the InterfaceError and dispatch's generic handler spent
@@ -111,7 +111,7 @@ class _InfraFailingReleaseBackend(FakeBackend):
     """Every mark_interrupted attempt fails with the pool-lifecycle family.
 
     The class asyncpg raises from a bounded pool close (worker teardown):
-    the exact infra error the #233 arm must swallow so the cancellation,
+    the exact infra error the arm must swallow so the cancellation,
     not the InterfaceError, escapes the consumer.
     """
 
@@ -132,7 +132,7 @@ class _ParkedTxConnection:
     """asyncpg.Connection stand-in whose transaction unwind can be parked.
 
     The transactional path's unwind: the ``async with transaction()``
-    exit that rolls back: is the thing the release used to race (#232's
+    exit that rolls back: is the thing the release used to race (the
     second mechanism). Parking it lets the test hold the unwind open past
     the cancel and observe the ordering: the release write must land only
     after ``rollback_done``.
@@ -282,7 +282,7 @@ async def test_a_cancelled_sync_actor_await_detaches_but_the_thread_is_tracked()
     assert handle is not None, "the dispatch helper must record the thread handle on the ctx"
     assert not handle.done(), (
         "the thread was gated, so its handle must still be live after the "
-        "await was cancelled — the actor body has NOT exited"
+        "await was cancelled - the actor body has NOT exited"
     )
     assert not body_returned.is_set()
 
@@ -300,7 +300,7 @@ async def test_a_cancelled_sync_actor_await_detaches_but_the_thread_is_tracked()
 async def test_a_live_sync_actor_is_released_behind_a_hold_not_pending() -> None:
     """The sync actor still running at the forced cancel is released HELD.
 
-    This is the #232 regression cell: on the old arm the release carried
+    This is the regression cell: on the old arm the release carried
     hold=0 on the false assumption the actor unwound with the await, so the
     row landed pending and a second worker could claim it while the thread
     ran on. The hold is now the process's exit window (the unanchored
@@ -347,7 +347,7 @@ async def test_a_live_sync_actor_is_released_behind_a_hold_not_pending() -> None
 
     assert len(backend.mark_interrupted_calls) == 1, (
         "the shutdown-origin cancellation must release the attempt back to "
-        "the fleet — one mark_interrupted, never a mark_cancelled"
+        "the fleet - one mark_interrupted, never a mark_cancelled"
     )
     release = backend.mark_interrupted_calls[0]
     expected_hold = timedelta(seconds=20.0 + _watchdog_exit_tail(settings))
@@ -529,7 +529,7 @@ async def test_a_cancel_landing_on_the_park_still_releases_with_the_hold() -> No
 
     assert len(backend.mark_interrupted_calls) == 1, (
         "a cancellation landing on the exit park must not discard the "
-        "release — the row would stay running behind a dying lease"
+        "release - the row would stay running behind a dying lease"
     )
     release = backend.mark_interrupted_calls[0]
     assert release["hold"] == timedelta(seconds=20.0 + _watchdog_exit_tail(settings)), (
@@ -591,11 +591,11 @@ async def test_the_transactional_release_lands_only_after_the_unwind() -> None:
     # on: the release write has not happened yet.
     assert "release_write" not in tx_conn.events, (
         "the release must not land while the transaction task is still "
-        "unwinding — the consumer parks on the unwind handle first (#232)"
+        "unwinding - the consumer parks on the unwind handle first"
     )
     assert "rollback_entered" in tx_conn.events, (
         "the cancellation must have reached the tx task and entered its "
-        "transaction unwind by now — the park is what keeps the release "
+        "transaction unwind by now - the park is what keeps the release "
         "behind it"
     )
 
@@ -614,7 +614,7 @@ async def test_the_transactional_release_lands_only_after_the_unwind() -> None:
     )
 
 
-# ── #233: an infra-failed release write must not eat the cancellation ────
+# ── : an infra-failed release write must not eat the cancellation ────
 
 
 async def test_infra_failed_release_write_propagates_the_cancellation_not_the_error(
@@ -673,7 +673,7 @@ async def test_infra_failed_release_write_propagates_the_cancellation_not_the_er
     assert isinstance(escaped, asyncio.CancelledError), (
         "the cancellation must be what leaves the consumer: an "
         "InterfaceError escaping here is the deploy-mislabelled-as-failure "
-        f"bug (#233); got {escaped!r}"
+        f"bug; got {escaped!r}"
     )
     assert job.id in deps.disowned_jobs, (
         "the infra-failed release is best-effort: the row stays running and "
@@ -681,7 +681,7 @@ async def test_infra_failed_release_write_propagates_the_cancellation_not_the_er
     )
     assert backend.mark_cancelled_calls == [], (
         "an infra-failed infrastructure release must NOT fall through to "
-        "mark_cancelled — the row carries no operator cancel, and a cancel "
+        "mark_cancelled - the row carries no operator cancel, and a cancel "
         "write here would terminalise a deploy interruption"
     )
 
@@ -735,7 +735,7 @@ async def test_the_anchored_park_budget_is_the_remaining_share_capped_by_the_lea
     )
     assert tight_budget == 0.0, (
         "a lease that cannot cover the park plus the write floors the park "
-        "at zero — the consumer releases immediately with the full hold "
+        "at zero - the consumer releases immediately with the full hold "
         "rather than parking into the reclaim sweep's window"
     )
 
@@ -784,7 +784,7 @@ async def test_the_unanchored_park_shapes_pin_their_degraded_bounds() -> None:
 
         assert fallback_hold == timedelta(seconds=_BARE_CALL_HOLD_FALLBACK_SECS), (
             "a bare call with neither deps nor settings must carry the fixed "
-            "fallback hold — the lease-expiry bound a stranded row already "
+            "fallback hold - the lease-expiry bound a stranded row already "
             "imposes, never hold=0 with no evidence either way"
         )
     finally:

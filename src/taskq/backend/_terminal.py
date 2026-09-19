@@ -16,11 +16,11 @@ the ``job_attempts`` INSERT, and the ``job_events`` INSERT execute inside
 a single statement instead of three awaited round trips inside one
 transaction.  E2E profiling of the dispatch loop
 (benchmarks/e2e_dispatch.py, 2000-job drain against local compose
-Postgres) measured the three-statement form at ~1.4 ms per job — ~89% of
-dispatch wall-clock and ~10x the terminal UPDATE's own 0.14 ms — with the
+Postgres) measured the three-statement form at ~1.4 ms per job, ~89% of
+dispatch wall-clock and ~10x the terminal UPDATE's own 0.14 ms, with the
 round trips, not the statements' work, dominating.  Fusing them, plus
 dropping the pool path's now-redundant explicit BEGIN/COMMIT (a single
-SQL statement — CTEs included — is atomic by itself, so the transaction
+SQL statement, CTEs included, is atomic by itself, so the transaction
 context manager's two round trips bought nothing the statement doesn't
 already provide; the LOOP-scope ``mark_succeeded_with_conn`` path still
 runs inside the actor's transaction as before), removes four round trips
@@ -32,26 +32,26 @@ aborts the write whole, still classifies through
 Invariants preserved verbatim from the three-statement form:
 
 * The UPDATE stays the single arbiter: its fencing WHERE (``status =
-  'running' AND locked_by_worker = $2`` — now one epoch deeper with the
+  'running' AND locked_by_worker = $2``, now one epoch deeper with the
   attempt conjunct ``AND attempt = $k``, the handler's dispatch-time
   job-row attempt snapshot threaded from every call site: a stale
   attempt's write after a same-worker reclaim/redispatch no-ops exactly
   like a different worker's late write, fencing stale attempts so their
   terminal writes cannot land on rows they no longer own)
   decides everything, and an empty ``upd`` CTE makes the INSERT CTEs
-  insert nothing and the final ``SELECT`` return no row — the exact
+  insert nothing and the final ``SELECT`` return no row, the exact
   ``rec is None`` / ``WorkerOwnershipMismatch`` / ``False`` contract,
   without a second read.
 * ``job_attempts.worker_id`` resolves through the holder-CTE idiom
   (``FOR KEY SHARE`` probe, LEFT-scan semantics via scalar subquery): a
   present worker row records the id, an already-deleted one records
-  NULL, mirroring the column's ON DELETE SET NULL — never an FK
+  NULL, mirroring the column's ON DELETE SET NULL, never an FK
   violation (the constraint-violation tear-down risk documented on
   ``_sql.py``'s INSERT_ATTEMPT_SQL).
 * Every timestamp is database-written (``clock_timestamp()``; the
   retry/snooze arms' ``now_ts``); ``duration_ms`` is computed in the
   statement from the same started/finished pair Python used to receive
-  and re-multiply — but server-side, with exact numeric arithmetic
+  and re-multiply, but server-side, with exact numeric arithmetic
   instead of Python's float path.  Values can differ from the old
   Python computation by 1ms on exactly-whole-millisecond boundaries
   (where the float product drifted just below the integer); the
@@ -78,7 +78,7 @@ Every pool-bearing function here acquires with ``pool.acquire(timeout=…)``
 wrappers thread ``dispatcher_command_timeout``). An exhausted or wedged
 pool therefore fails the individual write inside a bound instead of
 queueing it forever: the ``TimeoutError`` is the designed terminal-write
-infra failure (see ``worker/_handlers.py``), never a job outcome — the
+infra failure (see ``worker/_handlers.py``), never a job outcome, the
 row stays ``running`` and lease expiry reclaims it. This is what keeps a
 cancel storm of concurrent consumer ``mark_cancelled`` writes from
 wedging both the writers AND any loop that shares the pool (the
@@ -87,7 +87,7 @@ heartbeat spiral pinned by
 
 Deliberately NOT done here (the evaluated alternative): coalescing
 outcomes across jobs into one multi-row flusher.  Completion is the
-job's final act — the consumer ``await``s (under ``asyncio.shield``)
+job's final act, the consumer ``await``s (under ``asyncio.shield``)
 its terminal write before reporting the outcome, so a returned
 ``mark_succeeded`` means the row is durably terminal, and the at-least-
 once window (crash → lease sweep → re-run) is exercised only when the
@@ -107,12 +107,12 @@ from uuid import UUID
 
 import structlog
 
-# Why: private import — the pre-serialized result path holds bytes, not a
+# Why: private import, the pre-serialized result path holds bytes, not a
 # dict, so the byte-level scan is the only way to run dumps_jsonb_str's NUL
 # guard without a second serialization. Same package, behavior pinned by test.
 from taskq._json import (
     NUL_JSONB_ERROR,
-    _encoded_has_nul,  # pyright: ignore[reportPrivateUsage]  # Why: byte-level NUL scan for the pre-serialized bytes path — see the comment above.
+    _encoded_has_nul,  # pyright: ignore[reportPrivateUsage]  # Why: byte-level NUL scan for the pre-serialized bytes path, see the comment above.
     decode_result_bytes,
     dumps_jsonb_str,
     sanitize_surrogates,
@@ -175,15 +175,15 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 #: caller does not thread one in. Every terminal write is ONE fused
 #: statement (the ~0.14 ms UPDATE the module docstring's e2e profile
 #: measured), so a checkout that cannot resolve in a quarter second is a
-#: wedged or closing pool, not a busy one — and the write's correct
+#: wedged or closing pool, not a busy one, and the write's correct
 #: outcome there is the DESIGNED failure: the acquire's ``TimeoutError``
 #: surfaces as terminal-write infra (``_TERMINAL_WRITE_INFRA_EXCEPTIONS``
 #: in worker/_handlers.py explicitly anticipates "timeout acquiring a
 #: pool connection"), the job row stays ``running``, and lock-lease
 #: expiry reclaims it at-least-once. Production callers
 #: (:class:`~taskq.backend.postgres.PostgresBackend`) thread
-#: ``dispatcher_command_timeout`` — the operator knob the repo's other
-#: bounded acquires use — so this default binds only direct module-level
+#: ``dispatcher_command_timeout``, the operator knob the repo's other
+#: bounded acquires use, so this default binds only direct module-level
 #: callers, which otherwise had NO bound at all.
 DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S: Final[float] = 0.25
 
@@ -201,11 +201,11 @@ def _progress_jsonb_escaped(value: dict[str, object] | None) -> str | None:
     wiring) is escaped here instead of refused: the write lands with the
     defect visible (:func:`~taskq._json.sanitize_surrogates`), never
     stranding the job ``running`` in the crash-reclaim loop. Mirrors the
-    in-memory twin's ``_merge_progress`` (testing/_terminal.py) exactly —
+    in-memory twin's ``_merge_progress`` (testing/_terminal.py) exactly ,
     the escape runs only on the cold path the serialization already
     rejected, and a structural refusal (over-deep nesting) still stands,
     because escaping cannot repair it. NUL stays refused (the ValueError
-    the twin raises for the same input) — the NUL family's split.
+    the twin raises for the same input), the NUL family's split.
     """
     if value is None:
         return None
@@ -216,7 +216,7 @@ def _progress_jsonb_escaped(value: dict[str, object] | None) -> str | None:
             return dumps_jsonb_str(sanitize_surrogates(value))
         except RecursionError:
             # from None: the walk's stack exhaustion is an artifact of the
-            # repair attempt, not the refusal's cause — the original
+            # repair attempt, not the refusal's cause, the original
             # UnencodableValue is the truthful failure (twin-mirrored).
             raise exc from None
 
@@ -228,13 +228,13 @@ def _error_text_escaped(value: str | None) -> str | None:
     the actor raised; rejecting them would strand the very job the text
     describes, and binding them raw raises asyncpg ``DataError`` (a
     ``PostgresError`` subclass) that the terminal-write classification
-    misreads as transient infra — the job loops through reclaim against
+    misreads as transient infra, the job loops through reclaim against
     the same unencodable text forever. The escaped form keeps the write
     valid and the defect diagnosable: the stored text shows exactly
     where the unencodable codepoint was. ``str.encode("utf-8",
     "backslashreplace")`` is the identity on any string a UTF-8 encoder
     accepts, so clean text binds byte-identically. The in-memory twin
-    stores this text verbatim (no encode on that tier) — pinned as the
+    stores this text verbatim (no encode on that tier), pinned as the
     intended mirror split in tests/test_rt_payload_surrogate_guards.py.
     """
     return sanitize_surrogates(value)
@@ -321,18 +321,18 @@ async def _mark_succeeded_on_conn(
     """Terminal success write: ONE statement (UPDATE + attempt + event).
 
     The fused ``sql.mark_succeeded`` keeps the pool and LOOP-scope
-    transactional paths byte-identical in semantics — see the module
+    transactional paths byte-identical in semantics, see the module
     docstring.  ``None`` here still means the fencing UPDATE matched no
     row (wrong worker, missing job, already moved): nothing was written.
 
-    *attempt* is the attempt-identity epoch — the handler's dispatch-time
+    *attempt* is the attempt-identity epoch, the handler's dispatch-time
     job-row attempt snapshot. The fence is one epoch deeper than the
     worker fence: ``attempt = $8`` must match the row's current attempt,
     so a stale handler's write (a same-worker reclaim/redispatch moved
     the row to a later attempt) no-ops exactly like a different worker's
-    late write — stale attempts cannot land their terminal writes on rows
-    they no longer own. ``attempt=None`` — a caller that cannot present
-    the epoch — binds NULL, which never satisfies the equality: a write
+    late write, stale attempts cannot land their terminal writes on rows
+    they no longer own. ``attempt=None``, a caller that cannot present
+    the epoch, binds NULL, which never satisfies the equality: a write
     that cannot prove which attempt it terminates must not terminate any
     attempt.
 
@@ -350,19 +350,19 @@ async def _mark_succeeded_on_conn(
     result_size: int | None
     if result_bytes is not None:
         # Why: the caller (the worker consumer) serialized this exact result
-        # once (orjson, the same options ``dumps_jsonb_str`` uses) — reuse
+        # once (orjson, the same options ``dumps_jsonb_str`` uses), reuse
         # the bytes instead of dumping a second time and re-encoding the
         # bound str a third time just to measure result_size_bytes.
         # len(result_bytes) IS the stored byte length: the bound value is
         # result_bytes.decode() and asyncpg encodes text parameters back to
         # the identical utf-8 bytes.  The NUL guard runs on the same bytes
         # via the byte-level scan (_encoded_has_nul), so the ValueError
-        # still fires for NUL results — same defect, same boundary, same
+        # still fires for NUL results, same defect, same boundary, same
         # message as the dict path below.
         if not result_bytes:
             # Empty bytes are never valid orjson output (dumps always emits
             # at least "null"/"{}"); decoded they bind as '' which jsonb
-            # rejects with a PostgresError — a permanent data defect the
+            # rejects with a PostgresError, a permanent data defect the
             # terminal-write classification would read as transient infra
             # failure, stranding the job until the lease sweep reclaims it
             # into the same write forever.  Same ValueError class the
@@ -373,7 +373,7 @@ async def _mark_succeeded_on_conn(
             )
         if _encoded_has_nul(result_bytes):
             raise ValueError(NUL_JSONB_ERROR)
-        # Why parse-and-discard: validation only — the bound value is the
+        # Why parse-and-discard: validation only, the bound value is the
         # decoded str below. decode_result_bytes carries the rejection
         # rationale (the transient-infra misclassification its ValueError
         # prevents) and proves the decode underneath cannot fail.
@@ -428,7 +428,7 @@ async def _mark_succeeded(
     acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> bool:
     # No explicit transaction: the fused statement is atomic by itself (a
-    # single SQL statement — CTEs included — either completes entirely or
+    # single SQL statement, CTEs included, either completes entirely or
     # not at all), and dropping the BEGIN/COMMIT pair removes two of the
     # four remaining per-job round trips.  It also shortens the fencing
     # row lock's hold from UPDATE..COMMIT to the statement's own duration.
@@ -505,7 +505,7 @@ async def _mark_failed(
     attempt: int | None = None,
     acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> JobRow:
-    # No explicit transaction — see _mark_succeeded.  The rare
+    # No explicit transaction, see _mark_succeeded.  The rare
     # WorkerOwnershipMismatch diagnostic (_select_owner) runs after the
     # no-op statement on the same connection: both the fused statement and
     # the owner read are single-statement implicit transactions, and the
@@ -562,7 +562,7 @@ async def _mark_retry(
         # Error text escaped at the bind for the same reason as
         # _mark_failed; the retry_delay is floored at
         # MIN_DEFERRAL_INTERVAL inside the statement (params CTE's
-        # GREATEST) — the template-side twin of the in-memory
+        # GREATEST), the template-side twin of the in-memory
         # _mark_failed_or_retry floor.
         rec = await conn.fetchrow(
             sql.mark_retry,
@@ -584,7 +584,7 @@ async def _mark_retry(
         row = _job_row_from_record(rec)
         # The attempt row (duration_ms computed from the winning arm's
         # own timestamps) and the state_change event are written by the
-        # fused statement's per-arm CTEs — see _sql_templates.mark_retry.
+        # fused statement's per-arm CTEs, see _sql_templates.mark_retry.
 
     if branch == "retried":
         log_state_change(
@@ -717,7 +717,7 @@ async def _mark_abandoned(
         # mark_abandoned's comment in _sql_templates.py): the applied row
         # still carries its NULL lock (the abandon clears neither the
         # holder nor the lease), so a NULL here means that arm is the one
-        # that fired. The row was unholdable by construction — warn on the
+        # that fired. The row was unholdable by construction, warn on the
         # shape so a fleet that keeps producing it (a rogue direct-SQL
         # writer, a restored backup with NULLed leases) is visible instead
         # of silently absorbing corruptions one abandon at a time; the
@@ -764,11 +764,11 @@ async def _mark_snoozed(
     # The statement's arms key on exactly the three SnoozeOutcome values;
     # PG cannot reject an unknown bind value inside the statement itself,
     # so this boundary owns the check (the in-memory twin raises the
-    # identical error) — before the pool is even touched, so an illegal
+    # identical error), before the pool is even touched, so an illegal
     # outcome raises loudly whatever the job's state instead of firing
     # no arm and stranding the row 'running'. denial_reason keeps the
     # same boundary check even though the statement no longer branches
-    # on it — a caller naming a reason the protocol does not define is a
+    # on it, a caller naming a reason the protocol does not define is a
     # coding error the API must refuse rather than silently accept.
     validate_snooze_outcome(outcome)
     validate_denial_reason(denial_reason)
@@ -790,10 +790,12 @@ async def _mark_snoozed(
 
         branch = rec["outcome_branch"]
         # A non-terminal snooze/denial writes no attempt/event rows and no
-        # timestamps of its own — it increments the outcome-keyed counter
-        # on the row (see _sql_templates.mark_snoozed).  The deadline arm
-        # is the statement's ONLY terminal exit, and writes its attempt
-        # row and state_change event exactly like every other terminal
+        # timestamps of its own, it increments the outcome-keyed counter
+        # on the row (see _sql_templates.mark_snoozed).  The deadline
+        # arms are the statement's ONLY terminal exits (failed for a
+        # clean row, cancelled for a phase-carrying one, the
+        # cancel-first arm), and each writes its attempt row and
+        # state_change event exactly like every other terminal
         # transition.
 
     if branch == "snoozed":
@@ -806,6 +808,25 @@ async def _mark_snoozed(
             attempt=rec["attempt"],
         )
         return "scheduled"
+    if branch == "cancelled":
+        # The deadline arm's cancel-first exit (the mark_cancelled
+        # semantics the statement's deadline_cancelled arm carries): the
+        # schedule_to_close lapsed at deferral time on a row carrying a
+        # cancel phase, and the statement terminalised 'cancelled' per
+        # operator intent, not 'failed'. The row is already terminal, so
+        # there is nothing left for the worker's cancel ladder to do and
+        # no DeadlineExceeded failure to report: read back "noop", the
+        # same contract a fenced-out deferral returns (the deferral did
+        # not land; the operator's cancel decided the row).
+        log_state_change(
+            logger,
+            from_state="running",
+            to_state="cancelled",
+            job_id=str(job_id),
+            worker_id=str(worker_id),
+            attempt=rec["attempt"],
+        )
+        return "noop"
     log_state_change(
         logger,
         from_state="running",
@@ -855,13 +876,13 @@ async def _mark_retry_after(
         branch = rec["outcome_branch"]
         # Why row_attempt, not attempt: the caller's ``attempt`` hint (the
         # SQL bind above) is a different value from the row's own attempt
-        # the logs must report — a same-named local would obscure the
+        # the logs must report, a same-named local would obscure the
         # parameter (pyright reportRedeclaration) and invite a future edit
         # to bind the wrong one.
         row_attempt: int = rec["attempt"]
         # The attempt row and state_change event are written by the
         # fused statement's per-arm CTEs (attempt outcome/error fields
-        # and the snoozed arms' now_ts-based duration included) — see
+        # and the snoozed arms' now_ts-based duration included), see
         # _sql_templates.mark_retry_after_consume_*.
 
     if branch == "snoozed":
@@ -875,6 +896,28 @@ async def _mark_retry_after(
             cause="retry_after",
         )
         return "scheduled"
+    if branch == "cancelled":
+        # The deadline arm's cancel-first exit (the mark_cancelled
+        # semantics the statement's deadline_cancelled arm carries): the
+        # schedule_to_close lapsed at deferral time on a row carrying a
+        # cancel phase, and the statement terminalised 'cancelled' per
+        # operator intent, ahead of both the budget and deadline
+        # failure arms. The row is already terminal, so there is nothing
+        # left for the worker's cancel ladder to do and no
+        # DeadlineExceeded/MaxAttemptsExceeded failure to report: read
+        # back "noop", the same contract a fenced-out deferral returns
+        # (the deferral did not land; the operator's cancel decided the
+        # row).
+        log_state_change(
+            logger,
+            from_state="running",
+            to_state="cancelled",
+            job_id=str(job_id),
+            worker_id=str(worker_id),
+            attempt=row_attempt,
+            cause="retry_after",
+        )
+        return "noop"
     log_state_change(
         logger,
         from_state="running",
@@ -908,7 +951,7 @@ async def _mark_interrupted(
     away): leave the spent attempt standing (no refund; the attempt did
     start executing), count the interruption on the row, write one
     ``reason='interrupted'`` event. Fenced on ownership,
-    attempt epoch and ``cancel_phase = 0`` — an operator cancel in flight
+    attempt epoch and ``cancel_phase = 0``, an operator cancel in flight
     wins and reads back as ``"noop"`` (a row whose
     ``cancel_attempted_at`` is set is cancelled, never re-available).
     A hold that would outlive
@@ -926,7 +969,7 @@ async def _mark_interrupted(
             _progress_jsonb_escaped(progress_state),
         )
         if rec is None:
-            # Fenced out — the row moved (reclaim, a terminal write, or an
+            # Fenced out, the row moved (reclaim, a terminal write, or an
             # operator cancel in flight). Instrumented per the project rule
             # that a no-op on a release path must not look like a release.
             record_job_interrupted_noop(None)

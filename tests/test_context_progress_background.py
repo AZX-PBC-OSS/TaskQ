@@ -4,16 +4,16 @@
 and returns without awaiting it, tracking the task in a shared,
 worker-lifetime set (``_pending_publish_tasks``, sourced from
 ``WorkerDeps.pending_publish_tasks`` in production) so the task isn't
-garbage-collected mid-flight — asyncio only holds a weak reference to
+garbage-collected mid-flight - asyncio only holds a weak reference to
 scheduled tasks, so something must hold a strong one until completion.
 
-When no tracking set is available (``_pending_publish_tasks is None`` —
+When no tracking set is available (``_pending_publish_tasks is None`` -
 only possible when a caller constructs ``JobContext`` directly rather than
 going through the worker consumer, which always wires
 ``deps.pending_publish_tasks``), ``progress()`` deliberately falls back to
 awaiting the publish inline rather than risking that documented
 garbage-collection pitfall. This is intentional, not a partial
-implementation — see ``test_falls_back_to_blocking_without_a_tracking_set``.
+implementation - see ``test_falls_back_to_blocking_without_a_tracking_set``.
 """
 
 import asyncio
@@ -97,7 +97,7 @@ async def test_buffer_mutated_before_progress_returns_even_with_slow_redis() -> 
 
 async def test_progress_returns_without_blocking_on_slow_redis() -> None:
     """With a tracking set available, progress() returns promptly even
-    when the Redis publish hangs — it schedules the publish as a
+    when the Redis publish hangs - it schedules the publish as a
     background task instead of awaiting it."""
     redis_client = _make_hanging_redis_client()
     pending: set[asyncio.Task[None]] = set()
@@ -115,7 +115,7 @@ async def test_progress_returns_without_blocking_on_slow_redis() -> None:
 
 async def test_falls_back_to_blocking_without_a_tracking_set() -> None:
     """Without a tracking set, progress() awaits the publish inline rather
-    than scheduling an untracked (garbage-collectable) background task —
+    than scheduling an untracked (garbage-collectable) background task -
     a deliberate safety trade-off, not a missing feature."""
     redis_client = _make_hanging_redis_client()
     ctx, _buf = _make_ctx(redis_client=redis_client, pending_publish_tasks=None)
@@ -181,9 +181,10 @@ async def test_redis_publish_failure_does_not_propagate_to_caller() -> None:
     assert len(pending) == 0
 
 
-async def test_multiple_rapid_progress_calls_each_schedule_own_task() -> None:
-    """N rapid progress() calls each schedule their own background task; all
-    eventually complete and are removed from the pending set."""
+async def test_multiple_rapid_progress_calls_coalesce_into_one_in_flight_task() -> None:
+    """N rapid progress() calls share ONE in-flight publish per job; the
+    later calls latch and the in-flight task drains them, and the set is
+    empty again once everything lands."""
     redis_client = AsyncMock()
     redis_client.publish.return_value = 1
     pending: set[asyncio.Task[None]] = set()
@@ -192,7 +193,10 @@ async def test_multiple_rapid_progress_calls_each_schedule_own_task() -> None:
     for i in range(5):
         await ctx.progress(step=i)
 
-    assert len(pending) == 5
+    # The coalescing contract: at most one publish round trip per job at
+    # a time, whatever the call rate. The later calls latched onto the
+    # in-flight task's buffer instead of scheduling their own tasks.
+    assert len(pending) == 1
 
     await asyncio.gather(*pending)
     for _ in range(5):

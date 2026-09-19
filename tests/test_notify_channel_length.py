@@ -5,8 +5,8 @@ truncates to NAMEDATALEN-1 (63) bytes; ``pg_notify`` takes it as text and
 raises ``22023 channel name too long`` past the same bound. A channel built
 by interpolating the schema name therefore has a cliff: the per-worker
 cancel channel (13 + schema + 1 + 36-char uuid) overflowed at a 14-char
-schema — every cancel's NOTIFY statement then errored, was swallowed as a
-warning, and cancel latency degraded to the heartbeat poll — and the wake
+schema - every cancel's NOTIFY statement then errored, was swallowed as a
+warning, and cancel latency degraded to the heartbeat poll - and the wake
 channel overflowed at 53, breaking every enqueue. ``schema_name`` admits up
 to 63 characters.
 
@@ -53,7 +53,7 @@ _schemas = st.builds(
     st.text(_IDENT_REST, min_size=0, max_size=62),
 )
 
-#: The widest ``str(uuid)`` form (36 chars) and a 40-char schema — well past
+#: The widest ``str(uuid)`` form (36 chars) and a 40-char schema - well past
 #: the 13-char cliff the per-worker channel used to have.
 _WIDEST_UUID = UUID("ffffffff-ffff-ffff-ffff-ffffffffffff")
 _LONG_SCHEMA = "tq_forty_character_schema_name_xxxxxxxxx"
@@ -92,7 +92,7 @@ def test_distinct_schemas_derive_distinct_channels(a: str, b: str) -> None:
 
 
 def test_channel_tag_is_stable_and_case_sensitive() -> None:
-    """The tag is a pure function of the schema text — quoted identifiers are
+    """The tag is a pure function of the schema text - quoted identifiers are
     case-sensitive, so ``Taskq`` and ``taskq`` are different schemas and must
     not share channels."""
     assert schema_channel_tag("taskq") == schema_channel_tag("taskq")
@@ -151,7 +151,7 @@ async def test_enqueue_wake_arrives_under_a_long_schema(pg_dsn: str) -> None:
 async def test_cancel_notify_reaches_the_worker_channel_under_a_long_schema(
     pg_dsn: str,
 ) -> None:
-    """A cancel under a 40-char schema lands on the per-worker channel — the
+    """A cancel under a 40-char schema lands on the per-worker channel - the
     fast path that used to error on the channel length and fall back to the
     heartbeat poll."""
     from taskq.worker.deps import open_worker_deps
@@ -175,7 +175,7 @@ async def test_cancel_notify_reaches_the_worker_channel_under_a_long_schema(
         try:
             await listen_conn.add_listener(
                 worker_channel(_LONG_SCHEMA, str(worker_id)),
-                _on_notify,  # pyright: ignore[reportArgumentType]  # Why: asyncpg stubs over-narrow the callback type — same pattern as worker/notify.py
+                _on_notify,  # pyright: ignore[reportArgumentType]  # Why: asyncpg stubs over-narrow the callback type - same pattern as worker/notify.py
             )
             backend = PostgresBackend(deps, SystemClock(), _GRACE, _GRACE)
             assert await backend.write_cancel_request(job_id, "test cancel") is True

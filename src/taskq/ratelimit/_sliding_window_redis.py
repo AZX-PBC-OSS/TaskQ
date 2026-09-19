@@ -5,7 +5,7 @@ GCRA styles, plus Lua-script caching helpers) live here as module-level
 functions taking ``self: SlidingWindow`` as the first parameter.
 
 Time domain: the acquire scripts derive now from ``redis.call('TIME')``
-and the peek paths read the store clock via ``redis_time_seconds`` — the
+and the peek paths read the store clock via ``redis_time_seconds``, the
 shared sorted-set scores and TATs are store-domain, so callers on nodes
 with divergent Python clocks are all measured against the same window.
 """
@@ -111,7 +111,7 @@ async def _acquire_redis_log(
     redis_client: "redis_async.Redis | None",
     settings: "WorkerSettings | None",
 ) -> RateLimitDecision:
-    """Redis log-style acquire — the script derives now from
+    """Redis log-style acquire, the script derives now from
     ``redis.call('TIME')`` (store-domain), so no Python clock participates."""
     if redis_client is None:
         raise RuntimeError("redis_client not injected for redis backend")
@@ -136,7 +136,7 @@ async def _acquire_redis_log(
         ttl_ms,
     ]
 
-    raw: list[object] = await script(keys=[key], args=argv)  # pyright: ignore[reportAssignmentType, reportUnknownMemberType, reportUnknownVariableType]  # Why: redis-py AsyncScript.__call__ has no return-type annotation — pyright cannot model the return shape; the three-element list structure is guaranteed by the Lua script contract
+    raw: list[object] = await script(keys=[key], args=argv)  # pyright: ignore[reportAssignmentType, reportUnknownMemberType, reportUnknownVariableType]  # Why: redis-py AsyncScript.__call__ has no return-type annotation, pyright cannot model the return shape; the three-element list structure is guaranteed by the Lua script contract
 
     allowed = int(raw[0]) == 1  # pyright: ignore[reportArgumentType]  # Why: raw[0] is int | bytes from Redis; int() accepts both at runtime
     count = int(raw[1])  # pyright: ignore[reportArgumentType]  # Why: raw[1] is int | bytes from Redis; int() accepts both
@@ -179,7 +179,7 @@ async def _acquire_redis_gcra(
     redis_client: "redis_async.Redis | None",
     settings: "WorkerSettings | None",
 ) -> RateLimitDecision:
-    """Redis GCRA acquire — the script derives now from ``redis.call('TIME')``
+    """Redis GCRA acquire, the script derives now from ``redis.call('TIME')``
     (store-domain), so no Python clock participates."""
     if redis_client is None:
         raise RuntimeError("redis_client not injected for redis backend")
@@ -204,7 +204,7 @@ async def _acquire_redis_gcra(
         ttl_ms,
     ]
 
-    raw: list[object] = await script(keys=[key], args=argv)  # pyright: ignore[reportAssignmentType, reportUnknownMemberType, reportUnknownVariableType]  # Why: redis-py AsyncScript.__call__ has no return-type annotation — pyright cannot model the return shape; the three-element list structure is guaranteed by the Lua script contract
+    raw: list[object] = await script(keys=[key], args=argv)  # pyright: ignore[reportAssignmentType, reportUnknownMemberType, reportUnknownVariableType]  # Why: redis-py AsyncScript.__call__ has no return-type annotation, pyright cannot model the return shape; the three-element list structure is guaranteed by the Lua script contract
 
     allowed = int(raw[0]) == 1  # pyright: ignore[reportArgumentType]  # Why: raw[0] is int | bytes from Redis; int() accepts both at runtime
     retry_after_ms = int(raw[1])  # pyright: ignore[reportArgumentType]  # Why: raw[1] is int | bytes from Redis; int() accepts both
@@ -266,7 +266,7 @@ async def _peek_redis_log(
     redis_client: "redis_async.Redis | None",
     settings: "WorkerSettings | None",
 ) -> RateLimitState:
-    """Read-only log-style snapshot — the retry estimate runs on the
+    """Read-only log-style snapshot, the retry estimate runs on the
     store's clock (``TIME``), the same domain the acquire script's ZADD
     scores live in."""
     if redis_client is None:
@@ -281,8 +281,8 @@ async def _peek_redis_log(
     # Read-only window filter: eviction only happens in acquire, so the
     # sorted set can still hold aged-out entries after the window empties
     # with no intervening acquire. Count only members whose score is
-    # inside the window — exclusive lower bound at ``now - window``, the
-    # exact boundary the acquire script's ZREMRANGEBYSCORE evicts up to —
+    # inside the window, exclusive lower bound at ``now - window``, the
+    # exact boundary the acquire script's ZREMRANGEBYSCORE evicts up to ,
     # measured against the store's clock (``TIME``), the domain the
     # scores live in. ZCARD would count the whole key and overstate
     # exhaustion while the next acquire is allowed.
@@ -325,7 +325,7 @@ async def _peek_redis_gcra(
     redis_client: "redis_async.Redis | None",
     settings: "WorkerSettings | None",
 ) -> RateLimitState:
-    """Read-only GCRA snapshot — measured against the store's clock
+    """Read-only GCRA snapshot, measured against the store's clock
     (``TIME``), the same domain the acquire script advances the TAT in."""
     if redis_client is None:
         raise RuntimeError("redis_client not injected for redis backend")
@@ -402,7 +402,7 @@ async def _refund_redis_log(
     if decision.request_id is None:
         raise ValueError(
             "log-style refund requires decision.request_id for ZREM; "
-            "got None — was this decision from a non-log acquire path?"
+            "got None, was this decision from a non-log acquire path?"
         )
     if redis_client is None:
         raise RuntimeError("redis_client not injected for redis backend refund")

@@ -3,7 +3,7 @@
 
 S1 branches (retry-exhausted / cancel-in-flight / crashed), the +60s cancel
 carve-out margin, the bounded-batch cap, S2's DeadlineExceeded terminal,
-and S3's due promotion — each driven through real dispatch where possible,
+and S3's due promotion - each driven through real dispatch where possible,
 with row-timestamp mutation standing in for clock advance on the PG side.
 """
 
@@ -21,7 +21,7 @@ async def _s1_branches_and_cap(side: DiffSide) -> None:
     # row mutation (the PG equivalent of FakeClock advancing past the lease).
     # retry_jitter is pinned to 0: this scenario's observable includes the
     # re-pended row's scheduled_at, which the projection compares at
-    # second-resolution buckets — a resolution that cannot resolve a jitter
+    # second-resolution buckets - a resolution that cannot resolve a jitter
     # band. The deterministic per-(id, attempt) jitter fraction's exact
     # cross-backend parity is pinned at full precision in
     # tests/test_reclaim_backoff_policy_parity.py; the branch/cap/drain
@@ -54,7 +54,7 @@ async def test_diff_sweep1_branches_cap_and_drain(pg_dsn: str) -> None:
         "reclaim sweep: retry branch requeues with a 5s backoff and a clean "
         "cancel slate; exhausted branch lands crashed (or cancelled when a "
         "cancel was in-flight); every branch clears the holder and lease and "
-        "writes the crashed attempt + lock_expired event — identically on "
+        "writes the crashed attempt + lock_expired event - identically on "
         "both backends, one bounded batch at a time",
         mem,
         pg,
@@ -74,12 +74,12 @@ async def _s1_cancel_margin_window(side: DiffSide) -> None:
     await side.dispatch("wholder", ["default"], limit=1)
     await side.write_cancel_request("inflight", "margin-probe")
     # Expired only 40s ago: past the lease, but NOT past the
-    # cancel_grace + cleanup_grace + 60s deep margin — the carve-out holds.
+    # cancel_grace + cleanup_grace + 60s deep margin - the carve-out holds.
     await side.mutate("inflight", lock_expired_ago_s=40.0)
     held = await side.sweep_reclaim()
     side.record("shallow_sweep", held)
     # Now past the deep margin (130s): the carve-out releases it and the
-    # sweep's cancel arm terminalises the row (PR #272: never a re-pend).
+    # sweep's cancel arm terminalises the row (PR : never a re-pend).
     await side.mutate("inflight", lock_expired_ago_s=130.0)
     deep = await side.sweep_reclaim()
     side.record("deep_sweep", deep)
@@ -87,8 +87,8 @@ async def _s1_cancel_margin_window(side: DiffSide) -> None:
 
 async def test_diff_sweep1_cancel_carveout_margin(pg_dsn: str) -> None:
     """The cancel carve-out: an in-flight cancel is left alone until the lock
-    has been expired past grace+grace+60s, then reclaimed. PR #272 (issues
-    #237/#238): operator intent outranks the retry budget, so the deep reclaim
+    has been expired past grace+grace+60s, then reclaimed: operator
+    intent outranks the retry budget, so the deep reclaim
     terminalises the row 'cancelled' instead of requeueing it pending. A
     cancelled job never re-pends; it terminalises, keeping cancel_phase and
     cancel_requested_at as the audit trail of the honoured request (the same
@@ -134,7 +134,7 @@ async def test_diff_sweep2_deadline_never_dispatched(pg_dsn: str) -> None:
     assert_mirror(
         "the deadline sweep fails pending/scheduled rows whose "
         "schedule_to_close has passed, writing the same terminal fields, "
-        "attempt row, and event on both backends — and only those rows",
+        "attempt row, and event on both backends - and only those rows",
         mem,
         pg,
     )
@@ -157,7 +157,7 @@ async def test_diff_sweep2_deadline_never_dispatched(pg_dsn: str) -> None:
 async def _s2_deadline_retried_job(side: DiffSide) -> None:
     # A job that RAN once (attempt row written at (job, 1) by the retry arm)
     # and rescheduled; its deadline then passes while it waits. S2 selects
-    # it — and PG's batched attempt INSERT targets (job_id, attempt) again.
+    # it - and PG's batched attempt INSERT targets (job_id, attempt) again.
     await side.enqueue("retried", scheduled_in=-30.0, stc_in=300.0, max_attempts=3)
     await side.dispatch("w1", ["default"], limit=1)
     await side.mark_failed_or_retry("retried", "w1", retry_delay_s=10.0)
@@ -183,7 +183,7 @@ async def test_diff_sweep2_deadline_after_retry_attempt_pk(pg_dsn: str) -> None:
     assert_mirror(
         "the deadline sweep on a row whose (job_id, attempt) attempt row "
         "already exists (any retried row) must behave identically on both "
-        "backends — today PG aborts on job_attempts_pkey while the mirror "
+        "backends - today PG aborts on job_attempts_pkey while the mirror "
         "writes a duplicate attempt row and completes the transition",
         mem,
         pg,
@@ -202,10 +202,10 @@ async def test_diff_sweep2_deadline_retried_job_does_not_wedge(pg_dsn: str) -> N
     conflict guard the sweep's batched INSERT collides with the
     (job_id, attempt) row the retry arm already wrote, raises
     UniqueViolationError, rolls back the whole sweep batch, and leaves the
-    job stuck at 'scheduled' — rewedging on every subsequent tick.
+    job stuck at 'scheduled' - rewedging on every subsequent tick.
     """
     _mem, pg = await run_differential(_s2_deadline_retried_job, pg_dsn=pg_dsn)
-    # The sweep must not have raised — 'sweep' should record the swept count
+    # The sweep must not have raised - 'sweep' should record the swept count
     # (an int), never an exception class name like "UniqueViolationError".
     assert pg["records"]["sweep"] != "UniqueViolationError", (
         f"deadline sweep raised UniqueViolationError on job_attempts_pkey "
@@ -216,7 +216,7 @@ async def test_diff_sweep2_deadline_retried_job_does_not_wedge(pg_dsn: str) -> N
     # never-dispatched-overdue-job contract (test_diff_sweep2_deadline_never_dispatched).
     assert pg["jobs"]["retried"]["status"] == "failed", (
         f"job left wedged at {pg['jobs']['retried']['status']!r} instead of "
-        f"'failed' — sweep 2 never terminally wrote the overdue retried job "
+        f"'failed' - sweep 2 never terminally wrote the overdue retried job "
         f"(the production wedge: the job, and every "
         f"other overdue job batched behind it, never leaves pending/scheduled)"
     )
@@ -228,7 +228,7 @@ async def _s3_promotion(side: DiffSide) -> None:
     before = await side.sweep_promote()
     side.record("before_due", before)
     # Drive both clocks past 'due': memory moves its row, PG binds
-    # clock_timestamp() arithmetic — the same logical instant.
+    # clock_timestamp() arithmetic - the same logical instant.
     await side.mutate("due", scheduled_in_s=-1.0)
     after = await side.sweep_promote()
     side.record("after_due", after)
@@ -241,7 +241,7 @@ async def test_diff_sweep3_promotion(pg_dsn: str) -> None:
     mem, pg = await run_differential(_s3_promotion, pg_dsn=pg_dsn)
     assert_mirror(
         "the promotion sweep flips due scheduled rows to pending (writing no "
-        "event rows — promotion is scheduler bookkeeping) and leaves "
+        "event rows - promotion is scheduler bookkeeping) and leaves "
         "not-yet-due rows untouched, on both backends",
         mem,
         pg,

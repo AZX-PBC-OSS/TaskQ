@@ -8,7 +8,7 @@ The prune loop takes its session-level advisory lock with
 ``QueryCanceledError`` (server-side 57014 cancel) and ``TimeoutError``
 (client-side command timeout) are BOTH in the transient set
 (``worker/_transient.py``), so a cancel landing mid-unlock is swallowed
-silently while the connection SURVIVES — the session keeps the lock, the
+silently while the connection SURVIVES - the session keeps the lock, the
 conn returns to the pool, and every later prune attempt on any pod logs
 ``prune-skipped-advisory-lock-held`` until that session dies.
 
@@ -43,8 +43,8 @@ pytestmark = pytest.mark.integration
 
 class _UnlockFailingConn:
     """Delegates everything to the wrapped real conn; raises *fail_with* on
-    the ``pg_advisory_unlock`` statement BEFORE it reaches PG — a cancel
-    arriving mid-unlock — and records the failure plus lock attempts."""
+    the ``pg_advisory_unlock`` statement BEFORE it reaches PG - a cancel
+    arriving mid-unlock - and records the failure plus lock attempts."""
 
     def __init__(self, conn: asyncpg.Connection, fail_with: type[BaseException]) -> None:
         self._conn = conn
@@ -59,7 +59,7 @@ class _UnlockFailingConn:
         self,
         query: str,
         *args: object,
-        timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg's per-statement timeout parameter (and ChaosConnection's own signature) — a delegating wrapper, not a waitable-with-deadline API.
+        timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg's per-statement timeout parameter (and ChaosConnection's own signature) - a delegating wrapper, not a waitable-with-deadline API.
     ) -> str:
         if "pg_advisory_unlock" in query:
             self.unlock_failed.set()
@@ -71,7 +71,7 @@ class _UnlockFailingConn:
         query: str,
         *args: object,
         column: int = 0,
-        timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg's per-statement timeout parameter — a delegating wrapper, not a waitable-with-deadline API.
+        timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg's per-statement timeout parameter - a delegating wrapper, not a waitable-with-deadline API.
     ) -> object | None:
         if "pg_try_advisory_lock" in query:
             self.lock_attempts += 1
@@ -81,7 +81,7 @@ class _UnlockFailingConn:
         self,
         query: str,
         *args: object,
-        timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg's per-statement timeout parameter — a delegating wrapper, not a waitable-with-deadline API.
+        timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg's per-statement timeout parameter - a delegating wrapper, not a waitable-with-deadline API.
     ) -> object:
         return await self._conn.fetchrow(query, *args, timeout=timeout)
 
@@ -89,13 +89,13 @@ class _UnlockFailingConn:
         self,
         query: str,
         *args: object,
-        timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg's per-statement timeout parameter — a delegating wrapper, not a waitable-with-deadline API.
+        timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg's per-statement timeout parameter - a delegating wrapper, not a waitable-with-deadline API.
     ) -> list[Any]:
         return await self._conn.fetch(query, *args, timeout=timeout)
 
 
 class _HeldPool:
-    """Pool double yielding the wrapper conn — the dispatcher pool handing
+    """Pool double yielding the wrapper conn - the dispatcher pool handing
     out (and taking back) the session that holds the prune lock. Release is
     a no-op: the wrapped real conn is test-owned and stays ALIVE, exactly
     the leak shape (the conn returns to the pool with the lock held)."""
@@ -144,7 +144,7 @@ async def test_failed_unlock_leaks_prune_lock_on_live_pooled_session(
     released) so another pod can prune. Today the contract is violated:
     worker/_leader_sweeps.py wraps the unlock in
     ``contextlib.suppress(*TRANSIENT_PG_ERRORS)`` with no other action, and
-    both failure shapes here are transient per worker/_transient.py — so
+    both failure shapes here are transient per worker/_transient.py - so
     the lock stayed held on the surviving session and a second session's
     ``pg_try_advisory_lock`` returned false: every pod skips pruning until
     that session dies. The real _prune_loop is driven end-to-end; only its
@@ -188,7 +188,7 @@ async def test_failed_unlock_leaks_prune_lock_on_live_pooled_session(
         await asyncio.wait_for(wrapper.unlock_failed.wait(), timeout=30.0)
         await asyncio.sleep(0.5)
         assert wrapper.lock_attempts == 1, (
-            "fixture fidelity: the prune attempt itself must have SUCCEEDED — a failed "
+            "fixture fidelity: the prune attempt itself must have SUCCEEDED - a failed "
             "attempt retries immediately under the patched sleep and re-acquires the "
             "session lock (attempt count "
             f"{wrapper.lock_attempts})"
@@ -200,12 +200,12 @@ async def test_failed_unlock_leaks_prune_lock_on_live_pooled_session(
         )
         assert acquired is True or not c_alive, (
             "Contract: a failed pg_advisory_unlock on a still-live session must not "
-            "strand the fleet's prune lock — the session must be terminated (or the "
+            "strand the fleet's prune lock - the session must be terminated (or the "
             "lock otherwise released) so another pod can prune. Today the contract is "
             f"violated ({label}): worker/_leader_sweeps.py's finally wraps the unlock "
             "in `contextlib.suppress(*TRANSIENT_PG_ERRORS)` and both QueryCanceledError "
             "and TimeoutError are transient per worker/_transient.py, so the unlock "
-            "failure was swallowed with no other action — the pooled session is still "
+            "failure was swallowed with no other action - the pooled session is still "
             f"alive (SELECT 1 -> {c_alive}) and still holds the prune lock "
             f"(pg_try_advisory_lock from a second session -> {acquired}); every pod "
             "logs prune-skipped-advisory-lock-held until that session dies"

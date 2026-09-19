@@ -2,14 +2,14 @@
 
 TaskQ's worker gives every actor and queue a *worker process subscribes to*
 one shared pool of ``TASKQ_MAX_CONCURRENCY`` consumer coroutines draining
-one ``local_queue`` (docs/guides/workers.md "Internal components" —
+one ``local_queue`` (docs/guides/workers.md "Internal components" -
 "Consumer loops. ``max_concurrency`` concurrent coroutines drain
 ``local_queue``"; src/taskq/worker/run.py's ``producer_loop`` /
 ``di_consumer_loop``). Admission has two layers: the claim (the SQL in
 src/taskq/backend/_dispatch_sql.py, pending -> running) and the per-job
 ``acquire_for_actor`` AFTER the claim, inside ``consume_one_job``
 (src/taskq/worker/_consumer.py:416-427), which decides whether the claimed
-job can actually spend its declared ``reservations``/``rate_limits`` — on
+job can actually spend its declared ``reservations``/``rate_limits`` - on
 denial (``ReservationUnavailable``) the job is rescheduled to ``scheduled``
 (docs/guides/rate-limiting.md:685-693). The claim is reservation-aware: its
 capacity computation folds in live ``reservation_slots`` occupancy (the
@@ -32,7 +32,7 @@ all denied capacity can only ever starve ITS OWN pool's workers -- it
 structurally cannot touch a sibling queue's dedicated worker slots.
 TaskQ's single-shared-pool-per-worker-process design is a
 real, documented architectural choice (docs/guides/workers.md's
-"Concurrency model" table has no "per-queue worker pool" row at all — only
+"Concurrency model" table has no "per-queue worker pool" row at all - only
 process/queue/actor/reservation *caps*, none of which isolate one actor's
 consumer-slot churn from another's), so this test does not ask TaskQ to
 adopt a per-queue-pool shape. It pins the narrower, checkable
@@ -46,14 +46,14 @@ consumer pool, one actor holding a permanently-exhausted single-slot
 ``ConcurrencyReservation`` and flooding its queue with jobs that are denied
 every attempt): healthy-actor throughput dropped ~44-45% versus an
 uncontended baseline (234.3 jobs/s baseline vs 127.9 jobs/s contended, and
-220.7 vs 124.1 on a second run — see the scratch probe this test's
+220.7 vs 124.1 on a second run - see the scratch probe this test's
 harness reproduces, not committed to the repo per the sweep's own rules).
 This test pins a conservative bound (no more than a 15% throughput drop)
 well inside that measured regression.
 
 The fix that turned it green: the claim statement is reservation-aware
 (``reservation_holdings`` / ``reservation_headroom`` in
-src/taskq/backend/_dispatch_sql.py) — an actor whose held bucket has no
+src/taskq/backend/_dispatch_sql.py) - an actor whose held bucket has no
 acquirable slot is admitted nothing that round, so its rows stay pending
 instead of churning consumer coroutines into denied acquires. The
 measured shape after the fix (same harness, same machine): the drop
@@ -81,8 +81,9 @@ from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.worker._consumer import consume_one_job
 from tests._fleet import Fleet, FleetPayload, fleet_actor_config, open_fleet
+from tests.conftest import interpreter_is_traced
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.load_sensitive]
 
 _QUEUE = "fleet_saturation_isolation_q"
 _SATURATED_ACTOR = "saturation_isolation_saturated"
@@ -137,11 +138,11 @@ async def _drain_healthy_actor_throughput(
 
     async def producer() -> None:
         while not stop.is_set():
-            # Deliberately the pre-#229 queue-emptiness formula: this
+            # Deliberately the pre-fix queue-emptiness formula: this
             # harness measures the dispatch SQL's reservation gate
             # (perf-evidence-dispatch.md A6), whose conditions include
-            # claims landing while consumers are busy — the shipped
-            # producer's exact-slot accounting (run.py, #229) is pinned
+            # claims landing while consumers are busy - the shipped
+            # producer's exact-slot accounting (run.py) is pinned
             # separately in tests/test_producer_slot_accounting.py.
             available = local_queue.maxsize - local_queue.qsize()
             if available <= 0:
@@ -171,7 +172,7 @@ async def _drain_healthy_actor_throughput(
                 return await _h(_p, ctx)
 
             # Only the saturated actor's jobs declare the exhausted
-            # reservation — the production wiring passes no registry
+            # reservation - the production wiring passes no registry
             # (and spends no acquire) for an actor without declarations.
             rl_registry: RateLimitRegistry | None = None
             rl_reservations: list[str] | None = None
@@ -207,7 +208,7 @@ async def _drain_healthy_actor_throughput(
     deadline = t0 + _RUN_CEILING_SECONDS
     while not stop.is_set() and time.monotonic() < deadline:
         # Wake on the completion signal itself (the 150th healthy job),
-        # never a fixed sleep — the deadline caps the wait, the event
+        # never a fixed sleep - the deadline caps the wait, the event
         # makes the measured `elapsed` end at the completion, not at the
         # next poll tick.
         with contextlib.suppress(TimeoutError):
@@ -237,6 +238,8 @@ async def _drain_healthy_actor_throughput(
 
 @pytest.mark.slow
 async def test_saturated_actor_does_not_reduce_healthy_actor_throughput(pg_dsn: str) -> None:
+    if interpreter_is_traced():
+        pytest.skip("the throughput bounds measure the tracer, not the code")
     """A co-located actor stuck on an exhausted reservation must not
     measurably slow a healthy actor sharing its worker's consumer pool.
 

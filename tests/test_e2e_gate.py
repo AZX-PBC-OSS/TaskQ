@@ -3,7 +3,7 @@
 Regression: a command-line ``-m`` REPLACES the addopts marker expression
 rather than combining with it, so a marker-only ``-m "not e2e"`` gate let
 ``-m "not integration"`` (make test-fast, README fast loop) and the CI legs
-passing ``-m "not redis"`` collect the whole e2e tier — docker image and
+passing ``-m "not redis"`` collect the whole e2e tier - docker image and
 wheel builds on every run. The gate must be structural: tests/e2e is never
 collected unless ``--e2e`` is passed, regardless of any ``-m`` expression.
 
@@ -58,7 +58,7 @@ def test_e2e_dir_not_collected_without_opt_in() -> None:
 
 
 def test_e2e_marker_alone_does_not_open_tier() -> None:
-    """``-m e2e`` without ``--e2e`` still collects nothing — the gate is structural."""
+    """``-m e2e`` without ``--e2e`` still collects nothing - the gate is structural."""
     proc = _collect("-m", "e2e", "tests/e2e")
     assert proc.returncode == 5, proc.stdout[-2000:]
     assert "tests/e2e/" not in proc.stdout

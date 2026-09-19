@@ -2,7 +2,7 @@
 
 Verifies the ownership model (caller-owned vs TaskQ-owned), teardown
 semantics, and DSN-elimination when all PG roles are overridden. Uses
-fakes — no real Postgres required. Integration tests live in
+fakes - no real Postgres required. Integration tests live in
 test_worker_deps.py (marked ``integration``).
 """
 
@@ -149,7 +149,7 @@ async def test_concrete_notify_conn_still_gets_listen() -> None:
         # LISTEN was issued
         assert any(sql.startswith("LISTEN") for sql in notify.executed)
 
-    # Caller-owned — not closed
+    # Caller-owned - not closed
     assert not notify.closed
 
 
@@ -237,7 +237,7 @@ async def test_all_pg_overridden_no_dsn_needed() -> None:
     """When every PG role is overridden, pg_dsn_direct/pooled can be None.
 
     The settings still carry the fake DSN (load_from_dict requires it), but
-    this test verifies that no DSN-fallback path is exercised — the fake
+    this test verifies that no DSN-fallback path is exercised - the fake
     DSN host would fail to connect, so success proves the fallback was
     never reached.
     """
@@ -270,7 +270,7 @@ async def test_all_pg_overridden_no_dsn_needed() -> None:
 
 async def test_caller_owned_leader_conn_without_factory_or_dsn_fails_fast() -> None:
     """A caller-owned leader_conn with no leader_conn_factory and no
-    pg_dsn_direct can never be rebuilt after a drop — the watchdog would
+    pg_dsn_direct can never be rebuilt after a drop - the watchdog would
     otherwise retry asyncpg.connect("None") forever. Fail fast at startup."""
     settings = _make_settings()
     settings.pg_dsn_direct = None
@@ -290,7 +290,7 @@ async def test_caller_owned_leader_conn_without_factory_or_dsn_fails_fast() -> N
 
 async def test_caller_owned_notify_conn_without_factory_or_dsn_is_allowed() -> None:
     """A caller-owned notify_conn without a rebuild path is NOT a startup
-    error — NOTIFY is best-effort (poll fallback); the listener disables
+    error - NOTIFY is best-effort (poll fallback); the listener disables
     itself gracefully if the conn drops and cannot be rebuilt."""
     settings = _make_settings()
     settings.pg_dsn_direct = None
@@ -382,7 +382,7 @@ async def test_unoverridden_direct_role_with_none_direct_dsn_fails_fast() -> Non
         dispatcher_pool_factory=_make_pool_factory(_FakePool()),
         heartbeat_pool_factory=_make_pool_factory(_FakePool()),
         worker_pool_factory=_make_pool_factory(_FakePool()),
-        # notify_conn NOT overridden — requires the direct DSN.
+        # notify_conn NOT overridden - requires the direct DSN.
         leader_conn_factory=_make_conn_factory(_FakeConn()),
     )
     with pytest.raises(ValueError, match="pg_dsn_direct is None"):
@@ -402,7 +402,7 @@ async def test_unoverridden_worker_pool_with_none_pooled_dsn_fails_fast() -> Non
     conns = WorkerConnections(
         dispatcher_pool_factory=_make_pool_factory(_FakePool()),
         heartbeat_pool_factory=_make_pool_factory(_FakePool()),
-        # worker_pool NOT overridden — requires the pooled DSN.
+        # worker_pool NOT overridden - requires the pooled DSN.
         notify_conn_factory=_make_conn_factory(_FakeConn()),
         leader_conn_factory=_make_conn_factory(_FakeConn()),
     )

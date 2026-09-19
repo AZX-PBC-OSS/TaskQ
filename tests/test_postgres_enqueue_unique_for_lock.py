@@ -81,7 +81,7 @@ def _inserted_record() -> dict[str, object]:
     ``JobRow``'s retry-curve fields are typed ``timedelta`` (application
     domain); the ``jobs`` row stores them as ``_seconds`` float columns
     (see migration 01.00.12_03) and ``_job_row_from_record`` reads them by
-    that column name — the one field family ``asdict`` cannot shape
+    that column name - the one field family ``asdict`` cannot shape
     correctly for a RETURNING-* stand-in, so it is patched here.
     """
     row = asdict(make_job_row(status="pending", actor=_UNIQUE_FOR_ACTOR, identity_key=_IDENTITY))
@@ -161,7 +161,7 @@ class _ContendedFakeConn:
     async def fetchrow(self, sql: str, *params: object) -> dict[str, object] | None:
         self.fetchrow_sql.append(sql)
         if "identity_key = $2" in sql:
-            # enqueue_unique_for_preflight — reached only after the lock is held.
+            # enqueue_unique_for_preflight - reached only after the lock is held.
             return self.preflight_rec
         return _inserted_record()
 
@@ -211,7 +211,7 @@ class TestUniqueForLockBoundedWaitUnit:
         assert exc_info.value.timeout_ms == 100.0
         assert elapsed < 2.0, f"budget was 100 ms but the wait took {elapsed:.3f}s"
         # Two-tier shape: one try-lock, then the savepoint tier with the
-        # GUC set to the budget. Only the SET ran — the timeout raised
+        # GUC set to the budget. Only the SET ran - the timeout raised
         # before any restore, and the savepoint ROLLBACK undoes the set
         # itself (verified PG savepoint/GUC semantics); the
         # restore-before-RELEASE belongs to the success path.
@@ -220,7 +220,7 @@ class TestUniqueForLockBoundedWaitUnit:
         assert conn.blocking_lock_calls == 1
         assert conn.set_config_values == ["100ms"]
         # The refusal is counted under its own bounded kind, beside the
-        # log line — never under a capacity kind, and never uncounted
+        # log line - never under a capacity kind, and never uncounted
         # (a log-only refusal is invisible to an operator's alerting).
         assert recorded == [(_UNIQUE_FOR_ACTOR, "unique_for_lock_timeout")]
 
@@ -228,7 +228,7 @@ class TestUniqueForLockBoundedWaitUnit:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The ``unique-for-lock-timeout`` log event carries the identity
-        and the expired budget — the per-occurrence observability channel
+        and the expired budget - the per-occurrence observability channel
         for an exhaustion whose RATE rides the backpressure counter."""
         _spy_backpressure(monkeypatch)
         conn = _ContendedFakeConn(try_lock_result=False, blocking_times_out=True)
@@ -305,7 +305,7 @@ class TestUniqueForLockBoundedWaitUnit:
     ) -> None:
         """``timeout_ms <= 0`` disables the bound (the pre-fix behavior),
         matching the ``lock_timeout`` GUC convention used by migrate.py: a
-        plain blocking acquire with NO savepoint and NO GUC statements —
+        plain blocking acquire with NO savepoint and NO GUC statements -
         only an unbounded server-side wait reaches the dedup answer."""
         recorded = _spy_backpressure(monkeypatch)
         conn = _ContendedFakeConn(try_lock_result=False, blocking_times_out=False)
@@ -351,7 +351,7 @@ class TestUniqueForLockBoundedWaitUnit:
 
     async def test_no_unique_for_takes_no_advisory_lock(self) -> None:
         """unique_for=None (or identity_key=None) never touches the
-        advisory lock — the bounded-wait machinery is scoped to the
+        advisory lock - the bounded-wait machinery is scoped to the
         single-flight path only."""
         conn = _ContendedFakeConn(try_lock_result=True)
         args = make_enqueue_args(actor=_UNIQUE_FOR_ACTOR, identity_key=_IDENTITY)

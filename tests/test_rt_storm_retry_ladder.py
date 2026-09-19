@@ -11,11 +11,11 @@ Model (from ``backend/_sweeps.py`` ``_SWEEP_1_SQL``, ``heartbeat.py``
 
 * The consumer-side failure ladder (``retry.py`` ``compute_backoff``) IS
   exponential, jittered and doubly capped (``min(policy.cap,
-  max_retry_backoff)``) — already pinned by ``test_retry_backoff.py``
+  max_retry_backoff)``) - already pinned by ``test_retry_backoff.py``
   and ``test_retry_backoff_overflow.py``. Not re-pinned here.
 * The CRASH-reclaim ladder IS the row's own stamped RetryPolicy curve:
   sweep 1 (and the heartbeat isolate twin) re-pend with
-  ``scheduled_at = clock_timestamp() + _RECLAIM_DELAY_SQL`` — the row's
+  ``scheduled_at = clock_timestamp() + _RECLAIM_DELAY_SQL`` - the row's
   base, cap, backoff kind and jitter evaluated at its attempt, spread by
   a deterministic md5-derived fraction of (job id, attempt) rather than
   an RNG draw, so a replayed sweep re-stamps the same instant and every
@@ -29,9 +29,9 @@ Model (from ``backend/_sweeps.py`` ``_SWEEP_1_SQL``, ``heartbeat.py``
   becoming due at one synchronised instant, and the cycle COUNT is
   bounded by ``max_attempts`` because dispatch stamps
   ``attempt = attempt + 1`` each round-trip and sweep 1's retry arm
-  requires ``attempt < max_attempts``. Damped — pinned below at
+  requires ``attempt < max_attempts``. Damped - pinned below at
   both tiers (in-memory and real PG).
-* The failure-retry arm — the one requeue shape that was unfloored — is
+* The failure-retry arm - the one requeue shape that was unfloored - is
   floored at ``MIN_DEFERRAL_INTERVAL``: ``retry.py`` ``_retry_decision``
   returns ``Retry(retry_delay=max(delay, MIN_DEFERRAL_INTERVAL))``, the
   in-memory write floors again as defense-in-depth
@@ -43,7 +43,7 @@ Model (from ``backend/_sweeps.py`` ``_SWEEP_1_SQL``, ``heartbeat.py``
   The rationale (``constants.py`` MIN_DEFERRAL_INTERVAL) is exactly the
   monopolisation hazard: "one job monopolises a worker slot in a
   claim/refund round trip per cycle", and an ``indefinite`` kind has no
-  attempt ceiling — so a ``RetryPolicy(base=0)`` can no longer cycle a
+  attempt ceiling - so a ``RetryPolicy(base=0)`` can no longer cycle a
   worker slot at claim/run/fail/retry round-trip rate; the pins below
   hold the tiers to it.
 
@@ -109,7 +109,7 @@ def _make_backend() -> tuple[InMemoryBackend, FakeClock]:
         cleanup_grace_period=_GRACE,
     )
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor=_ACTOR)
     return backend, clock
 
@@ -158,7 +158,7 @@ async def _seed_running_expired(
 
 def _assert_default_policy(row: JobRow) -> None:
     """The storm model's cycle floor is stated at the shipped default
-    policy — a row stamped with anything else silently voids it."""
+    policy - a row stamped with anything else silently voids it."""
     defaults = RetryPolicy()
     assert (
         row.retry_base,
@@ -175,7 +175,7 @@ def _reclaim_due_instant(row: JobRow, reclaim_time: datetime) -> datetime:
     """The due instant sweep 1 must stamp on *row* reclaimed at
     *reclaim_time*: the row's own stamped RetryPolicy curve at its
     attempt, spread by the deterministic per-(job, attempt) jitter
-    fraction — evaluated through ``_compute_reclaim_backoff``, the same
+    fraction - evaluated through ``_compute_reclaim_backoff``, the same
     boundary the in-memory sweep twin uses (and pinned bit-for-bit
     against the SQL fragment by the reclaim-parity suite), so the
     expectation is exact by construction rather than a tolerance around
@@ -199,15 +199,15 @@ def _reclaim_due_instant(row: JobRow, reclaim_time: datetime) -> datetime:
 
 async def test_mass_reclaim_requeue_is_damped_by_the_policy_curve_and_gates_redispatch() -> None:
     """A mass-reclaimed fleet is not redispatchable until each row's own
-    derived reclaim delay has elapsed — and the dispatch gate enforces it.
+    derived reclaim delay has elapsed - and the dispatch gate enforces it.
 
     Contract: after sweep 1 reclaims expired-lock running jobs onto the
     retry arm, every row carries ``scheduled_at == reclaim_time + the
-    row's derived reclaim delay`` — its stamped RetryPolicy curve at its
+    row's derived reclaim delay`` - its stamped RetryPolicy curve at its
     attempt, spread by the deterministic per-(job, attempt) jitter
     fraction, never a flat constant and never a fresh draw (a flat
     constant synchronises the cohort on one instant; an unfloored or
-    zero delay turns the cycle into a tight redispatch loop — the two
+    zero delay turns the cycle into a tight redispatch loop - the two
     amplification shapes the damper exists to prevent). At the shipped
     default policy (base 5 s, jitter 0.2) the delay lands in [4 s, 6 s).
     Without the gate, a 500-job fleet at max_concurrency 8 would re-enter
@@ -236,12 +236,12 @@ async def test_mass_reclaim_requeue_is_damped_by_the_policy_curve_and_gates_redi
         )
 
     # The dispatch gate: nothing is claimable before its own due
-    # instant, checked on both sides of the boundary — 1 ms before the
+    # instant, checked on both sides of the boundary - 1 ms before the
     # cohort's earliest due instant, then at each due instant itself.
     claimed_now = await backend.dispatch_batch(_WORKER, [_QUEUE], _STORM_N, _LEASE)
     assert claimed_now == [], (
         "dispatch must not claim a requeued job before its derived delay "
-        "elapses — the scheduled_at <= now gate is the redispatch rate damper"
+        "elapses - the scheduled_at <= now gate is the redispatch rate damper"
     )
 
     first_due = min(expected_due.values())
@@ -266,7 +266,7 @@ async def test_mass_reclaim_requeue_is_damped_by_the_policy_curve_and_gates_redi
             claimed_ids.add(claimed.id)
         assert claimed_ids == {j for j, due in expected_due.items() if due <= instant}, (
             "at each due instant the gate must admit exactly the rows whose "
-            "derived delay has elapsed — never a row still inside its damper"
+            "derived delay has elapsed - never a row still inside its damper"
         )
     assert claimed_ids == set(job_ids), (
         "past the cohort's last due instant the whole fleet is redispatchable"
@@ -278,7 +278,7 @@ async def test_reclaim_cycle_count_is_bounded_by_attempt_exhaustion() -> None:
     increment plus sweep 1's ``attempt < max_attempts`` retry-arm guard
     cap the cycle count at ``max_attempts - 1`` reclaims per job.
 
-    Contract: a permanently-crashing job cannot cycle forever — after
+    Contract: a permanently-crashing job cannot cycle forever - after
     the attempt budget is spent, the same systemic failure lands the row
     on a terminal state ('crashed'). The repetition until attempt
     exhaustion is bounded, not unbounded.
@@ -293,7 +293,7 @@ async def test_reclaim_cycle_count_is_bounded_by_attempt_exhaustion() -> None:
     assert row is not None and row.status == "pending"
 
     # Redispatch once the row's own derived reclaim delay has elapsed
-    # (the due instant the sweep stamped — the gate admits the row at
+    # (the due instant the sweep stamped - the gate admits the row at
     # exactly that instant), crash again: attempt 2 → 3 = max_attempts.
     clock.advance(row.scheduled_at - clock.now())
     (claimed,) = await backend.dispatch_batch(_WORKER, [_QUEUE], 1, _LEASE)
@@ -310,7 +310,7 @@ async def test_reclaim_cycle_count_is_bounded_by_attempt_exhaustion() -> None:
     row = await backend.get(job_id)
     assert row is not None
     assert row.status == "crashed", (
-        "a job at max_attempts whose lock expired again must land 'crashed' — "
+        "a job at max_attempts whose lock expired again must land 'crashed' - "
         "the attempt budget is the cycle-count bound; a retry-arm miss here "
         "would mean an unbounded crash/reclaim loop"
     )
@@ -322,12 +322,12 @@ async def test_reclaim_cycle_count_is_bounded_by_attempt_exhaustion() -> None:
 
 async def test_zero_base_indefinite_failure_retry_cycles_at_zero_period_unfloored() -> None:
     """A ``RetryPolicy(base=0, kind='indefinite')`` degenerates the backoff
-    curve to zero — the monopolisation hazard with no attempt ceiling. The
+    curve to zero - the monopolisation hazard with no attempt ceiling. The
     validating policy boundary now refuses the shape, so the degenerate
     policy is built with ``model_construct``: the shape a row stamped by an
     earlier release carries, or a boundary bypass produces. The CONTRACT,
     asserted after the loop: a failure-retry decision must never carry a
-    delay below ``MIN_DEFERRAL_INTERVAL`` — the same floor the deferral arms
+    delay below ``MIN_DEFERRAL_INTERVAL`` - the same floor the deferral arms
     (``mark_snoozed``, ``mark_retry_after`` non-consuming) apply at
     their writes for exactly this monopolisation rationale, now applied
     by the failure-retry decision itself (``retry.py`` floors at the
@@ -336,8 +336,8 @@ async def test_zero_base_indefinite_failure_retry_cycles_at_zero_period_unfloore
     The loop drives five full claim→fail→retry rounds; its zero-landing
     assertions (``scheduled_at == now``, instant reclaim, five cycles at
     one unmoved tick) are conditioned on the decision carrying a zero
-    delay: they fire only inside the defect shape — documenting its full
-    cycle as evidence — and never pin it as today's behaviour. If the
+    delay: they fire only inside the defect shape - documenting its full
+    cycle as evidence - and never pin it as today's behaviour. If the
     floor ever regresses, the loop re-derives the zero-period evidence
     and the contract assert below is what fails.
     """
@@ -386,12 +386,12 @@ async def test_zero_base_indefinite_failure_retry_cycles_at_zero_period_unfloore
         # pattern): the assertions document the defect's full
         # claim→fail→retry cycle at one unmoved tick and fire only
         # inside that shape, so the loop can never pin the defect as
-        # today's behaviour — the contract asserted after the loop is
+        # today's behaviour - the contract asserted after the loop is
         # the binding one, and it is what goes red if the floor ever
         # regresses while these assertions re-derive the evidence.
         if decision.retry_delay == timedelta(0):
             assert row.scheduled_at == clock.now(), (
-                "retry_delay=0 lands scheduled_at == now (pending, unfloored) — "
+                "retry_delay=0 lands scheduled_at == now (pending, unfloored) - "
                 "head of every dispatch round"
             )
             claimed = await backend.dispatch_batch(_WORKER, [_QUEUE], 1, _LEASE)
@@ -399,24 +399,24 @@ async def test_zero_base_indefinite_failure_retry_cycles_at_zero_period_unfloore
             assert claimed[0].attempt == attempt + 1
             cycles_at_t0 += 1
         else:
-            # Floored decision — the contract's landing: the row is
+            # Floored decision - the contract's landing: the row is
             # scheduled floor-out and NOT claimable at this tick, so the
             # loop must re-park it running/owned to drive the next round
             # (the zero-delay branch's instant reclaim plays this role
-            # inside the defect shape). Pure mechanics — the floored
+            # inside the defect shape). Pure mechanics - the floored
             # landing itself is pinned by the side-by-side test below.
             _set_running(backend, job_id, attempt=attempt + 1)
 
     if last_delay == timedelta(0):
         assert cycles_at_t0 == 5, (
-            "five full failure cycles completed at one unmoved clock tick — the zero-period evidence"
+            "five full failure cycles completed at one unmoved clock tick - the zero-period evidence"
         )
 
     # ── THE CONTRACT ────────────────────────────────────────────────────
     assert last_delay is not None and last_delay >= MIN_DEFERRAL_INTERVAL, (
         f"failure-retry delay must be floored at MIN_DEFERRAL_INTERVAL "
         f"({MIN_DEFERRAL_INTERVAL}); got {last_delay} for a base=0 indefinite "
-        "policy — a sub-floor delay requeues the job at the head of dispatch "
+        "policy - a sub-floor delay requeues the job at the head of dispatch "
         "order, so the actor cycles a worker slot at claim/run/fail/retry "
         "round-trip rate with no period and no attempt ceiling"
     )
@@ -427,7 +427,7 @@ async def test_deferral_arms_floor_zero_delay_but_failure_retry_does_not() -> No
     ``Snooze(0)`` is floored to ``MIN_DEFERRAL_INTERVAL`` (1 s) by
     ``mark_snoozed``'s snooze arm, and a failure ``Retry(0)`` handed to
     the write raw is floored to the same interval by the failure-retry
-    arm — the asymmetry this test was written red against is landed.
+    arm - the asymmetry this test was written red against is landed.
 
     GREEN on both halves (the floor is pinned behaviour on both arms);
     each half's assertion carries its arm's contract.
@@ -443,7 +443,7 @@ async def test_deferral_arms_floor_zero_delay_but_failure_retry_does_not() -> No
     snooze_row = await backend.get(snoozer)
     assert snooze_row is not None
     assert snooze_row.scheduled_at - _START == MIN_DEFERRAL_INTERVAL, (
-        "the deferral arm floors Snooze(0) at MIN_DEFERRAL_INTERVAL — pinned "
+        "the deferral arm floors Snooze(0) at MIN_DEFERRAL_INTERVAL - pinned "
         "anti-monopolisation behaviour"
     )
 
@@ -459,7 +459,7 @@ async def test_deferral_arms_floor_zero_delay_but_failure_retry_does_not() -> No
     assert fail_row.scheduled_at - _START >= MIN_DEFERRAL_INTERVAL, (
         f"the failure-retry arm must apply the same floor the deferral arm "
         f"just demonstrated; got scheduled_at - now = "
-        f"{fail_row.scheduled_at - _START} — a sub-floor landing requeues the "
+        f"{fail_row.scheduled_at - _START} - a sub-floor landing requeues the "
         "job at the head of the dispatch order, instantly re-claimable "
         "(the monopolisation hazard the floor exists for)"
     )
@@ -474,13 +474,13 @@ def test_failure_retry_floor_must_match_the_deferral_family() -> None:
 
     The behavioural half is green on the in-memory tier (the twin's
     ``_mark_failed_or_retry`` floors ``max(retry_delay,
-    MIN_DEFERRAL_INTERVAL)`` — see the side-by-side test above); this
+    MIN_DEFERRAL_INTERVAL)`` - see the side-by-side test above); this
     pin's job is the template half: without the ``GREATEST`` in
     ``mark_retry``, the PG tier silently requeues below the floor
     whenever a caller hands the write a raw sub-floor delay (the
     in-memory twin floors, the mirror diverges, and the monopolisation
-    hazard the floor exists for — one claim/refund round trip per cycle
-    monopolising a worker slot — returns on real PG).
+    hazard the floor exists for - one claim/refund round trip per cycle
+    monopolising a worker slot - returns on real PG).
 
     Source-text assertion over rendered SQL, the same inventory-guard
     category as ``test_release_fixes_core``'s no-``now()`` pin: there is
@@ -496,9 +496,9 @@ def test_failure_retry_floor_must_match_the_deferral_family() -> None:
     floor_sql = f"interval '{MIN_DEFERRAL_INTERVAL.total_seconds()} seconds'"
     greatest_floor = f"GREATEST($3::interval, {floor_sql})"
 
-    # The deferral family's pinned floor shape — the reference:
+    # The deferral family's pinned floor shape - the reference:
     assert greatest_floor in sql.mark_snoozed, (
-        "mark_snoozed must keep its GREATEST($3, MIN_DEFERRAL_INTERVAL) floor — "
+        "mark_snoozed must keep its GREATEST($3, MIN_DEFERRAL_INTERVAL) floor - "
         "the family reference this pin holds mark_retry to"
     )
     assert greatest_floor in sql.mark_retry_after_consume_false, (
@@ -507,7 +507,7 @@ def test_failure_retry_floor_must_match_the_deferral_family() -> None:
     # The failure-retry arm must carry the SAME floor:
     assert greatest_floor in sql.mark_retry, (
         "mark_retry must floor its requeue delay at MIN_DEFERRAL_INTERVAL via "
-        "GREATEST, exactly like the deferral arms — the PG twin of the "
+        "GREATEST, exactly like the deferral arms - the PG twin of the "
         "in-memory floor; without it a raw sub-floor delay requeues at the "
         "head of the dispatch order on real PG"
     )
@@ -518,17 +518,17 @@ def test_failure_retry_floor_must_match_the_deferral_family() -> None:
         "THEN 'scheduled'" in sql.mark_retry
     ), (
         "mark_retry's status branch must key on the floored effective delay, "
-        "not the raw $3 bind — the single effective delay contract"
+        "not the raw $3 bind - the single effective delay contract"
     )
     # Both arms' deadline comparison AND the retried arm's scheduled_at
     # read the same effective delay:
     assert sql.mark_retry.count("clock_timestamp() + (SELECT effective_delay FROM params)") == 3, (
         "the retried arm's scheduled_at and both arms' deadline comparisons "
-        "must read the floored effective_delay — one effective delay per write"
+        "must read the floored effective_delay - one effective delay per write"
     )
     # The consuming RetryAfter arm keeps the RAW delay by design:
     assert "GREATEST" not in sql.mark_retry_after_consume_true, (
-        "the consuming RetryAfter arm must keep the raw delay — its requeue "
+        "the consuming RetryAfter arm must keep the raw delay - its requeue "
         "is a real execution bounded by the budget it spends, not the "
         "deferral floor"
     )
@@ -586,16 +586,16 @@ async def test_pg_reclaim_damper_and_attempt_exhaustion(pg_dsn: str) -> None:
     """On real Postgres: sweep 1's retry arm stamps
     ``scheduled_at = clock_timestamp() + the row's derived reclaim
     delay`` (its stamped RetryPolicy curve at its attempt, spread by the
-    deterministic per-row jitter fraction — never a flat constant, never
+    deterministic per-row jitter fraction - never a flat constant, never
     a fresh draw); ``dispatch_batch`` claims nothing while that timestamp
     is in the future (the SQL gate ``j2.scheduled_at <=
     statement_timestamp()``); once due, dispatch claims with
     ``attempt + 1``; and the exhausted arm lands 'crashed'.
 
-    Deterministic — no wall-clock sleeps: the expected delay is derived
+    Deterministic - no wall-clock sleeps: the expected delay is derived
     from the row's own identity, the sweep's stamp is bracketed by
     server-clock reads taken around it (the reclaim-parity suite's
-    measurement discipline — the sweep's own ``clock_timestamp()`` is
+    measurement discipline - the sweep's own ``clock_timestamp()`` is
     unobservable from outside, so the bracket is milliseconds wide while
     the delay is seconds), and due-ness is produced by rewinding
     ``scheduled_at`` rather than waiting.
@@ -630,7 +630,7 @@ async def test_pg_reclaim_damper_and_attempt_exhaustion(pg_dsn: str) -> None:
         )
         pools.extend([worker_pool, dispatcher_pool])
         backend = PostgresBackend(
-            _PoolsDeps(settings, worker_pool=worker_pool, dispatcher_pool=dispatcher_pool),  # type: ignore[arg-type]  # Why: duck-typed BackendDeps — settings plus the three pools, the full surface the swept paths touch.
+            _PoolsDeps(settings, worker_pool=worker_pool, dispatcher_pool=dispatcher_pool),  # type: ignore[arg-type]  # Why: duck-typed BackendDeps - settings plus the three pools, the full surface the swept paths touch.
             clock=SystemClock(),
             cancellation_grace_period=timedelta(0),
             cleanup_grace_period=timedelta(0),
@@ -639,7 +639,7 @@ async def test_pg_reclaim_damper_and_attempt_exhaustion(pg_dsn: str) -> None:
         # Fill: one bounded reclaim batch re-pends the storm, each row by
         # its own derived reclaim delay. Server-clock reads bracket the
         # sweep, so each row's stamp must land at exactly its bracketed
-        # instant plus the derived delay — a flat constant or a fresh
+        # instant plus the derived delay - a flat constant or a fresh
         # draw falls outside the bracket on virtually every run.
         before = await admin.fetchval("SELECT clock_timestamp()")
         assert isinstance(before, datetime)
@@ -671,7 +671,7 @@ async def test_pg_reclaim_damper_and_attempt_exhaustion(pg_dsn: str) -> None:
                 policy_defaults.backoff,
                 policy_defaults.jitter,
             ), (
-                "the seeded rows must carry the default policy columns — the "
+                "the seeded rows must carry the default policy columns - the "
                 "storm model's cycle floor is stated at the default policy"
             )
             expected = _compute_reclaim_backoff(
@@ -684,19 +684,19 @@ async def test_pg_reclaim_damper_and_attempt_exhaustion(pg_dsn: str) -> None:
                 f"the requeue damper must stamp scheduled_at = clock_timestamp() "
                 f"+ the row's derived reclaim delay ({expected} for this row) on "
                 f"PG; got scheduled_at={rec['scheduled_at']!r} with the sweep "
-                f"bracketed in [{before!r}, {after!r}] — the derived delay is the "
+                f"bracketed in [{before!r}, {after!r}] - the derived delay is the "
                 "cycle's period floor"
             )
 
         # Gate: nothing claimable while scheduled_at is in the future.
         claimed = await backend.dispatch_batch(worker_id, [_QUEUE], 10, _LEASE)
         assert claimed == [], (
-            "PG dispatch must refuse future-scheduled_at rows — the "
+            "PG dispatch must refuse future-scheduled_at rows - the "
             "scheduled_at <= statement_timestamp() index gate is the "
             "redispatch rate damper under storm"
         )
 
-        # Due: rewind the damper and claim — attempt increments.
+        # Due: rewind the damper and claim - attempt increments.
         await admin.execute(
             f'UPDATE "{schema}".jobs SET scheduled_at = clock_timestamp() - '
             "interval '1 second' WHERE id = ANY($1)",
@@ -711,7 +711,7 @@ async def test_pg_reclaim_damper_and_attempt_exhaustion(pg_dsn: str) -> None:
             )
 
         # Exhaustion: park the victim at max_attempts, expire its lock
-        # again — the next reclaim must land it terminal.
+        # again - the next reclaim must land it terminal.
         await admin.execute(
             f'UPDATE "{schema}".jobs SET attempt = $2, lock_expires_at = '
             "clock_timestamp() - interval '1 second' WHERE id = $1",
@@ -722,7 +722,7 @@ async def test_pg_reclaim_damper_and_attempt_exhaustion(pg_dsn: str) -> None:
         assert reclaimed_again == 1
         status = await admin.fetchval(f'SELECT status FROM "{schema}".jobs WHERE id = $1', victim)
         assert status == "crashed", (
-            f"the exhausted arm must land 'crashed' (got {status!r}) — "
+            f"the exhausted arm must land 'crashed' (got {status!r}) - "
             "attempt exhaustion is the cycle-count bound on PG too"
         )
     finally:

@@ -5,7 +5,7 @@
 The feature under attack: keyed ``reservation_slots`` /
 ``rate_limit_buckets`` rows carry their own staleness (the ``keyed``
 mark plus ``last_used_at``, refreshed by the acquire / release / upsert
-statements that already touch them — piggybacking freshness on statements
+statements that already touch them - piggybacking freshness on statements
 already in flight), and the maintenance leader's ``sweep_idle_keyed_rows``
 deletes marked rows unused past ``keyed_row_reclaim_period``, one bounded
 committed batch per tick per table. The author's pins
@@ -14,36 +14,36 @@ siblings) cover the steady states: orphan reclamation, static
 immortality, the redis-backend publish, the acquire/release stamps, the
 live-lease veto, the disable sentinel, the batch bound, the leader
 wiring. This file attacks the INTERLEAVINGS and the mark's writers
-those pins cannot reach — each test names the hypothesis it drives:
+those pins cannot reach - each test names the hypothesis it drives:
 
-* **the sweep-vs-live-use races** — a write landing between the sweep's
+* **the sweep-vs-live-use races** - a write landing between the sweep's
   candidate window and its DELETE (an acquire, a release). The
   hypothesis: the DELETE must re-check eligibility under its row lock
   (EvalPlanQual), or a live row dies / a live bucket is partially
   deleted. The slots arm's guard re-checks only ``job_id``/lease; the
-  buckets arm re-checks the stamp too — the asymmetry is probed from
+  buckets arm re-checks the stamp too - the asymmetry is probed from
   both sides.
-* **refresh-on-use completeness** — every statement that touches a
+* **refresh-on-use completeness** - every statement that touches a
   keyed row must stamp it. The author pins the acquire/release and the
   token bucket's acquire; unpinned are the token bucket's REFUND and
   the re-materialisation ``ensure_slots`` over rows that SURVIVED (the
-  conflict arm — the registry's re-resolve path after an eviction whose
+  conflict arm - the registry's re-resolve path after an eviction whose
   rows outlived the drain).
-* **the mark's birth and death** — whether any path can flip a STATIC
+* **the mark's birth and death** - whether any path can flip a STATIC
   bucket's rows fleet-reclaimable (the migration's own deny-forever
   trap; the in-process collision guard cannot see across processes),
   and whether the mark and stamp are reborn correctly when a fleet
   sweep deletion is healed by the next acquire.
-* **rolling-deploy skew** — the previous release's unstamped acquire
+* **rolling-deploy skew** - the previous release's unstamped acquire
   against the new sweep (is the horizon/mark shape safe for a live-held
   row?), and the pre-migration ``UndefinedColumnError`` the leader
   block claims to tolerate per tick.
-* **the redis-backend carve-out through the outage fallback** — the one
+* **the redis-backend carve-out through the outage fallback** - the one
   path where a redis-backend keyed bucket's PG row IS written: the
   fallback's preseed/upsert must keep the row unmarked, and the sweep
   must never reset mid-outage fallback state.
 
-An attack that lands red stays red — it is the finding, reported with
+An attack that lands red stays red - it is the finding, reported with
 the design's own words it contradicts. A green attack is a refutation
 the suite keeps as a pin.
 """
@@ -67,8 +67,8 @@ from taskq.ratelimit.composition import RateLimitHandle
 from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.reservation import (
-    _ACQUIRE_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: the race tests must run the production acquire statement itself, held open in a transaction — a paraphrase would prove nothing about the real interleaving.
-    _RELEASE_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same — the production release statement, held open, is the interleaving under test.
+    _ACQUIRE_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: the race tests must run the production acquire statement itself, held open in a transaction - a paraphrase would prove nothing about the real interleaving.
+    _RELEASE_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same - the production release statement, held open, is the interleaving under test.
     ConcurrencyReservation,
 )
 from taskq.ratelimit.token_bucket import TokenBucket
@@ -78,11 +78,11 @@ from taskq.worker._leader_shared import SweepContext
 from taskq.worker.deps import WorkerDeps
 
 #: The production horizon (``WorkerSettings.keyed_row_reclaim_period``
-#: default) — rows are aged past it rather than shrinking it, so the
+#: default) - rows are aged past it rather than shrinking it, so the
 #: sweep predicate runs exactly as the leader drives it.
 _HORIZON = timedelta(hours=1)
 
-#: The production batch bound's magnitude — wide enough that every test
+#: The production batch bound's magnitude - wide enough that every test
 #: below is capped by eligibility, not by the batch.
 _BATCH = 256
 
@@ -112,7 +112,7 @@ def _settings(pg_dsn: str) -> WorkerSettings:
 
 
 def _pg_ref(base_name: str) -> KeyedRateLimitRef:
-    """A keyed rate limit on the PG backend — the acquire path's own
+    """A keyed rate limit on the PG backend - the acquire path's own
     preseed/upsert creates and stamps the ``rate_limit_buckets`` row."""
     return KeyedRateLimitRef.typed(
         _TenantPayload,
@@ -164,7 +164,7 @@ async def _drop_schema(pg_dsn: str) -> None:
 
 async def _sweep(pg_dsn: str, *, horizon: timedelta = _HORIZON, batch_size: int = _BATCH) -> int:
     """One leader-tick's worth of the fleet reclaim sweep, on a bare
-    connection — the seam the maintenance leader drives. Safe to run as
+    connection - the seam the maintenance leader drives. Safe to run as
     a ``asyncio`` task: the connection's lifecycle is self-contained."""
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -229,7 +229,7 @@ async def _bucket_stamp_is_fresh(pool: asyncpg.Pool, bucket: str) -> bool | None
 
 
 async def _bucket_state_tokens(pool: asyncpg.Pool, bucket: str) -> float | None:
-    """The stored token count of *bucket*'s ``rate_limit_buckets`` row —
+    """The stored token count of *bucket*'s ``rate_limit_buckets`` row -
     the outage-fallback state a redis-backend keyed bucket carries."""
     async with pool.acquire() as conn:
         return await conn.fetchval(
@@ -241,7 +241,7 @@ async def _bucket_state_tokens(pool: asyncpg.Pool, bucket: str) -> float | None:
 
 async def _age_slots(pool: asyncpg.Pool, bucket: str, older_than: timedelta) -> None:
     """Row-timestamp mutation standing in for clock advance (the
-    differential harness's doctrine) — ages *bucket*'s staleness stamps
+    differential harness's doctrine) - ages *bucket*'s staleness stamps
     without waiting out a real horizon."""
     async with pool.acquire() as conn:
         await conn.execute(
@@ -270,7 +270,7 @@ async def _await_lock_waiter(pool: asyncpg.Pool) -> None:
     sweep's DELETE takes its statement snapshot under READ COMMITTED
     (the uncommitted writer is invisible, so the rows still look
     stale/free), then blocks on the writer's row lock. Only once that
-    wait is OBSERVED may the writer commit — that ordering is the race
+    wait is OBSERVED may the writer commit - that ordering is the race
     under test: the refresh lands strictly between the candidate window
     and the DELETE's row lock, which is exactly the interleaving
     EvalPlanQual exists for.
@@ -302,7 +302,7 @@ async def test_acquire_landing_between_window_and_delete_partially_deletes_a_liv
     and its DELETE must keep the bucket WHOLE.
 
     The sweep's own contract (``_SWEEP_IDLE_KEYED_SLOTS_SQL``): "a bucket
-    must be reclaimed WHOLE or not at all — a partial delete would
+    must be reclaimed WHOLE or not at all - a partial delete would
     silently shrink the bucket's configured capacity, and the
     acquire-path heal only fires at ZERO rows (a partially-deleted
     bucket denies with a smaller slot count forever, no code path ever
@@ -331,7 +331,7 @@ async def test_acquire_landing_between_window_and_delete_partially_deletes_a_liv
         try:
             async with conn_a.transaction():
                 # The real acquire statement, held open: slot 0 is taken
-                # and locked, uncommitted — invisible to the sweep's
+                # and locked, uncommitted - invisible to the sweep's
                 # snapshot, blocking to its DELETE.
                 row = await conn_a.fetchrow(acquire_sql, bucket, job_id, worker_id, 30.0)
                 assert row is not None and row["slot_index"] == 0, (
@@ -339,7 +339,7 @@ async def test_acquire_landing_between_window_and_delete_partially_deletes_a_liv
                 )
                 sweep_task = asyncio.create_task(_sweep(pg_dsn))
                 await _await_lock_waiter(pool)
-                # Exiting the transaction block commits the acquire —
+                # Exiting the transaction block commits the acquire -
                 # the refresh lands between the sweep's window and its
                 # row lock.
             deleted: int = await sweep_task
@@ -350,12 +350,12 @@ async def test_acquire_landing_between_window_and_delete_partially_deletes_a_liv
         assert rows == 4, (
             f"the fleet sweep partially deleted a LIVE keyed bucket: an acquire committed "
             f"between the sweep's candidate window and its DELETE, the per-row guard "
-            f"(job_id/lease only — no last_used_at re-check, unlike the buckets arm) "
+            f"(job_id/lease only - no last_used_at re-check, unlike the buckets arm) "
             f"spared the acquired row but its DELETE removed the {4 - rows} free "
             f"siblings ({deleted} deleted, {rows} of 4 rows remain). The sweep's own "
             "comment calls this 'the one accepted partial ... its acquire stamped it "
             "fresh, so the bucket is live again and re-enters eligibility a horizon "
-            "later' — but a bucket in continuous use never goes idle past the horizon, "
+            "later' - but a bucket in continuous use never goes idle past the horizon, "
             "so it never re-enters eligibility, never returns to zero rows (the heal "
             "fires only at zero), and permanently runs at reduced capacity: the "
             "whole-bucket contract stated ten lines above the guard is violated by "
@@ -410,7 +410,7 @@ async def test_release_landing_between_window_and_delete_loses_the_freshly_relea
         await res.ensure_slots(pool)
         worker_id = new_uuid()
         # Slot 0: held by a worker whose lease expired two hours ago (the
-        # shape sweep 4 has not yet cleared) — eligible through the
+        # shape sweep 4 has not yet cleared) - eligible through the
         # free-or-expired arm of every window in the sweep.
         async with pool.acquire() as conn:
             await conn.execute(
@@ -436,7 +436,7 @@ async def test_release_landing_between_window_and_delete_loses_the_freshly_relea
                 )
                 sweep_task = asyncio.create_task(_sweep(pg_dsn))
                 await _await_lock_waiter(pool)
-                # Commit: the freed, freshly-stamped row is now visible —
+                # Commit: the freed, freshly-stamped row is now visible -
                 # the sweep's DELETE re-evaluates it under its row lock.
             await sweep_task
         finally:
@@ -447,8 +447,8 @@ async def test_release_landing_between_window_and_delete_loses_the_freshly_relea
             f"the fleet sweep deleted the row a release had just freed and stamped "
             f"({rows} of 2 rows remain): the release landed between the sweep's "
             "candidate window and its DELETE, so EvalPlanQual re-checked the row "
-            "against the slots arm's guard — job_id/lease only, never the "
-            "last_used_at the release had just refreshed — and the freshly-stamped, "
+            "against the slots arm's guard - job_id/lease only, never the "
+            "last_used_at the release had just refreshed - and the freshly-stamped, "
             "mid-workflow row died with its stale free sibling. The buckets arm's "
             "own DELETE re-checks the stamp ('AND b.keyed AND b.last_used_at < ...'); "
             "the slots arm's asymmetry with it is the hole this attack drives"
@@ -496,7 +496,7 @@ async def test_rematerialisation_over_surviving_rows_leaves_the_bucket_fully_rec
         # pending-reclaim drain, idle past the horizon.
         await _age_slots(pool, bucket, _HORIZON * 2)
 
-        # Re-materialisation — exactly what _resolve_reservation_name's
+        # Re-materialisation - exactly what _resolve_reservation_name's
         # fresh-registration branch runs for the same concrete name.
         remat = ConcurrencyReservation(
             name=bucket,
@@ -512,7 +512,7 @@ async def test_rematerialisation_over_surviving_rows_leaves_the_bucket_fully_rec
             "re-materialisation left the bucket's pre-eviction staleness in place: "
             "ensure_slots' contract promises 'a fresh last_used_at', but the ON "
             "CONFLICT arm (DO UPDATE SET keyed = EXCLUDED.keyed) refreshes only the "
-            "keyed mark — a bucket that just came back into a live registry still "
+            "keyed mark - a bucket that just came back into a live registry still "
             "reads as idle past the horizon, so the leader tick between the "
             "re-materialisation's ensure and the acquire's first stamp deletes the "
             "whole bucket out from under the acquiring worker (one denial plus the "
@@ -545,7 +545,7 @@ async def test_keyed_materialisation_over_a_static_name_flips_its_rows_fleet_rec
     rows are born false and must NEVER be flipped true (a static
     reservation has no acquire-path heal, so deleted rows would deny
     forever)". The registry's concrete-name collision guard sees only
-    ITS OWN process's entries — two workers with different actor sets
+    ITS OWN process's entries - two workers with different actor sets
     (different registries) can legally hold a static declaration and a
     keyed ref that resolve to the SAME concrete name, and the keyed
     materialisation's ensure_slots conflict arm re-marks the static
@@ -555,7 +555,7 @@ async def test_keyed_materialisation_over_a_static_name_flips_its_rows_fleet_rec
     pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=1, max_size=4)
     try:
         name = "collide:s1"
-        # Worker B: the static declaration — the bootstrap's startup
+        # Worker B: the static declaration - the bootstrap's startup
         # ensure, rows born keyed=false.
         static = ConcurrencyReservation(
             name=name,
@@ -570,7 +570,7 @@ async def test_keyed_materialisation_over_a_static_name_flips_its_rows_fleet_rec
         )
 
         # Worker A: a DIFFERENT process's registry (its actor set does
-        # not declare the static name — the in-process collision guard
+        # not declare the static name - the in-process collision guard
         # cannot see worker B's entry) resolves the keyed ref whose
         # concrete name IS the static name.
         reg_a = RateLimitRegistry()
@@ -591,7 +591,7 @@ async def test_keyed_materialisation_over_a_static_name_flips_its_rows_fleet_rec
             "fleet-reclaimable: the concrete name 'collide:s1' equals the static "
             "name, worker A's registry cannot see worker B's static entry (the "
             "collision guard is process-local), and ensure_slots' conflict arm "
-            "(DO UPDATE SET keyed = EXCLUDED.keyed) re-marked the rows true — "
+            "(DO UPDATE SET keyed = EXCLUDED.keyed) re-marked the rows true - "
             "migration 01.00.10_02's own invariant says static rows 'must NEVER be "
             "flipped true (a static reservation has no acquire-path heal, so "
             "deleted rows would deny forever)'"
@@ -608,7 +608,7 @@ async def test_keyed_materialisation_over_a_static_name_flips_its_rows_fleet_rec
             f"the fleet sweep deleted a STATIC reservation's rows ({rows} of 2 "
             "remain) after a cross-registry keyed materialisation marked them: the "
             "static limiter has no keyed lifecycle, no heal, and no "
-            "re-materialisation — every acquisition on worker B now denies forever"
+            "re-materialisation - every acquisition on worker B now denies forever"
         )
     finally:
         await pool.close()
@@ -620,7 +620,7 @@ async def test_keyed_materialisation_over_a_static_name_flips_its_rows_fleet_rec
 
 @pytest.mark.integration
 async def test_refund_refreshes_the_keyed_bucket_row_stamp(pg_dsn: str) -> None:
-    """The token bucket's PG refund is a release-path USE of the row —
+    """The token bucket's PG refund is a release-path USE of the row -
     its UPDATE refreshes ``last_used_at`` (token_bucket.py: "a bucket
     whose token was just refunded is mid-workflow"), so a refunded
     bucket must not be swept even when its stamp had aged past the
@@ -671,7 +671,7 @@ async def test_refund_refreshes_the_keyed_bucket_row_stamp(pg_dsn: str) -> None:
 @pytest.mark.integration
 async def test_buckets_arm_delete_rechecks_the_stamp_under_a_late_acquire(pg_dsn: str) -> None:
     """The buckets arm's DELETE re-checks ``keyed AND last_used_at <
-    horizon`` under its row lock — an acquire (the real upsert from
+    horizon`` under its row lock - an acquire (the real upsert from
     ``token_bucket._acquire_pg``) committing between the sweep's window
     and the DELETE spares the row. The mirror of the slots arm's race:
     there the guard checks only job_id/lease; here the stamp itself is
@@ -698,7 +698,7 @@ async def test_buckets_arm_delete_rechecks_the_stamp_under_a_late_acquire(pg_dsn
         # locks the row and stamps it fresh, uncommitted. The state is the
         # refilling bucket's full document (this fixture's ref is
         # capacity=5, refill_per_second=0.5): provably safe to delete, so
-        # only the fresh stamp can spare the row — anything the quota veto
+        # only the fresh stamp can spare the row - anything the quota veto
         # keeps would make this pin blind to a stamp re-check regression.
         upsert_sql = (
             f'INSERT INTO "{_schema()}".rate_limit_buckets '
@@ -719,7 +719,7 @@ async def test_buckets_arm_delete_rechecks_the_stamp_under_a_late_acquire(pg_dsn
                 )
                 sweep_task = asyncio.create_task(_sweep(pg_dsn))
                 await _await_lock_waiter(pool)
-                # Commit: the acquire's fresh stamp is visible — the
+                # Commit: the acquire's fresh stamp is visible - the
                 # DELETE re-evaluates the row under its row lock.
             deleted: int = await sweep_task
         finally:
@@ -746,7 +746,7 @@ async def test_swept_keyed_bucket_rematerialises_marked_and_fresh_on_the_next_ac
     pg_dsn: str,
 ) -> None:
     """After a fleet sweep deletes a tracked keyed bucket's rows, the
-    next acquire's denial-path heal re-materialises them — and the
+    next acquire's denial-path heal re-materialises them - and the
     re-born rows carry the mark and fresh stamps (the
     self-heal's interplay with the new fleet sweep: deletion is a
     transient denial, not a wedge)."""
@@ -775,7 +775,7 @@ async def test_swept_keyed_bucket_rematerialises_marked_and_fresh_on_the_next_ac
 
         # The tracked entry survives the sweep; the acquire denies on
         # zero rows, the heal probes, re-materialises, and the retry
-        # succeeds — the re-born rows marked and freshly stamped.
+        # succeeds - the re-born rows marked and freshly stamped.
         again = await reg.acquire_for_actor(
             rate_limits=[],
             reservations=[_res_ref("heal-res", slots=2)],
@@ -815,12 +815,12 @@ async def test_redis_backend_keyed_row_stays_unmarked_through_the_outage_fallbac
     pg_dsn: str,
 ) -> None:
     """A redis-backend keyed bucket's PG row must stay ``keyed=false``
-    through the ONE path that writes it — the Redis-outage fallback.
+    through the ONE path that writes it - the Redis-outage fallback.
 
     The row is outage-fallback state plus admin metadata; its stamp
     cannot speak for Redis-side use, so the fleet sweep must never
     delete it (sweeping would "reset the outage-fallback state of a
-    fixed-quota bucket mid-outage" — the migration's words). The drive:
+    fixed-quota bucket mid-outage" - the migration's words). The drive:
     a redis-backend keyed ref resolved with a dead Redis (ConnectionError
     → PG fallback), so the fallback's preseed/upsert consumes real PG
     tokens; the row then ages past the horizon and the sweep runs."""
@@ -856,7 +856,7 @@ async def test_redis_backend_keyed_row_stays_unmarked_through_the_outage_fallbac
         assert await _bucket_keyed(pool, bucket) is False, (
             "the outage fallback's upsert marked a redis-backend keyed bucket's PG "
             "row fleet-reclaimable: only backend='postgres' keyed buckets may carry "
-            "the mark — this row's staleness can never speak for Redis-side use"
+            "the mark - this row's staleness can never speak for Redis-side use"
         )
         assert await _bucket_state_tokens(pool, bucket) == 4.0, (
             "fixture broken: the fallback acquire did not consume a PG token "
@@ -868,7 +868,7 @@ async def test_redis_backend_keyed_row_stays_unmarked_through_the_outage_fallbac
         assert deleted == 0, f"the sweep deleted {deleted} rows of a redis-backend keyed bucket"
         assert await _bucket_rows(pool, bucket) == 1, (
             "a redis-backend keyed bucket's PG row was swept: the row is "
-            "outage-fallback state plus admin metadata — deleting it mid-outage "
+            "outage-fallback state plus admin metadata - deleting it mid-outage "
             "resets the fallback state of a fixed-quota bucket (a fresh full-capacity "
             "row on the next fallback acquire silently re-admits over quota)"
         )
@@ -889,11 +889,11 @@ async def test_redis_backend_keyed_row_stays_unmarked_through_the_outage_fallbac
 async def test_old_generation_acquire_with_a_live_lease_vetoes_the_sweep(pg_dsn: str) -> None:
     """Rolling-deploy skew, old-against-new: the previous release's
     acquire does not stamp ``last_used_at`` (the stamp is new in
-    e5d2154), so a row it holds looks stale forever — the horizon/mark
+    e5d2154), so a row it holds looks stale forever - the horizon/mark
     shape must still protect it. The live-lease veto is that protection:
     a bucket with one live-held slot is not reclaimable whatever its
     stamps say. (The free-between-acquires window under old-code churn
-    IS swept — the designed transient; the held-row case must not be.)"""
+    IS swept - the designed transient; the held-row case must not be.)"""
     await _fresh_schema(pg_dsn)
     pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=1, max_size=4)
     try:
@@ -908,7 +908,7 @@ async def test_old_generation_acquire_with_a_live_lease_vetoes_the_sweep(pg_dsn:
         await res.ensure_slots(pool)
         await _age_slots(pool, bucket, _HORIZON * 2)
 
-        # The previous release's acquire arm — the current
+        # The previous release's acquire arm - the current
         # _ACQUIRE_SQL_TEMPLATE verbatim MINUS the last_used_at stamp
         # (the one line e5d2154 added to it).
         old_acquire_sql = f"""\
@@ -945,7 +945,7 @@ SELECT a.slot_index FROM acquired a"""
         assert await _slot_rows(pool, bucket) == 2, (
             "a live-held bucket lost rows to the fleet sweep under rolling-deploy "
             "skew: the old release's acquire never stamps last_used_at, so the "
-            "lease veto — not the stamp — is what must keep the held bucket whole"
+            "lease veto - not the stamp - is what must keep the held bucket whole"
         )
         async with pool.acquire() as conn:
             still_stale = await conn.fetchval(
@@ -954,7 +954,7 @@ SELECT a.slot_index FROM acquired a"""
                 bucket,
             )
         assert still_stale is True, (
-            "fixture broken: the stamps were refreshed somewhere — the point of "
+            "fixture broken: the stamps were refreshed somewhere - the point of "
             "this pin is that the LEASE, not a fresh stamp, protected the bucket"
         )
         _ = res
@@ -969,7 +969,7 @@ SELECT a.slot_index FROM acquired a"""
 @pytest.mark.integration
 async def test_pre_migration_schema_raises_undefined_column_at_the_sweep(pg_dsn: str) -> None:
     """A schema without the keyed/last_used_at columns makes the sweep
-    raise ``UndefinedColumnError`` — the exact failure mode the leader
+    raise ``UndefinedColumnError`` - the exact failure mode the leader
     block's pre-migration tolerance is built around (the wiring pins it
     per tick below). Pins that the failure mode IS the named exception,
     not something else escaping the except tuple."""
@@ -1023,7 +1023,7 @@ class _FakePool:
 class _PreMigrationBackend:
     """Backend double exposing the PG-only sweep surface the leader
     section gates on, whose keyed-row reclaim always raises the
-    pre-migration ``UndefinedColumnError`` — the rolling-deploy state
+    pre-migration ``UndefinedColumnError`` - the rolling-deploy state
     between code rollout and migration 01.00.10_02 landing. Sibling
     sweeps return 0 so no drain runs and the hasattr gate is entered
     (same shape as the author's wiring double)."""
@@ -1123,7 +1123,7 @@ async def test_leader_loop_tolerates_pre_migration_undefined_column_per_tick() -
     """The leader sweep block tolerates ``UndefinedColumnError`` PER TICK
     (the pre-migration rolling-deploy pattern the stale-batches block
     set): a new-code leader against a schema whose keyed/last_used_at
-    columns have not landed warns and keeps ticking — the loop neither
+    columns have not landed warns and keeps ticking - the loop neither
     dies (leaving the fleet with no sweeper at all) nor stops calling
     (the tolerance must be a per-tick warn until the migration lands,
     not a one-shot swallow)."""
@@ -1137,7 +1137,7 @@ async def test_leader_loop_tolerates_pre_migration_undefined_column_per_tick() -
         f"the leader loop did not tolerate the pre-migration UndefinedColumnError "
         f"per tick ({len(backend.keyed_reclaim_calls)} calls recorded): the block's "
         "except tuple is built around this exact exception so a rolling deploy "
-        "warns each tick until migration 01.00.10_02 lands — a loop that tore down "
+        "warns each tick until migration 01.00.10_02 lands - a loop that tore down "
         "would leave the fleet with no sweeper, and one that stopped calling would "
         "silently drop the reclaim feature the moment the migration landed"
     )

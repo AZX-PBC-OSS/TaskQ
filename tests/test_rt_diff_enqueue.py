@@ -3,7 +3,7 @@
 
 Each scenario runs identically against InMemoryBackend (FakeClock) and
 PostgresBackend (real schema); the harness normalizes observables and
-asserts equality.  Postgres is the contract source — a mirror that dedupes
+asserts equality.  Postgres is the contract source - a mirror that dedupes
 (or admits) differently certifies code whose production behavior diverges.
 """
 
@@ -45,7 +45,7 @@ async def test_diff_unique_for_live_window_dedupes(pg_dsn: str) -> None:
 async def _unique_for_expired_window(side: DiffSide) -> None:
     await side.enqueue("j1", identity_key="id-a", unique_for_s=60.0)
     # Drive both clocks past the window: memory rewrites created_at, PG binds
-    # clock_timestamp() arithmetic — the same logical instant per domain.
+    # clock_timestamp() arithmetic - the same logical instant per domain.
     await side.mutate("j1", created_ago_s=120.0)
     row2 = await side.enqueue("j2", identity_key="id-a", unique_for_s=60.0)
     side.record("second_owner", side.token_of(row2.id))
@@ -91,7 +91,7 @@ async def test_diff_unique_for_terminal_state_set(pg_dsn: str) -> None:
 
 
 async def _unique_for_succeeded_boundary_instant(side: DiffSide) -> None:
-    """A first job succeeded exactly ``unique_for`` seconds ago — the boundary
+    """A first job succeeded exactly ``unique_for`` seconds ago - the boundary
     instant the strict ``created_at > cutoff`` predicate excludes.
 
     Both domains implement the window as a strict inequality (PG:
@@ -113,7 +113,7 @@ async def _unique_for_succeeded_boundary_instant(side: DiffSide) -> None:
 
 async def test_diff_unique_for_succeeded_boundary_instant_admits(pg_dsn: str) -> None:
     """A succeeded row exactly at the window edge is excluded (strict ``>``),
-    identically on both backends — the boundary sits on the same side
+    identically on both backends - the boundary sits on the same side
     everywhere, and a caller relying on the edge does not get a silent
     duplicate suppression one tick early nor an extra tick of protection."""
     mem, pg = await run_differential(_unique_for_succeeded_boundary_instant, pg_dsn=pg_dsn)

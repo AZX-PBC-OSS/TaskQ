@@ -103,7 +103,7 @@ async def test_update_property_happy_path(
     Verifies that the actor completes successfully via the direct-call
     form of ``actor_runner``, with stub HTTP and Neo4j collaborators
     injected via ``**deps``. No ``EventLoopThread`` or
-    ``stub_worker.join()`` — replaced by ``await actor_runner(...)``.
+    ``stub_worker.join()`` - replaced by ``await actor_runner(...)``.
     """
     http = StubHttpClient()
     neo4j = StubNeo4jSession()

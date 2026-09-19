@@ -2,7 +2,7 @@
 
 A rolling deploy hands each pod a SIGTERM with jobs mid-flight. What happens
 to those rows is decided by the shutdown orchestration, and the governing
-principle is that a job's terminal state reflects what its *actor* did — an
+principle is that a job's terminal state reflects what its *actor* did - an
 infrastructure event may delay the work or hand it to another worker, but
 never discard it, spend its budget, or choose its outcome.
 
@@ -152,11 +152,11 @@ async def test_shutdown_releases_a_responsive_actor_back_to_pending(
 ) -> None:
     """The actor that unwinds on the cancel is re-pended immediately.
 
-    The cancel event fires at CANCELLING and this actor raises on it — the
+    The cancel event fires at CANCELLING and this actor raises on it - the
     shape the cancellation guide teaches. The deploy must leave the row
     ``pending`` for the surviving fleet with the claim's attempt increment
     returned: nothing ran to completion, so nothing may be spent. A deploy
-    that terminalises this row as ``cancelled`` — the old behaviour — spends
+    that terminalises this row as ``cancelled`` - the old behaviour - spends
     the budget and makes the deploy indistinguishable from a genuine cancel.
     """
     deps = clean_jobs_app.deps
@@ -191,7 +191,7 @@ async def test_shutdown_releases_a_responsive_actor_back_to_pending(
     assert after.status == "pending", (
         "a job whose actor unwound on the deploy's cancel must go straight back "
         "to the fleet as pending; it is free and the actor is gone. Got "
-        f"{after.status!r} — the deploy terminalised work that was only ever "
+        f"{after.status!r} - the deploy terminalised work that was only ever "
         "interrupted"
     )
     assert after.attempt == enqueued.attempt + 1, (
@@ -226,8 +226,8 @@ async def test_shutdown_releases_an_unresponsive_actor_behind_the_remaining_budg
 
         A job that ignores the cooperative cancel and the forced cancel is still
         running when the graces expire. Its row is released ``scheduled`` behind
-        the rest of this process's termination budget — the window in which the
-        watchdog guarantees the process is gone — so no other pod can claim the
+        the rest of this process's termination budget - the window in which the
+        watchdog guarantees the process is gone - so no other pod can claim the
         row while its first runner might still be alive. The attempt is NOT
         refunded: the attempt started executing, so its increment stands
     .
@@ -288,7 +288,7 @@ async def test_shutdown_releases_an_unresponsive_actor_behind_the_remaining_budg
         tail = _watchdog_exit_tail(deps.settings)
         assert timedelta(0) < hold <= timedelta(seconds=termination + tail), (
             f"the release of a still-running actor must be deferred until the "
-            f"releasing process is provably gone — the deadline itself is not "
+            f"releasing process is provably gone - the deadline itself is not "
             f"enough, the watchdog's exit tail ({tail}s) is part of the "
             f"promise: hold reads {hold}, expected within (0, "
             f"{termination + tail}s]"
@@ -307,7 +307,7 @@ async def test_shutdown_releases_an_unresponsive_actor_behind_the_remaining_budg
     assert settled is not None
     assert settled.status == "scheduled" and settled.interrupt_count == 1, (
         "the released row must survive the interrupted actor's late terminal "
-        "write untouched — the fence on the release is what keeps a deploy "
+        "write untouched - the fence on the release is what keeps a deploy "
         "from committing an attempt the fleet already took back"
     )
 
@@ -316,7 +316,7 @@ async def test_shutdown_hold_falls_back_to_the_lock_lease_without_the_watchdog(
     clean_jobs_app: JobsApp,
 ) -> None:
     """With no shutdown watchdog there is no guaranteed exit, so the hold is
-    the lock lease — the bound the lease-expiry path already imposes today,
+    the lock lease - the bound the lease-expiry path already imposes today,
     now without spending the attempt."""
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
@@ -368,8 +368,8 @@ async def test_operator_cancel_in_flight_wins_over_the_deploy(
 
     The operator asked for a terminal state; the deploy must not launder it
     into a release. The row carries ``cancel_phase >= 1`` when SIGTERM lands,
-    so the interrupt write's phase fence declines it and the operator ladder —
-    escalation at FORCING, abandonment past the graces — owns the outcome:
+    so the interrupt write's phase fence declines it and the operator ladder -
+    escalation at FORCING, abandonment past the graces - owns the outcome:
     ``cancelled`` for the actor that unwinds, ``abandoned`` for the one that
     does not.
     """
@@ -413,7 +413,7 @@ async def test_operator_cancel_in_flight_wins_over_the_deploy(
         )
         assert after.interrupt_count == 0, (
             "the interruption must not touch a row the operator already "
-            "cancelled — the interrupt write's cancel_phase = 0 fence declines "
+            "cancelled - the interrupt write's cancel_phase = 0 fence declines "
             f"it; interrupt_count reads {after.interrupt_count}"
         )
     finally:
@@ -489,7 +489,7 @@ async def test_a_hold_that_outlives_the_jobs_deadline_fails_it_on_the_deadline(
     clean_jobs_app: JobsApp,
 ) -> None:
     """A hold that pushes past ``schedule_to_close`` fails the job on the
-    deadline — the same terminal exit every deferral arm honours.
+    deadline - the same terminal exit every deferral arm honours.
 
     The release cannot park a job beyond its own deadline into a state
     nothing terminalises: the deadline, not the deploy, ends that job. The
@@ -543,7 +543,7 @@ async def test_a_hold_that_outlives_the_jobs_deadline_fails_it_on_the_deadline(
             await attempt_task
 
 
-# ── The sync-actor gate: a deploy must never double-run a thread (#232) ──
+# ── The sync-actor gate: a deploy must never double-run a thread ──
 
 
 async def _spawn_second_worker(deps: WorkerDeps, schema: str) -> UUID:
@@ -566,7 +566,7 @@ async def _claim_as(
 async def test_a_deploy_never_hands_a_live_sync_actors_row_to_a_second_worker(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """THE sync-actor gate (#232): a thread the cancel cannot reach is never
+    """THE sync-actor gate: a thread the cancel cannot reach is never
     concurrently claimable.
 
     A sync actor runs in an executor thread; the deploy's ``task.cancel()``
@@ -639,7 +639,7 @@ async def test_a_deploy_never_hands_a_live_sync_actors_row_to_a_second_worker(
         assert after.status == "scheduled", (
             "a sync actor that never provably exited must be released HELD "
             f"(scheduled behind the exit window), not pending; got {after.status!r} "
-            "— a pending row here is the double-execution overlap: the "
+            "- a pending row here is the double-execution overlap: the "
             "second worker claims it while the first pod's thread still runs"
         )
         assert after.attempt == enqueued.attempt + 1, (
@@ -665,7 +665,7 @@ async def test_a_deploy_never_hands_a_live_sync_actors_row_to_a_second_worker(
         assert after.scheduled_at >= min_cover, (
             f"the hold must keep the row unclaimable until this process is "
             f"provably gone (deadline {deps.settings.termination_grace_period}s "
-            f"+ exit tail {expected_tail}s from the shutdown's start — the "
+            f"+ exit tail {expected_tail}s from the shutdown's start - the "
             f"watchdog observes the deadline only once per dump interval and "
             f"flushes metrics before os._exit); hold reads {hold}"
         )

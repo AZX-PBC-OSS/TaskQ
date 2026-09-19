@@ -115,7 +115,7 @@ async def _enqueue_parent(backend: "PostgresBackend") -> JobRow:
             retry_kind="transient",
             # None = immediate, in the SERVER clock domain. An absolute
             # datetime.now() races the enqueue SQL's status boundary
-            # (COALESCE($n, clock_timestamp()) > clock_timestamp()) —
+            # (COALESCE($n, clock_timestamp()) > clock_timestamp()) -
             # with the testcontainer clock a fraction of a millisecond
             # behind the host, a warm asyncpg statement cache (sub-ms
             # sample→execute latency, as in the parallel suite) lands the

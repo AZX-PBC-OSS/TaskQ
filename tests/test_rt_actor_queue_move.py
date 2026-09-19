@@ -5,7 +5,7 @@ Contract under attack, in the feature's own words:
 * the ``actor_config_ops`` module docstring: the backlog rewrite plus the
   flip exist "so old-queue strays drain through the target's consumers";
 * ``ActorQueueMoveResult``: the running rows left behind are "deliberately
-  untouched — their queue field is inert once claimed and they finish on
+  untouched - their queue field is inert once claimed and they finish on
   the worker that claimed them";
 * the ``move_actor_queue`` docstring: a crash mid-drain "leaves the batches
   already committed as partial progress; a re-run continues where it
@@ -16,8 +16,8 @@ Contract under attack, in the feature's own words:
 
 The author's own pins cover the happy-path move, the both-sides boot
 window, the refusal errors, and the configured-target carry.  This file
-attacks what those pins do not: the running-job tail (every re-pend path —
-failure retry, lease-expiry reclaim, operator retry — keeps the row's OLD
+attacks what those pins do not: the running-job tail (every re-pend path -
+failure retry, lease-expiry reclaim, operator retry - keeps the row's OLD
 queue label, and dispatch candidates match ``jobs.queue`` against the
 consumer's subscription, not the stored assignment), the mid-drain abort's
 report, two concurrent moves of one actor, and the
@@ -161,7 +161,7 @@ async def _make_tail_due(conn: asyncpg.Connection, schema: str, job_id: UUID) ->
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # The running-job tail: the move's left-behind rows re-enter the dispatchable
-# pool through the retry/reclaim paths — on the old queue.
+# pool through the retry/reclaim paths - on the old queue.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
@@ -170,7 +170,7 @@ class TestRunningJobTail:
     field is inert once claimed and they finish on the worker that claimed
     them".  Every re-pend path sends the row back into the pending pool
     still carrying the OLD queue label, and dispatch matches ``jobs.queue``
-    against the consumer's subscription — so the tail is claimable only by
+    against the consumer's subscription - so the tail is claimable only by
     consumers of the queue the operator is told to retire once the producers
     have moved."""
 
@@ -219,7 +219,7 @@ class TestRunningJobTail:
         self, clean_pg_conn: asyncpg.Connection, module_pg_schema: ModulePgSchema
     ) -> None:
         """The crash tail: the claiming worker dies, the leader's reclaim
-        sweep re-pends the row with its retry budget — onto the old queue."""
+        sweep re-pends the row with its retry budget - onto the old queue."""
         schema = module_pg_schema.schema_name
         conn = clean_pg_conn
         claimed = await _move_actor_with_one_running_job(conn, schema, max_attempts=3)
@@ -251,7 +251,7 @@ class TestRunningJobTail:
         module_pg_pool: asyncpg.Pool,
     ) -> None:
         """The operator tail: the left-behind row fails terminally, an
-        operator re-runs it via the admin retry — back onto the old queue."""
+        operator re-runs it via the admin retry - back onto the old queue."""
         schema = module_pg_schema.schema_name
         conn = clean_pg_conn
         claimed = await _move_actor_with_one_running_job(conn, schema, max_attempts=1)
@@ -299,7 +299,7 @@ class TestMidDrainAbort:
     the assignment still names the source queue, and a re-run continues
     where the aborted drain stopped.  The abort also destroys durable
     state (rows already rewritten onto the target), so the failure itself
-    must surface what it began — the count already moved — to whoever
+    must surface what it began - the count already moved - to whoever
     operates the queue."""
 
     async def test_mid_drain_abort_is_re_runnable_but_leaves_partial_progress_unreported(
@@ -363,7 +363,7 @@ class TestMidDrainAbort:
         assert surfaced, (
             "the aborted move rewrote 5 of 12 rows onto the target before "
             "failing, and neither the raised error nor any log event during "
-            "the call names that partial progress — an operator sees a "
+            "the call names that partial progress - an operator sees a "
             "cancelled statement and no evidence of the durable writes "
             "already committed"
         )
@@ -429,7 +429,7 @@ class TestConcurrentMoves:
 
 class TestQueueRowCarry:
     """The carry is fill-in: a configured target stands, an unconfigured
-    source contributes nothing — so an unconfigured-to-unconfigured move must
+    source contributes nothing - so an unconfigured-to-unconfigured move must
     leave the ``queues`` table exactly as it found it (no row created for
     the target) while the moved backlog stays dispatchable from the target
     on the queue-table defaults."""
@@ -467,9 +467,9 @@ class TestQueueRowCarry:
 
 class TestSourceQueueStray:
     """The one residual the feature documents: a stale producer enqueuing to
-    the source queue after the flip is served by source-queue consumers —
+    the source queue after the flip is served by source-queue consumers -
     never by the target's.  This pins that the documented remedy actually
-    holds, and that the stray is invisible to the target's consumers — the
+    holds, and that the stray is invisible to the target's consumers - the
     same invisibility the running-job tail suffers without any documented
     remedy or consumer guidance."""
 

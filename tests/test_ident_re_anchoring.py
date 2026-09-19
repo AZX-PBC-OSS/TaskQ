@@ -3,7 +3,7 @@
 Python's `$` matches immediately before a trailing newline, so the original
 `^[A-Za-z_][A-Za-z0-9_]*$` accepted `"taskq\\n"`.
 
-Scope, stated honestly: this was NOT an injection path, and calling it one would
+Scope, stated directly: this was NOT an injection path, and calling it one would
 overstate it. Only a single trailing newline slipped through --
 `"taskq\\nDROP TABLE x"` was always rejected, because the remainder still has to
 match a charset that admits no whitespace, quote or SQL metacharacter. Every
@@ -17,7 +17,7 @@ should mean exactly what it appears to mean.
 
 The same trap existed in three sibling validators that copied the `^...$`
 style: `_QUEUE_NAME_RE` (queue names at the enqueue/actor chokepoints),
-`_TAG_RE` (job tags), and `_KEYED_KEY_RE` (keyed-ref name components — pinned
+`_TAG_RE` (job tags), and `_KEYED_KEY_RE` (keyed-ref name components - pinned
 in tests/test_keyed_reservation_hardening.py, where its callers live). They are
 re-anchored identically; the sections below pin each.
 """
@@ -90,7 +90,7 @@ def test_callers_reject_the_trailing_newline_end_to_end() -> None:
         "my.queue",
         "_internal",
         "Q_2.x",
-        "1queue",  # leading digit: allowed — a queue name is not a PG identifier
+        "1queue",  # leading digit: allowed - a queue name is not a PG identifier
         "2024-backfill",
     ],
 )
@@ -105,7 +105,7 @@ def test_valid_queue_names_still_accepted(value: str) -> None:
         "deafult\n",
         "\ndefault",
         "default\n\n",
-        "deafult ",  # charset (space) — never valid, pinned for clarity
+        "deafult ",  # charset (space) - never valid, pinned for clarity
         "foo:eu",  # ":" separates the taskq:global:queue: cap namespace
         ":leading",
         "trailing:",
@@ -152,9 +152,9 @@ def test_valid_tags_still_accepted(value: str) -> None:
         "tag\n",  # the regression: accepted before the \Z anchor
         "my-tag\n",
         "\ntag",
-        "ta\ng",  # mid-string newline — always rejected by the charset
-        "-tag",  # leading hyphen — charset
-        "tag-",  # trailing hyphen — charset
+        "ta\ng",  # mid-string newline - always rejected by the charset
+        "-tag",  # leading hyphen - charset
+        "tag-",  # trailing hyphen - charset
         "-",  # a bare hyphen has no word character at either end
         "",
     ],

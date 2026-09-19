@@ -137,7 +137,7 @@ def _mock_provider_echoing_login_nonce(
 
     The callback validates the ID token's nonce claim against the nonce the
     login minted, so a token response fixed before ``/login`` cannot complete
-    the flow — the nonce is only knowable from the login redirect. Tests that
+    the flow - the nonce is only knowable from the login redirect. Tests that
     need a *successful* callback mock the token endpoint this way.
     """
     with _mock_provider():
@@ -539,7 +539,7 @@ def test_login_and_callback_fetch_discovery_and_jwks_once_per_issuer() -> None:
 def _state_cookie_payload(client: TestClient) -> dict[str, str]:
     """Decode this client's ``taskq_oidc_state`` cookie: the signed
     ``{"state", "cv", "nonce"}`` record production issues at login (same
-    serializer secret/salt as ``oidc._state_serializer`` — ``cv`` is the PKCE
+    serializer secret/salt as ``oidc._state_serializer`` - ``cv`` is the PKCE
     code_verifier, ``nonce`` binds the ID token to this login)."""
     from itsdangerous import URLSafeTimedSerializer
 
@@ -592,7 +592,7 @@ def test_login_redirect_targets_discovered_authorization_endpoint_with_pkce() ->
 
 def _token_request_posts(router: respx.MockRouter) -> list[httpx.Request]:
     """The POSTs the callback made to the token endpoint (call while the
-    ``_mock_provider`` context is live — the router only records calls made
+    ``_mock_provider`` context is live - the router only records calls made
     while its routes are mounted)."""
     return [
         call.request
@@ -603,7 +603,7 @@ def _token_request_posts(router: respx.MockRouter) -> list[httpx.Request]:
 
 def test_callback_token_request_carries_pkce_verifier_from_state_cookie() -> None:
     """The token exchange POST carries the SAME code_verifier the state
-    cookie recorded at login — the PKCE round-trip binding between the
+    cookie recorded at login - the PKCE round-trip binding between the
     authorization request and the token request."""
     config = _config()
     app = _make_app(config)

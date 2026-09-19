@@ -175,7 +175,7 @@ async def test_property_operation_sequence_memory(ops: list[tuple[str, object]])
         )
 
     # Invariant: no-double-dispatch.
-    # No job in "running" status should be returned by a dispatch call —
+    # No job in "running" status should be returned by a dispatch call -
     # the backend must not dispatch the same job twice.
     all_jobs = list(backend._jobs.values())  # type: ignore[reportPrivateUsage]
     running_jobs = [r for r in all_jobs if r.status == "running"]

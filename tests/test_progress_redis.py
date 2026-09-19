@@ -4,8 +4,11 @@ All tests require a live Redis container and are marked @pytest.mark.integration
 
 Test plan
 ---------
-Actor calls ctx.progress() 100 times; subscriber receives all 100 kind='progress'
-        events; PG progress_seq == 100 after final flush; status = 'succeeded'.
+Actor calls ctx.progress() 100 times; the publish gate coalesces: the
+        subscriber receives at most 2 kind='progress' events (the first
+        call's and the latched latest one, see JobContext.progress), the
+        last carrying the final seq; PG progress_seq == 100 after final
+        flush; status = 'succeeded'.
 Subscribe before enqueue; actor calls ctx.progress(step=1) then returns; events
         arrive in order: kind='progress', kind='state_change'(succeeded, terminal=True).
 First non-subscribe message is NOT a progress event (subscribe happens before job).
@@ -16,6 +19,7 @@ Redis publish round trip raises after 1st; channel='per_job' label on
 # ruff: noqa: S608 Why: schema name validated by WorkerSettings against _IDENT_RE; asyncpg has no parameter binding for identifiers.
 
 import asyncio
+import contextlib
 import json
 from contextlib import AsyncExitStack
 from datetime import timedelta
@@ -174,7 +178,7 @@ async def _enqueue_and_dispatch(
             retry_kind="transient",
             # None = immediate, in the SERVER clock domain. An absolute
             # datetime.now() races the enqueue SQL's status boundary
-            # (COALESCE($n, clock_timestamp()) > clock_timestamp()) —
+            # (COALESCE($n, clock_timestamp()) > clock_timestamp()) -
             # with the testcontainer clock a fraction of a millisecond
             # behind the host, a warm asyncpg statement cache (sub-ms
             # sample→execute latency, as in the parallel suite) lands the
@@ -235,10 +239,13 @@ async def _get_job_row(pool: asyncpg.Pool, schema: str, actor_name: str) -> asyn
 async def test_ti2_hundred_progress_events(
     pg_dsn: str, redis_url: str, module_pg_schema: ModulePgSchema
 ) -> None:
-    """Actor calls ctx.progress() 100 times; subscriber receives all 100 events.
+    """Actor calls ctx.progress() 100 times; the publish gate coalesces.
 
-    Oracle: Redis subscriber on per-job channel receives exactly 100 kind='progress'
-    events; PG progress_seq == 100 after final flush; status = 'succeeded'.
+    Oracle: Redis subscriber on per-job channel receives at most 2
+    kind='progress' events (the first call publishes; calls racing that
+    in-flight publish latch on the buffer and the running task re-publishes
+    the latched latest event), the LAST event carries the final seq and
+    step; PG progress_seq == 100 after final flush; status = 'succeeded'.
     """
     import redis.asyncio as redis_async
 
@@ -259,33 +266,40 @@ async def test_ti2_hundred_progress_events(
             # Brief pause to let the subscribe ack arrive
             await asyncio.sleep(0.05)
 
-            async def _collect_all(expected: int) -> None:
+            async def _collect_while_consuming() -> None:
                 async for msg in pubsub.listen():
                     if msg.get("type") == "message":
                         data = json.loads(msg["data"])
                         if data.get("kind") == "progress":
                             received_events.append(data)
-                        if len(received_events) >= expected:
-                            return
 
             consume_task = asyncio.create_task(
                 _consume(deps, backend, job_row, _progress_hundred_actor.fn, wid)
             )
-            collect_task = asyncio.create_task(_collect_all(100))
+            collect_task = asyncio.create_task(_collect_while_consuming())
 
-            await asyncio.wait_for(
-                asyncio.gather(consume_task, collect_task),
-                timeout=30.0,
-            )
+            await asyncio.wait_for(consume_task, timeout=30.0)
+            # The coalesced latch publishes when the in-flight round trip
+            # lands, right after the actor returned; give it a moment.
+            await asyncio.sleep(0.5)
+            collect_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await collect_task
 
             await pubsub.unsubscribe(channel)
             await pubsub.aclose()
         finally:
             await redis_client.aclose()
 
-        assert len(received_events) == 100, (
-            f"expected 100 progress events, got {len(received_events)}"
+        assert 1 <= len(received_events) <= 2, (
+            f"expected the first and the coalesced final publish at most, "
+            f"got {len(received_events)}"
         )
+        last_event = received_events[-1]
+        assert last_event["seq"] == 100, (
+            f"expected the final publish to carry seq 100, got {last_event['seq']}"
+        )
+        assert last_event["step"] == 100
 
         pg_row = await _get_job_row(
             deps.worker_pool, deps.settings.schema_name, "_progress_redis_hundred"
@@ -399,7 +413,7 @@ async def test_ti3b_first_message_is_state_change_running(
     pg_dsn: str, redis_url: str, module_pg_schema: ModulePgSchema
 ) -> None:
     """When subscribing before the job starts, the first real message
-    received must be a kind='state_change' with status='running' — published
+    received must be a kind='state_change' with status='running' - published
     after the job is dispatched and before the actor body runs.
 
     This confirms subscribe-before-start guarantees no missed events and that
@@ -464,7 +478,7 @@ async def test_ti3b_first_message_is_state_change_running(
 class _FailingPipeline:
     """Pipeline stand-in whose ``execute`` raises.
 
-    Simulates a failed pipelined dual-channel publish round trip — the
+    Simulates a failed pipelined dual-channel publish round trip - the
     surface progress events actually go through when
     ``progress_publish_global`` is on (one pipeline, one execute, both
     channels; ``client.publish`` is never called on that path).

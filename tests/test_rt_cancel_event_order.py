@@ -95,7 +95,7 @@ async def test_occurred_at_is_non_decreasing_across_batch_boundaries(
     )
     assert len(rows) == 2 * _TOTAL
 
-    # Global co-monotonicity in id order — the invariant the trailing
+    # Global co-monotonicity in id order - the invariant the trailing
     # watermark rests on, now spanning four separate committed batches.
     stamps = [r["occurred_at"] for r in rows]
     inversions = [
@@ -104,7 +104,7 @@ async def test_occurred_at_is_non_decreasing_across_batch_boundaries(
         if stamps[i + 1] < stamps[i]
     ]
     assert inversions == [], (
-        f"occurred_at must be non-decreasing in id order across batch boundaries — "
+        f"occurred_at must be non-decreasing in id order across batch boundaries - "
         f"{len(inversions)} inversion(s), e.g. {inversions[:3]}"
     )
 
@@ -124,7 +124,7 @@ async def test_occurred_at_is_non_decreasing_across_batch_boundaries(
         next_lo = batch_bounds[b + 1][0]
         assert next_lo >= cur_hi, (
             f"batch {b + 1}'s earliest event stamp {next_lo} precedes batch {b}'s "
-            f"latest {cur_hi} — a per-batch frozen or Python-side timestamp would "
+            f"latest {cur_hi} - a per-batch frozen or Python-side timestamp would "
             f"invert exactly here, and poll_reclaim_events' trailing watermark "
             f"silently skips events in the gap"
         )
@@ -142,7 +142,7 @@ async def test_occurred_at_is_non_decreasing_across_batch_boundaries(
             "to_state": "cancelled",
         }, (
             f"state_change detail for {jid} must carry that job's ACTUAL prior status "
-            f"({expected_from[jid]!r}) — a batched write that shares one detail would "
+            f"({expected_from[jid]!r}) - a batched write that shares one detail would "
             f"corrupt the audit trail for the other status's rows"
         )
     observed = {parse_detail(r["detail"])["from_state"] for r in state_changes}

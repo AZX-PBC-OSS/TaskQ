@@ -84,7 +84,7 @@ async def test_client_cancel_where_empty_filter_raises() -> None:
 
 
 async def test_client_cancel_where_empty_tags_tuple_raises() -> None:
-    """JobFilter(tags=()) is an empty filter — must raise EmptyFilterError."""
+    """JobFilter(tags=()) is an empty filter - must raise EmptyFilterError."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))
     client = JobsClient(backend)
 

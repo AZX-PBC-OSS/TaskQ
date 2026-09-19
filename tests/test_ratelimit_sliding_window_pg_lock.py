@@ -1,13 +1,13 @@
 """Bounded-wait contract for the log-style PG sliding-window bucket lock.
 
 ``_acquire_pg_log`` serialises its per-bucket window work, one fused
-prune + admission-insert + count statement (#228), behind a
+prune + admission-insert + count statement, behind a
 transaction-scoped advisory lock keyed ``taskq:{schema}:sw:{name}``. This
 module pins three properties:
 
 1. The lock WAIT is bounded: a racer that cannot acquire the lock within
    its budget gets the limiter's DENIAL outcome (``allowed=False`` with a
-   retry hint) — never an unbounded block, never an admission, never a
+   retry hint) - never an unbounded block, never an admission, never a
    raw driver error. Unlike the enqueue path's max_pending lock (which
    raises a typed backpressure error), the limiter's denial channel is a
    return value: the dispatch layer already converts ``allowed=False``
@@ -15,11 +15,11 @@ module pins three properties:
    not a failure.
 2. Contended racers QUEUE SERVER-SIDE: once the holder releases inside the
    budget, the acquire proceeds and the window is enforced exactly.
-3. The window stays EXACT under concurrency — the lock serialises the
+3. The window stays EXACT under concurrency - the lock serialises the
    racers, and bounding the wait never loosens the limit.
 
 The acquire is TWO-TIER (``acquire_advisory_xact_lock_bounded``, imported
-from ``taskq._advisory`` — the one helper shared with the enqueue
+from ``taskq._advisory`` - the one helper shared with the enqueue
 branch's bounded locks, so every bounded lock wait has the same
 mechanics): one ``pg_try_advisory_xact_lock`` statement when
 uncontended, a savepoint-scoped server-side bounded blocking acquire
@@ -51,7 +51,7 @@ _HOLD_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
 
 
 def _fake_settings() -> WorkerSettings:
-    """Settings for the fake-pool unit tests — no connection is ever made."""
+    """Settings for the fake-pool unit tests - no connection is ever made."""
     return WorkerSettings.load_from_dict(
         {"pg_dsn": "postgresql://u:p@h/d", "schema_name": "taskq_fake"},
     )
@@ -158,7 +158,7 @@ class _ContendedFakeConn:
 
 class _BlackHoleFakeConn(_ContendedFakeConn):
     """Contended tier whose blocking acquire NEVER returns (network black
-    hole: the server is unreachable, the statement never completes) — only
+    hole: the server is unreachable, the statement never completes) - only
     the client-side wait_for backstop can bound this."""
 
     def __init__(self) -> None:
@@ -197,8 +197,8 @@ class TestSlidingWindowLockBoundedWaitUnit:
 
     async def test_lock_timeout_returns_denial_never_admission(self) -> None:
         """A racer whose server-side lock_timeout fires gets the limiter's
-        denial outcome — allowed=False with a retry hint of exactly one
-        more budget — and the window-mutating statements never ran: fail
+        denial outcome - allowed=False with a retry hint of exactly one
+        more budget - and the window-mutating statements never ran: fail
         closed, a racer that could not check the window never
         over-admits."""
         sw = _sw("sw_lock_unit")
@@ -223,7 +223,7 @@ class TestSlidingWindowLockBoundedWaitUnit:
         assert decision.request_id == str(request_id)
         assert elapsed < 2.0, f"budget was 100 ms but the wait took {elapsed:.3f}s"
         # Two-tier shape: one try-lock, then the savepoint tier. Only the
-        # SET ran — the timeout raised before any restore, and the
+        # SET ran - the timeout raised before any restore, and the
         # savepoint ROLLBACK undoes the set itself.
         assert conn.try_lock_calls == 1
         # One savepoint from the acquire's OWN transaction wrapper, one
@@ -237,7 +237,7 @@ class TestSlidingWindowLockBoundedWaitUnit:
 
     async def test_lock_timeout_logs_ratelimit_warning_event(self) -> None:
         """The ``ratelimit-lock-timeout`` log event carries the bucket and
-        the expired budget — the signal that separates a contended or sick
+        the expired budget - the signal that separates a contended or sick
         bucket (or holder) from a merely busy one."""
         sw = _sw("sw_lock_unit_log")
         conn = _ContendedFakeConn(try_lock_result=False, blocking_times_out=True)
@@ -262,7 +262,7 @@ class TestSlidingWindowLockBoundedWaitUnit:
         ``_acquire_pg_log(self, pg_pool, settings, request_id)`` with NO
         ``lock_timeout_ms`` kwarg, so the operator-configured budget on
         ``WorkerSettings.sliding_window_lock_timeout_ms`` must govern the
-        server-side ``lock_timeout`` GUC and the denial's retry hint —
+        server-side ``lock_timeout`` GUC and the denial's retry hint -
         not the 5000 ms module default
         (``DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS``), which applies only
         when no settings object is in hand.
@@ -335,7 +335,7 @@ class TestSlidingWindowLockBoundedWaitUnit:
     async def test_fast_path_uncontended_is_single_try_lock_statement(self) -> None:
         """Happy-path round-trip parity: an uncontended acquire issues
         exactly ONE advisory-lock statement (the try-lock) and never
-        touches the savepoint/GUC machinery — identical to the pre-bounded
+        touches the savepoint/GUC machinery - identical to the pre-bounded
         statement count, so the bound costs the common case nothing."""
         sw = _sw("sw_lock_unit_fast")
         conn = _ContendedFakeConn(try_lock_result=True)
@@ -349,7 +349,7 @@ class TestSlidingWindowLockBoundedWaitUnit:
         assert decision.allowed is True
         assert conn.try_lock_calls == 1
         assert conn.blocking_lock_calls == 0
-        # Only the acquire's OWN transaction wrapper opened — the
+        # Only the acquire's OWN transaction wrapper opened - the
         # contended tier never ran.
         assert conn.savepoint_opens == 1
         assert conn.set_config_values == []
@@ -360,7 +360,7 @@ class TestSlidingWindowLockBoundedWaitUnit:
     async def test_lock_timeout_budget_zero_waits_indefinitely(self) -> None:
         """``lock_timeout_ms <= 0`` disables the bound (the pre-fix
         behavior), matching the enqueue lock's ``lock_timeout`` GUC
-        convention — pinned by contract, not by waiting forever: the
+        convention - pinned by contract, not by waiting forever: the
         fast-path try-lock never succeeds on this fake, so only an
         UNBOUNDED server-side wait reaches the admission, and the
         indefinite mode must take it with no savepoint and no GUC
@@ -378,7 +378,7 @@ class TestSlidingWindowLockBoundedWaitUnit:
         assert decision.allowed is True
         assert conn.try_lock_calls == 1
         assert conn.blocking_lock_calls == 1
-        # Only the acquire's OWN transaction wrapper opened — indefinite
+        # Only the acquire's OWN transaction wrapper opened - indefinite
         # mode adds no savepoint of its own.
         assert conn.savepoint_opens == 1, "indefinite mode must not open a savepoint"
         assert conn.set_config_values == [], "indefinite mode must not touch the GUC"
@@ -386,7 +386,7 @@ class TestSlidingWindowLockBoundedWaitUnit:
     async def test_client_backstop_bounds_black_holed_blocking_acquire(self) -> None:
         """A network black hole (the blocking-acquire statement never
         returns) is bounded by the client-side wait_for backstop at
-        budget + slack — the server-side lock_timeout cannot fire if the
+        budget + slack - the server-side lock_timeout cannot fire if the
         server is unreachable, so this layer is the only bound left, and
         the outcome is still the fail-closed denial."""
         sw = _sw("sw_lock_unit_blackhole")
@@ -426,7 +426,7 @@ class TestSlidingWindowLockBoundedWait:
         module_pg_pool: asyncpg.Pool,
     ) -> None:
         """A racer facing a long-held lock gets the denial outcome inside
-        its budget instead of blocking until the holder finishes — the
+        its budget instead of blocking until the holder finishes - the
         server-side lock_timeout fires at the budget, precisely."""
         schema = module_pg_schema.schema_name
         settings = _settings(module_pg_schema)
@@ -495,7 +495,7 @@ class TestSlidingWindowLockBoundedWait:
     ) -> None:
         """Refunding a lock-timeout denial must be a no-op: nothing was
         admitted (fail closed), so the refund's request_id-keyed DELETE
-        matches no row and the bucket's state is untouched — the released
+        matches no row and the bucket's state is untouched - the released
         slot a caller might expect simply never existed."""
         schema = module_pg_schema.schema_name
         settings = _settings(module_pg_schema)
@@ -545,7 +545,7 @@ class TestSlidingWindowLockBoundedWait:
         a savepoint and MUST restore the prior value before releasing the
         savepoint (``SET LOCAL`` effects persist through RELEASE), so a
         LATER lock acquire in the same transaction does not inherit the
-        stale bound — pinned with a real PG transaction doing two acquires
+        stale bound - pinned with a real PG transaction doing two acquires
         of the helper directly (``_acquire_pg_log`` owns its whole
         transaction, so the helper is the level at which two acquires
         share one): the second acquire waits LONGER than the first
@@ -598,7 +598,7 @@ class TestSlidingWindowLockBoundedWait:
 
 
 class TestSlidingWindowExactUnderConcurrency:
-    """Pin: the per-bucket lock keeps the window EXACT under concurrency —
+    """Pin: the per-bucket lock keeps the window EXACT under concurrency -
     bounding the wait never loosens the limit."""
 
     pytestmark = pytest.mark.integration
@@ -612,7 +612,7 @@ class TestSlidingWindowExactUnderConcurrency:
         admitted, the stored in-window count exactly 5, every denial
         carrying a retry hint. The default budget covers 20 serialized
         racers (the server-side queue drains one racer per holder critical
-        section), so denials here are window denials — the lock never
+        section), so denials here are window denials - the lock never
         becomes the bottleneck the bound has to shed."""
         schema = module_pg_schema.schema_name
         settings = _settings(module_pg_schema)

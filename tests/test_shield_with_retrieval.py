@@ -2,7 +2,7 @@
 
 The helper must be byte-for-byte asyncio.shield on the non-cancelled path
 (result returned, inner exception re-raised to the caller) and must, when
-a cancellation detaches the inner task, retrieve that detached outcome —
+a cancellation detaches the inner task, retrieve that detached outcome -
 logging an inner failure instead of leaving asyncio to report
 "Task exception was never retrieved" (the lost-infra-signal bug measured
 during the reconnect-storm campaign: 2 unretrieved exceptions per
@@ -63,7 +63,7 @@ class TestNonCancelledPath:
         assert await shield_with_retrieval(inner()) == 42
 
     async def test_inner_exception_reraises_to_caller(self) -> None:
-        """Inner failure with no cancellation: shield semantics — the
+        """Inner failure with no cancellation: shield semantics - the
         exception propagates to the awaiting caller, unchanged.
         """
 
@@ -76,7 +76,7 @@ class TestNonCancelledPath:
     async def test_inner_failure_on_normal_path_is_not_detached_logged(self) -> None:
         """When the caller receives the inner exception directly, no
         detached-retrieval warning is logged (the callback only attaches on
-        the cancellation path — no duplicate reporting).
+        the cancellation path - no duplicate reporting).
         """
 
         async def inner() -> None:
@@ -143,7 +143,7 @@ class TestCancellationPath:
                 sim = asyncio.create_task(_drive_site(inner_write()))
                 await asyncio.sleep(0)
                 sim.cancel("first cancel")
-                # Cancel #1 lands on the actor-body sleep; the handler then
+                # Cancel lands on the actor-body sleep; the handler then
                 # enters the shielded write, which starts the inner task.
                 await started.wait()
                 await asyncio.sleep(0)
@@ -202,8 +202,8 @@ class TestCancellationPath:
 class TestCancelAbandonSite:
     """The ``run_post_tx`` abandon site (``taskq.worker.cancel``).
 
-    ``mark_abandoned`` ran under plain ``asyncio.shield`` — the one shield
-    site the reconnect-storm campaign's conversion pass skipped — so a
+    ``mark_abandoned`` ran under plain ``asyncio.shield`` - the one shield
+    site the reconnect-storm campaign's conversion pass skipped - so a
     double cancel (shutdown racing the force-cancel escalation) detached a
     failing PG write that nobody retrieved. The test drives the REAL
     controller: a first cancel (heartbeat tick body) hands control to
@@ -258,7 +258,7 @@ class TestCancelAbandonSite:
                 site = asyncio.create_task(heartbeat_finally_site())
                 await asyncio.sleep(0)
                 site.cancel("shutdown cancel")
-                # Cancel #1 lands on the tick-body sleep; the finally enters
+                # Cancel lands on the tick-body sleep; the finally enters
                 # run_post_tx, which starts the abandon write.
                 await started.wait()
                 await asyncio.sleep(0)

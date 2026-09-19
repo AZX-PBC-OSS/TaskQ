@@ -4,17 +4,17 @@ series after real worker activity against real Postgres.
 The adopter red team's repro shape, held green: follow the documented
 quick-start (``pip install taskq-py[prometheus]``, no ``OTEL_*`` env vars),
 run real work, scrape ``GET /jobs/health/metrics`` as mounted by
-``taskq ui serve`` — the served text must contain the ``taskq_*`` series
+``taskq ui serve`` - the served text must contain the ``taskq_*`` series
 the shipped ``rules.yaml`` alert set references. Pre-fix it contained only
 Python process defaults: 200, valid Prometheus text, zero ``taskq_*``
 series, no error anywhere.
 
 The subprocess gets a freshly migrated schema (the module PG fixtures) and
-performs REAL worker activity through the production code paths — a real
+performs REAL worker activity through the production code paths - a real
 enqueue (``client/_args.py`` records
 ``messaging.client.published.messages``) and a real dispatch round
 (``backend/_dispatch_sql.py::dispatch_batch`` records
-``taskq.dispatch.duration``) — then scrapes through the real FastAPI
+``taskq.dispatch.duration``) - then scrapes through the real FastAPI
 router. Boot order inside the script is the shipped serve path's real
 order: the router is created (auto-wiring the provider) at process start,
 before any activity records, because OTel proxy instruments drop
@@ -112,7 +112,7 @@ def test_served_metrics_contain_taskq_series_after_real_worker_activity(
 ) -> None:
     """After a real enqueue and a real dispatch round, the scrape served by
     the router mounted exactly as ``taskq ui serve`` mounts it contains the
-    ``taskq_*`` / ``messaging_*`` series the shipped alert rules reference —
+    ``taskq_*`` / ``messaging_*`` series the shipped alert rules reference -
     with no ``PrometheusMetricReader`` and no ``OTEL_*`` env vars anywhere,
     the exact documented quick-start state."""
     env = {
@@ -126,7 +126,7 @@ def test_served_metrics_contain_taskq_series_after_real_worker_activity(
     env["PROBE_PG_DSN"] = module_pg_schema.pg_dsn
     env["PROBE_SCHEMA"] = module_pg_schema.schema_name
 
-    result = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell — the current interpreter running this file's own literal script; the DSN/schema arrive via env, not argv.
+    result = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell - the current interpreter running this file's own literal script; the DSN/schema arrive via env, not argv.
         [sys.executable, "-c", _SCRIPT],
         capture_output=True,
         text=True,
@@ -151,6 +151,6 @@ def test_served_metrics_contain_taskq_series_after_real_worker_activity(
         f"absent from the served scrape: {result.stdout!r}"
     )
     assert out.get("ANY_TASKQ") == "True", (
-        "no taskq_* series at all in the served scrape — the pre-fix "
+        "no taskq_* series at all in the served scrape - the pre-fix "
         "silent-failure shape (200, valid text, only process defaults)"
     )

@@ -97,7 +97,7 @@ async def test_autonomous_success_serializes_result_exactly_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """One ``dumps`` call in the consumer per successful completion, and its
-    bytes — not a dict — are what reach ``mark_succeeded``."""
+    bytes - not a dict - are what reach ``mark_succeeded``."""
     counter = _CountingDumps()
     monkeypatch.setattr("taskq.worker._consumer._json_dumps", counter)
     backend = FakeBackend()
@@ -177,7 +177,7 @@ async def test_autonomous_cap_exceeded_raises_result_too_large_in_encode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``ResultTooLarge`` is still raised from the consumer's encode helper
-    (same site), before ``mark_succeeded`` — routed to failure, not success."""
+    (same site), before ``mark_succeeded`` - routed to failure, not success."""
     monkeypatch.setattr("taskq.worker._consumer._json_dumps", _CountingDumps())
     backend = FakeBackend()
     raised_from: list[str] = []

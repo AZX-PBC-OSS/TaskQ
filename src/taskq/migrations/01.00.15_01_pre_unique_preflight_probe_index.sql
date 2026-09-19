@@ -1,0 +1,63 @@
+-- Unique-preflight probe index over EVERY status, not just the active
+-- ones. Forward-only; there is no down migration. To revert, DROP INDEX.
+-- The literal "{schema}" token is substituted at apply time by the
+-- migration runner.
+--
+-- ── Why this index exists ───────────────────────────────────────────
+-- The unique_for preflight (enqueue_unique_for_preflight in
+-- backend/_sql_templates.py) asks: "the newest job for this (actor,
+-- identity_key) within the window, in any of the CALLER's
+-- unique_states". The state set is per-actor configuration
+-- (@actor(unique_states=...)); DEFAULT_UNIQUE_STATES is the active
+-- triple, but a caller may fold terminal states in (``succeeded`` is
+-- the documented use: recent success is the dedup answer). The only
+-- index serving the probe was jobs_identity_active_idx
+-- (01.00.00_01), and it is PARTIAL on
+-- status IN ('pending', 'scheduled', 'running'): the planner can prove
+-- a partial index applies only when the query's own quals imply its
+-- predicate, and a bound status array holding ANY terminal status
+-- proves the opposite. Every probe whose unique_states leaves the
+-- active triple therefore degrades from the index seek to a sequential
+-- scan filtered on actor and identity_key, on the enqueue path, once
+-- per unique enqueue.
+--
+-- This migration adds a NON-partial B-tree on (actor, identity_key,
+-- status): equality, equality, and the probe's status array, for ANY
+-- status set, so the probe's plan no longer depends on what the caller
+-- configured. The status column rides as the third key (not a
+-- predicate) precisely because the set varies per caller; the window's
+-- created_at bound stays a post-scan filter (a VOLATILE
+-- clock_timestamp() bound cannot be an index condition), and the
+-- ORDER BY created_at DESC LIMIT 1 keeps its top-N shape over the
+-- (tiny) per-identity candidate set the index hands it.
+--
+-- ── Deliberate overlap ──────────────────────────────────────────────
+-- jobs_identity_active_idx stays: for the DEFAULT active-triple state
+-- set it remains the better plan (its body holds only active rows, so
+-- the seek touches a smaller index and never the terminal history),
+-- and the planner keeps choosing it there. This index is the fallback
+-- the partial index cannot serve; the redundancy is the same trade
+-- 01.00.06_01's keyed indexes document, an enqueue-path probe is not
+-- the place to make the planner prove a subset relation on a bound
+-- array.
+--
+-- ROLLING DEPLOY: pre-phase is safe for both code generations. The
+-- index is purely additive: the previous release's probe never
+-- references it, and this release's probe runs without it too (it
+-- degrades to the sequential scan; only the cost bound is lost, never
+-- correctness).
+--
+-- OPS NOTE (locks), same caveat as every sibling index migration: the
+-- CREATE INDEX takes a write-blocking lock on jobs for the duration of
+-- the build, and build time is proportional to the current row count
+-- (a non-partial index body holds every job with a non-NULL identity
+-- key, including the terminal history). Operators with a large jobs
+-- table should run the equivalent
+-- `CREATE INDEX CONCURRENTLY IF NOT EXISTS jobs_identity_status_idx
+-- ON "{schema}".jobs (actor, identity_key, status)` manually outside
+-- the migration runner during a maintenance window, then let this
+-- migration no-op via IF NOT EXISTS. Plain CREATE INDEX here, not the
+-- no-transaction CONCURRENTLY form, for the deadlock reason
+-- 01.00.09_01_pre_round_robin_probe_index.sql derives.
+CREATE INDEX IF NOT EXISTS jobs_identity_status_idx
+    ON "{schema}".jobs (actor, identity_key, status);

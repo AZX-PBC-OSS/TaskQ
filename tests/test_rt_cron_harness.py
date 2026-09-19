@@ -6,15 +6,15 @@ No tests live here.  The ``tests/test_rt_cron_*.py`` files drive
 module's seeding helpers, connection wrappers and backend subclasses so
 each attack file stays focused on its assertions.
 
-Two pieces here are load-bearing beyond convenience:
+Two pieces here are critical beyond convenience:
 
-* the wedge — :func:`wedge_then_fail` / :func:`wedge_then_succeed` are
+* the wedge - :func:`wedge_then_fail` / :func:`wedge_then_succeed` are
   importable async ``payload_factory`` dotted paths that hold one
   schedule's PLANNING open on an :class:`asyncio.Event` while the tick's
   transaction (and its advisory lock) stays open.  That is the only
   deterministic way to act on the database from a second connection
   strictly between the tick's due SELECT and its UPDATEs.
-* :class:`_JobIdCollisionBackend` — makes the tick's batched enqueue fail
+* :class:`_JobIdCollisionBackend` - makes the tick's batched enqueue fail
   with a genuine server-side ``UniqueViolationError`` (``jobs_pkey``) on
   the caller's connection, without mocking asyncpg: the first planned
   row's id is swapped for one already committed, and the real
@@ -92,8 +92,8 @@ def pool_backend(
 
     ``make_backend`` suffices where the caller supplies the connection
     (the cron tick, single enqueues, caller-conn batches), but pool-touching
-    paths — ``enqueue_batch_atomic`` acquiring its own transaction, pool-level
-    ``enqueue`` — need real pools. Same duck-typed deps shape, wired to the
+    paths - ``enqueue_batch_atomic`` acquiring its own transaction, pool-level
+    ``enqueue`` - need real pools. Same duck-typed deps shape, wired to the
     module pool fixture instead of ``None``.
     """
     deps = _StubBackendDeps(settings)
@@ -115,7 +115,7 @@ class GatedEnqueueBackend(PostgresBackend):
     """Backend whose batched enqueue pauses on a gate before writing.
 
     The pause lands after the tick took the advisory lock, read the due
-    set and planned every fire — the exact state a second leader ticks
+    set and planned every fire - the exact state a second leader ticks
     through during handover.  ``entered`` is set the moment the enqueue
     is reached, so the test can start the competing tick while this one
     is provably mid-transaction.
@@ -156,14 +156,14 @@ class JobIdCollisionBackend(PostgresBackend):
     ``UniqueViolationError`` (``jobs_pkey``) on the caller's connection.
 
     Before the FIRST batched INSERT, the first planned arg's job id is
-    committed by a SECOND connection — the client write that won the race
-    to that id in production — then the real ``enqueue_batch`` INSERT runs
+    committed by a SECOND connection - the client write that won the race
+    to that id in production - then the real ``enqueue_batch`` INSERT runs
     and genuinely violates ``jobs_pkey`` for real, with no asyncpg
     mocking.  The violation's detail line therefore names an id the tick's
     own plan carries (``Key (id)=(…)``), which is exactly what per-plan
     attribution must match.  Only the first attempt collides: the
     colliding row exists from then on, but the survivors' own fresh ids
-    never do — a retry of THEIR args lands.
+    never do - a retry of THEIR args lands.
     """
 
     def __init__(
@@ -212,10 +212,10 @@ class SingletonRaceBackend(PostgresBackend):
 
     The tick's singleton preflight ran earlier in the tick's own
     transaction and saw no blocker; this commit lands in the preflight→
-    INSERT window — the client enqueue that wins that race in production —
+    INSERT window - the client enqueue that wins that race in production -
     and the batched INSERT, whose statement snapshot under READ COMMITTED
     DOES see the committed blocker, then genuinely violates
-    ``jobs_singleton_uniq``.  Deterministic: no sleeps, no polling — the
+    ``jobs_singleton_uniq``.  Deterministic: no sleeps, no polling - the
     injection point IS the window.
     """
 
@@ -318,12 +318,12 @@ class FrozenClockConn:
     The tick's folded lock + clock + due statement reads its planning clock
     as ``statement_timestamp() AS server_now``; that one expression is
     rewritten to a pinned instant so the catch-up boundary comparison
-    (``fire_at < frozen_now - window``) is EXACT — the only quantity in the
+    (``fire_at < frozen_now - window``) is EXACT - the only quantity in the
     tick that cannot be made deterministic with a live server clock,
     because equality requires hitting a microsecond that is only known
-    once the tick itself reads it.  Everything else in that statement —
+    once the tick itself reads it.  Everything else in that statement -
     the advisory-lock probe and the due bound (evaluated server-side
-    against the live clock) — and every later statement (the enqueue and
+    against the live clock) - and every later statement (the enqueue and
     the UPDATEs) runs against real PG.
     """
 
@@ -467,7 +467,7 @@ async def server_hour_floor(conn: asyncpg.Connection) -> datetime:
     Cron seeds and due bounds must live in one clock domain: the tick's
     due bound is server-side ``statement_timestamp()``, so a seed taken
     from the test process's clock carries the app↔DB skew into every tick
-    decision — a host behind the server seeds the future (nothing due,
+    decision - a host behind the server seeds the future (nothing due,
     the round fires nothing), a host ahead seeds the past. Same kernel on
     CI today; a different machine tomorrow. Every ``next_fire_at`` a test
     seeds goes through this, never ``datetime.now``.

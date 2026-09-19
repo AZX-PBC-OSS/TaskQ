@@ -1,8 +1,8 @@
 """The worker's exit stack releases the credential providers its factories declare.
 
 ``open_worker_deps`` closes every pool and client built through a
-credential-provider factory; the provider itself — the Entra ID providers
-hold a lazily created credential session — stayed open after shutdown. These
+credential-provider factory; the provider itself - the Entra ID providers
+hold a lazily created credential session - stayed open after shutdown. These
 tests pin the wiring: closed ONCE (one provider may serve both the PG and
 the Redis role), AFTER every resource built through it, never for a factory
 that declares no provider, and for the per-slot pool's provider only when
@@ -12,7 +12,7 @@ Docker-free: hand-rolled fakes wired through the REAL ``open_worker_deps``
 and ``_maybe_open_slot_pool``, mirroring ``tests/test_worker_deps_teardown.py``'s
 fake conventions.
 
-No ``pytestmark`` — must run under ``pytest -m "not integration"``.
+No ``pytestmark`` - must run under ``pytest -m "not integration"``.
 """
 
 from __future__ import annotations
@@ -211,7 +211,7 @@ async def test_slot_pool_provider_closes_after_the_slot_pool() -> None:
 
     # A registered connection that cannot answer the session-state queries:
     # _registered_session_state degrades to {} and the factory is used as
-    # passed — the fake above, whose declared provider is what this test pins.
+    # passed - the fake above, whose declared provider is what this test pins.
     async def unreadable(_query: str) -> object:
         raise RuntimeError("unreadable session")
 
@@ -306,7 +306,7 @@ async def test_slot_pool_provider_already_tracked_by_the_role_factories_is_not_c
 def test_no_event_loop_dependencies_in_the_provider_close_path() -> None:
     """close_provider_bounded is pushed as a callback, not awaited at open:
     a worker whose providers never close (nothing declares aclose) boots
-    exactly as before. Control test — the collection is a no-op here."""
+    exactly as before. Control test - the collection is a no-op here."""
     events: list[str] = []
     conns = WorkerConnections(
         heartbeat_pool=_FakePool("heartbeat", events),  # type: ignore[arg-type]

@@ -3,7 +3,7 @@
 The supervisor's own wall clock must not participate: ``last_seen_at`` is
 written by PG (``clock_timestamp()``), so only PG can measure its age
 without mixing domains.  Pre-fix, ``_child_health_check`` computed the age
-from ``time.time()`` — a supervisor whose clock ran ahead read a healthy
+from ``time.time()`` - a supervisor whose clock ran ahead read a healthy
 child as stale and killed it.
 """
 
@@ -59,7 +59,7 @@ async def _verdict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> bool:
     """Run one health check with the supervisor's Python clock skewed a full
-    day ahead — pre-fix this inflates the age by 86400 s and kills a healthy
+    day ahead - pre-fix this inflates the age by 86400 s and kills a healthy
     child."""
     real_time = time.time
     monkeypatch.setattr(time, "time", lambda: real_time() + 86_400)

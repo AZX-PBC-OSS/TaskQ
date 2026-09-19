@@ -4,12 +4,12 @@ Each test uses a **different actor** to avoid cross-test interference:
 ``e2e_worker`` is module-scoped and ``sync_actor_config`` runs only at
 bootstrap, so once a test deregisters an actor's ``actor_config`` row,
 later tests cannot enqueue to that same actor (the dispatch query
-inner-joins ``actor_config`` — jobs would never be dispatched).
+inner-joins ``actor_config`` - jobs would never be dispatched).
 
 Actors used (all defined in ``tests/e2e/actors.py``):
-- ``quick_result`` — 0.05 s sleep, simple payload/result.
-- ``long_running_job`` — 30 s sleep. Used for the refusal-with-active-jobs test.
-- ``short_lived_job`` — 0.5 s sleep. Used for the force+purge_queue test.
+- ``quick_result`` - 0.05 s sleep, simple payload/result.
+- ``long_running_job`` - 30 s sleep. Used for the refusal-with-active-jobs test.
+- ``short_lived_job`` - 0.5 s sleep. Used for the force+purge_queue test.
 """
 
 from __future__ import annotations
@@ -114,9 +114,9 @@ async def test_deregister_refuses_with_active_jobs(
     assert ac_count == 1
 
     # Cleanup: cancel the job, wait for terminal, then force-deregister.
-    # Do NOT use handle.wait() — it raises JobFailed for cancelled status.
+    # Do NOT use handle.wait() - it raises JobFailed for cancelled status.
     # long_running_job never calls ctx.check_cancelled(), so the cancel
-    # lands only after the 30s sleep finishes — budget the full duration.
+    # lands only after the 30s sleep finishes - budget the full duration.
     await handle.cancel()
     await wait_for_handle_status(handle, "cancelled", timeout=60)
 
@@ -156,7 +156,7 @@ async def test_deregister_force_with_purge_queue_after_completion(
     assert result.actor_config_deleted is True
     assert result.jobs_cancelled == 0
     assert result.terminal_jobs_remaining == 1
-    # All e2e actors share queue="e2e" — purge_queue=True is a safe no-op
+    # All e2e actors share queue="e2e" - purge_queue=True is a safe no-op
     # because the orphan guard correctly refuses to delete a shared queue.
     assert result.queue_purged is False
 

@@ -1,7 +1,7 @@
 """Work denied a slot waits for one; it does not die of waiting.
 
-Capacity limits are shared across the fleet — a rate limit of ten per
-second is ten for the deployment, not ten per pod — so a pod that wants
+Capacity limits are shared across the fleet - a rate limit of ten per
+second is ten for the deployment, not ten per pod - so a pod that wants
 to run a job routinely finds the capacity already spent by a peer. The
 same shape arrives from outside: an upstream answering 429 means come
 back later, not give up.
@@ -16,13 +16,13 @@ waiting is the job's own schedule-to-close deadline, which is the one an
 operator set deliberately.
 
 A job deferred this way must also come back on time, from whichever pod
-is alive when its moment arrives — the deferral is a row in the
+is alive when its moment arrives - the deferral is a row in the
 database precisely so it does not belong to the process that issued it.
 
 The saturation denial currently spends a retry and can end a job that
 never ran; the tests below state the behaviour the queue is meant to
 have, so they fail until it does. They are not describing today's
-arithmetic and must not be adjusted to match it — a denial that costs
+arithmetic and must not be adjusted to match it - a denial that costs
 budget is the defect, not the specification.
 """
 
@@ -103,7 +103,7 @@ async def test_a_denied_job_spends_no_retry_budget(pg_dsn: str, outcome: str) ->
         after = await _row(fleet, job_id)
         assert after["attempt"] == before["attempt"], (
             f"a {outcome} moved the job's attempt counter from {before['attempt']} to "
-            f"{after['attempt']}. The job never ran — the fleet was simply busy — yet it "
+            f"{after['attempt']}. The job never ran - the fleet was simply busy - yet it "
             f"has one fewer of its {_MAX_ATTEMPTS} retries left. A queue under load now "
             "consumes its own backlog: jobs that would succeed the moment capacity frees "
             "are written off instead, and the busier the fleet the more of them."
@@ -118,7 +118,7 @@ async def test_repeated_denials_never_end_a_job(pg_dsn: str) -> None:
 
     This is the property the word 'indefinite' means operationally. A
     keyed limit held by a busy peer can refuse the same job far more
-    often than its retry budget would allow if denials counted — the
+    often than its retry budget would allow if denials counted - the
     fleet may be saturated for hours. The job must survive all of it and
     then run when a slot appears.
 
@@ -186,7 +186,7 @@ async def test_a_denial_writes_no_failed_attempt_history(pg_dsn: str) -> None:
     An attempt row is the record of the actor having executed. A denial
     means it did not. If denials write attempt rows, every dashboard and
     every investigation that counts attempts is wrong in the same
-    direction — a busy period looks like a wave of failures, and the
+    direction - a busy period looks like a wave of failures, and the
     operator debugging it is looking for a bug in code that never ran.
     """
     schema = f"fleet_denial_hist_{new_base62()}".lower()
@@ -207,8 +207,8 @@ async def test_a_denial_writes_no_failed_attempt_history(pg_dsn: str) -> None:
         written = await _attempt_rows(fleet, job_id)
         assert written == 0, (
             f"a capacity denial wrote {written} attempt row(s) for a job whose actor "
-            "never ran. Every count of attempts — the job's own history, failure rates, "
-            "retry dashboards — now reports contention as execution, so a busy fleet is "
+            "never ran. Every count of attempts - the job's own history, failure rates, "
+            "retry dashboards - now reports contention as execution, so a busy fleet is "
             "indistinguishable from a broken one."
         )
 
@@ -219,7 +219,7 @@ async def test_capacity_denied_work_is_picked_up_by_a_different_pod(
     """A deferral belongs to the fleet, not to the pod that issued it.
 
     The pod that hit the limit may well be gone by the time capacity
-    frees — that is the normal case during a deploy, and the reason the
+    frees - that is the normal case during a deploy, and the reason the
     deferral is a row rather than a timer. Whichever pod is alive when
     the job comes due must be able to run it.
 
@@ -296,8 +296,8 @@ async def test_future_scheduled_work_is_not_claimable_before_its_time(
             early = await fleet.pod(name).claim([_QUEUE], 5)
             assert early == [], (
                 f"pod {name} claimed a job scheduled an hour into the future. Whatever "
-                "the delay was protecting — a rate limit, an external dependency, a "
-                "business time — has been defeated, and the work has already happened by "
+                "the delay was protecting - a rate limit, an external dependency, a "
+                "business time - has been defeated, and the work has already happened by "
                 "the time anyone notices."
             )
 

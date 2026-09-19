@@ -10,17 +10,17 @@ on PG. Every seam of the current surface is either pinned by a behavioural
 isolation test (named below), probed below, or registered with the reason no
 stored state can escape. Those tests guard their seam. This file guards the
 *surface*: it walks every public member of ``InMemoryBackend``, so a new
-method — the next ``get_events``, the next batch-read seam — fails the
+method - the next ``get_events``, the next batch-read seam - fails the
 completeness check on arrival, before anyone has to remember the invariant.
 
-Precedent: ``tests/test_sweepaudit_bounded_writes.py`` — dynamic tests pin
+Precedent: ``tests/test_sweepaudit_bounded_writes.py`` - dynamic tests pin
 each known site, a registry over the walked surface catches the next one.
 
 What to do when the completeness check fails on a method you added:
 
 * If it returns a row type or accepts a caller-held mutable object, add a
   behavioural isolation test (the shape lives in
-  ``tests/test_in_memory_read_isolation.py``) and register the pin here —
+  ``tests/test_in_memory_read_isolation.py``) and register the pin here -
   or write the probe in this file alongside ``get`` and the batch variants.
 * If no stored state can escape (scalar/derived return, no caller-held
   mutable argument), register it in ``_NO_STORED_STATE_ESCAPES`` with the
@@ -160,7 +160,7 @@ _PINNED_BY_TEST: dict[str, tuple[str, str, bool]] = {
 #: Seams probed behaviourally in this file (below). ``get`` is the read-back
 #: seam every isolation test asserts through; the batch/with_conn variants
 #: delegate to the pinned ``_enqueue`` builder, and the probes below keep
-#: that delegation honest — a re-implementation that stops copying fails a
+#: that delegation honest - a re-implementation that stops copying fails a
 #: probe here, not nothing.
 _PROBED_IN_THIS_FILE = {
     "get",
@@ -172,7 +172,7 @@ _PROBED_IN_THIS_FILE = {
 
 #: Methods no stored state can escape through: scalar or freshly-derived
 #: return, no caller-held mutable argument. The annotation tripwire below
-#: re-checks the return half of each claim — a method edited to return a
+#: re-checks the return half of each claim - a method edited to return a
 #: row type fails there until reclassified.
 _NO_STORED_STATE_ESCAPES: dict[str, str] = {
     "abort_batch": "returns a count",
@@ -204,7 +204,7 @@ _NO_STORED_STATE_ESCAPES: dict[str, str] = {
 }
 
 #: Caller-held data stored by reference, but unreachable from any read seam.
-#: If a read seam is ever added for this state, it must copy — and the method
+#: If a read seam is ever added for this state, it must copy - and the method
 #: moves to a pinned bucket at that moment.
 _STORED_CALLER_DATA_NO_READ_SEAM: dict[str, str] = {
     "register_actor_config": (
@@ -236,7 +236,7 @@ def _public_members() -> dict[str, object]:
 
 
 def _classified() -> dict[str, object]:
-    """The union of every bucket's keys — only the names matter."""
+    """The union of every bucket's keys - only the names matter."""
     out: dict[str, object] = {}
     for bucket in (
         _PINNED_BY_TEST,
@@ -251,14 +251,14 @@ def _classified() -> dict[str, object]:
 
 def test_every_public_member_is_classified_exactly_once() -> None:
     """The surface walk: a new public method on InMemoryBackend fails here
-    until someone writes its classification — the sentence is the review."""
+    until someone writes its classification - the sentence is the review."""
     members = set(_public_members())
     classified = _classified()
     unclassified = members - set(classified)
     stale = set(classified) - members
     assert not unclassified, (
         f"public InMemoryBackend members with no aliasing classification: {sorted(unclassified)}. "
-        "Classify each into a bucket of tests/test_in_memory_seam_registry.py — "
+        "Classify each into a bucket of tests/test_in_memory_seam_registry.py - "
         "if it returns rows or accepts caller-held mutables, that means adding "
         "an isolation test, not just a registry line."
     )

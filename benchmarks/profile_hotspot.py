@@ -7,7 +7,7 @@
 
 Engines:
     cprofile      stdlib, always available. Sorted by cumulative then tottime.
-    pyinstrument  sampling profiler — lower overhead, better for hot loops;
+    pyinstrument  sampling profiler - lower overhead, better for hot loops;
                   falls back to cProfile with a warning if not installed.
     gil-sampler   runs the full dispatch stress (benchmarks/stress_dispatch.py)
                   under benchmarks/gil_sample.py's in-process sampler and prints
@@ -119,7 +119,7 @@ def profile_gil_sampler() -> None:
         f"running benchmarks/gil_sample.py (dispatch stress, ~{stress_seconds}s; py-spy fallback for macOS)…",
         flush=True,
     )
-    proc = subprocess.run(  # noqa: S603  (fixed, repo-owned script — no untrusted input)
+    proc = subprocess.run(  # noqa: S603  (fixed, repo-owned script - no untrusted input)
         [sys.executable, str(_BENCH_DIR / "gil_sample.py")], check=False
     )
     if proc.returncode != 0:

@@ -5,7 +5,7 @@ candidate rows per actor+queue *before* computing ``fairness_rank``. When
 that sampling LIMIT is applied globally (ordered by priority/scheduled_at
 only, ignoring fairness_key), a deep cohort enqueued first can occupy the
 entire oversampled candidate window, so a shallow cohort's jobs never even
-reach the fairness_rank computation — starving it indefinitely regardless
+reach the fairness_rank computation - starving it indefinitely regardless
 of how many dispatch rounds run.
 
 The fix partitions the oversample LIMIT by ``fairness_key`` (via an inner
@@ -57,9 +57,9 @@ async def test_deep_cohort_does_not_starve_shallow_fairness_key(
     """500 pending jobs under fairness_key A, 1 job under fairness_key B.
 
     Both enqueued to the same actor/queue, A enqueued first (so A sorts
-    ahead of B on priority/scheduled_at/id — the ordering the old global
+    ahead of B on priority/scheduled_at/id - the ordering the old global
     LIMIT used). Dispatching with limit=4 must surface B's job within a
-    couple of rounds — not be starved indefinitely by A's depth.
+    couple of rounds - not be starved indefinitely by A's depth.
     """
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
@@ -80,11 +80,11 @@ async def test_deep_cohort_does_not_starve_shallow_fairness_key(
             "{}",
         )
 
-    # Deep cohort A enqueued first — 500 pending jobs.
+    # Deep cohort A enqueued first - 500 pending jobs.
     for _ in range(500):
         await backend.enqueue(_args(actor, queue, "A"))
 
-    # Shallow cohort B — a single job, enqueued after A.
+    # Shallow cohort B - a single job, enqueued after A.
     await backend.enqueue(_args(actor, queue, "B"))
 
     found_b = False
@@ -101,7 +101,7 @@ async def test_deep_cohort_does_not_starve_shallow_fairness_key(
 
     assert found_b, (
         "fairness_key 'B' (1 pending job) was starved by fairness_key 'A' "
-        "(500 pending jobs) across 2 dispatch rounds of limit=4 — the "
+        "(500 pending jobs) across 2 dispatch rounds of limit=4 - the "
         "oversample LIMIT is truncating the candidate list before "
         "fairness_rank partitioning"
     )

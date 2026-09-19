@@ -1,6 +1,6 @@
 """TCP/HTTP health listener: the probe surface Azure Container Apps can actually reach.
 
-ACA supports only ``httpGet``/``tcpSocket`` probes against a container TCP port — there is no
+ACA supports only ``httpGet``/``tcpSocket`` probes against a container TCP port - there is no
 ``exec`` probe type (https://learn.microsoft.com/en-us/azure/container-apps/health-probes,
 "Restrictions": "``exec`` probes aren't supported"), so the Unix-socket-only health server was
 unprobeable there. Every test below drives a *real* listener over a *real* socket with a plain
@@ -90,7 +90,7 @@ def _make_settings(
         health_readiness_check_timeout=5.0,
         # Maintenance-health fields read by build_ready_body's
         # maintenance_health view (only when the process-global OTel sweep
-        # caches are non-empty — i.e. when other sweep-recording tests ran
+        # caches are non-empty - i.e. when other sweep-recording tests ran
         # earlier in this xdist worker process; without these the /ready
         # handler raises AttributeError and answers 500). Mirrors the stub
         # settings in tests/test_health.py and tests/test_web_health.py.
@@ -138,7 +138,7 @@ async def _running(
 
 
 def _port(server: HealthServer) -> int:
-    """The listening TCP port, asserted present — every caller here enabled HTTP."""
+    """The listening TCP port, asserted present - every caller here enabled HTTP."""
     port = server.bound_port
     assert port is not None
     return port
@@ -198,7 +198,7 @@ async def test_http_ready_returns_200_when_healthy() -> None:
 
 
 async def test_http_ready_returns_503_when_pg_unreachable() -> None:
-    """503 is driven by the real condition — an unusable pool — not a patched responder.
+    """503 is driven by the real condition - an unusable pool - not a patched responder.
 
     ACA/K8s treat 200-399 as success, so an unready worker MUST answer outside that band or the
     orchestrator will route traffic to it.
@@ -321,7 +321,7 @@ async def test_no_tcp_listener_when_port_unset() -> None:
         assert server.bound_port is None
 
 
-# ── 4b. The two transports bind independently (#245) ────────────────────
+# ── 4b. The two transports bind independently ────────────────────
 
 
 async def _peer_http_ok(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -338,7 +338,7 @@ async def _peer_http_ok(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
 
 async def test_unix_collision_with_health_port_still_serves_tcp() -> None:
-    """#245: a Unix-path collision must not take the TCP probe listener
+    """A Unix-path collision must not take the TCP probe listener
     down with it.
 
     Before, ``start()`` bound the Unix socket first and aborted on the
@@ -456,7 +456,7 @@ async def test_unix_collision_without_health_port_keeps_the_bare_oserror_contrac
     """No ``health_port`` configured: the collision keeps today's answer.
 
     Nothing of the server's is serving anywhere, so the boot's
-    warn-and-continue (the #207 contract) fires on a plain ``OSError`` and
+    warn-and-continue (the contract) fires on a plain ``OSError`` and
     no stop is owed: ``stop()`` stays a safe no-op that never touches the
     peer's file. Pinning the TYPE matters: ``HealthUnixBindCollisionError``
     subclasses ``OSError``, so a bare ``pytest.raises(OSError)`` cannot
@@ -659,7 +659,7 @@ async def test_drip_fed_headers_do_not_hold_the_connection_open() -> None:
     """A per-line timeout alone does not bound the header loop.
 
     A peer sending one *valid* header line just under the per-line timeout never trips it while
-    holding a connection — and its server task — indefinitely. The TCP listener is
+    holding a connection - and its server task - indefinitely. The TCP listener is
     network-reachable, so the whole head-read is bounded by ``health_request_timeout`` regardless
     of per-line progress. Discovered downstream in cennan's bridge; it belongs here.
     """
@@ -670,8 +670,8 @@ async def test_drip_fed_headers_do_not_hold_the_connection_open() -> None:
         try:
             writer.write(b"GET /live HTTP/1.1\r\n")
             await writer.drain()
-            # Drip a valid header line every deadline/4 — never enough to trip a per-line
-            # timeout — for 2.5x longer than the total deadline allows.
+            # Drip a valid header line every deadline/4 - never enough to trip a per-line
+            # timeout - for 2.5x longer than the total deadline allows.
             with contextlib.suppress(OSError, TimeoutError):
                 for _ in range(10):
                     await asyncio.sleep(deadline / 4)

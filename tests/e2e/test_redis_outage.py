@@ -1,16 +1,16 @@
-"""Redis outage chaos e2e — stop Dragonfly mid-run, verify graceful degradation.
+"""Redis outage chaos e2e - stop Dragonfly mid-run, verify graceful degradation.
 
 Scenario: a worker running rate-limited jobs loses its Dragonfly (Redis)
 container mid-run. The worker must NOT crash catastrophically: rate-limited
 jobs should snooze/requeue (the token-bucket acquisition fails, the
 consumer routes to ``mark_snoozed`` which re-schedules without consuming
-retry budget). When Dragonfly returns, normal operation resumes — a fresh
+retry budget). When Dragonfly returns, normal operation resumes - a fresh
 job completes successfully.
 
 This module runs its own function-scoped Dragonfly container (``chaos_df``)
 so the shared session ``e2e_dragonfly`` is never stopped. The worker is
 pointed at the chaos Dragonfly via its network alias. The module owns its
-own schema, pool, client, and worker container — the shared ``e2e_pg``
+own schema, pool, client, and worker container - the shared ``e2e_pg``
 session fixture provides the PG instance, but none of the shared module
 fixtures (``e2e_schema``, ``e2e_worker``, ``e2e_client``, ``e2e_pg_pool``)
 are requested, so the autouse ``clean_e2e_state`` guard early-yields.
@@ -294,12 +294,12 @@ async def test_redis_outage_degrades_gracefully(
     restart Dragonfly and verify normal operation resumes.
 
     (a) Enqueue 5 rate-limited ``deliver_webhook`` jobs (token-bucket cap 5,
-    refill 5/s). Wait for the first ``delivered`` effect — proving the
+    refill 5/s). Wait for the first ``delivered`` effect - proving the
     worker is dispatching and Redis is healthy.
 
     (b) Stop the chaos Dragonfly container. Enqueue 3 more rate-limited
     jobs. These jobs cannot acquire a token (Redis connection refused), so
-    the consumer routes them to ``mark_snoozed`` — they return to
+    the consumer routes them to ``mark_snoozed`` - they return to
     ``scheduled`` without consuming retry budget. The worker must NOT
     crash: verify the container is still running.
 
@@ -340,7 +340,7 @@ async def test_redis_outage_degrades_gracefully(
         for i in range(3)
     ]
 
-    # The worker must NOT crash — verify it's still running after a short
+    # The worker must NOT crash - verify it's still running after a short
     # settling period.
     await asyncio.sleep(2.0)
     wrapped_worker = chaos_worker.container.get_wrapped_container()

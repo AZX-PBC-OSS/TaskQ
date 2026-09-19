@@ -14,7 +14,7 @@ must not kill the reclaim sweep (it is the fleet's crash-recovery path),
 and map/CASE drift must fail CI loudly instead of surfacing as a
 dashboard anomaly.
 
-The counter is the per-actor crash split #230 asks the expired-locks
+The counter is the per-actor crash split asks the expired-locks
 sweep to carry; ``taskq.maintenance_leader.sweep_rows{sweep_name}``
 stays the sweep-name total and is pinned separately
 (test_rt_worker_sweep_telemetry.py).
@@ -364,7 +364,7 @@ async def test_pg_reclaim_survives_an_unmapped_returning_status(
     metric_reader: InMemoryMetricReader,
 ) -> None:
     """A RETURNING row carrying an unmapped post-update status (the
-    #238-evolved or migration-era CASE) must not kill the sweep: the
+    current or migration-era CASE) must not kill the sweep: the
     disposition lookup is total, so the batch completes: attempts, events,
     wake NOTIFY, metric.  The unknown counts as its own series instead
     of a rolled-back transaction escaping into the leader's kill-streak."""

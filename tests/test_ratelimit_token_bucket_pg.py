@@ -41,7 +41,7 @@ def _pg_bucket(
 
 
 async def _rewind_bucket_ts(pool: asyncpg.Pool, schema: str, name: str, seconds: float) -> None:
-    """Rewind the stored server-domain ``ts`` by *seconds* — the PG analog
+    """Rewind the stored server-domain ``ts`` by *seconds* - the PG analog
     of ``FakeClock.advance`` for token-bucket time travel. The elapsed
     refill math runs on the store's clock, so simulating elapsed time must
     manipulate the store's own ``ts`` domain, never the caller's clock."""
@@ -56,7 +56,7 @@ async def _rewind_bucket_ts(pool: asyncpg.Pool, schema: str, name: str, seconds:
         )
 
 
-# ── PG fallback activation — WARNING log + ordering ────────────
+# ── PG fallback activation - WARNING log + ordering ────────────
 
 
 @pytest.mark.redis
@@ -68,7 +68,7 @@ async def test_pg_fallback_activation(
     WARNING precedes INFO denial log (ordering).
 
     Test setup pre-exhausts the PG row so the fallback path also emits an
-    INFO denial log — required to verify log ordering.
+    INFO denial log - required to verify log ordering.
     """
     import redis as _redis_mod
 
@@ -129,7 +129,7 @@ async def test_pg_burst_throttle_refill(
 ) -> None:
     """same scenario as the Redis test but backend="postgres".
 
-    100 burst — all allowed, remaining decreases monotonically.
+    100 burst - all allowed, remaining decreases monotonically.
     Then 10 denied with retry_after > 0 (refill=0.001, negligible under
     parallel load). Rewind the stored SERVER-domain ts 2000 s → 2 more
     allowed (the elapsed-refill math runs on the store's clock, so
@@ -260,7 +260,7 @@ async def test_pg_refund_fixed_quota_recovers(
         r = await tb.acquire(count=1.0, pg_pool=module_pg_pool, settings=settings)
         assert r.allowed is True
 
-    # Simulate 9999 s of elapsed store time — a fixed quota must not
+    # Simulate 9999 s of elapsed store time - a fixed quota must not
     # refill no matter how much (server-domain) time passes.
     await _rewind_bucket_ts(module_pg_pool, module_pg_schema.schema_name, tb.name, seconds=9999)
     r = await tb.acquire(count=1.0, pg_pool=module_pg_pool, settings=settings)

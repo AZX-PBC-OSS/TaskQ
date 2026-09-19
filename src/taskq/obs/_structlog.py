@@ -43,7 +43,7 @@ def _otel_span_processor(
 
     Reads ``opentelemetry.trace.get_current_span().get_span_context()`` on every
     log call so nested sub-spans within a job are reflected in ``span_id``.
-    ``opentelemetry-api`` is a hard dep — no conditional import guard needed.
+    ``opentelemetry-api`` is a hard dep, no conditional import guard needed.
     """
     ctx = trace.get_current_span().get_span_context()
     if ctx.is_valid:
@@ -89,8 +89,8 @@ def _render_exc_info_safe(
 ) -> structlog.types.EventDict:
     """Replace ``exc_info`` with scrubbed ``exception.*`` keys on the JSON channel.
 
-    Mirrors structlog's ``format_exc_info`` key semantics — pop ``exc_info``,
-    render only when it resolves to a real exception — but renders through the
+    Mirrors structlog's ``format_exc_info`` key semantics, pop ``exc_info``,
+    render only when it resolves to a real exception, but renders through the
     ``_redact_exc`` helpers so Postgres DETAIL row values and URI credentials
     never reach the JSON log line. Without this, ``log.exception()`` shipped a
     leftover ``"exc_info": true`` bool and foreign stdlib records with real
@@ -107,14 +107,14 @@ class _ExcInfoSafeBoundLogger(structlog.stdlib.BoundLogger):
     """``BoundLogger`` whose ``.exception()`` never sets ``exc_info`` on the record.
 
     Why: structlog's own ``exception()`` proxies to ``logging.Logger.exception``,
-    and *that* hard-codes ``exc_info=True`` in the stdlib call — so
+    and *that* hard-codes ``exc_info=True`` in the stdlib call, so
     ``record.exc_info`` is populated with the live ``sys.exc_info()`` triple no
     matter what the processor chain did to the event dict. Every root handler
     then reads it: ``setup_logging`` installs on the ROOT logger and
     ``worker_main`` calls it unconditionally, and Azure Monitor's
     ``configure_azure_monitor()`` attaches its ``LoggingHandler`` alongside,
     reads ``record.exc_info`` directly, and ships the raw ``str(exc)`` plus the
-    full traceback to the App Insights ``exceptions`` table — Postgres DETAIL
+    full traceback to the App Insights ``exceptions`` table, Postgres DETAIL
     row values and all.
 
     No processor can close that, because the leak is added *after* the chain
@@ -132,7 +132,7 @@ def _scrub_exception_fields(
     logger: object, method: str, event_dict: structlog.types.EventDict
 ) -> structlog.types.EventDict:
     """Scrub the known exception-bearing field names (the
-    ``EXCEPTION_MESSAGE_FIELDS`` / ``EXCEPTION_TRACEBACK_FIELDS`` sets —
+    ``EXCEPTION_MESSAGE_FIELDS`` / ``EXCEPTION_TRACEBACK_FIELDS`` sets ,
     ``error``, ``error_message``, ``error_traceback``, ``exc``, and the
     terminal-write log's ``job_error_*`` / ``infra_error_*`` names).
 
@@ -147,23 +147,19 @@ def _scrub_exception_fields(
     return event_dict
 
 
-def setup_logging(
-    *,
-    level: str = "INFO",
-    log_format: str = "json",
-) -> None:
-    """Configure structlog with the canonical processor chain.
+def _shared_processors() -> list[structlog.types.Processor]:
+    """The processor chain every TaskQ record runs, shared by
+    :func:`setup_logging`'s stdlib-formatter handoff and the pre-setup
+    default chain :func:`_install_default_chain` installs, so the two
+    can never drift on what a record carries.
 
-    Production (``log_format="json"``): ``JSONRenderer`` via
-    ``ProcessorFormatter`` stdlib bridge. Development (``log_format="console"``):
-    ``ConsoleRenderer`` via ``ProcessorFormatter``. Idempotent — guarded
-    by ``_logging_configured`` flag. Not called at import time .
+    Built per call: the chain closes over the module-global processors
+    (``_otel_span_processor``), and the level-filter pin
+    (``tests/test_obs_structlog.py``) monkeypatches that global before
+    calling :func:`setup_logging`, so a module-level constant would
+    freeze the spy out.
     """
-    global _logging_configured
-    if _logging_configured:
-        return
-
-    shared_processors: list[structlog.types.Processor] = [
+    return [
         # First, and deliberately unwrapped: a call below the configured
         # level must cost nothing beyond this level comparison, so the
         # per-job DEBUG sites do not run the whole chain for a line stdlib
@@ -187,11 +183,98 @@ def setup_logging(
         # dict is therefore an export surface for any vendor handler that
         # stringifies values. Console pays for this with a plain scrubbed
         # ``exception.stacktrace`` field instead of ConsoleRenderer's pretty
-        # traceback — the same record reaches the same vendor handlers whichever
+        # traceback, the same record reaches the same vendor handlers whichever
         # renderer the operator picked, so the dev view does not get an
         # unredacted exemption.
         _safe_processor_wrapper(_render_exc_info_safe),
     ]
+
+
+def _install_default_chain() -> None:
+    """Install the pre-``setup_logging`` processor chain, at import.
+
+    Why the default configuration needs its own level filter: structlog's
+    built-in default chain has none, so an embedding application that
+    never calls :func:`setup_logging` paid the full processor chain for
+    every record and let stdlib drop the line afterwards, roughly six
+    times the filtered cost per enqueue log. The installed chain mirrors
+    the configured one's shape: :func:`structlog.stdlib.filter_by_level`
+    FIRST and unwrapped, so a call below the effective level costs one
+    comparison. The level it filters at is the stdlib effective level of
+    the emitting logger, i.e. the embedding application's own root level:
+    this configuration never raises or lowers it, and the application
+    keeps full control (it also keeps full control of rendering, a later
+    :func:`setup_logging` call reconfigures the chain wholesale, and an
+    application configuring structlog itself after importing taskq
+    overrides this one the same way).
+
+    The default is installed ONLY when structlog is still unconfigured:
+    an application that ran its own ``structlog.configure`` before
+    importing taskq keeps its chain untouched, because ``configure``
+    replaces the process-global config and silently stealing it would be
+    an import side effect with no fix except reconfiguring. Note the
+    contract for the never-configured app: pre-setup records render as
+    JSON through stdlib logging (root-level filtered, the application's
+    own handlers), not plain-text stdout, which is the cost fix AND the
+    output change on purpose.
+
+    ``cache_logger_on_first_use`` stays False: a logger materialized
+    before :func:`setup_logging` runs must re-resolve per call and pick
+    the configured chain up, never stay pinned to this pre-config one.
+    """
+    from taskq._json import structlog_serializer
+
+    if structlog.is_configured():
+        # The application owns the global chain already (it configured
+        # structlog before importing taskq): installing ours would
+        # silently replace it at import time. setup_logging reconfigures
+        # wholesale when the application asks for ours explicitly.
+        return
+
+    structlog.configure(
+        processors=[
+            *_shared_processors(),
+            # Direct renderer instead of setup_logging's
+            # ``wrap_for_formatter`` handoff: there is no
+            # ``ProcessorFormatter`` installed yet to receive it, and
+            # wrapping without one would hand stdlib's default formatter a
+            # non-string record.
+            structlog.processors.JSONRenderer(serializer=structlog_serializer),
+        ],
+        # Why the stdlib factory (not structlog's default PrintLogger):
+        # ``filter_by_level`` consults the stdlib logger's effective level,
+        # which only this factory produces, and routing through stdlib
+        # logging means TaskQ's pre-setup records reach the embedding
+        # application's own handlers (or stdlib's last-resort handler for
+        # WARNING and above) instead of printing to stdout unconditionally.
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        cache_logger_on_first_use=False,
+    )
+
+
+_install_default_chain()
+
+
+def setup_logging(
+    *,
+    level: str = "INFO",
+    log_format: str = "json",
+) -> None:
+    """Configure structlog with the canonical processor chain.
+
+    Production (``log_format="json"``): ``JSONRenderer`` via
+    ``ProcessorFormatter`` stdlib bridge. Development (``log_format="console"``):
+    ``ConsoleRenderer`` via ``ProcessorFormatter``. Idempotent, guarded
+    by ``_logging_configured`` flag. Not called at import time (the
+    pre-setup default chain :func:`_install_default_chain` is installed
+    at import instead, so an embedding application that never calls this
+    still gets level-filtered logging).
+    """
+    global _logging_configured
+    if _logging_configured:
+        return
+
+    shared_processors = _shared_processors()
 
     formatter_processors: list[structlog.types.Processor]
     if log_format == "console":
@@ -209,7 +292,7 @@ def setup_logging(
             # Still needed for FOREIGN records: ``ProcessorFormatter`` lifts
             # their ``record.exc_info`` onto the event dict here, after the
             # shared chain has run, and orjson drops the whole line on a raw
-            # tuple. Idempotent for TaskQ's own records — ``exc_info`` is
+            # tuple. Idempotent for TaskQ's own records, ``exc_info`` is
             # already gone by then.
             _safe_processor_wrapper(_render_exc_info_safe),
             renderer,
@@ -276,7 +359,7 @@ def bind_job_context(
     """Bind job-scope fields to a logger, returning a new immutable BoundLogger.
 
     ``identity_key``, ``span_id``, and ``batch_id`` are omitted from the bound
-    dict when ``None`` — not set to null or empty string .  ``trace_id``
+    dict when ``None``, not set to null or empty string .  ``trace_id``
     is always bound (defaults to ``""`` when no active OTel span per spec).
     Returns a new ``BoundLogger``; does not mutate the input.
     """
@@ -324,7 +407,7 @@ def log_cancel_phase_change(
     """Emit an INFO log line with ``kind="cancel_phase_change"``.
 
     ``from_phase`` and ``to_phase`` are the cancel-phase integers before
-    and after the escalation.  ``cancel_observed_at`` is NOT included — it
+    and after the escalation.  ``cancel_observed_at`` is NOT included, it
     is per-handler context, not part of the canonical schema.
     """
     log.info(
@@ -343,7 +426,7 @@ def redact_payload(payload: object) -> str:
     for the same input.
     """
     # Why bytes directly, not dumps_str(...).encode(): the hash consumes
-    # bytes, and dumps() already produces them — the str round-trip was a
+    # bytes, and dumps() already produces them, the str round-trip was a
     # decode+encode pair per redacted log line.
     serialized = dumps(payload)
     return hashlib.sha256(serialized).hexdigest()[:16]

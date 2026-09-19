@@ -63,7 +63,7 @@ def test_rate_limits_page_falls_back_to_singleton(
     # Self-isolating: the patched dict is reverted at teardown, so this test
     # leaves the process-global singleton exactly as it found it regardless of
     # fixture ordering. (The root autouse fixture would also clear it before
-    # the next test — this removes the dependency on that discipline.)
+    # the next test - this removes the dependency on that discipline.)
     monkeypatch.setattr(
         singleton, "_rate_limits", {"singleton_bucket": _bucket("singleton_bucket")}
     )
@@ -102,7 +102,7 @@ async def test_rate_limit_reset_uses_bundle_provided_registry(
     """POST /rate-limits/{name}/reset resets the OWNED registry's bucket.
 
     The singleton holds a same-named bucket in the same drained state and
-    must remain untouched — proving the reset hit the owned registry, not
+    must remain untouched - proving the reset hit the owned registry, not
     the module singleton. Fixed-quota (refill=0) buckets keep token counts
     exact regardless of wall-clock elapsed time.
     """

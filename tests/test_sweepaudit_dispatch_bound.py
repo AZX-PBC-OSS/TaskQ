@@ -3,7 +3,7 @@
 The sweep/cron index audit (tests/test_index_audit.py, the
 statement_timestamp() rewrite in taskq.backend._sweeps) established the
 two-clock doctrine: row-selection RANGE predicates must use a STABLE
-``now`` so the planner can serve them as btree Index Conds — a VOLATILE
+``now`` so the planner can serve them as btree Index Conds - a VOLATILE
 ``clock_timestamp()`` bound degrades to a post-scan Filter that walks
 the pending backlog per dispatch round. The dispatch candidates laterals
 (dispatch's hottest path) were left on the volatile bound.
@@ -13,10 +13,10 @@ EXPLAIN ANALYZE BUFFERS, this file's seed shape):
 
 * volatile bound: Index Scan with ``Filter: (scheduled_at <=
   clock_timestamp())``, ``Rows Removed by Filter: 20000``, 20,172
-  buffers, ~5.1 ms — the whole backlog walked to admit 10 due rows;
+  buffers, ~5.1 ms - the whole backlog walked to admit 10 due rows;
 * stable bound: ``Index Cond: (... AND scheduled_at <=
   statement_timestamp())`` on jobs_actor_dispatch_idx, 10 buffers,
-  ~0.04 ms — the scan terminates at the range boundary.
+  ~0.04 ms - the scan terminates at the range boundary.
 
 The written values (started_at / last_heartbeat_at / lock_expires_at)
 stay ``clock_timestamp()`` per the same doctrine; only the row-selection
@@ -26,7 +26,7 @@ Section 3 pins the idle-actor prefilter in ``per_actor_capacity``: an
 EXPLAIN ANALYZE oracle on the full production dispatch CTE asserting the
 candidates lateral executes only for actors that hold pending rows on
 the round's queues (actual loop counts, not estimates), plus the
-selection-neutrality oracle — the live actor's jobs still dispatch.
+selection-neutrality oracle - the live actor's jobs still dispatch.
 """
 
 # ruff: noqa: S608  # Why: every f-string SQL below interpolates only this module's own throwaway schema identifier (built from new_base62, validated by the migration runner's _IDENT_RE) or renders a module SQL constant; all values are $n-bound.
@@ -95,7 +95,7 @@ def test_written_values_stay_clock_timestamp() -> None:
 async def dispatch_schema(pg_dsn: str) -> Any:
     """Throwaway schema, migrations applied, bulk-seeded into the shape
     that exposes the walk: a 20k-row PENDING backlog that is not yet due
-    (high priority, scheduled_at in the future — the direct-INSERT /
+    (high priority, scheduled_at in the future - the direct-INSERT /
     restored-dump shape; TaskQ's own writers classify future-scheduled
     rows as 'scheduled', so this pin also keeps the defensive bound
     index-servable for any writer that does not) plus a handful of due
@@ -207,11 +207,11 @@ async def test_dispatch_lateral_scheduled_at_bound_is_index_served(
         # time; only the outer producers are literalized. The params CTE
         # is the production one verbatim: the lateral's LIMIT bound is
         # the direct $5 parameter (the depth fix's foldable-bound
-        # doctrine — subquery LIMITs never fold into row estimates), so
+        # doctrine - subquery LIMITs never fold into row estimates), so
         # the wrapper must bind the same five typed parameters the real
         # statement binds. queue_cap_headroom joins them as a third
         # literalized producer (the lateral's LIMIT probe selects from
-        # it, #242): the empty relation is the uncapped-pair shape this
+        # it): the empty relation is the uncapped-pair shape this
         # pin has always exercised, where the scalar probe yields NULL
         # and LEAST ignores it, leaving the residual bound untouched.
         wrapped = (
@@ -245,7 +245,7 @@ async def test_dispatch_lateral_scheduled_at_bound_is_index_served(
         # stats-dependent, and both serve the doctrine this test pins.
         # The critical difference between the twins, the unrouted
         # one never walking a re-pended tail, is pinned by
-        # tests/test_migration_lock_scope_dead_index.py's #243 oracle,
+        # tests/test_migration_lock_scope_dead_index.py's oracle,
         # which seeds the mixed population.
         cond_lines = [line for line in plan.splitlines() if "Index Cond:" in line]
         assert cond_lines and any("scheduled_at <=" in line for line in cond_lines), (
@@ -268,9 +268,9 @@ _LIVE_ACTORS = 1
 async def prefilter_schema(pg_dsn: str) -> Any:
     """Throwaway schema, migrations applied, seeded into the shape that
     exposes the fan-out: many registered actors with NO pending rows (the
-    idle fleet — actor_config is synced from every worker's registry, so
+    idle fleet - actor_config is synced from every worker's registry, so
     hundreds of idle actors is the production shape) plus one live actor
-    with a handful of due pending rows on the round's queue — and, on that
+    with a handful of due pending rows on the round's queue - and, on that
     same live actor, the 20k-row not-yet-due pending backlog of this
     module's measured seed shape: the lateral-seek loop-count oracle needs
     the candidates lateral served by jobs_actor_dispatch_idx, and a
@@ -297,7 +297,7 @@ async def prefilter_schema(pg_dsn: str) -> Any:
 
         now = datetime.now(UTC)
         # Not-yet-due pending rows at the head of the index order, on the
-        # live actor only — the idle fleet keeps zero pending rows, so the
+        # live actor only - the idle fleet keeps zero pending rows, so the
         # prefilter oracle's premise (idle actors contribute no lateral
         # seeks) is untouched.
         future_rows = [
@@ -383,15 +383,15 @@ async def test_dispatch_prefilter_prunes_lateral_fanout_for_idle_actors(
 
     Without per_actor_capacity's EXISTS prefilter, the candidates CROSS
     JOIN runs the lateral seek once per (actor_config row, subscribed
-    queue) pair — ``_IDLE_ACTORS + _LIVE_ACTORS`` loops here, and
+    queue) pair - ``_IDLE_ACTORS + _LIVE_ACTORS`` loops here, and
     hundreds-to-thousands per idle tick in production. With the
     prefilter, per_actor_capacity yields only the live actor, so the
     lateral runs once. The asserted quantity is the scan node's ACTUAL
-    loop count — an exact count, not a timing or estimate — so the pin
+    loop count - an exact count, not a timing or estimate - so the pin
     is deterministic for a fixed seed.
 
     EXPLAIN ANALYZE executes the UPDATE, so the same run doubles as the
-    correctness oracle: the prefilter must not drop the live actor —
+    correctness oracle: the prefilter must not drop the live actor -
     its five due jobs still transition to running under the dispatched
     worker id.
     """
@@ -410,7 +410,7 @@ async def test_dispatch_prefilter_prunes_lateral_fanout_for_idle_actors(
 
         lateral_loops = _lateral_scan_loops(plan)
         assert lateral_loops, (
-            "no index-served candidates lateral found in the plan — the "
+            "no index-served candidates lateral found in the plan - the "
             "STABLE-bound doctrine pin (scheduled_at <= as an Index Cond) "
             f"has regressed:\n{plan}"
         )
@@ -418,7 +418,7 @@ async def test_dispatch_prefilter_prunes_lateral_fanout_for_idle_actors(
         assert max(lateral_loops) <= 4, (
             f"candidates lateral executed {max(lateral_loops)} times per "
             "outer row where the seeded shape allows at most "
-            f"{_LIVE_ACTORS} live (actor, queue) pairs — the unfiltered "
+            f"{_LIVE_ACTORS} live (actor, queue) pairs - the unfiltered "
             f"fan-out is {unfiltered_loops} loops, which is what a lost "
             "or broken idle-actor prefilter looks like. Plan:\n{plan}"
         )

@@ -4,23 +4,23 @@ The advisory lock exists for exactly one property: during leader handover
 two ticks, on two real connections, both inside their own transactions,
 must never both fire the same schedule.  The pinning file
 (``tests/test_cron_tick_bounded.py``) exercises a contended tick in
-isolation — a second connection holds the lock first and the tick under
+isolation - a second connection holds the lock first and the tick under
 test loses the probe.  What it does NOT pin is the handover race itself:
 a second tick STARTING while the first is mid-transaction, and two ticks
 free-running concurrently.  Those are the attacks here.
 
-* ``TestHandoverDoubleFire`` — a gated backend pauses tick T1 after it
+* ``TestHandoverDoubleFire`` - a gated backend pauses tick T1 after it
   took the lock, read the due set and planned its fires; tick T2 starts
   on a second real connection at that exact point and must lose the
   probe and fire nothing.  Then free-running pairs of concurrent ticks
-  under ``asyncio.gather`` — whichever interleaving the event loop
+  under ``asyncio.gather`` - whichever interleaving the event loop
   picks, every schedule fires exactly once.
-* ``TestTickStatementShape`` — the lock probe must be the tick's FIRST
+* ``TestTickStatementShape`` - the lock probe must be the tick's FIRST
   statement (a rewrite that reads the due set before probing re-opens
   the window the lock exists to close), and an empty due set must cost
-  exactly lock + clock + due SELECT — no actor fetch, no UPDATEs, no
+  exactly lock + clock + due SELECT - no actor fetch, no UPDATEs, no
   enqueue.
-* ``TestManualScheduleManagementMidTick`` — a schedule created and
+* ``TestManualScheduleManagementMidTick`` - a schedule created and
   committed by another connection while a tick is inflight is not in
   the tick's due-set snapshot: not fired, not advanced; it fires on the
   NEXT tick.  No lost write, no double-fire.
@@ -134,7 +134,7 @@ class TestHandoverDoubleFire:
         for identity in identities:
             rows = await jobs_for_identity(clean_pg_conn, schema, identity)
             assert len(rows) == 1, (
-                f"identity {identity} has {len(rows)} jobs after a handover overlap — "
+                f"identity {identity} has {len(rows)} jobs after a handover overlap - "
                 "the double-fire window the lock exists to close is open"
             )
 
@@ -177,13 +177,13 @@ class TestHandoverDoubleFire:
 
             assert fired_a + fired_b == 3, (
                 f"round {round_no}: concurrent ticks fired {fired_a} + {fired_b} for a "
-                "3-schedule due set — exactly one leader may consume it"
+                "3-schedule due set - exactly one leader may consume it"
             )
             for identity in identities:
                 rows = await jobs_for_identity(clean_pg_conn, schema, identity)
                 assert len(rows) == 1, (
                     f"round {round_no}: identity {identity} fired {len(rows)} times "
-                    "under concurrent ticks — double-fire"
+                    "under concurrent ticks - double-fire"
                 )
 
 
@@ -195,7 +195,7 @@ class TestTickStatementShape:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """No statement may precede the probe — not the clock, not the due
+        """No statement may precede the probe - not the clock, not the due
         SELECT.  Reading the due set before probing is the rewrite that
         re-opens the handover window: both leaders would plan the same
         schedules and the probe would only stop the second UPDATE."""
@@ -225,7 +225,7 @@ class TestTickStatementShape:
         assert counting.statements, "the tick issued no statements at all"
         assert _PROBE in counting.statements[0], (
             "the tick's first statement is not the advisory-lock probe: "
-            f"{counting.statements[0]!r} — a due-set read before the probe lets two "
+            f"{counting.statements[0]!r} - a due-set read before the probe lets two "
             "leaders plan the same schedules concurrently"
         )
         assert "cron_schedules" not in counting.statements[0], (
@@ -273,7 +273,7 @@ class TestTickStatementShape:
         assert enqueue_calls == []
         assert counting.count == 2, (
             f"an empty tick issued {counting.count} statements: "
-            f"{counting.statements} — the allowed shape is the probe, then the "
+            f"{counting.statements} - the allowed shape is the probe, then the "
             "clock + due SELECT"
         )
         assert _PROBE in counting.statements[0]
@@ -295,7 +295,7 @@ class TestManualScheduleManagementMidTick:
         module_pg_schema: ModulePgSchema,
     ) -> None:
         """A due schedule committed after the tick's due SELECT is not in
-        the tick's snapshot: no job, no advance — it fires on the next tick."""
+        the tick's snapshot: no job, no advance - it fires on the next tick."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, "rt_wedge_actor")
@@ -345,7 +345,7 @@ class TestManualScheduleManagementMidTick:
 
         assert fired_first == 1, "only the wedged schedule was in the tick's snapshot"
         assert await count_jobs(clean_pg_conn, schema, "rt_late_actor") == 0, (
-            "a schedule created mid-tick was fired by the inflight tick — the due "
+            "a schedule created mid-tick was fired by the inflight tick - the due "
             "SELECT's snapshot was not respected"
         )
         late_after = await _schedule_snapshot(clean_pg_conn, schema, late_id)

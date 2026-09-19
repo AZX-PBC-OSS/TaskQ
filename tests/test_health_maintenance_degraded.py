@@ -1,7 +1,7 @@
 """maintenance_health: the degraded-maintenance view in the readiness body.
 
 Drives the helper directly against monkeypatched obs caches, then pins that
-build_ready_body carries the ``maintenance`` key — including that a degraded
+build_ready_body carries the ``maintenance`` key - including that a degraded
 maintenance view never flips ``ready`` (degraded is not unready).
 """
 
@@ -31,7 +31,7 @@ def _settings() -> WorkerSettings:
     # Real settings, not a hand-listed SimpleNamespace: maintenance_health
     # reads tuning fields (sweep_interval, event_writer_batch_size) and a
     # stub that enumerates them turns every new read into an AttributeError
-    # rather than a behaviour change — the same reasoning as the watchdog
+    # rather than a behaviour change - the same reasoning as the watchdog
     # health tests.
     return WorkerSettings.load_from_dict({"TASKQ_PG_DSN": _PG_DSN, "TASKQ_SWEEP_INTERVAL": "10"})
 
@@ -174,7 +174,7 @@ def test_ready_body_carries_maintenance_key(
 def test_degraded_maintenance_does_not_flip_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A degraded maintenance view stays a body signal — ready is untouched."""
+    """A degraded maintenance view stays a body signal - ready is untouched."""
     settings = _settings()
     stale = time.time() - 4 * settings.sweep_interval
     _patch_caches(monkeypatch, success={"scheduled_to_pending": stale}, batch={})

@@ -3,13 +3,13 @@ OTel export being enabled.
 
 ``maintenance_health`` reports "sweep batch size degraded" so orchestrators
 surfacing the health body see a latched reduced-tier worker WITHOUT a
-Prometheus/OTel pipeline — that independence is the whole point of the
+Prometheus/OTel pipeline - that independence is the whole point of the
 health view. The emitter the production sweep path drives with the
 effective tier is ``record_sweep_batch_size`` (called from
 ``PostgresBackend._run_bounded_sweep``). If that emitter no-ops under
 ``TASKQ_OTEL_ENABLED=False``, the batch-size cache is never populated,
 ``maintenance_health`` can report "stalled" but never "batch size
-degraded" — half the degraded signal silently dies exactly when the
+degraded" - half the degraded signal silently dies exactly when the
 operator opted out of OTel.
 """
 
@@ -34,7 +34,7 @@ def test_batch_size_degraded_is_reported_when_otel_disabled(
     """The production emitter path, with OTel off: a sweep reporting the
     latched reduced tier must still make ``maintenance_health`` degraded.
 
-    Mirrors the production call order — ``record_sweep_success`` is what
+    Mirrors the production call order - ``record_sweep_success`` is what
     the leader loops call on a completed sweep, ``record_sweep_batch_size``
     is what ``_run_bounded_sweep`` calls with the effective tier. Success
     is fresh (the "stalled" branch stays quiet), so the degraded reason
@@ -53,7 +53,7 @@ def test_batch_size_degraded_is_reported_when_otel_disabled(
 
     assert view["degraded"] is True, (
         "a sweep latched to the reduced batch tier must report degraded in "
-        "the health body even with OTel export disabled — the health view "
+        "the health body even with OTel export disabled - the health view "
         "is the orchestrator's Prometheus-free signal"
     )
     assert (
@@ -66,7 +66,7 @@ def test_full_batch_size_not_degraded_when_otel_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The same production emitter path at the FULL tier stays clean with
-    OTel off — the degradation signal is the reduced tier alone, not the
+    OTel off - the degradation signal is the reduced tier alone, not the
     mere presence of a batch-size sample."""
     monkeypatch.setattr(otel_mod, "_otel_enabled", False)
     monkeypatch.setattr(otel_mod, "_sweep_success_cache", {})

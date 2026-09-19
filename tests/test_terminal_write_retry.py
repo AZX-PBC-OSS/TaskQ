@@ -26,14 +26,13 @@ from taskq.testing.in_memory import InMemoryBackend
 from taskq.worker._consumer import consume_one_job
 from taskq.worker._handlers import AttemptOutcome
 
-pytestmark = [pytest.mark.load_sensitive]
 _START = datetime(2026, 1, 1, tzinfo=UTC)
 _ACTOR = "blip_actor"
 
 
 class _BlippingBackend(InMemoryBackend):
     """In-memory twin whose terminal writes fail with an infra error the
-    first *failures* times they are called, then behave normally — the
+    first *failures* times they are called, then behave normally - the
     connection-reset-then-recovered shape of a Postgres hiccup."""
 
     def __init__(self, *, failures: int, clock: FakeClock) -> None:
@@ -156,7 +155,7 @@ async def test_failure_write_lands_after_two_blips() -> None:
     row = await backend.get(job.id)
     assert row is not None
     assert row.status == "failed", (
-        f"the terminal write never landed (row is {row.status!r}) — a transient "
+        f"the terminal write never landed (row is {row.status!r}) - a transient "
         "infra error on the write must be retried, not abandoned"
     )
     assert backend.write_calls == 3
@@ -437,7 +436,7 @@ async def test_a_second_cancel_during_a_cancel_write_retry_wait_disowns_the_job(
     """A forced escalation (or the shutdown's FORCING phase) cancels the
     task again while the handler is waiting to retry: no write is in
     flight and the row is still this worker's, so it is disowned before
-    the cancellation propagates — a retry the escalation cut short must
+    the cancellation propagates - a retry the escalation cut short must
     not leave the lease renewed for a row nothing will move."""
     import asyncio
     from typing import Any, cast

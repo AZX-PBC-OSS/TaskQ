@@ -33,7 +33,7 @@ def _make_admin_app(
     *,
     admin_actions_enabled: bool,
 ) -> FastAPI:
-    # setenv must precede create_router — it calls TaskQSettings.load() internally
+    # setenv must precede create_router - it calls TaskQSettings.load() internally
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     monkeypatch.setenv("TASKQ_ADMIN_ACTIONS_ENABLED", "true" if admin_actions_enabled else "false")
     # TASKQ_ADMIN_UI_SECURE_COOKIES=false because httpx, like a browser, will not
@@ -88,7 +88,7 @@ async def test_actors_stats_include_live_terminal_rows_and_respect_the_window(
     not the archive alone: a terminal row stays in ``jobs`` for its
     whole prune retention before the prune sweep moves it, so an
     archive-only read shows a clean actor for exactly as long as its
-    fresh failures matter most. #230's stale-failure bullet, pinned
+    fresh failures matter most. the stale-failure bullet, pinned
     end-to-end: the fresh failure renders on the page and in the stats
     JSON at the default and in a 24h window, and the window bound
     excludes the older archived row.
@@ -219,7 +219,7 @@ async def test_actors_page_shows_deregister_form(
         resp = await client.get("/admin/actors")
 
     assert resp.status_code == 200
-    # Targeted assertions — check for the specific form action and form fields,
+    # Targeted assertions - check for the specific form action and form fields,
     # not just the word "Deregister" which could appear anywhere.
     assert 'action="/admin/actors/button-actor/deregister"' in resp.text
     assert 'name="force"' in resp.text
@@ -295,7 +295,7 @@ async def test_deregister_route_returns_409_when_actor_has_active_jobs(
 
     assert resp.status_code == 409
     assert "non-terminal" in resp.text
-    # Row must still exist — deregistration was refused.
+    # Row must still exist - deregistration was refused.
     count = await clean_pg_conn.fetchval(
         f'SELECT count(*) FROM "{schema}".actor_config WHERE actor = $1',
         "blocked-actor",

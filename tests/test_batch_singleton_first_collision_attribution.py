@@ -1,5 +1,5 @@
 """Two distinct singleton actors colliding in one batch name the FIRST
-collision in batch order — deterministically, on both backends, on both
+collision in batch order - deterministically, on both backends, on both
 bulk tiers.
 
 ``jobs_singleton_uniq`` is keyed on ``(actor)`` over live singleton-flagged
@@ -7,7 +7,7 @@ rows, and a bulk write visits items in batch order, so the violating actor
 is the first singleton item whose actor repeats an earlier singleton item or
 already holds a live singleton row. The refusal names that actor through the
 shared pure rule (``first_singleton_collision_actor``) applied to the
-batch's own contents plus a post-abort lookup of the stored holders — never
+batch's own contents plus a post-abort lookup of the stored holders - never
 parsed from the driver's detail text, which renders values raw and
 unquoted.
 
@@ -15,7 +15,7 @@ The single-collision pins (same-actor in-batch repeats and stored-collision
 attribution, on both tiers) already exist
 (tests/test_batch_fast.py::TestTISingletonCollisionTypedError and the
 in-memory siblings). What they cannot catch is an attribution that drifts
-from batch order to something else — alphabetical, hash order, last-write —
+from batch order to something else - alphabetical, hash order, last-write -
 because with one colliding actor every order names it. With TWO distinct
 colliding actors the orders disagree, and the idempotency-pair analog is
 already pinned (tests/test_batch_fast.py "two distinct duplicate pairs name
@@ -93,7 +93,7 @@ def _two_actor_repeat_batch(side: DiffSide, *, first: str, second: str) -> list[
 async def test_two_distinct_singleton_actors_colliding_name_the_first_in_batch_order(
     pg_dsn: str, fast: bool
 ) -> None:
-    """Batch [A, B, A, B] — both actors repeat — refuses naming actor A:
+    """Batch [A, B, A, B] - both actors repeat - refuses naming actor A:
     the repeat the write reaches first in batch order."""
 
     async def scenario(side: DiffSide) -> None:
@@ -118,7 +118,7 @@ async def test_two_distinct_singleton_actors_colliding_name_the_first_in_batch_o
 
 @pytest.mark.parametrize("fast", [False, True], ids=["unnest", "copy"])
 async def test_reversed_order_names_the_other_actor(pg_dsn: str, fast: bool) -> None:
-    """Batch [B, A, B, A] refuses naming actor B — the mirror image of the
+    """Batch [B, A, B, A] refuses naming actor B - the mirror image of the
     forward case, so only genuine batch-order attribution (never
     alphabetical or hash order) satisfies both."""
 
@@ -128,8 +128,8 @@ async def test_reversed_order_names_the_other_actor(pg_dsn: str, fast: bool) -> 
 
     mem, pg = await run_differential(scenario, pg_dsn=pg_dsn, actors=_ACTORS)
     assert_mirror(
-        "the reversed batch names actor_b — the first repeat in ITS batch "
-        "order — identically on both backends",
+        "the reversed batch names actor_b - the first repeat in ITS batch "
+        "order - identically on both backends",
         mem,
         pg,
     )
@@ -143,7 +143,7 @@ async def test_a_stored_holder_colliding_ahead_of_an_in_batch_repeat_wins_by_pos
 ) -> None:
     """A live singleton holder for actor B is already stored; the batch
     [A, B, A] carries B's stored collision at position 1, ahead of A's
-    in-batch repeat at position 2 — so the refusal names B, and the stored
+    in-batch repeat at position 2 - so the refusal names B, and the stored
     holder is the only row that survives."""
 
     async def scenario(side: DiffSide) -> None:
@@ -159,7 +159,7 @@ async def test_a_stored_holder_colliding_ahead_of_an_in_batch_repeat_wins_by_pos
     mem, pg = await run_differential(scenario, pg_dsn=pg_dsn, actors=_ACTORS)
     assert_mirror(
         "a stored singleton holder colliding ahead of an in-batch repeat is "
-        "the collision the batch order reaches first — the refusal names "
+        "the collision the batch order reaches first - the refusal names "
         "the stored holder's actor, the holder survives, nothing from the "
         "batch is admitted, identically on both backends",
         mem,

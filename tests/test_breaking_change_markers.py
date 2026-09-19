@@ -6,7 +6,7 @@ conventional commits (``.github/workflows/release-please.yml``,
 ``release-please-config.json``), not hand-edited. Every generated release
 heading carries the compare-link form
 ``## [x.y.z](…/compare/v…)``; a hand-written ``## [Unreleased]`` block is
-structurally foreign to the generator's model of the file — anything
+structurally foreign to the generator's model of the file - anything
 written into it is invisible to the release-notes pipeline and is
 flattened or discarded when the generator next runs.
 
@@ -80,7 +80,7 @@ _RELEASE_MANIFEST = _REPO_ROOT / ".release-please-manifest.json"
 
 #: A generated release heading: ``## [0.2.2](https://…/compare/v0.2.1...v0.2.2) (2026-…)``.
 _GENERATED_HEADING = re.compile(r"^## \[\d+\.\d+\.\d+\]\(https://", re.MULTILINE)
-#: A historical pre-release-please heading (``## 0.1.0 - 2026-07-08``) — a
+#: A historical pre-release-please heading (``## 0.1.0 - 2026-07-08``) - a
 #: released version's record, which the generator leaves alone.
 _LEGACY_RELEASE_HEADING = re.compile(r"^## \[?\d+\.\d+\.\d+\]?", re.MULTILINE)
 _ANY_HEADING = re.compile(r"^## \[?[^\]\n]+.*$", re.MULTILINE)
@@ -247,7 +247,7 @@ def _shipped_breaking_bullets(version: str) -> list[str] | None:
 #:
 #: Entries whose flag lives in the section prose rather than a
 #: "Breaking" blockquote (the table sections) are policy additions the
-#: issue #196 census established; they are held to the same contract.
+#: census established; they are held to the same contract.
 _BREAKING_SECTION_ENTRIES: dict[str, tuple[str, tuple[str, ...]]] = {
     "`taskq.worker.actor_config` → `taskq.actor_config`": (
         "0.3.0",

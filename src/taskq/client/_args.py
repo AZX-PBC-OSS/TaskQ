@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import structlog
+from opentelemetry import trace
 from opentelemetry.trace import Span, SpanKind, StatusCode
 from pydantic import BaseModel
 
@@ -32,7 +33,7 @@ from taskq.backend._protocol import (
     _validate_queue_name,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical queue-name validator; redefining it here would let the enqueue and actor chokepoints drift.
 )
 from taskq.constants import MAX_IDEMPOTENCY_KEY_BYTES, check_priority_domain
-from taskq.obs import record_published_message, safe_start_span
+from taskq.obs import otel_enabled, record_published_message, safe_start_span
 from taskq.retry import time_budget_as_interval
 
 if TYPE_CHECKING:
@@ -53,26 +54,26 @@ class UniqueForNoIdentityWarner:
 
     The adjudicated contract for the pairing hole: ``unique_for`` without
     ``identity_key`` is a documented no-op (the backend's single-flight
-    gate requires both) that WARNs and enqueues a fresh job — never
-    raises — a contract codified in docs/guides/actors.md and
+    gate requires both) that WARNs and enqueues a fresh job, never
+    raises, a contract codified in docs/guides/actors.md and
     docs/guides/ops.md's footgun table and pinned by
     tests/test_actor_warnings.py. What the contract forbids is SILENCE: a
     caller asking for single-flight must be told the knob enforced
     nothing.
 
     One instance per enqueue surface (per JobsClient, per
-    SubJobEnqueuer): the warning fires once per actor per surface — the
+    SubJobEnqueuer): the warning fires once per actor per surface, the
     shape the JobsClient actor-declared path has always had. The state
     is per-instance, never module-global: a process-wide set would
     couple test isolation to execution order and cross-client state.
 
     Why this module: both caller-facing single-enqueue seams
-    (JobsClient.enqueue and SubJobEnqueuer.enqueue — the only surface
+    (JobsClient.enqueue and SubJobEnqueuer.enqueue, the only surface
     that takes a per-call ``unique_for``) already import this, the
     argument-assembly choke point they share; the tracker is the warning
     half of that same boundary. When ``@actor`` gains an identity
     callable parameter, the actor-declared warning can move to
-    ``_build_ref`` alongside the actor-config-* family — the log event
+    ``_build_ref`` alongside the actor-config-* family, the log event
     name stays the same.
     """
 
@@ -81,7 +82,7 @@ class UniqueForNoIdentityWarner:
 
     def maybe_warn(self, *, actor: str, queue: str, unique_for: timedelta) -> None:
         """Emit the warn-once event for this actor, or stay quiet when it
-        already fired. ``unique_for`` must be non-None — the call site's
+        already fired. ``unique_for`` must be non-None, the call site's
         condition guarantees it."""
         if actor in self._warned_actors:
             return
@@ -105,12 +106,12 @@ Unicode letters/digits) and may carry hyphens between them; whitespace,
 punctuation and a leading/trailing hyphen are rejected. The optional
 ``(?:...)?`` group is what admits a single-character tag: the previous
 ``[\\w][\\w\\-]+[\\w]`` imposed a three-character minimum that rejected
-``ci``, ``qa``, ``v1`` and ``p0`` for no storage reason — the column is an
+``ci``, ``qa``, ``v1`` and ``p0`` for no storage reason, the column is an
 unbounded ``text[]`` and ``_MAX_TAG_LENGTH`` is the only real bound.
 
 ``\\A``/``\\Z``, not ``^``/``$``: Python's ``$`` also matches immediately
 before a trailing newline, so ``"tag\\n"`` satisfied ``^...$`` (see
-``_IDENT_RE``'s docstring in taskq.constants — same trap, same fix).
+``_IDENT_RE``'s docstring in taskq.constants, same trap, same fix).
 """
 _MAX_TAG_LENGTH: int = 255
 
@@ -189,9 +190,9 @@ def _user_stacklevel() -> int:
     """stacklevel that blames the first frame outside the taskq package.
 
     Why not a static level: the user's call line sits at a different depth
-    per public entry — 3 frames above ``build_enqueue_args`` via
+    per public entry, 3 frames above ``build_enqueue_args`` via
     ``JobsClient.enqueue``, 4 via the ``TaskQ.enqueue`` facade, and a
-    different depth again via ``SubJobEnqueuer`` — and the shared helper
+    different depth again via ``SubJobEnqueuer``, and the shared helper
     cannot know which one fired.  Walking to the first frame whose module
     is not ``taskq``/``taskq.*`` attributes the user's call line on every
     path (blaming a third-party wrapper is also correct: it is the
@@ -238,7 +239,7 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
 ) -> EnqueueArgs:
     """Validate inputs and construct :class:`EnqueueArgs`.
 
-    Pure function — no I/O, no global state and no clock (see the module
+    Pure function, no I/O, no global state and no clock (see the module
     docstring): ``scheduled_at`` passes through as ``None`` when the caller
     wants "immediate", and the backend's server stamps and decides it.
 
@@ -256,7 +257,7 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
     # stale-holder classification in taskq.backend._sweeps's _SWEEP_1_SQL):
     # a running job whose holder has been silent past this timeout is
     # reclaimed even while its lock lease is still valid. The boundary
-    # rule mirrors start_to_close's — a zero-or-negative timeout anchors
+    # rule mirrors start_to_close's, a zero-or-negative timeout anchors
     # the staleness deadline in the past, so the first sweep tick after
     # dispatch would reclaim a healthy job's lease out from under its
     # holder. Sizing guidance lives in docs/guides/ops.md: keep it >= 2x
@@ -292,13 +293,13 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
     # which would drive increment/abort hooks on that batch.
     metadata_dict.pop("batch_id", None)
     # Security boundary, same class: "cron_schedule_id" is the provenance
-    # stamp the cron tick writes on its own fires and pre-scheduled twins —
+    # stamp the cron tick writes on its own fires and pre-scheduled twins ,
     # the DST twin-coverage walk counts a row bearing the planning
     # schedule's id as that schedule's delivery. A caller-supplied value
     # would let any on-demand enqueue self-assert membership in a victim
     # schedule's delivery set and silently skip its owed occurrences, so it
     # is stripped here exactly like batch_id. The tick mints the stamp
-    # itself, on args it builds directly — it never crosses this boundary.
+    # itself, on args it builds directly, it never crosses this boundary.
     metadata_dict.pop("cron_schedule_id", None)
     # Library-side batch stamping, INSIDE the boundary: the strip above runs
     # first regardless, so a caller-supplied batch_id can never survive, and
@@ -323,7 +324,7 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
             )
         warnings.warn(
             "schedule_to_close (absolute datetime) is deprecated; declare "
-            "retry.time_budget on the actor (interval form) instead — absolute "
+            "retry.time_budget on the actor (interval form) instead, absolute "
             "datetimes cross clock domains (the app clock that produced them "
             "vs the database clock that evaluates them) and can misbehave "
             "under skew; see docs/architecture.md",
@@ -351,7 +352,7 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
     resolved_queue = queue if queue is not None else ref.queue
     # The ``QueueName`` annotation above is inert at runtime (an
     # AfterValidator only fires inside pydantic model validation), so the
-    # charset check must run here explicitly — for the per-call override
+    # charset check must run here explicitly, for the per-call override
     # and the actor-declared default alike. Without it a typo'd queue name
     # strands jobs on a queue no worker's ``queue = ANY($1)`` ever matches.
     _validate_queue_name(resolved_queue)
@@ -402,7 +403,7 @@ def build_batch_args(
 
     ``max_pending_by_actor`` optionally carries the caller-resolved
     *effective* ``max_pending`` per actor name (operator-owned stored
-    value when set, else the ``@actor(...)`` literal — see
+    value when set, else the ``@actor(...)`` literal, see
     :class:`taskq.client._capacity.ActorCapacityCache`). Pass it so the
     per-item args enforce the same limit the caller's aggregated check
     just admitted; when omitted, each actor's literal is used, exactly
@@ -445,6 +446,19 @@ def enqueue_span(
     *,
     identity_key: str = "",
 ) -> Generator[tuple[Span, str | None, str | None], None, None]:
+    if not otel_enabled():
+        # Why this arm exists: the f-string span name and the five-entry
+        # attribute dict below are per-enqueue allocations whose only reader
+        # is the tracer. With telemetry off, safe_start_span would discard
+        # them unread (its own _otel_enabled gate is the one this mirrors),
+        # so build nothing and hand back the same non-recording span it
+        # would. Everything the disabled path below did is preserved by
+        # cheaper equivalents: a non-recording span's set_status is a
+        # no-op, the invalid span context yields None ids exactly as the
+        # is_valid branch does, and record_published_message re-checks the
+        # flag itself, so skipping it here drops no metric.
+        yield trace.NonRecordingSpan(trace.INVALID_SPAN_CONTEXT), None, None
+        return
     with safe_start_span(
         f"enqueue {actor_name}",
         kind=SpanKind.PRODUCER,

@@ -6,13 +6,13 @@ The residual these pins close: keyed ``reservation_slots`` /
 ``rate_limit_buckets`` rows orphan when the worker that materialised them
 DIES. The in-process reclamation machinery (the registry's idle eviction
 plus ``drain_pending_reservation_reclaims``) only ever names rows its OWN
-process evicted — the pending-reclaim set, the tracked-key stamps, and
+process evicted - the pending-reclaim set, the tracked-key stamps, and
 the row-schema captures all live inside the dead process's registry, so
 no survivor can name the rows. A live worker that happens to re-resolve
 the same concrete key re-materialises over them, but the key space is
 caller-controlled: steady-state cardinality after enough worker deaths is
 one bucket (or one bucket's ``slots`` rows) per key ever materialised by
-any process that later died — unbounded, and unreachable by every
+any process that later died - unbounded, and unreachable by every
 deletion path in the package.
 
 The fleet-reclaim design: per-key rows carry their own staleness through a
@@ -21,8 +21,8 @@ The fleet-reclaim design: per-key rows carry their own staleness through a
 only then does the acquire path touch the row and keep ``last_used_at``
 truthful). The ``last_used_at`` timestamp is refreshed by the
 acquire/release/upsert statements that already touch the row (no extra round
-trips). The maintenance leader then runs ``sweep_idle_keyed_rows`` — a
-bounded, committed batch per tick per table — deleting fleet-reclaimable
+trips). The maintenance leader then runs ``sweep_idle_keyed_rows`` - a
+bounded, committed batch per tick per table - deleting fleet-reclaimable
 rows unused past the horizon. Static rows (``keyed`` false by construction)
 and redis-backend keyed rows (state in Redis; the PG row is outage-fallback
 + admin metadata whose ``last_used_at`` cannot track Redis-side use) are
@@ -30,23 +30,23 @@ never deleted by it.
 
 What each pin asserts:
 
-- **orphaned-by-death** — a keyed row whose creating worker died (no
+- **orphaned-by-death** - a keyed row whose creating worker died (no
   registry anywhere can name it) is gone after one sweep tick.
-- **static immortality** — a static bucket's rows survive the sweep at
+- **static immortality** - a static bucket's rows survive the sweep at
   any age, past any horizon: ``keyed`` false excludes them from the
   sweep's predicate entirely.
-- **redis-backend survival** — a redis-backend keyed bucket's published
+- **redis-backend survival** - a redis-backend keyed bucket's published
   PG row is never swept (its liveness signal lives in Redis).
-- **the stamp rides the acquire/release writes** — the existing
+- **the stamp rides the acquire/release writes** - the existing
   statements refresh ``last_used_at``; no dedicated stamping round trip
   exists.
-- **the held-bucket veto** — a keyed bucket with one live-held slot
+- **the held-bucket veto** - a keyed bucket with one live-held slot
   keeps ALL its rows (a partial delete would silently shrink the
   bucket's configured capacity; the acquire-path heal only fires at
   zero rows).
-- **the disable sentinel** — ``timedelta(0)`` is the settings-level
+- **the disable sentinel** - ``timedelta(0)`` is the settings-level
   disable, rejected at the sweep's own boundary as a caller wiring bug.
-- **the batch bound** — one call deletes at most ``batch_size`` buckets
+- **the batch bound** - one call deletes at most ``batch_size`` buckets
   (rows, for ``rate_limit_buckets``), oldest first; repeated calls drain
   the backlog a committed batch at a time.
 """
@@ -69,12 +69,12 @@ from taskq.settings import WorkerSettings
 pytestmark = pytest.mark.integration
 
 #: The production horizon (``WorkerSettings.keyed_row_reclaim_period``
-#: default) — the pins age rows past it rather than shrinking it, so the
+#: default) - the pins age rows past it rather than shrinking it, so the
 #: sweep predicate is exercised exactly as the leader runs it.
 _HORIZON = timedelta(hours=1)
 
 #: The production batch bound (``WorkerSettings.keyed_row_reclaim_batch_size``
-#: default's magnitude) — the bound pin shrinks it to make the cap bite.
+#: default's magnitude) - the bound pin shrinks it to make the cap bite.
 _BATCH = 256
 
 
@@ -103,7 +103,7 @@ def _settings(pg_dsn: str) -> WorkerSettings:
 
 
 def _pg_ref(base_name: str) -> KeyedRateLimitRef:
-    """A keyed rate limit on the PG backend — the acquire path's own
+    """A keyed rate limit on the PG backend - the acquire path's own
     preseed/upsert creates and stamps the ``rate_limit_buckets`` row."""
     return KeyedRateLimitRef.typed(
         _TenantPayload,
@@ -155,8 +155,8 @@ async def _drop_schema(pg_dsn: str) -> None:
 
 async def _age_bucket_row_setup(pool: asyncpg.Pool, bucket: str, older_than: timedelta) -> None:
     """Stand up one fleet-reclaimable ``rate_limit_buckets`` row directly
-    — the empty state document the keyed publish path writes before any
-    acquire — aged past the horizon, for the batch-bound pin's
+    - the empty state document the keyed publish path writes before any
+    acquire - aged past the horizon, for the batch-bound pin's
     population."""
     async with pool.acquire() as conn:
         await conn.execute(
@@ -199,7 +199,7 @@ async def _insert_bucket_row_with_tokens(
 
 async def _sweep(pg_dsn: str, *, horizon: timedelta = _HORIZON, batch_size: int = _BATCH) -> int:
     """One leader-tick's worth of the fleet reclaim sweep, on a bare
-    connection — the seam the maintenance leader drives."""
+    connection - the seam the maintenance leader drives."""
     conn = await asyncpg.connect(pg_dsn)
     try:
         return await sweep_idle_keyed_rows(
@@ -253,7 +253,7 @@ async def _max_slot_last_used(pool: asyncpg.Pool, bucket: str) -> object:
 
 async def _age_slots(pool: asyncpg.Pool, bucket: str, older_than: timedelta) -> None:
     """Row-timestamp mutation standing in for clock advance (the
-    differential harness's doctrine) — ages *bucket*'s staleness stamps
+    differential harness's doctrine) - ages *bucket*'s staleness stamps
     without waiting out a real horizon."""
     async with pool.acquire() as conn:
         await conn.execute(
@@ -293,7 +293,7 @@ async def test_orphaned_keyed_rows_are_reclaimed_after_worker_death(pg_dsn: str)
     The worker-death shape, exactly: the registry that materialised these
     rows is gone with the process (no pending-reclaim set, no tracked-key
     stamp, no row-schema capture survives it), and no live worker ever
-    re-resolves the same concrete key — so the fleet sweep's row-borne
+    re-resolves the same concrete key - so the fleet sweep's row-borne
     staleness is the ONLY signal left that can name them."""
     await _fresh_schema(pg_dsn)
     pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=1, max_size=2)
@@ -321,7 +321,7 @@ async def test_orphaned_keyed_rows_are_reclaimed_after_worker_death(pg_dsn: str)
         await reg.release_for_actor(res_handles)
         # The worker dies: the registry (and every in-process reclaim
         # structure inside it) ceases to exist. Simulated by dropping the
-        # reference entirely — nothing below consults it.
+        # reference entirely - nothing below consults it.
         del reg, res_handles, rl_handles
 
         res_bucket = "orphan-res:s1"
@@ -346,12 +346,12 @@ async def test_orphaned_keyed_rows_are_reclaimed_after_worker_death(pg_dsn: str)
             f"the keyed reservation rows of {res_bucket!r} survived the fleet sweep although "
             "their creating worker died a horizon ago: no registry anywhere can name them "
             "(the pending-reclaim drain died with the process), so this sweep is the only "
-            "deletion path left — steady-state cardinality is slots x every key ever "
+            "deletion path left - steady-state cardinality is slots x every key ever "
             "materialised by a process that later died"
         )
         assert await _bucket_rows(pool, rl_bucket) == 0, (
             f"the keyed rate-limit row of {rl_bucket!r} survived the fleet sweep although "
-            "its creating worker died a horizon ago — same orphan shape, one "
+            "its creating worker died a horizon ago - same orphan shape, one "
             "rate_limit_buckets row per dead-worker key, unbounded in the caller-controlled "
             "key space"
         )
@@ -361,7 +361,7 @@ async def test_orphaned_keyed_rows_are_reclaimed_after_worker_death(pg_dsn: str)
 
 
 async def test_static_bucket_rows_survive_the_sweep_forever(pg_dsn: str) -> None:
-    """Pin (b): static buckets are never deleted — not at any age, past
+    """Pin (b): static buckets are never deleted - not at any age, past
     any horizon.
 
     A static reservation has no keyed lifecycle and no acquire-path heal
@@ -405,7 +405,7 @@ async def test_static_bucket_rows_survive_the_sweep_forever(pg_dsn: str) -> None
         )
 
         # 30 days stale, swept at the production horizon AND at a horizon
-        # narrower than their age — no horizon may touch them.
+        # narrower than their age - no horizon may touch them.
         await _age_slots(pool, "fleet-static-res", timedelta(days=30))
         await _age_bucket_row(pool, "fleet-static-rl", timedelta(days=30))
         await _sweep(pg_dsn)
@@ -413,12 +413,12 @@ async def test_static_bucket_rows_survive_the_sweep_forever(pg_dsn: str) -> None
 
         assert await _slot_rows(pool, "fleet-static-res") == 2, (
             "a STATIC reservation's slot rows were deleted by the fleet sweep: static "
-            "buckets have no keyed lifecycle, no heal, and no re-materialisation — the "
+            "buckets have no keyed lifecycle, no heal, and no re-materialisation - the "
             "deletion is a permanently denying limiter, not a reclamation"
         )
         assert await _bucket_rows(pool, "fleet-static-rl") == 1, (
             "a STATIC rate limit's rate_limit_buckets row was deleted by the fleet sweep "
-            "at an age any keyed row would have been reclaimed at — the keyed mark, not "
+            "at an age any keyed row would have been reclaimed at - the keyed mark, not "
             "the horizon, is what must gate this sweep"
         )
     finally:
@@ -427,14 +427,14 @@ async def test_static_bucket_rows_survive_the_sweep_forever(pg_dsn: str) -> None
 
 
 async def test_redis_backend_keyed_row_is_never_swept(pg_dsn: str) -> None:
-    """Pin (c): a redis-backend keyed bucket's PG row survives — never
+    """Pin (c): a redis-backend keyed bucket's PG row survives - never
     swept.
 
     The redis-backend keyed bucket's state lives in Redis (self-bounding
     via the Lua script's EXPIRE TTL); its PG row is admin-UI metadata
     plus the Redis-outage fallback's state carrier. Its ``last_used_at``
-    cannot track Redis-side use — the healthy acquire path never touches
-    PG — so a staleness sweep would reclaim the row of an actively-used
+    cannot track Redis-side use - the healthy acquire path never touches
+    PG - so a staleness sweep would reclaim the row of an actively-used
     bucket and reset the fallback state of a fixed-quota one mid-outage.
     The row is therefore never marked fleet-reclaimable."""
     await _fresh_schema(pg_dsn)
@@ -443,7 +443,7 @@ async def test_redis_backend_keyed_row_is_never_swept(pg_dsn: str) -> None:
         reg = RateLimitRegistry()
         # The resolution publishes the row (best-effort, idempotent);
         # the acquire then needs a Redis client this test does not
-        # inject, so it raises AFTER the publish — the RuntimeError is
+        # inject, so it raises AFTER the publish - the RuntimeError is
         # the fixture's publish trigger, not a failure under test.
         with pytest.raises(RuntimeError, match="redis_client not injected"):
             await reg.acquire_for_actor(
@@ -472,7 +472,7 @@ async def test_redis_backend_keyed_row_is_never_swept(pg_dsn: str) -> None:
 
         assert await _bucket_rows(pool, bucket) == 1, (
             f"the redis-backend keyed row {bucket!r} was swept: redis-backend rows are "
-            "never fleet-reclaimable — the PG row is outage-fallback state plus admin "
+            "never fleet-reclaimable - the PG row is outage-fallback state plus admin "
             "metadata, and no PG-side staleness signal can speak for Redis-side use"
         )
     finally:
@@ -482,7 +482,7 @@ async def test_redis_backend_keyed_row_is_never_swept(pg_dsn: str) -> None:
 
 async def test_stale_keyed_row_is_refreshed_by_acquire_and_release(pg_dsn: str) -> None:
     """Pin (d): ``last_used_at`` rides the existing acquire/release
-    writes — the statements that already touch the row refresh the
+    writes - the statements that already touch the row refresh the
     staleness stamp; no dedicated stamping round trip exists.
 
     Aged rows that are acquired again come back fresh on BOTH tables
@@ -524,7 +524,7 @@ async def test_stale_keyed_row_is_refreshed_by_acquire_and_release(pg_dsn: str) 
         assert fresh_slot_stamp is True, (
             "the reservation acquire did not refresh last_used_at: the stamp must ride "
             "the acquire CTE's existing UPDATE that already touches the row, not as a "
-            "separate round trip — a re-activated key must not look stale the instant "
+            "separate round trip - a re-activated key must not look stale the instant "
             "it is used, or the next sweep tick reclaims a live bucket's rows"
         )
         await _age_slots(pool, res_bucket, _HORIZON * 2)
@@ -574,7 +574,7 @@ async def test_stale_keyed_row_is_refreshed_by_acquire_and_release(pg_dsn: str) 
         assert fresh_bucket_stamp is True, (
             "the token-bucket acquire did not refresh last_used_at: the preseed/upsert "
             "pair already writes the row on every PG acquire, and the stamp must ride "
-            "those statements — a dedicated stamping round trip on the hot path is the "
+            "those statements - a dedicated stamping round trip on the hot path is the "
             "cost this design exists to avoid"
         )
 
@@ -583,7 +583,7 @@ async def test_stale_keyed_row_is_refreshed_by_acquire_and_release(pg_dsn: str) 
         deleted = await _sweep(pg_dsn)
         assert deleted == 0, (
             f"freshly-acquired keyed rows were swept ({deleted} deleted): the acquire "
-            "stamp is the liveness signal the sweep trusts — a sweep that deletes "
+            "stamp is the liveness signal the sweep trusts - a sweep that deletes "
             "fresh rows deletes live buckets"
         )
         assert await _slot_rows(pool, res_bucket) == 2
@@ -599,7 +599,7 @@ async def test_live_held_slot_vetoes_the_whole_bucket(pg_dsn: str) -> None:
     The fleet sweep reclaims buckets whole or not at all: deleting a
     stale bucket's free rows while a live lease holds one would shrink
     the bucket's configured capacity (the acquire-path heal only fires
-    at ZERO rows — a partially-deleted bucket denies with a silently
+    at ZERO rows - a partially-deleted bucket denies with a silently
     smaller slot count forever). The veto predicate is whole-bucket:
     every row free-or-lease-expired, every row keyed, every row's stamp
     past the horizon."""
@@ -626,19 +626,19 @@ async def test_live_held_slot_vetoes_the_whole_bucket(pg_dsn: str) -> None:
         assert deleted == 0, f"the sweep deleted {deleted} rows of a live-held bucket"
         assert await _slot_rows(pool, bucket) == 2, (
             "a keyed bucket with one live-held slot lost rows to the fleet sweep: the "
-            "held row survives (lease guard) but its FREE sibling was deleted — the "
+            "held row survives (lease guard) but its FREE sibling was deleted - the "
             "bucket now runs at half its configured capacity with no heal path (the "
             "heal fires only at zero rows)"
         )
         # After the lease dies (job gone, heartbeat stopped) the whole
-        # bucket becomes reclaimable — the veto is about liveness, not
+        # bucket becomes reclaimable - the veto is about liveness, not
         # permanence.
         await reg.release_for_actor(handles)
         await _age_slots(pool, bucket, _HORIZON * 2)
         deleted = await _sweep(pg_dsn)
         assert deleted == 2, (
             f"after the hold ended the stale bucket was not fully reclaimed ({deleted} "
-            "rows deleted, expected 2) — the veto must track liveness, not latch"
+            "rows deleted, expected 2) - the veto must track liveness, not latch"
         )
         assert await _slot_rows(pool, bucket) == 0
     finally:
@@ -650,7 +650,7 @@ async def test_zero_horizon_is_rejected_at_the_sweep_boundary(pg_dsn: str) -> No
     """``timedelta(0)`` is the settings-level disable sentinel, never a
     sweep argument: at the function boundary zero would read as "delete
     every keyed row older than now", the dangerous misreading, so it is
-    rejected as a caller wiring bug — the same contract
+    rejected as a caller wiring bug - the same contract
     ``sweep_expired_events`` enforces for the event retention."""
     await _fresh_schema(pg_dsn)
     try:
@@ -694,7 +694,7 @@ async def test_consumed_fixed_quota_bucket_survives_the_fleet_sweep(pg_dsn: str)
         settings = _settings(pg_dsn)
 
         # Consume 4 of 5 tokens for real, through the acquire path (not a
-        # hand-inserted row) — the row now genuinely carries consumed
+        # hand-inserted row) - the row now genuinely carries consumed
         # quota state, exactly like the issue's scenario.
         for _ in range(4):
             decision = await bucket.acquire(1.0, pg_pool=pool, settings=settings)
@@ -711,7 +711,7 @@ async def test_consumed_fixed_quota_bucket_survives_the_fleet_sweep(pg_dsn: str)
         )
 
         # The bucket goes idle past the horizon with no acquire touching
-        # it — no lease, no hold, nothing but ordinary idleness. The
+        # it - no lease, no hold, nothing but ordinary idleness. The
         # sibling reservation_slots sweep vetoes a live-held bucket even
         # PAST the horizon; this bucket has consumed quota but nothing
         # analogous protects it.
@@ -755,17 +755,17 @@ async def test_legacy_bucket_row_without_quota_keys_survives_the_fleet_sweep(
     The write shape before ``capacity``/``refill`` rode along in ``state``
     was ``{"tokens", "ts"}`` and nothing else: a real token count with
     nothing stored to evaluate it against. That row could be a refilling
-    bucket mid-window (safe to delete — its state converges back to full)
+    bucket mid-window (safe to delete - its state converges back to full)
     or a fixed quota partly spent (deleting it lets the next acquire
     re-preseed at full capacity, handing back a budget the tenant already
     used). The sweep cannot tell the two apart from the row, so the row
     is kept: the veto is fail-closed on missing keys, the same "cannot
     prove safe to delete" rule the consumed-fixed-quota case already
-    states. A kept legacy row is not a leak — the first acquire after the
+    states. A kept legacy row is not a leak - the first acquire after the
     keys existed rewrites the state with the full document, so the kept
     population is bounded by rows nothing has touched since.
 
-    The companion never-acquired row (``{}`` state — what the keyed
+    The companion never-acquired row (``{}`` state - what the keyed
     publish path writes before any acquire) carries no token count at
     all, so the same sweep must still delete it: the veto protects
     unprovable state, not the absence of state.
@@ -794,7 +794,7 @@ async def test_legacy_bucket_row_without_quota_keys_survives_the_fleet_sweep(
         assert await _bucket_rows(pool, never_acquired) == 0, (
             "the never-acquired published row survived the sweep although its "
             "state carries no token count at all: the veto protects unprovable "
-            "state, not the absence of state — sparing empty rows keeps one "
+            "state, not the absence of state - sparing empty rows keeps one "
             "permanent row per key ever published, the unbounded growth this "
             "sweep exists to bound"
         )
@@ -806,7 +806,7 @@ async def test_legacy_bucket_row_without_quota_keys_survives_the_fleet_sweep(
             "carries a stored token count without the capacity/refill keys needed "
             "to prove deletion safe: if that count is a partly spent fixed quota, "
             "the next acquire re-preseeds at full capacity and hands back a budget "
-            "the tenant already used — a row the sweep cannot prove safe to delete "
+            "the tenant already used - a row the sweep cannot prove safe to delete "
             "is one it must keep"
         )
     finally:
@@ -970,8 +970,8 @@ async def test_orphan_reclaim_makes_progress_within_a_bounded_number_of_ticks(
 
 async def test_sweep_is_bounded_oldest_first_and_drains_per_call(pg_dsn: str) -> None:
     """One call deletes at most ``batch_size`` buckets (rows, for
-    ``rate_limit_buckets``) — the bounded-batch doctrine's constant-size
-    committed batch per tick — oldest first, and repeated calls drain
+    ``rate_limit_buckets``) - the bounded-batch doctrine's constant-size
+    committed batch per tick - oldest first, and repeated calls drain
     the backlog."""
     await _fresh_schema(pg_dsn)
     pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=1, max_size=2)
@@ -1021,8 +1021,8 @@ async def test_refilling_keyed_bucket_below_capacity_remains_reclaimable(pg_dsn:
     hour of idleness past the reclaim horizon is far longer than any
     sane refill window, so the row's stored token count is already stale
     by the time it is eligible. Protecting it would make every key ever
-    materialised keep its row forever — the unbounded growth this sweep
-    exists to bound — while buying no correctness at all.
+    materialised keep its row forever - the unbounded growth this sweep
+    exists to bound - while buying no correctness at all.
 
     The protection belongs strictly to the fixed-quota case
     (``refill_per_second == 0``), where consumed tokens never come back
@@ -1051,7 +1051,7 @@ async def test_refilling_keyed_bucket_below_capacity_remains_reclaimable(pg_dsn:
             f"the idle refilling bucket row {bucket!r} was not reclaimed by the "
             "fleet sweep: a below-capacity token count on a bucket that refills "
             "is not consumed quota worth preserving, and sparing every such row "
-            "leaves one permanent row per key ever materialised — the state "
+            "leaves one permanent row per key ever materialised - the state "
             "check on this arm must key on a zero refill rate, not on tokens "
             "being short of capacity"
         )

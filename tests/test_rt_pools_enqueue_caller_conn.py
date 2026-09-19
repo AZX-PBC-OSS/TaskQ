@@ -7,26 +7,26 @@ contract under attack is what TaskQ hands BACK on a typed refusal.
 Every typed enqueue refusal on this path is an outcome the caller is
 meant to catch and continue from (a singleton actor refused once, a cap
 rejection shed to a backpressure handler, a lock-budget exhaustion
-retried) — so the caller's session and transaction must come back
+retried) - so the caller's session and transaction must come back
 exactly as TaskQ found it: usable, with no GUC residue.
 
 Three refusals, three shapes:
 
-* **Singleton preflight hit** (Python raise after a SELECT — no
+* **Singleton preflight hit** (Python raise after a SELECT - no
   statement error): leaves the caller's transaction usable today. Pinned
   green so a refactor cannot regress it.
 * **Singleton unique-violation catch** (the INSERT races a concurrent
   singleton insert and loses): the raw UniqueViolationError is a
-  STATEMENT error — it aborts the caller's whole transaction, and the
+  STATEMENT error - it aborts the caller's whole transaction, and the
   typed ``SingletonCollisionError`` conversion does not undo that. The
   red finding: the SAME typed error leaves the caller's transaction
   dead on this detection path but alive on the preflight path. The
-  desired observable is parity — a catchable typed refusal that leaves
+  desired observable is parity - a catchable typed refusal that leaves
   the transaction usable (savepoint-protect the insert, or roll back to
   a savepoint before converting).
 * **unique_for lock-budget exhaustion** (bounded advisory wait gives
   up): raises ``UniqueForLockTimeoutError`` from a savepoint-rolled-back
-  state. Pinned green on a BARE caller conn — the conn must come back
+  state. Pinned green on a BARE caller conn - the conn must come back
   not-in-transaction with ``lock_timeout`` at its session default (the
   savepoint rollback is what restores the GUC; a refactor away from
   savepoints would leak the 250 ms bound onto the session's next
@@ -128,7 +128,7 @@ def _args(
 
 
 async def _seed_job(conn: asyncpg.Connection, schema: str, actor: str) -> None:
-    """One pending row for *actor* — committed or in the caller's open tx."""
+    """One pending row for *actor* - committed or in the caller's open tx."""
     await conn.execute(
         f'INSERT INTO "{schema}".jobs '
         "(id, actor, queue, payload, status, max_attempts, retry_kind, scheduled_at, metadata) "
@@ -147,7 +147,7 @@ async def _assert_caller_tx_usable(conn: asyncpg.Connection, context: str) -> No
     except asyncpg.PostgresError as exc:
         pytest.fail(
             f"contract violated ({context}): enqueue_with_conn raised a typed, "
-            "catchable refusal but left the CALLER's transaction aborted — "
+            "catchable refusal but left the CALLER's transaction aborted - "
             f"the follow-up SELECT 1 failed with {type(exc).__name__}: {exc}. "
             "The caller owns this transaction; a refusal it is meant to catch "
             "and continue from must not poison it (savepoint-protect the "
@@ -159,7 +159,7 @@ async def test_singleton_preflight_refusal_keeps_caller_transaction_usable(
     pg_dsn: str,
 ) -> None:
     """GREEN pin: the preflight-path singleton refusal is a plain Python raise
-    after a SELECT — no statement error — so the caller's transaction stays
+    after a SELECT - no statement error - so the caller's transaction stays
     usable. The violation-catch path (next test) must converge to this."""
     schema = await _fresh_schema(pg_dsn)
     backend = _backend(pg_dsn, schema)
@@ -194,7 +194,7 @@ async def test_singleton_violation_refusal_keeps_caller_transaction_usable(
     error: Postgres aborts the CALLER's transaction, and converting the
     error to the typed SingletonCollisionError does not undo that. The
     same typed error raised from the preflight leaves the transaction
-    usable — so a caller that catches SingletonCollisionError and moves
+    usable - so a caller that catches SingletonCollisionError and moves
     on works or breaks depending on which detection path fired, with no
     signal from the API. The desired observable: the catchable refusal
     leaves the caller's transaction usable.
@@ -230,7 +230,7 @@ async def test_singleton_violation_refusal_keeps_caller_transaction_usable(
 async def test_cap_refusal_keeps_caller_transaction_usable(pg_dsn: str) -> None:
     """GREEN pin: a max_pending refusal raised after the count SELECT (a
     Python raise, no statement error) leaves the caller's open transaction
-    usable — the shape the singleton red must converge to."""
+    usable - the shape the singleton red must converge to."""
     schema = await _fresh_schema(pg_dsn)
     backend = _backend(pg_dsn, schema)
     actor = "capped_actor"
@@ -257,7 +257,7 @@ async def test_unique_for_lock_budget_exhaustion_returns_bare_caller_conn_clean(
     pg_dsn: str,
 ) -> None:
     """GREEN pin: a budget-exhausted unique_for wait hands the BARE caller
-    conn back exactly as found — not in a transaction, ``lock_timeout`` at
+    conn back exactly as found - not in a transaction, ``lock_timeout`` at
     its session default.
 
     The bounded advisory acquire sets ``lock_timeout`` via set_config(...,
@@ -265,7 +265,7 @@ async def test_unique_for_lock_budget_exhaustion_returns_bare_caller_conn_clean(
     typed UniqueForLockTimeoutError raises, and the enqueue's own wrapper
     transaction rolls back. A refactor away from the savepoint (or a
     second GUC set outside it) would leak the 250 ms bound onto the
-    caller's session — every later statement of the caller would run
+    caller's session - every later statement of the caller would run
     under a lock wait budget it never chose.
     """
     schema = await _fresh_schema(pg_dsn)
@@ -295,7 +295,7 @@ async def test_unique_for_lock_budget_exhaustion_returns_bare_caller_conn_clean(
         assert caller.is_in_transaction() is False, (
             "the caller handed enqueue_with_conn a BARE connection; after the "
             "typed UniqueForLockTimeoutError the conn must be back outside "
-            "any transaction — a dangling transaction would hold the "
+            "any transaction - a dangling transaction would hold the "
             "advisory lock and pin the caller's next use."
         )
         lock_timeout_after = await _bounded(
@@ -305,7 +305,7 @@ async def test_unique_for_lock_budget_exhaustion_returns_bare_caller_conn_clean(
             "the bounded advisory acquire set lock_timeout=250ms via "
             "set_config(local=true) inside a savepoint; the savepoint "
             f"rollback must restore it, but the session reads {lock_timeout_after!r} "
-            "— the wait budget leaked onto the caller's session and now "
+            "- the wait budget leaked onto the caller's session and now "
             "bounds every statement the caller issues."
         )
         await _bounded(caller.execute("SELECT 1"))

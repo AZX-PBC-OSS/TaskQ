@@ -33,7 +33,7 @@ _ACQUIRE_TIMEOUT: float = 0.001
 def _semaphore(key: str, limit: int) -> asyncio.Semaphore:
     # The limit is part of the key because one process can mount the same
     # family at several limits (the test suite does; a misconfigured process
-    # could), and a later mount must enforce the limit it was given — keying
+    # could), and a later mount must enforce the limit it was given, keying
     # by family alone made the first mount's limit silently govern every
     # later one. Mounts that agree on the limit still share one budget,
     # which is the cross-router sharing the family key exists to provide.

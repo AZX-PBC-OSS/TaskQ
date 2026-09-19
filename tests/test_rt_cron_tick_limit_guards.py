@@ -1,21 +1,21 @@
 """Red-team attacks on two boundary gaps the bounded-batch fix left open.
 
-Both target the fix's own stated invariant — a degenerate row cap must
-fail loudly at the typed boundary, before any SQL runs — at the two
+Both target the fix's own stated invariant - a degenerate row cap must
+fail loudly at the typed boundary, before any SQL runs - at the two
 sites the fix's boundary tests do not reach:
 
 * ``tick_cron``'s ``limit`` (``src/taskq/worker/cron_loop.py:358``)
   feeds ``LIMIT $1`` (``:439-440``) with no function-level validation:
   the function validates only the schema identifier (``:391-392``).
-  Every sibling bound — the sweeps (``_sweeps.py:676-677,795-796,
+  Every sibling bound - the sweeps (``_sweeps.py:676-677,795-796,
   908-909``), bulk cancel (``_cancel_bulk.py:167-168``), force
-  deregistration (``actor_config_ops.py:523-524``) — rejects 0 and
+  deregistration (``actor_config_ops.py:523-524``) - rejects 0 and
   negatives with ``ValueError`` before touching the database, for the
   documented reason that ``LIMIT 0`` is a legal rowless query: a silent
   drain stall that reports success on zero rows forever while eligible
   work sits waiting. ``tick_cron(limit=0)`` is that shape exactly: it
   returns 0, indistinguishable from "nothing due", while due schedules
-  sit unfired — the cron half of the silent stall the settings layer
+  sit unfired - the cron half of the silent stall the settings layer
   already names (``TASKQ_CRON_TICK_LIMIT`` is ``ge=1`` with the comment
   "0 schedules per tick is a silent cron stall",
   ``test_worker_settings_event_writer.py:103-105``). A negative limit
@@ -23,8 +23,8 @@ sites the fix's boundary tests do not reach:
   data error (SQLSTATE 2201W), outside the leader's transient-error
   classification, so it burns the unexpected-error budget instead of
   being caught where it belongs. ``tick_cron`` is not an internal
-  helper behind a settings-only caller — its cap is an exercised
-  contract (``test_cron_tick_bounded.py`` drives explicit caps) — so
+  helper behind a settings-only caller - its cap is an exercised
+  contract (``test_cron_tick_bounded.py`` drives explicit caps) - so
   the coverage note's "settings layer is the guard" design line, which
   names only ``complete_stale_batches``/``cleanup_stale_workers``, does
   not cover it.
@@ -38,7 +38,7 @@ sites the fix's boundary tests do not reach:
   tier: no degradation when the database is falling over",
   ``test_worker_settings_event_writer.py:92-94``), and the existing
   constructor-boundary test (``test_rt_sweeps_boundary.py:212-241``)
-  rejects 0 and -2 but not 1 — the gap sits exactly on the edge between
+  rejects 0 and -2 but not 1 - the gap sits exactly on the edge between
   tested and untested. The constructor's own comment misstates the
   boundary it enforces ("divisor < 1 either never reduces or divides
   by zero" at ``_sweeps.py:498-504``): ``divisor == 1`` also never
@@ -87,12 +87,12 @@ async def test_tick_cron_rejects_degenerate_limit_before_any_sql(limit: int) -> 
     """``tick_cron`` must reject a degenerate ``limit`` with ``ValueError``.
 
     ``limit=0`` selects zero due schedules and returns 0 forever while
-    schedules sit due — a silent cron stall wearing "nothing due"
+    schedules sit due - a silent cron stall wearing "nothing due"
     clothing, the exact failure shape the bounded-sweep boundary
     contract exists to remove. A negative limit is a server-side data
     error (SQLSTATE 2201W) the transient classification does not catch.
     Both are caller configuration bugs and belong at the boundary,
-    before the advisory-lock acquisition — the backend argument is
+    before the advisory-lock acquisition - the backend argument is
     never reached, so a dummy stands in for it.
     """
     with pytest.raises(ValueError, match="limit"):
@@ -111,7 +111,7 @@ def test_sizer_constructor_rejects_noop_divisor() -> None:
 
     With ``divisor=1`` the latched tier equals the normal tier, so a
     database that keeps aborting full-size batches gets full-size
-    batches forever — the degradation tier exists silently without ever
+    batches forever - the degradation tier exists silently without ever
     engaging. The settings layer already rejects 1 for this reason;
     the shared constructor must enforce the same boundary, since it is
     constructed directly (every backend sweep call mints its tier from

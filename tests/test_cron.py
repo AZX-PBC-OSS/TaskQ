@@ -3,10 +3,10 @@
 compute_next_fire_after with UTC.
 compute_next_fire_after at minute boundary.
 _resolve_factory succeeds and caches.
-_resolve_factory failure — ModuleNotFoundError.
-_resolve_factory failure — AttributeError.
+_resolve_factory failure - ModuleNotFoundError.
+_resolve_factory failure - AttributeError.
 cron() with both payload_factory and static_payload raises ValueError.
-property test — compute_next_fire_after always returns a datetime
+property test - compute_next_fire_after always returns a datetime
        strictly after the `after` argument for valid expressions.
 """
 
@@ -51,7 +51,7 @@ def test_dst_strategies_matches_the_literal() -> None:
     coercion, admin ops coercion) before this export; a fourth hand-rolled
     copy would drift against the ``DstStrategy`` Literal the type checker
     enforces. Derived via ``get_args`` so adding a strategy to the Literal
-    updates the set — and every coercion site — with it.
+    updates the set - and every coercion site - with it.
     """
     assert frozenset({"skip", "firstof", "allof"}) == DST_STRATEGIES
 
@@ -450,7 +450,7 @@ def test_resolve_factory_succeeds_and_caches(monkeypatch: pytest.MonkeyPatch) ->
     assert cached is _sample_factory
 
 
-# ── _resolve_factory failure — ModuleNotFoundError ────────────
+# ── _resolve_factory failure - ModuleNotFoundError ────────────
 
 
 def test_resolve_factory_module_not_found() -> None:
@@ -459,7 +459,7 @@ def test_resolve_factory_module_not_found() -> None:
         _resolve_factory("nonexistent.module.fn")
 
 
-# ── _resolve_factory failure — AttributeError ─────────────────
+# ── _resolve_factory failure - AttributeError ─────────────────
 
 
 def test_resolve_factory_attribute_error() -> None:
@@ -771,7 +771,7 @@ async def testresolve_payload_factory_import_error_propagates() -> None:
 # Cron payload resolution must not depend on actor-pool availability to
 # make progress. A sync factory runs off the event loop so a blocking
 # factory cannot stall the loop, but the executor it runs on must not be
-# the loop's default ThreadPoolExecutor — that is the same pool sync
+# the loop's default ThreadPoolExecutor - that is the same pool sync
 # actor bodies check out of. Sharing it means a fleet of busy sync actors
 # holding every thread stalls schedule ticks: even an instantaneous
 # `def f(): return {}` cannot start until a slot frees, and the bounded
@@ -780,7 +780,7 @@ async def testresolve_payload_factory_import_error_propagates() -> None:
 
 
 def _trivial_sync_factory() -> dict[str, object]:
-    """Instantaneous sync factory — the case that must never wait on
+    """Instantaneous sync factory - the case that must never wait on
     actor-pool contention at all."""
     return {}
 
@@ -793,8 +793,8 @@ async def testresolve_payload_trivial_sync_factory_survives_a_saturated_actor_po
 
     Cron payload resolution runs a sync factory off the event loop to keep
     a blocking factory from stalling the loop, but it must do so on an
-    executor of its own. Submitting to the default pool — the one sync
-    actor bodies use — makes a schedule tick's progress depend on actor
+    executor of its own. Submitting to the default pool - the one sync
+    actor bodies use - makes a schedule tick's progress depend on actor
     load: an instantaneous factory queues behind saturating work and its
     bounded resolution times out while the tick holds the cron lock."""
     import concurrent.futures
@@ -819,7 +819,7 @@ async def testresolve_payload_trivial_sync_factory_survives_a_saturated_actor_po
     probe_release.set()
     await asyncio.wrap_future(probe_future)
 
-    # Saturate every worker slot with long-blocking work — standing in for
+    # Saturate every worker slot with long-blocking work - standing in for
     # sync actor bodies holding the pool.
     saturators_started = [threading.Event() for _ in range(max_workers)]
     saturators_release = threading.Event()
@@ -834,7 +834,7 @@ async def testresolve_payload_trivial_sync_factory_survives_a_saturated_actor_po
     try:
         for started in saturators_started:
             assert started.wait(5.0), (
-                "not every saturating task reached the pool — miscounted max_workers"
+                "not every saturating task reached the pool - miscounted max_workers"
             )
 
         # Every slot is now held by simulated actor work. A cron system
@@ -847,7 +847,7 @@ async def testresolve_payload_trivial_sync_factory_survives_a_saturated_actor_po
             timeout_s=3.0,
         )
         assert result == {}, (
-            "resolve_payload did not return the trivial factory's payload — "
+            "resolve_payload did not return the trivial factory's payload - "
             "unexpected failure shape, not the starvation this test targets"
         )
     finally:
@@ -864,8 +864,8 @@ async def testresolve_payload_trivial_sync_factory_survives_a_saturated_actor_po
 # the same wall-clock's later occurrence is a real next match, but naive
 # comparison cannot distinguish the two and the walk jumps a year.  The
 # strategies split on what that means: ``skip``/``firstof`` fire a
-# repeated hour once, at the earlier occurrence — which the seed already
-# is — so the next slot is genuinely next year; ``allof`` owes the later
+# repeated hour once, at the earlier occurrence - which the seed already
+# is - so the next slot is genuinely next year; ``allof`` owes the later
 # occurrence, so the fold-1 twin is the next fire.  Reachable in
 # production whenever a leader outage or manual edit leaves
 # ``next_fire_at`` ON the fold-0 occurrence: the post-outage tick fires
@@ -881,7 +881,7 @@ _NEXT_SLOT_UTC = datetime(2027, 11, 1, 5, 30, tzinfo=UTC)
 
 def test_allof_seed_on_first_occurrence_returns_the_second() -> None:
     """The fold-0 occurrence just fired (it is the seed); ``allof`` still
-    owes the fold-1 twin — a strictly later instant — so the next fire
+    owes the fold-1 twin - a strictly later instant - so the next fire
     is the twin, not next year.
 
     Compared as normalized instants: the function's contract preserves
@@ -906,7 +906,7 @@ def test_single_fire_strategies_advance_one_slot_from_inside_the_overlap(
     strategy: str,
 ) -> None:
     """``skip``/``firstof`` fire a repeated hour once, at the earlier
-    occurrence — the seed — so nothing is owed and the next slot is next
+    occurrence - the seed - so nothing is owed and the next slot is next
     year, from either member of the pair."""
     for seed in (_FOLD0_UTC, _FOLD1_UTC):
         out = compute_next_fire_after(_OVERLAP_EXPR, _OVERLAP_TZ, seed, dst_strategy=strategy)
@@ -917,7 +917,7 @@ def test_single_fire_strategies_advance_one_slot_from_inside_the_overlap(
 
 def test_allof_seed_inside_overlap_on_a_non_matching_wall_is_untouched() -> None:
     """A seed inside the repeated hour whose wall-clock is NOT a match
-    takes the normal walk — the fold handling only owns the seed's own
+    takes the normal walk - the fold handling only owns the seed's own
     matched wall-clock."""
     seed = datetime(2026, 11, 1, 5, 10, tzinfo=UTC)  # 01:10 EDT, inside the hour
     out = compute_next_fire_after(_OVERLAP_EXPR, _OVERLAP_TZ, seed, dst_strategy="allof")
@@ -936,7 +936,7 @@ async def _hung_factory() -> dict[str, object]:
 @pytest.mark.asyncio
 async def testresolve_payload_timeout_names_the_factory() -> None:
     """A hung async factory's TimeoutError must name the dotted factory
-    path — the schedule's error text is the only place an operator sees
+    path - the schedule's error text is the only place an operator sees
     WHICH factory hung."""
     dotted = f"{_hung_factory.__module__}.{_hung_factory.__qualname__}"
     with pytest.raises(TimeoutError, match="timed out after 5s") as exc_info:
@@ -1025,13 +1025,13 @@ async def testresolve_payload_async_factory_resolves_off_the_shared_thread_pool(
 # stays parked inside the factory. A schedule whose factory hangs every
 # fire strands one such thread per tick, and cron ticks forever. Those
 # stranded threads must come from cron's own bounded pool, never from the
-# pool sync actor bodies check out of — otherwise one permanently hung
+# pool sync actor bodies check out of - otherwise one permanently hung
 # schedule silently eats the fleet's actor execution capacity, a
 # slow-motion outage no cron metric reports.
 
 
 _HUNG_FACTORY_RELEASE = threading.Event()
-"""Release flag for :func:`_hung_sync_factory` — module scope because the
+"""Release flag for :func:`_hung_sync_factory` - module scope because the
 factory is resolved by dotted path, so the test can only reach it here."""
 
 
@@ -1057,7 +1057,7 @@ async def testresolve_payload_hung_factories_never_strand_actor_pool_threads() -
     factory until the factory itself returns, which a truly hung one never
     does. Cron ticks indefinitely, so one permanently hung schedule strands
     a thread per tick. If those calls run on the loop's default thread pool
-    — the one sync actor bodies run on — the hung schedule steadily
+    - the one sync actor bodies run on - the hung schedule steadily
     consumes the worker's own execution capacity until sync actors have no
     thread left, with nothing in the cron telemetry to explain it. Cron
     must strand only threads from a pool of its own.
@@ -1086,7 +1086,7 @@ async def testresolve_payload_hung_factories_never_strand_actor_pool_threads() -
         stranded_from_actor_pool = [t for t in _HUNG_PARKED_THREADS if t in default_threads]
         assert stranded_from_actor_pool == [], (
             f"{len(stranded_from_actor_pool)} of 3 hung payload factories are "
-            "parked on the loop's default executor — the same pool sync actor "
+            "parked on the loop's default executor - the same pool sync actor "
             "bodies run on. Each hung fire permanently removes one thread from "
             "actor execution capacity, so a single stuck schedule degrades "
             "unrelated work until the pool is exhausted"
@@ -1104,11 +1104,11 @@ async def testresolve_payload_healthy_factory_survives_a_saturated_cron_pool() -
     stdlib executor cannot recall a parked thread, so that many hung sync
     factories strand the whole pool. Without recovery a healthy factory
     then queues behind the residue and misses every deadline for the rest
-    of the process's life — cron's OWN contention against itself, one
+    of the process's life - cron's OWN contention against itself, one
     level in from where the actor-pool isolation fixed it. The contract:
     the submit path detects the fully-stranded pool, retires it loudly
     (one WARN, naming the residue), and the healthy factory resolves on a
-    fresh pool. The parked threads are NOT reclaimed — they finish when
+    fresh pool. The parked threads are NOT reclaimed - they finish when
     their factories return, which the test's release forces so nothing
     outlives it.
     """
@@ -1130,7 +1130,7 @@ async def testresolve_payload_healthy_factory_survives_a_saturated_cron_pool() -
                 await resolve_payload(dotted, {}, timeout_s=0.05)
         assert len(_HUNG_PARKED_THREADS) == pool_size
 
-        # A completely healthy, instantaneous factory must now resolve —
+        # A completely healthy, instantaneous factory must now resolve -
         # the saturated pool was retired instead of queueing this call
         # behind residue it could never pass.
         with structlog.testing.capture_logs() as captured:
@@ -1146,7 +1146,7 @@ async def testresolve_payload_healthy_factory_survives_a_saturated_cron_pool() -
 
         retired = [e for e in captured if e["event"] == "cron-factory-pool-saturated-retired"]
         assert len(retired) == 1, (
-            f"expected exactly one pool-retirement WARN, got {len(retired)} — "
+            f"expected exactly one pool-retirement WARN, got {len(retired)} - "
             "retirement must be loud (it is the only place an operator learns "
             "hung schedules stranded a pool) and must not spam per submit"
         )
@@ -1158,7 +1158,7 @@ async def testresolve_payload_healthy_factory_survives_a_saturated_cron_pool() -
 
 def _slow_sync_factory() -> dict[str, object]:
     """Slow-but-alive sync factory: occupies a pool thread briefly, then
-    returns — the live-work contrast to :func:`_hung_sync_factory`."""
+    returns - the live-work contrast to :func:`_hung_sync_factory`."""
     time.sleep(0.3)
     return {"slow": True}
 
@@ -1192,6 +1192,6 @@ async def testresolve_payload_busy_but_alive_cron_pool_is_not_retired() -> None:
     assert results[:pool_size] == [{"slow": True}] * pool_size
     assert results[pool_size] == {}
     assert not [e for e in captured if e["event"] == "cron-factory-pool-saturated-retired"], (
-        "a busy-but-alive pool was retired — retirement is only for pools "
+        "a busy-but-alive pool was retired - retirement is only for pools "
         "whose every thread is stranded on work nobody waits for"
     )

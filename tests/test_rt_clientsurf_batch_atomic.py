@@ -10,9 +10,9 @@ the CLIENT:
    level rollback pin (tests/test_batch_pg.py::
    TestPostgresEnqueueBatchAtomicRollback) fails the transaction via a
    raising GENERATOR mid-stream; the duplicate-batch_id failure is a
-   different mid-transaction failure point — every member chunk and the
+   different mid-transaction failure point - every member chunk and the
    finalizer INSERT succeed, then ``create_batch`` hits the
-   ``batches`` primary key (src/taskq/backend/_batch_sql.py:613-626) —
+   ``batches`` primary key (src/taskq/backend/_batch_sql.py:613-626) -
    and it is the failure a real caller produces by retrying a batch_id.
    The client docstring promises "If any insert fails, no rows are
    committed" (src/taskq/client/_jobs.py:516-518); this pins that the
@@ -25,7 +25,7 @@ the CLIENT:
    Unpinned anywhere: the observable is a PLAIN
    :class:`~taskq.exceptions.MaxPendingExceededError` (all-or-nothing,
    matching the client docstring at src/taskq/client/_jobs.py:550-555)
-   with zero member rows committed — NOT
+   with zero member rows committed - NOT
    :class:`~taskq.exceptions.BatchMaxPendingExceededError` (the
    partition error whose contract assumes "part of the batch is already
    stored", which would be a lie inside one transaction).
@@ -37,13 +37,13 @@ the CLIENT:
    id than finalizer_args.id)" (src/taskq/backend/_batch_sql.py:584-586).
    The happy-path finalizer stamping is pinned in-memory
    (tests/test_batch_enqueue.py::test_finalizer_job_id_on_batch_row);
-   the collision arm — batch row must name the collided row, the
+   the collision arm - batch row must name the collided row, the
    finalizer handle must report ``was_existing=True``, and the collided
-   row must NOT be retro-stamped with ``batch_id`` metadata — is not.
+   row must NOT be retro-stamped with ``batch_id`` metadata - is not.
 
 All three are expected GREEN (documented behavior); any RED here is a
 real defect in the atomic arm. PG tier because each observable turns on
-real SQL semantics — one transaction's rollback, ON CONFLICT idempotency
+real SQL semantics - one transaction's rollback, ON CONFLICT idempotency
 dedup, and the cap admission count. Every wait is bounded.
 """
 
@@ -70,7 +70,7 @@ from taskq.batch_policy import AbortBatchAfter
 from taskq.client._jobs import JobsClient
 from taskq.exceptions import BatchIdExistsError, MaxPendingExceededError
 from taskq.testing.fixtures import (
-    _open_pg_backend,  # pyright: ignore[reportPrivateUsage]  # Why: deliberate test seam — the canonical drop+apply_pending+pools+backend sequence under a caller-chosen schema; no public equivalent.
+    _open_pg_backend,  # pyright: ignore[reportPrivateUsage]  # Why: deliberate test seam - the canonical drop+apply_pending+pools+backend sequence under a caller-chosen schema; no public equivalent.
 )
 from taskq.worker.deps import WorkerDeps
 
@@ -144,15 +144,15 @@ def _member(payload_value: int = 0, **kwargs: Any) -> EnqueueItem:
 
 async def test_duplicate_batch_id_rolls_back_the_whole_second_call(tcs_app: _TcsApp) -> None:
     """PIN: retrying a caller-chosen batch_id raises BatchIdExistsError and
-    commits NOTHING from the second call — not even the rows its member
+    commits NOTHING from the second call - not even the rows its member
     chunks already inserted inside the still-open transaction.
 
     The client contract (src/taskq/client/_jobs.py:516-518): 'the entire
     operation (batch row + all child jobs + finalizer) is inserted in a
     single transaction ... If any insert fails, no rows are committed.'
-    The duplicate-batch_id failure fires at create_batch — AFTER all
+    The duplicate-batch_id failure fires at create_batch - AFTER all
     member and finalizer inserts succeeded (src/taskq/backend/
-    _batch_sql.py:604-626) — so this is the arm where a rollback bug
+    _batch_sql.py:604-626) - so this is the arm where a rollback bug
     would strand an orphaned member set under a foreign batch id."""
     app = tcs_app
     batch_id = new_uuid()
@@ -184,11 +184,11 @@ async def test_duplicate_batch_id_rolls_back_the_whole_second_call(tcs_app: _Tcs
 
     assert batch_members == 1, (
         f"CONTRACT: a duplicate batch_id must leave the batch exactly as the "
-        f"first call wrote it (1 member); found {batch_members} member rows — "
+        f"first call wrote it (1 member); found {batch_members} member rows - "
         f"the second call's members survived the BatchIdExistsError rollback"
     )
     assert plain_jobs == 1, (
-        f"CONTRACT: the rolled-back call must leave no finalizer row either — "
+        f"CONTRACT: the rolled-back call must leave no finalizer row either - "
         f"the finalizer ('rt_cs_plain_member') was the last statement before "
         f"create_batch; found {plain_jobs} jobs for the actor, expected 1 "
         f"(the first call's member only)"
@@ -202,8 +202,8 @@ async def test_duplicate_batch_id_rolls_back_the_whole_second_call(tcs_app: _Tcs
 
 async def test_capped_finalizer_actor_refuses_the_whole_atomic_batch(tcs_app: _TcsApp) -> None:
     """PIN: when the FINALIZER actor is over its max_pending cap, the atomic
-    path refuses the whole call — plain MaxPendingExceededError, zero
-    member rows, no batch row — never the partition error
+    path refuses the whole call - plain MaxPendingExceededError, zero
+    member rows, no batch row - never the partition error
     (BatchMaxPendingExceededError) whose contract says 'part of the
     batch is already stored'.
 
@@ -235,7 +235,7 @@ async def test_capped_finalizer_actor_refuses_the_whole_atomic_batch(tcs_app: _T
         )
     assert not isinstance(excinfo.value, BatchMaxPendingExceededError), (
         "the atomic path must raise the PLAIN MaxPendingExceededError "
-        f"(all-or-nothing refusal), got {type(excinfo.value).__name__} — the "
+        f"(all-or-nothing refusal), got {type(excinfo.value).__name__} - the "
         "partition error promises admitted rows are already stored, which is "
         "false inside one transaction"
     )
@@ -247,12 +247,12 @@ async def test_capped_finalizer_actor_refuses_the_whole_atomic_batch(tcs_app: _T
     assert plain_jobs == 0, (
         f"CONTRACT: both member rows were inserted BEFORE the finalizer's cap "
         f"refusal; only the transaction rollback can remove them. Found "
-        f"{plain_jobs} member rows after the refusal — the atomic path leaked "
+        f"{plain_jobs} member rows after the refusal - the atomic path leaked "
         f"a partially-admitted batch."
     )
     assert capped_jobs == 1, (
         f"the capped actor must hold exactly its one occupying job; found "
-        f"{capped_jobs} — the refused finalizer must not have written"
+        f"{capped_jobs} - the refused finalizer must not have written"
     )
 
     batch_row = await asyncio.wait_for(app.backend.get_batch(batch_id), timeout=_CALL_BOUND)
@@ -261,7 +261,7 @@ async def test_capped_finalizer_actor_refuses_the_whole_atomic_batch(tcs_app: _T
 
 async def test_finalizer_idempotency_collision_records_the_existing_row(tcs_app: _TcsApp) -> None:
     """PIN (M4): a finalizer whose idempotency_key collides with an existing
-    job dedups onto that row — the batch row's finalizer_job_id names the
+    job dedups onto that row - the batch row's finalizer_job_id names the
     EXISTING row (not the never-inserted args id), the finalizer handle
     reports was_existing=True, and the existing row is not retro-stamped
     with batch_id metadata.
@@ -293,12 +293,12 @@ async def test_finalizer_idempotency_collision_records_the_existing_row(tcs_app:
     assert fin is not None, "finalizer-only enqueue_batch must return a finalizer handle"
     assert fin.was_existing is True, (
         "CONTRACT (M4): a finalizer deduping onto an existing idempotency_key "
-        "must report was_existing=True — a False here means the handle was "
+        "must report was_existing=True - a False here means the handle was "
         "paired against the never-inserted args id"
     )
     assert fin.job_id == existing.job_id, (
         f"CONTRACT (M4): the finalizer handle must carry the EXISTING row's id "
-        f"{existing.job_id}, got {fin.job_id} — src/taskq/backend/_batch_sql.py:"
+        f"{existing.job_id}, got {fin.job_id} - src/taskq/backend/_batch_sql.py:"
         f"584-586 inserts the finalizer first precisely so the collided id "
         f"can be recorded"
     )
@@ -308,7 +308,7 @@ async def test_finalizer_idempotency_collision_records_the_existing_row(tcs_app:
     assert batch_row.finalizer_job_id == existing.job_id, (
         f"CONTRACT (M4): the batches row's finalizer_job_id must name the "
         f"existing collided row {existing.job_id}, got "
-        f"{batch_row.finalizer_job_id} — wait_for_batch's auto-exclusion "
+        f"{batch_row.finalizer_job_id} - wait_for_batch's auto-exclusion "
         f"keys off this column, so a wrong id makes the finalizer count "
         f"itself as a child (the deadlock the unstamped design prevents)"
     )
@@ -317,6 +317,6 @@ async def test_finalizer_idempotency_collision_records_the_existing_row(tcs_app:
     assert existing_row is not None
     assert existing_row.metadata.get("batch_id") is None, (
         "CONTRACT: the collided existing row must NOT be retro-stamped with "
-        "batch_id metadata — stamping it would make wait_for_batch count the "
+        "batch_id metadata - stamping it would make wait_for_batch count the "
         "finalizer as its own child"
     )

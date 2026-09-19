@@ -104,7 +104,7 @@ async def test_in_memory_delegation() -> None:
     clock = FakeClock(start=datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="test_actor")
 
     args = make_enqueue_args(scheduled_at=clock.now())
@@ -156,7 +156,7 @@ async def test_in_memory_autonomous_mark_succeeded_still_works() -> None:
     clock = FakeClock(start=datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="test_actor")
 
     args = make_enqueue_args(scheduled_at=clock.now())

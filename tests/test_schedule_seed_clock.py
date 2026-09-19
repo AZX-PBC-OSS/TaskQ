@@ -2,18 +2,18 @@
 
 The cron loop's due-check is server-side (``next_fire_at <=
 clock_timestamp()``) and its NORMAL path recomputes every subsequent
-fire from the STORED fire time — only a miss beyond
+fire from the STORED fire time - only a miss beyond
 ``cron_catch_up_window`` re-anchors on the server clock. A Python-clock
 seed therefore phase-shifts every fire for the schedule's LIFE whenever
 |app↔DB skew| stays inside the catch-up window (default 1h): a
 "03:00 daily" schedule fires persistently at 03:00±skew.
 
 These tests shim ``taskq.client._jobs.datetime`` with a skewed app clock
-(the repo's skew-injection pattern — cf. ``_SkewedCronDatetime`` in
+(the repo's skew-injection pattern - cf. ``_SkewedCronDatetime`` in
 test_cron_integration.py, TI9-TI12) and drive the REAL public client
 methods. The persisted ``next_fire_at`` must be anchored to the server
 clock (pool-backed clients) or the client's injected Clock (in-memory
-clients) — never to the skewed Python clock.
+clients) - never to the skewed Python clock.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from taskq.testing.clock import FakeClock
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.in_memory import InMemoryBackend
 
-# 12:01 — the next */5 fire from the server clock is 12:05; from the
+# 12:01 - the next */5 fire from the server clock is 12:05; from the
 # app clock skewed +10m (12:11) it is 12:15. The two domains are
 # distinguishable at a glance, which is the point.
 _SERVER_NOW = datetime(2026, 1, 1, 12, 1, tzinfo=UTC)
@@ -46,7 +46,7 @@ _APP_SKEWED_NOW = _SERVER_NOW + timedelta(minutes=10)
 
 
 class _FixedJobsDatetime:
-    """Shim for ``taskq.client._jobs.datetime`` — ``now()`` returns a
+    """Shim for ``taskq.client._jobs.datetime`` - ``now()`` returns a
     FIXED skewed app-clock time, so whichever clock domain seeded
     ``next_fire_at`` is observable in the persisted value."""
 
@@ -102,7 +102,7 @@ class _FakePool:
 
 
 class _WedgedAcquireCtx:
-    """``async with pool.acquire()`` context whose enter never completes —
+    """``async with pool.acquire()`` context whose enter never completes -
     the shape an exhausted or wedged asyncpg pool presents."""
 
     async def __aenter__(self) -> object:
@@ -123,8 +123,8 @@ class _WedgedPool:
 class _FakePgBackend:
     """Pool-backed stand-in driving the REAL JobsClient schedule path.
 
-    Exposes ``worker_pool`` — the attribute shape JobsClient probes for
-    its server-clock read — and records every create/update args it
+    Exposes ``worker_pool`` - the attribute shape JobsClient probes for
+    its server-clock read - and records every create/update args it
     receives, so the test asserts on the value that would be persisted.
     Only the schedule surface the client touches is implemented.
     """
@@ -196,7 +196,7 @@ async def test_create_schedule_surfaces_bounded_error_when_pool_wedges(
     error within the bound, not hang ``create_schedule`` indefinitely.
 
     ``_schedule_seed_now`` acquired the pool with a bare ``async with
-    pool.acquire()`` — asyncpg acquire has no default timeout, so a
+    pool.acquire()`` - asyncpg acquire has no default timeout, so a
     wedged/exhausted pool blocked schedule creation forever. The bound
     mirrors ``ActorCapacityCache._refresh`` (``wait_for`` around
     acquisition + read); on timeout the error must be explicit, because
@@ -204,16 +204,16 @@ async def test_create_schedule_surfaces_bounded_error_when_pool_wedges(
     clock-skew domain mixing the server-clock seed exists to eliminate.
     """
     backend = _FakePgBackend(_SERVER_NOW)
-    backend.worker_pool = _WedgedPool()  # pyright: ignore[reportAttributeAccessIssue, reportIncompatibleVariableOverride]  # Why: deliberately wedged pool shape — the connection (and thus the server clock) is never reached.
+    backend.worker_pool = _WedgedPool()  # pyright: ignore[reportAttributeAccessIssue, reportIncompatibleVariableOverride]  # Why: deliberately wedged pool shape - the connection (and thus the server clock) is never reached.
     client = JobsClient(backend)  # type: ignore[arg-type]  # Why: see test_create_seeds_next_fire_from_server_clock.
-    # raising=False: the bound arrives with the fix — at HEAD this patch is a
+    # raising=False: the bound arrives with the fix - at HEAD this patch is a
     # no-op and the hang-guard below is what fails the test.
     monkeypatch.setattr(jobs_mod, "DEFAULT_CAPACITY_READ_TIMEOUT", 0.05, raising=False)
 
     with pytest.raises(TimeoutError, match="schedule seed clock read timed out"):
         # Hang-guard, deliberately above the default bound (2s): without the
         # bound this await blocks forever and the guard's bare TimeoutError
-        # fails the match — exactly the failure this test exists to catch.
+        # fails the match - exactly the failure this test exists to catch.
         # With the bound, the inner wait_for always fires first.
         await asyncio.wait_for(client.create_schedule("wedged_actor", "*/5 * * * *"), timeout=5.0)
 
@@ -224,7 +224,7 @@ async def test_create_seeds_next_fire_from_server_clock(
     """create_schedule on a pool-backed client seeds ``next_fire_at``
     from the SERVER clock, not the (skewed) Python clock."""
     backend = _FakePgBackend(_SERVER_NOW)
-    client = JobsClient(backend)  # type: ignore[arg-type]  # Why: deliberately not a full Backend — only the schedule surface the client touches is implemented, and the guardrails under test fire before any other backend call.
+    client = JobsClient(backend)  # type: ignore[arg-type]  # Why: deliberately not a full Backend - only the schedule surface the client touches is implemented, and the guardrails under test fire before any other backend call.
     monkeypatch.setattr(jobs_mod, "datetime", _FixedJobsDatetime(_APP_SKEWED_NOW))
 
     handle = await client.create_schedule("seeded_actor", "*/5 * * * *")
@@ -234,7 +234,7 @@ async def test_create_seeds_next_fire_from_server_clock(
     )
     assert backend.created, "the backend create must have been reached"
     assert backend.created[0].next_fire_at == _expected("*/5 * * * *", _SERVER_NOW), (
-        "the PERSISTED next_fire_at must be anchored to the server clock — "
+        "the PERSISTED next_fire_at must be anchored to the server clock - "
         "a skewed app clock must not phase-shift the fire chain"
     )
     assert handle.next_fire_at == _expected("*/5 * * * *", _SERVER_NOW)
@@ -287,7 +287,7 @@ async def test_pg_create_seeds_from_server_clock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """End-to-end on real Postgres: a Python clock skewed +10 minutes
-    cannot move the persisted ``next_fire_at`` — it is anchored to
+    cannot move the persisted ``next_fire_at`` - it is anchored to
     ``clock_timestamp()`` read through the backend's pool.
 
     The expectation is bracketed by server-clock reads taken before and

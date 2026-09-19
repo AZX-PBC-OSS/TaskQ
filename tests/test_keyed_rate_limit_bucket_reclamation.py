@@ -4,33 +4,33 @@ The PG tier of this contract is
 ``tests/test_rt_keyed_bucket_reclamation.py``: an evicted keyed rate
 limit's published ``rate_limit_buckets`` row must be reclaimed by the
 pending-reclaim drain. This file pins the same contract one level down,
-where no PG is needed — the registry bookkeeping that records an evicted
+where no PG is needed - the registry bookkeeping that records an evicted
 bucket for reclamation, the drain statement it issues, and the bounds
 that keep that statement constant-size against any evicted-key backlog.
 
 What each observable pins:
 
-- **The drain statement** — one batched ``DELETE`` against
+- **The drain statement** - one batched ``DELETE`` against
   ``"{schema}".rate_limit_buckets`` whose predicate is
   ``bucket_name = ANY($1)`` over the drain's bounded name slice: the
   same statement shape the reservation twin
   (``_RECLAIM_SLICE_DELETE_SQL_TEMPLATE`` in ``ratelimit/reservation.py``)
-  uses for ``reservation_slots``, minus the lease guard — a bucket row
+  uses for ``reservation_slots``, minus the lease guard - a bucket row
   has no holder, so nothing can survive the DELETE and there is no
   survivor probe to run.
-- **The gate** — ``has_pending_reservation_reclaims`` is the sweep
+- **The gate** - ``has_pending_reservation_reclaims`` is the sweep
   loop's drain gate, so it must cover rate-limit pendings too: a
   pending rate-limit row with no pending reservation must still run the
   drain, or the reclamation never happens in production.
-- **Live buckets** — a name that re-registered since eviction is
+- **Live buckets** - a name that re-registered since eviction is
   dropped from the pending set WITHOUT a statement (a re-activated key
   owns its row again), and a bucket materialized with no PG pool
   published no row, so its eviction records nothing and the drain
   acquires no connection at all.
-- **The bound** — one drain call deletes at most ``batch_names``
+- **The bound** - one drain call deletes at most ``batch_names``
   buckets' rows per schema, the front of the insertion-ordered pending
   set, so one tick's write set is constant-size against any backlog.
-- **The cap** — eviction refuses to record past
+- **The cap** - eviction refuses to record past
   ``max_pending_reclaims``; the overflow entries stay registered and
   re-scanned on the next sweep (fail-closed, the reservation twin's
   veto).
@@ -96,7 +96,7 @@ class _RecordingConn:
     """Connection double that records every statement it is handed.
 
     ``fetch`` answers a ``DELETE ... RETURNING bucket_name`` with the
-    sliced names echoed back as the deleted rows — the rowcount shape
+    sliced names echoed back as the deleted rows - the rowcount shape
     the drain counts; every other fetch returns no rows.
     """
 
@@ -144,7 +144,7 @@ class _RecordingPool:
 
 
 class _AcquireRaisingPool:
-    """A pool whose ``acquire`` raises — proves a drain touches no connection."""
+    """A pool whose ``acquire`` raises - proves a drain touches no connection."""
 
     def acquire(self, *, timeout: float | None = None) -> Any:
         raise asyncpg.PostgresConnectionError("no drain should reach the pool")
@@ -182,7 +182,7 @@ def _rate_limit_delete_statements(pool: _RecordingPool) -> list[_RecordedStateme
 
 async def test_evicted_published_keyed_rate_limit_bucket_row_is_drained() -> None:
     """Evicting an idle keyed rate limit must feed the pending-reclaim
-    drain a ``rate_limit_buckets`` DELETE for its published row — the
+    drain a ``rate_limit_buckets`` DELETE for its published row - the
     unit tier of the PG pin in test_rt_keyed_bucket_reclamation.py."""
     reg = RateLimitRegistry()
     pool = _RecordingPool()
@@ -208,7 +208,7 @@ async def test_evicted_published_keyed_rate_limit_bucket_row_is_drained() -> Non
     assert evicted == 1, "fixture broken: the idle keyed bucket was not evicted"
     assert reg.has_pending_reservation_reclaims, (
         "an evicted keyed rate limit's published row must reach the pending-reclaim "
-        "set — and has_pending_reservation_reclaims is the sweep loop's drain gate, "
+        "set - and has_pending_reservation_reclaims is the sweep loop's drain gate, "
         "so a pending rate-limit row that does not trip it is never drained in "
         "production"
     )
@@ -223,7 +223,7 @@ async def test_evicted_published_keyed_rate_limit_bucket_row_is_drained() -> Non
     )
     assert "bucket_name = ANY($1)" in deletes[0].sql, (
         "the drain's DELETE must scope by the bounded name slice (ANY($1)), "
-        "the same statement shape as the reservation twin — an unscoped DELETE "
+        "the same statement shape as the reservation twin - an unscoped DELETE "
         "is the backlog-sized write the bounded-write guard exists for"
     )
     assert deletes[0].args == ([bucket],), "the DELETE's slice must name the evicted bucket"
@@ -249,7 +249,7 @@ async def test_re_registered_keyed_bucket_is_dropped_without_a_statement() -> No
 
     assert await reg.drain_pending_reservation_reclaims(pool) == 0  # type: ignore[arg-type]  # Why: test double for asyncpg.Pool.
     assert not _rate_limit_delete_statements(pool), (
-        "a re-registered bucket's row must not be deleted — the drain drops "
+        "a re-registered bucket's row must not be deleted - the drain drops "
         "the pending name without a statement"
     )
     assert not reg.has_pending_reservation_reclaims
@@ -269,7 +269,7 @@ async def test_unpublished_keyed_rate_limit_records_no_pending_reclaim() -> None
     assert reg.evict_idle_keyed_rate_limits(idle_for=timedelta(0)) == 1
     assert not reg.has_pending_reservation_reclaims, (
         "evicting a bucket that never published a row must not record a "
-        "pending reclaim — there is nothing to delete, and a phantom pending "
+        "pending reclaim - there is nothing to delete, and a phantom pending "
         "entry would burn drain ticks and pending-cap budget forever"
     )
     assert await reg.drain_pending_reservation_reclaims(_AcquireRaisingPool()) == 0  # type: ignore[arg-type]  # Why: a minimal stand-in for asyncpg.Pool; only acquire() is reached, and only if the bug is present.
@@ -278,7 +278,7 @@ async def test_unpublished_keyed_rate_limit_records_no_pending_reclaim() -> None
 async def test_rate_limit_pending_cap_vetoes_eviction() -> None:
     """Eviction refuses to record past max_pending_reclaims: the set never
     exceeds the cap, and the overflow entries stay registered (re-scanned
-    next sweep) — the fail-closed bound, the reservation twin's veto."""
+    next sweep) - the fail-closed bound, the reservation twin's veto."""
     reg = RateLimitRegistry()
     pool = _RecordingPool()
     ref = _ref("krl-cap")
@@ -296,7 +296,7 @@ async def test_rate_limit_pending_cap_vetoes_eviction() -> None:
 
 async def test_drain_delete_slice_is_bounded_by_batch_names() -> None:
     """One drain call's bucket-row DELETE carries at most ``batch_names``
-    names — the front of the insertion-ordered pending set — so one tick's
+    names - the front of the insertion-ordered pending set - so one tick's
     write set is constant-size against any evicted-key backlog, and the
     next drain continues where the slice bound stopped the last."""
     reg = RateLimitRegistry()
@@ -312,7 +312,7 @@ async def test_drain_delete_slice_is_bounded_by_batch_names() -> None:
     assert len(deletes) == 1
     assert deletes[0].args == (buckets[:2],), (
         "one drain must delete only the front slice of pending buckets, not "
-        "the whole backlog — an unbounded DELETE is the backlog-ricochet "
+        "the whole backlog - an unbounded DELETE is the backlog-ricochet "
         "defect the bounded-write guard exists for"
     )
     assert reg.has_pending_reservation_reclaims, "the unsliced tail must stay pending"
@@ -325,7 +325,7 @@ async def test_drain_delete_slice_is_bounded_by_batch_names() -> None:
 
 
 async def test_sweep_loop_drains_pending_rate_limit_reclaims() -> None:
-    """The per-worker sweep tick — the production driver — must evict an
+    """The per-worker sweep tick - the production driver - must evict an
     idle keyed rate limit, record its published row as pending, and drain
     it through the dispatcher pool on the same tick (the wiring twin of
     test_leader_sweep_reclaim_drain_wiring.py's reservation pin)."""
@@ -388,7 +388,7 @@ async def test_sweep_loop_drains_pending_rate_limit_reclaims() -> None:
     deletes = _rate_limit_delete_statements(pool)
     assert deletes, (
         "the sweep tick must drain an evicted keyed rate limit's published row "
-        "through the dispatcher pool — the gate it consults "
+        "through the dispatcher pool - the gate it consults "
         "(has_pending_reservation_reclaims) has to see rate-limit pendings"
     )
     assert deletes[0].args == ([bucket],)

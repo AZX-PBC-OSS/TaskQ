@@ -92,7 +92,7 @@ class TestCapRefusalBoundaryDrift:
     async def test_fresh_actor_no_stored_row_no_prior_jobs_admits_on_both(
         self,
     ) -> None:
-        """An actor with no actor_config row and no prior jobs at all —
+        """An actor with no actor_config row and no prior jobs at all -
         the carried literal is the only cap in play, existing count is
         the GROUP BY-absent (PG) / empty-scan (in-memory) zero case."""
         args_list = [_args(_capped_ref, 0)]

@@ -6,14 +6,14 @@ handler's signature, validates it, and returns an :class:`ActorRef`
 parameterized on the handler's payload (``P``) and return (``R``)
 types.
 
-Handler signatures follow the FastAPI principle — *declare what you
+Handler signatures follow the FastAPI principle, *declare what you
 need*. The decorator accepts any of these shapes:
 
-- ``async def fn(payload: P) -> R`` — payload only.
-- ``def fn(payload: P) -> R`` — payload only (sync).
-- ``async def fn(payload: P, ctx: JobContext[P]) -> R`` — payload + context.
-- ``async def fn(payload: P, *, db: DbSession, http: HttpClient) -> R`` — payload + DI deps.
-- ``async def fn(payload: P, ctx: JobContext[P], *, db: DbSession) -> R`` — all three.
+- ``async def fn(payload: P) -> R``, payload only.
+- ``def fn(payload: P) -> R``, payload only (sync).
+- ``async def fn(payload: P, ctx: JobContext[P]) -> R``, payload + context.
+- ``async def fn(payload: P, *, db: DbSession, http: HttpClient) -> R``, payload + DI deps.
+- ``async def fn(payload: P, ctx: JobContext[P], *, db: DbSession) -> R``, all three.
 
 The first parameter is always the validated payload (``P: BaseModel``).
 The optional second positional parameter is the typed
@@ -21,7 +21,7 @@ The optional second positional parameter is the typed
 requests: their names and annotations are captured on
 :attr:`ActorRef.dependencies` and resolved by the worker's DI pass at
 dispatch time. Whether deps arrive as keyword-only (``*, db: ...``) or
-positional is up to the handler — the dispatcher always passes them
+positional is up to the handler, the dispatcher always passes them
 as keyword arguments.
 
 Sync functions (plain ``def``) are accepted and dispatched to
@@ -130,7 +130,7 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
     """Typed reference to a registered actor.
 
     Created by the :func:`actor` decorator. Not callable directly via
-    the queue path — enqueue jobs by passing this ref to
+    the queue path, enqueue jobs by passing this ref to
     :meth:`JobsClient.enqueue(ref, payload) <taskq.client.JobsClient.enqueue>`.
     Direct in-process invocation (``await my_actor(payload, ...)``) is
     available for tests and simulators.
@@ -146,7 +146,7 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
 
     Attributes:
         max_concurrent: Fleet-wide concurrency cap for this actor.
-            ``None`` means unbounded — matches the
+            ``None`` means unbounded, matches the
             ``actor_config.max_concurrent IS NULL`` semantics in the
             dispatch CTE. Allowed values are ``None`` or ``int >= 0``.
             A value of ``0`` means no jobs may run for this actor
@@ -160,7 +160,7 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
 
         metadata: Arbitrary key-value metadata stored in
             ``actor_config.metadata`` (``jsonb NOT NULL``). Must be a
-            plain ``dict[str, object]`` — mapping proxies and
+            plain ``dict[str, object]``, mapping proxies and
             frozendicts are rejected at decoration time to avoid
             surprises at JSONB serialization time.
 
@@ -171,7 +171,7 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
     ``wants_ctx`` records whether the handler declared a
     :class:`JobContext` parameter; the dispatcher passes ``ctx`` only
     when set. ``dependencies`` maps each DI parameter name to its
-    annotated type — the worker's DI pass resolves these at dispatch
+    annotated type, the worker's DI pass resolves these at dispatch
     time and passes them as keyword arguments to the handler. The DI
     resolver itself is an erasure boundary (see
     the resolver operates on the registered provider graph at runtime): user-declared annotations on
@@ -246,7 +246,7 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
         # A malformed declared queue strands every job the actor ever
         # enqueues on a queue no worker drains; fail at decoration time
         # (import time in the common case) instead. Same validator the
-        # enqueue path runs — see client._args.build_enqueue_args.
+        # enqueue path runs, see client._args.build_enqueue_args.
         _validate_queue_name(queue)
         self.queue = queue
         self.is_sync = is_sync
@@ -274,7 +274,7 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
         self.on_cancel = on_cancel
         self.on_cancel_timeout = on_cancel_timeout
         self.priority = priority
-        # Single storage slot. Call shape varies by handler — the
+        # Single storage slot. Call shape varies by handler, the
         # dispatcher (or :meth:`__call__`) routes based on
         # :attr:`wants_ctx`, :attr:`dependencies`, and :attr:`is_sync`.
         self._fn: Callable[..., object] = fn
@@ -284,7 +284,7 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
         """This ref, viewed as the per-actor config the consumer reads.
 
         The registration record and the config are one object here, so
-        the property is a named view rather than a second store — it
+        the property is a named view rather than a second store, it
         exists so callers can say what they need (the retry policy and
         the lifecycle hooks) instead of reaching for the whole ref, and
         so the structural contract is asserted at one place.
@@ -312,7 +312,7 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
         /,
         **deps: object,
     ) -> R:
-        """Direct invocation — bypasses enqueue, runs the handler in-process.
+        """Direct invocation, bypasses enqueue, runs the handler in-process.
 
         Pass a :class:`JobContext` only when the registered handler
         declared one (when :attr:`wants_ctx` is ``True``); calling with
@@ -422,7 +422,7 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
 ) -> ActorRef[P, R] | Callable[[ActorHandler[P, R]], ActorRef[P, R]]:
     """Register an async handler as a typed :class:`ActorRef`.
 
-    All shapes are supported — declare what you need::
+    All shapes are supported, declare what you need::
 
         # Payload only.
         @actor
@@ -461,7 +461,7 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
 
     Args:
         max_concurrent: Fleet-wide concurrency cap for this actor.
-            ``None`` means unbounded — matches the
+            ``None`` means unbounded, matches the
             ``actor_config.max_concurrent IS NULL`` semantics in the
             dispatch CTE. Allowed values are ``None`` or ``int >= 0``.
             A value of ``0`` means no jobs may run for this actor
@@ -474,7 +474,7 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
             correctness, use ConcurrencyReservation.
 
         max_pending: Queue-depth backpressure cap for this actor.
-            ``None`` means unbounded — enqueue never rejects on capacity.
+            ``None`` means unbounded, enqueue never rejects on capacity.
             A non-negative ``int`` limits the number of ``pending`` and
             ``scheduled`` jobs allowed before :meth:`JobsClient.enqueue`
             raises ``MaxPendingExceededError``. ``max_pending=0`` means
@@ -488,15 +488,15 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
             Singleton enforcement is actor-scoped, not identity-scoped:
             different ``identity_key`` values for the same singleton actor
             are still blocked. ``scheduled`` is an active state for
-            singleton enforcement — a snoozed singleton job blocks new
+            singleton enforcement, a snoozed singleton job blocks new
             enqueues until it terminates. For per-identity singleton
             semantics use ``max_concurrent=1`` with an ``identity`` key
             instead. The library reserves the ``metadata.singleton``
-            JSONB key — callers MUST NOT set it manually.
+            JSONB key, callers MUST NOT set it manually.
 
         metadata: Arbitrary key-value metadata stored in
             ``actor_config.metadata`` (``jsonb NOT NULL``). Must be a
-            plain ``dict[str, object]`` — mapping proxies and
+            plain ``dict[str, object]``, mapping proxies and
             frozendicts are rejected at decoration time to avoid
             surprises at JSONB serialization time. Pass ``None`` to
             get an empty ``dict`` (the default).
@@ -505,7 +505,7 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
             matches. Defaults to ``("pending", "scheduled", "running",
             "succeeded")``: the window means "at most one job for this
             identity in this period", and ``succeeded`` is the state that
-            says the work already happened — the precise condition the
+            says the work already happened, the precise condition the
             window exists to detect. The remaining terminal states
             (``failed``, ``cancelled``, ``crashed``, ``abandoned``) are
             excluded because they mean the work did NOT happen, so

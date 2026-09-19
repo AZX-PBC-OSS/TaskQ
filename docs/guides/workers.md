@@ -5,7 +5,7 @@ The TaskQ worker is a long-running asyncio process that polls a Postgres-backed 
 ## Prerequisites
 
 - Python 3.12+
-- TaskQ installed (`uv add taskq-py`) — core includes `asyncpg`, no extra needed
+- TaskQ installed (`uv add taskq-py`); core includes `asyncpg`, no extra needed
 - A running Postgres instance with the TaskQ schema applied (`taskq migrate up`)
 
 See [../getting-started/quick-start.md](../getting-started/quick-start.md) for initial setup and [../architecture.md](../architecture.md) for system-level context.
@@ -20,7 +20,7 @@ See [../getting-started/quick-start.md](../getting-started/quick-start.md) for i
 
 **Heartbeat loop.** On every `heartbeat_interval` tick, acquires one connection from `heartbeat_pool`, opens a single transaction, and atomically updates `workers.last_seen_at`, extends `jobs.lock_expires_at` for all running jobs owned by this worker, extends `reservation_slots.lease_expires_at`, and (if this worker is the leader) pings `maintenance_leader.last_seen_at`. After the transaction commits, runs the cancel-controller's `run_post_tx` to drain any phase-3 abandonment queue. Consecutive failures increment `heartbeat_failures`; exceeding `max_heartbeat_failures` triggers `isolate_self`.
 
-**NOTIFY listener.** Holds a dedicated direct connection (`notify_conn`) subscribed to the schema's wake channel (`wake_channel(schema)`, see [architecture.md](../architecture.md#notify--wake-mechanism)). When a NOTIFY arrives, the listener calls `event.set()` on all registered producer wake-subscribers, waking any sleeping producer immediately rather than waiting for the next poll tick. A health-check coroutine issues `SELECT 1` every `notify_health_check_interval` seconds and reconnects with jittered bounded exponential backoff (±25% multiplicative jitter around each doubling delay) on failure.
+**NOTIFY listener.** Holds a dedicated direct connection (`notify_conn`) subscribed to the schema's wake channel (`wake_channel(schema)`, see [architecture.md](../architecture.md#notify--wake-mechanism)). When a NOTIFY arrives, the listener reads the payload (the inserted row's queue) and calls `event.set()` only for subscribers whose served queue set includes that queue; an empty payload (the COPY fixup's bulk wake, or an older trigger still live in a rolling deploy) wakes every subscriber. A wake that never arrives, filtered or dropped, costs one fallback poll interval, never work: the poll is authoritative. A health-check coroutine issues `SELECT 1` every `notify_health_check_interval` seconds and reconnects with jittered bounded exponential backoff (±25% multiplicative jitter around each doubling delay) on failure.
 
 External code (for example a bulk-enqueue script) can wake sleeping workers immediately without going through the normal enqueue path. The channel name embeds a hash of the schema rather than the schema itself (so it fits Postgres's 63-byte identifier limit for any schema name); derive it in SQL from the value of `TASKQ_SCHEMA_NAME` (default `taskq`):
 
@@ -54,11 +54,11 @@ livenessProbe:
 
 A trip emits `worker-watchdog-trip` at CRITICAL (labelled by detector), dumps every live asyncio task (name, coroutine, await-site frames; never locals or payload values), flushes, and calls `os._exit(2)` with no further awaits: a wedged process cannot be trusted to unwind. In-flight jobs are reclaimed by the leader sweep on `lock_lease` expiry, and the non-zero exit code guarantees the supervisor restarts the worker.
 
-Observability surfaces: send `SIGUSR2` to dump the same task-stack payload on demand (not available on Windows); `GET /tasks` on the health socket serves it as JSON when `TASKQ_HEALTH_TASKS_ENABLED=true`; the `/ready` body reports `loop_tick_ages` and `shutdown_elapsed_seconds`, and a stale loop flips readiness to 503 with a `stale_loops` reason. The OTel instruments are `taskq.worker.event_loop_lag_seconds` (per-beat scheduling latency), `taskq.worker.watchdog_loop_lag_warns_total` and `taskq.worker.watchdog_trips_total` (by detector), `taskq.worker.shutdown_duration_seconds`, `taskq.worker.loop_tick_age_seconds` (by loop), and `taskq.worker.sibling_crashes_total` (by loop) — see [observability.md — The watchdog family](observability.md#the-watchdog-family).
+Observability surfaces: send `SIGUSR2` to dump the same task-stack payload on demand (not available on Windows); `GET /tasks` on the health socket serves it as JSON when `TASKQ_HEALTH_TASKS_ENABLED=true`; the `/ready` body reports `loop_tick_ages` and `shutdown_elapsed_seconds`, and a stale loop flips readiness to 503 with a `stale_loops` reason. The OTel instruments are `taskq.worker.event_loop_lag_seconds` (per-beat scheduling latency), `taskq.worker.watchdog_loop_lag_warns_total` and `taskq.worker.watchdog_trips_total` (by detector), `taskq.worker.shutdown_duration_seconds`, `taskq.worker.loop_tick_age_seconds` (by loop), and `taskq.worker.sibling_crashes_total` (by loop); see [observability.md: The watchdog family](observability.md#the-watchdog-family).
 
 **Shutdown orchestrator.** Handles SIGTERM/SIGINT. Drives the four-phase sequence: DRAINING → CANCELLING → FORCING → RELEASING, then sets `shutdown_event` so all TaskGroup siblings return.
 
-**DI scope chain.** Three scope containers — `ProcessScope`, `ThreadScope`, `LoopScope` — are bootstrapped in sequence after `open_worker_deps`. They resolve declared dependencies for actors at dispatch time using `build_actor_scope`, which opens a per-invocation TRANSIENT scope. TRANSIENT teardown runs after each job regardless of outcome.
+**DI scope chain.** Three scope containers (`ProcessScope`, `ThreadScope`, `LoopScope`) are bootstrapped in sequence after `open_worker_deps`. They resolve declared dependencies for actors at dispatch time using `build_actor_scope`, which opens a per-invocation TRANSIENT scope. TRANSIENT teardown runs after each job regardless of outcome.
 
 ---
 
@@ -125,10 +125,10 @@ class SendEmailPayload(BaseModel):
 async def send_email(payload: SendEmailPayload) -> None: ...
 
 
-# Iterable form — pass the ActorRef objects directly
+# Iterable form: pass the ActorRef objects directly
 registry = [send_email]
 
-# Mapping form — keyed by actor name
+# Mapping form: keyed by actor name
 registry_map: dict[str, object] = {"send_email": send_email}
 ```
 
@@ -146,7 +146,7 @@ taskq worker --actors myapp.actors:registry_map
 
 The `module:attr` string must resolve to a `Mapping[str, ActorRef]` or an `Iterable[ActorRef]` at import time. If the attribute is neither, the CLI prints an error and exits with code 1.
 
-**Generator registries are unsafe.** The attribute resolved from `MODULE:ATTR` must be a reusable `Mapping` or a `list`/`tuple` of `ActorRef` — not a generator or other one-shot iterable. The CLI iterates the resolved object twice during type-checking: the first pass exhausts a generator, and the second pass sees an empty sequence and silently builds an empty registry, causing all dispatched jobs to be dropped with `dispatch-actor-not-found` errors.
+**Generator registries are unsafe.** The attribute resolved from `MODULE:ATTR` must be a reusable `Mapping` or a `list`/`tuple` of `ActorRef`, not a generator or other one-shot iterable. The CLI iterates the resolved object twice during type-checking: the first pass exhausts a generator, and the second pass sees an empty sequence and silently builds an empty registry, causing all dispatched jobs to be dropped with `dispatch-actor-not-found` errors.
 
 See [actors.md](actors.md) for the full `@actor` decorator reference.
 
@@ -170,7 +170,7 @@ taskq worker --actors myapp.actors:registry --queues default --queues priority -
 TASKQ_QUEUES=default,priority taskq worker --actors myapp.actors:registry
 ```
 
-The `--queues` flag is a multi-value Typer option: pass it once per queue name. Do not pass a single comma-separated string to `--queues` on the command line — use the environment variable form for comma-separated input.
+The `--queues` flag is a multi-value Typer option: pass it once per queue name. Do not pass a single comma-separated string to `--queues` on the command line; use the environment variable form for comma-separated input.
 
 The dispatch CTE filters `jobs.queue = ANY($queues)`, so one worker process can consume from any subset of queues in a single polling round.
 
@@ -178,9 +178,9 @@ Actors declare which queue they target via `@actor(queue="...")`. A worker that 
 
 ### Actors on unconsumed queues
 
-An actor registered on a queue this worker does not consume is **stranded from this worker's perspective**: `enqueue` keeps succeeding (any client can insert into any queue), but this worker's dispatch CTE filters `jobs.queue = ANY($queues)` and will never claim those jobs. If no *other* worker consumes the queue either, the jobs sit `pending` forever with no error anywhere — the silent pile-up failure mode.
+An actor registered on a queue this worker does not consume is **stranded from this worker's perspective**: `enqueue` keeps succeeding (any client can insert into any queue), but this worker's dispatch CTE filters `jobs.queue = ANY($queues)` and will never claim those jobs. If no *other* worker consumes the queue either, the jobs sit `pending` forever with no error anywhere: the silent pile-up failure mode.
 
-This is deliberately a warning, not a fatal error, because a split-queue topology is legitimate: one process consuming `["default"]` while another consumes `["cron"]` is a normal deployment shape. The check is judged against the **stored** `actor_config.queue` when a stored row already exists — the assignment `taskq queue migrate` rewrites and the cron leader's fires follow — falling back to the `@actor(queue=...)` literal only for an actor with no stored row yet (this check runs before the row is seeded on a first-ever boot). A worker whose code literal has not yet caught up with a fleet-wide queue move is the normal, blessed state during a rolling deploy, so judging coverage by the literal alone would warn on that healthy window instead of on the actor whose routed work nothing can actually claim. At bootstrap, every worker whose registry contains an actor routed to a queue outside its own subscription logs one warning:
+This is deliberately a warning, not a fatal error, because a split-queue topology is legitimate: one process consuming `["default"]` while another consumes `["cron"]` is a normal deployment shape. The check is judged against the **stored** `actor_config.queue` when a stored row already exists, the assignment `taskq queue migrate` rewrites and the cron leader's fires follow, falling back to the `@actor(queue=...)` literal only for an actor with no stored row yet (this check runs before the row is seeded on a first-ever boot). A worker whose code literal has not yet caught up with a fleet-wide queue move is the normal, blessed state during a rolling deploy, so judging coverage by the literal alone would warn on that healthy window instead of on the actor whose routed work nothing can actually claim. At bootstrap, every worker whose registry contains an actor routed to a queue outside its own subscription logs one warning:
 
 ```
 actors-on-unconsumed-queues  actors={"mailer": "email", "nightly": "cron"}  queues=["cron", "email"]  worker_queues=["default"]
@@ -191,12 +191,12 @@ The `note` field spells out the condition under which it is a real problem: only
 How to detect and resolve stranding:
 
 - **At startup**: the `actors-on-unconsumed-queues` warning names every affected actor, the queue that actually routes it (the stored assignment when one exists), and this worker's subscription, with the distinct unconsumed queue names in the `queues` field.
-- **After the fact**: `taskq actor-config list` shows each registered actor's stored `queue` column — cross-check that every queue appearing there is consumed by *some* worker's `TASKQ_QUEUES` / `--queues`. The admin UI's Jobs page (`taskq ui serve`) shows pending jobs per queue and makes a growing backlog on one queue visible.
-- **Fix**: either add the actor's queue to this worker (`TASKQ_QUEUES=default,cron` / repeat the `--queues` flag), or point the actor at a consumed queue via `@actor(queue=...)` and re-register (see [troubleshooting.md](troubleshooting.md) — "Jobs stuck in `pending`").
+- **After the fact**: `taskq actor-config list` shows each registered actor's stored `queue` column; cross-check that every queue appearing there is consumed by *some* worker's `TASKQ_QUEUES` / `--queues`. The admin UI's Jobs page (`taskq ui serve`) shows pending jobs per queue and makes a growing backlog on one queue visible.
+- **Fix**: either add the actor's queue to this worker (`TASKQ_QUEUES=default,cron` / repeat the `--queues` flag), or point the actor at a consumed queue via `@actor(queue=...)` and re-register (see [troubleshooting.md](troubleshooting.md), "Jobs stuck in `pending`").
 
 ### Worker consumes no queues
 
-A second bootstrap warning covers the blunter misconfiguration: `TASKQ_QUEUES` resolving to an **empty list** (typically the variable set to an empty value — unset, it defaults to `["default"]`). The dispatch CTE then matches no queue at all, so this worker never claims a job, on any queue: every job meant for it sits `pending` forever unless another worker consumes the queue — the same silent pile-up as above, but for every queue at once. Unlike the warning above, no fleet legitimately runs a worker that consumes nothing, so there is no split-queue caveat to spell out. It fires once at bootstrap, with or without registered actors:
+A second bootstrap warning covers the blunter misconfiguration: `TASKQ_QUEUES` resolving to an **empty list** (typically the variable set to an empty value; unset, it defaults to `["default"]`). The dispatch CTE then matches no queue at all, so this worker never claims a job, on any queue: every job meant for it sits `pending` forever unless another worker consumes the queue: the same silent pile-up as above, but for every queue at once. Unlike the warning above, no fleet legitimately runs a worker that consumes nothing, so there is no split-queue caveat to spell out. It fires once at bootstrap, with or without registered actors:
 
 ```
 worker-consumes-no-queues  worker_queues=[]
@@ -212,7 +212,7 @@ orders candidates. The mode is resolved by querying the `queues` table at dispat
 
 | Mode | Behaviour |
 |---|---|
-| `strict_fifo` (default) | Jobs are dispatched in priority-then-time order (`priority DESC, scheduled_at, id`). Every pending job competes freely — a deep queue of one actor can starve others if all candidates share high priority. |
+| `strict_fifo` (default) | Jobs are dispatched in priority-then-time order (`priority DESC, scheduled_at, id`). Every pending job competes freely: a deep queue of one actor can starve others if all candidates share high priority. |
 | `round_robin` | **Per-actor lateral dispatch.** Jobs are interleaved by `fairness_key` cohort. Within a cohort, ordering is priority-then-time. Across cohorts, dispatch picks round-robin: one job from each fairness cohort per round. This prevents a deep queue of one tenant/actor from starving all others. |
 
 **When to use `round_robin`:**
@@ -227,17 +227,17 @@ orders candidates. The mode is resolved by querying the `queues` table at dispat
 taskq queues set-mode multi round_robin
 ```
 
-The change takes effect within the queue-mode cache's 5 s TTL -- no worker
+The change takes effect within the queue-mode cache's 5 s TTL: no worker
 restart needed (dispatch serves queue modes from a per-worker TTL cache; the
 process running `set-mode` invalidates its own caches immediately, and each
 worker picks the flip up on its next cache refill). Queues with no
 row default to `strict_fifo`, and nothing in TaskQ creates rows, so a queue is
 `strict_fifo` until you run this command.
 
-!!! danger "`round_robin` alone does nothing — it needs `fairness_key` on the jobs"
+!!! danger "`round_robin` alone does nothing: it needs `fairness_key` on the jobs"
     Setting a queue's mode is only **half** the change. Cohorts are formed by
     `fairness_key`, and the dispatch CTE partitions on
-    `COALESCE(fairness_key, '__null__')` — so jobs enqueued without one all
+    `COALESCE(fairness_key, '__null__')`, so jobs enqueued without one all
     collapse into a **single** `__null__` cohort. Round-robin across one cohort
     is exactly priority-then-time order: a `round_robin` queue where nothing
     sets a `fairness_key` behaves **identically to `strict_fifo`**.
@@ -245,8 +245,8 @@ row default to `strict_fifo`, and nothing in TaskQ creates rows, so a queue is
     Nothing warns you. `taskq queues set-mode` succeeds, the queue reports
     `round_robin`, and the starvation you set out to fix continues unchanged.
 
-    The key is an **enqueue-time** argument — there is no actor-level
-    declaration — so fixing starvation means changing the *producer*, not just
+    The key is an **enqueue-time** argument; there is no actor-level
+    declaration, so fixing starvation means changing the *producer*, not just
     the queue:
 
     ```python
@@ -266,7 +266,7 @@ row default to `strict_fifo`, and nothing in TaskQ creates rows, so a queue is
     One `__null__` row is the fingerprint of an inert `round_robin` queue.
 
 **`fairness_key` and `round_robin`:** `fairness_key` is an enqueue-time
-argument (`JobsClient.enqueue(..., fairness_key=...)`) — there is no actor-level
+argument (`JobsClient.enqueue(..., fairness_key=...)`); there is no actor-level
 declaration, and the key travels on each job's row. The key only
 affects dispatch on a `round_robin` queue; on the default `strict_fifo` it is stored
 and ignored. See [jobs-clients.md](jobs-clients.md) for the `fairness_key` enqueue
@@ -290,16 +290,16 @@ round trip.
 
 ## Concurrency model
 
-TaskQ limits concurrency at **three independent scopes**. They compose — a job
-must satisfy all three — and they are not substitutes for one another. Reaching
+TaskQ limits concurrency at **three independent scopes**. They compose: a job
+must satisfy all three, and they are not substitutes for one another. Reaching
 for the wrong one is the most common configuration mistake in production.
 
 | Layer | Knob | Scope | Strict? | Change takes effect |
 |---|---|---|---|---|
 | **Process** | `TASKQ_MAX_CONCURRENCY` | One worker process | Per-process only | Worker restart |
-| **Queue** | `queues.max_concurrent` (`taskq queues set-max-concurrent`) | Fleet-wide, per queue | **Yes** — leased slots | Worker restart (read at startup) |
-| **Actor** | `actor_config.max_concurrent` (`taskq actor-config set`) | Fleet-wide, per actor | **No** — best-effort | Next dispatch cycle |
-| **Resource** | `@actor(reservations=[...])` — [`ConcurrencyReservation`](rate-limiting.md#concurrencyreservation) | Fleet-wide, per named slot bucket | **Yes** — leased slots | Worker restart |
+| **Queue** | `queues.max_concurrent` (`taskq queues set-max-concurrent`) | Fleet-wide, per queue | **Yes** (leased slots) | Worker restart (read at startup) |
+| **Actor** | `actor_config.max_concurrent` (`taskq actor-config set`) | Fleet-wide, per actor | **No** (best-effort) | Next dispatch cycle |
+| **Resource** | `@actor(reservations=[...])` ([`ConcurrencyReservation`])(rate-limiting.md#concurrencyreservation) | Fleet-wide, per named slot bucket | **Yes** (leased slots) | Worker restart |
 
 Total fleet concurrency for an actor is bounded by the *lowest* of these that
 applies. Note the process layer multiplies: `TASKQ_MAX_CONCURRENCY=8` across 5
@@ -307,22 +307,22 @@ replicas is up to 40 concurrent jobs before any fleet-wide cap applies.
 
 ### Which one do I want?
 
-- **"This one actor must never run in parallel with itself."** — a
+- **"This one actor must never run in parallel with itself."**: a
   `ConcurrencyReservation` with `slots=1`, declared via
   `@actor(reservations=[...])`. This is the only real mutex. See
   [Choosing a concurrency control](actors.md#choosing-a-concurrency-control).
-- **"This one actor should not hog the fleet."** —
+- **"This one actor should not hog the fleet."**:
   `taskq actor-config set <actor> --max-concurrent N`. Best-effort is fine here;
   you want a damper, not a guarantee.
-- **"At most N jobs from this queue, fleet-wide, whatever publishes to it."** —
+- **"At most N jobs from this queue, fleet-wide, whatever publishes to it."**:
   `taskq queues set-max-concurrent <queue> --max-concurrent N`.
-- **"How much work should one pod do at once?"** — `TASKQ_MAX_CONCURRENCY`,
+- **"How much work should one pod do at once?"**: `TASKQ_MAX_CONCURRENCY`,
   sized against the pod's CPU/memory and pool sizes.
 
 !!! danger "Never size a queue for its narrowest actor"
     A queue cap bounds a whole tier and cannot distinguish a thread-unsafe
     native call from an HTTP round-trip. Setting a queue's cap to `1` to protect
-    one unsafe actor serializes **every other actor on that queue** — a fleet
+    one unsafe actor serializes **every other actor on that queue**; a fleet
     that looks correctly configured, reports healthy, and produces almost
     nothing. The symptom is low throughput with idle workers and a growing
     `pending` backlog on one queue only.
@@ -332,9 +332,9 @@ replicas is up to 40 concurrent jobs before any fleet-wide cap applies.
 
 ### Process-level bound
 
-`max_concurrency` (default `8`, env `TASKQ_MAX_CONCURRENCY`) is the upper bound on simultaneously executing jobs — and, since the producer sizes every claim by the slots genuinely free (`local_queue` capacity minus queued rows minus actively running jobs), also the upper bound on rows this worker holds **locked** at once. A worker whose consumers are all busy claims nothing further: its next claim fires the moment a job finishes (the consumer wakes the producer at the deregister that frees the slot), not on the next poll tick. The transient window between a consumer taking a row from the queue and registering it in the active-jobs registry is one scheduler step wide, so a claim can overshoot the free-slot count by at most the consumer count for that instant.
+`max_concurrency` (default `8`, env `TASKQ_MAX_CONCURRENCY`) is the upper bound on simultaneously executing jobs; and, since the producer sizes every claim by the slots genuinely free (`local_queue` capacity minus queued rows minus actively running jobs), also the upper bound on rows this worker holds **locked** at once. A worker whose consumers are all busy claims nothing further: its next claim fires the moment a job finishes (the consumer wakes the producer at the deregister that frees the slot), not on the next poll tick. The transient window between a consumer taking a row from the queue and registering it in the active-jobs registry is one scheduler step wide, so a claim can overshoot the free-slot count by at most the consumer count for that instant.
 
-The trade this makes: local prefetch used to hide one dispatch round trip for sub-millisecond actors (the producer claimed a fresh batch while the last one was still executing). With exact slot accounting, a finished row's replacement claim waits for the accounting to settle — bounded by the same-tick deregister wake, not a poll interval. The win is that a busy worker no longer locks up to 2× `max_concurrency` rows (double the crash-reclaim exposure, and pending work locked behind long jobs while peer workers idle).
+The trade this makes: local prefetch used to hide one dispatch round trip for sub-millisecond actors (the producer claimed a fresh batch while the last one was still executing). With exact slot accounting, a finished row's replacement claim waits for the accounting to settle, bounded by the same-tick deregister wake, not a poll interval. The win is that a busy worker no longer locks up to 2× `max_concurrency` rows (double the crash-reclaim exposure, and pending work locked behind long jobs while peer workers idle).
 
 `worker_pool_size` is derived automatically:
 
@@ -344,26 +344,26 @@ worker_pool_size = int(max_concurrency * 1.5)
 
 The 1.5 factor provides headroom for terminal writes that occur just after a job finishes while the slot is being recycled. This pool is used for worker-path Postgres writes (`mark_succeeded`, `mark_failed_or_retry`, `mark_cancelled`, `mark_abandoned`). It may route through PgBouncer in transaction mode; see [PgBouncer compatibility](#pgbouncer-compatibility).
 
-When a LOOP-scope `asyncpg.Connection` is registered and `max_concurrency > 1`, the setting also sizes a fourth pool — the per-slot transaction pool (`max_concurrency + 1` direct connections, fully warmed at boot) that carries every per-job transaction: the actor's own writes (the actor receives its slot connection by injection), the terminal write, and transactional sub-enqueues. It is always direct-DSN and worker-internal: there is deliberately no `WorkerConnections` slot for it, and a worker that cannot open it fails to boot.
+When a LOOP-scope `asyncpg.Connection` is registered and `max_concurrency > 1`, the setting also sizes a fourth pool: the per-slot transaction pool (`max_concurrency + 1` direct connections, fully warmed at boot) that carries every per-job transaction: the actor's own writes (the actor receives its slot connection by injection), the terminal write, and transactional sub-enqueues. It is always direct-DSN and worker-internal: there is deliberately no `WorkerConnections` slot for it, and a worker that cannot open it fails to boot.
 
 #### Session state on slot connections
 
-At `max_concurrency = 1` the actor runs on the registered connection itself, so everything configured on it applies by construction. Above that the actor runs on a slot connection. Before it builds the pool, the worker reads the registered connection's **live session state** — its `search_path` and its `role` — and opens every slot connection with those values as startup settings. Unqualified table references and RLS-driving roles therefore resolve identically at every concurrency, whether the application set them with a connect keyword, from an `init` hook, or with a plain `SET` after connecting. The worker logs `slot_pool_inherits_registered_session` naming what it carried across; if a value cannot be read it logs `slot-pool-registered-session-unreadable` at WARN rather than falling back silently.
+At `max_concurrency = 1` the actor runs on the registered connection itself, so everything configured on it applies by construction. Above that the actor runs on a slot connection. Before it builds the pool, the worker reads the registered connection's **live session state** (its `search_path` and its `role`) and opens every slot connection with those values as startup settings. Unqualified table references and RLS-driving roles therefore resolve identically at every concurrency, whether the application set them with a connect keyword, from an `init` hook, or with a plain `SET` after connecting. The worker logs `slot_pool_inherits_registered_session` naming what it carried across; if a value cannot be read it logs `slot-pool-registered-session-unreadable` at WARN rather than falling back silently.
 
-Reading before the build is what keeps the pool warm: the slot connections are opened during the build, so state applied afterwards would reach only connections re-established lazily on first acquire — putting connection establishment, and a managed-identity credential fetch, back into the dispatch path. It is also what makes the state survive a SIGHUP credential rotation, which rebuilds the pool from the same factory.
+Reading before the build is what keeps the pool warm: the slot connections are opened during the build, so state applied afterwards would reach only connections re-established lazily on first acquire, putting connection establishment, and a managed-identity credential fetch, back into the dispatch path. It is also what makes the state survive a SIGHUP credential rotation, which rebuilds the pool from the same factory.
 
-**Type codecs and init hooks carry only through a hook-declaring registration.** A codec registered on a live connection with `set_type_codec` is stored inside the driver's per-connection state, which exposes no way to read it back — so what the worker can replay onto slot connections depends on how the LOOP-scope connection was registered:
+**Type codecs and init hooks carry only through a hook-declaring registration.** A codec registered on a live connection with `set_type_codec` is stored inside the driver's per-connection state, which exposes no way to read it back, so what the worker can replay onto slot connections depends on how the LOOP-scope connection was registered:
 
 * **Registered through a factory that declares its init hook, carried.** Register the connection with `register_factory(asyncpg.Connection, Scope.LOOP, ...)`, where the factory is wrapped in `taskq.connections.with_connection_init(factory, init)` (for a hand-rolled or plain-DSN factory) or built by `taskq.auth.make_dedicated_conn_factory(..., setup=...)` (for a credential-provider deployment; the factory applies `setup` to the fresh connection itself, `asyncpg.connect` takes no `setup` parameter). The worker reads the declared hook off the registration and installs it as the slot pool's `init`, so every slot connection runs the same per-connection setup and decodes identically at every concurrency. The boot log records it as `slot_pool_inherits_registered_session` with `init_hook=true`.
-* **Registered as a raw, already-built connection — not carried, and warned.** `register_value(asyncpg.Connection, Scope.LOOP, conn)` hands the worker a finished connection whose codecs and hooks are sealed inside the driver; there is nothing to read back and nothing to replay. When the per-slot pool activates on such a registration the worker logs `slot_pool_registered_setup_not_inherited` at WARN, naming this boundary and the factory channel above. The slot connections still work — but a query relying on such a codec returns the driver's default representation (e.g. raw strings for `json`), not the application's decoded form, and only this warning says so. At `max_concurrency = 1` the actor runs on the registered connection itself, so the codec is present there and absent above it.
+* **Registered as a raw, already-built connection, not carried, and warned.** `register_value(asyncpg.Connection, Scope.LOOP, conn)` hands the worker a finished connection whose codecs and hooks are sealed inside the driver; there is nothing to read back and nothing to replay. When the per-slot pool activates on such a registration the worker logs `slot_pool_registered_setup_not_inherited` at WARN, naming this boundary and the factory channel above. The slot connections still work, but a query relying on such a codec returns the driver's default representation (e.g. raw strings for `json`), not the application's decoded form, and only this warning says so. At `max_concurrency = 1` the actor runs on the registered connection itself, so the codec is present there and absent above it.
 
 Either way, the session-state read-back (`search_path`, `role`) applies independently of the codec channel.
 
 `dispatcher_pool_size` (default `4`) and `heartbeat_pool_size` (default `4`) are independent pools; both always use the direct DSN.
 
-The worker spawns exactly `max_concurrency` consumer loop coroutines. They are cooperatively concurrent — asyncio, not threads. CPU-bound work should be offloaded to a thread pool executor via `asyncio.get_running_loop().run_in_executor`.
+The worker spawns exactly `max_concurrency` consumer loop coroutines. They are cooperatively concurrent (asyncio, not threads). CPU-bound work should be offloaded to a thread pool executor via `asyncio.get_running_loop().run_in_executor`.
 
-For fleet-sizing math (connections per worker against `max_connections`, throughput per process) see [ops.md — Sizing](ops.md#4-sizing-workers-and-postgres-connections).
+For fleet-sizing math (connections per worker against `max_connections`, throughput per process) see [ops.md: Sizing](ops.md#4-sizing-workers-and-postgres-connections).
 
 ---
 
@@ -383,7 +383,7 @@ Each consumer loop iteration follows this sequence:
 
 6. **Rate-limit / reservation acquire.** If the actor declares `rate_limits` or `reservations` and a `RateLimitRegistry` is registered at LOOP scope, `acquire_for_actor` is called. On denial (`ReservationUnavailable`), the job is snoozed and the actor is not invoked.
 
-7. **Actor invocation.** The actor function is called with `(payload, ctx, **di_kwargs)`. If a LOOP-scope `asyncpg.Connection` is registered, the invocation and `mark_succeeded_with_conn` are wrapped in a single transaction, making the job status update and any sub-enqueues transactional. On a single-slot worker (`TASKQ_MAX_CONCURRENCY=1`) that transaction runs on the registered LOOP-scope connection; at higher concurrency the worker opens a per-slot transaction pool, each job transacts on its own slot connection, and the actor receives that same slot connection by injection — so the actor's own writes join the transaction and concurrent slots never share a connection.
+7. **Actor invocation.** The actor function is called with `(payload, ctx, **di_kwargs)`. If a LOOP-scope `asyncpg.Connection` is registered, the invocation and `mark_succeeded_with_conn` are wrapped in a single transaction, making the job status update and any sub-enqueues transactional. On a single-slot worker (`TASKQ_MAX_CONCURRENCY=1`) that transaction runs on the registered LOOP-scope connection; at higher concurrency the worker opens a per-slot transaction pool, each job transacts on its own slot connection, and the actor receives that same slot connection by injection, so the actor's own writes join the transaction and concurrent slots never share a connection.
 
 8. **Result / exception handling.** See [Retry and backoff](#retry-and-backoff). All terminal Postgres writes are wrapped in `asyncio.shield`.
 
@@ -444,8 +444,8 @@ After computing the raw delay, multiplicative jitter is applied: `delay = raw * 
 
 **Control-flow exceptions:**
 
-- `Snooze(delay: timedelta)` — re-schedules the job with `mark_snoozed` and increments the row's `snooze_count` counter column. If `schedule_to_close` has passed, the job is failed with `DeadlineExceeded`.
-- `RetryAfter(delay: timedelta, consume_budget: bool)` — re-schedules the job immediately. When `consume_budget=True`, the re-schedule counts against `max_attempts`. When `False`, it does not. Fails the job if `schedule_to_close` has passed or `max_attempts` is exhausted.
+- `Snooze(delay: timedelta)`: re-schedules the job with `mark_snoozed` and increments the row's `snooze_count` counter column. If `schedule_to_close` has passed, the job is failed with `DeadlineExceeded`.
+- `RetryAfter(delay: timedelta, consume_budget: bool)`: re-schedules the job immediately. When `consume_budget=True`, the re-schedule counts against `max_attempts`. When `False`, it does not. Fails the job if `schedule_to_close` has passed or `max_attempts` is exhausted.
 
 Both exceptions are raised from inside the actor body; they are not errors.
 
@@ -457,7 +457,7 @@ Cancellation is a three-phase protocol coordinated between the API layer (which 
 
 | Phase | Value | Trigger | Worker action |
 |---|---|---|---|
-| `NONE` | 0 | — | Job running normally |
+| `NONE` | 0 | n/a | Job running normally |
 | `COOPERATIVE` | 1 | Cancel flag written by API | Sets `ctx.cancel_event`; actor may observe and return cooperatively |
 | `FORCED` | 2 | `cancellation_grace_period` elapsed | Writes `cancel_phase=2` to Postgres, then calls `task.cancel()` |
 | `ABANDON_PENDING` | 3 | `cleanup_grace_period` elapsed | Queues job for `mark_abandoned` after heartbeat transaction commits |
@@ -475,8 +475,8 @@ async def long_running(payload: MyPayload, ctx: JobContext[MyPayload]) -> None:
 
 The `CancelController` protocol has two methods called by the heartbeat loop:
 
-- `run_in_tx(conn)` — phases 1–3 eligibility check, runs inside the heartbeat transaction.
-- `run_post_tx()` — drains the phase-3 abandonment queue after the transaction commits.
+- `run_in_tx(conn)`: phases 1-3 eligibility check, runs inside the heartbeat transaction.
+- `run_post_tx()`: drains the phase-3 abandonment queue after the transaction commits.
 
 `run_post_tx` must always be called after `run_in_tx` on the same tick, even if `run_in_tx` raises. The heartbeat loop calls it unconditionally.
 
@@ -508,17 +508,17 @@ If `heartbeat_pool.acquire()` times out, raises a connection error, or `run_in_t
 
 Every worker competes for the Postgres advisory lock `taskq:maintenance_leader:<schema>` (built by `taskq.constants.schema_lock_name`, e.g. `taskq:maintenance_leader:taskq` for the default schema) by calling `pg_try_advisory_lock(hashtextextended($1, 0))` on a dedicated direct connection (`leader_conn`). Only one worker per schema can hold the lock; it is held for the lifetime of the connection (session-scoped advisory lock).
 
-Advisory locks are session-scoped and are dropped when the connection is released. This is why `leader_conn` must use `pg_dsn_direct` and cannot route through PgBouncer in transaction mode — transaction-mode pooling releases the underlying session between transactions, which would silently drop the lock.
+Advisory locks are session-scoped and are dropped when the connection is released. This is why `leader_conn` must use `pg_dsn_direct` and cannot route through PgBouncer in transaction mode: transaction-mode pooling releases the underlying session between transactions, which would silently drop the lock.
 
 The elected leader:
 
 - Upserts a row into `maintenance_leader` (worker ID, elected timestamp).
-- Runs the maintenance sweep loop every `TASKQ_SWEEP_INTERVAL` (default 30 s): `reclaim_expired_locks` (sweep 1), `deadline_sweep` (sweep 2), and, when the backend supports them, `sweep_leaked_reservation_slots` (sweep 4), `sweep_expired_results`, `cleanup_stale_workers`, and `complete_stale_batches` (marks `active` batches with zero non-terminal child jobs as `complete` — the safety net for lost `apply_batch_terminal_outcome` hooks). Each event-writing sweep transitions at most one bounded batch per call (`TASKQ_EVENT_WRITER_BATCH_SIZE` rows, its own committed transaction with a server-side `statement_timeout`); a call that returns rows drains up to `TASKQ_SWEEP_DRAIN_BATCHES` batches per tick before leaving the remainder to the next tick — every batch commits, so a stopped drain keeps its progress. See [maintenance-sweeps.md](maintenance-sweeps.md) for the reasoning and the tuning knobs.
-- Runs the scheduled-wake loop every 1 second, promoting due `scheduled` jobs to `pending` (`scheduled_at <= statement_timestamp()` — a STABLE bound so the partial index serves the scan) and issuing a `pg_notify` wake signal. One bounded batch per tick; a larger due backlog drains across the one-second ticks.
+- Runs the maintenance sweep loop every `TASKQ_SWEEP_INTERVAL` (default 30 s): `reclaim_expired_locks` (sweep 1), `deadline_sweep` (sweep 2), and, when the backend supports them, `sweep_leaked_reservation_slots` (sweep 4), `sweep_expired_results`, `cleanup_stale_workers`, and `complete_stale_batches` (marks `active` batches with zero non-terminal child jobs as `complete`, the safety net for lost `apply_batch_terminal_outcome` hooks). Each event-writing sweep transitions at most one bounded batch per call (`TASKQ_EVENT_WRITER_BATCH_SIZE` rows, its own committed transaction with a server-side `statement_timeout`); a call that returns rows drains up to `TASKQ_SWEEP_DRAIN_BATCHES` batches per tick before leaving the remainder to the next tick; every batch commits, so a stopped drain keeps its progress. See [maintenance-sweeps.md](maintenance-sweeps.md) for the reasoning and the tuning knobs.
+- Runs the scheduled-wake loop every 1 second, promoting due `scheduled` jobs to `pending` (`scheduled_at <= statement_timestamp()`: a STABLE bound so the partial index serves the scan) and issuing a `pg_notify` wake signal. One bounded batch per tick; a larger due backlog drains across the one-second ticks.
 - Runs the cron loop every 1 second on a dedicated connection, firing due schedules under the schema-qualified cron advisory lock (`taskq:cron:<schema>`). One tick fires at most `TASKQ_CRON_TICK_LIMIT` schedules; a catch-up burst drains across successive ticks. Per-schedule failures (payload factory, missing actor) are isolated per schedule; an insert-level failure aborts the whole tick and the next one-second tick retries.
 - Runs the **prune loop** (Sweep 5) once daily at `TASKQ_PRUNE_SCHEDULE_UTC` (default `03:00` UTC). Moves terminal jobs from `jobs` to `jobs_archive` after their per-status retention period has elapsed. After job pruning completes, `prune_old_batches` deletes completed batch rows past the same cutoff (see [Batch Subsystem](../architecture.md#batch-subsystem)). Acquires the schema-qualified advisory lock `taskq:prune:<schema>` to prevent concurrent runs across a rolling deploy.
 - Runs the **archive expiry loop** (Sweep 6) once daily at `TASKQ_ARCHIVE_EXPIRY_SCHEDULE_UTC` (default `04:00` UTC, 1 hour after the prune). Hard-deletes rows from `jobs_archive` once their `expire_at` has passed. Acquires the schema-qualified advisory lock `taskq:archive_expiry:<schema>`.
-- Runs the **stranded-jobs detector** (`_stranded_jobs_loop`) every 60 seconds: warns (does not delete or reassign) when `pending`/`scheduled` jobs exist for an actor with no `actor_config` row — typically because the actor was removed from the registry but jobs referencing it are still enqueued.
+- Runs the **stranded-jobs detector** (`_stranded_jobs_loop`) every 60 seconds: warns (does not delete or reassign) when `pending`/`scheduled` jobs exist for an actor with no `actor_config` row, typically because the actor was removed from the registry but jobs referencing it are still enqueued.
 - Samples queue depth and reservation slot counts every 15 seconds for OTel gauges. The **backlog detector** (`_backlog_detection_loop`, jobs-by-status and oldest-due-age gauges) is deliberately not leader-gated: every worker samples it, so the promotion-stall signature stays visible under the exact election failure it exists to expose.
 
 A watchdog coroutine probes `leader_monitor_conn` (a second dedicated direct connection) every 5 seconds. On connection failure, the watchdog clears `is_leader` and closes both leader connections, which releases the advisory lock and allows another worker to win the next election.
@@ -537,27 +537,27 @@ SIGTERM (or SIGINT) triggers `orchestrate_shutdown`. A second signal fast-advanc
 |---|---|---|
 | DRAINING | 1 | Sets `producer_stop_event`; calls `drain_local_queue_to_pending` to re-pend locked-but-not-started rows (the claim's attempt increment is refunded) |
 | CANCELLING | 2 | Sets `cancel_event` on all in-flight jobs and stamps their cancel origin as the shutdown; waits up to `cancellation_grace_period` for cooperative exit |
-| FORCING | 3 | Calls `task.cancel()` on remaining jobs (even when a job's `write_cancel_escalation` PG write fails — the local cancel is the process-side half of the phase and is never skipped); issues `write_cancel_escalation(phase=2)` per job, which lands only on rows already carrying an operator's cancel request (the row says who asked) |
+| FORCING | 3 | Calls `task.cancel()` on remaining jobs (even when a job's `write_cancel_escalation` PG write fails; the local cancel is the process-side half of the phase and is never skipped); issues `write_cancel_escalation(phase=2)` per job, which lands only on rows already carrying an operator's cancel request (the row says who asked) |
 | RELEASING | 4 | Releases still-running jobs back to the fleet via `mark_interrupted`; the spent attempt stands (no refund), one `interrupted` event, held `scheduled` behind the remaining `termination_grace_period` budget **plus the watchdog's exit tail** (the dump-interval lag before the deadline trip is observed, and the bounded metrics flush before `os._exit`); or `lock_lease` when the shutdown watchdog is disabled; jobs under an operator cancel reach `abandoned` here instead; closes `leader_conn` (releasing the advisory lock) |
 
-**DRAINING phase detail.** `drain_local_queue_to_pending` re-pends DB-level rows where `status='running' AND locked_by_worker` is this worker, excluding jobs with a live consumer. The claim stamps `started_at` at claim time, so the predicate cannot distinguish "claimed but unstarted" from "executing" — only this process's active-jobs registry can, which is what the exclusion reads. The producer loop repeats the same hand-back on its own exit, so a claim round that was in flight when the stop event landed is caught too. Rows the consumer loops took off the local queue before the stop signal are never dispatched past it.
+**DRAINING phase detail.** `drain_local_queue_to_pending` re-pends DB-level rows where `status='running' AND locked_by_worker` is this worker, excluding jobs with a live consumer. The claim stamps `started_at` at claim time, so the predicate cannot distinguish "claimed but unstarted" from "executing"; only this process's active-jobs registry can, which is what the exclusion reads. The producer loop repeats the same hand-back on its own exit, so a claim round that was in flight when the stop event landed is caught too. Rows the consumer loops took off the local queue before the stop signal are never dispatched past it.
 
 **RELEASING phase detail.** The RELEASING phase releases rows whose actors never unwound, externally (not from the job's own task) via `mark_interrupted`: the row goes back to the fleet with the spent attempt standing (no refund; the attempt started executing), held unclaimable until this process is provably gone; so the fleet never has two live runners for one row. A job under an operator cancel is the exception: the release's `cancel_phase = 0` fence declines it and the operator ladder's terminal (`mark_abandoned`) still runs for it. The job's asyncio task was already cancelled at FORCING; any pending shield calls in the consumer may or may not succeed.
 
-**The release is held back until the actor has provably exited.** The consumer's own cancellation arm (not just the orchestrator's RELEASING pass) writes the release, and it no longer assumes the actor unwound with the await. An async actor has provably unwound by the time the `CancelledError` reaches the consumer — the row is released `pending`, claimable immediately. A sync `def` actor has not: `task.cancel()` cancels the await on the executor thread, never the thread, and the transactional path's `tx_task` unwinds its rollback asynchronously after the cancel. Both leave tracked handles on the job's context, and the consumer parks on them — bounded by the remaining termination budget minus the release write's own retry budget, then **capped by the lease** (`lock_lease - heartbeat_interval - write budget`; the heartbeat stops at `shutdown_event`, so the park must never outlive the lease the reclaim sweep reads) — releasing `pending` (hold=0) only on a provable exit inside that window. An actor that outlives the window (an unbounded sync loop, say) is still released, never stranded: the hold is the rest of the process's exit window plus the watchdog's exit tail. A cancellation landing on the park (the TaskGroup teardown after RELEASING) ends the waiting, never the release.
+**The release is held back until the actor has provably exited.** The consumer's own cancellation arm (not just the orchestrator's RELEASING pass) writes the release, and it no longer assumes the actor unwound with the await. An async actor has provably unwound by the time the `CancelledError` reaches the consumer, the row is released `pending`, claimable immediately. A sync `def` actor has not: `task.cancel()` cancels the await on the executor thread, never the thread, and the transactional path's `tx_task` unwinds its rollback asynchronously after the cancel. Both leave tracked handles on the job's context, and the consumer parks on them, bounded by the remaining termination budget minus the release write's own retry budget, then **capped by the lease** (`lock_lease - heartbeat_interval - write budget`; the heartbeat stops at `shutdown_event`, so the park must never outlive the lease the reclaim sweep reads), releasing `pending` (hold=0) only on a provable exit inside that window. An actor that outlives the window (an unbounded sync loop, say) is still released, never stranded: the hold is the rest of the process's exit window plus the watchdog's exit tail. A cancellation landing on the park (the TaskGroup teardown after RELEASING) ends the waiting, never the release.
 
-**The exit the hold models is enforced, not hoped for.** "Until this process is provably gone" is true by construction, on both exits. The shutdown watchdog stays armed until every tracked actor handle is reaped: either the handle completes (the actor finished on its own — the remaining process lifetime is bounded pool closes, which touch no row), or the deadline trip fires and `os._exit` ends the process **with the still-running thread inside it** — the trip's reason says exactly that (`tracked-actor-outlived-teardown`, with the live handle count, so a dump is not misread as a loop stall). Without that gate the clean path disarmed the watchdog and then parked in the default executor's join (`THREAD_JOIN_TIMEOUT`, 300s) waiting for the very thread the hold assumed was gone — a released row became claimable while its actor still ran. The thread's post-release completion accomplishes nothing (its row was already released-with-hold; the fleet re-attempts the work), so ending an outlived attempt at the deadline loses nothing.
+**The exit the hold models is enforced, not hoped for.** "Until this process is provably gone" is true by construction, on both exits. The shutdown watchdog stays armed until every tracked actor handle is reaped: either the handle completes (the actor finished on its own; the remaining process lifetime is bounded pool closes, which touch no row), or the deadline trip fires and `os._exit` ends the process **with the still-running thread inside it**; the trip's reason says exactly that (`tracked-actor-outlived-teardown`, with the live handle count, so a dump is not misread as a loop stall). Without that gate the clean path disarmed the watchdog and then parked in the default executor's join (`THREAD_JOIN_TIMEOUT`, 300s) waiting for the very thread the hold assumed was gone: a released row became claimable while its actor still ran. The thread's post-release completion accomplishes nothing (its row was already released-with-hold; the fleet re-attempts the work), so ending an outlived attempt at the deadline loses nothing.
 
-The exit tail exists because the deadline trip is not instantaneous: the watchdog checks the deadline once per `watchdog_dump_interval` (the final sleep is clipped to the deadline, so real check lag is loop jitter and the dump-interval term is margin) and then dumps stacks and joins a bounded (~2s) metrics flush before `os._exit`, so the process can be alive a few seconds past the deadline. A hold that ended at the bare deadline would leave exactly that window in which the released row is claimable while the dying process could still touch it. Residual: the stack render and the critical log write inside the trip have no bound of their own — the ~1s of slack in the tail is a heuristic, and a full stderr pipe under a slow Docker logging driver can outlive any fixed slack. Everything else in the tail is bounded; this one term is documented padding, and the cost of under-padding it is overlap only in the pathological-logger case.
+The exit tail exists because the deadline trip is not instantaneous: the watchdog checks the deadline once per `watchdog_dump_interval` (the final sleep is clipped to the deadline, so real check lag is loop jitter and the dump-interval term is margin) and then dumps stacks and joins a bounded (~2s) metrics flush before `os._exit`, so the process can be alive a few seconds past the deadline. A hold that ended at the bare deadline would leave exactly that window in which the released row is claimable while the dying process could still touch it. Residual: the stack render and the critical log write inside the trip have no bound of their own; the ~1s of slack in the tail is a heuristic, and a full stderr pipe under a slow Docker logging driver can outlive any fixed slack. Everything else in the tail is bounded; this one term is documented padding, and the cost of under-padding it is overlap only in the pathological-logger case.
 
 **The platform-grace window.** What the platform does around SIGTERM must fit the worker's own timing, and it is a window, not a single number:
 
-- **Floor** — the platform's SIGTERM→SIGKILL patience must exceed the shutdown phases or no release lands at all: at least `cancellation_grace_period + cleanup_grace_period` (40s at the defaults), and for a *clean* exit (not just the release write) `worst_case_shutdown_seconds` (82s at the defaults: the graces plus the bounded-close tail). Kubernetes `terminationGracePeriodSeconds`, Docker `stop_grace_period`, and the workgroup's `supervisor.shutdown_grace` (default 30s — below the default floor, so a default workgroup SIGKILLs children before the held release lands and interrupted jobs ride the lease-expiry crash path; a startup warning says so) are the three knobs that hold this end.
-- **Ceiling** — matters only when `watchdog_enabled=false`: with no deadline trip to bound the process, the platform SIGKILL must land by `termination_grace_period + exit tail` (93s at the defaults) or a lingering executor thread can outlive a released row's hold. With the watchdog enabled there is no ceiling — the process polices its own exit, and a platform grace larger than the trip bound simply never engages.
+- **Floor**: the platform's SIGTERM→SIGKILL patience must exceed the shutdown phases or no release lands at all: at least `cancellation_grace_period + cleanup_grace_period` (40s at the defaults), and for a *clean* exit (not just the release write) `worst_case_shutdown_seconds` (82s at the defaults: the graces plus the bounded-close tail). Kubernetes `terminationGracePeriodSeconds`, Docker `stop_grace_period`, and the workgroup's `supervisor.shutdown_grace` (default 30s, below the default floor, so a default workgroup SIGKILLs children before the held release lands and interrupted jobs ride the lease-expiry crash path; a startup warning says so) are the three knobs that hold this end.
+- **Ceiling**: matters only when `watchdog_enabled=false`: with no deadline trip to bound the process, the platform SIGKILL must land by `termination_grace_period + exit tail` (93s at the defaults) or a lingering executor thread can outlive a released row's hold. With the watchdog enabled there is no ceiling: the process polices its own exit, and a platform grace larger than the trip bound simply never engages.
 
 The no-concurrent-run promise is scoped accordingly: it holds when the watchdog is enabled, or when the platform SIGKILL lands by `termination_grace_period + exit tail`.
 
-**For sync-actor fleets** (plain `def` handlers — the only execution shape a deploy can never interrupt mid-body): give actors a cooperative stop by polling `ctx.should_abort()` in long loops so they exit inside the cancellation grace and get the immediate `pending` release; an actor that cannot check in still gets the held release, at the cost of the exit window's latency on every deploy it outlives — and its thread is ended at the deadline trip, by design, per the exit paragraph above. "Provably exited" is wrapper-level: threads or subprocesses the *actor itself* spawned are not proven gone (a subprocess outlives even `os._exit`) — the guarantee is about TaskQ's own executor thread, not the actor's fan-out.
+**For sync-actor fleets** (plain `def` handlers, the only execution shape a deploy can never interrupt mid-body): give actors a cooperative stop by polling `ctx.should_abort()` in long loops so they exit inside the cancellation grace and get the immediate `pending` release; an actor that cannot check in still gets the held release, at the cost of the exit window's latency on every deploy it outlives, and its thread is ended at the deadline trip, by design, per the exit paragraph above. "Provably exited" is wrapper-level: threads or subprocesses the *actor itself* spawned are not proven gone (a subprocess outlives even `os._exit`); the guarantee is about TaskQ's own executor thread, not the actor's fan-out.
 
 After RELEASING completes, `shutdown_event` is set and all TaskGroup siblings return.
 
@@ -568,7 +568,7 @@ cancellation_grace_period + cleanup_grace_period < termination_grace_period - 5.
 cancellation_grace_period + cleanup_grace_period < lock_lease
 ```
 
-Defaults: `cancellation_grace_period=30.0`, `cleanup_grace_period=10.0`, `termination_grace_period=85.0`, `lock_lease=60.0`. The releasing hold additionally covers the watchdog's exit tail past the deadline (`watchdog_dump_interval` + ~2s flush + ~1s render slack ≈ 8s at the defaults) — the process's own exit is enforced to that bound (see the exit paragraph above), so size the platform grace (`terminationGracePeriodSeconds` / `stop_grace_period`) from the same worst case, not from the hold. Two lease relationships are surfaced as startup warnings rather than validated: `lock_lease` below `termination - cancellation - cleanup + heartbeat` caps the release park short of the full budget (safe — the cap is what keeps the parked release write ahead of the lease reclaim — but interrupted sync actors release earlier with longer holds), and `lock_lease` below `termination - cancellation - cleanup + heartbeat + exit tail` (~63 vs 60 at the defaults) leaves a ~3s double-write-failure residue in which the reclaim sweep can take a disowned row before the deadline trip ends its actor.
+Defaults: `cancellation_grace_period=30.0`, `cleanup_grace_period=10.0`, `termination_grace_period=85.0`, `lock_lease=60.0`. The releasing hold additionally covers the watchdog's exit tail past the deadline (`watchdog_dump_interval` + ~2s flush + ~1s render slack ≈ 8s at the defaults): the process's own exit is enforced to that bound (see the exit paragraph above), so size the platform grace (`terminationGracePeriodSeconds` / `stop_grace_period`) from the same worst case, not from the hold. Two lease relationships are surfaced as startup warnings rather than validated: `lock_lease` below `termination - cancellation - cleanup + heartbeat` caps the release park short of the full budget (safe: the cap is what keeps the parked release write ahead of the lease reclaim, but interrupted sync actors release earlier with longer holds), and `lock_lease` below `termination - cancellation - cleanup + heartbeat + exit tail` (~63 vs 60 at the defaults) leaves a ~3s double-write-failure residue in which the reclaim sweep can take a disowned row before the deadline trip ends its actor.
 
 ---
 
@@ -591,7 +591,7 @@ readinessProbe:
   periodSeconds: 10
 ```
 
-On platforms without exec probes (Azure Container Apps), or when an orchestrator or scraper should reach the worker over the network, set `TASKQ_HEALTH_PORT` to serve the same `/live` and `/ready` over TCP on `TASKQ_HEALTH_HOST` (default `0.0.0.0`, the pod-network address container probes need). The TCP listener is off unless the port is set, answers `/tasks` with `404` (the socket's filesystem permissions do not apply to a TCP port), and carries no token check: keep it pod-network-only. The two transports bind independently: a TCP port that cannot be bound refuses the worker's startup (`HealthTcpBindError`: the probes target that port), while a unix-socket collision — a live peer owns the path — costs the Unix listener alone; the TCP listener is still bound, so port-routed probes keep answering (`HealthUnixBindCollisionError`, the same `health-server-unavailable` WARN as when no port is set). With no `health_port` configured at all, the collision warns and boots with no listener, as it always has. The Prometheus scrape listener (`TASKQ_METRICS_PORT`, host `TASKQ_METRICS_HOST` falling back to `TASKQ_HEALTH_HOST`) is a separate, unauthenticated surface documented in [observability.md](observability.md#serving-the-metrics-the-prometheus-endpoint) and refuses startup on a bind failure the same way. Full per-platform recipes: [deployment.md — Listener deployment recipes](deployment.md#listener-deployment-recipes).
+On platforms without exec probes (Azure Container Apps), or when an orchestrator or scraper should reach the worker over the network, set `TASKQ_HEALTH_PORT` to serve the same `/live` and `/ready` over TCP on `TASKQ_HEALTH_HOST` (default `0.0.0.0`, the pod-network address container probes need). The TCP listener is off unless the port is set, answers `/tasks` with `404` (the socket's filesystem permissions do not apply to a TCP port), and carries no token check: keep it pod-network-only. The two transports bind independently: a TCP port that cannot be bound refuses the worker's startup (`HealthTcpBindError`: the probes target that port), while a unix-socket collision (a live peer owns the path) costs the Unix listener alone; the TCP listener is still bound, so port-routed probes keep answering (`HealthUnixBindCollisionError`, the same `health-server-unavailable` WARN as when no port is set). With no `health_port` configured at all, the collision warns and boots with no listener, as it always has. The Prometheus scrape listener (`TASKQ_METRICS_PORT`, host `TASKQ_METRICS_HOST` falling back to `TASKQ_HEALTH_HOST`) is a separate, unauthenticated surface documented in [observability.md](observability.md#serving-the-metrics-the-prometheus-endpoint) and refuses startup on a bind failure the same way. Full per-platform recipes: [deployment.md: Listener deployment recipes](deployment.md#listener-deployment-recipes).
 
 **Endpoints:**
 
@@ -599,7 +599,7 @@ On platforms without exec probes (Azure Container Apps), or when an orchestrator
 |---|---|---|---|
 | `GET /live` | Event loop responsive within 1.0s | `200 {"status":"ok"}` | `503 {"status":"unresponsive"}` |
 | `GET /ready` | `shutdown_phase == NONE` and PG ping succeeds within `health_pg_ping_timeout` (the per-slot transaction pool is pinged too, when it exists) | `200 {"ready":true,...}` | `503 {"ready":false,...}` |
-| `GET /metrics` | Always | `200` Prometheus text format | — |
+| `GET /metrics` | Always | `200` Prometheus text format | n/a |
 
 The `/ready` response body includes:
 
@@ -624,7 +624,7 @@ The `/ready` response body includes:
 `maintenance` is this process's view of its own sweep health: `degraded: true`
 when any sweep's last success is more than three `sweep_interval`s old or any
 sweep is running at the reduced batch tier (the batch-size breaker latched).
-It is deliberately **not** part of the 200/503 verdict — degraded means "up,
+It is deliberately **not** part of the 200/503 verdict: degraded means "up,
 but sweeps are unhealthy", an operator signal in the body, not a probe
 failure. `"no sweep has completed yet"` is the informational reason a process
 that has never completed a sweep (fresh, or never leader) reports instead of
@@ -652,8 +652,8 @@ Probe these from a Kubernetes sidecar or `taskq health live` / `taskq health rea
 
 At startup, after `register_worker`, the worker calls `sync_actor_config` for every registered actor. This writes (or updates) rows in `{schema}.actor_config`, and treats the row's fields as two different kinds of state:
 
-- **Capacity fields** — `max_concurrent`, `max_pending`, `result_ttl` — are **operator-owned**. The `@actor(...)` literal only *seeds* the value the first time a row is created for that actor. On every subsequent startup, the stored value wins: a registered literal that differs from the stored value is expected (an operator tuned it), is never an error, and is logged at info level as `actor-config-capacity-override`. The UPSERT never writes these columns back on conflict, so nothing a worker does at startup can clobber an operator's change.
-- **The queue assignment** is operator-owned the same way — moved by `taskq actor-config move-queue`, never by a boot. A registered literal that differs from the stored queue is the rolling-deploy window of a move (or a literal that has not followed the assignment yet): the worker logs `actor-config-queue-override` at WARNING and boots, and the UPSERT never writes the column back on conflict, so a stale-literal pod cannot undo the move. The warning is louder than the capacity one on purpose: the cron leader's fires follow the stored queue while producers enqueue by their own literal, so a persistent mismatch means the fleet's two routing halves disagree — reconcile with `taskq actor-config move-queue` or by deploying the matching literal.
+- **Capacity fields** (`max_concurrent`, `max_pending`, `result_ttl`) are **operator-owned**. The `@actor(...)` literal only *seeds* the value the first time a row is created for that actor. On every subsequent startup, the stored value wins: a registered literal that differs from the stored value is expected (an operator tuned it), is never an error, and is logged at info level as `actor-config-capacity-override`. The UPSERT never writes these columns back on conflict, so nothing a worker does at startup can clobber an operator's change.
+- **The queue assignment** is operator-owned the same way, moved by `taskq actor-config move-queue`, never by a boot. A registered literal that differs from the stored queue is the rolling-deploy window of a move (or a literal that has not followed the assignment yet): the worker logs `actor-config-queue-override` at WARNING and boots, and the UPSERT never writes the column back on conflict, so a stale-literal pod cannot undo the move. The warning is louder than the capacity one on purpose: the cron leader's fires follow the stored queue while producers enqueue by their own literal, so a persistent mismatch means the fleet's two routing halves disagree; reconcile with `taskq actor-config move-queue` or by deploying the matching literal.
 - **Metadata** still guards against real bugs (no operator surface can move it, so any mismatch is one) and behaves exactly as before:
   - **`force=False` (default):** a mismatch raises `ActorConfigDriftList` and the worker refuses to start. The CLI prints the drift details and instructs the operator to re-run with `--force-update-actor-config`.
   - **`force=True`:** logs `actor-config-drift-overwrite` at ERROR for each drifted field and overwrites the stored value.
@@ -664,7 +664,7 @@ The sync uses a transactional SELECT-then-UPSERT to prevent races between concur
     Operator-owned means the decorator literal is read **only** when the row is
     first created. Editing `max_concurrent`, `max_pending` or `result_ttl` in
     code and deploying it changes nothing on any deployment where the actor has
-    already booted once — the rollout succeeds, the code review passes, and
+    already booted once: the rollout succeeds, the code review passes, and
     dispatch keeps using the stored value. A row seeded before the argument
     existed holds `NULL`, which for `max_concurrent` means **uncapped**, so a
     "we capped it" change can leave every actor running unbounded.
@@ -681,10 +681,10 @@ The sync uses a transactional SELECT-then-UPSERT to prevent races between concur
 
     `taskq actor-config set` is idempotent, so a deploy step or boot-time hook
     that applies your intended capacities is a safe way to make the code the
-    source of truth. Verify with `taskq actor-config list` — an unexpected
+    source of truth. Verify with `taskq actor-config list`; an unexpected
     `max_concurrent = NULL` is the fingerprint of this trap.
 
-**`ActorConfigDriftList` wraps one `ActorConfigDriftError` per drifted *structural* field per actor.** A single startup check can produce multiple `ActorConfigDriftError` instances — one for each combination of actor × structural field that differs.
+**`ActorConfigDriftList` wraps one `ActorConfigDriftError` per drifted *structural* field per actor.** A single startup check can produce multiple `ActorConfigDriftError` instances, one for each combination of actor × structural field that differs.
 
 **Tuning capacity on a live deployment.** Since a worker restart never changes a stored capacity value, use `taskq actor-config set` instead:
 
@@ -698,13 +698,13 @@ taskq actor-config diff --actors myapp.actors:registry
 
 All three capacity fields take effect without a worker restart, through three different mechanisms:
 
-- `max_concurrent` — the dispatch query re-reads `actor_config.max_concurrent` on every dispatch cycle. Effective immediately.
-- `result_ttl` — the terminal-write UPDATE re-reads `actor_config.result_ttl` on every job completion. Effective immediately for jobs completing after the change.
-- `max_pending` — every enqueue-side process (web apps, workers' sub-job enqueues) holds a TTL-bounded in-process snapshot of the table (`taskq/client/_capacity.py`) and refreshes it at most once per TTL (default 5s). Effective fleet-wide within seconds. The cache fails open: if the refresh query fails, enqueue falls back to the last good snapshot (or the code literal) and retries no sooner than the TTL, so a sick database never turns into a per-enqueue failing query storm.
+- `max_concurrent`: the dispatch query re-reads `actor_config.max_concurrent` on every dispatch cycle. Effective immediately.
+- `result_ttl`: the terminal-write UPDATE re-reads `actor_config.result_ttl` on every job completion. Effective immediately for jobs completing after the change.
+- `max_pending`: every enqueue-side process (web apps, workers' sub-job enqueues) holds a TTL-bounded in-process snapshot of the table (`taskq/client/_capacity.py`) and refreshes it at most once per TTL (default 5s). Effective fleet-wide within seconds. The cache fails open: if the refresh query fails, enqueue falls back to the last good snapshot (or the code literal) and retries no sooner than the TTL, so a sick database never turns into a per-enqueue failing query storm.
 
-Clearing a field (`--clear-max-concurrent` etc.) writes NULL. For `max_concurrent` that means *unlimited* — the dispatch SQL cannot see the code literal once a row exists. For `max_pending` and `result_ttl` NULL means *revert to the `@actor(...)` literal* — clearing undoes the operator override and restores the code default. The reverted `result_ttl` literal is supplied by the completing worker and applied from the job's **completion** timestamp — a job that sat in the queue longer than its TTL still gets its full result lifetime rather than completing already expired.
+Clearing a field (`--clear-max-concurrent` etc.) writes NULL. For `max_concurrent` that means *unlimited*: the dispatch SQL cannot see the code literal once a row exists. For `max_pending` and `result_ttl` NULL means *revert to the `@actor(...)` literal*; clearing undoes the operator override and restores the code default. The reverted `result_ttl` literal is supplied by the completing worker and applied from the job's **completion** timestamp: a job that sat in the queue longer than its TTL still gets its full result lifetime rather than completing already expired.
 
-**Upgrading note.** Before this change, stored capacity always matched the last deployed literal (any drift blocked startup, or `--force-update-actor-config` rewrote it), so existing deployments upgrade seamlessly: enforcement simply continues from the stored values. Do not run `taskq actor-config set` until every pod runs the new version — an old-version pod that *restarts* mid-rollout still crashes on capacity drift.
+**Upgrading note.** Before this change, stored capacity always matched the last deployed literal (any drift blocked startup, or `--force-update-actor-config` rewrote it), so existing deployments upgrade seamlessly: enforcement simply continues from the stored values. Do not run `taskq actor-config set` until every pod runs the new version; an old-version pod that *restarts* mid-rollout still crashes on capacity drift.
 
 **Moving an actor between queues.** One operator action, two phases:
 
@@ -712,7 +712,7 @@ Clearing a field (`--clear-max-concurrent` etc.) writes NULL. For `max_concurren
 taskq actor-config move-queue mailer email_tier
 ```
 
-The actor's pending/scheduled backlog is rewritten onto the target queue as bounded committed batches, then one final transaction locks the stored assignment, carries the old queue's `queues` row (mode + `max_concurrent`) to the target when the target has no row of its own, and flips the assignment — so old-queue strays drain through the target's consumers, and a crash mid-drain re-runs cleanly (the abort logs `actor-queue-move-aborted` with the count already committed). Running jobs finish on the workers that claimed them; any that re-pend instead (failure retry, crash reclaim, operator retry) keep their old queue label as an audit trail but are routed at dispatch by the actor's *current* assignment, so the running-job tail drains through the target queue's consumers; other actors on the old queue are untouched; cron fires follow the moved assignment from the flip on. Deploy the matching `@actor(queue=...)` literal before, during, or after the move — in any order — and keep workers consuming the old queue until every producer runs the new literal (stale producers keep enqueueing to it). The same rule governs a per-job `enqueue(queue=...)` override: it places the job's **first attempt** only, and any re-pend follows the actor's current assignment — see [Queue overrides: first placement only](jobs-clients.md#queue-overrides-first-placement-only).
+The actor's pending/scheduled backlog is rewritten onto the target queue as bounded committed batches, then one final transaction locks the stored assignment, carries the old queue's `queues` row (mode + `max_concurrent`) to the target when the target has no row of its own, and flips the assignment, so old-queue strays drain through the target's consumers, and a crash mid-drain re-runs cleanly (the abort logs `actor-queue-move-aborted` with the count already committed). Running jobs finish on the workers that claimed them; any that re-pend instead (failure retry, crash reclaim, operator retry) keep their old queue label as an audit trail but are routed at dispatch by the actor's *current* assignment, so the running-job tail drains through the target queue's consumers; other actors on the old queue are untouched; cron fires follow the moved assignment from the flip on. Deploy the matching `@actor(queue=...)` literal before, during, or after the move, in any order, and keep workers consuming the old queue until every producer runs the new literal (stale producers keep enqueueing to it). The same rule governs a per-job `enqueue(queue=...)` override: it places the job's **first attempt** only, and any re-pend follows the actor's current assignment; see [Queue overrides: first placement only](jobs-clients.md#queue-overrides-first-placement-only).
 
 The fields checked for structural drift are: `metadata`. Actor name changes require a migration; rename detection is not implemented.
 
@@ -726,7 +726,7 @@ Multiple worker processes against the same database are fully supported. Each pr
 
 **Single leader.** Only one worker holds the `taskq:maintenance_leader:<schema>` advisory lock at a time. Other workers retry election on every `heartbeat_interval` tick. If the leader pod dies, the lock is released when the connection closes, and another worker wins the next election.
 
-**Rolling deploy gotcha.** Old and new worker versions that declare different `queue` literals for the same actor name both boot: each logs `actor-config-queue-override` (the old side) or matches (the new side), and the stored assignment — the newest one, moved by `taskq actor-config move-queue` — stays authoritative throughout the rollout. Make sure workers consume both queues for the duration of the window and drop the old queue from `TASKQ_QUEUES` only after every producer runs the new literal and its backlog has drained.
+**Rolling deploy gotcha.** Old and new worker versions that declare different `queue` literals for the same actor name both boot: each logs `actor-config-queue-override` (the old side) or matches (the new side), and the stored assignment (the newest one, moved by `taskq actor-config move-queue`) stays authoritative throughout the rollout. Make sure workers consume both queues for the duration of the window and drop the old queue from `TASKQ_QUEUES` only after every producer runs the new literal and its backlog has drained.
 
 A rolling deploy that changes `metadata` for the same actor name still trips the startup guard: new pods fail with `ActorConfigDriftList`. Best practice:
 
@@ -735,7 +735,7 @@ A rolling deploy that changes `metadata` for the same actor name still trips the
 
 Do not leave `--force-update-actor-config` set permanently. It allows any future metadata drift to be silently overwritten, removing the startup guard that protects against accidental mis-deploys.
 
-A rolling deploy that only changes `max_concurrent`, `max_pending`, or `result_ttl` in the `@actor(...)` decorator needs none of this — those fields no longer participate in drift detection at all. Old and new pods can register different literals for the same actor simultaneously without either one failing to start; the stored row (whatever it currently is) stays authoritative throughout the rollout. Use `taskq actor-config set` if you actually want the new literal to take effect.
+A rolling deploy that only changes `max_concurrent`, `max_pending`, or `result_ttl` in the `@actor(...)` decorator needs none of this: those fields no longer participate in drift detection at all. Old and new pods can register different literals for the same actor simultaneously without either one failing to start; the stored row (whatever it currently is) stays authoritative throughout the rollout. Use `taskq actor-config set` if you actually want the new literal to take effect.
 
 ---
 
@@ -796,7 +796,7 @@ The worker opens up to four asyncpg connection pools and two dedicated connectio
 | `dispatcher_pool` | `pg_dsn_direct` | Shares infrastructure with session-mode connections; direct connection avoids transaction-mode complications |
 | `heartbeat_pool` | `pg_dsn_direct` | Same rationale as dispatcher_pool |
 | `worker_pool` | `pg_dsn_pooled` | Terminal writes use short transactions; transaction-mode PgBouncer is safe here |
-| slot pool (conditional) | `pg_dsn_direct` | Per-slot transaction connections — a transaction-mode pool would break every transaction boundary; opened only when a LOOP-scope `asyncpg.Connection` is registered and `max_concurrency > 1` |
+| slot pool (conditional) | `pg_dsn_direct` | Per-slot transaction connections: a transaction-mode pool would break every transaction boundary; opened only when a LOOP-scope `asyncpg.Connection` is registered and `max_concurrency > 1` |
 | `notify_conn` | `pg_dsn_direct` | LISTEN state is session-scoped; a transaction-mode pool would drop the subscription between transactions |
 | `leader_conn` | `pg_dsn_direct` | `pg_try_advisory_lock` produces a session-scoped lock; a transaction-mode pool would release the lock between transactions, allowing another worker to win the lock silently |
 
@@ -809,10 +809,10 @@ TASKQ_PG_DSN_POOLED=postgresql://user:pass@pgbouncer:5432/mydb
 
 When neither is set, both fall back to `TASKQ_PG_DSN`. When both DSNs are the same (no PgBouncer), the worker operates identically.
 
-!!! note "The dispatcher pool carries `jit = off` — leave it there"
+!!! note "The dispatcher pool carries `jit = off`; leave it there"
     Every pool TaskQ builds for the dispatcher role is opened with
-    `server_settings={"jit": "off"}`. Everything that pool runs — the dispatch
-    claim statement, the leader sweeps, the admission lock acquires — is a
+    `server_settings={"jit": "off"}`. Everything that pool runs: the dispatch
+    claim statement, the leader sweeps, the admission lock acquires, is a
     short bounded OLTP round trip that LLVM compilation cannot help, and the
     dispatch statement's estimated cost at deep backlogs crosses Postgres's
     `jit_above_cost`, which would make Postgres compile the plan (~1 s of
@@ -822,7 +822,7 @@ When neither is set, both fall back to `TASKQ_PG_DSN`. When both DSNs are the sa
     keeps any *future* estimate surprise from ever paying compile time on a
     hot dispatch loop. If you supply your own dispatcher pool
     (`WorkerConnections.dispatcher_pool_factory`), do not enable JIT on it for
-    "more speed" — if a dispatch-path statement ever genuinely benefits from
+    "more speed"; if a dispatch-path statement ever genuinely benefits from
     compilation, that is a measured statement-level change, not a pool knob.
 
 If a LOOP-scope `asyncpg.Connection` provider is registered but the two DSNs differ, the worker emits a `loop_scope_conn_dsn_mismatch` warning at startup. PgBouncer in transaction mode breaks session semantics required by LOOP-scope connection providers. Either set both DSNs to the same direct endpoint for workers that use LOOP-scope connections, or omit the LOOP-scope connection provider and use the autonomous commit path.
@@ -852,10 +852,10 @@ When no pending, scheduled, or running jobs remain for the settle window
 shutdown and exits.
 
 An optional `--idle-max-runtime` cap (or `TASKQ_IDLE_MAX_RUNTIME`) forces exit
-with code 4 if the drain takes too long — useful for CI pipelines with
+with code 4 if the drain takes too long: useful for CI pipelines with
 time budgets.
 
-**Scheduled jobs:** Jobs with a future `scheduled_at` count as "active" —
+**Scheduled jobs:** Jobs with a future `scheduled_at` count as "active":
 the worker waits for them to become due, dispatches them, and processes
 them before exiting. Use `--idle-max-runtime` if you don't want to wait for
 far-future scheduled jobs.
@@ -893,7 +893,7 @@ that returned `"failed"` from `dispatch_one_job`. It does NOT capture:
   stays 0. Exit 0 is possible with failures on other workers.
 - **Jobs cancelled during shutdown:** Jobs cancelled by the shutdown phase
   (CANCELLING → FORCING) propagate `CancelledError` out of
-  `dispatch_one_job` without incrementing `drain_failures` — they are
+  `dispatch_one_job` without incrementing `drain_failures`;
   timeout-interrupted, not user-failed. This is correct: a cancelled job
   during drain is NOT a "failure".
 - **Actor-not-found jobs:** A misconfigured job whose actor is not in this
@@ -933,7 +933,7 @@ All variables use the `TASKQ_` prefix. `WorkerSettings` extends `TaskQSettings`;
 | `TASKQ_CANCELLATION_GRACE_PERIOD` | `float` | `30.0` | Seconds for cooperative cancel phase |
 | `TASKQ_CLEANUP_GRACE_PERIOD` | `float` | `10.0` | Seconds for force-cancel cleanup phase |
 | `TASKQ_MAX_RETRY_BACKOFF` | `timedelta` | `PT24H` | Global ceiling on per-attempt retry backoff |
-| `TASKQ_DEFAULT_START_TO_CLOSE` | `timedelta \| None` | `None` | Worker-wide fallback per-attempt execution timeout, applied only when neither the enqueue call nor the actor sets `start_to_close`. `None` = unbounded. See [retries.md — `start_to_close` vs `schedule_to_close`](retries.md#7-start_to_close-vs-schedule_to_close) |
+| `TASKQ_DEFAULT_START_TO_CLOSE` | `timedelta \| None` | `None` | Worker-wide fallback per-attempt execution timeout, applied only when neither the enqueue call nor the actor sets `start_to_close`. `None` = unbounded. See [retries.md: `start_to_close` vs `schedule_to_close`](retries.md#7-start_to_close-vs-schedule_to_close) |
 | `TASKQ_RATE_LIMIT_PG_FALLBACK_ENABLED` | `bool` | `True` | Fall back to Postgres when Redis errors occur during rate limiting |
 | `TASKQ_HEALTH_ENABLED` | `bool` | `True` | Enable the health server, both transports (Unix socket and the optional TCP listener) |
 | `TASKQ_HEALTH_SOCKET_PATH` | `str` | `/tmp/taskq_health.sock` | Path for the health Unix socket |
@@ -946,7 +946,7 @@ All variables use the `TASKQ_` prefix. `WorkerSettings` extends `TaskQSettings`;
 | `TASKQ_HEALTH_PG_PING_TIMEOUT` | `float` | `0.2` | Seconds to wait for the readiness PG ping |
 | `TASKQ_POLL_INTERVAL` | `float` | `1.0` | Fallback producer polling cadence (seconds) when NOTIFY is disabled |
 | `TASKQ_NOTIFY_ENABLED` | `bool` | `true` | When `true`, the worker uses LISTEN/NOTIFY for near-zero-latency dispatch wakeups. When `false`, uses poll-only dispatch with `poll_interval`. |
-| `TASKQ_NOTIFY_POLL_INTERVAL` | `float` | `5.0` | Fallback poll cadence when NOTIFY is enabled (rarely reached — NOTIFY handles the common case). Uses `poll_interval` when NOTIFY is disabled. |
+| `TASKQ_NOTIFY_POLL_INTERVAL` | `float` | `5.0` | Fallback poll cadence when NOTIFY is enabled (rarely reached; NOTIFY handles the common case). Uses `poll_interval` when NOTIFY is disabled. |
 | `TASKQ_NOTIFY_HEALTH_CHECK_INTERVAL` | `float` | `5.0` | How often the NOTIFY listener health-checks its connection |
 | `TASKQ_NOTIFY_RECONNECT_BACKOFF_INITIAL` | `float` | `1.0` | Initial backoff before first NOTIFY reconnect attempt (doubles per attempt, capped at 30s; each delay carries ±25% multiplicative jitter so a fleet that loses PG simultaneously does not reconnect in lockstep) |
 | `TASKQ_QUEUES` | `list[str]` | `["default"]` | Queue names this worker consumes; comma-separated |

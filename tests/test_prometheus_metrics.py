@@ -123,7 +123,7 @@ _NAME_MAP: list[tuple[str, str, str]] = [
         "taskq_maintenance_leader_sweep_timeouts_total",
         "counter",
     ),
-    # Name already ends in the unit word "seconds" — the no-double-suffix rule.
+    # Name already ends in the unit word "seconds" - the no-double-suffix rule.
     (
         "taskq.maintenance_leader.sweep_last_success_seconds",
         "taskq_maintenance_leader_sweep_last_success_seconds",
@@ -139,7 +139,7 @@ _NAME_MAP: list[tuple[str, str, str]] = [
         "taskq_maintenance_leader_sweep_batch_size_configured",
         "gauge",
     ),
-    # Name already ends in the unit word "seconds" — the no-double-suffix rule.
+    # Name already ends in the unit word "seconds" - the no-double-suffix rule.
     (
         "taskq.maintenance_leader.lease_expires_in_seconds",
         "taskq_maintenance_leader_lease_expires_in_seconds",
@@ -587,12 +587,12 @@ def test_scheduled_backlog_growing_and_operands_have_compatible_labels(
     """TaskQScheduledBacklogGrowing's `and` must join operands whose label
     sets are identical, or PromQL vector `and` (with no `on`/`ignoring`
     modifier) can never pair a result, regardless of how bad the real
-    backlog stall is — a `status`-labeled series never matches a
+    backlog stall is - a `status`-labeled series never matches a
     label-less one.
 
     The alert compares `taskq_jobs_oldest_due_age_seconds` (no labels;
     `_observe_oldest_due_age` in obs/_otel.py yields a bare `Observation`)
-    against `taskq_jobs_scheduled_count` — the label-less twin of
+    against `taskq_jobs_scheduled_count` - the label-less twin of
     `taskq_jobs_by_status{status="scheduled"}` that `update_scheduled_
     count_cache` maintains in step with it specifically so this join has
     matching operands, rather than joining the `status`-labeled series

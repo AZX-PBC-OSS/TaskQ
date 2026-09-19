@@ -1,4 +1,4 @@
-"""Tests for the workgroup supervisor — stubbed subprocess management."""
+"""Tests for the workgroup supervisor - stubbed subprocess management."""
 
 import asyncio
 import contextlib
@@ -39,7 +39,7 @@ class FakeStreamReader:
 
     Implements ``readuntil`` (the member production ``_read_line``
     calls), raising the EOF signal immediately so a pump over this fake
-    exits cleanly instead of dying on a missing attribute — a fake that
+    exits cleanly instead of dying on a missing attribute - a fake that
     silently violates the reader contract turns every pump into the
     failure branch and drowns real pump-failure signals in noise.
     """
@@ -56,7 +56,7 @@ class FakeProcess:
     """Fake subprocess process with controllable returncode.
 
     ``signalled`` (optional) is set at the exact points a signal is
-    delivered to the child (send_signal/terminate/kill) — the canonical
+    delivered to the child (send_signal/terminate/kill) - the canonical
     wait surface for tests that need "the supervisor signalled this
     child" instead of sleeping a fixed interval that races the
     supervisor's async kill path under load.
@@ -252,7 +252,7 @@ async def test_run_forever_spawns_and_shuts_down() -> None:
 
     The spawn wait is event-driven: the create_subprocess_exec double
     signals at the observable's flip point, so the wait resolves exactly
-    when the child exists — a fixed window would race startup under
+    when the child exists - a fixed window would race startup under
     load. Child-exit detection and graceful-shutdown-on-signal coverage
     lives in test_run_forever_liveness_restarts_crashed_child and
     test_run_forever_graceful_shutdown_via_signal below.
@@ -293,7 +293,7 @@ async def test_run_forever_spawns_and_shuts_down() -> None:
         try:
             await asyncio.wait_for(task, timeout=5.0)
         except asyncio.CancelledError:
-            pass  # Why: the cancellation the test itself requested — the clean outcome.
+            pass  # Why: the cancellation the test itself requested - the clean outcome.
         except TimeoutError:
             pytest.fail("run_forever did not tear down within 5.0s of cancellation")
 
@@ -350,7 +350,7 @@ async def test_run_forever_health_kill() -> None:
         task = asyncio.create_task(run_forever(config_path))
         # Event-driven wait for the kill: FakeProcess.signalled is set at
         # the exact point the health loop's _kill_child delivers the
-        # signal — a fixed sleep plus a "mock_health.called" check races
+        # signal - a fixed sleep plus a "mock_health.called" check races
         # the kill under load (called only proves the check ran, not
         # that the child was killed).
         try:
@@ -422,7 +422,7 @@ async def test_run_forever_except_star_cleanup() -> None:
             except TimeoutError:
                 pytest.fail("run_forever did not spawn its child within 5.0s")
 
-            # Child exits — the patched handler turns liveness_monitor's
+            # Child exits - the patched handler turns liveness_monitor's
             # exit processing into the background failure under test.
             fake_proc._returncode = 42
             try:
@@ -613,7 +613,7 @@ def test_validate_health_pg_schema_invalid() -> None:
 def test_validate_worker_name_too_long() -> None:
     # 43 is the longest name whose health socket path binds on every
     # supported platform: 103 usable sun_path chars (macOS budget, incl.
-    # NUL) minus the path's 60 fixed chars of prefix/uuid/separators —
+    # NUL) minus the path's 60 fixed chars of prefix/uuid/separators -
     # one char past it is the first name the child cannot bind anywhere.
     cfg = WorkgroupConfig(
         actors="app:reg",
@@ -1007,7 +1007,7 @@ async def test_health_check_stale() -> None:
 
 
 async def test_health_check_last_seen_none() -> None:
-    """last_seen_at IS NULL (never registered a beat) — the server-side
+    """last_seen_at IS NULL (never registered a beat) - the server-side
     freshness expression is NULL, so the child is unhealthy."""
     child = _make_child()
     proc = FakeProcess(returncode=None, pid=12345)
@@ -1064,7 +1064,7 @@ async def test_run_forever_multiple_children_graceful_shutdown() -> None:
 
         task = asyncio.create_task(run_forever(config_path))
         # Event-driven waits on the spawn double and the handler-capture
-        # double — a fixed window races startup under load (fewer than
+        # double - a fixed window races startup under load (fewer than
         # both children spawned, handler missing).
         try:
             await asyncio.wait_for(both_spawned.wait(), timeout=5.0)
@@ -1077,7 +1077,7 @@ async def test_run_forever_multiple_children_graceful_shutdown() -> None:
             pytest.fail("run_forever did not register its SIGTERM handler within 5.0s")
 
         # Trigger graceful shutdown. The children are alive (returncode
-        # None), so the supervisor must forward SIGTERM to each — the
+        # None), so the supervisor must forward SIGTERM to each - the
         # forwarded signal is what stops them (FakeProcess sets its
         # returncode on SIGTERM). No manual returncode poking: setting
         # it would suppress the very forwarding the final assert
@@ -1088,7 +1088,7 @@ async def test_run_forever_multiple_children_graceful_shutdown() -> None:
         except TimeoutError:
             pytest.fail("run_forever did not complete graceful shutdown within 3.0s")
 
-    # Every child received SIGTERM during graceful shutdown — the real
+    # Every child received SIGTERM during graceful shutdown - the real
     # "shuts them all down" assertion.
     for label, proc in procs.items():
         assert signal.SIGTERM in proc._signals, f"child {label!r} did not receive SIGTERM"
@@ -1132,7 +1132,7 @@ async def test_run_forever_force_update_warning() -> None:
         with structlog.testing.capture_logs() as captured:
             task = asyncio.create_task(run_forever(config_path))
             # The warning is emitted before the spawn loop, so the spawn
-            # event implies it has been logged — no fixed sleep racing
+            # event implies it has been logged - no fixed sleep racing
             # startup.
             try:
                 await asyncio.wait_for(spawned.wait(), timeout=5.0)
@@ -1184,7 +1184,7 @@ async def test_run_forever_spawn_failure_continues() -> None:
 
         task = asyncio.create_task(run_forever(config_path))
         # Event-driven waits on the spawn double and the handler-capture
-        # double — a fixed window races startup under load (fewer than
+        # double - a fixed window races startup under load (fewer than
         # one spawn attempt, handler missing) and fails the completion
         # assert below for a reason that has nothing to do with the
         # continue-on-failure behaviour under test.
@@ -1194,21 +1194,21 @@ async def test_run_forever_spawn_failure_continues() -> None:
             pytest.fail("run_forever did not attempt its first spawn within 5.0s")
         # The signal handlers are installed AFTER the initial spawn loop,
         # so the spawn attempt alone does not yet prove the supervisor is
-        # stoppable — wait for the registration the stop below drives.
+        # stoppable - wait for the registration the stop below drives.
         try:
             await asyncio.wait_for(sigterm_registered.wait(), timeout=5.0)
         except TimeoutError:
             pytest.fail("run_forever did not register its SIGTERM handler within 5.0s")
 
         # Stop the supervisor the way an operator does: SIGTERM, then let
-        # run_forever complete its own graceful shutdown — the same stop
+        # run_forever complete its own graceful shutdown - the same stop
         # shape test_run_forever_multiple_children_graceful_shutdown
         # drives. A bare task.cancel() aborts the supervisor mid-
         # _delay_then_respawn, whose asyncio.wait() does not cancel its
         # inner futures when the caller itself is cancelled: the backoff
         # sleep and the shutdown Event.wait went on running WITHOUT the
         # supervisor, two tasks orphaned on the module loop. The signal
-        # path is clean in every interleaving — shutting_down set either
+        # path is clean in every interleaving - shutting_down set either
         # skips the restart arm under the restart lock, or wins the
         # _delay_then_respawn race and cancels-and-awaits its own sleep
         # before the monitor's loop condition exits.
@@ -1225,7 +1225,7 @@ async def test_spawn_failed_child_is_retried_by_liveness_monitor() -> None:
     """A child whose initial spawn failed must not stay dead.
 
     The liveness monitor retries never-spawned children under the same
-    burst/backoff budget as exited ones — the worker's command line
+    burst/backoff budget as exited ones - the worker's command line
     failing once (image pull retry, transient exec failure) must not
     mean the worker is absent until the whole supervisor restarts.
     """
@@ -1262,7 +1262,7 @@ async def test_spawn_failed_child_is_retried_by_liveness_monitor() -> None:
             await asyncio.wait_for(second_attempt.wait(), timeout=10.0)
         except TimeoutError:
             pytest.fail(
-                "the liveness monitor never retried the failed spawn within 10s — "
+                "the liveness monitor never retried the failed spawn within 10s - "
                 "the worker stays dead until supervisor restart"
             )
         finally:
@@ -1315,7 +1315,7 @@ async def test_spawn_failure_exhausts_burst_budget_and_stops_retrying() -> None:
 
         task = asyncio.create_task(run_forever(config_path))
         try:
-            # Bounded wait on the budget-exhausted decision itself — the
+            # Bounded wait on the budget-exhausted decision itself - the
             # event that PROVES the monitor stopped scheduling; when it
             # fires, the last budgeted attempt has already happened.
             # (time.monotonic, not the loop clock: asyncio.get_running_loop
@@ -1344,7 +1344,7 @@ async def test_spawn_failure_exhausts_burst_budget_and_stops_retrying() -> None:
     criticals = [e for e in captured if e.get("event") == "workgroup-burst-limit-exceeded"]
     assert len(criticals) == 1, (
         f"budget exhaustion must log the critical exactly once, got {len(criticals)} "
-        f"across further monitor ticks — a per-tick re-decision is a "
+        f"across further monitor ticks - a per-tick re-decision is a "
         "critical-log flood"
     )
 
@@ -1352,7 +1352,7 @@ async def test_spawn_failure_exhausts_burst_budget_and_stops_retrying() -> None:
 async def test_stream_pump_failure_is_logged_and_task_completes() -> None:
     """A failed output pump is loud and clean, not silently lost.
 
-    The pump forwards the child's stdout/stderr — the supervisor's
+    The pump forwards the child's stdout/stderr - the supervisor's
     primary diagnostic surface. An unexpected read failure must surface
     as a warning (the child's output is lost from that point, which an
     operator must be able to see) and the task must complete without an
@@ -1365,13 +1365,13 @@ async def test_stream_pump_failure_is_logged_and_task_completes() -> None:
             raise RuntimeError("transport exploded")
 
     with structlog.testing.capture_logs() as captured:
-        pump = asyncio.create_task(_stream_output(_ExplodingReader(), "w1", "warning"))  # type: ignore[arg-type]  # Why: structural StreamReader double — readuntil is the only member _read_line touches.
+        pump = asyncio.create_task(_stream_output(_ExplodingReader(), "w1", "warning"))  # type: ignore[arg-type]  # Why: structural StreamReader double - readuntil is the only member _read_line touches.
         # RED on the pre-fix code: this await raised RuntimeError and the
         # task's exception was never retrieved anywhere.
         await asyncio.wait_for(pump, timeout=5.0)
 
     failures = [e for e in captured if e.get("event") == "workgroup.stream_pump_failed"]
-    assert failures, "the pump failure was silent — no workgroup.stream_pump_failed event"
+    assert failures, "the pump failure was silent - no workgroup.stream_pump_failed event"
     assert failures[0]["worker"] == "w1"
     assert failures[0]["error_class"] == "RuntimeError"
 
@@ -1382,8 +1382,8 @@ async def test_stream_pump_failure_is_logged_and_task_completes() -> None:
 # test_health_check_bad_timestamp was removed with the Python-side age
 # computation: freshness is now computed by the PG server
 # (last_seen_at > clock_timestamp() - $3::interval), so a malformed Python
-# timestamp can no longer reach the verdict. The behavioral pin — a skewed
-# supervisor must not flag a healthy child — lives in
+# timestamp can no longer reach the verdict. The behavioral pin - a skewed
+# supervisor must not flag a healthy child - lives in
 # tests/test_workgroup_health_pg.py.
 
 
@@ -1451,7 +1451,7 @@ async def test_run_forever_graceful_shutdown_via_signal() -> None:
         from taskq.worker.workgroup import run_forever
 
         task = asyncio.create_task(run_forever(config_path))
-        # Event-driven startup wait — a fixed sleep races handler
+        # Event-driven startup wait - a fixed sleep races handler
         # registration under load (the SIGTERM() call below would
         # KeyError).
         try:
@@ -1462,7 +1462,7 @@ async def test_run_forever_graceful_shutdown_via_signal() -> None:
         # Trigger the signal handler to set shutting_down
         signal_handlers[signal.SIGTERM]()
 
-        # Let the graceful shutdown proceed — with NO manual returncode:
+        # Let the graceful shutdown proceed - with NO manual returncode:
         # the forwarded SIGTERM is what stops the child, and the final
         # assert verifies it. (Setting _returncode by hand would
         # deterministically suppress the SIGTERM forwarding AND make the
@@ -1482,7 +1482,7 @@ async def test_run_forever_graceful_shutdown_via_signal() -> None:
 # ── Bounded health-pool close at supervisor shutdown ────────────────────
 #
 # run_forever closed its health-check pool with a bare
-# ``await pg_pool.close()`` — a dead PG can block that indefinitely,
+# ``await pg_pool.close()`` - a dead PG can block that indefinitely,
 # wedging the supervisor between "shutdown_begin" and "shutdown_complete".
 # These tests pin the bounded-close discipline (asyncio.wait_for +
 # terminate on timeout) applied via ``close_pool_bounded``; the shrink
@@ -1555,7 +1555,7 @@ def _install_run_forever_patches(
     Returns the exit stack plus the two startup observables:
     ``sigterm_registered`` fires at the exact point run_forever registers
     its SIGTERM handler, and ``health_pool_created`` when
-    asyncpg.create_pool returns the fake pool — the points a test about
+    asyncpg.create_pool returns the fake pool - the points a test about
     to trigger shutdown must wait for. The fixed 0.2s sleep this
     replaces raced startup under load: the SIGTERM() call would
     KeyError on an unregistered handler, and a shutdown before pool
@@ -1600,7 +1600,7 @@ async def _wait_for_run_forever_startup(
     sigterm_registered: asyncio.Event,
     health_pool_created: asyncio.Event,
     *,
-    timeout: float = 5.0,  # noqa: ASYNC109  # Why: repo wait_for_* idiom (see taskq.testing.assertions) — a deadline parameter, not an asyncio.timeout scope.
+    timeout: float = 5.0,  # noqa: ASYNC109  # Why: repo wait_for_* idiom (see taskq.testing.assertions) - a deadline parameter, not an asyncio.timeout scope.
 ) -> None:
     """Bounded, named waits on the two run_forever startup observables."""
     for event, what in (
@@ -1709,7 +1709,7 @@ async def test_run_forever_liveness_restarts_crashed_child() -> None:
 
         task = asyncio.create_task(run_forever(config_path))
         # run_forever registers handlers AFTER the initial spawn loop, so
-        # this wait also guarantees procs[0] below exists — the fixed
+        # this wait also guarantees procs[0] below exists - the fixed
         # 0.2s sleep it replaced could IndexError under startup
         # starvation.
         try:
@@ -1720,7 +1720,7 @@ async def test_run_forever_liveness_restarts_crashed_child() -> None:
         # First proc crashes
         procs[0]._returncode = 1
         # Bounded wait for the liveness monitor (0.5s poll) to detect the
-        # crash and spawn a replacement — the event fires at the
+        # crash and spawn a replacement - the event fires at the
         # observable's flip (the second fake_exec call), replacing the
         # 30x0.1s poll loop.
         try:
@@ -1744,8 +1744,8 @@ async def test_run_forever_liveness_restarts_crashed_child() -> None:
 #
 # `_handle_child_exit` received `actors` and `wg_instance` and dropped
 # both from every event it logs. `workgroup.start` logs them once at
-# startup, but the events that matter operationally — a child exiting and
-# the CRITICAL burst-limit trip — carried only the worker name, so they
+# startup, but the events that matter operationally - a child exiting and
+# the CRITICAL burst-limit trip - carried only the worker name, so they
 # could not be correlated back to the workgroup instance that owns them.
 
 
@@ -1789,13 +1789,13 @@ async def test_child_exit_events_carry_workgroup_identity() -> None:
 # `_child_health_check` bounded only the pool acquire (2.0 s); the
 # fetchrow itself had no deadline. A server that accepts the query and
 # never answers parked the health loop inside the child's `restart_lock`
-# — and because both the liveness monitor and the shutdown path acquire
+# - and because both the liveness monitor and the shutdown path acquire
 # the same locks sequentially, ONE black-holed query froze restart
 # scheduling for every child AND wedged the supervisor's SIGTERM
 # forwarding. The fix is a client-side deadline on the query itself: per
 # `taskq.worker._transient`, a client-side TimeoutError is a transient
 # PG error, so it must land in the existing consecutive-failure
-# accounting (healthy side until `consecutive_failure_limit`) — a
+# accounting (healthy side until `consecutive_failure_limit`) - a
 # black-holed DB is not the child's fault.
 
 
@@ -1852,7 +1852,7 @@ async def test_health_check_query_timeout_counts_as_transient_failure(
     """A black-holed health query is bounded and errs on the healthy side.
 
     RED pre-fix: the fetchrow had no client-side deadline, so the check
-    (and the restart_lock its caller holds) parked forever — bounded
+    (and the restart_lock its caller holds) parked forever - bounded
     only by TCP keepalives, minutes out. The timeout must land in the
     same transient accounting as any other query failure: logged,
     health_failures incremented, verdict healthy below the limit.
@@ -1869,7 +1869,7 @@ async def test_health_check_query_timeout_counts_as_transient_failure(
     cfg = WorkerHealthConfig(enabled=True, consecutive_failure_limit=3)
 
     # Why the outer wait_for: the RED state hangs, and a hung test
-    # proves nothing — it must fail fast instead.
+    # proves nothing - it must fail fast instead.
     result = await asyncio.wait_for(
         _child_health_check(child, pool, "taskq", cfg, UUID(int=1)), timeout=1.0
     )
@@ -1883,7 +1883,7 @@ async def test_health_check_query_timeout_at_limit_declares_unhealthy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Consecutive timeouts cross consecutive_failure_limit: the check
-    returns False — the existing policy that a persistently failing DB
+    returns False - the existing policy that a persistently failing DB
     must not mask hung workers applies to black-holed queries too, so
     the timeout cannot be classified as always-healthy."""
     import taskq.worker.workgroup as workgroup_mod
@@ -1913,7 +1913,7 @@ async def test_run_forever_black_holed_health_query_does_not_stall_the_loop(
 
     The health loop walks children sequentially while holding each
     child's restart_lock across its check, and the shutdown path
-    acquires the same locks to forward SIGTERM — pre-fix, one
+    acquires the same locks to forward SIGTERM - pre-fix, one
     never-answered fetchrow froze health checks for EVERY child and the
     supervisor's graceful shutdown with it.
     """
@@ -1975,7 +1975,7 @@ async def test_run_forever_black_holed_health_query_does_not_stall_the_loop(
     ):
         # Why _child_health_check is NOT patched here (unlike the other
         # run_forever health tests): the behaviour under test lives
-        # inside it — the real check against a pool that never answers.
+        # inside it - the real check against a pool that never answers.
         mock_loop.return_value.add_signal_handler = capture_handler
         pool_mock.side_effect = _create_pool
 
@@ -1995,13 +1995,13 @@ async def test_run_forever_black_holed_health_query_does_not_stall_the_loop(
                     pytest.fail(f"run_forever did not {what} within 5.0s")
 
             # The headline symptom: while w1's query is parked, w2's
-            # check must still complete — pre-fix the sequential loop
+            # check must still complete - pre-fix the sequential loop
             # never reached w2 and this bounded wait fails by name.
             try:
                 await asyncio.wait_for(black_hole.conn.answered.wait(), timeout=2.0)
             except TimeoutError:
                 pytest.fail(
-                    "the black-holed w1 query stalled health checks for w2 — "
+                    "the black-holed w1 query stalled health checks for w2 - "
                     "the sequential loop never moved past it"
                 )
 
@@ -2010,7 +2010,7 @@ async def test_run_forever_black_holed_health_query_does_not_stall_the_loop(
                 await asyncio.wait_for(task, timeout=3.0)
             except TimeoutError:
                 pytest.fail(
-                    "run_forever did not complete graceful shutdown within 3.0s — "
+                    "run_forever did not complete graceful shutdown within 3.0s - "
                     "the hung health query wedged the supervisor behind the "
                     "child's restart_lock"
                 )
@@ -2030,7 +2030,7 @@ def test_health_query_timeout_constant_is_the_documented_default() -> None:
     """Pin the documented default for _HEALTH_QUERY_TIMEOUT_SECS.
 
     Every health-query-bound behaviour test monkeypatches the constant (raising=False),
-    so none of them would notice a silent default change — 2.0 -> 30.0
+    so none of them would notice a silent default change - 2.0 -> 30.0
     would pass CI while multiplying the worst-case health-check stall
     fifteenfold. The docstring documents 2.0 (consistent with the
     neighboring pool-acquire bound); this pin makes changing it a

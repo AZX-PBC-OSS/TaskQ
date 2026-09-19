@@ -63,7 +63,7 @@ def test_hook_returning_none_falls_through_to_default_policy_kind() -> None:
 
 def test_hook_override_kind_indefinite_wins_over_transient_policy() -> None:
     """A hook returning RetryOverride(kind='indefinite') overrides a
-    policy.kind='transient' for that occurrence — attempt >= max_attempts
+    policy.kind='transient' for that occurrence - attempt >= max_attempts
     still retries because indefinite ignores the attempt budget."""
     policy = RetryPolicy(kind="transient", max_attempts=2, jitter=0.0)
     actor_config = StubActorConfig(
@@ -163,7 +163,7 @@ def test_negative_delay_raises_validation_error_at_construction() -> None:
 
 def test_non_retryable_exceptions_isinstance_match_wins_over_hook() -> None:
     """non_retryable_exceptions isinstance match wins even when a hook is
-    registered and would return an override — the hook must not even be
+    registered and would return an override - the hook must not even be
     consulted for excluded exception types."""
     hook_called = False
 
@@ -187,7 +187,7 @@ def test_non_retryable_exceptions_isinstance_match_wins_over_hook() -> None:
 
 
 def test_payload_validation_error_wins_over_hook_in_adapter() -> None:
-    """PayloadValidationError must not reach the hook — the hook is
+    """PayloadValidationError must not reach the hook - the hook is
     skipped at the adapter layer before classify, matching the
     non_retryable_exceptions contract."""
     hook_called = False
@@ -233,7 +233,7 @@ def test_payload_validation_error_wins_over_hook_in_pure_classifier() -> None:
 
 
 def test_hook_raising_exception_falls_back_to_default_classification_and_logs() -> None:
-    """A hook that raises does not propagate — decide_after_failure still
+    """A hook that raises does not propagate - decide_after_failure still
     returns a valid RetryDecision using default classification, and a
     warning is logged."""
 
@@ -257,7 +257,7 @@ def test_hook_raising_exception_falls_back_to_default_classification_and_logs() 
 
 def test_hook_returning_dict_falls_back_to_default_and_logs() -> None:
     """A hook that returns a dict (not a RetryOverride) does not crash the
-    retry pipeline — decide_after_failure logs a warning and falls back to
+    retry pipeline - decide_after_failure logs a warning and falls back to
     the static policy's default classification."""
 
     def bad_hook(exc: BaseException, attempt: int) -> object:
@@ -278,7 +278,7 @@ def test_hook_returning_dict_falls_back_to_default_and_logs() -> None:
 
 def test_hook_returning_non_retryable_dict_does_not_cause_immediate_fail() -> None:
     """A hook returning a dict with kind='non_retryable' must NOT influence
-    classification — the invalid return is discarded and the static policy
+    classification - the invalid return is discarded and the static policy
     governs the decision (transient → Retry on attempt 1 < max_attempts 3)."""
 
     def bad_hook(exc: BaseException, attempt: int) -> object:
@@ -350,7 +350,7 @@ def test_hook_branches_on_exception_attribute(
 
 def test_hook_returning_none_falls_through_to_default_indefinite_policy() -> None:
     """When the hook returns None (unrecognised status code), the static
-    RetryPolicy governs classification — here an indefinite policy retries."""
+    RetryPolicy governs classification - here an indefinite policy retries."""
     policy = RetryPolicy(kind="indefinite", max_attempts=3, jitter=0.0)
     actor_config = StubActorConfig(
         retry=policy,
@@ -369,7 +369,7 @@ def test_hook_returning_none_falls_through_to_default_indefinite_policy() -> Non
 
 def test_hook_override_delay_honoured_deadline_is_sqls_business() -> None:
     """A hook returning RetryOverride(delay=10h) with schedule_to_close only
-    1h away still produces Retry(retry_delay=10h) — the override delay is
+    1h away still produces Retry(retry_delay=10h) - the override delay is
     honoured, and the deadline outcome belongs to the SQL guard in
     mark_failed_or_retry (the classifier is not a deadline arbiter; pinned
     in tests/test_clock_domain_isolation.py)."""

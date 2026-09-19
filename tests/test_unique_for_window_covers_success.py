@@ -8,7 +8,7 @@ API call, or a double-clicked button harmless.
 
 The default ``unique_states`` is ``("pending", "scheduled", "running",
 "succeeded")``, so the window keeps covering a job after it succeeds: the first
-job completing is the state that says the work already happened — the precise
+job completing is the state that says the work already happened - the precise
 condition the window exists to detect. Before this default, the identity was
 freed the instant the first job succeeded, and the faster the work completed,
 the wider the unguarded remainder of the operator's window.
@@ -131,8 +131,8 @@ async def test_second_enqueue_inside_the_window_dedups_onto_a_succeeded_job(
         "a second enqueue for the same identity, inside a still-open "
         f"unique_for window of {_WINDOW}, created a new job "
         f"({second_row.id}) instead of deduplicating onto the completed one "
-        f"({first_row.id}). The work will run a second time — the report is "
-        "sent twice, the webhook processed twice — even though the caller "
+        f"({first_row.id}). The work will run a second time - the report is "
+        "sent twice, the webhook processed twice - even though the caller "
         "asked for it to happen once in the window. The window only covers "
         "unfinished jobs today, so it stops protecting the identity the "
         "instant the work succeeds, which is exactly when it has happened"
@@ -176,7 +176,7 @@ async def test_a_failed_job_does_not_block_the_identity_for_the_window(
         "a fresh enqueue for an identity whose only job FAILED was "
         "deduplicated onto that failure. The work never happened, so the "
         f"caller's request has been silently dropped for the rest of the "
-        f"{_WINDOW} window — a single transient failure suppressing an hour of "
+        f"{_WINDOW} window - a single transient failure suppressing an hour of "
         "real work"
     )
     row = await backend_pair.get(second_row.id)

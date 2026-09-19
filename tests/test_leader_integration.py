@@ -427,14 +427,14 @@ async def test_ti6_scheduled_wake_promotes_and_notify(pg_dsn: str) -> None:
             connection: object,
             pid: int,
             ch: str,
-            payload: object,  # pyright: ignore[reportMissingParameterType] # Why: asyncpg callback signature requires Connection | PoolConnectionProxy; importing just for type annotation is heavyweight — use object.
+            payload: object,  # pyright: ignore[reportMissingParameterType] # Why: asyncpg callback signature requires Connection | PoolConnectionProxy; importing just for type annotation is heavyweight - use object.
         ) -> None:
             nonlocal notify_count
             if ch == channel:
                 notify_count += 1
 
         listen_conn = await asyncpg.connect(str(deps.settings.pg_dsn_direct))
-        await listen_conn.add_listener(channel, _on_notify)  # type: ignore[reportArgumentType] # Why: asyncpg-stubs expects Awaitable | Generator return; this callback returns None — runtime asyncpg accepts both.
+        await listen_conn.add_listener(channel, _on_notify)  # type: ignore[reportArgumentType] # Why: asyncpg-stubs expects Awaitable | Generator return; this callback returns None - runtime asyncpg accepts both.
 
         try:
             job_id = new_uuid()
@@ -459,7 +459,7 @@ async def test_ti6_scheduled_wake_promotes_and_notify(pg_dsn: str) -> None:
                 await asyncio.wait_for(deps.is_leader.wait(), timeout=_HEARTBEAT_INTERVAL + 2)
 
                 # Poll until the wake loop promotes the job (scheduled_at is
-                # +500ms) instead of a fixed 1.5s sleep — promotion latency
+                # +500ms) instead of a fixed 1.5s sleep - promotion latency
                 # varies under parallel test load.
                 status: str | None = None
                 for _ in range(150):
@@ -480,13 +480,13 @@ async def test_ti6_scheduled_wake_promotes_and_notify(pg_dsn: str) -> None:
                 with suppress(asyncio.CancelledError):
                     await task
         finally:
-            await listen_conn.remove_listener(channel, _on_notify)  # type: ignore[reportArgumentType] # Why: asyncpg-stubs expects Awaitable | Generator return; callback return type mismatch — see add_listener above.
+            await listen_conn.remove_listener(channel, _on_notify)  # type: ignore[reportArgumentType] # Why: asyncpg-stubs expects Awaitable | Generator return; callback return type mismatch - see add_listener above.
             await listen_conn.close()
     finally:
         await stack.aclose()
 
 
-# ── Equivalence — isolate_self vs sweep_expired_locks ─────────────
+# ── Equivalence - isolate_self vs sweep_expired_locks ─────────────
 
 
 @pytest.mark.asyncio
@@ -580,7 +580,7 @@ async def test_ti7_equivalence_isolate_self_vs_sweep_cancel_phase_0(pg_dsn: str)
 async def test_ti7_equivalence_cancel_phase_1_grace_divergence(pg_dsn: str) -> None:
     """cancel_phase=1 within grace: isolate_self reclaims, sweep_expired_locks does NOT.
 
-    Documented divergence — vs sweep 1 carve-out.
+    Documented divergence - vs sweep 1 carve-out.
     """
     schema, stack, deps, _backend, worker_id_a = await _open_single(
         pg_dsn, f"test_leader_{new_base62()}"
@@ -652,7 +652,7 @@ async def test_ti7_equivalence_cancel_phase_1_grace_divergence(pg_dsn: str) -> N
         assert row_a["status"] == "cancelled", (
             "isolate applies the cancel arm immediately (no grace headroom: "
             "the departing worker is the only writer that could have honoured "
-            "the request), and with #238 the cancel arm outranks the retry "
+            "the request), and with the cancel arm outranks the retry "
             "budget, so this phase=1 row terminalises rather than re-pending"
         )
         assert row_b["status"] == "running"
@@ -672,8 +672,8 @@ async def test_isolate_self_hands_back_an_indefinite_job_past_max_attempts(
     the attempt count, so the consumer's own retry path keeps
     rescheduling it, and the crash-reclaim sweep hands such a job back
     (pinned for both backends in the reclaim retry-budget parity tests).
-    A heartbeat-lost worker isolating itself is the same class of event —
-    infrastructure, not a job failure — so the same hand-back must hold
+    A heartbeat-lost worker isolating itself is the same class of event -
+    infrastructure, not a job failure - so the same hand-back must hold
     on this path, leaving terminalisation to the deadline sweep where an
     indefinite job's budget actually runs out.
     """
@@ -693,7 +693,7 @@ async def test_isolate_self_hands_back_an_indefinite_job_past_max_attempts(
                 "{}",
                 2,
                 "indefinite",
-                3,  # already past max_attempts — the state only this kind reaches
+                3,  # already past max_attempts - the state only this kind reaches
                 now - timedelta(minutes=5),
                 now + timedelta(hours=6),  # the kind's real budget, still open
                 worker_id,
@@ -912,7 +912,7 @@ async def test_ti7_crash_reclaim_observable_via_poll(pg_dsn: str) -> None:
 
         # Consumer observes the terminal transition via poll_reclaim_events.
         # visibility_delay=0: no concurrent sweep in this test, so there is
-        # no out-of-order-commit hazard to guard against — see
+        # no out-of-order-commit hazard to guard against - see
         # taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY.
         events = await backend.poll_reclaim_events(0, visibility_delay=timedelta(0))
         assert len(events) == 1
@@ -931,7 +931,7 @@ async def test_ti8_fanout_outstanding_counter_reaches_zero(
     """Fan-out scenario: enqueue N jobs, mark most succeeded, crash one,
     run the sweep, and drive an outstanding-work counter purely off
     poll_reclaim_events + the normal succeeded-path checks. The counter
-    must reach zero — without poll_reclaim_events it would be stuck at 1
+    must reach zero - without poll_reclaim_events it would be stuck at 1
     forever (the regression described in the issue).
 
     Contributes to acceptance_definition.
@@ -989,7 +989,7 @@ async def test_ti8_fanout_outstanding_counter_reaches_zero(
         )
         assert count == 1
 
-        # Drive outstanding-work counter — a consumer tracking completion
+        # Drive outstanding-work counter - a consumer tracking completion
         # of a fan-out of N jobs via an outstanding-work counter.
         outstanding = num_jobs
 
@@ -1058,7 +1058,7 @@ def _route_logs_to_stdlib() -> None:
 
     ``setup_logging`` is the production configurator and is idempotent, so
     this is a no-op once anything (a worker boot, an earlier test) has
-    already configured logging — the point is that these tests never depend
+    already configured logging - the point is that these tests never depend
     on that having happened.
     """
     setup_logging(level="DEBUG", log_format="json")
@@ -1072,8 +1072,8 @@ async def test_losing_pod_emits_no_error_and_keeps_retrying(
     normal steady state and must never surface as an error.
 
     If losing looked like a fault, every multi-pod deployment would page on
-    every heartbeat interval, and the one signal that actually matters — a
-    fleet with no leader at all — would be buried under noise from the
+    every heartbeat interval, and the one signal that actually matters - a
+    fleet with no leader at all - would be buried under noise from the
     healthy majority. The losing pod must also keep its election loop alive
     so it can take over when the leader dies.
     """
@@ -1189,8 +1189,8 @@ async def test_joining_pod_does_not_displace_the_incumbent_leader(pg_dsn: str) -
     """Scaling a fleet up must not cause leadership churn.
 
     An operator adding capacity expects the existing leader to keep leading.
-    A design where the newcomer wins — or where both briefly believe they
-    lead — would run leader-only work twice or stall it mid-sweep at every
+    A design where the newcomer wins - or where both briefly believe they
+    lead - would run leader-only work twice or stall it mid-sweep at every
     deploy, which is exactly when the fleet is least able to absorb it.
     """
     (
@@ -1256,7 +1256,7 @@ async def test_orchestrated_shutdown_still_resigns_the_lease(pg_dsn: str) -> Non
 
     orchestrate_shutdown closes and nulls a TaskQ-owned ``leader_conn``
     before the leader runtime's teardown runs, so a resign that reads only
-    ``deps.leader_conn`` would find nothing to write through — the row
+    ``deps.leader_conn`` would find nothing to write through - the row
     would be left to lapse and every graceful deploy would pay a whole
     lease of no-leader time. The resign must ride a connection that
     survives to teardown.
@@ -1294,7 +1294,7 @@ async def test_orchestrated_shutdown_still_resigns_the_lease(pg_dsn: str) -> Non
                 count = await conn.fetchval(f'SELECT count(*) FROM "{schema}".maintenance_leader')
             assert count == 0, (
                 "the resign must land even though the orchestrator closed "
-                "leader_conn first — otherwise the row lapses only after a "
+                "leader_conn first - otherwise the row lapses only after a "
                 "whole leader_lease, and every rolling deploy pays it"
             )
         finally:
@@ -1312,7 +1312,7 @@ async def test_graceful_leader_shutdown_hands_over_within_one_election_cycle(
     pg_dsn: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     """The resign at shutdown deletes the row, so the surviving follower
-    wins on its very next election attempt — a clean exit must cost the
+    wins on its very next election attempt - a clean exit must cost the
     fleet one election cycle, never a lease's lapse."""
     (
         schema,
@@ -1330,7 +1330,7 @@ async def test_graceful_leader_shutdown_hands_over_within_one_election_cycle(
         _route_logs_to_stdlib()
         with caplog.at_level(logging.DEBUG):
             # Per-pod shutdown events: the incumbent is stopped alone, the
-            # follower keeps running — the deploy shape.
+            # follower keeps running - the deploy shape.
             shutdown_a, shutdown_b = asyncio.Event(), asyncio.Event()
             leader_a = MaintenanceLeader(deps_a, wid_a, backend_a, clock=SystemClock())
             leader_b = MaintenanceLeader(deps_b, wid_b, backend_b, clock=SystemClock())
@@ -1353,7 +1353,7 @@ async def test_graceful_leader_shutdown_hands_over_within_one_election_cycle(
                 # The graceful stop: run()'s teardown resigns the lease
                 # before the connections go. The row's absence between the
                 # resign and the follower's win is deliberately NOT asserted
-                # — the handover is designed to be faster than any
+                # - the handover is designed to be faster than any
                 # post-hoc read of it; what proves the resign landed is the
                 # bound below: without it the follower would wait out the
                 # whole lease (40s at these settings) instead of one cycle.
@@ -1382,7 +1382,7 @@ async def test_graceful_leader_shutdown_hands_over_within_one_election_cycle(
                     await asyncio.gather(task_a, task_b, return_exceptions=True)
 
         assert _events(caplog, "leader-resigned"), (
-            "the graceful stop must log its resign — a handover with no resign "
+            "the graceful stop must log its resign - a handover with no resign "
             "event means the fleet paid the full lease lapse instead"
         )
     finally:
@@ -1395,7 +1395,7 @@ class _HungRenewConn:
 
     Every other call delegates to the real connection (the double's
     surface is derived from the real thing, not hand-listed). The hung
-    renewal is cut off by the renewal's own trust-window budget — the
+    renewal is cut off by the renewal's own trust-window budget - the
     leader must stand down on its own clock while the server still shows
     its lease live.
     """
@@ -1447,13 +1447,13 @@ async def test_leader_steps_down_on_its_own_clock_before_the_server_side_expiry(
     pg_dsn: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     """The split-brain guard: the leader stops trusting its term at
-    ``attempt_started + leader_lease - margin`` on its own monotonic clock —
-    strictly before the ``expires_at`` the server holds — and standing down
+    ``attempt_started + leader_lease - margin`` on its own monotonic clock -
+    strictly before the ``expires_at`` the server holds - and standing down
     touches no database state.
 
     A renewal that cannot land (here: the connection never answers) must
     end in demotion once the remaining trust is spent, while the row the
-    leader wrote is still unexpired at the server and still naming it —
+    leader wrote is still unexpired at the server and still naming it -
     the gap that keeps a peer's takeover and this pod's leadership from
     ever overlapping.
     """
@@ -1481,7 +1481,7 @@ async def test_leader_steps_down_on_its_own_clock_before_the_server_side_expiry(
             # elect wrote it until the lapse. The factory replacement makes
             # the post-demotion re-election park inside a hung elect, so the
             # row cannot be rewritten between the demotion and the reads
-            # below — that is what makes "the step-down touched no database
+            # below - that is what makes "the step-down touched no database
             # state" observable without racing the loop's next cycle.
             real_conn = deps.leader_conn
             assert real_conn is not None
@@ -1519,7 +1519,7 @@ async def test_leader_steps_down_on_its_own_clock_before_the_server_side_expiry(
                 )
             assert still_live is True, (
                 "the leader must stand down BEFORE the server-side expiry "
-                "it wrote — standing down past it overlaps a peer's legal "
+                "it wrote - standing down past it overlaps a peer's legal "
                 "takeover"
             )
             assert after is not None
@@ -1546,7 +1546,7 @@ async def test_leader_whose_row_was_taken_over_steps_down_on_the_next_renewal(
     leaves the successor's row untouched.
 
     The takeover itself cannot be produced by the elect statement against
-    a live lease — that is the exclusion property — so the successor's row
+    a live lease - that is the exclusion property - so the successor's row
     is seeded directly, exactly the state the fence exists to be read
     against.
     """
@@ -1604,12 +1604,12 @@ async def test_leader_whose_row_was_taken_over_steps_down_on_the_next_renewal(
         await stack.aclose()
 
 
-# ── A won-but-unassumable lease goes back to the fleet (#234) ───────────
+# ── A won-but-unassumable lease goes back to the fleet ───────────
 
 
 class _UnassumableLeader(MaintenanceLeader):
     """A pod that keeps WINNING elections but can never open the dedicated
-    conns an assume requires, the conn-count-pressure shape from #234:
+    conns an assume requires, the conn-count-pressure shape from :
     the one leader-conn slot the election itself uses opens fine, the two
     extra dedicated conns are refused every cycle."""
 
@@ -1621,7 +1621,7 @@ class _UnassumableLeader(MaintenanceLeader):
 async def test_won_but_unassumable_leader_hands_the_lease_to_a_peer(
     pg_dsn: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """#234, end to end on real Postgres: a pod whose elections keep
+    """, end to end on real Postgres: a pod whose elections keep
     succeeding but whose dedicated-conn opens keep failing must not hold
     the lease forever.
 

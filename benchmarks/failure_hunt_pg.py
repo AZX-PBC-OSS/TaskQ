@@ -1,14 +1,14 @@
 """Empirical failure-path hunt (perf campaign follow-up).
 
 Runs against the real PG at postgresql://taskq:taskq@localhost:5432/taskq.
-Read-only with respect to src/ — this file lives in benchmarks/ and only
+Read-only with respect to src/ - this file lives in benchmarks/ and only
 writes rows to the `taskq` schema, cleaning up after itself.
 
 Parts
-  1  BATCH POISONING   — one NUL payload in enqueue_batch / _enqueue_batch_fast
-  2  NOTIFY FAN-OUT    — cancel_where-style pg_notify burst (payload size, timing)
-  3  PROGRESS ORPHANS  — buffer lifecycle on flush/self-heal/leak-window
-  4  CANCELLATION      — double-cancel during asyncio.shield -> unretrieved exc
+  1  BATCH POISONING   - one NUL payload in enqueue_batch / _enqueue_batch_fast
+  2  NOTIFY FAN-OUT    - cancel_where-style pg_notify burst (payload size, timing)
+  3  PROGRESS ORPHANS  - buffer lifecycle on flush/self-heal/leak-window
+  4  CANCELLATION      - double-cancel during asyncio.shield -> unretrieved exc
 """
 
 from __future__ import annotations
@@ -79,7 +79,7 @@ BATCH_ID = new_uuid()
 
 async def part1_batch_poisoning(pool: asyncpg.Pool) -> None:
     say("=" * 78)
-    say("PART 1 — BATCH POISONING (one bad job in a 50-job batch)")
+    say("PART 1 - BATCH POISONING (one bad job in a 50-job batch)")
     say("=" * 78)
     sql = render(SCHEMA)
 
@@ -127,7 +127,7 @@ async def part1_batch_poisoning(pool: asyncpg.Pool) -> None:
         f"({loop_ms / retries:6.2f} ms/retry; 0 good jobs enqueued per retry)"
     )
 
-    # Fast path: NUL payload — guarded at jsonb_param too?
+    # Fast path: NUL payload - guarded at jsonb_param too?
     t0 = time.perf_counter()
     err = None
     try:
@@ -150,10 +150,10 @@ async def part1_batch_poisoning(pool: asyncpg.Pool) -> None:
         f"1f  _enqueue_batch(50, 1 NUL tag):    {type(err).__name__} (guarded at EnqueueArgs construction)"
     )
 
-    # dispatch_batch atomicity: claim is a single CTE — poison a payload of a
-    # PENDING row and confirm the claim either claims or not — never partially.
+    # dispatch_batch atomicity: claim is a single CTE - poison a payload of a
+    # PENDING row and confirm the claim either claims or not - never partially.
     say(
-        "1g  dispatch CTE atomicity: single UPDATE..RETURNING — no partial-claim path exists (code: _dispatch_sql.py:166-182)"
+        "1g  dispatch CTE atomicity: single UPDATE..RETURNING - no partial-claim path exists (code: _dispatch_sql.py:166-182)"
     )
 
     # poison-job terminal cost: actor result with NUL reaching mark_failed
@@ -167,12 +167,12 @@ async def part1_batch_poisoning(pool: asyncpg.Pool) -> None:
 async def part2_notify_fanout(pool: asyncpg.Pool) -> None:
     say()
     say("=" * 78)
-    say("PART 2 — NOTIFY FAN-OUT (cancel_where of N running jobs)")
+    say("PART 2 - NOTIFY FAN-OUT (cancel_where of N running jobs)")
     say("=" * 78)
 
     payload = _cancel_notify_payload(new_job_id(), WORKER_ID)
     say(
-        f"2a  per-target payload length: {len(payload)} bytes (PG cap 8000) — cap overflow impossible (fixed shape)"
+        f"2a  per-target payload length: {len(payload)} bytes (PG cap 8000) - cap overflow impossible (fixed shape)"
     )
     say(f"    payload: {payload}")
 
@@ -231,7 +231,7 @@ async def part2_notify_fanout(pool: asyncpg.Pool) -> None:
 async def part3_progress_orphans(pool: asyncpg.Pool) -> None:
     say()
     say("=" * 78)
-    say("PART 3 — PROGRESS BUFFER ORPHANS")
+    say("PART 3 - PROGRESS BUFFER ORPHANS")
     say("=" * 78)
     sql = render(SCHEMA)
     clock = SystemClock()
@@ -296,7 +296,7 @@ async def part3_progress_orphans(pool: asyncpg.Pool) -> None:
     )
 
     # leak window: cancel lands between buffer INSERT (consumer.py:387) and the
-    # inner try (consumer.py:452) — here: while active_jobs.register is blocked
+    # inner try (consumer.py:452) - here: while active_jobs.register is blocked
     say()
     say("3d  leak window: CancelledError during active_jobs.register (consumer.py:421)")
     await leak_window_demo()
@@ -332,7 +332,7 @@ async def leak_window_demo() -> None:
     async def victim() -> None:
         with contextlib.suppress(asyncio.CancelledError):
             await consume_one_job(
-                SimpleNamespace(),  # backend — never reached on this path
+                SimpleNamespace(),  # backend - never reached on this path
                 row,  # type: ignore[arg-type]
                 WORKER_ID,
                 deps=deps,  # type: ignore[arg-type]
@@ -359,7 +359,7 @@ async def leak_window_demo() -> None:
 async def part4_cancellation() -> None:
     say()
     say("=" * 78)
-    say("PART 4 — CANCELLATION: double-cancel during asyncio.shield")
+    say("PART 4 - CANCELLATION: double-cancel during asyncio.shield")
     say("=" * 78)
     unretrieved: list[BaseException] = []
     loop = asyncio.get_running_loop()
@@ -391,7 +391,7 @@ async def part4_cancellation() -> None:
     await asyncio.sleep(0.01)
     v.cancel()  # first cancel
     await asyncio.sleep(0.01)
-    v.cancel()  # second cancel — lands inside the except-block's shield
+    v.cancel()  # second cancel - lands inside the except-block's shield
     with contextlib.suppress(asyncio.CancelledError):
         await v
     await asyncio.sleep(0.2)  # let the detached task fail
@@ -401,7 +401,7 @@ async def part4_cancellation() -> None:
     for exc in unretrieved:
         say(f"      -> {type(exc).__name__}: {exc}")
     say(
-        "    pattern sites: _consumer.py:532/606/635/938/965/986, _cancel_bulk.py:332 —"
+        "    pattern sites: _consumer.py:532/606/635/938/965/986, _cancel_bulk.py:332 -"
         " a second CancelledError while awaiting the shield detaches the inner task;"
         " if it later fails its exception is never retrieved (log noise + lost signal)"
     )

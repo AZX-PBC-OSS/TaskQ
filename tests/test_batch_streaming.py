@@ -175,7 +175,7 @@ class TestStreamingValidation:
             await client.enqueue_batch_streaming(_items_gen(5), chunk_size=1001)
 
 
-# ── No-connection path — per-chunk commits, typed refusal ──────────────
+# ── No-connection path - per-chunk commits, typed refusal ──────────────
 
 
 @actor(name="batch_streaming_partition_healthy")
@@ -193,7 +193,7 @@ async def test_no_conn_chunk_failure_commits_prefix_and_raises_typed_error() -> 
     transaction, so a cap refusal on chunk N leaves chunks 1..N-1 (plus
     the refusing chunk's within-cap actors, under the per-actor
     partition) durably committed, and the call raises the typed batch
-    error with STREAM-GLOBAL item indices — everything a caller needs to
+    error with STREAM-GLOBAL item indices - everything a caller needs to
     retry only the refused items instead of duplicating the prefix."""
     backend = _make_backend()
     client = _make_client(backend)
@@ -235,7 +235,7 @@ async def test_no_conn_chunk_failure_commits_prefix_on_pg(
 ) -> None:
     """The same pin against real Postgres: the no-connection path commits
     each chunk in its OWN pool transaction, so the committed prefix
-    survives the failing chunk's refusal — the durability claim the
+    survives the failing chunk's refusal - the durability claim the
     in-memory mirror cannot prove by itself."""
     from taskq.client._jobs import JobsClient as _JobsClient
 

@@ -7,8 +7,8 @@ no-exit cell proved the failure mode live).  This module is the systematic
 differential the suite lacked: a :class:`DiffSide` adapter funnels the SAME
 scenario function through ``InMemoryBackend`` (FakeClock domain) and
 ``PostgresBackend`` (server-clock domain), and :meth:`DiffSide.snapshot`
-projects each side onto a normalized observable dict — statuses, attempt-row
-tuples, event kinds/details, returned rows' comparable fields — which
+projects each side onto a normalized observable dict - statuses, attempt-row
+tuples, event kinds/details, returned rows' comparable fields - which
 :func:`assert_mirror` then asserts equal, with the contract and both sides'
 observables in the failure text.  Postgres is the contract source: a mirror
 that misleads certifies code that would corrupt on PG.
@@ -18,26 +18,26 @@ Clock-domain normalization
 
 The two sides' clocks are independent (FakeClock is frozen until advanced;
 PG advances in wall time).  Scenarios therefore express time as OFFSETS from
-a per-side anchor captured at calibration (``side.ts(offset_seconds)``) —
+a per-side anchor captured at calibration (``side.ts(offset_seconds)``) -
 for the PG side re-captured at its own scenario's start, so its offsets,
-like the memory side's, measure from where its scenario begins — and
+like the memory side's, measure from where its scenario begins - and
 the snapshot normalizes every timestamp to a domain-relative bucket. At
 snapshot the memory clock is first advanced by exactly the wall time the PG
 side consumed running the scenario, so both sides' action-written
 timestamps sit at the same logical elapsed and bucket identically however
 loaded the runner is:
 
-* ``None`` — the column is NULL;
-* ``"past"`` — the instant is at least 0.5 s before the snapshot's now;
-* ``"now"`` — within 0.5 s of the snapshot's now;
-* a rounded integer — seconds AFTER the snapshot's now (retry backoffs,
+* ``None`` - the column is NULL;
+* ``"past"`` - the instant is at least 0.5 s before the snapshot's now;
+* ``"now"`` - within 0.5 s of the snapshot's now;
+* a rounded integer - seconds AFTER the snapshot's now (retry backoffs,
   lock leases, result expiries; PG's sub-second statement latency is
   absorbed by the rounding).
 
 Where a scenario needs PG's clock to "advance" (a lock expiring, a
 unique_for window elapsing, a scheduled job becoming due), the PG side
 manipulates the ROW timestamps via ``side.mutate`` (``clock_timestamp()``
-arithmetic in SQL) while the memory side rewrites the stored row — the
+arithmetic in SQL) while the memory side rewrites the stored row - the
 sanctioned equivalent of driving FakeClock, per the fix plan's
 "drive both to the same logical time" rule.
 
@@ -47,14 +47,14 @@ Identity normalization
 UUIDs differ per side by construction; the adapter maps them to the
 scenario's own tokens (``"j1"``, ``"w1"``, ``"b1"``), so observables compare
 token-for-token.  ``side.token_of(job_id)`` reports ``"<new>"`` for a row the
-scenario never registered — the dedup-arm differential's signal for "a fresh
+scenario never registered - the dedup-arm differential's signal for "a fresh
 row came back".
 
 PG-only surface deliberately normalized away (disposition note, not a
 divergence): ``job_attempts.worker_id`` resolves through a ``workers`` FK
 probe on PG (NULL when no workers row exists) while the mirror records the
 passed id verbatim.  The adapter inserts a ``workers`` row for every worker
-token it registers, so both sides record the id — the FK-NULL case is an
+token it registers, so both sides record the id - the FK-NULL case is an
 observable the mirror cannot represent and no production path hits through
 this harness.
 """
@@ -306,7 +306,7 @@ class DiffSide:
         ``anchor + offset`` in this side's domain.
 
         ``retry_jitter=None`` leaves the ``EnqueueArgs`` default in place
-        (the default is not restated here — one source); a scenario passes
+        (the default is not restated here - one source); a scenario passes
         an explicit value when its observable includes a reclaim-stamped
         ``scheduled_at``: the projection buckets timestamps at
         second-resolution, which cannot resolve a jitter band, so a
@@ -382,7 +382,7 @@ class DiffSide:
                     actor=actor,
                 ),
                 # make_job_row generates its OWN id; the twin must store a
-                # row whose id IS the key it is stored under — the PG arm's
+                # row whose id IS the key it is stored under - the PG arm's
                 # INSERT writes the same id as its pkey. A mismatch leaves
                 # the mirror holding a row whose identity disagrees with
                 # its storage key (and every attempt/event it later writes).
@@ -410,7 +410,7 @@ class DiffSide:
             assert self._conn is not None and self.schema is not None
             # started_at / lock_expires_at / cancel_requested_at are inlined
             # clock_timestamp() expressions (fixed scenario literals, never
-            # user input — the same S608 justification as the schema name);
+            # user input - the same S608 justification as the schema name);
             # every plain value stays $-bound. payload and created_at mirror
             # the memory arm's make_job_row defaults verbatim (empty payload,
             # anchor - 1s): the snapshot projection compares both, so the
@@ -609,7 +609,7 @@ class DiffSide:
     # ── Terminal writes ────────────────────────────────────────────────
 
     async def _attempt_epoch_of(self, token: str) -> int | None:
-        """The row's current attempt number — the epoch terminal writes fence on.
+        """The row's current attempt number - the epoch terminal writes fence on.
 
         The worker presents ``attempt=job.attempt`` from its in-hand row
         (worker/_consumer.py); the scenario adapter does the same through
@@ -774,7 +774,7 @@ class DiffSide:
                     (t for t, b in self._batches_by_token.items() if b == bid),
                     "<batch>",
                 )
-        # The projection is TOTAL over JobRow's fields — one key per field,
+        # The projection is TOTAL over JobRow's fields - one key per field,
         # guarded by test_job_observable_projects_every_jobrow_field: a
         # field the projection cannot serialize is a PG↔memory divergence
         # the harness would never catch. Identity and side-local values
@@ -865,7 +865,7 @@ class DiffSide:
             return _bucket(value, now)
         if isinstance(value, dict):
             # Why the cast: ``value`` is Any, and isinstance-narrowing leaves
-            # its items Unknown (pyright strict) — cast re-declares the
+            # its items Unknown (pyright strict) - cast re-declares the
             # narrowed container so every element is Any, not Unknown.
             mapping = cast("dict[Any, Any]", value)
             return {k: self._norm_value(v, now) for k, v in mapping.items()}
@@ -949,7 +949,7 @@ def _memory_side(actors: Sequence[str]) -> DiffSide:
     side = DiffSide("memory", backend, conn=None, schema=None)
     # Why the private poke instead of calibrate(): the builder is SYNC (its
     # caller composes it into run_differential without an event loop hop),
-    # and calibrate() is async — the frozen FakeClock's now IS the anchor,
+    # and calibrate() is async - the frozen FakeClock's now IS the anchor,
     # so the assignment is exactly what calibrate() would await to do.
     side._t0 = _MEM_START  # pyright: ignore[reportPrivateUsage]  # Why: harness-owned anchor seeding; the established same-module pattern.
     return side
@@ -1004,7 +1004,7 @@ async def run_differential(
     The SAME function drives both sides through the :class:`DiffSide` adapter,
     so the inputs are identical by construction; only the backend differs.
     The PG side gets a random ``tdf_`` schema with migrations applied, and is
-    dropped (CASCADE) in the finally — pool closed first.
+    dropped (CASCADE) in the finally - pool closed first.
     """
     schema = f"tdf_{new_base62()}".lower()
     mem = _memory_side(actors)
@@ -1020,14 +1020,14 @@ async def run_differential(
         # Re-anchor the PG side to its OWN scenario's start. The anchor
         # captured at side construction (the calibrate() call) predates the
         # MEMORY scenario, whose wall time is time the PG side's
-        # action-written timestamps never spanned — the memory side writes
+        # action-written timestamps never spanned - the memory side writes
         # its action timestamps at the frozen FakeClock instant no matter
         # how long its own scenario runs. Measuring the co-drive elapsed
         # from the stale anchor advanced the memory clock by the memory
         # scenario's own duration, so once a loaded runner stretched that
         # scenario past the 0.5 s bucket fence every memory action
         # timestamp read one bucket further into the past than its PG
-        # counterpart ('now' -> 'past', a 10 s backoff reading 9) — the
+        # counterpart ('now' -> 'past', a 10 s backoff reading 9) - the
         # mirror diverged on pure runner latency, not backend behavior
         # (the CI failure on test_diff_mark_failed_or_retry_arms). The
         # re-anchor also makes the sides' offset domains symmetric:
@@ -1041,12 +1041,12 @@ async def run_differential(
         # each side's own clock: PG's to the server clock, which advances
         # with real runner time, the memory's to the frozen FakeClock,
         # which does not. Bucketing both sides against their own now then
-        # diverges on a loaded runner — a lifecycle field written at the
+        # diverges on a loaded runner - a lifecycle field written at the
         # enqueue reads "now" on the frozen clock and "past" on the
         # advanced one, and a lease reads one second lower. This is the
         # harness's own drive-both-to-the-same-logical-time rule, applied
         # at snapshot: the memory clock advances by exactly the elapsed
-        # the PG side experienced (measured from the re-anchored t0 —
+        # the PG side experienced (measured from the re-anchored t0 -
         # its own scenario's start), so action-written fields bucket
         # identically and the rounding absorbs only sub-second residual.
         assert pg._t0 is not None  # pyright: ignore[reportPrivateUsage]  # Why: harness-owned anchor; the established same-module pattern.
@@ -1067,7 +1067,7 @@ async def run_differential(
 def assert_mirror(contract: str, mem: dict[str, Any], pg: dict[str, Any]) -> None:
     """Assert the mirror produced PG's observables; PG is the contract source."""
     assert mem == pg, (
-        "MIRROR DIVERGENCE — the InMemoryBackend must reproduce PostgresBackend's "
+        "MIRROR DIVERGENCE - the InMemoryBackend must reproduce PostgresBackend's "
         f"observables for identical inputs.\nContract: {contract}\n"
         f"PostgresBackend (contract source): {pg}\n"
         f"InMemoryBackend (mirror):          {mem}"
@@ -1113,10 +1113,10 @@ async def test_job_observable_projects_every_jobrow_field() -> None:
     """The job projection is TOTAL: every ``JobRow`` field has a same-named key.
 
     The differential can only catch PG↔memory divergence in fields the
-    projection serializes — a field added to ``JobRow`` but never projected
+    projection serializes - a field added to ``JobRow`` but never projected
     here is a silent blind spot (the retry-curve scalars, ``interrupt_count``
     and ``assignment_routed`` were exactly that). The field list derives
-    from the dataclass itself — one source of truth — so adding a
+    from the dataclass itself - one source of truth - so adding a
     ``JobRow`` field without projecting it fails this test. The planted
     row carries non-default values for the previously unprojected fields
     so their serialization is exercised, not just their key presence.
@@ -1154,7 +1154,7 @@ async def test_job_observable_projects_every_jobrow_field() -> None:
 
     missing = {f.name for f in fields(JobRow)} - set(obs)
     assert not missing, (
-        f"JobRow fields missing from the differential projection: {sorted(missing)} — "
+        f"JobRow fields missing from the differential projection: {sorted(missing)} - "
         "a field the projection cannot serialize is a PG↔memory divergence the "
         "harness can never catch"
     )

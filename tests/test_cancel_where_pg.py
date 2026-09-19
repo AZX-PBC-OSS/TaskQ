@@ -63,7 +63,7 @@ class TestCancelWherePostgres:
         Bulk cancel is how an operator offboards a tenant or aborts a bad
         deploy, and it is exactly when monitoring needs to say *why* a
         large population of rows went terminal. If the bulk path writes a
-        different marker from the single-job path — or none at all — the
+        different marker from the single-job path - or none at all - the
         cancelled-jobs view splits into two populations that mean the same
         thing, and the bulk one is the population with no explanation
         attached.
@@ -299,7 +299,7 @@ class TestCancelWherePostgres:
 class TestDeadlockRetry:
     """Unit tests for the deadlock retry loop in _cancel_where.
 
-    These don't need a real Postgres — they mock the pool to simulate
+    These don't need a real Postgres - they mock the pool to simulate
     deadlock-then-success and deadlock-then-exhaustion scenarios.
     """
 
@@ -317,7 +317,7 @@ class TestDeadlockRetry:
         conn.executemany = AsyncMock(return_value=None)
         # The batched event INSERTs and the statement_timeout
         # capture/restore (current_setting fetch + set_config executes)
-        # run via conn.fetch/conn.execute — bare MagicMock attributes
+        # run via conn.fetch/conn.execute - bare MagicMock attributes
         # would not be awaitable.
         conn.fetch = AsyncMock(return_value=[{"current_setting": "0"}])
         conn.execute = AsyncMock(return_value="INSERT 0 1")
@@ -379,7 +379,7 @@ class TestDeadlockRetry:
         running_row = self._running_empty_row()
         # Round 1: the ps arm's first batch deadlocks, its retry commits
         # the ps row (matched 1 < batch size ends that drain), the
-        # running arm drains empty. Round 2 (the #237 fixpoint's
+        # running arm drains empty. Round 2 (the fixpoint's
         # confirmation pass): both arms window empty and the loop stops.
         pool, _ = self._mock_pool_and_conn(
             fetch_rows=[
@@ -416,7 +416,7 @@ class TestDeadlockRetry:
         ps_row = self._ps_success_row()
         running_row = self._running_empty_row()
         # Round 1 drains both arms (2 driving fetchrows); round 2, the
-        # #237 fixpoint's confirmation pass, which must run because round
+        # fixpoint's confirmation pass, which must run because round
         # 1 made progress, windows both arms empty (2 more) and stops.
         pool, conn = self._mock_pool_and_conn(
             fetch_rows=[
@@ -439,12 +439,12 @@ class TestDeadlockRetry:
 
     async def test_deadlock_during_executemany_retries_correctly(self) -> None:
         """Deadlock during the event write (after fetchrow succeeds)
-        retries the batch — no phantom IDs from the aborted attempt."""
+        retries the batch - no phantom IDs from the aborted attempt."""
         ps_row = self._ps_success_row()
         running_row = self._running_empty_row()
         # Attempt 1: fetchrow → ps_row, batched event INSERT → deadlock
         # Attempt 2: fetchrow → ps_row, event INSERTs → ok, fetchrow → running_row
-        # Round 2 (the #237 fixpoint confirmation): both arms empty.
+        # Round 2 (the fixpoint confirmation): both arms empty.
         pool, conn = self._mock_pool_and_conn(
             fetch_rows=[
                 ps_row,

@@ -9,25 +9,25 @@ Two attacking interleavings around ``run_post_tx``'s drain of
    sentinel so the consumer's CancelledError path skips ``mark_cancelled``).
    ``run_post_tx`` then pops the job and awaits ``mark_abandoned``.  If that
    write RAISES (a mere pool-acquire ``TimeoutError`` is enough), the entry
-   keeps ``ABANDON_PENDING`` — and no arm in ``run_in_tx`` ever matches
+   keeps ``ABANDON_PENDING`` - and no arm in ``run_in_tx`` ever matches
    ``ABANDON_PENDING`` again: the phase-1 arm needs ``< COOPERATIVE``, the
    re-issue arm needs ``== COOPERATIVE`` or ``(>= FORCED AND db ==
    COOPERATIVE)``, and the phase-3 queueing arm needs ``== FORCED`` exactly.
    The not-applied fallback in ``run_post_tx`` (entry back to ``FORCED``)
    only covers the ``False`` return, never the exception.  One transient
    write failure therefore leaves a hung-actor job *permanently*
-   un-abandonable while the heartbeat keeps renewing its lease — the sweep
+   un-abandonable while the heartbeat keeps renewing its lease - the sweep
    can never reclaim it either.
 
 2. **The phase-3 queueing arm ignores poll ownership.**
    The arm queues an abandon for any entry at local ``FORCED`` past both
-   graces, without consulting ``db_phase`` — i.e. without checking that
+   graces, without consulting ``db_phase`` - i.e. without checking that
    THIS tick's own poll still returns the row.  Once the job has been
    reclaimed (``locked_by_worker`` no longer this worker) the poll stays
    silent, yet the abandon is re-issued every tick, unbounded.  Because
    ``mark_abandoned`` is deliberately worker-unfenced (guard: ``status =
    'running' AND cancel_phase = 2``), a stale entry can terminate a
-   re-dispatched attempt now owned by ANOTHER worker — the PG-level proof
+   re-dispatched attempt now owned by ANOTHER worker - the PG-level proof
    is in ``tests/test_rt_cancelwatch_cross_worker_abandon.py``; this file
    pins the controller-level contract.
 """
@@ -137,7 +137,7 @@ async def _reap_sleeper(task: asyncio.Task[object]) -> None:
     test_leader_sweeps_coverage.py, ``_stop_quietly`` in
     test_drain_liveness.py): a task minted on the module loop is the
     minting test's to retrieve. The registry's ``deregister`` only drops
-    bookkeeping — it never touches the task — and the controller cancels
+    bookkeeping - it never touches the task - and the controller cancels
     the task only on the escalation path, which the poll-ownership
     contract below deliberately never reaches, so nothing but this
     reap ever stops the sleeper.
@@ -160,7 +160,7 @@ async def test_abandon_write_failure_does_not_strand_job_at_abandon_pending() ->
 
     Current behavior violates the contract because the drain pops the entry
     and lets the exception escape while the registry entry keeps the
-    in-process ``ABANDON_PENDING`` sentinel — a phase no arm in ``run_in_tx``
+    in-process ``ABANDON_PENDING`` sentinel - a phase no arm in ``run_in_tx``
     ever matches again, so the abandon is never re-issued and the job is
     registered forever with no route to a terminal state.
     """
@@ -201,7 +201,7 @@ async def test_abandon_write_failure_does_not_strand_job_at_abandon_pending() ->
         assert INSERT_EVENT_SQL.format(schema=ws.schema_name) in recorder.execute_calls
 
         # Tick 2: the same state a production heartbeat reaches on its next
-        # interval — PG healthy again, entry still registered.
+        # interval - PG healthy again, entry still registered.
         await _tick(controller, _Recorder([]))
 
         assert len(backend.calls) == 2, (
@@ -225,7 +225,7 @@ async def test_phase3_abandon_not_issued_for_job_absent_from_own_poll() -> None:
     """A tick whose own poll no longer returns the job must not abandon it.
 
     The poll (``POLL_CANCEL_FLAGS_SQL``) is fenced on ``locked_by_worker =
-    $1 AND cancel_requested_at IS NOT NULL AND status = 'running'`` — the
+    $1 AND cancel_requested_at IS NOT NULL AND status = 'running'`` - the
     exact set of rows an abandon from THIS worker is entitled to touch.
     Once a reclaim has moved the row to another holder, the poll goes
     silent, but the phase-3 arm queues on local state alone; because
@@ -265,7 +265,7 @@ async def test_phase3_abandon_not_issued_for_job_absent_from_own_poll() -> None:
 
         assert backend.calls == [], (
             "Contract: a cancel-poll tick must not issue mark_abandoned for a job "
-            "its own poll did not return — the poll's predicate (locked_by_worker, "
+            "its own poll did not return - the poll's predicate (locked_by_worker, "
             "cancel_requested_at, status='running') is exactly the set of rows this "
             "worker's abandon may touch; mark_abandoned is worker-unfenced, so an "
             "abandon issued from stale local state can terminate another worker's "

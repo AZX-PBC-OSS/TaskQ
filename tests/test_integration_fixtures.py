@@ -1,12 +1,12 @@
 """Verify the module-scoped PG/Redis fixtures provide proper isolation.
 
-Covers: module_pg_schema is module-scoped — same schema for all tests in
-file; module_redis_url is module-scoped — same DB id for all tests in
-file; clean_pg_conn truncates between tests — no cross-test PG state;
+Covers: module_pg_schema is module-scoped - same schema for all tests in
+file; module_redis_url is module-scoped - same DB id for all tests in
+file; clean_pg_conn truncates between tests - no cross-test PG state;
 clean_jobs_app provides working WorkerDeps + PostgresBackend;
-clean_redis_url flushdb between tests — no cross-test Redis state;
+clean_redis_url flushdb between tests - no cross-test Redis state;
 clean_redis_client provides a working Redis async client; seed_actors
-with custom actors — empty/custom actors work; truncate_schema leaves
+with custom actors - empty/custom actors work; truncate_schema leaves
 schema_migrations intact.
 """
 
@@ -37,7 +37,7 @@ def pg_schema_seen_at_setup(module_pg_schema: ModulePgSchema) -> str:
     The recording lives here, not in a test body, because pytest-randomly
     reshuffles order within each xdist worker: any "a previous test body ran
     first in this process" premise is an ordering dependence. Setup time is
-    order-invariant — every test that depends on this recorder compares
+    order-invariant - every test that depends on this recorder compares
     against the instance the module fixture actually handed out.
     """
     _MOD_SEEN.add(module_pg_schema.schema_name)
@@ -47,7 +47,7 @@ def pg_schema_seen_at_setup(module_pg_schema: ModulePgSchema) -> str:
 @pytest.fixture(scope="module")
 def redis_url_seen_at_setup(module_redis_url: str) -> str:
     """The module Redis URL, recorded once per (worker, module) at fixture
-    SETUP — same order-invariant recording as :func:`pg_schema_seen_at_setup`.
+    SETUP - same order-invariant recording as :func:`pg_schema_seen_at_setup`.
     """
     _REDIS_DB_SEEN.add(module_redis_url)
     return module_redis_url
@@ -301,14 +301,14 @@ class TestTruncateSchemaMetadata:
 # A test that installs a trigger changes the schema's DDL, which no
 # TRUNCATE undoes, so the reset drops any trigger the migrations did not
 # install.  The trigger and table names come from the catalog, and the
-# DROP interpolates them — the project's identifier rule (validate
+# DROP interpolates them - the project's identifier rule (validate
 # against the canonical identifier regex before any interpolation)
 # applies to catalog-sourced names exactly as to user-sourced ones.
 
 
 class TestTruncateSchemaTriggerReset:
     async def test_test_added_trigger_is_dropped(self, module_pg_schema: ModulePgSchema) -> None:
-        """A trigger a test installed is gone after the reset — the DDL
+        """A trigger a test installed is gone after the reset - the DDL
         the next test meets is the migrated one."""
         conn = await asyncpg.connect(module_pg_schema.pg_dsn)
         s = module_pg_schema.schema_name
@@ -349,7 +349,7 @@ class TestTruncateSchemaTriggerReset:
     ) -> None:
         """A catalog-sourced trigger name the identifier rule cannot
         admit must fail the reset loudly rather than be interpolated raw
-        into the DROP — an unvalidated name breaks out of the quoting."""
+        into the DROP - an unvalidated name breaks out of the quoting."""
         conn = await asyncpg.connect(module_pg_schema.pg_dsn)
         s = module_pg_schema.schema_name
         try:

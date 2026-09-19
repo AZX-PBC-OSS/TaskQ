@@ -9,11 +9,11 @@ When the key goes idle, ``evict_idle_keyed_reservations``
 the strength of a docstring claiming the rows "are already reclaimed
 independently by the existing lock-expiry sweep". That claim was false:
 the lock-expiry sweep is ``UPDATE ... SET job_id = NULL``
-(``backend/_sweeps.py:334-341``) — it clears the row but leaves it — and
+(``backend/_sweeps.py:334-341``) - it clears the row but leaves it - and
 ``sync_slots``, for its part, iterates *currently registered*
 reservations, so an evicted bucket is invisible to it by construction.
 The rows were orphaned with no code path able to delete them, ever, and
-steady-state cardinality is ``slots x every key ever seen`` — unbounded
+steady-state cardinality is ``slots x every key ever seen`` - unbounded
 in the caller-supplied key space. The pending-reclaim drain
 (``registry.py:1647``, ``drain_pending_reservation_reclaims``) is the
 DELETE path that closes exactly this gap; these tests pin its contract.
@@ -21,7 +21,7 @@ DELETE path that closes exactly this gap; these tests pin its contract.
 The contract these tests pin: once a keyed bucket is evicted AND idle
 (no slot held), its ``reservation_slots`` rows are reclaimed; and a key
 that becomes active again afterwards re-materialises and acquires
-cleanly. Deliberately NOT pinned here: the actively-held case — a slot
+cleanly. Deliberately NOT pinned here: the actively-held case - a slot
 still held by a live job must survive eviction (pinned by
 ``tests/test_ratelimit_keyed_refs_pg.py::test_eviction_while_holder_active_does_not_over_admit``
 and, for the drain's idle-guarded DELETE specifically, by
@@ -83,7 +83,7 @@ async def test_evicted_idle_keyed_reservation_slots_are_reclaimed(
     pg_dsn: str,
 ) -> None:
     """Evicting an idle keyed bucket must delete its ``reservation_slots``
-    rows — the key space is caller-controlled, so retaining them is
+    rows - the key space is caller-controlled, so retaining them is
     permanent, unbounded growth."""
     await _fresh_schema(pg_dsn)
 
@@ -112,7 +112,7 @@ async def test_evicted_idle_keyed_reservation_slots_are_reclaimed(
         assert await _slot_rows(pool, bucket) == 2, "fixture broken: ensure_slots did not run"
 
         # Release the only slot, THEN evict: the bucket is now genuinely
-        # idle — the case no correctness argument protects.
+        # idle - the case no correctness argument protects.
         await reg.release_for_actor(acquired)
         evicted = reg.evict_idle_keyed_reservations(idle_for=timedelta(0))
         assert evicted == 1, "fixture broken: the idle keyed bucket was not evicted"
@@ -138,7 +138,7 @@ async def test_reclaimed_key_rematerialises_on_next_acquire(
 ) -> None:
     """Control: reclamation must not break re-materialisation. A key that
     becomes active again after its idle eviction must re-register and
-    acquire cleanly — this must stay green both before and after the fix."""
+    acquire cleanly - this must stay green both before and after the fix."""
     await _fresh_schema(pg_dsn)
 
     pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=1, max_size=2)

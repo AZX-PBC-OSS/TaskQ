@@ -49,7 +49,7 @@ async def _enqueue_and_dispatch(
 ) -> tuple[JobId, UUID]:
     """Enqueue a job and dispatch it, returning (job_id, worker_id)."""
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     if actor not in backend._actor_configs_meta:  # type: ignore[reportPrivateUsage]  # Why: test-only private access
         backend.register_actor_config(actor=actor)
     args = EnqueueArgs(
@@ -213,7 +213,7 @@ class TestOwnershipMismatch:
         assert exc_info.value.job_id == job_id
         assert exc_info.value.expected == wid
         # The succeeded row cleared its lock holder (PG's mark_succeeded
-        # SET clause), so the diagnostic reads actual=None — exactly the
+        # SET clause), so the diagnostic reads actual=None - exactly the
         # owner PG's _select_owner would report for a terminal row.
         assert exc_info.value.actual is None
 
@@ -338,7 +338,7 @@ class TestSingleAttemptRowPerTransition:
         await backend.mark_snoozed(job_id, wid, timedelta(seconds=30), attempt=1)
 
         # A snooze is a deferral, not an execution: no attempt row and no
-        # event row — the row's snooze_count is its whole durable record.
+        # event row - the row's snooze_count is its whole durable record.
         attempts = await backend.get_attempts(job_id)
         assert len(attempts) == 0
 
@@ -505,8 +505,8 @@ class TestMarkAbandonedCancelPhaseGuard:
     async def test_abandon_counts_on_the_abandoned_series(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """An applied abandon is the only producer of taskq.jobs.abandoned —
-        the series TaskQAbandonedJobs pages on — labelled by the row's
+        """An applied abandon is the only producer of taskq.jobs.abandoned -
+        the series TaskQAbandonedJobs pages on - labelled by the row's
         actor; a predicate miss records nothing."""
         from taskq.testing.otel import counter_data_points, setup_meter
 
@@ -555,7 +555,7 @@ class TestAttemptEpochFencing:
     epoch (``attempt == $attempt``) guards against a stale handler's
     terminal write landing on a row it no longer owns after the same worker
     reclaimed and redispatched it. Every write that cannot present the
-    row's CURRENT attempt — a stale epoch, or no epoch at all — must
+    row's CURRENT attempt - a stale epoch, or no epoch at all - must
     no-op through the same machinery as the worker fence.
     """
 
@@ -791,7 +791,7 @@ class TestMarkCancelledPreservesCancelPhase:
 
 class TestPayloadValidationErrorThroughMarkFailedOrRetry:
     """PayloadValidationError path through mark_failed_or_retry.
-    Verifies the write surface — the non-retryable classifier.
+    Verifies the write surface - the non-retryable classifier.
     """
 
     async def test_payload_validation_error_terminal_failure(self) -> None:
@@ -989,12 +989,12 @@ class TestWriteCancelEscalationEvents:
         """write_cancel_escalation(phase=2) on a cancel_phase=0 row is a no-op.
 
         The SQL WHERE clause requires cancel_phase=1. cancel_phase=0 means
-        no cancel request has been issued yet — escalating directly to phase=2
+        no cancel request has been issued yet - escalating directly to phase=2
         would skip the cooperative grace window. The predicate MUST reject this.
         """
         backend = _make_backend()
         job_id, wid = await _enqueue_and_dispatch(backend)
-        # cancel_phase is 0 at dispatch — no write_cancel_request call
+        # cancel_phase is 0 at dispatch - no write_cancel_request call
 
         r = await backend.write_cancel_escalation(job_id, wid, 2)  # type: ignore[arg-type]  # Why: Literal[2] not narrowed from int literal by pyright
         assert r is False  # predicate miss: cancel_phase != 1
@@ -1010,14 +1010,14 @@ class TestWriteCancelEscalationEvents:
 class TestCancelSlateResetOnRetry:
     """Branch B (transient retry) resets the cancel slate: a retry reuses
     the SAME job row, so an escalated cancel that survived the retry write
-    would hand the next attempt an already-FORCED phase — the cancel
+    would hand the next attempt an already-FORCED phase - the cancel
     controller's fast-advance would then skip cooperative cancel entirely
     and the attempt could never be cancelled again. Both cancel columns
     (phase + requested-at) must come back clean, asserted on the returned
     row and the persisted row (c06ba0e).
 
-    These previously asserted the opposite — that the phase survived the
-    retry — the exact behaviour that made a job permanently uncancellable.
+    These previously asserted the opposite - that the phase survived the
+    retry - the exact behaviour that made a job permanently uncancellable.
     Clearing matches the crash-reclaim sweep (_SWEEP_1_SQL) and
     isolate_self, which have always reset both columns on their retry arm
     for the same reason: "the next dispatch doesn't immediately re-cancel
@@ -1390,8 +1390,8 @@ class TestSnoozeOutcomeParameter:
     """mark_snoozed accepts an outcome parameter (default "snoozed").
 
     The denial handler passes outcome="reservation_denied" /
-    "rate_limit_denied". A denial is admission backpressure — "come back
-    later" — so its whole durable record is the aggregated counter on the
+    "rate_limit_denied". A denial is admission backpressure - "come back
+    later" - so its whole durable record is the aggregated counter on the
     job row: no attempt row, no event row.
     """
 
@@ -1430,7 +1430,7 @@ class TestDenialNeverConsumesRetryBudget:
     A rate-limit or reservation denial means the job never ran: no actor
     code executed, nothing failed. Charging it a retry attempt lets a
     queue or rate-limit misconfiguration kill work that simply never got
-    a slot — a job with a retry budget of three dies after three
+    a slot - a job with a retry budget of three dies after three
     denials, having done nothing wrong. So a denial refunds the claim's
     attempt increment exactly like an actor-requested deferral, and the
     job is rescheduled indefinitely until capacity frees or its
@@ -1502,8 +1502,8 @@ class TestDenialNeverConsumesRetryBudget:
         """Indefinite denial is the point: contention must not kill work.
 
         Denied far more times than the job's retry ceiling allows, the
-        job stays reschedulable and the denial counter — the operator's
-        only view of the bottleneck — keeps rising.
+        job stays reschedulable and the denial counter - the operator's
+        only view of the bottleneck - keeps rising.
         """
         backend = _make_backend()
         job_id, wid = await _enqueue_and_dispatch(backend, max_attempts=3, retry_kind="transient")
@@ -1819,12 +1819,12 @@ class TestMarkSucceededResultExpiryFallback:
 
     async def test_cleared_stored_ttl_falls_back_to_literal_at_completion(self) -> None:
         """The reported bug: stored result_ttl cleared to NULL, job sat in
-        the queue longer than its TTL — the result must NOT complete
+        the queue longer than its TTL - the result must NOT complete
         already expired. The worker's fallback literal is applied from
         the completion timestamp, so the result outlives the sweep."""
         clock = FakeClock(_START)
         backend = InMemoryBackend(clock=clock)
-        # Row exists with result_ttl NULL — the operator's cleared override.
+        # Row exists with result_ttl NULL - the operator's cleared override.
         backend.register_actor_configs(
             [ActorConfig(actor="test_actor", max_concurrent=None, queue="default")]
         )
@@ -1843,7 +1843,7 @@ class TestMarkSucceededResultExpiryFallback:
         assert row is not None
         assert row.result == {"ok": True}
         # Completion happened at _START + 45s; expiry must be completion+5s,
-        # a future timestamp — not the enqueue-pinned _START+5s (40s past).
+        # a future timestamp - not the enqueue-pinned _START+5s (40s past).
         assert row.result_expires_at == clock.now() + ttl
 
     async def test_stored_ttl_wins_over_fallback_at_completion(self) -> None:
@@ -1877,7 +1877,7 @@ class TestMarkSucceededResultExpiryFallback:
 
     async def test_no_stored_no_fallback_keeps_enqueue_pinned_value(self) -> None:
         """Third COALESCE arm: neither a stored override nor a fallback
-        literal (e.g. a completing worker that predates the literal) —
+        literal (e.g. a completing worker that predates the literal) -
         the enqueue-time value is all there is to keep."""
         clock = FakeClock(_START)
         backend = InMemoryBackend(clock=clock)
@@ -1894,7 +1894,7 @@ class TestMarkSucceededResultExpiryFallback:
         assert ok is True
 
         # The pinned expiry is already 40s in the past at completion, so
-        # the public get() read reports the post-sweep view (result gone —
+        # the public get() read reports the post-sweep view (result gone -
         # pinned by TestGetExpiredResults below). This test pins the WRITE:
         # what mark_succeeded kept in storage, read directly.
         stored = backend._jobs[job_id]  # type: ignore[reportPrivateUsage]  # Why: test-only private access to pin the stored write; the public get() path now applies read-side result expiry
@@ -1940,7 +1940,7 @@ class TestMarkSucceededResultExpiryFallback:
         assert row.status == "succeeded"
         assert row.result == {"ok": True}
         # Completion happened at _START + 45s; the stub's literal applied
-        # from completion — not the enqueue-pinned _START + 5s (40s past).
+        # from completion - not the enqueue-pinned _START + 5s (40s past).
         assert row.result_expires_at == clock.now() + ttl
 
 
@@ -1957,7 +1957,7 @@ class TestGetExpiredResults:
     ``sweep_expired_results`` (``_SWEEP_RESULT_TTL_SQL``); until that sweep
     fires, a read can still observe the result. The in-memory backend has no
     leader loop, so ``get`` applies the sweep's predicate directly against
-    the injected Clock — a read past ``result_expires_at`` returns the exact
+    the injected Clock - a read past ``result_expires_at`` returns the exact
     post-sweep row shape (``result`` / ``result_size_bytes`` /
     ``result_expires_at`` all ``None``) while every other column, terminal
     status included, is untouched.
@@ -2051,7 +2051,7 @@ class TestGetExpiredResults:
         assert second.result is None
 
     async def test_expiry_boundary_is_strictly_less_than(self) -> None:
-        """At exactly result_expires_at the result is still available —
+        """At exactly result_expires_at the result is still available -
         the sweep predicate is ``result_expires_at < now``, matching
         ``_SWEEP_RESULT_TTL_SQL``; one second past it, the result is gone."""
         clock = FakeClock(_START)
@@ -2100,7 +2100,7 @@ class TestGetExpiredResults:
         self,
     ) -> None:
         """Third COALESCE arm on the read side: with neither a stored
-        override nor a worker literal, the enqueue-pinned expiry is kept —
+        override nor a worker literal, the enqueue-pinned expiry is kept -
         a completion that lands after it reads back already expired, the
         same state the PG sweep would leave behind."""
         clock = FakeClock(_START)
@@ -2130,7 +2130,7 @@ class TestGetExpiredResults:
 
     async def test_wait_returns_value_before_expiry_and_raises_after(self) -> None:
         """The downstream-facing contract: JobHandle.wait returns R before
-        expiry and raises ResultUnavailable once the clock has passed it —
+        expiry and raises ResultUnavailable once the clock has passed it -
         previously untestable in-memory because get never expired results."""
         clock = FakeClock(_START)
         backend = InMemoryBackend(clock=clock)
@@ -2155,7 +2155,7 @@ class TestGetExpiredResults:
     async def test_row_without_ttl_is_never_expired_by_reads(self) -> None:
         """Ported from the superseded sweep-based suite: a job with no
         ``result_expires_at`` at all keeps its result on every read,
-        however far the clock advances — the predicate's
+        however far the clock advances - the predicate's
         ``result_expires_at is not None`` half."""
         clock = FakeClock(_START)
         backend = InMemoryBackend(clock=clock)
@@ -2171,7 +2171,7 @@ class TestGetExpiredResults:
     async def test_none_result_with_passed_ttl_keeps_stale_expiry_on_reads(self) -> None:
         """Ported from the superseded sweep-based suite: a row whose result
         is already ``None`` but whose TTL has passed must NOT have its
-        stale ``result_expires_at`` cleared by a read — the predicate's
+        stale ``result_expires_at`` cleared by a read - the predicate's
         ``result is not None`` half, pinning that expiry alone never
         matches (PG's ``AND result IS NOT NULL``)."""
         clock = FakeClock(_START)
@@ -2193,7 +2193,7 @@ class TestGetExpiredResults:
         await backend.enqueue(args)
         await backend.run_until_drained()
 
-        stored = backend._jobs[args.id]  # pyright: ignore[reportPrivateUsage]  # Why: test-only private access pinning the stored write — the public get() path would apply the read-side view.
+        stored = backend._jobs[args.id]  # pyright: ignore[reportPrivateUsage]  # Why: test-only private access pinning the stored write - the public get() path would apply the read-side view.
         assert stored.result is None
         assert stored.result_expires_at == _START + timedelta(seconds=60)
 
@@ -2207,7 +2207,7 @@ class TestGetExpiredResults:
 
     async def test_expired_read_appends_no_events_and_never_touches_wake(self) -> None:
         """Red-team F11 pin: an expired read is side-effect-free. The PG
-        sweep is a bare UPDATE — no ``job_events`` row, no NOTIFY — and a
+        sweep is a bare UPDATE - no ``job_events`` row, no NOTIFY - and a
         read must be stricter still: evaluating the view may never write.
         ``get`` past expiry appends nothing to the event log and pings
         neither a wake nor a cancel-wake subscriber, so a read cannot
@@ -2215,7 +2215,7 @@ class TestGetExpiredResults:
         clock = FakeClock(_START)
         backend = InMemoryBackend(clock=clock)
         job_id = await self._complete_ttl_job(backend, clock)
-        events_before = len(backend._events)  # pyright: ignore[reportPrivateUsage]  # Why: test-only private access — the global event count is the side-effect oracle; per-job get_events would miss another job's row.
+        events_before = len(backend._events)  # pyright: ignore[reportPrivateUsage]  # Why: test-only private access - the global event count is the side-effect oracle; per-job get_events would miss another job's row.
 
         async with (
             backend.subscribe_wake() as wake_event,
@@ -2247,7 +2247,7 @@ class TestGetReturnsIsolatedRowCopies:
     Red-team finding reported during the result-TTL work and
     deliberately left unfixed there: ``JobRow`` is frozen, but its dict
     fields (``payload``, ``progress_state``, ``result``, ``metadata``)
-    are shared by reference — and only the expired branch of the read
+    are shared by reference - and only the expired branch of the read
     path produced a copy. Every non-expired read handed back the live
     stored row, so ``row.result["injected"] = True`` silently rewrote
     storage, and every later read (and the runner's internal paths) saw
@@ -2263,7 +2263,7 @@ class TestGetReturnsIsolatedRowCopies:
         """Enqueue a job carrying dict payload/metadata, dispatch it, and
         succeed it with a dict result and progress_state."""
         # Register the actor so dispatch_batch finds it (mirrors PG's
-        # actor_config requirement — candidates come FROM the registry).
+        # actor_config requirement - candidates come FROM the registry).
         if "read_isolation_actor" not in backend._actor_configs_meta:  # type: ignore[reportPrivateUsage]  # Why: test-only private access
             backend.register_actor_config(actor="read_isolation_actor")
         args = EnqueueArgs(
@@ -2297,7 +2297,7 @@ class TestGetReturnsIsolatedRowCopies:
     async def test_mutating_non_expired_read_leaves_stored_state_intact(self) -> None:
         """The defect branch: a fresh (non-expired) read used to hand
         back the live stored row, so mutating its dict fields rewrote
-        storage — the next read saw the injected keys."""
+        storage - the next read saw the injected keys."""
         backend = _make_backend()
         job_id = await self._enqueue_and_succeed(backend)
 
@@ -2316,7 +2316,7 @@ class TestGetReturnsIsolatedRowCopies:
         assert fresh.metadata == {"meta_key": "v"}
         assert fresh.payload == {"payload_key": "v"}
 
-        stored = backend._jobs[job_id]  # pyright: ignore[reportPrivateUsage]  # Why: pin the stored row directly — the public read is the code under test
+        stored = backend._jobs[job_id]  # pyright: ignore[reportPrivateUsage]  # Why: pin the stored row directly - the public read is the code under test
         assert stored.result == {"ok": True}
         assert stored.progress_state == {"pct": 100}
         assert stored.metadata == {"meta_key": "v"}
@@ -2325,7 +2325,7 @@ class TestGetReturnsIsolatedRowCopies:
     async def test_expired_read_view_composes_with_the_row_copy(self) -> None:
         """The expired branch keeps its post-sweep shape (result columns
         nulled, every other column intact) and its remaining dict fields
-        are copies too — the old ``replace`` view copied only the row
+        are copies too - the old ``replace`` view copied only the row
         shell, leaving ``payload``/``progress_state``/``metadata``
         aliased to storage."""
         backend = _make_backend()
@@ -2343,7 +2343,7 @@ class TestGetReturnsIsolatedRowCopies:
         expired.metadata["injected"] = True
         expired.payload["injected"] = True
 
-        stored = backend._jobs[job_id]  # pyright: ignore[reportPrivateUsage]  # Why: pin the stored row directly — the expired view must never become a write
+        stored = backend._jobs[job_id]  # pyright: ignore[reportPrivateUsage]  # Why: pin the stored row directly - the expired view must never become a write
         assert stored.result == {"ok": True}
         assert stored.result_expires_at == _START + timedelta(seconds=60)
         assert stored.progress_state == {"pct": 100}

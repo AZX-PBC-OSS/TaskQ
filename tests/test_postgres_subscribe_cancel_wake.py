@@ -22,7 +22,7 @@ note::
     per-worker channel. The per-worker channel name exceeds PostgreSQL's
     63-char identifier limit when using the ``module_pg_schema`` fixture
     (schema name is derived from the module path). The callbacks are the
-    exact same production code path — the only skipped step is asyncpg's
+    exact same production code path - the only skipped step is asyncpg's
     NOTIFY delivery, which is exercised by the dedicated
     ``test_cancel_notify_integration.py`` under a short schema.
 """
@@ -136,7 +136,7 @@ class TestSubscribeCancelWake:
         backend = clean_jobs_app.backend
         worker_id = new_uuid()
 
-        # The events callback filters on worker_id — create one for our worker.
+        # The events callback filters on worker_id - create one for our worker.
         events_cb = _make_events_callback(backend, worker_id)
 
         async with backend.subscribe_cancel_wake() as cancel_event:
@@ -210,7 +210,7 @@ class TestSubscribeCancelWake:
     async def test_cancel_wake_not_set_for_pending_job_cancel(
         self, clean_jobs_app: JobsApp
     ) -> None:
-        """Cancelling a pending job (case 1 — immediate terminal) does NOT
+        """Cancelling a pending job (case 1 - immediate terminal) does NOT
         fire a cancel notify. The cancel wake event must remain unset as
         there is no callback invocation.
         """
@@ -299,7 +299,7 @@ def _mock_asyncpg_conn() -> asyncpg.Connection:
     """Return a lightweight stand-in for ``asyncpg.Connection``.
 
     The notify callbacks receive a connection as their first argument but
-    do not use it — they only iterate subscriber sets. Returning a
+    do not use it - they only iterate subscriber sets. Returning a
     ``Mock`` avoids constructing a real asyncpg connection for callback-
     only tests.
     """

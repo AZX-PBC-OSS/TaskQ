@@ -2,7 +2,7 @@
 producer loop.
 
 The invariant's model (``timeout + period``) holds only for loops actually
-wrapped in ``asyncio.timeout`` — the scheduled-writer and cron loops. The
+wrapped in ``asyncio.timeout`` - the scheduled-writer and cron loops. The
 producer's multi-statement ``dispatch_batch`` is not wrapped, so certifying
 it would make the invariant guarantee something false; the validator checks
 only wrapped loops and its error text names only the loop that failed.

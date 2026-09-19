@@ -62,7 +62,7 @@ async def _list_jobs(
     filters: JobFilter,
 ) -> list[JobRow]:
     # Defence-in-depth: re-validate the schema identifier at the call site
-    # (docs/architecture.md §Identifier validation) — construction-time
+    # (docs/architecture.md §Identifier validation), construction-time
     # validation alone is single-point.
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
@@ -78,7 +78,7 @@ async def _list_jobs(
         # The cursor is decoded to the columns' own Python types, never
         # bound as the raw text it travels as: asyncpg types each
         # placeholder from its ``::`` cast and refuses a ``str`` for
-        # timestamptz/uuid/int — the DataError that 500'd every admin
+        # timestamptz/uuid/int, the DataError that 500'd every admin
         # job-list page turn before 2569da5.
         cursor_sql, cursor_params = ordering.sql_after(ordering.decode(filters.cursor), n + 1)
         conditions.append(cursor_sql)
@@ -219,10 +219,10 @@ async def _check_reclaim_visibility_risk(
     visibility_delay: timedelta | None = None,
 ) -> list[LongRunningJobEventsWriter]:
     """Diagnostic: transactions holding a lock on ``job_events`` for
-    longer than *visibility_delay* — a candidate cause of a silently
+    longer than *visibility_delay*, a candidate cause of a silently
     missed ``poll_reclaim_events`` event. See
     :class:`LongRunningJobEventsWriter`. Not part of the ``Backend``
-    protocol (diagnostic, not a core operation) — ``InMemoryBackend``
+    protocol (diagnostic, not a core operation), ``InMemoryBackend``
     therefore has no equivalent, so a dedicated monitoring loop consuming
     this must branch on backend type (or ``getattr``-probe, as
     ``taskq.client._taskq._probe_visibility_risk`` does). Wired into

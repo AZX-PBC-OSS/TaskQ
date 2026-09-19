@@ -1,9 +1,9 @@
 """Unit, negative, and integration tests for TaskQ.stream().
 
 Unit and negative tests run with ``pytest -m "not integration"``
-— no Docker, no testcontainers. They use :class:`InMemoryBackend` and
+- no Docker, no testcontainers. They use :class:`InMemoryBackend` and
 class:`~taskq.testing.clock.FakeClock` from
-mod:`taskq.testing.fixtures` — the in-memory backend IS the unit-test
+mod:`taskq.testing.fixtures` - the in-memory backend IS the unit-test
 substitute for the real one.
 
 Integration tests require Docker / testcontainers and are
@@ -18,14 +18,14 @@ Covers:
 - TaskQ without redis is importable without [redis] extra.
 - stream() outside open() raises RuntimeError.
 - stream() on a job_id that never exists raises KeyError.
-- PG transport — stream terminates on job completion.
-- PG transport — all status transitions appear in stream events.
-- PG transport — no dedicated connection is held per stream.
-- PG transport — a terminal write is observed within a second by default.
-- PG transport — poll-timeout path yields terminal event.
-- Redis transport — stream terminates on job completion.
-- Redis transport — progress events and monotonic progress_seq.
-- Redis transport — malformed message is skipped, stream continues.
+- PG transport - stream terminates on job completion.
+- PG transport - all status transitions appear in stream events.
+- PG transport - no dedicated connection is held per stream.
+- PG transport - a terminal write is observed within a second by default.
+- PG transport - poll-timeout path yields terminal event.
+- Redis transport - stream terminates on job completion.
+- Redis transport - progress events and monotonic progress_seq.
+- Redis transport - malformed message is skipped, stream continues.
 """
 
 import asyncio
@@ -67,7 +67,7 @@ def _inject_tq(
     """Construct a TaskQ with the in-memory backend injected for unit testing.
 
     TaskQ.open() hardcodes PostgresBackend, so we bypass construction
-    and inject the client directly — the same pattern used in
+    and inject the client directly - the same pattern used in
     test_taskq_stream.py.
     """
     tq = TaskQ.__new__(TaskQ)
@@ -255,7 +255,7 @@ def _enqueue_args(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Integration tests — require Docker / testcontainers
+# Integration tests - require Docker / testcontainers
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -373,7 +373,7 @@ async def _count_listen_connections(pool: asyncpg.Pool) -> int:
     The match is anchored (``LIKE 'LISTEN%'``): pg_stat_activity.query
     holds a backend's LAST statement, so a substring match also hits the
     counting query's own backend and every idle pool connection whose
-    last statement merely mentioned the word — noise that cancels out in
+    last statement merely mentioned the word - noise that cancels out in
     a single-shot count and skews a repeated poll.
     """
     row = await pool.fetchval(
@@ -393,12 +393,12 @@ async def _count_sessions(pool: asyncpg.Pool) -> int:
     )
 
 
-# ── PG transport — stream terminates on job completion ──────────────
+# ── PG transport - stream terminates on job completion ──────────────
 
 
 @pytest.mark.integration
 async def test_ti1_pg_stream_terminates_on_job_completion(pg_dsn: str) -> None:
-    """PG transport — stream yields terminal event and exits when
+    """PG transport - stream yields terminal event and exits when
     the job reaches succeeded status.
     """
     tq, worker_id = await _open_taskq_pg(pg_dsn, schema=f"tst_{new_base62()}".lower())
@@ -434,12 +434,12 @@ async def test_ti1_pg_stream_terminates_on_job_completion(pg_dsn: str) -> None:
         await tq.close()
 
 
-# ── PG transport — all status transitions appear in stream events ──
+# ── PG transport - all status transitions appear in stream events ──
 
 
 @pytest.mark.integration
 async def test_ti2_pg_all_status_transitions_appear(pg_dsn: str) -> None:
-    """PG transport — stream yields events for pending → running →
+    """PG transport - stream yields events for pending → running →
     succeeded with at least one event per status. The transport samples
     the row, so each state is held until the stream has reported it: a
     state that outlives the poll interval is always observed.
@@ -488,12 +488,12 @@ async def test_ti2_pg_all_status_transitions_appear(pg_dsn: str) -> None:
         await tq.close()
 
 
-# ── PG transport — no dedicated connection per stream ──────────────
+# ── PG transport - no dedicated connection per stream ──────────────
 
 
 @pytest.mark.integration
 async def test_ti3_pg_stream_holds_no_dedicated_connection(pg_dsn: str) -> None:
-    """PG transport — a stream in flight adds no session of its own: the
+    """PG transport - a stream in flight adds no session of its own: the
     row is polled through the client's pool, so a page of streaming
     viewers costs no Postgres connections beyond that pool."""
     tq, worker_id = await _open_taskq_pg(pg_dsn, schema=f"tst_{new_base62()}".lower())
@@ -540,12 +540,12 @@ async def test_ti3_pg_stream_holds_no_dedicated_connection(pg_dsn: str) -> None:
         await tq.close()
 
 
-# ── PG transport — a terminal write is observed within a second ─────
+# ── PG transport - a terminal write is observed within a second ─────
 
 
 @pytest.mark.integration
 async def test_ti4_pg_terminal_write_observed_within_one_second(pg_dsn: str) -> None:
-    """PG transport — with the DEFAULT ``poll_timeout`` (30 s), a terminal
+    """PG transport - with the DEFAULT ``poll_timeout`` (30 s), a terminal
     write is observed within a second: the poll cadence is the latency
     contract, and nothing on Postgres announces the write to shortcut it."""
     tq, worker_id = await _open_taskq_pg(
@@ -592,12 +592,12 @@ async def test_ti4_pg_terminal_write_observed_within_one_second(pg_dsn: str) -> 
         await tq.close()
 
 
-# ── PG transport — poll-timeout path yields terminal event ──────────
+# ── PG transport - poll-timeout path yields terminal event ──────────
 
 
 @pytest.mark.integration
 async def test_ti5_pg_poll_timeout_path_yields_terminal(pg_dsn: str) -> None:
-    """PG transport — with a short poll_timeout, the stream still
+    """PG transport - with a short poll_timeout, the stream still
     receives the terminal event even when the worker is delayed.
     """
     tq, worker_id = await _open_taskq_pg(
@@ -635,13 +635,13 @@ async def test_ti5_pg_poll_timeout_path_yields_terminal(pg_dsn: str) -> None:
         await tq.close()
 
 
-# ── Redis transport — stream terminates on job completion ───────────
+# ── Redis transport - stream terminates on job completion ───────────
 
 
 @pytest.mark.integration
 @pytest.mark.redis
 async def test_ti6_redis_stream_terminates_on_job_completion(pg_dsn: str, redis_url: str) -> None:
-    """Redis transport — stream yields terminal event and exits when
+    """Redis transport - stream yields terminal event and exits when
     the job reaches succeeded status. Confirms the Redis transport was used.
     """
     tq, worker_id = await _open_taskq_pg(
@@ -681,13 +681,13 @@ async def test_ti6_redis_stream_terminates_on_job_completion(pg_dsn: str, redis_
         await tq.close()
 
 
-# ── Redis transport — progress events and monotonic progress_seq ────
+# ── Redis transport - progress events and monotonic progress_seq ────
 
 
 @pytest.mark.integration
 @pytest.mark.redis
 async def test_ti7_redis_progress_events_monotonic_seq(pg_dsn: str, redis_url: str) -> None:
-    """Redis transport — progress updates produce events with
+    """Redis transport - progress updates produce events with
     monotonically increasing progress_seq values and correct progress_state.
     """
     tq, worker_id = await _open_taskq_pg(
@@ -781,13 +781,13 @@ async def test_ti7_redis_progress_events_monotonic_seq(pg_dsn: str, redis_url: s
         await tq.close()
 
 
-# ── Redis transport — malformed message is skipped ──────────────────
+# ── Redis transport - malformed message is skipped ──────────────────
 
 
 @pytest.mark.integration
 @pytest.mark.redis
 async def test_ti8_redis_malformed_message_skipped(pg_dsn: str, redis_url: str) -> None:
-    """Redis transport — a malformed message on the progress channel
+    """Redis transport - a malformed message on the progress channel
     is skipped and the stream continues, eventually receiving the terminal
     event.
     """

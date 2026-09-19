@@ -41,7 +41,7 @@ _log: structlog.stdlib.BoundLogger = get_logger(__name__)
 #:   ``ConnectionDoesNotExistError`` / ``ConnectionFailureError``).
 #: - ``InterfaceError`` / ``OSError``: the connection is unusable or the
 #:   socket died.
-#: - ``QueryCanceledError``: server-side 57014 — a DBA ran
+#: - ``QueryCanceledError``: server-side 57014, a DBA ran
 #:   pg_cancel_backend, or a server-side ``statement_timeout`` fired. Not
 #:   a client-side ``command_timeout`` (that raises ``TimeoutError``); kept
 #:   in the tuple because a server-side cancel is equally transient.
@@ -50,7 +50,7 @@ _log: structlog.stdlib.BoundLogger = get_logger(__name__)
 #:   learned this one the hard way.
 #: - ``CannotConnectNowError``: 57P03, server in crash recovery or still
 #:   starting. Same OperatorInterventionError family.
-#: - ``ReadOnlySQLTransactionError``: 25006, read_only_sql_transaction —
+#: - ``ReadOnlySQLTransactionError``: 25006, read_only_sql_transaction ,
 #:   a PG failover's read-only window on the surviving primary. Pure
 #:   reads keep succeeding (the watchdog's and election loop's ``SELECT
 #:   1`` probes) while every leader write fails, so this classification
@@ -69,11 +69,11 @@ _log: structlog.stdlib.BoundLogger = get_logger(__name__)
 #: are not transient for static DSNs and must not retry silently (the
 #: credential-provider reopen path has its own deliberate broad catch);
 #: ``LockNotAvailableError`` (55P03) is raised by the bounded advisory
-#: acquires' scoped ``lock_timeout`` — every acquire site converts it to
+#: acquires' scoped ``lock_timeout``, every acquire site converts it to
 #: its own typed outcome (``MaxPendingLockTimeoutError`` /
 #: ``UniqueForLockTimeoutError`` / the limiter's fail-closed denial), so
 #: one reaching this classifier means a leaked or operator-set
-#: ``lock_timeout`` hit an ordinary statement — surfacing loudly beats
+#: ``lock_timeout`` hit an ordinary statement, surfacing loudly beats
 #: silently retrying under an unknown bound; data errors (constraint
 #: violations, undefined tables) are bugs, and the guard below makes them
 #: loud and then deliberately fatal; statement-name errors (26000,
@@ -97,17 +97,17 @@ TRANSIENT_PG_ERRORS: tuple[type[BaseException], ...] = (
 
 #: Errors that mean "PG refused this call and will keep refusing it":
 #: the server's answer is a property of the role's grants, not of the
-#: moment. Deliberately disjoint from :data:`TRANSIENT_PG_ERRORS` — a
+#: moment. Deliberately disjoint from :data:`TRANSIENT_PG_ERRORS`, a
 #: refusal retried next tick re-fails identically forever, so classifying
 #: it as transient would livelock the retrying loop while logging like a
 #: blip. A site catching from this tuple must DEGRADE instead: skip the
 #: refused operation, log once at WARN naming what was refused, and keep
 #: working without it. Anything from this tuple that escapes a site's own
 #: handling still lands in the loop's :class:`UnexpectedLoopErrorGuard`,
-#: where a permanent fault is deliberately fatal after the budget — never
+#: where a permanent fault is deliberately fatal after the budget, never
 #: a silent infinite retry.
 #:
-#: - ``InsufficientPrivilegeError``: 42501 — a managed Postgres
+#: - ``InsufficientPrivilegeError``: 42501, a managed Postgres
 #:   restricting a function to admin/superuser roles (the same posture
 #:   class that restricts ``pg_terminate_backend``; here it is the
 #:   election loop's courtesy ``pg_try_advisory_lock`` probe). The grant

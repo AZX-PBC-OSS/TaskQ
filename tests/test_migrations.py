@@ -121,7 +121,7 @@ async def test_copy_enqueue_columns_are_copy_from_minus_server_stamped(
     """COPY_ENQUEUE_COLUMNS (the enqueue COPY path) is COPY_FROM_COLUMNS
     minus exactly the columns the post-COPY fixup UPDATE stamps server-side
     or a DDL default covers.  Every omitted column must be safe to omit
-    from COPY: nullable or carrying a DDL default — a NOT NULL column
+    from COPY: nullable or carrying a DDL default - a NOT NULL column
     without a default would make the COPY insert fail outright.  Order is
     positional (the record tuples are built by hand), so it must be a
     order-preserving subsequence of COPY_FROM_COLUMNS.  ``status`` is
@@ -157,7 +157,7 @@ async def test_copy_enqueue_columns_are_copy_from_minus_server_stamped(
         rec = by_col[col]
         assert rec["is_nullable"] == "YES" or rec["column_default"] is not None, (
             f"column {col!r} is omitted from COPY_ENQUEUE_COLUMNS but is NOT NULL "
-            f"without a DDL default — the enqueue COPY path cannot omit it"
+            f"without a DDL default - the enqueue COPY path cannot omit it"
         )
 
 

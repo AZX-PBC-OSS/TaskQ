@@ -1,15 +1,15 @@
-"""Jitter on the denial requeue — same-round denials must desynchronize.
+"""Jitter on the denial requeue - same-round denials must desynchronize.
 
 A denial's ``retry_after`` is advisory timing, but until it is jittered it
 is also a synchroniser: N jobs denied in one dispatch round carry
 near-identical ``retry_after`` (same-round token-deficit denials compute
 the same hint; slot denials reported the same constant), so the herd
-re-attempts in lockstep — each cycle costing claim + acquire + snooze per
+re-attempts in lockstep - each cycle costing claim + acquire + snooze per
 job. The failure-backoff path already applies multiplicative-symmetric
 jitter (``compute_backoff``); the denial requeue takes the same
 treatment, sourced from the SAME knob (``RetryPolicy.jitter``), so an
 actor that has already chosen a jitter policy for failures gets it for
-denial requeues too — and the deterministic suites, which construct
+denial requeues too - and the deterministic suites, which construct
 policies with ``jitter=0.0``, stay deterministic (``uniform(1, 1) == 1``).
 """
 
@@ -108,10 +108,10 @@ async def _field_denial(
 async def test_same_round_denials_get_desynchronized_retry_after() -> None:
     """N denials fielded with the SAME ``retry_after`` (the mass-denial
     shape: one round, one token deficit) must not requeue at N identical
-    delays — the actor's jitter policy spreads them inside its symmetric
+    delays - the actor's jitter policy spreads them inside its symmetric
     band, exactly as ``compute_backoff`` spreads failure retries.
 
-    Observable: the delay each denial hands to ``mark_snoozed`` — the
+    Observable: the delay each denial hands to ``mark_snoozed`` - the
     backend records every call, so the spread is read off the write the
     requeue actually made, not off an intermediate.
     """
@@ -129,12 +129,12 @@ async def test_same_round_denials_get_desynchronized_retry_after() -> None:
         d_s = d if isinstance(d, timedelta) else timedelta(seconds=float(d))  # pyright: ignore[reportUnknownMemberType]  # Why: the fake backend records the delay as an object; the pin asserts the timedelta band, so coerce the recorded value.
         assert raw_s * 0.8 <= d_s.total_seconds() <= raw_s * 1.2, (
             f"jittered delay {d} escaped the ±20% band around the raw "
-            f"{_RAW} — the jitter must be multiplicative-symmetric "
+            f"{_RAW} - the jitter must be multiplicative-symmetric "
             "(uniform(1 - jitter, 1 + jitter)), the same formula "
             "compute_backoff applies to failure backoff."
         )
     assert len(set(delays)) > 1, (
-        f"{n} same-round denials requeued at a single delay {delays[0]!r} — "
+        f"{n} same-round denials requeued at a single delay {delays[0]!r} - "
         "the herd re-attempts in lockstep and every cycle costs claim + "
         "acquire + snooze per job; the denial requeue must jitter like the "
         "failure backoff does."
@@ -164,7 +164,7 @@ async def _mem_running_job(clock: FakeClock) -> tuple[InMemoryBackend, JobId, UU
     """One running job on the in-memory twin, claimed by a fresh worker."""
     backend = InMemoryBackend(clock=clock)
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="jitter_actor")
     args = EnqueueArgs(
         id=new_job_id(),
@@ -186,7 +186,7 @@ async def test_jittered_denial_reschedules_at_least_min_deferral_interval_out() 
     """Jitter is timing-only: a denial whose jittered delay collapses
     toward zero (``retry_after`` 0.4 s at the maximum jitter band, where
     draws land in [0, 0.8] s) still reschedules at least
-    ``MIN_DEFERRAL_INTERVAL`` out — the snooze arm's floor is applied by
+    ``MIN_DEFERRAL_INTERVAL`` out - the snooze arm's floor is applied by
     ``mark_snoozed`` downstream of the jitter, never defeated by it.
 
     The scheduled row is the observable: every one of the sampled
@@ -214,7 +214,7 @@ async def test_jittered_denial_reschedules_at_least_min_deferral_interval_out() 
         assert row is not None
         assert row.status == "scheduled"
         assert row.scheduled_at >= _NOW + MIN_DEFERRAL_INTERVAL, (
-            f"a jittered denial requeued at {row.scheduled_at - _NOW} out — "
+            f"a jittered denial requeued at {row.scheduled_at - _NOW} out - "
             f"the {MIN_DEFERRAL_INTERVAL} deferral floor must survive the "
             "jitter, or a collapsed draw parks the job pending at "
             "clock_timestamp() at the head of the dispatch order."

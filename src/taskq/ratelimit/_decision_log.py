@@ -2,7 +2,7 @@
 
 Emits ``logger.debug("rate-limit-decision", **fields)`` on every call and
 ``logger.info("rate-limit-decision", **fields)`` additionally on denial;
-a denial also bumps ``taskq.ratelimit.denials`` (backend label only —
+a denial also bumps ``taskq.ratelimit.denials`` (backend label only ,
 bucket names are caller-derived and unbounded, so they are not a metric
 dimension). The ``style`` keyword argument is omitted from the log payload
 when ``None`` so that token-bucket log lines remain byte-for-byte identical

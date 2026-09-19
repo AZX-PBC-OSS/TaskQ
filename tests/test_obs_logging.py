@@ -17,7 +17,7 @@ from taskq.testing.otel import _unpin_cached_loggers
 
 
 @pytest.fixture(autouse=True)
-def _reset_structlog_and_logging() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction] # Why: autouse fixture — consumed by pytest, not called directly.
+def _reset_structlog_and_logging() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction] # Why: autouse fixture - consumed by pytest, not called directly.
     """Reset structlog and logging state so each test starts clean.
 
     ``cache_logger_on_first_use=True`` means loggers cached at import time
@@ -26,7 +26,7 @@ def _reset_structlog_and_logging() -> Generator[None, None, None]:  # pyright: i
     added by ``setup_logging()`` and resets the ``_logging_configured`` flag.
 
     Note the config reset alone cannot restore interception for a proxy that
-    already pinned its chain onto the instance while caching was in force —
+    already pinned its chain onto the instance while caching was in force -
     that pin lives on the proxy, not in the config; the suite-wide guard in
     ``taskq.testing.otel`` sweeps those pins around every test.
     """
@@ -77,8 +77,8 @@ def test_unpin_cached_loggers_restores_capture_for_pinned_proxy(
     Regression pin for the order-dependent capture failures: a module-level
     proxy first bound while the production configuration
     (``cache_logger_on_first_use=True``) is active keeps its frozen processor
-    chain on the INSTANCE, so later ``capture_logs`` windows — which swap only
-    the CURRENT config's processor list — see none of its events. The guard in
+    chain on the INSTANCE, so later ``capture_logs`` windows - which swap only
+    the CURRENT config's processor list - see none of its events. The guard in
     ``taskq.testing.otel`` deletes the instance pin around every test; this
     test drives that sweep directly against a proxy pinned on purpose.
     """
@@ -95,14 +95,14 @@ def test_unpin_cached_loggers_restores_capture_for_pinned_proxy(
 
     # The inter-test reset the suite guard has always performed: it assigns a
     # FRESH processor list, orphaning the list instance the pinned proxy's
-    # assembled logger still holds by reference — which is exactly why a
+    # assembled logger still holds by reference - which is exactly why a
     # config-only reset cannot restore capture for it.
     structlog.reset_defaults()
 
     with structlog.testing.capture_logs() as missed:
         probe.info("pinned-proxy-event")
     assert missed == [], (
-        "a pinned proxy must bypass capture_logs — otherwise there is no defect to guard against"
+        "a pinned proxy must bypass capture_logs - otherwise there is no defect to guard against"
     )
 
     _unpin_cached_loggers()
@@ -316,7 +316,7 @@ def test_failing_builtin_processor_does_not_propagate_through_chain() -> None:
     assert result["key"] == "val"
 
 
-# ── stdlib bridge — ProcessorFormatter on root handler ─────────────
+# ── stdlib bridge - ProcessorFormatter on root handler ─────────────
 
 
 def test_setup_logging_adds_processor_formatter_handler() -> None:
@@ -491,7 +491,7 @@ def test_worker_settings_log_format_rejects_invalid_value_even_when_validate_dis
         )
 
 
-# ── bind_job_context — mandatory fields on bound logger ────────
+# ── bind_job_context - mandatory fields on bound logger ────────
 
 
 def test_bind_job_context_binds_mandatory_fields() -> None:
@@ -784,7 +784,7 @@ async def test_worker_id_contextvar_propagates_to_coroutine() -> None:
 
 @pytest.mark.slow
 def test_bind_job_context_performance_bounded() -> None:
-    """bind_job_context is a hot-path helper — guard against gross regressions.
+    """bind_job_context is a hot-path helper - guard against gross regressions.
 
     The bound is deliberately loose (100µs vs the ~5µs typical) so the test
     catches an accidental O(n)/IO regression without flaking on loaded CI

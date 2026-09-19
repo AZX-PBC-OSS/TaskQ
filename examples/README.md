@@ -40,7 +40,7 @@ Submitting any form enqueues a job and redirects to the admin job-detail page wh
 |---|---|---|---|
 | `counter` | Normal success, cooperative cancellation | `n` (int, default 10) | Job transitions `pending` → `running` → `succeeded`. Cancel mid-run to see it transition to `cancelled`. |
 | `flaky` | Retry on failure | `fail_count` (int, default 2) | Two failed attempts visible in attempt history, then `succeeded`. |
-| `snoozer` | Snooze / deferred re-execution | `delay_seconds` (int, default 10), `wake_after_attempt` (int, default 1) | Job enters `scheduled` state during the snooze window, then wakes up and succeeds. |
+| `snoozer` | Snooze / deferred re-execution | `delay_seconds` (int, default 10), `snooze_cycles` (int, default 1) | Job enters `scheduled` once per configured snooze cycle, then wakes up and succeeds. |
 | `deferred` | Future scheduling via `scheduled_at` | `delay_seconds` (int, default 30) | Job stays `scheduled` until the delay elapses, then transitions to `running` → `succeeded`. |
 | `window_rate_limited` | Redis-backed sliding window rate limit | *(none)* | Enqueue 5+ jobs: at most 3 dispatched in the first 15 s; remainder wait in `pending`. |
 | `token_rate_limited` | Redis-backed token bucket rate limit | *(none)* | Enqueue 5+ jobs: at most 3 dispatched immediately; further jobs dispatched as tokens refill at 1/s. |

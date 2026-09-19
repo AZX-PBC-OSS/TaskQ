@@ -1,4 +1,4 @@
-"""SPIKE A — OTel SDK per-configuration cost at realistic TaskQ cardinality.
+"""SPIKE A - OTel SDK per-configuration cost at realistic TaskQ cardinality.
 
 Questions (from the perf-rust-hotspots spike brief):
   1. What is INSIDE the measured 15.8 µs/job span tax and ~1.35 µs metric
@@ -258,7 +258,7 @@ def measure_metric_config(name: str, reader) -> dict[str, object]:  # type: igno
 def measure_pemr_contention(interval_ms: int) -> dict[str, object]:
     """add() cost WHILE the export thread wakes every *interval_ms*.
 
-    Reports mean/p95/pair-max across one long pass — export-thread wakeups
+    Reports mean/p95/pair-max across one long pass - export-thread wakeups
     (collection lock) show up in the tail, not the median.
     """
     reader = PeriodicExportingMetricReader(

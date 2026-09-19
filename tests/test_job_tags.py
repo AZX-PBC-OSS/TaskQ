@@ -55,7 +55,7 @@ def _make_client(backend: InMemoryBackend) -> JobsClient:
 
 
 class TestTagValidation:
-    """Tag validation — regex, length, dedup."""
+    """Tag validation - regex, length, dedup."""
 
     def test_valid_tags_pass_regex(self) -> None:
         """Valid tags match the regex pattern."""

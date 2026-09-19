@@ -126,15 +126,15 @@ _OK = object()
 
 def _rate_limit_dependency_exceptions() -> tuple[type[BaseException], ...]:
     """The exception family a limiter acquire raises when its STORE
-    failed to answer — Redis dead, or the PG fallback behind it dead or
+    failed to answer, Redis dead, or the PG fallback behind it dead or
     never wired.
 
     The PG members are the shared pool-infra classification
     (:data:`POOL_INFRA_EXCEPTIONS`, owned by worker.deps) plus the typed
     no-pool error the ratelimit PG delegates raise when the fallback is
     reached without an injected pool (a store that cannot answer, not a
-    job defect — a ``RuntimeError`` subclass so the fail-loud pins hold);
-    Redis joins only when the extra is installed — without redis-py no
+    job defect, a ``RuntimeError`` subclass so the fail-loud pins hold);
+    Redis joins only when the extra is installed, without redis-py no
     Redis error can occur on this path, so the ImportError narrows the
     family rather than weakening it.
     """
@@ -153,15 +153,15 @@ def _rate_limit_dependency_exceptions() -> tuple[type[BaseException], ...]:
 _RATE_LIMIT_DEPENDENCY_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (
     _rate_limit_dependency_exceptions()
 )
-"""What a rate-limit acquire raises when a store dependency — not the
-job, not the actor — failed to answer. Recognised at the acquire
+"""What a rate-limit acquire raises when a store dependency, not the
+job, not the actor, failed to answer. Recognised at the acquire
 boundary below and failed closed as the limiter's denial; anything else
 from the composition stays loud through the generic handler."""
 
 _DEPENDENCY_FAILURE_LOG_WINDOW_S: Final[float] = 60.0
 """Window gating the acquire dependency-failure WARNING. A sustained
 store outage fails every rate-limited dispatch, and one warning line
-per denial is a log flood, not a signal — the same bound the registry's
+per denial is a log flood, not a signal, the same bound the registry's
 keyed heal-failure emission applies. The per-occurrence aggregate stays
 on the ``ratelimit.acquire_dependency_failures`` counter."""
 
@@ -173,7 +173,7 @@ by error class (bounded: the stores' exception vocabulary)."""
 def bind_job_log(
     log: structlog.stdlib.BoundLogger, job: JobRow, *, span: trace.Span
 ) -> structlog.stdlib.BoundLogger:
-    """Bind *job*'s fields onto *log* — the one logger every line of a
+    """Bind *job*'s fields onto *log*, the one logger every line of a
     job's dispatch and consumption carries.
 
     The trace id comes from *span* (the CONSUMER span) when it is valid
@@ -209,7 +209,7 @@ def _encode_result(result: object, max_bytes: int = MAX_RESULT_BYTES) -> bytes |
     ``BaseModel`` results are dumped via ``model_dump(mode="json")``;
     ``dict`` results are dumped as-is (the actor contract guarantees
     ``dict[str, object]``); all other types return ``None`` (no result
-    stored).  Raises :class:`ResultTooLarge` (non-retryable — a re-run
+    stored).  Raises :class:`ResultTooLarge` (non-retryable, a re-run
     returns the same oversized value) when the serialized size exceeds
     *max_bytes*, which the callers take from
     ``WorkerSettings.result_max_bytes`` and which defaults to
@@ -218,7 +218,7 @@ def _encode_result(result: object, max_bytes: int = MAX_RESULT_BYTES) -> bytes |
     The returned bytes are the result's ONLY serialization: they reach the
     backend as the ``result_bytes`` terminal-write parameter, which binds
     them decoded and stores ``len`` as ``result_size_bytes`` without
-    serializing again.  The NUL guard deliberately does not run here — it
+    serializing again.  The NUL guard deliberately does not run here, it
     stays at the terminal write (the single consumption point), so a
     recording backend observes the exact bytes.
     """
@@ -246,7 +246,7 @@ async def _pre_terminal_flush(
     and return the buffer the write's progress fields are read from.
 
     The flush is shielded so a cancel landing mid-statement cannot strand
-    the progress row half-written — but the shield costs a Task per call,
+    the progress row half-written, but the shield costs a Task per call,
     and the flush itself is a no-op for a clean buffer (the common case:
     an actor that reported no progress). The dirty check is made here so
     only a flush that will issue a statement pays for the shield; the
@@ -294,7 +294,7 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
     ``_consume_transactional``.
 
     Infra failures (DB/network) raised by *handler*'s terminal write are
-    caught here — not re-dispatched into generic exception handling, which
+    caught here, not re-dispatched into generic exception handling, which
     would misclassify the infra error as the actor's failure (*job_exc*).
     The job row stays ``running``; it is disowned into *disowned_jobs* so
     the heartbeat stops renewing it and lock-lease expiry reclaims it.
@@ -321,8 +321,8 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
         _buf = progress_buffers.get(job.id)
         if _buf is not None:
             _buf.dirty = False
-    # A noop means no transition happened — the row moved underneath
-    # this dispatch (a reclaim race) — so publishing the requested
+    # A noop means no transition happened, the row moved underneath
+    # this dispatch (a reclaim race), so publishing the requested
     # state change would announce a move the row never made.
     if redis_client is not None and settings is not None and handler_result != "noop":
         await _publish_state_change_event(
@@ -375,7 +375,7 @@ async def _interrupted_actor_hold(
     actor) is still released, never stranded: the hold is the rest of this
     process's exit window plus the watchdog's exit tail
     (:func:`taskq.worker.shutdown._release_hold`), so the row becomes
-    claimable only once this process is provably gone (#232).
+    claimable only once this process is provably gone.
 
     A cancellation landing on the park (the TaskGroup teardown after
     RELEASING, a second forced cancel) ends the waiting, never the release:
@@ -516,7 +516,7 @@ async def consume_one_job(
     ``validated_payload=None`` gets the fallback
     ``validate_actor_payload`` call, whose
     :class:`~taskq.exceptions.PayloadValidationError` propagates to the
-    caller BEFORE any token is consumed — an invalid payload must not
+    caller BEFORE any token is consumed, an invalid payload must not
     acquire (and non-refundably burn) a rate-limit token for an actor body
     that can never run. ``acquire_for_actor`` then receives the validated
     ``BaseModel`` (not the raw row dict): a ``KeyedRateLimitRef`` /
@@ -528,7 +528,7 @@ async def consume_one_job(
     bound is ``BaseModel`` here (the registry is heterogeneous); per-actor
     ``P`` flows from the call site that selected ``payload_type``.
 
-    ``enqueuer`` is the SubJobEnqueuer the dispatch path selected — the
+    ``enqueuer`` is the SubJobEnqueuer the dispatch path selected, the
     per-job instance bound to the slot transaction connection on the
     per-slot path, or the per-loop instance ``_main`` constructs after
     ``loop_scope.bootstrap()``. When provided, the live JobContext uses
@@ -542,7 +542,7 @@ async def consume_one_job(
     literal, forwarded to the success terminal write so a cleared stored
     override still computes ``result_expires_at`` from completion rather
     than keeping the enqueue-pinned value.
-    The reporter call is wrapped in a try/except — a failing reporter
+    The reporter call is wrapped in a try/except, a failing reporter
     never crashes the worker.
 
     ``job_log`` is the job-bound logger a caller has already built (the
@@ -551,7 +551,7 @@ async def consume_one_job(
     ``None`` it is bound here from ``logger`` and the current span.
 
     ``transaction_conn`` is the connection the job's transaction runs
-    on — the connection this dispatch acquired from the worker's slot
+    on, the connection this dispatch acquired from the worker's slot
     pool on the per-slot path, or the resolved LOOP-scope
     asyncpg.Connection (None when no LOOP-scope connection provider is
     registered). When present, the consumer opens a transaction on it
@@ -582,22 +582,22 @@ async def consume_one_job(
     _needs_acquire = bool(_rl_limits or _rl_reservations) and rate_limit_registry is not None
 
     # Resolve the typed model BEFORE rate-limit acquisition: an invalid payload must not
-    # acquire — and non-refundably burn — a rate-limit token for an actor
+    # acquire, and non-refundably burn, a rate-limit token for an actor
     # body that can never run. acquire_for_actor then receives the validated
     # BaseModel, so keyed refs either hit the registry's isinstance fast path
     # (same model) or re-validate the model's dump, which carries the actor
-    # model's applied defaults/aliases — not the raw row dict. The wrapped
+    # model's applied defaults/aliases, not the raw row dict. The wrapped
     # PayloadValidationError propagates to the caller, exactly as it did
     # from the in-try fallback and as non-dependency acquire-path errors
     # still do (a wiring or programming defect must stay loud): callers
     # (dispatch_one_job's outer except, the in-memory runner's catch) own
     # the terminal write for pre-actor failures. A STORE-dependency failure
-    # is the exception — the acquire boundary below fails it closed as the
+    # is the exception, the acquire boundary below fails it closed as the
     # limiter's own denial, because an infrastructure outage is not a job
     # outcome either.
     if validated_payload is None:
-        # The row's stored version rides the raise — not the helper's
-        # current-version default — so a row that predates a payload
+        # The row's stored version rides the raise, not the helper's
+        # current-version default, so a row that predates a payload
         # migration is distinguishable from a malformed caller payload.
         validated_payload = validate_actor_payload(
             payload_type,
@@ -624,7 +624,7 @@ async def consume_one_job(
         except ReservationUnavailable as e:
             # The handler owns the outcome tri-state (a snooze, a
             # deadline failure, a budget-exhaustion failure, or a noop
-            # when the job moved underneath us) — its result is this
+            # when the job moved underneath us), its result is this
             # dispatch's result, not a hardcoded reschedule. Routed
             # through _run_terminal_path exactly as _dispatch_exception
             # routes the in-actor denial for the same handler: the
@@ -665,7 +665,7 @@ async def consume_one_job(
         except _RATE_LIMIT_DEPENDENCY_EXCEPTIONS as exc:
             # The limiter's store could not answer. This try block wraps
             # ONLY the acquire composition, so a store-failure-family
-            # exception here has exactly one provenance — and one
+            # exception here has exactly one provenance, and one
             # response: the limiter's own fail-closed denial, never the
             # actor-failure accounting an escapee falls into (a retry
             # attempt burnt and the store's error persisted as the job's
@@ -680,13 +680,13 @@ async def consume_one_job(
             # acquire_dependency_failures counter rises beside the
             # denials counter (an operator scaling a bucket on denials
             # alone would chase an outage with capacity), and the
-            # WARNING is window-gated — a sustained outage denies every
+            # WARNING is window-gated, a sustained outage denies every
             # rate-limited dispatch, and a warning per denial is a log
             # flood, not a signal.
             #
             # Non-consuming: the denial is infra backpressure about a
             # job whose actor never ran, so it rides mark_snoozed's
-            # 'unavailable' arm (attempt refunded, no terminal arm) —
+            # 'unavailable' arm (attempt refunded, no terminal arm) ,
             # never the budget-consuming bounded loop a saturation
             # denial deliberately takes. The reason is passed here,
             # explicitly: the store's unavailability is proven only at
@@ -710,7 +710,7 @@ async def consume_one_job(
             )
             # Why a direct __cause__ assignment: the synthetic denial is
             # constructed, not raised, so no except-context chains the
-            # store failure automatically — the chain is what the
+            # store failure automatically, the chain is what the
             # terminal-write infra log and any traceback reader see.
             denial.__cause__ = exc
             return await _run_terminal_path(
@@ -940,7 +940,7 @@ async def consume_one_job(
                 # budget, and holds the release behind this process's
                 # exit window when they never finish: the row must not
                 # be claimable while this process might still touch it
-                # (#232).
+                #
                 #
                 # The row is the final arbiter: a "noop" means the fence
                 # declined the release: an operator cancel raced the
@@ -976,7 +976,7 @@ async def consume_one_job(
                 except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
                     # Best-effort, exactly like the cancel write below: the
                     # row stays 'running', disowned so lock-lease expiry
-                    # reclaims it. Do NOT fall through to mark_cancelled —
+                    # reclaims it. Do NOT fall through to mark_cancelled ,
                     # the row carries no operator cancel, so a cancel write
                     # here would terminalise an infrastructure interruption.
                     # The infra error is swallowed, never re-raised: a bare
@@ -986,7 +986,7 @@ async def consume_one_job(
                     # exception and dispatch's generic handler spends the
                     # attempt's budget on a deploy: the exact mislabel the
                     # mark_cancelled arm's comment below describes (an
-                    # eaten cancellation) (#233). Logged and disowned
+                    # eaten cancellation). Logged and disowned
                     # above; the `raise` at the end of this handler
                     # propagates the cancellation.
                     _log_terminal_write_failed(job_log, job, None, infra_exc)
@@ -1029,7 +1029,7 @@ async def consume_one_job(
                             _override_pending_state=_cancel_state,
                         )
                     raise
-                # "noop": the fence declined — an operator cancel landed on
+                # "noop": the fence declined, an operator cancel landed on
                 # the row first (cancel_phase != 0), or the row already
                 # moved (released by RELEASING, reclaimed, terminalised).
                 # The operator's request owns the terminal state; fall
@@ -1045,7 +1045,7 @@ async def consume_one_job(
             # the retry waits here is ordinary, and the whole window
             # (about a second of waits, five seconds of wall time at most)
             # sits inside the cleanup grace the forcing phase allows
-            # before the shutdown's own release write competes — a fenced
+            # before the shutdown's own release write competes, a fenced
             # write, so at most one of the two lands and the other reads
             # a fence outcome. A second cancel (a forced escalation, the
             # shutdown's FORCING phase) interrupts a retry wait as a
@@ -1066,7 +1066,7 @@ async def consume_one_job(
                     write_name="mark_cancelled",
                 )
             except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
-                # Why: the terminal write is best-effort on this path — the
+                # Why: the terminal write is best-effort on this path, the
                 # row stays 'running', disowned so lock-lease expiry
                 # reclaims it (identical to the success-path infra
                 # failure). The CancelledError MUST still propagate below:
@@ -1088,7 +1088,7 @@ async def consume_one_job(
                 # Best-effort, bounded, and deliberately after the write:
                 # a hook that hangs or raises must not be able to leave the
                 # row 'running' behind a lease only the sweep clears. Fires
-                # only here — a job cancelled before it ever ran never
+                # only here, a job cancelled before it ever ran never
                 # enters a worker, so no hook can run for it.
                 await invoke_on_cancel(
                     actor_config.on_cancel,
@@ -1120,7 +1120,7 @@ async def consume_one_job(
         except _TerminalWriteFailed:
             # Success-path terminal write failed with an infra error.
             # Already logged via _log_terminal_write_failed inside the
-            # success path.  The job stays ``running`` — disowned here so
+            # success path.  The job stays ``running``, disowned here so
             # the heartbeat stops renewing it and lock-lease expiry
             # reclaims it.  Do NOT re-dispatch into
             # _handle_generic_exception (that would mislabel the infra
@@ -1186,7 +1186,7 @@ async def consume_one_job(
         _parent_tags_var.reset(_parent_tags_token)
         # Why unconditional, even when the terminal write failed: the actor
         # body has stopped either way, so the resource it was holding really
-        # is free — keeping the slot until its lease expires would throttle
+        # is free, keeping the slot until its lease expires would throttle
         # the bucket for no benefit. It is safe to release here because a
         # reservation release is fenced to the exact lease acquired above
         # (taskq.ratelimit.reservation.SlotLease): if this attempt's lease
@@ -1239,12 +1239,12 @@ async def _consume_transactional(
     routes exceptions to the appropriate handler with
     ``discard_buffer()`` called before each terminal write.
 
-    Returns the job outcome — ``"succeeded"`` on successful commit,
+    Returns the job outcome, ``"succeeded"`` on successful commit,
     ``"failed"`` or ``"scheduled"`` when an exception was handled
     internally.
 
     ``fallback_result_ttl`` is forwarded to ``mark_succeeded_with_conn``
-    on the success path — see ``consume_one_job``.
+    on the success path, see ``consume_one_job``.
     """
     completion: object = None
     _tx_result: object = None
@@ -1264,7 +1264,7 @@ async def _consume_transactional(
                 # Why no shield here: asyncio.shield leaves the shielded
                 # awaitable running when its waiter is cancelled, so
                 # wait_for(shield(actor)) enforced the deadline on the WAIT
-                # and not on the actor — the attempt was marked timed out and
+                # and not on the actor, the attempt was marked timed out and
                 # became retryable elsewhere while the actor body carried on,
                 # duplicating every side effect past the timeout point.  The
                 # start_to_close cancellation must reach the actor, exactly as
@@ -1272,7 +1272,7 @@ async def _consume_transactional(
                 # integrity is the OUTER shield's job (`shield(
                 # _run_actor_in_tx())` below): that one decouples EXTERNAL
                 # cancellation from an in-flight commit.  A cancel landing
-                # mid-statement on transaction_conn is safe — asyncpg sends a
+                # mid-statement on transaction_conn is safe, asyncpg sends a
                 # CancelRequest, leaves the connection usable and puts the
                 # transaction in a failed state, which the enclosing
                 # `async with transaction_conn.transaction()` then rolls back; the
@@ -1289,7 +1289,7 @@ async def _consume_transactional(
                 # the two windows cannot blur.
                 actor_finished = True
                 # Why NO cancel-phase check here: a cancel request observed
-                # while the actor ran does not decide the terminal state —
+                # while the actor ran does not decide the terminal state ,
                 # the actor's own outcome does. The actor returned a value,
                 # so the attempt succeeded; an actor that abandons its unit
                 # of work signals it by RAISING CancelledError (handled by
@@ -1336,7 +1336,7 @@ async def _consume_transactional(
                     # Fenced out: the row moved underneath this attempt
                     # (reclaimed and re-claimed at a newer attempt epoch).
                     # The actor's writes must NOT join this transaction's
-                    # commit — they are a stale attempt's side effects, and
+                    # commit, they are a stale attempt's side effects, and
                     # the live attempt will produce its own. Raising rolls
                     # the transaction back; the buffered sub-enqueues go
                     # with it (their claims belong to this attempt's unit
@@ -1392,7 +1392,7 @@ async def _consume_transactional(
         except SubEnqueueError as sub_err:
             # The parent has already been reported as succeeded, so every
             # failed child enqueue is a job the caller believes exists but
-            # does not — count them before the log line, so the catch can
+            # does not, count them before the log line, so the catch can
             # never lose the signal.
             record_sub_enqueue_failure(job.actor, len(sub_err.failed_items))
             log.error(
@@ -1419,13 +1419,13 @@ async def _consume_transactional(
         # task running detached (an in-flight commit must survive the
         # cancel). Nobody awaits it afterwards, so its eventual outcome
         # must be retrieved here or asyncio reports "Task exception was
-        # never retrieved" — noise that buries the real signal. The
+        # never retrieved", noise that buries the real signal. The
         # outcome itself is deliberately discarded: the dispatch path's
         # connection release terminates a still-open transaction (see
         # _release_slot_conn), so a detached task's late failure is
         # expected, and its late success is superseded by the
         # cancellation handling below. task.exception() raises
-        # CancelledError when the task ended cancelled — the only thing
+        # CancelledError when the task ended cancelled, the only thing
         # suppressed here.
         with contextlib.suppress(asyncio.CancelledError):
             task.exception()
@@ -1461,12 +1461,12 @@ async def _consume_transactional(
     except asyncio.CancelledError:
         # Why: asyncio.shield decouples outer cancellation from the
         # inner task. If the inner task already completed successfully
-        # (commit happened), do NOT route to mark_cancelled — the row is
+        # (commit happened), do NOT route to mark_cancelled, the row is
         # already terminal, and a cancel write against it must not land.
         if completion is not _OK:
             if not actor_finished:
                 # The actor attempt is still running and nothing else
-                # ever delivers this cancellation to it — with no
+                # ever delivers this cancellation to it, with no
                 # start_to_close bound (timeout None) it would run to
                 # completion detached, committing side effects after the
                 # row already says cancelled. Cancelling tx_task here
@@ -1482,25 +1482,25 @@ async def _consume_transactional(
             # the handle is stashed on the ctx: that handler parks on
             # it, bounded, before releasing the row, and holds the
             # release back when the unwind (or the thread inside it)
-            # never finishes (#232).
+            # never finishes.
             ctx._set_tx_unwind_task(tx_task)  # pyright: ignore[reportPrivateUsage]  # Why: the transactional consumer is the designated writer of the unwind handle (see the setter's contract); the consumer's shutdown arm is its designated reader.
             register_tracked_actor_handle(tx_task)  # pyright: ignore[reportPrivateUsage]  # Why: the process-wide twin of the ctx stash: a tx task still unwinding past the TaskGroup keeps the shutdown watchdog armed (see await_tracked_actor_reap), the same as a live sync-actor thread.
             # Past the actor (commit machinery in flight) the detached
             # task is deliberately left to finish: its eventual outcome
             # must be retrieved here or asyncio reports "Task exception
-            # was never retrieved". The outcome itself is discarded — the
+            # was never retrieved". The outcome itself is discarded, the
             # dispatch path's connection release terminates a still-open
             # transaction (see _release_slot_conn), and a detached
             # task's late success is superseded by the cancellation
             # handling below. task.exception() raises CancelledError when
-            # the task ended cancelled — the only outcome suppressed.
+            # the task ended cancelled, the only outcome suppressed.
             tx_task.add_done_callback(_retrieve_detached_outcome)
         raise
 
     except _AttemptFencedOut:
         # The success write's fence matched no row (the attempt was
         # reclaimed; a later attempt owns the row). The raise already
-        # rolled the actor's transaction back — nothing here terminated
+        # rolled the actor's transaction back, nothing here terminated
         # the job, so the outcome is the one batch policy and dispatch
         # metrics treat as "not this dispatch's to move".
         return "noop"
@@ -1552,13 +1552,13 @@ async def _consume_autonomous(
     worker_pool: asyncpg.Pool | None = None,
     fallback_result_ttl: timedelta | None = None,
 ) -> AttemptOutcome:
-    """Autonomous success path — no LOOP-scope connection.
+    """Autonomous success path, no LOOP-scope connection.
 
     Returns ``"succeeded"`` when the terminal write landed and
     ``"noop"`` when its fence matched no row (the attempt was reclaimed
-    and a later attempt owns the row — nothing here terminated it).
+    and a later attempt owns the row, nothing here terminated it).
 
-    ``fallback_result_ttl`` is forwarded to ``mark_succeeded`` — see
+    ``fallback_result_ttl`` is forwarded to ``mark_succeeded``, see
     ``consume_one_job``.
     """
     _auto_redis = (
@@ -1577,7 +1577,7 @@ async def _consume_autonomous(
 
     # Why NO cancel-phase check between the actor's return and the success
     # write: the actor returned a value, so the attempt's outcome is
-    # success — a cancel REQUEST observed while it ran is not a verdict
+    # success, a cancel REQUEST observed while it ran is not a verdict
     # over the work it completed (cancellation is cooperative: the actor
     # that abandons its unit of work raises CancelledError and lands in
     # the outer handler; the actor that degrades gracefully and returns
@@ -1613,7 +1613,7 @@ async def _consume_autonomous(
     if not succeeded_landed:
         # Fenced out: the row moved underneath this attempt (a lease
         # reclaim re-pended it; a later attempt owns it now). The actor's
-        # result is NOT the job's outcome — no success hook (a hook with
+        # result is NOT the job's outcome, no success hook (a hook with
         # external side effects would fire once here and once for the
         # attempt that wins the row), no terminal publish, and the
         # outcome reported is "noop" so batch policy and dispatch metrics

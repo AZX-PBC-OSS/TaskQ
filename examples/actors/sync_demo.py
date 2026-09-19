@@ -1,4 +1,4 @@
-"""Sync actor — demonstrates a plain ``def`` actor dispatched via asyncio.to_thread.
+"""Sync actor - demonstrates a plain ``def`` actor dispatched via asyncio.to_thread.
 
 Sync actors run on a thread, freeing the event loop for other work.
 They must cooperate with cancellation by polling :meth:`JobContext.should_abort`.
@@ -27,7 +27,7 @@ class WordCountResult(BaseModel):
 
 @actor(name="count_words", queue="examples", result_ttl=timedelta(minutes=5))
 def count_words(payload: WordCountPayload, ctx: JobContext[WordCountPayload]) -> WordCountResult:
-    """Counts words and characters — runs synchronously via asyncio.to_thread.
+    """Counts words and characters - runs synchronously via asyncio.to_thread.
 
     Sleeps briefly to simulate work and polls ctx.should_abort() for
     cooperative cancellation support.

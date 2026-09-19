@@ -21,7 +21,7 @@ reset would make every one of them fire again:
   wedged.
 
 Every step of both cycles runs through production paths: enqueue,
-dispatch, the real consumer (``consume_one_job`` — the actor executes
+dispatch, the real consumer (``consume_one_job`` - the actor executes
 and its failure write goes through the real handler and fused terminal
 statement), ``retry_job``, and ``reclaim_expired_locks``.
 """
@@ -52,8 +52,8 @@ if TYPE_CHECKING:
 
     type _Conn = asyncpg.Connection | PoolConnectionProxy
 else:
-    PostgresBackend = object  # pyright: ignore[reportInvalidTypeForm]  # Why: runtime fallback — PostgresBackend is TYPE_CHECKING-only so the test import surface stays asyncpg-free at collection time.
-    type _Conn = object  # pyright: ignore[reportInvalidTypeForm]  # Why: runtime fallback — asyncpg is TYPE_CHECKING-only in test modules, matching tests/test_snooze_round_trip_pg.py.
+    PostgresBackend = object  # pyright: ignore[reportInvalidTypeForm]  # Why: runtime fallback - PostgresBackend is TYPE_CHECKING-only so the test import surface stays asyncpg-free at collection time.
+    type _Conn = object  # pyright: ignore[reportInvalidTypeForm]  # Why: runtime fallback - asyncpg is TYPE_CHECKING-only in test modules, matching tests/test_snooze_round_trip_pg.py.
 
 pytestmark = pytest.mark.integration
 
@@ -63,7 +63,7 @@ _RECLAIM_CYCLES = 3
 
 
 async def _expire_lease(conn: _Conn, schema: str, job_id: UUID) -> None:
-    """Put the row's lock lease in the past (time control only — the same
+    """Put the row's lock lease in the past (time control only - the same
     shape ``create_running_job``'s ``lock_expires_at`` parameter seeds)."""
     await conn.execute(
         f"""UPDATE "{schema}".jobs
@@ -105,7 +105,7 @@ async def _consume(
     *,
     max_attempts: int,
 ) -> str:
-    """Run the production consumer over one dispatched job — the same call
+    """Run the production consumer over one dispatched job - the same call
     the in-memory ``run_until_drained`` makes, here against PG so the
     actor's failure goes through the real handler, fused terminal
     statement, and terminal-write infra classification."""
@@ -177,18 +177,18 @@ async def test_epoch2_collision_must_not_strand_job_running(
     assert repended is not None and repended.status == "pending"
     assert repended.attempt == 1, (
         "MONOTONIC-ATTEMPT CONTRACT: retry_job must never reset the attempt "
-        f"counter — observed {repended.attempt!r}. A reset revisits the spent "
+        f"counter - observed {repended.attempt!r}. A reset revisits the spent "
         "epoch's attempt numbers and every attempt-row writer collides on "
         "job_attempts_pkey (the wedge this suite pins)."
     )
     assert repended.max_attempts == 2, (
         "CEILING-RAISE CONTRACT: retry_job must raise max_attempts to "
         "GREATEST(max_attempts, attempt + 1) so the budget gates open for the "
-        f"re-run — observed max_attempts={repended.max_attempts!r}."
+        f"re-run - observed max_attempts={repended.max_attempts!r}."
     )
 
-    # Epoch 2: dispatch climbs to the fresh attempt number 2 — the spent 1
-    # is never revisited — and the actor re-executes.
+    # Epoch 2: dispatch climbs to the fresh attempt number 2 - the spent 1
+    # is never revisited - and the actor re-executes.
     rows = await backend.dispatch_batch(worker_id, ["default"], limit=1, lock_lease=_LOCK_LEASE)
     assert [r.id for r in rows] == [job_id]
     claimed = await backend.get(job_id)
@@ -203,7 +203,7 @@ async def test_epoch2_collision_must_not_strand_job_running(
         "the epoch-2 terminal write collided on the spent (job_id, attempt) "
         "key and the consumer swallowed it as terminal-write infra "
         "(_TERMINAL_WRITE_INFRA_EXCEPTIONS admits asyncpg.PostgresError): "
-        f"it reported outcome={outcome!r} while writing nothing — the "
+        f"it reported outcome={outcome!r} while writing nothing - the "
         f"actor's failure is unrecorded (error_class={after.error_class!r}), "
         f"the row is stranded running on a lease only the reclaim sweep can "
         f"expire, and every attempt-row writer revisits the same spent key. "
@@ -224,11 +224,11 @@ async def test_epoch2_wedge_must_be_resolvable_by_reclaim_sweep(
     (job_id, 4) key → the lease expires → the production reclaim entry
     runs, one cycle per lease period, each followed by a wake+dispatch
     probe that claims whatever the sweep actually re-pended. The row
-    must be resolvable — under a reintroduced epoch reset the re-run
+    must be resolvable - under a reintroduced epoch reset the re-run
     write collides on the spent (job_id, 1) key, the row strands
     running, and every reclaim cycle dies on the same spent key; the
     re-pend branch is exactly the machinery that would re-execute the
-    actor per lease period — and the row must not still be running
+    actor per lease period - and the row must not still be running
     after it."""
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
@@ -255,7 +255,7 @@ async def test_epoch2_wedge_must_be_resolvable_by_reclaim_sweep(
     assert sorted(a.attempt for a in await backend.get_attempts(job_id)) == [1, 2, 3]
 
     # The escape hatch, then the re-run: the actor executes a fourth time
-    # and its failure write lands at the fresh (job_id, 4) key — the spent
+    # and its failure write lands at the fresh (job_id, 4) key - the spent
     # 1..3 are never revisited.
     assert await backend.retry_job(job_id)
     rows = await backend.dispatch_batch(worker_id, ["default"], limit=1, lock_lease=_LOCK_LEASE)
@@ -289,7 +289,7 @@ async def test_epoch2_wedge_must_be_resolvable_by_reclaim_sweep(
     assert final is not None, "the job row vanished"
     assert sweep_errors == [], (
         "the production reclaim entry died on the wedged row instead of "
-        "resolving it — the sweep's own job_attempts INSERT revisits the "
+        "resolving it - the sweep's own job_attempts INSERT revisits the "
         "same spent (job_id, attempt) key, its transaction rolls back, and "
         "the row can never leave running: no re-pend, no terminal label, "
         "no crash label can ever land, and the actor's fourth execution "

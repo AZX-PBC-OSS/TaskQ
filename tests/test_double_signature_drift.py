@@ -3,12 +3,12 @@
 A double that outlives the signature of the real callable stops standing in for
 anything. Two failure modes, and the quiet one is the dangerous one:
 
-* **Hard drift** — the double demands arguments the real caller cannot supply,
+* **Hard drift** - the double demands arguments the real caller cannot supply,
   so every call raises ``TypeError``. Loud, but it surfaces as a confusing
   double failure instead of the assertion the test exists to make. Six of these
   shipped at once on this branch when ``_sse_generator`` lost an unused
   ``topic`` parameter and six stand-ins kept declaring it.
-* **Soft drift** — the double is NARROWER than the real callable and survives
+* **Soft drift** - the double is NARROWER than the real callable and survives
   only because production does not happen to pass the missing argument yet. It
   breaks on the day someone starts, and until then it silently under-models the
   thing it replaces.
@@ -16,7 +16,7 @@ anything. Two failure modes, and the quiet one is the dangerous one:
 The related hazard this file does NOT cover: a hand-rolled double (``FakeConn``,
 ``StubConnection``) declares no link to the type it imitates, so nothing static
 can resolve it. Those drift by ROW SHAPE and RETURN TYPE rather than by
-signature — a ``fetchval`` answering every statement with one canned value,
+signature - a ``fetchval`` answering every statement with one canned value,
 handed a bool where Postgres returns a datetime. Two of those also shipped on
 this branch. They are caught by the tests that use them, loudly, and there is no
 static equivalent; this module deliberately scopes itself to the resolvable case
@@ -394,7 +394,7 @@ def test_no_double_declares_a_signature_the_real_callable_cannot_satisfy() -> No
     so every call through it raises TypeError."""
     hard, _soft, _resolved = _scan()
     assert not hard, (
-        "Test doubles whose signature the real callable cannot satisfy — every "
+        "Test doubles whose signature the real callable cannot satisfy - every "
         "call through these raises TypeError:\n\n"
         + "\n".join(f.describe() for f in hard)
         + "\n\nUpdate the double to mirror the real signature."

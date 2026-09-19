@@ -1,6 +1,6 @@
 """Unit tests for ``CancelController`` / ``make_cancel_controller``.
 
-Tests the five-phase cancel-poll loop (..) against mock connections —
+Tests the five-phase cancel-poll loop (..) against mock connections -
 no Postgres required. Covers through from the
 test plan.
 """
@@ -224,7 +224,7 @@ async def test_phase_2_ordering_pg_write_before_task_cancel() -> None:
     assert "INSERT INTO" in recorder.execute_calls[1][0]
     assert recorder.execute_calls[0][1] == (job_id, worker_id)
 
-    # task.cancel() came after the PG writes — verify by checking the
+    # task.cancel() came after the PG writes - verify by checking the
     # call order index: the escalation UPDATE is at index 0, task.cancel()
     # would have been called before the execute_calls at index 1 if the
     # hook inverted the invariant.
@@ -425,7 +425,7 @@ async def test_phase_3_abandonment() -> None:
     active.cancel_observed_at = loop.time() - cancel_grace - cleanup_grace - 1.0
 
     recorder = _Recorder()
-    # Why the poll must return the row: the phase-3 arm is poll-fenced —
+    # Why the poll must return the row: the phase-3 arm is poll-fenced -
     # mark_abandoned is worker-unfenced, so an abandon may only be queued
     # for a row this worker's own poll still returns (locked_by this
     # worker, cancel-requested, running). A silent poll with a local
@@ -493,7 +493,7 @@ async def test_controller_has_run_in_tx_and_run_post_tx() -> None:
 
 @pytest.mark.asyncio
 async def test_pg_observation_fast_advance() -> None:
-    """PG fast-advance — when ``db_phase=2`` and local is < 2,
+    """PG fast-advance - when ``db_phase=2`` and local is < 2,
     ``active.cancel_phase`` becomes 2 without a PG write or
     ``task.cancel()``."""
     job_id = new_job_id()
@@ -600,7 +600,7 @@ async def test_wall_clock_skew_negative() -> None:
 
 @pytest.mark.asyncio
 async def test_forbidden_order_task_cancel_before_pg_write() -> None:
-    """Verify the PG-first invariant — the escalation UPDATE must
+    """Verify the PG-first invariant - the escalation UPDATE must
     precede ``task.cancel()`` in the execution order. This test runs the
     production hook through a ``_Recorder`` and fails if the hook ever
     calls ``task.cancel()`` before the PG write."""

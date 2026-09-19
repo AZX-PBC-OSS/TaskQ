@@ -7,7 +7,7 @@ the call sat after the transaction block on the success path only.
 
 Two jobs crossing the cancel grace in one tick share one transaction.  If the
 second job's write fails, the first job's ``cancel_phase = 2`` write and its
-audit event roll back with it — while the first job's Task was genuinely
+audit event roll back with it - while the first job's Task was genuinely
 already cancelled in memory and its in-process phase left at FORCED.  Nothing
 ever re-issued that write: the phase-2 block only fires from a local
 COOPERATIVE phase, so PG stayed at phase 1 forever and ``mark_abandoned``'s

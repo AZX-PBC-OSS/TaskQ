@@ -2,7 +2,7 @@
 
 ``_enqueue_on_conn`` opens its own transaction when the caller-supplied
 connection carries none and the enqueue needs transaction-scoped
-serialization — a capped actor's count-then-insert, and the unique_for
+serialization - a capped actor's count-then-insert, and the unique_for
 check-then-insert. A transaction-scoped advisory lock only serializes
 statements that share one transaction: on a bare autocommit connection
 every statement is its own transaction, so without the wrap the lock
@@ -92,7 +92,7 @@ def _full_record(*, job_id: UUID | None = None) -> dict[str, object]:
 
 
 class _Record:
-    """Duck-typed asyncpg.Record — supports ``rec[key]``."""
+    """Duck-typed asyncpg.Record - supports ``rec[key]``."""
 
     def __init__(self, data: dict[str, object]) -> None:
         self._data = data
@@ -119,9 +119,9 @@ class _ConnStandin:
     per statement, whether an open transaction surrounded it.
 
     ``caller_tx_open`` models the two caller shapes the wrap must
-    distinguish: a bare autocommit connection (False — every statement
+    distinguish: a bare autocommit connection (False - every statement
     its own transaction unless the enqueue path opens one) and a
-    caller-owned OPEN transaction (True — the caller owns the scope).
+    caller-owned OPEN transaction (True - the caller owns the scope).
     """
 
     def __init__(
@@ -269,8 +269,8 @@ async def test_unique_for_dedup_hit_on_bare_caller_conn_returns_inside_the_wrap(
 async def test_caller_owned_open_transaction_is_not_re_wrapped() -> None:
     """A caller who already holds a transaction owns the scope.
 
-    The lock then spans that caller's transaction — the documented
-    semantics for this shape — and the enqueue path must not open a
+    The lock then spans that caller's transaction - the documented
+    semantics for this shape - and the enqueue path must not open a
     second one (asyncpg would nest it as a savepoint of the caller's).
     """
     conn = _ConnStandin(

@@ -22,7 +22,7 @@ _ALL_JOB_STATUSES: frozenset[str] = JOB_STATUS_VALUES
 
 def test_job_status_values_matches_literal() -> None:
     """JOB_STATUS_VALUES (the runtime validation set) is derived from the
-    JobStatus Literal — and still covers every Literal member."""
+    JobStatus Literal - and still covers every Literal member."""
     assert frozenset(get_args(JobStatus.__value__)) == JOB_STATUS_VALUES
 
 
@@ -32,7 +32,7 @@ def test_job_status_literals_match_transition_table() -> None:
 
 
 def test_terminal_and_active_union_covers_all_statuses() -> None:
-    """Every status is classified as terminal or non-terminal — none fall through the cracks."""
+    """Every status is classified as terminal or non-terminal - none fall through the cracks."""
     assert frozenset(VALID_TRANSITIONS) == TERMINAL_STATUSES | ACTIVE_STATUSES
 
 
@@ -60,7 +60,7 @@ def test_active_statuses_pinned_membership() -> None:
 
 
 def test_active_statuses_equals_complement_derivation() -> None:
-    """ACTIVE_STATUSES must remain *derived* — if it is ever replaced by a
+    """ACTIVE_STATUSES must remain *derived* - if it is ever replaced by a
     hand-maintained set that drifts from the complement rule, this fails."""
     assert frozenset(VALID_TRANSITIONS) - TERMINAL_STATUSES == ACTIVE_STATUSES
 

@@ -5,8 +5,8 @@ Marked ``integration`` so they are skipped in non-integration runs.
 
 The redteam repro of the concurrent-serial-runs collision landed on THIS
 module's hashed module-database name (``tq_db_5a19dc6e3f4c``), derived by
-its ``pg_dsn`` fixture. The guard against it —
-``test_module_db_names_diverge_across_serial_run_tokens`` — lives in
+its ``pg_dsn`` fixture. The guard against it -
+``test_module_db_names_diverge_across_serial_run_tokens`` - lives in
 ``tests/test_suite_hygiene.py``, alongside the rest of the run-isolation
 naming seam's unit tests (``run_isolation_token`` / ``_module_db_name``),
 which is where that seam is owned and where the guard needs no container.
@@ -160,7 +160,7 @@ async def test_heartbeat_pool_command_timeout(pg_dsn: str) -> None:
     async with open_worker_deps(settings) as deps:
         # Fail fast: the pool must carry the timeout before the 60s probe.
         assert deps.heartbeat_pool._connect_kwargs["command_timeout"] == 2, (  # type: ignore[attr-defined] # Why: asyncpg exposes no public command_timeout accessor; Pool._connect_kwargs is the constructor-kwargs store (pinned by the pg_sleep probe below).
-            "heartbeat_pool lost command_timeout=2 — pg_sleep(60) would hang for the full minute"
+            "heartbeat_pool lost command_timeout=2 - pg_sleep(60) would hang for the full minute"
         )
         async with deps.heartbeat_pool.acquire() as conn:
             # asyncpg raises TimeoutError when command_timeout fires mid-query
@@ -193,7 +193,7 @@ async def test_leader_conn_command_timeout(pg_dsn: str) -> None:
         assert deps.leader_conn is not None
         # Fail fast: the conn must carry the timeout before the 60s probe.
         assert deps.leader_conn._config.command_timeout == 2.0, (  # type: ignore[attr-defined] # Why: asyncpg exposes no public command_timeout accessor; Connection._config is the connect-time configuration record carrying it (pinned by the pg_sleep probe below).
-            "leader_conn lost dispatcher_command_timeout — pg_sleep(60) would hang for the full minute"
+            "leader_conn lost dispatcher_command_timeout - pg_sleep(60) would hang for the full minute"
         )
         with pytest.raises((asyncpg.QueryCanceledError, TimeoutError)):
             await deps.leader_conn.execute("SELECT pg_sleep(60)")
@@ -275,14 +275,14 @@ async def test_pg_unavailable_raises_within_timeout(pg_dsn: str) -> None:
 
     Uses a deliberately-unreachable port (1) on the same host as the
     testcontainer PG. asyncpg's default ``connect_timeout`` (60s) is overridden
-    by wrapping ``open_worker_deps`` in ``asyncio.wait_for`` — if the
+    by wrapping ``open_worker_deps`` in ``asyncio.wait_for`` - if the
     AsyncExitStack pattern is correct, the failure surfaces before the wait
     fires and no resource leaks.
     """
     bad_dsn = "postgresql://taskq:taskq@127.0.0.1:1/taskq"
     settings = make_integration_settings(bad_dsn)
 
-    # The connection attempt should fail fast (refused) — give it 5s ceiling.
+    # The connection attempt should fail fast (refused) - give it 5s ceiling.
     with pytest.raises(
         (asyncpg.PostgresConnectionError, OSError, ConnectionRefusedError, asyncio.TimeoutError)
     ):
@@ -324,7 +324,7 @@ async def test_partial_open_lifo_teardown_with_pg_failure(
 
     # Capture pools as teardown closes them so we can assert they were
     # closed. Patching the close_pool_bounded module global is the cleanest
-    # observation point — every pool teardown callback reads it at call time
+    # observation point - every pool teardown callback reads it at call time
     # (pools are no longer entered via AsyncExitStack.enter_async_context).
     captured_pools: list[asyncpg.Pool] = []
     original_close_bounded = deps_mod.close_pool_bounded
@@ -382,7 +382,7 @@ def disposable_pg_container() -> Iterator[PostgresContainer]:  # pyright: ignore
     ``ALTER USER ... PASSWORD`` mutates CLUSTER-WIDE auth state: run against
     the shared session container, every OTHER xdist worker's new connections
     would fail authentication during the sentinel window. The shared
-    container must never be mutated like this — same never-touch-the-shared-
+    container must never be mutated like this - same never-touch-the-shared-
     one rule as ``killable_redis_container``. Labeled with the ownership
     labels so a crashed run's leftover is sweepable (Ryuk is disabled
     process-wide by the shared-container machinery). Skips with a reason
@@ -401,7 +401,7 @@ def disposable_pg_container() -> Iterator[PostgresContainer]:  # pyright: ignore
 async def test_pool_startup_log_redacts_credentials(
     disposable_pg_container: PostgresContainer,
 ) -> None:
-    """A-TG-05: — pool startup logs must not contain passwords.
+    """A-TG-05: - pool startup logs must not contain passwords.
 
     Verifies the behavioral contract: ``dsn_host()`` strips credentials
     from DSNs, and ``open_worker_deps`` opens successfully with a
@@ -418,7 +418,7 @@ async def test_pool_startup_log_redacts_credentials(
 
     sentinel = "S3CR3T-redacted-zzzZQ9"  # not a substring of any expected log key/value
 
-    # Verify dsn_host strips the password — this is the behavioral contract
+    # Verify dsn_host strips the password - this is the behavioral contract
     # that prevents credential leakage in all logging sites.
     sentinel_dsn_for_check = f"postgresql://taskq:{sentinel}@db.test.invalid:5432/taskq"
     assert dsn_host(sentinel_dsn_for_check) == "db.test.invalid"
@@ -427,7 +427,7 @@ async def test_pool_startup_log_redacts_credentials(
     # Connect using the existing creds, ALTER USER to the sentinel, then
     # verify open_worker_deps opens successfully with the sentinel password.
     # Restore afterward.
-    # docker-py connection-url resolution is a blocking HTTP call — off the loop.
+    # docker-py connection-url resolution is a blocking HTTP call - off the loop.
     base_dsn = (await asyncio.to_thread(disposable_pg_container.get_connection_url)).replace(
         "postgresql+psycopg2://", "postgresql://"
     )
@@ -444,7 +444,7 @@ async def test_pool_startup_log_redacts_credentials(
         async with open_worker_deps(settings):
             pass
     finally:
-        # Restore the original password — hygiene for anything that inspects
+        # Restore the original password - hygiene for anything that inspects
         # this container after the test; the container is disposable either way.
         admin_conn = await asyncpg.connect(sentinel_dsn)
         try:

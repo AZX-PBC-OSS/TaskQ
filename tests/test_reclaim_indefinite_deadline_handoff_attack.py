@@ -5,9 +5,9 @@ Hypothesis under test: crash-reclaim's hand-back branch does not clamp
 ``scheduled_at`` against ``schedule_to_close`` (unlike ``mark_snoozed``,
 which refuses to snooze past the deadline at all). If nothing else picks
 up the slack, a job could sit forever at ``pending``/``scheduled`` with a
-``scheduled_at`` beyond its own deadline — never dispatched (dispatch
+``scheduled_at`` beyond its own deadline - never dispatched (dispatch
 excludes rows past ``schedule_to_close``) and never resolved (nothing
-else visits it) — a silent stall, not a crash-loss, but still a violation
+else visits it) - a silent stall, not a crash-loss, but still a violation
 of "no work stalled forever".
 
 The actual design (confirmed by reading ``_SWEEP_2_SQL`` /
@@ -15,7 +15,7 @@ The actual design (confirmed by reading ``_SWEEP_2_SQL`` /
 ``status IN ('pending', 'scheduled') AND schedule_to_close < now`` and
 fails any such row with ``DeadlineExceeded``, regardless of how it got
 into that status. So reclaim handing a job back with a scheduled_at past
-its deadline is not a stall — the deadline sweep resolves it on its next
+its deadline is not a stall - the deadline sweep resolves it on its next
 tick. This test exercises that handoff for real, on the in-memory twin,
 to confirm the two sweeps compose correctly rather than asserting it from
 reading the code.
@@ -41,7 +41,7 @@ async def test_reclaim_near_deadline_indefinite_job_is_resolved_by_the_deadline_
     None
 ):
     """An ``indefinite`` job crashes with its ``schedule_to_close`` only
-    seconds away — closer than the reclaim backoff delay its own retry
+    seconds away - closer than the reclaim backoff delay its own retry
     policy computes. Reclaim hands it back (attempt budget is open); the
     resulting ``scheduled_at`` lands after the deadline. The job must not
     become a permanent stall: the deadline sweep must terminalise it once
@@ -100,7 +100,7 @@ async def test_reclaim_near_deadline_indefinite_job_is_resolved_by_the_deadline_
     )
     assert after_reclaim.scheduled_at is not None
     assert after_reclaim.scheduled_at > deadline, (
-        "the scenario requires the reclaim delay to overshoot the deadline — "
+        "the scenario requires the reclaim delay to overshoot the deadline - "
         f"got scheduled_at={after_reclaim.scheduled_at!r}, deadline={deadline!r}; "
         "if this fails, the backoff formula changed and no longer produces the "
         "overshoot this test needs to attack"
@@ -108,14 +108,14 @@ async def test_reclaim_near_deadline_indefinite_job_is_resolved_by_the_deadline_
 
     # Advance the clock past the deadline (but the row's scheduled_at
     # hand-back time may still be in the future) and run the deadline
-    # sweep — the second, independent sweep that watches (pending,
+    # sweep - the second, independent sweep that watches (pending,
     # scheduled) rows for an expired schedule_to_close.
     clock.advance(timedelta(seconds=10))
     swept = await backend.deadline_sweep()
     assert swept == 1, (
         "the deadline sweep must resolve a (pending/scheduled) row whose "
         "schedule_to_close has passed, regardless of how it reached that "
-        "status — reclaim's hand-back must not create a row the deadline "
+        "status - reclaim's hand-back must not create a row the deadline "
         "sweep's predicate fails to match"
     )
 

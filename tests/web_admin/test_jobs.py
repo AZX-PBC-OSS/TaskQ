@@ -84,7 +84,7 @@ def test_job_detail_marks_max_attempts_inert_for_indefinite_retry(
 ) -> None:
     """An indefinite-kind job ignores max_attempts entirely (retries.md §2):
     the stored ceiling is inert, so the Attempt cell must not advertise it
-    as a live budget — a row can legitimately sit at attempt 168 over a
+    as a live budget - a row can legitimately sit at attempt 168 over a
     stored 3, and "168 / 3" reads as a lie about what is enforced."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     bundle = create_router(stub_pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
@@ -517,7 +517,7 @@ def test_build_where_with_tags() -> None:
 
 
 def test_parse_job_statuses_dedupes_preserving_order() -> None:
-    """A repeated status filter value is redundant, not an error — the
+    """A repeated status filter value is redundant, not an error - the
     closed set has 8 members, so duplicates only bloat the ANY() array
     bind."""
     from taskq.web.admin._constants import parse_job_statuses
@@ -529,7 +529,7 @@ def test_parse_job_statuses_dedupes_preserving_order() -> None:
 
 def test_parse_job_statuses_dedupes_a_long_repeated_list_rather_than_rejecting_it() -> None:
     """Invalid values are rejected before the dedup, so a list longer than the
-    closed set can only be duplicates — which the dedup already absorbs. It is
+    closed set can only be duplicates - which the dedup already absorbs. It is
     a well-formed request, not a 400."""
     from taskq.web.admin._constants import parse_job_statuses
 
@@ -564,7 +564,7 @@ def test_parse_job_tags_length_cap_and_dedupes() -> None:
 def test_jobs_route_accepts_duplicate_statuses(
     monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
 ) -> None:
-    """Duplicated status lists stay valid requests — the dedup absorbs them."""
+    """Duplicated status lists stay valid requests - the dedup absorbs them."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     client = make_app()
     response = client.get("/jobs?status=pending&status=failed&status=pending")
@@ -598,7 +598,7 @@ def test_jobs_route_rejects_nul_in_text_filters(
 
     Every one of these is bound as a text parameter by ``_build_where``;
     asyncpg rejects a NUL with ``CharacterNotInRepertoireError`` (SQLSTATE
-    22021) — the same driver-level class the client path already guards
+    22021) - the same driver-level class the client path already guards
     via ``JobFilter``'s NUL checks. The stub pool tolerates a NUL (200) and
     a real pool 500s; neither is the admin contract.
     """
@@ -607,7 +607,7 @@ def test_jobs_route_rejects_nul_in_text_filters(
     for param in ("actor", "queue", "search", "identity_key", "fairness_key"):
         response = client.get(f"/jobs?{param}=bad%00name")
         assert response.status_code == 400, (param, response.status_code)
-    # Time bounds bind as text::timestamptz — same bind class.
+    # Time bounds bind as text::timestamptz - same bind class.
     for param in ("time_from", "time_to"):
         response = client.get(f"/jobs?{param}=2026-01-01T00:00:00%00Z")
         assert response.status_code == 400, (param, response.status_code)
@@ -616,7 +616,7 @@ def test_jobs_route_rejects_nul_in_text_filters(
 def test_jobs_route_rejects_nul_in_tags_filter(
     monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
 ) -> None:
-    """Tags travel as a text[] bind — a NUL item is the same 22021 class."""
+    """Tags travel as a text[] bind - a NUL item is the same 22021 class."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     client = make_app()
     response = client.get("/jobs?tags=urg%00ent")
@@ -887,7 +887,7 @@ def test_build_where_binds_a_named_range_as_a_duration_not_an_instant() -> None:
 def _render_job_table(stub_pool: _StubPool, **context: Any) -> str:
     """Render the jobs table partial with one paged row.
 
-    The row's own fields are irrelevant here — every assertion in this
+    The row's own fields are irrelevant here - every assertion in this
     section is about the pagination links, so the row exists only to make
     the table render at all.
     """
@@ -952,8 +952,8 @@ def test_pagination_links_carry_the_active_sort(stub_pool: _StubPool) -> None:
 
     The cursor encodes the value of the SORT column. A page link that
     drops ``sort``/``order`` sends that value back to be compared against
-    the *default* column, so Next either serves nonsense or — as here,
-    where the cursor no longer matches anything — silently re-serves the
+    the *default* column, so Next either serves nonsense or - as here,
+    where the cursor no longer matches anything - silently re-serves the
     page the operator is already on.
     """
     links = _page_links(_render_job_table(stub_pool, sort="finished_at", order="asc"))
@@ -980,7 +980,7 @@ def test_pagination_links_survive_an_empty_cursor_value(stub_pool: _StubPool) ->
     """A NULL sort value is an empty ``cursor_at``, not a dropped link.
 
     ``finished_at DESC NULLS LAST`` ends in the unfinished rows, so the
-    seam between two of them carries no value — only the id.
+    seam between two of them carries no value - only the id.
     """
     links = _page_links(
         _render_job_table(stub_pool, sort="finished_at", order="desc", next_cursor_at="")
@@ -1035,12 +1035,12 @@ def test_live_jobs_list_fetches_the_lease_columns() -> None:
 
     cols = _LIVE_COLS.lower()
     assert "lock_expires_at" in cols, (
-        "the live /jobs list must fetch lock_expires_at — a lease the page "
+        "the live /jobs list must fetch lock_expires_at - a lease the page "
         "never selects can never be rendered"
     )
     assert "lease_expired" in cols, (
         "the live /jobs list must compute lease_expired server-side against "
-        "the database clock — comparing the row's timestamptz in Python mixes "
+        "the database clock - comparing the row's timestamptz in Python mixes "
         "clock domains on the one field where 'past' is the whole signal"
     )
     assert "cancel_phase = 0" in cols, (
@@ -1055,7 +1055,7 @@ def test_live_jobs_list_fetches_the_lease_columns() -> None:
 def test_live_jobs_table_renders_lease_column_with_expired_badge(
     stub_pool: _StubPool,
 ) -> None:
-    """A running row whose lease is past renders the lease state — expiry
+    """A running row whose lease is past renders the lease state - expiry
     time plus the holding worker, with the expired state marked visually,
     following the status-badge pattern.
 
@@ -1073,11 +1073,11 @@ def test_live_jobs_table_renders_lease_column_with_expired_badge(
 
     assert "Lease" in html, "the live tab must carry a Lease column"
     assert worker_id in html, (
-        "the holding worker must render — which worker holds the stuck lease "
+        "the holding worker must render - which worker holds the stuck lease "
         "is the first question at 3am"
     )
     assert "expired" in html, (
-        "an expired lease must be visually distinct from a live one — the "
+        "an expired lease must be visually distinct from a live one - the "
         "zombie shape must not read as a healthy running job"
     )
     # The healthy row shows its lease time without the expired marking.
@@ -1088,7 +1088,7 @@ def test_live_jobs_table_renders_lease_column_with_expired_badge(
 def test_live_jobs_table_non_running_rows_have_no_lease_state(
     stub_pool: _StubPool,
 ) -> None:
-    """Pending/terminal rows hold no lease — their lease cell renders the
+    """Pending/terminal rows hold no lease - their lease cell renders the
     same muted dash every other empty cell uses, not a badge."""
     pending_row = _live_row(status="pending", lease_expired=False)
     pending_row.pop("locked_by_worker")
@@ -1099,7 +1099,7 @@ def test_live_jobs_table_non_running_rows_have_no_lease_state(
 
     assert "Lease" in html
     assert "expired" not in html.replace("Lease", ""), (
-        "a row that holds no lease must not render an expired badge — the "
+        "a row that holds no lease must not render an expired badge - the "
         "badge means a running row's lease is past, nothing else"
     )
 

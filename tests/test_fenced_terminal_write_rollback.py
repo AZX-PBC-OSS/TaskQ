@@ -2,9 +2,9 @@
 
 """A terminal write that matches no row must roll back the attempt whole.
 
-When a job's lease is reclaimed mid-attempt — the worker stalled past its
+When a job's lease is reclaimed mid-attempt - the worker stalled past its
 lock lease, the leader's sweep re-pended the row, the job was re-dispatched
-at a newer attempt — the original handler is still running. Its terminal
+at a newer attempt - the original handler is still running. Its terminal
 write is fenced on ``(id, status, locked_by_worker, attempt)`` and lands on
 no row.
 
@@ -13,7 +13,7 @@ attempt is a unit of work: the actor's own writes, its sub-job enqueues,
 the success hook, and the success state-change event all belong to the same
 outcome. If the fence no-ops but the surrounding transaction still commits,
 the operator sees an attempt that was reclaimed and re-run from scratch,
-yet whose first run's side effects are durably in the database — the job ran
+yet whose first run's side effects are durably in the database - the job ran
 twice and half of the first run survived. If the success hook fires on a
 write that landed nowhere, downstream systems are told a job succeeded that
 is at that moment still running somewhere else.
@@ -120,7 +120,7 @@ async def _reclaim_to_newer_attempt(
     """Simulate what the fleet does while the original handler still runs.
 
     The leader's sweep re-pends a job whose lease expired and it is then
-    re-dispatched — to another worker here — at a newer attempt. This is
+    re-dispatched - to another worker here - at a newer attempt. This is
     the state the original handler's late terminal write arrives into.
     """
     await conn.execute(
@@ -199,7 +199,7 @@ async def test_fenced_transactional_success_rolls_back_actor_side_effects(
         async def run_actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> object:
             await enqueuer.enqueue(_CHILD, _Payload())
             # The reclaim happens on a separate connection, outside this
-            # job's transaction — exactly as another worker's would.
+            # job's transaction - exactly as another worker's would.
             async with deps.worker_pool.acquire() as sweep_conn:
                 await _reclaim_to_newer_attempt(sweep_conn, schema, parent.id, other_worker_id)
             return {"ok": True}
@@ -232,7 +232,7 @@ async def test_fenced_transactional_success_rolls_back_actor_side_effects(
     )
     assert row["status"] == "running", (
         "the fenced write terminalised a job that had been reclaimed and "
-        "re-dispatched at a newer attempt — the live attempt lost its row"
+        "re-dispatched at a newer attempt - the live attempt lost its row"
     )
     assert children == 0, (
         "the reclaimed attempt's sub-job INSERT committed even though its "
@@ -241,7 +241,7 @@ async def test_fenced_transactional_success_rolls_back_actor_side_effects(
     )
     assert success_hook_calls == [], (
         "the success hook fired for an attempt whose terminal write landed on "
-        "no row — downstream systems were told a job succeeded while it was "
+        "no row - downstream systems were told a job succeeded while it was "
         "still running elsewhere"
     )
     assert outcome != "succeeded", (
@@ -257,11 +257,11 @@ async def test_fenced_transactional_success_rolls_back_actor_side_effects_same_w
 
     The worker fence alone (``locked_by_worker = $worker_id``) cannot tell
     attempt N's suspended handler from attempt N+1's live one when the SAME
-    worker process re-claims the job after a lease-expiry sweep — both
+    worker process re-claims the job after a lease-expiry sweep - both
     present the identical worker id. Only the attempt conjunct
     (``attempt = $k``) rejects the stale write. This is the shape most
     easily missed because nothing about it looks like a hand-off: one
-    process, one worker id, one job, one transaction pool — so it is worth
+    process, one worker id, one job, one transaction pool - so it is worth
     pinning independently of the cross-worker case, on the real
     transactional path with a real sub-job INSERT sharing the connection.
     """
@@ -301,7 +301,7 @@ async def test_fenced_transactional_success_rolls_back_actor_side_effects_same_w
         async def run_actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> object:
             await enqueuer.enqueue(_CHILD, _Payload())
             # The reclaim happens on a separate connection, but re-claims
-            # back to the SAME worker id — a lease-expiry sweep followed
+            # back to the SAME worker id - a lease-expiry sweep followed
             # by that same worker's next poll winning the re-dispatch,
             # not a hand-off to a different process.
             async with deps.worker_pool.acquire() as sweep_conn:
@@ -336,7 +336,7 @@ async def test_fenced_transactional_success_rolls_back_actor_side_effects_same_w
     )
     assert row["status"] == "running", (
         "the fenced write terminalised a job that had been reclaimed and "
-        "re-dispatched at a newer attempt under the SAME worker id — the "
+        "re-dispatched at a newer attempt under the SAME worker id - the "
         "live attempt lost its row"
     )
     assert children == 0, (
@@ -361,7 +361,7 @@ async def test_fenced_autonomous_success_does_not_report_success(
     """The autonomous path must not claim success on a write that landed nowhere.
 
     Without a LOOP-scope connection the terminal write runs on its own
-    connection, so there is no actor transaction to roll back — but the
+    connection, so there is no actor transaction to roll back - but the
     reporting half of the guarantee still holds. A fenced write means this
     attempt did not terminate the job: no success hook, and no ``succeeded``
     outcome for the dispatcher's span and metrics to record.
@@ -437,8 +437,8 @@ async def test_expired_lock_sweep_converges_over_repeated_ticks(
 
     The convergence half of robustness: after a fleet-wide stall leaves many
     jobs with expired leases, repeated sweep ticks must reduce the backlog to
-    zero and then stay quiet. A sweep that wedges on one row — a collision it
-    retries identically every tick — leaves the whole backlog stranded behind
+    zero and then stay quiet. A sweep that wedges on one row - a collision it
+    retries identically every tick - leaves the whole backlog stranded behind
     it and the queue never recovers without operator intervention.
     """
     deps = clean_jobs_app.deps
@@ -487,7 +487,7 @@ async def test_expired_lock_sweep_converges_over_repeated_ticks(
         )
         assert reclaimed_total >= job_count, (
             f"the sweep reported {reclaimed_total} reclaims for {job_count} "
-            "expired jobs — rows were cleared without being accounted for"
+            "expired jobs - rows were cleared without being accounted for"
         )
 
         # Having converged, the sweep must go quiet: a sweep that keeps

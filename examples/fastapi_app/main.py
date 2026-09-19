@@ -1,8 +1,8 @@
-"""FastAPI example app — enqueue, stream, and cancel jobs via the public TaskQ surface.
+"""FastAPI example app - enqueue, stream, and cancel jobs via the public TaskQ surface.
 
 Demonstrates :meth:`TaskQ.stream` for real-time SSE fanout of
 :class:`~taskq.JobEvent` objects.  Uses only the public
-``taskq`` API — no private submodule imports.
+``taskq`` API - no private submodule imports.
 """
 
 from collections.abc import AsyncGenerator

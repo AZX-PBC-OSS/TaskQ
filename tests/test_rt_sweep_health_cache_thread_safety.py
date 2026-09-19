@@ -5,7 +5,7 @@ The sweep-health caches feed TWO cross-thread readers:
 * the OTel SDK invokes the observable-gauge callbacks
   (``_observe_sweep_success`` / ``_observe_sweep_batch_size`` /
   ``_observe_sweep_batch_size_configured``) on a reader thread while the
-  worker's event-loop thread publishes stamps — the identical race the
+  worker's event-loop thread publishes stamps - the identical race the
   module already warns about in ``leader.py``'s ``_active_leaders_lock``
   ("the OTel SDK reader thread invokes … while the event-loop thread
   mutates … Unsynchronized iteration raises RuntimeError: Set changed
@@ -13,7 +13,7 @@ The sweep-health caches feed TWO cross-thread readers:
 * ``maintenance_health`` reads them on the event-loop thread.
 
 A writer that mutates a cache dict IN PLACE while a reader's iterator is
-open raises ``RuntimeError: dictionary changed size during iteration`` —
+open raises ``RuntimeError: dictionary changed size during iteration`` -
 and the size changes land exactly where they matter most: on the first
 success after startup, and after every ``clear_sweep_health_caches()``
 demotion re-populates the cache. The pins below hold a reader generator
@@ -64,7 +64,7 @@ def test_success_cache_reader_survives_concurrent_first_success(
     # the reader's iterator is still open.
     otel_mod.record_sweep_success("deadline_exceeded")
 
-    # Draining the open iterator must not raise — publication is a rebind.
+    # Draining the open iterator must not raise - publication is a rebind.
     remaining = list(reader)
     assert {dict(o.attributes or {})["sweep_name"] for o in remaining} <= {
         "scheduled_to_pending",
@@ -96,7 +96,7 @@ def test_batch_size_cache_reader_survives_concurrent_first_write(
 def test_batch_size_configured_cache_reader_survives_concurrent_first_write(
     fresh_caches: None,
 ) -> None:
-    """The configured-size cache has the same publication discipline — its
+    """The configured-size cache has the same publication discipline - its
     gauge and the used-size gauge must stay label-matched, and a crashed
     collection on one would desynchronise the sweep-degraded comparison."""
     otel_mod.record_sweep_batch_size_configured("scheduled_to_pending", 100)

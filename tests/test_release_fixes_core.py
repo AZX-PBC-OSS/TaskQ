@@ -62,7 +62,7 @@ async def test_flush_buffer_survives_late_update_mid_flight() -> None:
 
     Regression for the lost-update race: the old `_flush_buffer` snapshot
     the buffer, awaited the DB write, then wholesale-reset
-    (base_seq=returned, delta=0, dirty=False, pending_state={}) — silently
+    (base_seq=returned, delta=0, dirty=False, pending_state={}) - silently
     dropping any mutation that happened during the await.
     """
     release_event = asyncio.Event()
@@ -89,7 +89,7 @@ async def test_flush_buffer_survives_late_update_mid_flight() -> None:
 
     # The DB write reflects the snapshot (delta=5); base_seq is now 5.
     assert buf.base_seq == 5
-    # The late delta (+1) survives — not clobbered by a delta=0 reset.
+    # The late delta (+1) survives - not clobbered by a delta=0 reset.
     assert buf.pending_seq_delta == 1
     # The late state mutation survives.
     assert buf.pending_state == {"step": "phase-2"}
@@ -128,7 +128,7 @@ def test_register_identical_token_bucket_is_noop() -> None:
     b = TokenBucket(name="dup", capacity=10, refill_per_second=1, backend="memory")
 
     registry.register(a)
-    registry.register(b)  # identical config — no-op, no raise
+    registry.register(b)  # identical config - no-op, no raise
 
     assert registry.get_rate_limit("dup") is a
 
@@ -154,9 +154,9 @@ def test_register_conflicting_token_bucket_raises_naming_both() -> None:
 class _RaisingBackend:
     """Backend stub whose mark_failed_or_retry raises once, then would succeed.
 
-    Only the raising behaviour is exercised — the test checks that the
+    Only the raising behaviour is exercised - the test checks that the
     infra exception propagates out of ``_handle_generic_exception`` (so
-    the caller — ``_run_terminal_path`` or ``dispatch.py`` — can catch it
+    the caller - ``_run_terminal_path`` or ``dispatch.py`` - can catch it
     consistently), rather than being swallowed internally (which caused a
     false terminal Redis publish via ``_run_terminal_path``).
     """
@@ -174,7 +174,7 @@ class _RaisingBackend:
 async def test_handle_generic_exception_propagates_infra_write_failure() -> None:
     """After the fix, _handle_generic_exception propagates infra exceptions
     from the terminal write so that _run_terminal_path's outer guard (or the
-    dispatch.py direct-call guard) catches them consistently — instead of
+    dispatch.py direct-call guard) catches them consistently - instead of
     swallowing them and causing a false terminal Redis publish."""
     import asyncpg
     import structlog
@@ -196,7 +196,7 @@ async def test_handle_generic_exception_propagates_infra_write_failure() -> None
 
     actor_exc = RuntimeError("actor blew up")
 
-    # The infra exception now propagates — the caller is responsible for
+    # The infra exception now propagates - the caller is responsible for
     # catching it (see _run_terminal_path and dispatch.py).
     with pytest.raises(asyncpg.PostgresConnectionError):
         await _handle_generic_exception(
@@ -222,7 +222,7 @@ async def test_dispatch_exception_swallows_infra_failure_all_handlers(
     path: str,
 ) -> None:
     """Infra failures during ANY terminal handler's write are caught in
-    _run_terminal_path — not just _handle_generic_exception's — so they can
+    _run_terminal_path - not just _handle_generic_exception's - so they can
     never be re-dispatched into generic handling as the actor's failure."""
     import asyncpg
     import structlog
@@ -263,7 +263,7 @@ async def test_dispatch_exception_swallows_infra_failure_all_handlers(
     else:
         exc = RuntimeError("actor blew up")
 
-    # Must not raise — the infra exception is caught in _run_terminal_path.
+    # Must not raise - the infra exception is caught in _run_terminal_path.
     outcome = await _dispatch_exception(
         exc,
         backend=backend,  # type: ignore[arg-type]
@@ -299,7 +299,7 @@ def test_no_rendered_sql_template_uses_now() -> None:
     not_transaction_start`` for the behavioural proof that this is a live
     difference, not a stylistic one.
 
-    Why a source-text assertion is legitimate here — and must not be
+    Why a source-text assertion is legitimate here - and must not be
     "fixed" into a behavioural one: this is an INVENTORY guard over
     generated SQL, the same category as the CI-workflow tests.  There is no
     runtime expression to observe; a new template is a new string, and the
@@ -345,16 +345,16 @@ def test_worker_fenced_terminal_templates_carry_the_attempt_epoch_conjunct() -> 
     redispatch: the stale handler's terminal write matches the guard and
     falsely terminalises the redispatched attempt with the old attempt's
     result. Guard against this with an attempt-identity epoch on every
-    terminal write — a conjunct binding the update to the specific
+    terminal write - a conjunct binding the update to the specific
     redispatched attempt so a stale handler's late write cannot land on
     its row. The behavioural pin is
     ``tests/test_rt_terminal_write_fencing.py`` (integration) and
     ``tests/test_in_memory_terminal_writes.py`` (the twin mirror); this
-    is the template inventory guard — every arm of every fenced
+    is the template inventory guard - every arm of every fenced
     template must carry the conjunct, and the expected counts pin that
     no arm is missed.
 
-    Source-text assertion over rendered SQL — the same inventory-guard
+    Source-text assertion over rendered SQL - the same inventory-guard
     category and rationale as ``test_no_rendered_sql_template_uses_now``
     above: the guard shape IS the contract, and only reading the set
     holds every arm of every template (including the one added tomorrow)
@@ -363,7 +363,7 @@ def test_worker_fenced_terminal_templates_carry_the_attempt_epoch_conjunct() -> 
     from taskq.backend._sql_templates import render
 
     sql = render("taskq")
-    # (template, conjunct needle, expected occurrences — one per fenced
+    # (template, conjunct needle, expected occurrences - one per fenced
     # UPDATE arm). The single-statement templates have one arm; the
     # multi-arm arbiters carry the conjunct in every arm so a stale
     # epoch cannot reach any outcome.
@@ -372,18 +372,20 @@ def test_worker_fenced_terminal_templates_carry_the_attempt_epoch_conjunct() -> 
         ("mark_failed", "AND attempt = $8", 1),
         ("mark_cancelled", "AND attempt = $5", 1),
         ("mark_retry", "AND j.attempt = (SELECT attempt FROM params)", 2),
-        # mark_snoozed has exactly two arms (snoozed, deadline_failed) —
-        # a deferral's only terminal exit is the job's own deadline, so a
+        # mark_snoozed has exactly three arms (snoozed, deadline_cancelled,
+        # deadline_failed): a deferral's terminal exits are the job's own
+        # deadline, which a cancel-carrying row exits as 'cancelled' (the
+        # cancel-first arm) and a clean row as 'failed'; the
         # denial/budget arm no longer exists to fence.
-        ("mark_snoozed", "AND j.attempt = (SELECT attempt FROM params)", 2),
-        ("mark_retry_after_consume_true", "AND j.attempt = (SELECT attempt FROM params)", 3),
-        ("mark_retry_after_consume_false", "AND j.attempt = (SELECT attempt FROM params)", 2),
+        ("mark_snoozed", "AND j.attempt = (SELECT attempt FROM params)", 3),
+        ("mark_retry_after_consume_true", "AND j.attempt = (SELECT attempt FROM params)", 4),
+        ("mark_retry_after_consume_false", "AND j.attempt = (SELECT attempt FROM params)", 3),
     )
     for template, needle, expected in fenced:
         rendered: str = getattr(sql, template)
         assert rendered.count(needle) == expected, (
             f"{template} must fence every UPDATE arm on the attempt epoch "
-            f"({needle!r} expected {expected}x, found {rendered.count(needle)}x) — "
+            f"({needle!r} expected {expected}x, found {rendered.count(needle)}x) - "
             "a stale attempt's terminal write must no-op after a same-worker "
             "reclaim/redispatch, exactly as a different worker's late write "
             "already does"

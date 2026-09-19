@@ -4,7 +4,7 @@
 literal duplicated across ``client/_args.py`` and ``client/_jobs.py``, with no
 comment in either. The column is plain ``text``; what actually bounds it is the
 composite unique index ``jobs_idempotency_scope_key_uniq``, whose btree entries
-cannot exceed ``BTREE_MAX_ITEM_BYTES`` — Postgres raises ``index row size N
+cannot exceed ``BTREE_MAX_ITEM_BYTES`` - Postgres raises ``index row size N
 exceeds btree version 4 maximum 2704`` at INSERT. That limit counts encoded
 bytes, so the cap is expressed in UTF-8 bytes.
 """
@@ -70,7 +70,7 @@ async def test_over_the_cap_is_a_clean_value_error_naming_the_setting() -> None:
 
 async def test_the_cap_counts_utf8_bytes_not_characters() -> None:
     """A multibyte key that fits the cap in *characters* but not in bytes is
-    rejected — the btree limit counts bytes."""
+    rejected - the btree limit counts bytes."""
     key = "中" * (MAX_IDEMPOTENCY_KEY_BYTES // 3 + 1)  # 3 bytes per char
     assert len(key) < MAX_IDEMPOTENCY_KEY_BYTES
     with pytest.raises(ValueError, match="UTF-8 bytes"):
@@ -110,7 +110,7 @@ async def test_scope_shares_the_same_bound() -> None:
 
 # ── Against a real Postgres ─────────────────────────────────────────────
 #
-# The unit tests above pin the arithmetic; these pin the premise — that the
+# The unit tests above pin the arithmetic; these pin the premise - that the
 # btree entry size is the actual constraint and that the ceiling sits under
 # it. Marked integration: they need a migrated schema.
 
@@ -146,7 +146,7 @@ async def _insert_raw(
 def _incompressible(n: int) -> str:
     """*n* characters a btree index tuple cannot shrink.
 
-    Index tuples are PGLZ-compressed, so ``"k" * 8000`` inserts happily —
+    Index tuples are PGLZ-compressed, so ``"k" * 8000`` inserts happily -
     measured, not assumed. Only incompressible values probe the real limit,
     and that is what a caller's opaque vendor cursor or hash digest is.
     """
@@ -172,12 +172,12 @@ async def test_pg_accepts_scope_and_key_both_at_the_ceiling(
 async def test_pg_btree_limit_is_the_real_constraint(
     pg_conn: "asyncpg.Connection", settings: TaskQSettings
 ) -> None:
-    """Past the btree entry size Postgres itself rejects the INSERT — the
+    """Past the btree entry size Postgres itself rejects the INSERT - the
     error the client-side cap exists so that no caller ever sees it.
 
     Measured: 1352 incompressible bytes of scope and key make a 2720-byte
     index row against the 2704 maximum, so the tuple carries 16 bytes of its
-    own and the largest safe symmetric value is (2704 - 16) / 2 = 1344 —
+    own and the largest safe symmetric value is (2704 - 16) / 2 = 1344 -
     which is why IDEMPOTENCY_KEY_BYTES_CEILING is 1300.
     """
     import asyncpg

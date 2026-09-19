@@ -224,7 +224,7 @@ class TestGet:
 
     async def test_handle_row_is_seeded_by_construction_by_identity(self) -> None:
         """``handle.row`` is, by identity, the row object the handle was
-        constructed with — the read is free (no backend round trip).
+        constructed with - the read is free (no backend round trip).
         """
         backend, client = _make_client()
 
@@ -244,12 +244,12 @@ class TestGet:
         handle = await _enqueue(backend, client, args)
 
         with pytest.raises(AttributeError):
-            handle.row = make_job_row()  # pyright: ignore[reportAttributeAccessIssue] — Why: deliberately assigning to the read-only property to verify AttributeError at runtime
+            handle.row = make_job_row()  # pyright: ignore[reportAttributeAccessIssue] - Why: deliberately assigning to the read-only property to verify AttributeError at runtime
 
     async def test_refresh_advances_row_to_the_fetched_row(self) -> None:
         """``row`` is the last row the handle observed: each refresh()
-        fetch advances it. The fetch pattern is unchanged — refresh still
-        re-reads the backend and returns the fresh row — but the handle's
+        fetch advances it. The fetch pattern is unchanged - refresh still
+        re-reads the backend and returns the fresh row - but the handle's
         observation now follows, so a long-lived handle's ``row`` can never
         go stale while its owner keeps refreshing.
         """
@@ -1024,7 +1024,7 @@ async def test_unique_for_no_identity_no_dedup_fresh_jobs() -> None:
     )
 )
 async def test_singleton_constraint_disambiguation() -> None:
-    """Constraint-name disambiguation — a singleton actor's preflight
+    """Constraint-name disambiguation - a singleton actor's preflight
     is monkey-patched to None; in the PG backend the second INSERT raises
     UniqueViolationError on jobs_singleton_uniq, caught as
     SingletonCollisionError (not a dedup return). InMemoryBackend lacks this
@@ -1293,7 +1293,7 @@ async def _streaming_log_actor(payload: _DedupPayload) -> None:
 class TestBatchStreamingEventName:
     """The streaming-completion log event uses the repo-standard
     kebab-case name (``batch-streaming-enqueued``), matching
-    ``batch-enqueued`` and ``batch-fast-enqueued`` — the snake_case
+    ``batch-enqueued`` and ``batch-fast-enqueued`` - the snake_case
     spelling never shipped on main, so no consumer can be depending on
     it.
     """
@@ -1470,7 +1470,7 @@ class TestCreateSchedule:
 
     async def test_create_same_actor_empty_name_backward_compat_raises(self) -> None:
         """A second schedule for the same actor with the default empty name
-        is rejected — preserves the pre-migration actor-only uniqueness."""
+        is rejected - preserves the pre-migration actor-only uniqueness."""
         _backend, client = self._make_client()
 
         await client.create_schedule("solo_actor", "0 * * * *")
@@ -1680,9 +1680,9 @@ class TestDeleteSchedule:
 # ── Bounded Redis close at client teardown ──────────────────────────────
 #
 # _open_redis entered the Redis client on the exit stack
-# (``Redis.__aexit__`` → unbounded ``aclose()``) — a hung broker could
+# (``Redis.__aexit__`` → unbounded ``aclose()``) - a hung broker could
 # wedge ``JobsClient.close()``. These tests pin the bounded-close
-# discipline (asyncio.wait_for, log-and-continue — Redis has no
+# discipline (asyncio.wait_for, log-and-continue - Redis has no
 # terminate()); the shrink seam is the same module-global monkeypatch
 # convention as tests/test_worker_deps_teardown.py.
 
@@ -1859,7 +1859,7 @@ class TestExplicitTraceContext:
 
     async def test_omitted_trace_context_is_not_invented(self) -> None:
         """Without an explicit value and without an active OTel span the
-        columns stay NULL — the override must not fabricate a context."""
+        columns stay NULL - the override must not fabricate a context."""
         backend, client = self._make_client()
 
         handle = await client.enqueue(_fresh_actor, _DedupPayload(value=2))
@@ -1888,7 +1888,7 @@ class _ForeignPayload(BaseModel):
 
 class TestStreamingPayloadValidation:
     """enqueue_batch_streaming validates each item's payload exactly once
-    (the pydantic-core pass inside build_enqueue_args — the client layer
+    (the pydantic-core pass inside build_enqueue_args - the client layer
     must not run a second, discarded validation per item) while preserving
     the index-annotated PayloadValidationError and the documented
     error-sanitization contract."""
@@ -1897,7 +1897,7 @@ class TestStreamingPayloadValidation:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A 3-item streaming batch triggers exactly one model_validate call
-        per item — not one discarded pre-validation plus the serializer's
+        per item - not one discarded pre-validation plus the serializer's
         own validation."""
         calls: list[object] = []
         original = _StreamingValPayload.model_validate
@@ -1917,7 +1917,7 @@ class TestStreamingPayloadValidation:
 
         assert handle.size == 3
         assert len(calls) == 3, (
-            f"expected one validation per item, got {len(calls)} — "
+            f"expected one validation per item, got {len(calls)} - "
             "the streaming path is double-validating payloads"
         )
 
@@ -1953,7 +1953,7 @@ class TestStreamingPayloadValidation:
     async def test_streaming_validation_errors_are_sanitized(self) -> None:
         """validation_errors follows the documented sanitization contract
         (include_url=False, include_input=False): no attacker-controlled
-        field values and no pydantic doc URLs are carried on the exception —
+        field values and no pydantic doc URLs are carried on the exception -
         it is persisted into job rows / web admin via generic handlers."""
         _backend, client = _make_client()
         items = [
@@ -1974,7 +1974,7 @@ class TestStreamingPayloadValidation:
             assert "attacker-controlled-value" not in str(err)
 
     async def test_streaming_payload_dict_is_json_mode_dump(self) -> None:
-        """The row payload is the JSON-mode dump of the validated payload —
+        """The row payload is the JSON-mode dump of the validated payload -
         the validate-once-then-dump serialization contract is preserved
         end to end."""
         backend, client = _make_client()

@@ -1,6 +1,6 @@
 """Unit tests for taskq.web.progress SSE bridge and poll-state endpoint (§3.7, §10.3).
 
-Uses stub PG and Redis mocks — no testcontainers required.
+Uses stub PG and Redis mocks - no testcontainers required.
 
 Strategy
 --------
@@ -123,9 +123,9 @@ class _StubPubSub:
     """Minimal redis PubSub duck-type for unit tests.
 
     ``messages`` is a list of items:
-      - ``dict`` — a Redis message returned by get_message
-      - ``None`` — simulate a timeout (keepalive emitted)
-      - ``_EXHAUST`` — signals end-of-stream: subsequent calls return None
+      - ``dict`` - a Redis message returned by get_message
+      - ``None`` - simulate a timeout (keepalive emitted)
+      - ``_EXHAUST`` - signals end-of-stream: subsequent calls return None
     """
 
     def __init__(self, messages: list[dict[str, Any] | object | None]) -> None:
@@ -169,7 +169,7 @@ class _StubRedis:
 
 class _HungPubSub(_StubPubSub):
     """_StubPubSub whose aclose() hangs on a gate (dead broker) and whose
-    subscribe() can be made to raise — drives the bounded pubsub-close pins
+    subscribe() can be made to raise - drives the bounded pubsub-close pins
     (review N5)."""
 
     def __init__(
@@ -180,7 +180,7 @@ class _HungPubSub(_StubPubSub):
     ) -> None:
         super().__init__(messages)
         self.aclose_calls = 0
-        self._aclose_wait = asyncio.Event()  # never set — aclose() hangs forever
+        self._aclose_wait = asyncio.Event()  # never set - aclose() hangs forever
         self._subscribe_error = subscribe_error
 
     async def subscribe(self, channel: str | bytes) -> None:
@@ -194,7 +194,7 @@ class _HungPubSub(_StubPubSub):
 
 
 class _RaisingPool:
-    """Pool stub whose acquire() raises (PG down) — drives the :359 error path."""
+    """Pool stub whose acquire() raises (PG down) - drives the :359 error path."""
 
     def __init__(self, exc: Exception) -> None:
         self._exc = exc
@@ -646,7 +646,7 @@ def test_poll_state_uses_orjson_response_class() -> None:
 @pytest.mark.asyncio
 async def test_503_before_sse_uses_orjson_response_class() -> None:
     """Redis-unavailable 503 (before the SSE upgrade) returns the shared
-    orjson response class — status, Retry-After and body semantics unchanged."""
+    orjson response class - status, Retry-After and body semantics unchanged."""
     router = create_router(
         _StubPool(_pg_row()),
         None,
@@ -678,7 +678,7 @@ async def test_503_before_sse_uses_orjson_response_class() -> None:
 async def test_subscribe_failure_503_uses_orjson_response_class(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Subscribe-failure 503 returns the shared orjson response class —
+    """Subscribe-failure 503 returns the shared orjson response class -
     status, Retry-After and body semantics unchanged."""
     monkeypatch.setattr(progress_mod, "CLOSE_TIMEOUT_SECS", 0.05, raising=False)
     pubsub = _HungPubSub([], subscribe_error=ConnectionError("broker down"))
@@ -845,7 +845,7 @@ _GOLDEN_CORPUS: list[ProgressEvent] = [
         terminal=True,
         data={"rows": 42},
     ),
-    # all-None optional fields — exclude_none drops them from the wire
+    # all-None optional fields - exclude_none drops them from the wire
     ProgressEvent(
         v=1,
         kind="progress",
@@ -948,13 +948,13 @@ async def test_sse_golden_corpus_passthrough_equivalence(
     source_event: ProgressEvent,
 ) -> None:
     """For every corpus event the SSE data must be byte-identical to (a) the
-    raw published wire bytes and (b) the old validate→dump round-trip —
+    raw published wire bytes and (b) the old validate→dump round-trip -
     proving the passthrough changes nothing on the wire.
 
     One stream per corpus event: a terminal event legitimately closes the
     stream, so events after a terminal need their own generator to observe.
     The round-trip idempotency asserted here is what makes the passthrough
-    equivalent to the old behavior — verified, not assumed.
+    equivalent to the old behavior - verified, not assumed.
     """
     pubsub = _StubPubSub([_redis_msg_from_event(source_event)])
 
@@ -978,7 +978,7 @@ async def test_sse_golden_corpus_passthrough_equivalence(
 # Malformed payloads discarded identically by the cheap envelope check and by
 # full pydantic validation: unparseable JSON, non-object JSON, and JSON
 # objects missing required envelope keys. After each, the next well-formed
-# event must still flow — the guard discards and continues.
+# event must still flow - the guard discards and continues.
 _MALFORMED_PAYLOADS: list[bytes] = [
     b"not valid json",
     b"[1, 2]",
@@ -1047,7 +1047,7 @@ async def test_sse_missing_terminal_key_defaults_to_progress() -> None:
 #
 # Every pubsub close the SSE bridge initiates (generator finally :233,
 # subscribe-failed :342, PG-error :359, 404 :366) is bounded via
-# close_redis_bounded — the "every TaskQ-initiated close is bounded" claim
+# close_redis_bounded - the "every TaskQ-initiated close is bounded" claim
 # has no counterexamples. The shrink seam is the same module-global
 # monkeypatch convention as the other teardown tests. Why raising=False on
 # the setattr: pre-fix the module has no CLOSE_TIMEOUT_SECS seam, so the
@@ -1061,7 +1061,7 @@ async def test_sse_missing_terminal_key_defaults_to_progress() -> None:
 async def test_generator_finally_bounds_hung_pubsub_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Generator finally (:233): a hung pubsub aclose() is bounded — the
+    """Generator finally (:233): a hung pubsub aclose() is bounded - the
     stream finalizer logs and completes instead of wedging."""
     monkeypatch.setattr(progress_mod, "CLOSE_TIMEOUT_SECS", 0.05, raising=False)
     terminal_event = _make_event(seq=6, terminal=True)
@@ -1081,7 +1081,7 @@ async def test_subscribe_failed_bounds_hung_pubsub_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Subscribe-failed path (:342): cleanup after a failed subscribe is
-    bounded — the 503 response is returned instead of wedging."""
+    bounded - the 503 response is returned instead of wedging."""
     monkeypatch.setattr(progress_mod, "CLOSE_TIMEOUT_SECS", 0.05, raising=False)
     pubsub = _HungPubSub([], subscribe_error=ConnectionError("broker down"))
     endpoint = _make_stream_endpoint(_StubPool(_pg_row()), pubsub)

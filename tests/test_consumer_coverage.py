@@ -6,7 +6,7 @@ Exercises branches not covered by ``test_consumer.py`` and
 - ``ResultTooLarge`` raised in the autonomous and transactional paths.
 - Transactional ``Snooze`` re-enqueue failure → ``RuntimeError`` handled
   as a generic failure.
-- Transactional success with ``SubEnqueueError`` on ``flush_buffer`` —
+- Transactional success with ``SubEnqueueError`` on ``flush_buffer`` -
   parent still succeeds, lost child logged.
 - ``CancelledError`` with an ``ABANDON_PENDING`` active-jobs entry
   re-raises without calling ``mark_cancelled``.
@@ -432,7 +432,7 @@ async def test_autonomous_cooperative_cancel_keeps_the_actors_result() -> None:
     requested during the attempt; it does not say the actor abandoned its work.
     An actor that observed the request, wound down and returned a value
     completed its unit of work, so the value is stored and the job is
-    succeeded — discarding it would destroy completed work on a terminal job
+    succeeded - discarding it would destroy completed work on a terminal job
     that nothing re-runs. Abandonment is signalled by raising, not returning.
 
     The full contract, including the transactional path and the raising
@@ -662,7 +662,7 @@ async def test_transactional_completed_then_cancel_re_raises() -> None:
 
 async def test_batch_id_extracted_from_metadata_runs_actor() -> None:
     """A job whose metadata contains ``batch_id`` exercises the batch_id
-    extraction branch — the actor runs and succeeds normally."""
+    extraction branch - the actor runs and succeeds normally."""
     from dataclasses import replace as _replace
 
     backend = _TxBackend()
@@ -703,7 +703,7 @@ async def test_transactional_cooperative_cancel_keeps_the_actors_result() -> Non
     ``cancel_phase >= COOPERATIVE``) but completes its unit of work and
     RETURNS, the attempt is a success: the result commits inside the actor's
     own transaction and the outcome reports it. A cancel request is not a
-    verdict over completed work — raising through the transaction here
+    verdict over completed work - raising through the transaction here
     instead would roll back writes the actor finished and record
     ``cancelled`` over a value the worker already holds. The raising
     complement (an actor that abandons by raising CancelledError IS
@@ -797,7 +797,7 @@ async def test_transactional_snooze_savepoint_rollback_failure_is_warned() -> No
         transaction_conn=_RollbackFailsConn(),
     )
 
-    # Snooze was handled — job scheduled, not failed.
+    # Snooze was handled - job scheduled, not failed.
     assert result == "scheduled"
     assert len(backend.mark_snoozed_calls) == 1
 

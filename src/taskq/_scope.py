@@ -1,4 +1,4 @@
-"""DI scope enum and lifecycle warning — zero-dependency leaf module.
+"""DI scope enum and lifecycle warning, zero-dependency leaf module.
 
 Extracted from ``taskq._di.scope`` so that ``taskq.exceptions`` can import
 :class:`Scope` without triggering ``taskq._di.__init__`` (which loads

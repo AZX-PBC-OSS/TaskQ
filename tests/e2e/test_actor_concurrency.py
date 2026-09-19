@@ -1,4 +1,4 @@
-"""Actor-level max_concurrent e2e — ``max_concurrent=2`` on an actor caps
+"""Actor-level max_concurrent e2e - ``max_concurrent=2`` on an actor caps
 per-actor parallelism via the dispatch SQL's ``per_actor_capacity`` CTE.
 
 The ``concurrent_tracked_worker`` actor (actors.py) declares
@@ -12,7 +12,7 @@ Unlike the queue-level concurrency cap (``test_queue_concurrency_cap.py``),
 no ``ConcurrencyReservation`` or ``reservation_slots`` table is involved:
 the cap is enforced purely in the dispatch SQL's ``per_actor_capacity``
 and ``eligible_candidates`` CTEs. No module-scoped schema override is
-needed — the actor declaration is sufficient.
+needed - the actor declaration is sufficient.
 
 The test follows the same event-line sweep pattern as
 ``test_queue_concurrency_cap.py``: enqueue 5 jobs (each sleeps 1.0 s),
@@ -54,7 +54,7 @@ async def test_actor_max_concurrent_limits_parallelism(
 
     Enqueues 5 ``concurrent_tracked_worker`` jobs (each sleeps 1.0 s).
     With ``max_concurrent=2``, the dispatch SQL's ``per_actor_capacity``
-    CTE limits admission to 2 concurrent jobs for this actor — the rest
+    CTE limits admission to 2 concurrent jobs for this actor - the rest
     stay ``pending`` until a running job finishes and frees a slot. The
     test computes the maximum observed concurrency from ``ct_started`` /
     ``ct_finished`` effect timestamps and asserts it never exceeds the
@@ -92,16 +92,16 @@ async def test_actor_max_concurrent_limits_parallelism(
         max_concurrent = max(max_concurrent, current)
 
     assert max_concurrent <= _CAP, (
-        f"max concurrency {max_concurrent} exceeded actor max_concurrent {_CAP} — "
+        f"max concurrency {max_concurrent} exceeded actor max_concurrent {_CAP} - "
         f"the actor-level concurrency cap is not being enforced"
     )
     assert max_concurrent >= 2, (
-        f"max concurrency {max_concurrent} < 2 — "
+        f"max concurrency {max_concurrent} < 2 - "
         f"the cap may not have been applied (actor_config not synced?)"
     )
 
     total_time = (max(finished_map.values()) - min(started_map.values())).total_seconds()
     assert total_time >= 2.0, (
-        f"total completion time {total_time:.2f}s < 2.0s — "
+        f"total completion time {total_time:.2f}s < 2.0s - "
         f"all {_NUM_JOBS} jobs ran in parallel (cap not enforced)"
     )

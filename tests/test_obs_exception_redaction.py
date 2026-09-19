@@ -198,7 +198,7 @@ def test_libpq_quoted_password_value_is_masked(raw: str, leaked: str) -> None:
     """libpq single-quotes a value that carries spaces (``password='a b'``).
 
     A value class that stops at whitespace masks ``'hun`` and ships
-    ``ter2'`` — most of the credential verbatim. The mask must consume the
+    ``ter2'`` - most of the credential verbatim. The mask must consume the
     whole quoted value instead, escapes (``\\'``, ``\\\\``) included.
     """
     safe = safe_exception_message(Exception(raw))
@@ -444,7 +444,7 @@ async def test_cron_auto_disabled_event_omits_row_values(
     """``cron.auto_disabled`` must carry the redacted message, not ``str(exc)``.
 
     The auto-disable branch already calls ``set_status(..., safe_exception_message(exc))``
-    — this pins the ``add_event`` attribute to the same contract. Drives the
+    - this pins the ``add_event`` attribute to the same contract. Drives the
     real ``tick_cron`` error path to the 3-strike auto-disable with a backend
     whose batched enqueue fails with a DETAIL-carrying asyncpg
     ``UniqueViolationError``: the recurring-caller-key leak vector, shipped
@@ -516,7 +516,7 @@ async def test_cron_auto_disabled_event_omits_row_values(
     last_error = attrs["last_error"]
     assert isinstance(last_error, str)
     assert canary not in last_error
-    # The diagnostic template — the part that is not row data — survives.
+    # The diagnostic template - the part that is not row data - survives.
     assert "duplicate key value violates unique constraint" in last_error
 
 
@@ -528,7 +528,7 @@ def test_no_raw_exception_text_in_span_event_attributes() -> None:
     ``str()``/``repr()``/f-string renders of exception objects.
 
     ``str()`` of an asyncpg ``PostgresError`` appends the server's DETAIL
-    line, which quotes row values — so an unredacted render inside a span
+    line, which quotes row values - so an unredacted render inside a span
     event attribute reopens the exact surface ``record_exception_safe``
     exists to close. AST-based so multi-line ``add_event(...)`` calls are
     covered (the leak this guards against spans 8 lines). Redaction helpers
@@ -604,12 +604,12 @@ def test_log_fields_carrying_exception_text_are_listed_for_scrubbing() -> None:
     ``EXCEPTION_MESSAGE_FIELDS`` / ``EXCEPTION_TRACEBACK_FIELDS``, so a log
     site introducing a new ``*error_message`` / ``*error_traceback`` field
     ships raw exception text to every telemetry backend the JSON channel
-    feeds — exactly how ``job_error_message``/``infra_error_message``/
+    feeds - exactly how ``job_error_message``/``infra_error_message``/
     ``job_error_traceback``/``infra_error_traceback`` (the terminal-write
     log in worker/_handlers.py) leaked the actor's exception unredacted.
 
     Suffix-scoped so classification fields (``error_class``, ``error_type``,
-    ``job_error_class`` — class names, not exception text) never fire: the
+    ``job_error_class`` - class names, not exception text) never fire: the
     suffix family is the shape that conventionally carries rendered
     exception text.
     """
@@ -634,7 +634,7 @@ def test_log_fields_carrying_exception_text_are_listed_for_scrubbing() -> None:
             ):
                 continue
             for kw in node.keywords:
-                if kw.arg is None:  # Why: **kwargs splat — no field name to check.
+                if kw.arg is None:  # Why: **kwargs splat - no field name to check.
                     continue
                 if kw.arg.endswith("error_message") and kw.arg not in EXCEPTION_MESSAGE_FIELDS:
                     offenders.append(
@@ -658,7 +658,7 @@ def test_log_fields_carrying_exception_text_are_listed_for_scrubbing() -> None:
 
 def test_repr_flattened_detail_line_is_scrubbed_but_hint_survives() -> None:
     """``repr()`` flattens the newline before DETAIL into the literal
-    two characters ``\\n``, which the line-anchored scrub cannot see — and
+    two characters ``\\n``, which the line-anchored scrub cannot see - and
     ``error=repr(exc)`` is the majority log idiom (59 sites vs 33 ``str``).
 
     asyncpg's own ``__repr__`` renders only the primary message, so the
@@ -692,8 +692,8 @@ def test_repr_flattened_detail_inside_an_exception_group_is_scrubbed() -> None:
     """A repr()-flattened ExceptionGroup still loses the DETAIL.
 
     repr() of a group closes the sub-exception's message with a RUN of
-    closers — ``')])``: the exception's own ``')``, then the group's ``]``
-    and ``)`` — so a scrub terminator that admits only a lone ``')`` at
+    closers - ``')])``: the exception's own ``')``, then the group's ``]``
+    and ``)`` - so a scrub terminator that admits only a lone ``')`` at
     end-of-line never matches, and the row value ships verbatim.
     """
     from taskq.obs._redact_exc import scrub_exception_field
@@ -768,7 +768,7 @@ def test_repr_flattened_detail_without_a_safe_terminator_is_scrubbed_anyway() ->
 
 
 def test_scrub_preserves_non_detail_escaped_newlines() -> None:
-    """Only DETAIL/HINT/CONTEXT-shaped escaped lines are scrubbed — a
+    """Only DETAIL/HINT/CONTEXT-shaped escaped lines are scrubbed - a
     repr whose message merely spans lines keeps every line."""
     from taskq.obs._redact_exc import scrub_exception_field
 
@@ -785,7 +785,7 @@ def test_scrub_preserves_non_detail_escaped_newlines() -> None:
 # Each scrub regex requires a literal trigger substring in the subject:
 # _PG_DETAIL_RE and _PG_DETAIL_ESCAPED_RE need "DETAIL:"; _URI_CRED_RE needs
 # "://"; _URI_PARAM_CRED_RE needs a password-family parameter name followed
-# by "=" (and does NOT need "://" — bare "host/db?password=…" must stay
+# by "=" (and does NOT need "://" - bare "host/db?password=…" must stay
 # masked). The prefilter must therefore be a NECESSARY-condition guard per
 # regex: skipping when the substring is absent never changes output, only
 # cost. These tests pin both the skip and the byte-identical outputs.
@@ -896,7 +896,7 @@ def test_scrub_text_skips_detail_regexes_when_detail_substring_absent(
     ],
 )
 def test_scrub_text_outputs_byte_identical(label: str, raw: str, expected: str) -> None:
-    """Exact scrub outputs — the prefilter must not change a single byte."""
+    """Exact scrub outputs - the prefilter must not change a single byte."""
     from taskq.obs._redact_exc import _scrub_text
 
     assert _scrub_text(raw) == expected, label
@@ -905,7 +905,7 @@ def test_scrub_text_outputs_byte_identical(label: str, raw: str, expected: str) 
 def test_scrub_text_prefilter_disabled_redaction_still_skips_detail_regexes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With redaction off, clean text still runs only the URI masks — the
+    """With redaction off, clean text still runs only the URI masks - the
     toggle semantics and the prefilter compose."""
     import taskq.obs._redact_exc as redact_mod
 
@@ -1068,7 +1068,7 @@ def test_sslpassword_libpq_form_at_end_of_string_is_masked() -> None:
     assert safe == "host=db user=app sslpassword=***"
 
 
-# ── the marker prefix must stay LINEAR under adversarial input (#248) ──
+# ── the marker prefix must stay LINEAR under adversarial input ──
 #
 # _PG_DETAIL_RE's ExceptionGroup marker prefix was originally spelled
 # ``(?:[ \t]*[|+][ \t]*)*`` -- a quantifier inside a quantifier. Given one
@@ -1307,7 +1307,7 @@ def test_detail_pattern_accepts_the_same_lines_as_the_retired_marker_shape() -> 
 def test_no_nested_quantifier_regexes_in_taskq_obs() -> None:
     """Structural guard: no regex compiled anywhere in ``taskq.obs`` may put
     a quantifier inside a quantifier -- the catastrophic-backtracking shape
-    that made the retired _PG_DETAIL_RE exponential (#248).
+    that made the retired _PG_DETAIL_RE exponential.
 
     Every pattern here runs on text an actor or a database error chose
     (exception messages, tracebacks), on the event loop, at error-storm
@@ -1332,7 +1332,7 @@ def test_no_nested_quantifier_regexes_in_taskq_obs() -> None:
     as a regex is flagged rather than skipped, the same fail-closed
     posture the follow-up review endorsed for the parser import
     itself: a guard that quietly tolerates what it cannot check is a
-    guard that reports green on the next #248.
+    guard that reports green on the next .
 
     Two deliberate scope limits, both stated so the next author knows the
     guard's edge: an ``ATOMIC_GROUP`` / possessive-repeat boundary is not
@@ -1430,7 +1430,7 @@ def test_no_nested_quantifier_regexes_in_taskq_obs() -> None:
 
     # Non-vacuity first: the guard must fire on the retired shape (and on
     # the textbook nested-quantifier forms), or it cannot be trusted to
-    # catch a regression of #248.
+    # catch a regression of .
     for bad in (
         r"^(?:[ \t]*[|+][ \t]*)*[ \t]*DETAIL:.*$",
         r"(a+)+b",
@@ -1475,7 +1475,7 @@ def test_no_nested_quantifier_regexes_in_taskq_obs() -> None:
             assert offenders == [], (
                 f"{mod_name}.{attr_name} ({attr.pattern!r}) carries the "
                 f"nested-quantifier shape that made exception redaction "
-                f"exponential on hostile input (#248): {offenders}"
+                f"exponential on hostile input: {offenders}"
             )
     assert checked >= 4, (
         "the audit found fewer compiled regexes than the obs package is known "
@@ -1566,7 +1566,7 @@ def test_no_nested_quantifier_regexes_in_taskq_obs() -> None:
                     f"{mod_name}: re.compile at line {call.lineno} "
                     f"({pattern_arg.value!r}) carries the nested-quantifier "
                     f"shape that made exception redaction exponential on "
-                    f"hostile input (#248): {offenders}"
+                    f"hostile input: {offenders}"
                 )
     assert compile_calls >= 4, (
         "the AST pass found fewer re.compile call sites than the obs package "
@@ -1576,7 +1576,7 @@ def test_no_nested_quantifier_regexes_in_taskq_obs() -> None:
 
 # ── the repr channel: marker parity and a terminator that cannot cross lines ──
 #
-# The fix-round review of #248 (PR #269) found the repr channel -- the
+# The fix-round review found the repr channel -- the
 # ``error=repr(exc)`` majority log idiom, scrubbed by
 # _PG_DETAIL_ESCAPED_RE -- half-updated: the line-anchored _PG_DETAIL_RE had
 # gained the ``[ \t|+]*`` ExceptionGroup marker class, the escaped companion

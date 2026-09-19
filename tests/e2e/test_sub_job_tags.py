@@ -1,4 +1,4 @@
-"""Sub-job tag inheritance and merge e2e — real pipeline in a worker container.
+"""Sub-job tag inheritance and merge e2e - real pipeline in a worker container.
 
 Scenario:
 parent job enqueued with a tag enqueues sub-jobs via ``ctx.jobs.enqueue()``.

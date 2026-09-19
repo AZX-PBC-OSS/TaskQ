@@ -1,8 +1,8 @@
-"""PostgresBackend — production backend backed by Postgres.
+"""PostgresBackend, production backend backed by Postgres.
 
 Schema identifier is baked into pre-rendered SQL strings at backend
 construction time.  All user-supplied values use asyncpg ``$N``
-positional parameter binding — no f-string interpolation of user data.
+positional parameter binding, no f-string interpolation of user data.
 
 Decode helpers (:mod:`taskq.backend._records`), maintenance sweeps
 (:mod:`taskq.backend._sweeps`), cron schedule CRUD
@@ -230,7 +230,7 @@ if BACKEND_PROTOCOL_VERSION != _EXPECTED_PROTOCOL_VERSION:
 # event_writer_statement_timeout_ms, event_writer_reduced_batch_divisor,
 # sweep_breaker_failure_threshold, sweep_breaker_window_secs) are declared
 # fields on the ``BackendSettings`` protocol, so every settings object that
-# reaches a PostgresBackend carries them — read directly at the use sites
+# reaches a PostgresBackend carries them, read directly at the use sites
 # below, no per-read fallbacks.
 
 
@@ -245,35 +245,35 @@ def _cancel_notify_channels(schema: str, worker_id: UUID) -> list[str]:
 class PostgresBackend:
     """Production backend backed by Postgres.
 
-    Constructor accepts ``deps`` typed as :class:`object` rather than
-    :class:`WorkerDeps` to avoid creating a circular dependency between the
-    ``taskq.backend`` and ``taskq.worker`` packages.  At runtime the caller
-    passes a ``WorkerDeps`` instance; method bodies access its fields by
-    name (e.g. ``self._deps.worker_pool``).  Rationale for the
-    single-struct pattern over individual pools: ``WorkerDeps`` is already
-    the stable named handle passed through the worker main loop (see
-    ``taskq.worker.deps``); unpacking its fields at this layer would
-    duplicate the wiring and make it fragile to pool additions.
+     Constructor accepts ``deps`` typed as :class:`object` rather than
+     :class:`WorkerDeps` to avoid creating a circular dependency between the
+     ``taskq.backend`` and ``taskq.worker`` packages.  At runtime the caller
+     passes a ``WorkerDeps`` instance; method bodies access its fields by
+     name (e.g. ``self._deps.worker_pool``).  Rationale for the
+     single-struct pattern over individual pools: ``WorkerDeps`` is already
+     the stable named handle passed through the worker main loop (see
+     ``taskq.worker.deps``); unpacking its fields at this layer would
+     duplicate the wiring and make it fragile to pool additions.
 
-    ``clock`` is used for Python-side timestamp computations in the
-    enqueue path (e.g. comparing ``scheduled_at`` against "now" to decide
-    whether to send it as a SQL parameter, and computing
-    ``retry_after`` on a singleton collision) — never as a substitute
-    for a database timestamp. It is unused in the terminal-write and
-    sweep methods, all of which use server-side ``clock_timestamp()``
-    for every timestamp value — both WHERE comparisons and SET clauses
-    — including ``scheduled_to_pending``, whose ``now`` parameter is
-    accepted only for API-surface consistency and is otherwise ignored.
+     ``clock`` is used for Python-side timestamp computations in the
+     enqueue path (e.g. comparing ``scheduled_at`` against "now" to decide
+     whether to send it as a SQL parameter, and computing
+     ``retry_after`` on a singleton collision), never as a substitute
+     for a database timestamp. It is unused in the terminal-write and
+     sweep methods, all of which use server-side ``clock_timestamp()``
+     for every timestamp value, both WHERE comparisons and SET clauses
+    , including ``scheduled_to_pending``, whose ``now`` parameter is
+     accepted only for API-surface consistency and is otherwise ignored.
 
-    ``cancellation_grace_period`` and ``cleanup_grace_period`` are the
-    ``timedelta`` values used by :meth:`reclaim_expired_locks`.
+     ``cancellation_grace_period`` and ``cleanup_grace_period`` are the
+     ``timedelta`` values used by :meth:`reclaim_expired_locks`.
 
-    ``reclaim_event_visibility_delay`` is the default trailing-watermark
-    margin :meth:`poll_reclaim_events` applies when a caller does not pass
-    an explicit ``visibility_delay`` — see
-    ``taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY`` and
-    ``WorkerSettings.reclaim_event_visibility_delay`` for the correctness
-    assumption this encodes.
+     ``reclaim_event_visibility_delay`` is the default trailing-watermark
+     margin :meth:`poll_reclaim_events` applies when a caller does not pass
+     an explicit ``visibility_delay``, see
+     ``taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY`` and
+     ``WorkerSettings.reclaim_event_visibility_delay`` for the correctness
+     assumption this encodes.
     """
 
     BACKEND_PROTOCOL_VERSION: ClassVar[int] = BACKEND_PROTOCOL_VERSION
@@ -302,6 +302,11 @@ class PostgresBackend:
         # needing to re-construct it. The properties below delegate to
         # self._deps at every access.
         self._wake_subscribers: set[asyncio.Event] = set()
+        # Queue-scoped wake filtering: each subscriber records the queue set
+        # it claims (None = wake on everything), and the notify callback
+        # skips wakes for queues the subscriber would never claim. The
+        # trigger carries the inserted row's queue as its payload.
+        self._wake_queues: dict[asyncio.Event, frozenset[str] | None] = {}
         self._wake_lock: asyncio.Lock = asyncio.Lock()
 
         self._cancel_subscribers: set[asyncio.Event] = set()
@@ -359,7 +364,7 @@ class PostgresBackend:
         protocol's settings object is satisfied by structural duck-typing,
         so a settings implementation written OUTSIDE this repo's settings
         classes (an embedder's own BackendSettings stand-in) may predate
-        these fields — a direct read would AttributeError that object's
+        these fields, a direct read would AttributeError that object's
         every enqueue. The fallback is the same 5 s constant the module
         functions defaulted to before the knob existed, so an undeclared
         settings object behaves exactly as it did yesterday, and the moment
@@ -583,24 +588,24 @@ class PostgresBackend:
         attempt: int | None = None,
     ) -> bool:
         # Why _worker_pool (supersession of the original heartbeat routing,
-        # which had no documented rationale — original v0.1.0 wiring): the
+        # which had no documented rationale, original v0.1.0 wiring): the
         # heartbeat pool is sized heartbeat_pool_size (default 4) for the
         # liveness loop's one-connection-per-tick cadence, and routing a
         # per-job terminal write onto it let a cancel storm of concurrent
         # consumer mark_cancelled calls exhaust the very pool the
-        # heartbeat loop's own bounded acquire waits on — starving the
+        # heartbeat loop's own bounded acquire waits on, starving the
         # loop into isolate_self while the worker was merely cancelling
         # jobs (the spiral pinned by
         # tests/test_rt_locks_terminal_write_pool_starvation.py). The
-        # routing's plausible original motive — a shielded cancel-path
+        # routing's plausible original motive, a shielded cancel-path
         # write outliving the worker pool's LIFO close (deps.py opens
         # heartbeat_pool BEFORE worker_pool, so teardown closes
-        # worker_pool first) — is superseded by the bounded acquire
+        # worker_pool first), is superseded by the bounded acquire
         # threaded above: a closing or closed pool is exactly the
         # wedged-checkout case the bound converts from a hang into the
         # designed infra failure, and the cancel path already treats that
         # outcome as best-effort (worker/_consumer.py: the row stays
-        # running and lock-lease expiry reclaims it) — the same contract
+        # running and lock-lease expiry reclaims it), the same contract
         # every other shielded terminal write already accepts on the
         # worker pool.
         return await _mark_cancelled(
@@ -757,7 +762,7 @@ class PostgresBackend:
     ) -> list[LongRunningJobEventsWriter]:
         """Diagnostic (not part of ``Backend``): report transactions that
         have held a lock on ``job_events`` for longer than the configured
-        visibility-delay margin — a candidate cause of a silently missed
+        visibility-delay margin, a candidate cause of a silently missed
         ``poll_reclaim_events`` event (see
         ``taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY``).
 
@@ -771,7 +776,7 @@ class PostgresBackend:
         default 60s) so a violated margin assumption is loud by default;
         also callable directly from a dedicated monitoring/alerting loop
         that wants a tighter cadence or its own sink.  Either way this is
-        not for the per-poll hot path — it issues its own query against
+        not for the per-poll hot path, it issues its own query against
         ``pg_locks`` / ``pg_stat_activity`` and is not free.  A non-empty
         result is a proxy warning, not proof of an actual missed event.
         """
@@ -844,8 +849,8 @@ class PostgresBackend:
                         )
                     _cancel_notify_sent_counter.add(1, {"schema": self._schema_name})
                 except Exception:
-                    # The cancel flag is already committed — the transaction
-                    # block above has exited by the time the NOTIFY fires —
+                    # The cancel flag is already committed, the transaction
+                    # block above has exited by the time the NOTIFY fires ,
                     # so a NOTIFY failure must not surface to the caller as
                     # a failed cancel: the request IS recorded. Same
                     # swallow-and-warn as cancel_where below; the heartbeat
@@ -879,7 +884,7 @@ class PostgresBackend:
         reason: str | None,
     ) -> BulkCancelResult:
         # batch_size and the timeout are declared BackendSettings fields
-        # (see _protocol.BackendSettings): bounded, typed reads — the
+        # (see _protocol.BackendSettings): bounded, typed reads, the
         # int() is the numeric conversion for SET LOCAL statement_timeout's
         # integer parameter, not a defensive coercion. No breaker wraps
         # this call (unlike _run_bounded_sweep): cancel_where is an
@@ -950,7 +955,7 @@ class PostgresBackend:
 
     # ── Scheduling / sweeps ─────────────────────────────────────────────
     # No `now` parameter: every predicate is evaluated server-side
-    # (clock_timestamp()) — the server clock is the arbiter.  One call
+    # (clock_timestamp()), the server clock is the arbiter.  One call
     # transitions at most one bounded batch of rows; repeated calls
     # drain.  The bound and its degradation tier come from settings via
     # the per-sweep SweepBatchSizer; an explicit batch_size overrides the
@@ -962,10 +967,10 @@ class PostgresBackend:
         Lazy (not in ``__init__``) for two reasons: a backend only needs a
         sizer for the sweeps it actually runs, and reading the knobs at
         first use (not construction) picks up settings mutated after the
-        backend was built — the seam tests use to shrink sweep intervals
+        backend was built, the seam tests use to shrink sweep intervals
         on an already-constructed deps. The knobs themselves are declared
         fields on ``BackendSettings``, read directly below.  Built once per
-        sweep name, then cached for the backend's lifetime — the breaker's
+        sweep name, then cached for the backend's lifetime, the breaker's
         latch state is exactly the state that must survive across calls.
         """
         sizer = self._sweep_sizers.get(sweep_name)
@@ -991,10 +996,10 @@ class PostgresBackend:
         The size the sweep actually uses (the sizer's effective tier, or
         an explicit ``batch_size`` override) is recorded before the call
         so the gauge reports reality rather than configuration.  An
-        aborted batch — server-side ``statement_timeout`` arriving as
+        aborted batch, server-side ``statement_timeout`` arriving as
         ``asyncpg.QueryCanceledError`` (SQLSTATE 57014), or a client
         ``command_timeout`` arriving as ``TimeoutError``; the two shapes
-        an aborted batch produces — counts against the breaker and
+        an aborted batch produces, counts against the breaker and
         re-raises for the caller's transient-error handling.
         """
         sizer = self._sweep_sizer(sweep_name)
@@ -1019,7 +1024,7 @@ class PostgresBackend:
         # Bounded acquire (the sweep twin's contract,
         # tests/test_rt_locks_sweep_notify_pool_unbounded.py): _notify_pool
         # delegates to the dispatcher pool, which a prune drain holds for
-        # its whole multi-batch drain — an unbounded checkout queues the
+        # its whole multi-batch drain, an unbounded checkout queues the
         # sweep indefinitely behind it. The dispatcher command timeout is
         # the prune loop's own acquire convention, and the resulting
         # TimeoutError is transient-classified by the leader loops that
@@ -1041,7 +1046,7 @@ class PostgresBackend:
             )
 
     async def deadline_sweep(self, *, batch_size: int | None = None) -> int:
-        # Bounded acquire — same contract and rationale as
+        # Bounded acquire, same contract and rationale as
         # scheduled_to_pending above.
         async with _bounded_checkout(
             self._notify_pool,
@@ -1066,7 +1071,7 @@ class PostgresBackend:
         *,
         batch_size: int | None = None,
     ) -> int:
-        # Bounded acquire — same contract and rationale as
+        # Bounded acquire, same contract and rationale as
         # scheduled_to_pending above.
         async with _bounded_checkout(
             self._notify_pool,
@@ -1084,7 +1089,7 @@ class PostgresBackend:
                     batch_size=size,
                     statement_timeout_ms=timeout_ms,
                     # The operator's global backoff ceiling reaches the
-                    # reclaim path here — the same value the consumer's
+                    # reclaim path here, the same value the consumer's
                     # failure path hands compute_backoff.
                     max_retry_backoff=self._deps.settings.max_retry_backoff,
                 ),
@@ -1208,9 +1213,33 @@ class PostgresBackend:
 
     # ── NOTIFY hook ─────────────────────────────────────────────────────
 
-    def subscribe_wake(self) -> AsyncContextManager[asyncio.Event]:
+    def subscribe_wake(
+        self, queues: Iterable[str] | None = None
+    ) -> AsyncContextManager[asyncio.Event]:
+        """Subscribe to insert wakes, optionally scoped to the caller's queues.
+
+        ``queues=None`` (or an empty set) wakes on every insert, the
+        historical contract. A queue set wakes only when the inserted
+        row's queue (the NOTIFY payload from the trigger) is served by
+        this subscriber, or when the payload is empty (an older trigger
+        still in a rolling deploy, or the COPY fixup's bulk wake).
+        """
         event = asyncio.Event()
-        return _SubscriberContext(event, self._wake_subscribers, self._wake_lock)
+        # A bare str satisfies Iterable[str] and would char-split into a
+        # nonsense set ('reports' -> {'r','e',...}), silently falling the
+        # subscriber back to poll cadence: single strings are the whole set.
+        queue_set = (
+            frozenset({queues})
+            if isinstance(queues, str)
+            else (frozenset(queues) if queues else None)
+        )
+        return _SubscriberContext(
+            event,
+            self._wake_subscribers,
+            self._wake_lock,
+            queue_registry=self._wake_queues,
+            queues=queue_set,
+        )
 
     def subscribe_cancel_wake(self) -> AsyncContextManager[asyncio.Event]:
         event = asyncio.Event()
@@ -1335,9 +1364,13 @@ class PostgresBackend:
     ) -> int:
         if connection is not None:
             return await _abort_batch(connection, self._batch_sql, batch_id)
+        # No outer transaction here: _abort_batch drains the member set
+        # as bounded, self-committed pages (each with its own
+        # statement_timeout and deadlock retry), and wrapping the drain
+        # in one transaction would re-create the whole-member write set
+        # the drain exists to bound.
         async with _bounded_checkout(self._worker_pool, "abort_batch") as conn:
-            async with conn.transaction():
-                return await _abort_batch(conn, self._batch_sql, batch_id)
+            return await _abort_batch(conn, self._batch_sql, batch_id)
 
     async def complete_batch(
         self,

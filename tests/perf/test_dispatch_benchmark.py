@@ -1,6 +1,6 @@
 """dispatch CTE p99 latency benchmark.
 
-One-off manual measurement gate — not a CI gate.
+One-off manual measurement gate - not a CI gate.
 Runs on demand: ``uv run pytest tests/perf -m "slow and integration" -v --capture=no``
 """
 

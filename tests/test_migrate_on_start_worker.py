@@ -89,7 +89,7 @@ def test_worker_still_does_not_apply_migrations() -> None:
             ):
                 offenders.append(f"{path.name}:{node.lineno}")
     assert not offenders, (
-        "the worker package must not run migrations — N replicas racing to "
+        "the worker package must not run migrations - N replicas racing to "
         "migrate is the hazard the advisory lock exists to prevent:\n"
         + "\n".join(f"  - {o}" for o in offenders)
     )
@@ -125,7 +125,7 @@ def test_upgrading_guide_does_not_tell_operators_the_worker_applies_migrations()
 
     Step 4 of ``upgrading.md`` used to read "Apply migrations explicitly, or
     let the worker apply them at startup via ``TASKQ_MIGRATE_ON_START=true``".
-    The worker never honours that setting (it only warns and ignores it —
+    The worker never honours that setting (it only warns and ignores it -
     see ``test_worker_bootstrap_warns_when_the_setting_is_set`` above), and
     since the pending-migrations boot guard landed, an operator who follows
     that literal advice now gets a crash-loop instead of a silent no-op: the

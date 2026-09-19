@@ -1,20 +1,20 @@
-"""The producer claims by genuinely free slots, not queue emptiness (#229).
+"""The producer claims by genuinely free slots, not queue emptiness.
 
 Before this change the producer sized every claim by
 ``local_queue.maxsize - local_queue.qsize()`` alone: a worker whose
 consumers were all busy and whose queue had drained looked FULLY free,
-so it locked up to ``max_concurrency`` ADDITIONAL rows — up to 2x the
+so it locked up to ``max_concurrency`` ADDITIONAL rows - up to 2x the
 slot count held running at once (double reclaim exposure on a crash,
 pending work locked behind long jobs while peer workers idled, gauges
 overstating occupancy by up to 2x). The claim now subtracts the
 active-jobs count, and the consumers wake the producer at the
-DEREGISTER that actually frees the slot — so a finished job's
+DEREGISTER that actually frees the slot - so a finished job's
 replacement claim does not wait for the fallback poll.
 
 Pins in this file (pure unit, no PG):
 
 * a fully-busy worker claims nothing, and its claim fires the moment
-  accounting settles — without arming the claim cooldown (the cooldown
+  accounting settles - without arming the claim cooldown (the cooldown
   only follows a ROUND; a skipped round arms nothing);
 * the claim size tracks the active count exactly;
 * the stub consumer's completion path wakes the producer AFTER the
@@ -53,6 +53,15 @@ class _Active:
 
     def all(self) -> list[object]:
         return []
+
+    def held_ids(self) -> list[object]:
+        return []
+
+    def mark_claimed(self, job_id: object) -> None:
+        return None
+
+    def resolve_claim(self, job_id: object) -> None:
+        return None
 
 
 class _RecordingBackend:
@@ -121,7 +130,7 @@ WorkerDepsLike = Any
 
 async def test_a_fully_busy_worker_claims_nothing_and_never_arms_the_cooldown() -> None:
     """Every consumer slot busy (active = max_concurrency), queue empty:
-    the producer must run NO claim round at all — the pre-#229 producer
+    the producer must run NO claim round at all - the pre-fix producer
     saw ``maxsize - qsize`` free slots here and locked a full extra
     batch. No round also means no short-round cooldown is armed, so the
     claim that follows a freed slot is immediate, not floored."""
@@ -137,7 +146,7 @@ async def test_a_fully_busy_worker_claims_nothing_and_never_arms_the_cooldown() 
         await asyncio.sleep(0.35)
         assert backend.rounds == [], (
             f"a fully-busy worker ran {len(backend.rounds)} claim rounds "
-            f"(limits {[limit for _, limit in backend.rounds]}) — the "
+            f"(limits {[limit for _, limit in backend.rounds]}) - the "
             "availability accounting must subtract active jobs"
         )
         # The slot frees: accounting settles and the consumer-side wake
@@ -157,7 +166,7 @@ async def test_a_fully_busy_worker_claims_nothing_and_never_arms_the_cooldown() 
         assert limit == 4
         assert claimed_at - woke_at < cooldown_floor, (
             f"the post-saturation claim landed {claimed_at - woke_at:.3f}s after "
-            "the slot freed — a cooldown floor was applied to a claim that "
+            "the slot freed - a cooldown floor was applied to a claim that "
             "followed NO round (only short rounds arm the cooldown)"
         )
     finally:
@@ -168,7 +177,7 @@ async def test_a_fully_busy_worker_claims_nothing_and_never_arms_the_cooldown() 
 
 async def test_claim_size_tracks_the_active_count() -> None:
     """With k of maxsize slots busy and the queue empty, the round asks
-    for exactly maxsize - k rows — never the full slot count again."""
+    for exactly maxsize - k rows - never the full slot count again."""
     for busy in (0, 1, 3):
         active = _Active(busy)
         backend = _RecordingBackend(jobs=8)
@@ -185,7 +194,7 @@ async def test_claim_size_tracks_the_active_count() -> None:
             )
             assert backend.rounds[0][1] == 4 - busy, (
                 f"with {busy} of 4 slots busy the producer asked for "
-                f"{backend.rounds[0][1]} rows — the claim must size by the "
+                f"{backend.rounds[0][1]} rows - the claim must size by the "
                 "genuinely free slots (maxsize - qsize - active)"
             )
         finally:
@@ -233,12 +242,22 @@ class _RegistrySpy:
     def all(self) -> list[object]:
         return []
 
+    def held_ids(self) -> list[object]:
+        return []
+
+    def mark_claimed(self, job_id: object) -> None:
+        self.registered.append(("intent", job_id))
+        return None
+
+    def resolve_claim(self, job_id: object) -> None:
+        return None
+
 
 async def test_stub_consumer_wakes_the_producer_after_the_deregister() -> None:
     """The completion-side slot release: the stub consumer sets the
     shared slot-freed event AFTER its deregister (the point the active
     count actually drops), so the producer the event wakes reads settled
-    accounting — the claim is not delayed to the fallback poll and not
+    accounting - the claim is not delayed to the fallback poll and not
     answered with a stale count."""
     job = make_job_row()
     local_queue: asyncio.Queue[JobRow] = asyncio.Queue(maxsize=1)
@@ -314,13 +333,13 @@ async def test_stub_consumer_wakes_the_producer_after_the_deregister() -> None:
     assert backend.succeeded == [job.id]
     # The wake ORDER is the pin: the get()-point wake fires before the
     # job registers (the queue slot freed, the active slot not yet
-    # taken — both counts read 0, which is why the order rather than
+    # taken - both counts read 0, which is why the order rather than
     # the count is the assertion), and the completion-side wake fires
-    # AFTER the deregister that frees the active slot — never while the
+    # AFTER the deregister that frees the active slot - never while the
     # finished job is still counted.
     assert events == ["wake", "register", "deregister", "wake"], (
         f"consumer event order was {events} (active counts at wakes "
-        f"{woke_counts}) — the completion-side wake must follow the "
+        f"{woke_counts}) - the completion-side wake must follow the "
         "deregister, so the producer it wakes reads settled accounting"
     )
     assert registry.deregistered == [job.id]
@@ -328,7 +347,7 @@ async def test_stub_consumer_wakes_the_producer_after_the_deregister() -> None:
 
 async def test_a_saturated_producer_drains_promptly_as_slots_free() -> None:
     """No stuck local_queue: a producer that spent a stretch fully
-    saturated claims promptly for each slot that frees — the
+    saturated claims promptly for each slot that frees - the
     deregister-side wake re-arms it without a poll wait, and every round
     sizes by the slots genuinely free (the queue fills with the claims,
     so the arithmetic must keep subtracting both terms)."""
@@ -347,7 +366,7 @@ async def test_a_saturated_producer_drains_promptly_as_slots_free() -> None:
         # deregister-side wake. After the k-th slot frees the worker
         # holds k-1 claimed-but-unconsumed rows (this test runs no
         # consumers), so the genuinely free count is exactly one per
-        # freed slot — the promptness is the pin, not the size.
+        # freed slot - the promptness is the pin, not the size.
         for freed in range(1, maxsize + 1):
             active.n = maxsize - freed
             slot_freed.set()
@@ -357,7 +376,7 @@ async def test_a_saturated_producer_drains_promptly_as_slots_free() -> None:
                 timeout=2.0,
             )
         assert [limit for _, limit in backend.rounds] == [1] * maxsize, (
-            f"round limits were {[limit for _, limit in backend.rounds]} — "
+            f"round limits were {[limit for _, limit in backend.rounds]} - "
             "each freed slot must yield one prompt, correctly-sized round"
         )
     finally:

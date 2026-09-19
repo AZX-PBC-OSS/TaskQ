@@ -4,7 +4,7 @@ Pods stop constantly: a rolling deploy replaces every one of them, an
 autoscaler removes them under light load, a node drains, an OOM killer
 takes one without warning. The queue's correctness cannot depend on
 which of those happened. Every job a departing pod held must end up in
-exactly one place — finished once, or back with the fleet once — and
+exactly one place - finished once, or back with the fleet once - and
 must arrive there with the same retry budget it would have had if the
 pod had never been disturbed.
 
@@ -57,8 +57,8 @@ async def test_rolling_deploy_settles_every_job_exactly_once(pg_dsn: str) -> Non
 
     Afterwards each job must be in exactly one place. A job that is
     finished must have finished once; a job that is not finished must be
-    claimable by the surviving fleet. A job that is neither — still
-    marked running, locked to a pod that no longer exists — is the
+    claimable by the surviving fleet. A job that is neither - still
+    marked running, locked to a pod that no longer exists - is the
     failure this pins: it is invisible to the queue's own accounting,
     no pod will ever finish it, and it stays that way until a lease
     expires long after the deploy is reported complete.
@@ -141,7 +141,7 @@ async def test_handback_during_shutdown_refunds_the_claim_attempt(pg_dsn: str) -
     If it is not, every deploy costs every in-flight job one retry.
     A job with three attempts that is unlucky in three consecutive
     deploys reaches its limit and is written off as crashed without its
-    actor having executed even once — and its history shows three
+    actor having executed even once - and its history shows three
     attempts, so the operator investigating concludes the code is broken
     rather than the deploys.
     """
@@ -226,7 +226,7 @@ async def test_abrupt_kill_returns_work_to_the_fleet_via_lease_expiry(
         assert reclaimed >= len(doomed_ids), (
             f"the reclaim sweep recovered {reclaimed} rows but the killed pod held "
             f"{len(doomed_ids)} with expired leases. Whatever it left behind is marked "
-            "running and owned by a process that no longer exists — work the fleet has "
+            "running and owned by a process that no longer exists - work the fleet has "
             "silently stopped doing."
         )
 
@@ -275,7 +275,7 @@ async def test_a_snoozed_job_survives_the_pod_that_snoozed_it(pg_dsn: str) -> No
     """A snooze outlives the process that issued it.
 
     Deferral is durable state on the row, not a timer in a worker's
-    memory — that is the whole reason it is written to the database. A
+    memory - that is the whole reason it is written to the database. A
     pod that snoozes a job and is then replaced by a deploy must leave a
     job that the next pod picks up when it comes due.
 
@@ -294,7 +294,7 @@ async def test_a_snoozed_job_survives_the_pod_that_snoozed_it(pg_dsn: str) -> No
         assert len(claimed) == 1
 
         # The terminal writes are fenced on the attempt the claim handed
-        # out, so the pod passes the attempt it is actually holding —
+        # out, so the pod passes the attempt it is actually holding -
         # the same value the consumer passes on the production path.
         outcome = await fleet.pod("pod-1").backend.mark_snoozed(
             job_id,
@@ -411,7 +411,7 @@ async def test_rolling_deploy_interrupts_running_jobs_and_the_fleet_finishes_the
     refund it: a refund re-creates the epoch a zombie
        handler holds).
 
-       Eight jobs run on one pod, every actor slower than the grace periods —
+       Eight jobs run on one pod, every actor slower than the grace periods -
        the ordinary shape of a rolling deploy under load. The deploy must not
        terminalise any of them (no ``cancelled``/``abandoned``/``crashed``),
        must not spend their budget (each completes on its first spent
@@ -442,7 +442,7 @@ async def test_rolling_deploy_interrupts_running_jobs_and_the_fleet_finishes_the
         async def slow_work(payload: FleetPayload, _ctx: object) -> object:
             """Longer than both graces; swallows the forced cancel and parks.
 
-            This is not a misbehaving actor — it is the export/report/shape
+            This is not a misbehaving actor - it is the export/report/shape
             of work that simply cannot finish inside a deploy's grace
             window. The zombie's late return after the release must not
             move the released row (the attempt epoch it carries is stale).
@@ -495,7 +495,7 @@ async def test_rolling_deploy_interrupts_running_jobs_and_the_fleet_finishes_the
             )
 
             # The surviving pod cannot claim held rows before the hold
-            # elapses — never two runners for one row.
+            # elapses - never two runners for one row.
             survivor = fleet.pod("pod-2")
             early = await survivor.claim([_QUEUE], 8)
             assert early == [], "pod-2 claimed a row whose departing pod may still be running it"
@@ -544,7 +544,7 @@ async def test_rolling_deploy_interrupts_running_jobs_and_the_fleet_finishes_the
         states = await fleet.job_states()
         for jid in job_ids:
             assert states[jid] == "succeeded", (
-                f"the interrupted job finished {states[jid]!r} — the fleet must "
+                f"the interrupted job finished {states[jid]!r} - the fleet must "
                 "complete what the deploy interrupted"
             )
         assert sorted(completed) == sorted(row.payload["marker"] for row in claimed_back), (
@@ -558,8 +558,8 @@ async def test_rolling_deploy_interrupts_running_jobs_and_the_fleet_finishes_the
 async def test_pods_stopping_together_leave_no_job_locked(pg_dsn: str) -> None:
     """A whole-fleet restart releases everything it was holding.
 
-    A cluster-wide restart — a config rollout, a node pool replacement,
-    a control-plane upgrade — stops every pod at once, each holding a
+    A cluster-wide restart - a config rollout, a node pool replacement,
+    a control-plane upgrade - stops every pod at once, each holding a
     full round. There is no surviving peer to reclaim for them during
     the window, so each pod's own shutdown must release its own work.
 
@@ -582,7 +582,7 @@ async def test_pods_stopping_together_leave_no_job_locked(pg_dsn: str) -> None:
         departing = {name: fleet.pod(name).worker_id for name in names}
 
         # Every pod's shutdown runs at the same time, as a cluster-wide
-        # restart does — not one after another.
+        # restart does - not one after another.
         exit_codes = await asyncio.gather(*(fleet.stop_pod(name, graceful=True) for name in names))
         assert set(exit_codes) == {0}, (
             f"a simultaneous fleet restart produced exit codes {exit_codes}; a pod that "

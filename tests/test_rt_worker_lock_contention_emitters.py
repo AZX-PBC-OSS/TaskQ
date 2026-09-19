@@ -4,14 +4,14 @@ The prune and archive-expiry loops lose the schema-qualified advisory
 lock to another session at their ``pg_try_advisory_lock`` call. The
 existing coverage pins the SKIP behavior (no sweep runs); what was never
 pinned is the new emitter: the losing side must record
-``taskq.leader.lock_contention`` with the exact lock name — the signal
+``taskq.leader.lock_contention`` with the exact lock name - the signal
 that would have exposed two schemas silently sharing one lock, and the
 only observable difference between "pruned by someone else" and "never
 prunes at all".
 
 These tests hold the lock with a REAL second connection on the REAL
 schema-qualified name and drive one loop iteration whose lock attempt
-runs on a REAL connection — the emitter is pinned at the acquisition
+runs on a REAL connection - the emitter is pinned at the acquisition
 site, not by calling the obs function directly. The asserted surface is
 behavioural throughout: the emitted counter, no sweep work running, and
 the loop retrying rather than dying.
@@ -143,12 +143,12 @@ async def _drive_loop_while_lock_held(
                 break
             await asyncio.sleep(0.01)
         assert not task.done(), (
-            "the loop died after losing the lock — a teardown mutes the "
+            "the loop died after losing the lock - a teardown mutes the "
             "contention signal permanently"
         )
         points = _contention_points(reader, lock_name)
         assert points, (
-            f"no lock_contention recorded for {lock_name!r} — the losing side "
+            f"no lock_contention recorded for {lock_name!r} - the losing side "
             "is the detector and must record the loss"
         )
         return int(points[0].value)

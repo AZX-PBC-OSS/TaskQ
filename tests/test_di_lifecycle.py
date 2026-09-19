@@ -113,7 +113,7 @@ def test_sync_closeable_detection() -> None:
     assert detect_lifecycle(_SyncCloseableClass) == ProviderLifecycle.SyncCloseable
 
 
-# ── Priority — ACM beats AsyncCloseable ──────────────────────────────
+# ── Priority - ACM beats AsyncCloseable ──────────────────────────────
 
 
 def test_acm_beats_async_closeable() -> None:
@@ -121,7 +121,7 @@ def test_acm_beats_async_closeable() -> None:
     assert detect_lifecycle(_HybridACMAndAclose) == ProviderLifecycle.AsyncContextManager
 
 
-# ── Priority — AsyncCloseable beats SyncCloseable ────────────────────
+# ── Priority - AsyncCloseable beats SyncCloseable ────────────────────
 
 
 def test_async_closeable_beats_sync_closeable() -> None:
@@ -152,7 +152,7 @@ def test_close_async_not_detected() -> None:
 
 
 def test_no_instantiation() -> None:
-    """detect_lifecycle never calls __init__ — verified with a class that raises."""
+    """detect_lifecycle never calls __init__ - verified with a class that raises."""
     assert detect_lifecycle(_InitRaises) == ProviderLifecycle.Plain
 
 

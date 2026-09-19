@@ -159,7 +159,7 @@ async def test_tc1_kill_pg_mid_tick(pg_dsn: str) -> None:
             initial_lock = row["lock_expires_at"]
 
         real_pool = deps.heartbeat_pool
-        deps.heartbeat_pool = _FailingPool(  # type: ignore[assignment] # Why: chaos testing — replacing the Pool with a wrapper that returns ChaosConnection-wrapped connections.
+        deps.heartbeat_pool = _FailingPool(  # type: ignore[assignment] # Why: chaos testing - replacing the Pool with a wrapper that returns ChaosConnection-wrapped connections.
             real_pool,
             fail_on_call=2,
             fail_with=asyncpg.PostgresConnectionError,  # type: ignore[arg-type] # Why: asyncpg PostgresConnectionError accepts a single str arg at runtime.
@@ -221,7 +221,7 @@ async def test_tc2_worker_isolation(pg_dsn: str) -> None:
                 job_ids.append(jid)
 
         real_pool = deps.heartbeat_pool
-        deps.heartbeat_pool = _FailingPool(  # type: ignore[assignment] # Why: chaos testing — replacing the Pool with a wrapper that returns ChaosConnection-wrapped connections.
+        deps.heartbeat_pool = _FailingPool(  # type: ignore[assignment] # Why: chaos testing - replacing the Pool with a wrapper that returns ChaosConnection-wrapped connections.
             real_pool,
             fail_on_call=1,
             fail_with=asyncpg.PostgresConnectionError,  # type: ignore[arg-type] # Why: asyncpg PostgresConnectionError accepts a single str arg at runtime; pyright stubs may report arity mismatch.
@@ -361,7 +361,7 @@ async def test_tc4_isolate_self_fresh_connect_fails(pg_dsn: str) -> None:
                 lock_expires_at=datetime.now(UTC) + timedelta(seconds=deps.settings.lock_lease),
             )
 
-        deps.heartbeat_pool = _FailingPool(  # type: ignore[assignment] # Why: chaos testing — replacing the Pool with a wrapper that returns ChaosConnection-wrapped connections.
+        deps.heartbeat_pool = _FailingPool(  # type: ignore[assignment] # Why: chaos testing - replacing the Pool with a wrapper that returns ChaosConnection-wrapped connections.
             deps.heartbeat_pool,
             fail_with=asyncpg.PostgresConnectionError,  # type: ignore[arg-type] # Why: asyncpg PostgresConnectionError accepts a single str arg at runtime; pyright stubs may report arity mismatch.
         )
@@ -371,7 +371,7 @@ async def test_tc4_isolate_self_fresh_connect_fails(pg_dsn: str) -> None:
         async def _failing_connect(*args: object, **kwargs: object) -> object:
             raise OSError("Connection refused — simulated PG outage")
 
-        hb_module.asyncpg.connect = _failing_connect  # type: ignore[method-assign] # Why: chaos testing — replacing asyncpg.connect to simulate full PG outage during isolate_self.
+        hb_module.asyncpg.connect = _failing_connect  # type: ignore[method-assign] # Why: chaos testing - replacing asyncpg.connect to simulate full PG outage during isolate_self.
         try:
             shutdown = asyncio.Event()
             task = asyncio.create_task(
@@ -384,7 +384,7 @@ async def test_tc4_isolate_self_fresh_connect_fails(pg_dsn: str) -> None:
                 shutdown.set()
                 await task
 
-            assert shutdown.is_set(), "shutdown was not set — isolate_self did not complete"
+            assert shutdown.is_set(), "shutdown was not set - isolate_self did not complete"
         finally:
             hb_module.asyncpg.connect = original_connect  # type: ignore[method-assign]
     finally:
@@ -405,7 +405,7 @@ async def test_tc5_query_canceled_counts_toward_isolation(pg_dsn: str) -> None:
 
     Named for what it injects, not for command_timeout: command_timeout raises
     TimeoutError, not QueryCanceledError (verified against PG 18), and nothing
-    here exercises command_timeout at all. 57014 is server-side cancellation —
+    here exercises command_timeout at all. 57014 is server-side cancellation -
     a DBA, or a server-side statement_timeout.
     """
     stack, deps, schema = await _setup(pg_dsn, MAX_HEARTBEAT_FAILURES="2")
@@ -424,7 +424,7 @@ async def test_tc5_query_canceled_counts_toward_isolation(pg_dsn: str) -> None:
                 )
                 job_ids.append(jid)
 
-        deps.heartbeat_pool = _FailingPool(  # type: ignore[assignment] # Why: chaos testing — replacing the Pool with a wrapper that returns ChaosConnection-wrapped connections.
+        deps.heartbeat_pool = _FailingPool(  # type: ignore[assignment] # Why: chaos testing - replacing the Pool with a wrapper that returns ChaosConnection-wrapped connections.
             deps.heartbeat_pool,
             fail_on_call=2,
             fail_with=asyncpg.QueryCanceledError,  # type: ignore[arg-type] # Why: asyncpg QueryCanceledError accepts a single str arg at runtime; pyright stubs may report arity mismatch.
@@ -473,7 +473,7 @@ async def test_tc6_oserror_on_execute(pg_dsn: str) -> None:
             initial_lock: datetime = row["lock_expires_at"]
 
         real_pool = deps.heartbeat_pool
-        deps.heartbeat_pool = _FailingPool(  # type: ignore[assignment] # Why: chaos pool substitution — see pattern.
+        deps.heartbeat_pool = _FailingPool(  # type: ignore[assignment] # Why: chaos pool substitution - see pattern.
             real_pool,
             fail_on_call=2,
             fail_with=OSError,  # type: ignore[arg-type] # Why: OSError() accepts str at runtime.

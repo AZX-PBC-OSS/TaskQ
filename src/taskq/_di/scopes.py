@@ -30,7 +30,7 @@ from taskq.settings import WorkerSettings
 
 logger = structlog.get_logger("taskq._di.scopes")
 
-# Why: resolver accepts object (erasure boundary — entry.impl is object per
+# Why: resolver accepts object (erasure boundary, entry.impl is object per
 # ) and returns Any (the kwargs dict shape depends
 # on the factory's signature, which the resolver inspects at runtime).
 _Resolver = Callable[[object], Any]
@@ -89,12 +89,12 @@ class ScopeContainer:
 
         ``factory_timeout`` is the bounded-open discipline applied at the DI
         registry's own factory seam: a user factory that accepts the
-        call and never returns (the black-holed credential endpoint —
+        call and never returns (the black-holed credential endpoint ,
         the documented "database pools, HTTP clients" shape) must fail
         the operation that awaited it within the configured bound, not
         park it forever. The worker's bootstrap passes
-        ``reload_factory_timeout`` here for every scope it opens — the
-        pre-watchdog window where no other bound exists — and the
+        ``reload_factory_timeout`` here for every scope it opens, the
+        pre-watchdog window where no other bound exists, and the
         timeout's ``TimeoutError`` propagates to fail that boot loudly;
         ``None`` (the default) keeps the unbounded await for containers
         whose callers supply their own bounds (the per-job TRANSIENT
@@ -109,7 +109,7 @@ class ScopeContainer:
                 return await coro
         except TimeoutError:
             if not bound.expired():
-                # The factory's own TimeoutError, not this bound —
+                # The factory's own TimeoutError, not this bound ,
                 # re-raise unlabeled so the caller sees its real cause.
                 raise
             logger.error(
@@ -185,7 +185,7 @@ class ScopeContainer:
         if self._scope is not Scope.TRANSIENT:
             self._cache[type_] = result
 
-        return result  # type: ignore[return-value]  # Why: same recovery as cache-hit branch — erasure boundary documented
+        return result  # type: ignore[return-value]  # Why: same recovery as cache-hit branch, erasure boundary documented
 
     async def _resolve_sync_generator(self, entry: ProviderEntry[object]) -> object:
         """Resolve a SYNC_GENERATOR provider via a pinned single-thread executor."""
@@ -218,7 +218,7 @@ class ScopeContainer:
                     await exit_future
             except TimeoutError:
                 if not bound.expired():
-                    # The generator's own __exit__ raised TimeoutError —
+                    # The generator's own __exit__ raised TimeoutError ,
                     # surface it as the teardown failure it is, not as the
                     # bound firing.
                     raise
@@ -257,7 +257,7 @@ class ScopeContainer:
         """Whether :meth:`aclose` has anything left to run.
 
         False once every registered teardown has run and the pinned
-        SYNC_GENERATOR executor (if one was ever opened) is shut down —
+        SYNC_GENERATOR executor (if one was ever opened) is shut down ,
         i.e. exactly when ``aclose()`` would return without awaiting
         anything, which lets a per-job caller skip scheduling it.
         """
@@ -290,7 +290,7 @@ class ScopeContainer:
         # container has one: a sync-gen ``__enter__``/``__exit__`` parked
         # in unkillable user code would otherwise park scope teardown for
         # as long as the user code hangs. The bound trips loudly and lets
-        # the close complete — the shutdown already initiated finishes in
+        # the close complete, the shutdown already initiated finishes in
         # the background whenever the user code returns, and the residue
         # is that one thread per hung container until then (a leak the
         # stdlib makes unrecoverable by construction; what teardown owns
@@ -333,7 +333,7 @@ class ScopeContainer:
 
 
 class ProcessScope(ScopeContainer):
-    """PROCESS-lifetime scope — worker process startup → exit."""
+    """PROCESS-lifetime scope, worker process startup → exit."""
 
     def __init__(
         self,
@@ -346,11 +346,11 @@ class ProcessScope(ScopeContainer):
     async def bootstrap(
         self,
         registry: ProviderRegistry,
-        settings: WorkerSettings,  # Why: accepted for API symmetry with the public surface; bootstrap doesn't use it directly — registration is a separate concern owned by worker bootstrap
+        settings: WorkerSettings,  # Why: accepted for API symmetry with the public surface; bootstrap doesn't use it directly, registration is a separate concern owned by worker bootstrap
     ) -> None:
         """Resolve all PROCESS-scoped providers.
 
-        Why: no try/except around get_or_create — earlier providers'
+        Why: no try/except around get_or_create, earlier providers'
         teardowns are already registered on self._teardowns; the
         caller runs aclose() on unwind, which iterates whatever
         teardowns were registered before the failure. Partial-bootstrap leaks are not possible: every
@@ -374,7 +374,7 @@ class ProcessScope(ScopeContainer):
 
 
 class ThreadScope(ScopeContainer):
-    """THREAD-lifetime scope — placeholder for multi-thread workers (trivially empty in M3)."""
+    """THREAD-lifetime scope, placeholder for multi-thread workers (trivially empty in M3)."""
 
     def __init__(
         self,
@@ -407,7 +407,7 @@ class ThreadScope(ScopeContainer):
 
 
 class LoopScope(ScopeContainer):
-    """LOOP-lifetime scope — worker loop start → loop close."""
+    """LOOP-lifetime scope, worker loop start → loop close."""
 
     def __init__(
         self,
@@ -428,7 +428,7 @@ class LoopScope(ScopeContainer):
 
         Why: process_scope / thread_scope parameters are accepted for
         API completeness even though bootstrap doesn't read them
-        directly — wider scopes' instances are reachable through the
+        directly, wider scopes' instances are reachable through the
         _resolver callable (which holds the registry + container map).
         """
         loop_providers = [t for t, e in registry.providers.items() if e.scope is Scope.LOOP]
@@ -446,7 +446,7 @@ class LoopScope(ScopeContainer):
     def resolved_cache(self) -> Mapping[type, object]:
         """Return a read-only view of the LOOP-scope resolved values.
 
-        The returned mapping is a live view onto the underlying cache —
+        The returned mapping is a live view onto the underlying cache ,
         providers resolved after this method is called (e.g., lazy
         providers) become visible without re-fetching, and replacements
         made via :meth:`replace_value` become visible to subsequent
@@ -455,7 +455,7 @@ class LoopScope(ScopeContainer):
 
         Stability invariant: once ``bootstrap`` returns, the registered
         set of LOOP-scope provider types is FROZEN for the lifetime of
-        the loop. ``asyncpg.Connection`` values are stable references —
+        the loop. ``asyncpg.Connection`` values are stable references ,
         callers that read the mapping repeatedly (such as
         ``SubJobEnqueuer.enqueue``) assume the connection identity does
         not change between dispatches, because the consumer's
@@ -464,7 +464,7 @@ class LoopScope(ScopeContainer):
 
         ``asyncpg.Pool`` values are the one sanctioned exception: they
         may be replaced mid-loop via :meth:`replace_value` (credential
-        hot-reload — see ``taskq.worker.deps.reload_credentials``).
+        hot-reload, see ``taskq.worker.deps.reload_credentials``).
         Pools are stateless acquisition factories, so swapping the
         reference does not violate any transaction-identity invariant;
         consumers that read the mapping per dispatch (rather than
@@ -476,19 +476,19 @@ class LoopScope(ScopeContainer):
         """Replace the cached instance for *type_*.
 
         The sanctioned mid-loop swap for VALUE providers whose resource
-        was hot-swapped externally — currently ``asyncpg.Pool`` after a
+        was hot-swapped externally, currently ``asyncpg.Pool`` after a
         SIGHUP credential reload (``taskq.worker.deps.reload_credentials``
         drains and closes the old pool; without this, DI-injected
         ``db: asyncpg.Pool`` consumers would keep using a closed pool).
 
-        The old value is NOT torn down here — its lifecycle belongs to
+        The old value is NOT torn down here, its lifecycle belongs to
         the swapper. Only the cache entry is replaced; the (sealed)
         registry is untouched. Raises :class:`KeyError` when *type_* has
-        no cached value — replacing an absent entry would silently
+        no cached value, replacing an absent entry would silently
         insert a value no provider declared.
         """
         if type_ not in self._cache:
-            raise KeyError(f"no cached value for {type_!r} — nothing to replace")
+            raise KeyError(f"no cached value for {type_!r}, nothing to replace")
         self._cache[type_] = value
 
     async def get_or_create[T](self, type_: type[T], entry: ProviderEntry[T]) -> T:
@@ -509,8 +509,8 @@ class LoopScopeSlotView:
     1``); the transaction that wraps the actor runs on that connection.
     This view shadows the LOOP-shared cache for exactly the types its
     mapping carries, for exactly one ``build_actor_scope`` body, so the
-    actor — and every nested LOOP-scoped resolution its dependencies
-    trigger through the same scope-containers map — resolves the slot's
+    actor, and every nested LOOP-scoped resolution its dependencies
+    trigger through the same scope-containers map, resolves the slot's
     instance instead of the one object registered at ``Scope.LOOP``.
     Without the shadow, every concurrent slot's actor received the SAME
     registered connection and interleaved operations on it: asyncpg
@@ -523,7 +523,7 @@ class LoopScopeSlotView:
 
     The shadow reaches one level further than the mapping itself: a
     LOOP-scoped FACTORY whose dependency closure reaches a shadowed type
-    (a helper that injects the connection — "any object derived from a
+    (a helper that injects the connection, "any object derived from a
     shared connection is shared the same way", the same rule one level
     removed) is re-resolved PER INVOCATION through the invocation's
     TRANSIENT runner instead of the LOOP cache. The scope's bootstrap
@@ -534,14 +534,14 @@ class LoopScopeSlotView:
     through the same shadowed scope-containers map (nested LOOP-scoped
     dependencies included), produces an instance this invocation alone
     owns, and lands any lifecycle teardown on the invocation's TRANSIENT
-    teardown — the derived object lives and dies with the actor call.
+    teardown, the derived object lives and dies with the actor call.
     Providers whose closure never touches a shadowed type keep the LOOP
     singleton: the view does not per-invocation-ize unrelated
     loop-lifetime resources.
 
     The view is a pure read-through otherwise: it never caches, never
     invokes a factory on its own account, and never registers a
-    teardown — a mapped instance's lifecycle belongs to the wiring that
+    teardown, a mapped instance's lifecycle belongs to the wiring that
     supplied it (the dispatch acquire/release exit stack that owns the
     slot connection), and a re-resolved instance's to the invocation
     runner. Every type NOT in the mapping and NOT shadow-derived
@@ -572,16 +572,16 @@ class LoopScopeSlotView:
         value = self._slot_values.get(type_)
         if value is not None:
             self._last_cache_hit = True
-            return cast("T", value)  # pyright: ignore[reportReturnType]  # Why: the DI erasure boundary — the mapping's value is the live instance the caller's wiring owns for type_ (dispatch maps the slot connection under asyncpg.Connection); the same value-shape trust ScopeContainer's cache-hit branch applies.
+            return cast("T", value)  # pyright: ignore[reportReturnType]  # Why: the DI erasure boundary, the mapping's value is the live instance the caller's wiring owns for type_ (dispatch maps the slot connection under asyncpg.Connection); the same value-shape trust ScopeContainer's cache-hit branch applies.
         if type_ in self._shadow_derived:
             # A LOOP-scoped factory derived (transitively) from a
             # shadowed type: the LOOP cache's bootstrap singleton baked
             # in the registered instance, so resolve this invocation's
-            # own through the TRANSIENT runner — fresh parameters off
+            # own through the TRANSIENT runner, fresh parameters off
             # the shadowed containers map, no caching, teardown owned
             # by the invocation.
             self._last_cache_hit = False
-            return await self._invocation_runner.get_or_create(type_, entry)  # pyright: ignore[reportReturnType]  # Why: same erasure boundary as the mapped branch — the runner's ProviderEntry[T] is the caller's entry; ScopeContainer's return-site coercion covers T.
+            return await self._invocation_runner.get_or_create(type_, entry)  # pyright: ignore[reportReturnType]  # Why: same erasure boundary as the mapped branch, the runner's ProviderEntry[T] is the caller's entry; ScopeContainer's return-site coercion covers T.
         self._last_cache_hit = False
         return await self._inner.get_or_create(type_, entry)
 
@@ -600,8 +600,8 @@ class LoopScopeSlotView:
 class ResolvedActorScope:
     """The yielded value of build_actor_scope.
 
-    ctx        — the JobContext supplied by the consumer (passthrough).
-    di_kwargs  — the DI-resolved kwargs dict for the actor function.
+    ctx       , the JobContext supplied by the consumer (passthrough).
+    di_kwargs , the DI-resolved kwargs dict for the actor function.
 
     Usage::
 
@@ -640,10 +640,10 @@ async def build_actor_scope(
     loop_slot_values maps LOOP-registered types to the instances THIS
     consumer slot owns for this one actor invocation (the dispatch path
     maps ``asyncpg.Connection`` to the job's slot connection). Each
-    mapped type resolves to the slot's instance — through a
+    mapped type resolves to the slot's instance, through a
     :class:`LoopScopeSlotView` that shadows the LOOP cache for this
     invocation only, actor parameters and nested LOOP-scoped
-    dependencies alike — so a LOOP-registered connection never reaches
+    dependencies alike, so a LOOP-registered connection never reaches
     two concurrent slots' actors, and a LOOP-scoped
     factory DERIVED from a shadowed type (a helper holding the
     connection) resolves per invocation instead of serving the
@@ -666,7 +666,7 @@ async def build_actor_scope(
     transient_scope = ScopeContainer(scope=Scope.TRANSIENT, resolver=_resolver)
 
     # Why a per-invocation view instead of mutating the LOOP cache: the
-    # LOOP cache is shared by every concurrent slot — a swap would race
+    # LOOP cache is shared by every concurrent slot, a swap would race
     # sibling dispatches and leak the slot's connection to later jobs.
     # The view is visible only to the solves that run inside THIS
     # build_actor_scope body, which is exactly the audience the slot's
@@ -674,7 +674,7 @@ async def build_actor_scope(
     # TRANSIENT container: a shadow-derived LOOP factory resolves its
     # parameters through the same containers map (LOOP is this view, so
     # its connection-typed parameters see the slot's instance) and its
-    # lifecycle teardowns land on the invocation's teardown — the
+    # lifecycle teardowns land on the invocation's teardown, the
     # derived object lives and dies with this one actor call, never
     # cached where a sibling slot could reach it.
     loop_container: LoopScope | LoopScopeSlotView = loop_scope
@@ -720,7 +720,7 @@ async def build_actor_scope(
         )
         # Why: solve_dependencies includes passthrough keys in its result
         # dict; build_actor_scope yields ctx separately and the consumer
-        # spreads di_kwargs — so passthrough keys must not appear in
+        # spreads di_kwargs, so passthrough keys must not appear in
         # di_kwargs to avoid duplicate keyword arguments at the call site.
         for _key in passthrough_kwargs:
             di_kwargs.pop(_key, None)
@@ -729,13 +729,13 @@ async def build_actor_scope(
             raise TypeError(
                 f"passthrough_kwargs['ctx'] must be a JobContext, got {type(ctx).__name__}"
             )
-        yield ResolvedActorScope(ctx=ctx, di_kwargs=di_kwargs)  # type: ignore[reportUnknownArgumentType]  # Why: ctx is narrowed to JobContext[Any] by isinstance but pyright cannot recover the BaseModel bound from the passthrough_kwargs dict[str, object] — the consumer that built passthrough_kwargs guarantees the correct P at the call site
+        yield ResolvedActorScope(ctx=ctx, di_kwargs=di_kwargs)  # type: ignore[reportUnknownArgumentType]  # Why: ctx is narrowed to JobContext[Any] by isinstance but pyright cannot recover the BaseModel bound from the passthrough_kwargs dict[str, object], the consumer that built passthrough_kwargs guarantees the correct P at the call site
     finally:
         # Why: shield the TRANSIENT teardown so cancellation /
         # asyncio.wait_for timeouts in the with-body do not
         # short-circuit the teardown mid-way.
         # ("wrap terminal writes in asyncio.shield") applies to
-        # scope teardown too — losing teardown of an opened
+        # scope teardown too, losing teardown of an opened
         # resource leaks it. CancelledError after the shielded
         # aclose finishes is re-raised to honor the outer cancel.
         try:

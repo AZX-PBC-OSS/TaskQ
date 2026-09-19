@@ -1,4 +1,4 @@
-"""Advanced actor options — singleton, max_concurrent, unique_for, result_ttl.
+"""Advanced actor options - singleton, max_concurrent, unique_for, result_ttl.
 
 These actors demonstrate less-common but important @actor decorator options:
 
@@ -41,13 +41,13 @@ class SumResult(BaseModel):
 
 @actor(name="singleton_job", queue="examples", singleton=True)
 async def singleton_job(payload: EmptyPayload) -> None:
-    """Runs for 5s — only one instance may be active fleet-wide (singleton=True)."""
+    """Runs for 5s - only one instance may be active fleet-wide (singleton=True)."""
     await asyncio.sleep(5)
 
 
 @actor(name="capped_job", queue="examples", max_concurrent=2)
 async def capped_job(payload: EmptyPayload) -> None:
-    """Runs for 3s — at most 2 may run simultaneously fleet-wide (max_concurrent=2)."""
+    """Runs for 3s - at most 2 may run simultaneously fleet-wide (max_concurrent=2)."""
     await asyncio.sleep(3)
 
 
@@ -57,7 +57,7 @@ async def capped_job(payload: EmptyPayload) -> None:
     unique_for=timedelta(minutes=1),
 )
 async def deduplicated(payload: DeduplicatedPayload) -> None:
-    """Sleeps 2s — enqueueing the same identity_key within 1 min returns the existing job."""
+    """Sleeps 2s - enqueueing the same identity_key within 1 min returns the existing job."""
     await asyncio.sleep(2)
 
 

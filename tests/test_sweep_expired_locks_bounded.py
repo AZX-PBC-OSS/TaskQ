@@ -20,7 +20,7 @@ the consumer's cursor has already advanced past its position, with no error
 raised anywhere.  The crash backlog the sweep eats is itself unbounded (every
 job held by a fleet-wide crash becomes eligible at once), so an unbounded
 sweep is precisely the writer whose events ``poll_reclaim_events`` exists to
-deliver — the miss lands on reclaim notifications themselves.
+deliver - the miss lands on reclaim notifications themselves.
 
 Why statements and not seconds
 -------------------------------
@@ -36,7 +36,7 @@ row shares ``kind`` and ``detail``.  Here the per-row values are all DISTINCT:
 ``started_at``, ``attempt``, ``duration_ms``, ``locked_by_worker``, and the
 event ``detail``'s ``to_state`` (a three-way CASE yielding
 ``pending``/``cancelled``/``crashed``).  The batch carries multi-column
-arrays AND a row cap — so Layer 1 asserts both properties independently.
+arrays AND a row cap - so Layer 1 asserts both properties independently.
 
 Invariant the batching must preserve
 -------------------------------------
@@ -210,7 +210,7 @@ async def _seed_running_jobs(
 
 
 # ══════════════════════════════════════════════════════════════════════
-# LAYER 1 — the boundedness contract these tests enforce.
+# LAYER 1 - the boundedness contract these tests enforce.
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -277,13 +277,13 @@ class TestSweepExpiredLocksIsBounded:
 
         assert counting.attempt_inserts <= _MAX_STATEMENTS_PER_CALL, (
             f"expected a bounded number of job_attempts INSERTs for {_BACKLOG} "
-            f"reclaimed jobs, got {counting.attempt_inserts} — the per-row loop is "
+            f"reclaimed jobs, got {counting.attempt_inserts} - the per-row loop is "
             "still there, taking one awaited round trip per row inside the "
             "transaction that holds every matched job locked"
         )
         assert counting.event_inserts <= _MAX_STATEMENTS_PER_CALL, (
             f"expected a bounded number of job_events INSERTs for {_BACKLOG} "
-            f"reclaimed jobs, got {counting.event_inserts} — every one of those "
+            f"reclaimed jobs, got {counting.event_inserts} - every one of those "
             "round trips extends the window between the job_events INSERT and its "
             "COMMIT, which RECLAIM_EVENT_VISIBILITY_DELAY (2s) bounds at the cost "
             "of a silently missed reclaim event when exceeded"
@@ -306,7 +306,7 @@ class TestSweepExpiredLocksIsBounded:
         batch's worth of running jobs whose locks have expired, in one
         ``FOR UPDATE SKIP LOCKED`` scan, in one transaction.  A
         fleet-wide crash makes the eligible set as large as the fleet's
-        in-flight concurrency — exactly the case the cap keeps out of
+        in-flight concurrency - exactly the case the cap keeps out of
         any single transaction.
 
         This asserts the cap exists and is honoured, without pinning its
@@ -340,7 +340,7 @@ class TestSweepExpiredLocksIsBounded:
         )
 
         assert count < _BACKLOG, (
-            f"one sweep call reclaimed all {count} of {_BACKLOG} expired locks — "
+            f"one sweep call reclaimed all {count} of {_BACKLOG} expired locks - "
             "_SWEEP_1_SQL's snap CTE has no LIMIT, so a single transaction holds "
             "the entire crash backlog under FOR UPDATE SKIP LOCKED while it writes "
             "an attempt row and an event row for every one of them"
@@ -399,7 +399,7 @@ class TestSweepExpiredLocksIsBounded:
             f"got {reclaimed} of {_BACKLOG} after {calls} calls"
         )
         assert first_call_count < _BACKLOG, (
-            "the first call drained the entire backlog in one transaction — there "
+            "the first call drained the entire backlog in one transaction - there "
             "is no row cap on _SWEEP_1_SQL"
         )
 
@@ -410,13 +410,13 @@ class TestSweepExpiredLocksIsBounded:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# LAYER 2 — CORRECTNESS PINNING.  These PASS TODAY and MUST STILL PASS
+# LAYER 2 - CORRECTNESS PINNING.  These PASS TODAY and MUST STILL PASS
 # after the fix.  They are the safety net over the SQL rewrite.
 # ══════════════════════════════════════════════════════════════════════
 
 
 class TestSweepExpiredLocksBehaviourPinned:
-    """Layer 2: pins existing behaviour — must pass BEFORE AND AFTER the fix.
+    """Layer 2: pins existing behaviour - must pass BEFORE AND AFTER the fix.
 
     The fix rewrites SQL that mutates job state and writes audit rows, so
     every observable consequence of the sweep is pinned here: the three-way
@@ -528,7 +528,7 @@ class TestSweepExpiredLocksBehaviourPinned:
             row = by_id[job_id]
             assert row["status"] == "cancelled", (
                 "an exhausted job with a cancel in flight must land on 'cancelled', "
-                f"not {row['status']} — the caller's explicit request is the honest "
+                f"not {row['status']} - the caller's explicit request is the honest "
                 "terminal label"
             )
             assert row["finished_at"] is not None
@@ -633,7 +633,7 @@ class TestSweepExpiredLocksBehaviourPinned:
         for row in attempts:
             job_id = row["job_id"]
             assert row["outcome"] == "crashed", (
-                "the attempt outcome is 'crashed' on every branch — that IS what "
+                "the attempt outcome is 'crashed' on every branch - that IS what "
                 f"happened to the attempt; got {row['outcome']}"
             )
             assert row["error_class"] == "WorkerCrashed"
@@ -821,7 +821,7 @@ class TestSweepExpiredLocksBehaviourPinned:
             cancel_phase=0,
             lock_expired_seconds_ago=10.0,
         )
-        # Lock still 5 minutes in the future — negative "seconds ago".
+        # Lock still 5 minutes in the future - negative "seconds ago".
         await _seed_running_jobs(
             clean_pg_conn,
             schema,
@@ -944,14 +944,14 @@ class TestSweepExpiredLocksBehaviourPinned:
             if stamps[i] < stamps[i - 1]
         ]
         assert not inversions, (
-            "job_events.occurred_at must be non-decreasing in id order — "
+            "job_events.occurred_at must be non-decreasing in id order - "
             f"found {len(inversions)} inversion(s): {inversions[:3]}. "
             "poll_reclaim_events' trailing watermark reads occurred_at as a proxy "
             "for id order; an inversion is a silently missed reclaim event."
         )
 
         assert len(set(stamps)) == len(stamps), (
-            "occurred_at must be DISTINCT per row — identical values mean the "
+            "occurred_at must be DISTINCT per row - identical values mean the "
             "per-row clock_timestamp() was replaced by a single transaction-wide "
             "timestamp (now(), or one hoisted across a batched INSERT)"
         )

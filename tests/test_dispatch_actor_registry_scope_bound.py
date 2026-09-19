@@ -6,7 +6,7 @@ round's own small backlog only, zero unrelated jobs), and only
 ``actor_config`` row count grows, with actors that have no pending work
 at all. (The sibling fleet oracle,
 tests/test_dispatch_fleet_scope_bound.py, originally held actor_config
-at exactly two rows while growing only jobs — structurally blind to
+at exactly two rows while growing only jobs - structurally blind to
 this axis; its fixture now registers its fleet actors too, so both
 oracles see the dimension.)
 

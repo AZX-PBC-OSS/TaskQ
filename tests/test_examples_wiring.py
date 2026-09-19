@@ -1,4 +1,4 @@
-"""Tests for examples package wiring — actor definitions, DI registry, and worker bootstrap.
+"""Tests for examples package wiring - actor definitions, DI registry, and worker bootstrap.
 
 Covers:
   - All example ActorRef instances have the expected name/queue
@@ -21,7 +21,7 @@ from examples.actors.advanced import SumResult, capped_job, deduplicated, single
 from examples.actors.basic import counter, deferred
 from examples.actors.chained import fan_out, step_one, step_two
 from examples.actors.di import FakeDb, FakeHttpClient, build_registry, db_lookup_actor, fetch_actor
-from examples.actors.failure import flaky, snoozer
+from examples.actors.failure import SnoozePayload, flaky, snoozer
 from examples.actors.ratelimit import (
     inmemory_rate_limited,
     reserved,
@@ -34,8 +34,11 @@ from taskq._di.registry import ProviderRegistry
 from taskq._di.scope import Scope
 from taskq.actor import ActorRef
 from taskq.backend.clock import Clock, SystemClock
+from taskq.exceptions import Snooze
 from taskq.settings import WorkerSettings
+from taskq.testing.fixtures import ActorRunnerCallable
 from taskq.testing.health import unique_health_sock_path
+from taskq.testing.in_memory import InMemoryBackend
 from taskq.worker.run import _main
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -47,7 +50,7 @@ def _settings() -> WorkerSettings:
             "PG_DSN": "postgres://u:p@localhost:5432/db",
             "LOCK_LEASE": 60,
             "HEARTBEAT_INTERVAL": 10,
-            # _main starts a real HealthServer — never the shared default path.
+            # _main starts a real HealthServer - never the shared default path.
             "TASKQ_HEALTH_SOCKET_PATH": unique_health_sock_path("examples_wiring"),
         },
     )
@@ -262,7 +265,7 @@ def test_build_registry_has_db_at_transient_scope() -> None:
 
 def test_build_registry_not_yet_sealed() -> None:
     registry = build_registry()
-    # Should not raise — registry is not sealed yet
+    # Should not raise - registry is not sealed yet
     registry.register_value(WorkerSettings, Scope.PROCESS, _settings())
 
 
@@ -272,7 +275,7 @@ def test_build_registry_validates_with_di_actors() -> None:
     registry.register_value(WorkerSettings, Scope.PROCESS, settings)
     registry.register_value(Clock, Scope.PROCESS, SystemClock())
     registry.validate(actors=[fetch_actor, db_lookup_actor])
-    # validate() seals — no error means all deps resolved
+    # validate() seals - no error means all deps resolved
 
 
 # ── Bootstrap integration: di_registry flows through _main ───────────
@@ -339,6 +342,20 @@ def test_step_two_no_ctx_no_deps() -> None:
 
 def test_fan_out_wants_ctx() -> None:
     assert fan_out.wants_ctx is True
+
+
+async def test_snoozer_stops_after_configured_cycles(
+    actor_runner: ActorRunnerCallable,
+    memory_jobs: InMemoryBackend,
+) -> None:
+    payload = SnoozePayload(delay_seconds=10, snooze_cycles=2)
+
+    with pytest.raises(Snooze):
+        await actor_runner(snoozer.fn, payload, backend=memory_jobs, snooze_count=0)
+    with pytest.raises(Snooze):
+        await actor_runner(snoozer.fn, payload, backend=memory_jobs, snooze_count=1)
+
+    await actor_runner(snoozer.fn, payload, backend=memory_jobs, snooze_count=2)
 
 
 # ── FakeHttpClient and FakeDb smoke tests ────────────────────────────

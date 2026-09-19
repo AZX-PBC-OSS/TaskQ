@@ -2,7 +2,7 @@
 
 The twin mirrors PG's per-actor capacity laterals by iterating the
 registered actors, and it used to rescan every stored job once per actor
-inside that loop — O(actors x jobs) per round, so a differential run with
+inside that loop - O(actors x jobs) per round, so a differential run with
 a few hundred registered actors and a few thousand jobs spent its time in
 the mirror rather than in the code under test. The pending, due rows are
 now grouped by actor in one pass before the actor loop (order-preserving,
@@ -62,5 +62,5 @@ async def test_a_dispatch_round_scans_the_table_a_fixed_number_of_times() -> Non
     # rows by actor: a bound that does not move with the 40 actors above.
     assert counting.scans <= 2, (
         f"a dispatch round scanned the job table {counting.scans} times for "
-        f"{len(actors)} registered actors — the per-actor rescan is back"
+        f"{len(actors)} registered actors - the per-actor rescan is back"
     )

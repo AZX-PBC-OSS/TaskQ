@@ -4,13 +4,13 @@ Job 6 of the observability-cost hunt. Measures, on the production
 processor chain from ``setup_logging`` (obs/_structlog.py:166-187):
 
   - ``merge_contextvars`` per line (worker_id is bound once at bootstrap,
-    _bootstrap.py:1003 — typically 1 live contextvar)
+    _bootstrap.py:1003 - typically 1 live contextvar)
   - ``_otel_span_processor`` per line: the
     ``trace.get_current_span().get_span_context()`` read, invalid (no span)
     and valid (recording span) variants
   - the full chain render per line via a bound logger (I/O excluded:
     root handler stream pointed at devnull)
-  - ``bind_job_context`` per job (obs/_structlog.py:257-289) — the per-job
+  - ``bind_job_context`` per job (obs/_structlog.py:257-289) - the per-job
     BoundLogger allocation
 
 Materiality is reported at 1k lines/sec: per-line µs x 1000 = ms of CPU
@@ -119,7 +119,7 @@ def main() -> None:
                 ),
                 500,
             ),
-            "obs/_structlog.py:257-289 — one per dispatch + one per handler",
+            "obs/_structlog.py:257-289 - one per dispatch + one per handler",
         )
     )
 

@@ -2,14 +2,14 @@
 
 For every generated sequence of timing scenarios, verifies that when the
 cancel-poll loop escalates to phase 2, the PG ``cancel_phase = 2`` write
-always occurs before ``task.cancel()`` in the side-effect log — the PG-first
+always occurs before ``task.cancel()`` in the side-effect log - the PG-first
 invariant from
 
 Escalation may fire more than once per job: the healing arm added with the
 rolled-back phase-2 write fix re-issues the escalation (and therefore
 ``task.cancel()``) while PG still reports COOPERATIVE, so the oracle tracks
 the count of completed escalation arms and requires ``task.cancelling()`` to
-match it exactly — one cancel per arm, none from any other path.
+match it exactly - one cancel per arm, none from any other path.
 
 Each step tuple carries ``(clock_advance, db_phase, cancel_grace,
 cleanup_grace)``. The hook sees ``db_phase`` as the PG-reported phase on that
@@ -18,7 +18,7 @@ elapsed time (no ``loop.time()`` mock per research G-19). Grace periods vary
 per step, exercising the case where operator-adjustable settings change
 between heartbeat ticks.
 
-The test runs against mock connections only — no PG, no Docker. The existing
+The test runs against mock connections only - no PG, no Docker. The existing
 ``test_cancel_hook.py::test_forbidden_order_task_cancel_before_pg_write``
 provides the reverse-angle check (fails on forbidden order), so the
 reviewer can confirm that both directions are covered.
@@ -71,7 +71,7 @@ class _Recorder:
     """Records ``fetch`` and ``execute`` calls on a mock ``asyncpg.Connection``.
 
     Distinguishes UPDATE vs INSERT vs SELECT calls by inspecting the SQL
-    prefix — matching the requirement to differentiate call types
+    prefix - matching the requirement to differentiate call types
     in the side-effect log.
     """
 
@@ -152,7 +152,7 @@ def _make_task() -> asyncio.Task[object]:
 
 _step_strategy = st.tuples(
     st.integers(min_value=0, max_value=600),  # clock_advance
-    st.sampled_from([0, 1, 2]),  # db_phase — what the mock PG returns
+    st.sampled_from([0, 1, 2]),  # db_phase - what the mock PG returns
     st.integers(min_value=1, max_value=120),  # cancel_grace
     st.integers(min_value=1, max_value=120),  # cleanup_grace
 )
@@ -184,8 +184,8 @@ async def test_cancel_phase_ordering_property(
     - ``task.cancelling()`` equals the number of completed escalation
       arms: one ``task.cancel()`` per arm, and no other code path may
       cancel the task.  Escalation may legitimately fire more than once
-      per job — the rolled-back-write healing arm re-issues it while PG
-      still reads COOPERATIVE — so the count is compared against the
+      per job - the rolled-back-write healing arm re-issues it while PG
+      still reads COOPERATIVE - so the count is compared against the
       arms fired, not against a constant.
     """
     job_id = new_job_id()
@@ -250,7 +250,7 @@ async def test_cancel_phase_ordering_property(
             escalations_fired += 1
 
         # The escalation block (cancel.py phase-2) is the ONLY task.cancel()
-        # site, firing once per completed arm — including the healing arm
+        # site, firing once per completed arm - including the healing arm
         # that re-issues a rolled-back phase-2 write while PG still reads
         # COOPERATIVE, so more than one arm per job is legitimate.  The task
         # is never reaped inside the loop (no await here suspends the event
@@ -260,7 +260,7 @@ async def test_cancel_phase_ordering_property(
         # and a double cancel inside a single arm.
         assert task.cancelling() == escalations_fired, (
             f"task.cancelling() must equal the number of completed escalation "
-            f"arms ({escalations_fired}) — one task.cancel() per arm, no other "
+            f"arms ({escalations_fired}) - one task.cancel() per arm, no other "
             f"cancel path (step {step_idx})"
         )
 

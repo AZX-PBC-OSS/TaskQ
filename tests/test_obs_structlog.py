@@ -238,7 +238,7 @@ def test_every_backend_emits_one_state_change_event_name() -> None:
     The divergence this pins spanned 18 call sites across four modules of the
     in-memory backend against one in the Postgres path, so no single runtime
     path observes it: catching it means looking at every emitter at once.
-    ``kind=`` deliberately stays snake_case — it is the persisted
+    ``kind=`` deliberately stays snake_case - it is the persisted
     ``job_events.kind`` value and part of the Backend protocol's Literal, not
     a log event name.
     """
@@ -266,7 +266,7 @@ def test_every_backend_emits_one_state_change_event_name() -> None:
                     f"{path.relative_to(src_root).as_posix()}:{node.lineno}"
                 )
 
-    assert emitters, "no state-change log emitters found — the scan is broken"
+    assert emitters, "no state-change log emitters found - the scan is broken"
     assert set(emitters) == {"state-change"}, (
         "state-change is logged under more than one event name; operators "
         "filtering on event see only some backends' transitions:\n"
@@ -584,3 +584,54 @@ def test_debug_below_configured_level_skips_processor_chain(
 
     log.info("processed")
     assert calls == ["info"]
+
+
+# ── The DEFAULT (pre-setup_logging) chain filters at the same position ─
+
+
+def test_default_chain_drops_below_level_before_processors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pre-``setup_logging`` default chain filters at the first position.
+
+    structlog's built-in default chain has no level filter, so an embedding
+    application that never calls :func:`setup_logging` paid the whole
+    processor chain per record and let stdlib drop the line afterwards. The
+    chain ``_install_default_chain`` installs at import must therefore keep
+    ``filter_by_level`` first (the position the configured chain puts it)
+    and stay uncached, so a logger materialized pre-setup still picks the
+    configured chain up when ``setup_logging`` runs. The autouse guard's
+    ``structlog.reset_defaults()`` wipes the import-time install per test,
+    so the pin re-installs it.
+    """
+    from taskq.obs import _structlog as structlog_mod
+
+    structlog_mod._install_default_chain()
+
+    config = structlog.get_config()
+    assert config["processors"][0] is structlog.stdlib.filter_by_level
+    assert config["cache_logger_on_first_use"] is False
+
+    calls: list[str] = []
+    real_merge = structlog.contextvars.merge_contextvars
+
+    def spy(
+        logger: object, method: str, event_dict: structlog.types.EventDict
+    ) -> structlog.types.EventDict:
+        calls.append(method)
+        return real_merge(logger, method, event_dict)
+
+    monkeypatch.setattr(structlog.contextvars, "merge_contextvars", spy)
+    # The guard's reset wiped the import-time install, and the reinstall
+    # above configured the chain again: reset once more so this install
+    # simulates the import-time state (structlog unconfigured).
+    structlog.reset_defaults()
+    structlog_mod._install_default_chain()
+
+    logging.root.setLevel(logging.WARNING)
+    log = obs_mod.get_logger("_test_default_filter")
+    log.debug("dropped_by_default_chain")
+    assert calls == []
+
+    log.warning("kept_by_default_chain")
+    assert calls == ["warning"]

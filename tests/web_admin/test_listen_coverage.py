@@ -188,7 +188,7 @@ async def test_listen_delivers_payload(pg_dsn: str) -> None:
             # LISTEN "<channel>" on its pool conn, so pg_stat_activity is
             # the exact observable. A fixed 0.4s sleep races the
             # generator's startup under load, and a NOTIFY sent before
-            # the registration lands is missed entirely — the first yield
+            # the registration lands is missed entirely - the first yield
             # below would then wait out the 5s keepalive and time out.
             # The deadline sits under that 5s wait so this assert, with
             # its precise message, fires first.

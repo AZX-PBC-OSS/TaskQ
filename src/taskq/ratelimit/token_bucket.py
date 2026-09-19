@@ -3,14 +3,14 @@
 The in-memory backend is the reference implementation and arithmetic oracle
 for the Redis Lua script and the PG fallback.
 
-Design deviation — always invoke the Lua script instead of a Python
+Design deviation, always invoke the Lua script instead of a Python
 pre-check ``if self.refill_per_second == 0 and tokens < count: return ...``
 before invoking the script. We deviate by always invoking the Lua script
 and post-processing the result.
 - Why: the pre-check requires local knowledge of ``tokens``.
   The in-memory backend has that knowledge in ``_InMemoryBucket._tokens``
   and implements the pre-check. The Redis backend does NOT
-  have local knowledge of ``tokens`` — that state lives in the Redis
+  have local knowledge of ``tokens``, that state lives in the Redis
   hash and is computed inside the Lua script using ``elapsed * refill``.
   The guard cannot be applied verbatim on the Redis path
   without first issuing an HMGET to read ``tokens``, which would change
@@ -31,9 +31,9 @@ and post-processing the result.
   or external contract relies on the deviation.
 
 This file exceeds the 500-line soft ceiling (file-size
-decomposition). It co-locates three concern-clusters — (a) the
+decomposition). It co-locates three concern-clusters, (a) the
 ``_InMemoryBucket`` state machine, (b) Lua-result decoding and the Redis
-acquire path, and (c) the PG acquire path — all of which serve the single
+acquire path, and (c) the PG acquire path, all of which serve the single
 token-bucket primitive. Splitting would move the shared ``RateLimitDecision``
 return contract, the ``capacity``/``refill_per_second`` constructor validation,
 and the ``acquire`` dispatch logic into a fourth module, creating an inner
@@ -55,7 +55,7 @@ from typing import TYPE_CHECKING, Final
 import structlog
 
 from taskq._advisory import (
-    _LOCK_TIMEOUT_SET_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the set_config statement shared with the enqueue and sliding-window bounded locks — a local copy would drift from the machinery it mirrors.
+    _LOCK_TIMEOUT_SET_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the set_config statement shared with the enqueue and sliding-window bounded locks, a local copy would drift from the machinery it mirrors.
     DEFAULT_ADVISORY_LOCK_CLIENT_BACKSTOP_SLACK_S,
 )
 from taskq.backend._protocol import RateLimitBackend
@@ -82,10 +82,10 @@ _DEFAULT_FIXED_QUOTA_TTL: Final[timedelta] = timedelta(seconds=86400)
 #: Bounded wait (milliseconds) for the PG fallback's ``rate_limit_buckets``
 #: row lock. Same value and rationale as the log-style sliding window's
 #: :data:`~taskq.ratelimit._sliding_window_pg.DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS`
-#: — the PG fallback is the Redis-outage funnel
+#:, the PG fallback is the Redis-outage funnel
 #: (``rate_limit_pg_fallback_enabled`` defaults on), so every admission
 #: waits on this lock exactly when the fleet is already degraded; the
-#: bound converts a black-holed holder (dead TCP, no FIN — the server
+#: bound converts a black-holed holder (dead TCP, no FIN, the server
 #: reaps it only via keepalives) from a bucket-wide admission hang into
 #: the limiter's fail-closed denial. ``0`` (or less) waits indefinitely,
 #: the ``lock_timeout`` GUC convention shared with migrate.py and
@@ -124,7 +124,7 @@ def _retry_after(seconds: float) -> timedelta:
     The Redis path can additionally receive ``inf``/``nan`` from the Lua
     script's own division.
 
-    The value is advisory — a hint for how long to back off — so clamping it
+    The value is advisory, a hint for how long to back off, so clamping it
     to :data:`_MAX_TTL` loses nothing: no caller sleeps for a year, and every
     such caller is being told the same thing either way ("not any time soon").
     Negative and non-finite inputs collapse to a valid bound rather than
@@ -160,7 +160,7 @@ class _LuaResult:
     ``tokens_remaining`` / ``retry_after_seconds`` are Lua number strings
     (``tostring()``). Redis truncates Lua numbers to integers on return;
     returning floats as strings preserves the fractional part (see Redis
-    EVAL docs: "Lua number → RESP2 integer reply — removing the decimal
+    EVAL docs: "Lua number → RESP2 integer reply, removing the decimal
     part of the number, if any"). This helper normalises them to Python
     types in one place so the rest of the Redis path stays fully typed.
     """
@@ -177,7 +177,7 @@ def _decode_lua_result(raw: list[object]) -> _LuaResult:
     ``AsyncScript.__call__`` return touches our code. ``raw[0]`` is an
     integer (allowed: 0 or 1). ``raw[1]`` and ``raw[2]`` are strings
     (bytes or str depending on ``decode_responses``) produced by Lua's
-    ``tostring()`` — this is required because Redis truncates Lua number
+    ``tostring()``, this is required because Redis truncates Lua number
     returns to integers, losing fractional parts. ``int()`` / ``float()``
     accept bytes, int, and str at runtime.
     """
@@ -290,7 +290,7 @@ class TokenBucket:
     the point, not an accident: only a PG-state-backed bucket's acquire
     path touches its PG row, so only there does the row's
     ``last_used_at`` stamp (refreshed by the preseed/upsert/refund
-    statements below) truthfully track use — a redis-backend keyed
+    statements below) truthfully track use, a redis-backend keyed
     bucket's healthy acquire never touches PG, and its PG row is
     outage-fallback state plus admin metadata that the fleet sweep must
     never delete (the stamp would be a false staleness signal for an
@@ -379,7 +379,7 @@ class TokenBucket:
 
         ``capacity`` and ``refill`` ride along with the accumulator so the
         row is self-describing: the leader's fleet sweep decides whether
-        deleting a row would destroy live state, and it has only the row —
+        deleting a row would destroy live state, and it has only the row ,
         no instance, no actor config. Without them a fixed quota
         (``refill == 0``) that has been partly spent is indistinguishable
         from an ordinary idle bucket, and deleting it lets the next
@@ -420,7 +420,7 @@ class TokenBucket:
         nothing about it recovers on its own and idleness is never
         evidence that it is safe to discard. Refilling buckets are not
         exempt: their state converges back toward full anyway, so eviction
-        loses at most one refill window's worth of tokens — an accepted,
+        loses at most one refill window's worth of tokens, an accepted,
         bounded divergence.
 
         What eviction destroys differs by where the state lives, and only
@@ -430,7 +430,7 @@ class TokenBucket:
           so eviction discards it and the next acquire materializes at
           FULL capacity. The instance is right here, so the exemption is
           exact: only a bucket that has actually spent some quota is held.
-        * **postgres** — the ``rate_limit_buckets`` row IS the state, and
+        * **postgres**, the ``rate_limit_buckets`` row IS the state, and
           evicting the REGISTRY entry does not delete it: both row-delete
           paths (the maintenance leader's fleet sweep and the per-worker
           pending-reclaim drain, sharing ``_no_consumed_quota_sql``) veto
@@ -439,11 +439,11 @@ class TokenBucket:
           preseeds ``ON CONFLICT DO NOTHING`` and reads the existing state
           under the row lock). The registry entry is pure bookkeeping,
           dropping it loses nothing, so no PG fixed-quota bucket is held.
-          Holding them anyway (the pre-#244 shape) was worse than a
+          Holding them anyway (the pre-fix shape) was worse than a
           wasted entry: every PG fixed-quota key ever seen counted against
           ``max_keyed_rate_limits`` forever, so once the cap filled, every
           NEW key was refused with ``ReservationUnavailable`` and its jobs
-          snooze-looped until process restart (#244).
+          snooze-looped until process restart.
         * **redis**: the backend keeps fixed-quota state for 24 h of its
           own accord (see ``_compute_ttl_seconds``), so a re-materialized
           bucket resumes prior state there and eviction is state-safe.
@@ -463,7 +463,7 @@ class TokenBucket:
         # Why the protected read: _InMemoryBucket._tokens is this module's
         # own accumulator, and the registry's idle-eviction sweep (the
         # only caller) runs synchronously with no await between this read
-        # and the dict pop — the docstring above documents the
+        # and the dict pop, the docstring above documents the
         # consistency argument; a public accessor would widen the surface
         # for one internal read.
         tokens: float | None = (
@@ -506,7 +506,7 @@ class TokenBucket:
         # Redis outage falls through to Postgres and consumes the token THERE.
         # The decision records which store actually paid; the primitive's own
         # configuration only records where it prefers to go. Dispatching on the
-        # latter refunded Redis for a token Postgres spent — inflating one
+        # latter refunded Redis for a token Postgres spent, inflating one
         # store's quota and destroying the other's, and for a fixed-quota
         # bucket (refill_per_second == 0) nothing ever puts the Postgres token
         # back, so that loss is permanent.
@@ -515,7 +515,7 @@ class TokenBucket:
         # the bucket and needs no timestamp. It stays in the signature because
         # RateLimitRegistry dispatches refund/peek/reset polymorphically over
         # TokenBucket and SlidingWindow with one fixed keyword block
-        # (redis_client, pg_pool, clock, settings) — see registry.reset_limit's
+        # (redis_client, pg_pool, clock, settings), see registry.reset_limit's
         # call sites. Dropping it would raise TypeError there, not merely break
         # symmetry.
         if decision.backend == "memory":
@@ -586,7 +586,7 @@ class TokenBucket:
         redis_client: "redis_async.Redis | None",
         settings: "WorkerSettings | None",
     ) -> RateLimitState:
-        """Read-only Redis state snapshot — the elapsed-refill estimate runs
+        """Read-only Redis state snapshot, the elapsed-refill estimate runs
         on the store's clock (``TIME``), the same domain the acquire script
         stamps ``ts`` in."""
         if redis_client is None:
@@ -647,7 +647,7 @@ class TokenBucket:
         the row holds it.
 
         No elapsed-refill projection. Peek is the audit view of the
-        store — the bounded-lock contract's fail-closed verification
+        store, the bounded-lock contract's fail-closed verification
         reads it to prove a timed-out racer wrote nothing ("the seeded
         tokens are intact"), and a projection would make that audit
         drift with the read's timing: the same unchanged row would
@@ -767,14 +767,14 @@ class TokenBucket:
 
         The row-lock WAIT is bounded by the operator's
         ``token_bucket_lock_timeout_ms`` budget (defaulting to
-        :data:`DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS`) — the same budget and
+        :data:`DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS`), the same budget and
         the same discipline the acquire path in this file applies, so a
         deployment that shortens the wait shortens both arms: with
         ``rate_limit_pg_fallback_enabled`` on, a Redis outage funnels the
         fleet's refunds through this lock exactly when it is already
         degraded, and an unbounded wait would let one black-holed holder
         (dead TCP, no FIN) pin the refund until the server's keepalives
-        reap it. On budget exhaustion the refund RAISES — the opposite of
+        reap it. On budget exhaustion the refund RAISES, the opposite of
         the acquire's fail-closed denial, because ``_refund_pg`` returns
         ``None`` on success and a quiet no-op return would make a lost
         refund look like a completed one (the tokens stay spent; for a
@@ -818,7 +818,7 @@ class TokenBucket:
                 # savepoint wraps the lock-taking read as one unit; the
                 # client-side backstop bounds the network black hole the
                 # server-side timeout cannot see. Why the function-level
-                # import: same boundary reason as the acquire above —
+                # import: same boundary reason as the acquire above ,
                 # this module stays importable without the asyncpg
                 # driver installed, and the refund only ever runs
                 # against a real connection.
@@ -839,7 +839,7 @@ class TokenBucket:
                     )
                 except (LockNotAvailableError, TimeoutError):
                     # The acquire converts exhaustion into the limiter's
-                    # denial outcome; the refund cannot — its success
+                    # denial outcome; the refund cannot, its success
                     # shape IS the silent ``None`` return, so the only
                     # honest exhausted outcome is the RAISE. The warning
                     # is the same contended-or-sick-bucket signal every
@@ -855,7 +855,7 @@ class TokenBucket:
                     )
                     raise
             else:
-                # lock_timeout_ms <= 0: the indefinite mode — the GUC
+                # lock_timeout_ms <= 0: the indefinite mode, the GUC
                 # convention's opt-out, and the pre-bound behavior.
                 row = await conn.fetchrow(select_sql, self._name)
 
@@ -865,7 +865,7 @@ class TokenBucket:
             now = float(row["now_s"])
             state = jsonb_to_dict(row["state"])
             tokens = float(state.get("tokens", self._capacity))  # type: ignore[index]  # Why: rate_limit_buckets.state is NOT NULL; jsonb_to_dict only returns None for SQL NULL, which cannot occur here; fallback for rows missing keys (e.g. from schema migrations or interop writes)
-            ts = float(state.get("ts", now))  # type: ignore[index]  # Why: same — state is non-None; fallback to now for rows missing "ts"
+            ts = float(state.get("ts", now))  # type: ignore[index]  # Why: same, state is non-None; fallback to now for rows missing "ts"
 
             elapsed = max(0.0, now - ts)
             tokens = min(self._capacity, tokens + elapsed * self._refill)
@@ -891,7 +891,7 @@ class TokenBucket:
         redis_client: "redis_async.Redis | None",
         settings: "WorkerSettings | None",
     ) -> RateLimitDecision:
-        """Redis acquire — the script derives now from ``redis.call('TIME')``
+        """Redis acquire, the script derives now from ``redis.call('TIME')``
         (store-domain), so no Python clock participates."""
         if redis_client is None:
             raise RuntimeError("redis_client not injected for redis backend")
@@ -912,7 +912,7 @@ class TokenBucket:
             ttl_seconds,
         ]
 
-        raw: list[object] = await script(keys=[key], args=argv)  # pyright: ignore[reportAssignmentType, reportUnknownMemberType, reportUnknownVariableType]  # Why: redis-py AsyncScript.__call__ has no return-type annotation — pyright cannot model the return shape; the three-element list structure is guaranteed by the Lua script contract
+        raw: list[object] = await script(keys=[key], args=argv)  # pyright: ignore[reportAssignmentType, reportUnknownMemberType, reportUnknownVariableType]  # Why: redis-py AsyncScript.__call__ has no return-type annotation, pyright cannot model the return shape; the three-element list structure is guaranteed by the Lua script contract
 
         lua = _decode_lua_result(raw)
 
@@ -981,7 +981,7 @@ class TokenBucket:
         preseed, the locked state read, and the upsert of the pre-fused
         shape (BEGIN + set_config + SAVEPOINT + preseed + SELECT FOR
         UPDATE + RELEASE + upsert + COMMIT, 8 round trips in bounded
-        mode) collapse into a single statement (#228). The token
+        mode) collapse into a single statement. The token
         arithmetic runs server-side under the row lock the conflict arm
         itself takes:
 

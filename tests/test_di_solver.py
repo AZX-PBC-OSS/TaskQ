@@ -473,7 +473,7 @@ async def test_multiple_scope_markers() -> None:
 def test_no_future_annotations() -> None:
     """The solver resolves annotations at runtime; PEP 563 stringifies them.
 
-    Parsed rather than grepped — the substring form also matched the phrase in
+    Parsed rather than grepped - the substring form also matched the phrase in
     a comment or docstring, and it read the file by hardcoded relative path,
     so it silently passed from any other working directory.
     """

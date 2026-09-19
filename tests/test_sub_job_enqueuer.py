@@ -387,7 +387,7 @@ async def test_flush_buffer_raises_sub_enqueue_error_on_failure() -> None:
 
 
 async def test_flush_buffer_logs_renamed_error_fields_on_failure() -> None:
-    """sub_enqueue_flush_error carries error_class/error_message — not the
+    """sub_enqueue_flush_error carries error_class/error_message - not the
     pre-rename ``message`` field."""
     backend = _make_backend()
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))

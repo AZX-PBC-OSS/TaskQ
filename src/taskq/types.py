@@ -3,12 +3,12 @@
 ``CancelResult`` is the structured return value of ``JobsClient.cancel()``.
 ``BulkCancelResult`` is the structured return value of
 ``JobsClient.cancel_where()`` (defined in ``backend._protocol`` to avoid
-a circular import — see its docstring).
+a circular import, see its docstring).
 ``StateChangeEvent`` is the JSON payload stored in
 ``job_events.detail`` for rows with ``kind='state_change'``.
 
 ``BulkCancelResult`` is re-exported here (not defined) because
-``types.py`` imports from ``backend._protocol`` — defining it here would
+``types.py`` imports from ``backend._protocol``, defining it here would
 create a circular import (``_protocol → types → _protocol``).
 """
 

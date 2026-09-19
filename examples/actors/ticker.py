@@ -1,4 +1,4 @@
-"""Cron-scheduled ticker actor — periodic scheduling.
+"""Cron-scheduled ticker actor - periodic scheduling.
 
 The ``ticker`` actor fires automatically every 30 seconds via the cron
 loop.  No manual enqueue is needed; the schedule is registered at

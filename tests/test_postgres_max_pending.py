@@ -64,7 +64,7 @@ async def test_max_pending_eleventh_enqueue_raises(
     clean_jobs_app: tuple[WorkerDeps, PostgresBackend],
 ) -> None:
     """max_pending=10: enqueue 10, 11th raises, transition one to
-    running, 12th succeeds — literal DoD requirement."""
+    running, 12th succeeds - literal DoD requirement."""
     deps, pg_backend = clean_jobs_app
     schema = deps.settings.schema_name
     client = JobsClient(pg_backend)
@@ -263,7 +263,7 @@ async def test_max_pending_raises_before_insert_no_partial_state(
     clean_jobs_app: tuple[WorkerDeps, PostgresBackend],
 ) -> None:
     """max_pending=5. Enqueue 5, then 6th raises before INSERT;
-    count stays 5 — no row was inserted, no partial state leaks."""
+    count stays 5 - no row was inserted, no partial state leaks."""
     deps, pg_backend = clean_jobs_app
     schema = deps.settings.schema_name
     client = JobsClient(pg_backend)

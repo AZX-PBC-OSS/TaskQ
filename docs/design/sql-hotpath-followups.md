@@ -19,8 +19,8 @@ mechanics), `src/taskq/backend/_dispatch_sql.py` (the CTE under test),
 
 The shipped strict-FIFO CTE (`src/taskq/backend/_dispatch_sql.py`, the
 `locked` CTE) re-joins the small `ranked` candidate set back to `jobs` with
-`WHERE j.status = 'pending'`. At scale the planner serves that join — and the
-terminal `UPDATE ... FROM eligible` — as **hash joins over a Seq Scan of the
+`WHERE j.status = 'pending'`. At scale the planner serves that join and the
+terminal `UPDATE ... FROM eligible` as **hash joins over a Seq Scan of the
 entire pending backlog**, twice per dispatch round:
 
 - `locked`: `Seq Scan on jobs` (filter `status = 'pending'`) hash-built,
@@ -28,7 +28,7 @@ entire pending backlog**, twice per dispatch round:
 - the final `UPDATE ... FROM eligible`: a **second** full pending Seq Scan,
   hash-joined against the 50 eligible ids.
 
-Measured (PG 18.6, EXPLAIN ANALYZE BUFFERS, JIT off — see the JIT note):
+Measured (PG 18.6, EXPLAIN ANALYZE BUFFERS, JIT off; see the JIT note):
 
 | backlog depth | exec time | buffers |
 |---:|---:|---:|
@@ -37,7 +37,7 @@ Measured (PG 18.6, EXPLAIN ANALYZE BUFFERS, JIT off — see the JIT note):
 | 50 000 | 11.67 ms | 4 809 |
 | 200 000 | 55.81 ms | 14 909 |
 
-O(depth) in both time and buffers — the campaign's "2.2 ms at 2k deep" point
+O(depth) in both time and buffers; the campaign's "2.2 ms at 2k deep" point
 reproduces on the same curve.
 
 **JIT note.** With the server default (`jit = on`), every execution of the
@@ -53,7 +53,7 @@ All prototypes keep the candidate/identity/rank semantics and were
 output-compared against the shipped CTE per round (`benchmarks/
 pg_dispatch_depth_spike.py` asserts the claimed job-id set matches).
 
-**v1 — top-ids-first locking (subquery LIMITs).** Same candidate body, but
+**v1: top-ids-first locking (subquery LIMITs).** Same candidate body, but
 the LIMIT-ed id set is finalized *before* touching the heap:
 
 ```sql
@@ -82,21 +82,21 @@ locked AS (
 ```
 
 The lock step becomes a merge join over `jobs_pkey` that stops after
-O(limit) index entries — structurally bounded. **But v1 has a broken generic
+O(limit) index entries, structurally bounded. **But v1 has a broken generic
 plan**: planned with `plan_cache_mode = force_generic_plan` (and reachable
 under the default `auto` after the prepared statement's custom-plan window),
-the statement under-dispatches — it returns **2 rows instead of 50**, from a
+the statement under-dispatches: it returns **2 rows instead of 50**, from a
 plan whose candidates lateral stops after 2 index entries. Deterministic per
-statement text, fatal if it surfaces in production. **Rejected** — do not
+statement text, fatal if it surfaces in production. **Rejected**; do not
 ship subquery LIMITs in this CTE family.
 
-**v2 — lock-first index-ordered.** Skip the candidate prelude; lock
+**v2: lock-first index-ordered.** Skip the candidate prelude; lock
 index-ordered straight off the queue-keyed partial index
 (`ORDER BY priority DESC, scheduled_at, id LIMIT limit*oversample FOR UPDATE
 SKIP LOCKED`), then apply actor-capacity admission after the lock. The
 `ORDER BY` (with the `id` tiebreak) does not match `jobs_dispatch_idx`
-(`queue, priority DESC, scheduled_at` — no `id`), so the planner sorts a
-Seq Scan of the whole backlog — at 200k it spilled 11 MB to disk
+(`queue, priority DESC, scheduled_at`, no `id`), so the planner sorts a
+Seq Scan of the whole backlog; at 200k it spilled 11 MB to disk
 (`Sort Method: external merge`):
 
 | backlog depth | v2 p50 |
@@ -109,7 +109,7 @@ Seq Scan of the whole backlog — at 200k it spilled 11 MB to disk
 Worse than shipped at every depth. **Rejected.** (It also changes semantics:
 per-actor residual and identity dedup become post-lock filters.)
 
-**v3 — covering index for an index-only candidates lateral.** v1's SQL plus
+**v3: covering index for an index-only candidates lateral.** v1's SQL plus
 
 ```sql
 CREATE INDEX jobs_bench_covering_idx
@@ -119,12 +119,12 @@ CREATE INDEX jobs_bench_covering_idx
 ```
 
 The lateral ran index-only as intended, but **the covering index does not
-fix the depth scaling** — v1's generic-plan fragility and estimate cascade
+fix the depth scaling**: v1's generic-plan fragility and estimate cascade
 remain, and once the lock step is structurally bounded (v1b), the lateral's
 ~100 heap fetches are already O(limit). Not worth a new index + the VM
 freshness dependency. **Dropped.**
 
-**v1b — top-ids-first locking with literal LIMITs (winner).** Identical to
+**v1b: top-ids-first locking with literal LIMITs (winner).** Identical to
 v1 except the lateral and `top_ids` LIMIT bounds are rendered as literals
 (`LIMIT 100`, `LIMIT 50`) instead of `(SELECT ... FROM params)` subqueries.
 The planner estimates a `Limit` node as its LIMIT value *only when the value
@@ -161,7 +161,7 @@ executions).
    statement cache for any given deployment (the values change only when
    settings change).
 3. Keep the `per_actor_capacity` residual CASE (the per-actor admission
-   bound) — it now feeds `candidates` only; the lateral's LIMIT becomes the
+   bound); it now feeds `candidates` only; the lateral's LIMIT becomes the
    literal `oversample * limit_n` upper bound, with the per-actor bound
    enforced by `residual > 0` filtering and the post-`eligible`
    `actor_rank <= residual - in_flight` cap (unchanged).
@@ -191,26 +191,26 @@ values. Measured on PG 18.6 at 1k/30k due rows (the same EXPLAIN
 row-work oracle as `tests/test_dispatch_backlog_depth_bound.py`):
 widest plan node 100 rows at both depths, ~0.9 ms flat (shipped:
 1.4 → 9.2/19.7 ms), and under `plan_cache_mode = force_generic_plan`
-the same ids with the same flat row work — the generic-plan cliff is
+the same ids with the same flat row work; the generic-plan cliff is
 avoided by structure, not by estimates.
 
 - `ranked AS MATERIALIZED` + `top_ids` (LIMIT `$2::int`) finalize the
-  round's id set before the heap is re-touched — v1b's fence doctrine,
+  round's id set before the heap is re-touched (v1b's fence doctrine),
   but `locked` then drives `jobs` by primary key through a **correlated
   LATERAL** (`FOR UPDATE OF ... SKIP LOCKED` inside it): the
   correlation denies the hash-join-over-backlog path at every depth,
   including the shallow depths where a whole-pending Seq Scan is
-  honestly *cheaper* than `limit_n` pkey probes and is therefore chosen
+  materially *cheaper* than `limit_n` pkey probes and is therefore chosen
   on correct costs (an estimate fix alone cannot close that hole).
 - The terminal UPDATE re-finds its rows via
   `j.id = ANY(ARRAY(SELECT id FROM eligible))`: the array materializes
   once as an InitPlan; the ScalarArrayOp is served as a Bitmap Index
-  Scan on `jobs_pkey` (deep) or a scan-level filter (shallow) — both
-  bounded — where a `FROM eligible` join would re-open the planner's
+  Scan on `jobs_pkey` (deep) or a scan-level filter (shallow), both
+  bounded, where a `FROM eligible` join would re-open the planner's
   seq-scan option at shallow depths. The subset-CTE fence approach
   bounds the terminal UPDATE by materializing the eligible id set
   before the heap is re-joined (this window's v1b winner).
-- The round-robin variant — a second depth defect this section's
+- The round-robin variant is a second depth defect this section's
   prototypes did not cover (they measured strict-FIFO only): the
   candidates lateral's `ROW_NUMBER` window ran over EVERY due row of
   the (actor, queue) pair before the `fairness_rank <= residual *
@@ -220,7 +220,7 @@ avoided by structure, not by estimates.
   `jobs_round_robin_probe_idx` expression index
   (actor, queue, COALESCE(fairness_key, '\_\_null\_\_'), priority DESC,
   scheduled_at, id) WHERE status='pending' (migration 01.00.09_01_pre)
-  and runs the window over that bounded union — identical surviving
+  and runs the window over that bounded union, giving identical surviving
   rows and ranks, so fairness contracts and the in-memory twin's
   per-partition model are untouched (the differential harness stays
   green without a twin change). Cohort enumeration is a
@@ -231,7 +231,7 @@ avoided by structure, not by estimates.
 - `per_actor_capacity`'s idle-actor prefilter moved from `EXISTS` to a
   correlated per-queue LATERAL probe: the EXISTS is a semi-join the
   planner executes as a hash over a whole-backlog Seq Scan whenever
-  `actor_config`'s row estimate favors one pass over jobs — and
+  `actor_config`'s row estimate favors one pass over jobs,
   `actor_config` (one row per actor, below autovacuum's insert
   threshold) is usually never analyzed, so the ~440-row default guess
   is production reality. The correlation removes the option.
@@ -249,8 +249,8 @@ family).
 ### Problem
 
 `job_events` has no retention of its own: rows die only via the parent-job
-`ON DELETE CASCADE` when the prune sweep removes a terminal job (30–90 day
-per-status windows — `_leader_shared.py`'s `_ARCHIVE_CTE_SQL`, cutoff =
+`ON DELETE CASCADE` when the prune sweep removes a terminal job (30-90 day
+per-status windows: `_leader_shared.py`'s `_ARCHIVE_CTE_SQL`, cutoff =
 `finished_at < statement_timestamp() - retention`). At the measured ~2
 events/job and 100 jobs/s that is ~17.3 M events/day and ~110 GB/30 days of
 event storage that exists only because job retention is long. Jobs that
@@ -263,7 +263,7 @@ Events are **narration**; the durable forensic record for a terminal job is
 `jobs`/`jobs_archive` + `job_attempts`/`job_attempts_archive` (which keep
 outcome/error/traceback for the full 30/90-day prune windows plus the
 365-day archive retention). The event window therefore does not need to
-match the job retention family — it needs to bound event volume
+match the job retention family; it needs to bound event volume
 independently of it. A 7-day default keeps the steady-state event table at
 ~26 GB (121 M rows) instead of 110 GB at 30 days, while staying ≤ the
 shortest job-retention window (30 d) so events never outlive the shortest
@@ -291,7 +291,7 @@ WHERE e.id = expired.id
 RETURNING e.id
 ```
 
-Required index (migration — see §4):
+Required index (migration; see §4):
 
 ```sql
 CREATE INDEX IF NOT EXISTS job_events_occurred_at_idx
@@ -299,28 +299,28 @@ CREATE INDEX IF NOT EXISTS job_events_occurred_at_idx
 ```
 
 The `id` suffix makes the drain deterministic (oldest-first, stable under
-tied timestamps) and pins the snap to this index — the same ORDER-BY-pins-
+tied timestamps) and pins the snap to this index, the same ORDER-BY-pins-
 the-scan rule `_sweeps.py` documents for the sweep snaps. Write cost: one
 extra index maintained per event INSERT (~10% write amplification on the
-event path) — accepted; it is what makes the sweep boundable at any table
+event path), accepted; it is what makes the sweep boundable at any table
 size.
 
 ### Scheduling and bounds
 
 - **Leader-gated, per-tick cadence** (runs in `_sweep_loop` after sweep 5,
-  like sweeps 1–4) — *not* the daily prune-cron shape: at 100 jobs/s a
+  like sweeps 1-4), *not* the daily prune-cron shape: at 100 jobs/s a
   once-daily sweep would need to delete ~17 M rows in one leader pass.
   One batch per tick bounds each call.
 - Batch size: `event_retention_batch_size`, default 10 000
   (`prune_batch_size`'s value; its own setting so the two can be tuned
   independently). One batch per 5 s tick = 2 000 rows/s capacity vs the
-  200 events/s steady insert rate — 10× headroom.
+  200 events/s steady insert rate, 10× headroom.
 - `statement_timeout` applied/restored via the `set_config(..., true)` pair
   with `DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS` (1 750 ms), same as the
   other batched sweeps.
 - Steady state drains to a no-op (2-buffer index range check). After a
   retention *reduction* (e.g. 30 d → 7 d) the first ~80 M-row backlog
-  drains at one 10k batch per tick (~11 h) — each batch committed, each
+  drains at one 10k batch per tick (~11 h); each batch committed, each
   tick short; no user action needed.
 
 ### Volume math (from the measured 2 events/job)
@@ -358,14 +358,14 @@ No per-table autovacuum tuning ships with the schema. `jobs` is UPDATE-hot
 (dispatch, heartbeat lock extension, terminal writes) and at 100 jobs/s the
 global defaults vacuum far too late (scale factor 0.2 = 40k dead rows at
 200k) while `job_events` grows append-only with cascade deletes. The churn
-probe measured FF50 keeping the `jobs` heap flat but +50% seed footprint —
+probe measured FF50 keeping the `jobs` heap flat but +50% seed footprint,
 too aggressive; the update pattern needs HOT headroom, not 50%.
 
 ### Migration statements
 
 Transactional-safe: `ALTER TABLE ... SET (...)` is a catalog-only change
 (`SHARE UPDATE EXCLUSIVE`, momentary), rewrites nothing, and needs no
-`CONCURRENTLY` carve-out — it runs in the runner's default transaction
+`CONCURRENTLY` carve-out: it runs in the runner's default transaction
 wrapper. Place after the retention index so a single version ships both
 (see §4 for sequencing):
 
@@ -375,7 +375,7 @@ wrapper. Place after the retention index so a single version ships both
 -- tables. Catalog-only (no rewrite); safe to apply online. Forward-only.
 
 -- jobs: UPDATE-hot (dispatch / heartbeat / terminal writes). fillfactor 80
--- leaves HOT-update headroom (~20% free page space) at ~25% heap growth —
+-- leaves HOT-update headroom (~20% free page space) at ~25% heap growth;
 -- the churn probe measured FF50 flat-heap/+50%-seed-footprint, too big a
 -- footprint for the same benefit. Vacuum at 2% dead tuples (vs global 20%)
 -- keeps the cycle tight at 100 jobs/s (4k dead rows at 200k ≈ ~20 s of
@@ -418,15 +418,15 @@ Setting rationale:
 Both migrations are `pre`-phase (safe to apply before the code that depends
 on them ships, cheap to apply online):
 
-1. `01.00.07_01_pre_event_retention_index.sql` — `job_events_occurred_at_idx`.
+1. `01.00.07_01_pre_event_retention_index.sql`: `job_events_occurred_at_idx`.
    Must precede the sweep code. Plain transactional `CREATE INDEX` per the
    `01.00.02` precedent (the runner's no-transaction + CIC template was
-   tried and reverted in `01.00.06` — it deadlocks against the runner's own
+   tried and reverted in `01.00.06`; it deadlocks against the runner's own
    advisory-lock discipline); carries the same maintenance-window OPS NOTE
    (EXCLUSIVE lock for the build; on a large `job_events` table, apply
    during a window or let `IF NOT EXISTS` no-op after a manual
    `CREATE INDEX CONCURRENTLY`).
-2. `01.00.07_02_pre_jobs_storage_tuning.sql` — the ALTERs above.
+2. `01.00.07_02_pre_jobs_storage_tuning.sql`: the ALTERs above.
 
 ---
 
@@ -439,7 +439,7 @@ on them ships, cheap to apply online):
 
 # generic-plan cliff (v1 shape, 2-row under-dispatch)
 ./.venv/bin/python - <<'EOF'
-# see "Alternatives prototyped" — v1 under plan_cache_mode=force_generic_plan
+# see "Alternatives prototyped": v1 under plan_cache_mode=force_generic_plan
 EOF
 ```
 

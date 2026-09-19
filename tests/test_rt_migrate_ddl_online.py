@@ -11,7 +11,7 @@ SHARE UPDATE EXCLUSIVE lock instead of stalling the fleet. Two contracts:
 * a pre-existing violating row must fail the apply CLEANLY: the whole
   migration transaction rolls back (columns AND constraint AND version row
   together), the ledger does not advance, and a re-run re-attempts
-  identically — never the "version advanced + DDL rolled back = permanently
+  identically - never the "version advanced + DDL rolled back = permanently
   skipped" corruption shape.
 """
 
@@ -81,7 +81,7 @@ async def test_max_attempts_check_ends_validated_and_binds_new_writes(pg_dsn: st
         convalidated = await conn.fetchval(_CONSTRAINT_STATE_SQL, schema)
         assert convalidated is True, (
             "contract: the VALIDATE phase must leave jobs_max_attempts_check "
-            "validated — an unvalidated constraint would let pre-existing "
+            "validated - an unvalidated constraint would let pre-existing "
             "violators persist silently while only new writes are checked"
         )
         with pytest.raises(asyncpg.exceptions.CheckViolationError):
@@ -118,19 +118,19 @@ async def test_validate_failure_rolls_back_whole_migration_and_stays_rerunnable(
         )
         assert _DENIAL_COUNTERS_KEY not in await list_applied(conn, schema), (
             "anti-corruption contract: the version row must be transactional with "
-            "the DDL — version advanced while the DDL rolled back would permanently "
+            "the DDL - version advanced while the DDL rolled back would permanently "
             "skip the migration"
         )
         counter_column = await conn.fetchval(_COUNTER_COLUMN_EXISTS_SQL, schema)
         assert counter_column is not True, (
-            "the whole migration file must roll back — no partially applied columns"
+            "the whole migration file must roll back - no partially applied columns"
         )
         constraint_row = await conn.fetchval(_CONSTRAINT_STATE_SQL, schema)
         assert constraint_row is None, "the NOT VALID constraint must roll back with the file"
         with pytest.raises(asyncpg.exceptions.CheckViolationError):
             await apply_pending(conn, schema=schema)
         assert _DENIAL_COUNTERS_KEY not in await list_applied(conn, schema), (
-            "the re-run must re-attempt (loud, deterministic) — not silently skip"
+            "the re-run must re-attempt (loud, deterministic) - not silently skip"
         )
         surviving = await conn.fetchval(
             f'SELECT count(*) FROM "{schema}".jobs WHERE max_attempts = 0'

@@ -6,24 +6,24 @@
 The pre-I-03 ``reservation_slots`` leak, one class over: each distinct
 ``base_name:key`` rate limit materialises an in-memory bucket AND
 publishes a ``rate_limit_buckets`` row to PG (best-effort, so a
-standalone admin process can see the limiter — pinned by
+standalone admin process can see the limiter - pinned by
 ``tests/test_ratelimit_keyed_rate_limits_pg.py``). When the key goes
 idle, ``evict_idle_keyed_rate_limits``
 (``src/taskq/ratelimit/registry.py``) removes only the in-memory
-registry entry — its docstring justifies the store side solely via the
+registry entry - its docstring justifies the store side solely via the
 Redis ``EXPIRE`` TTL, which governs Redis hashes, not the PG row the
 publish wrote. No code path deletes an evicted keyed bucket's
 ``rate_limit_buckets`` row: the only ``rate_limit_buckets`` DELETEs in
 the tree are ``reset()``-by-name, and the pending-reclaim drain handles
 ``reservation_slots`` only. Steady-state cardinality is one row per key
-ever seen — unbounded in the caller-supplied key space, exactly the
+ever seen - unbounded in the caller-supplied key space, exactly the
 shape the reservation fix closed.
 
 Standard keyed-PG pattern: one row per payload key with a TTL column,
-reclaimed by exactly one batched sweep — the TTL is derived from the
+reclaimed by exactly one batched sweep - the TTL is derived from the
 job, and the maintenance sweep deletes expired rows in batches. Any of
-the three shapes — TTL column + sweep, pending-reclaim reuse, or
-publish-on-demand without a persistent row — closes this; the pin
+the three shapes - TTL column + sweep, pending-reclaim reuse, or
+publish-on-demand without a persistent row - closes this; the pin
 asserts the observable, not the shape.
 """
 
@@ -70,7 +70,7 @@ async def test_evicted_idle_keyed_rate_limit_bucket_row_is_reclaimed(
     pg_dsn: str,
 ) -> None:
     """Evicting an idle keyed rate limit must reclaim its published
-    ``rate_limit_buckets`` row — the key space is caller-controlled, so
+    ``rate_limit_buckets`` row - the key space is caller-controlled, so
     retaining rows is permanent, unbounded growth, the same defect
     class the reservation-side reclamation closed."""
     schema = f"tkblr_{new_base62()}".lower()
@@ -111,7 +111,7 @@ async def test_evicted_idle_keyed_rate_limit_bucket_row_is_reclaimed(
         evicted = reg.evict_idle_keyed_rate_limits(idle_for=timedelta(0))
         assert evicted == 1, "fixture broken: the idle keyed bucket was not evicted"
 
-        # The sweep-side reclamation step the reservation path runs —
+        # The sweep-side reclamation step the reservation path runs -
         # included so the pin is fair to every reclamation the registry
         # already offers.
         await reg.drain_pending_reservation_reclaims(pool)

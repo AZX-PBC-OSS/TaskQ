@@ -69,7 +69,7 @@ def _inserted_record() -> dict[str, object]:
     ``JobRow``'s retry-curve fields are typed ``timedelta`` (application
     domain); the ``jobs`` row stores them as ``_seconds`` float columns
     (see migration 01.00.12_03) and ``_job_row_from_record`` reads them by
-    that column name — the one field family ``asdict`` cannot shape
+    that column name - the one field family ``asdict`` cannot shape
     correctly for a RETURNING-* stand-in, so it is patched here.
     """
     row = asdict(make_job_row(status="pending", actor=_CAPPED_ACTOR))
@@ -139,7 +139,7 @@ class _ContendedFakeConn:
             # The GUC save: the pre-acquire value on a session that never
             # set one (PG's default lock_timeout is 0 = off).
             return "0"
-        # enqueue_max_pending_count — reached only after the lock is held.
+        # enqueue_max_pending_count - reached only after the lock is held.
         return 0
 
     async def execute(self, sql: str, *params: object) -> str:
@@ -160,7 +160,7 @@ class _ContendedFakeConn:
 
 class _BlackHoleFakeConn(_ContendedFakeConn):
     """Contended tier whose blocking acquire NEVER returns (network black
-    hole: the server is unreachable, the statement never completes) — only
+    hole: the server is unreachable, the statement never completes) - only
     the client-side wait_for backstop can bound this."""
 
     def __init__(self) -> None:
@@ -226,14 +226,14 @@ class TestMaxPendingLockBoundedWaitUnit:
         # Only the SET ran: the timeout raised before the restore, and the
         # savepoint ROLLBACK undoes the GUC set itself (a restore statement
         # after the failed acquire would hit "current transaction is
-        # aborted") — the restore-before-RELEASE is the SUCCESS path's job.
+        # aborted") - the restore-before-RELEASE is the SUCCESS path's job.
         assert conn.set_config_values == ["100ms"]
 
     async def test_lock_timeout_logs_warning_event_with_budget(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The ``max-pending-lock-timeout`` log event carries the actor and
-        the expired budget — the observability for an exhaustion that must
+        the expired budget - the observability for an exhaustion that must
         NOT be silently conflated with a cap rejection."""
         _spy_backpressure(monkeypatch)
         conn = _ContendedFakeConn(try_lock_result=False, blocking_times_out=True)
@@ -259,7 +259,7 @@ class TestMaxPendingLockBoundedWaitUnit:
     ) -> None:
         """Contended racers queue server-side: once the holder releases
         inside the budget, the blocking acquire is granted and the enqueue
-        proceeds to completion — the pre-poll drain rate restored."""
+        proceeds to completion - the pre-poll drain rate restored."""
         recorded = _spy_backpressure(monkeypatch)
         conn = _ContendedFakeConn(try_lock_result=False, blocking_times_out=False)
         args = _capped_args()
@@ -284,7 +284,7 @@ class TestMaxPendingLockBoundedWaitUnit:
     ) -> None:
         """Happy-path round-trip parity: an uncontended capped enqueue
         issues exactly ONE advisory-lock statement (the try-lock) and never
-        touches the savepoint/GUC machinery — identical to the pre-bound
+        touches the savepoint/GUC machinery - identical to the pre-bound
         statement count, so the redesign costs the common case nothing."""
         recorded = _spy_backpressure(monkeypatch)
         conn = _ContendedFakeConn(try_lock_result=True)
@@ -308,7 +308,7 @@ class TestMaxPendingLockBoundedWaitUnit:
     ) -> None:
         """``timeout_ms <= 0`` disables the bound (the pre-fix behavior),
         matching the ``lock_timeout`` GUC convention used by migrate.py: a
-        plain blocking acquire with NO savepoint and NO GUC statements —
+        plain blocking acquire with NO savepoint and NO GUC statements -
         only an unbounded server-side wait reaches the admission."""
         recorded = _spy_backpressure(monkeypatch)
         conn = _ContendedFakeConn(try_lock_result=False, blocking_times_out=False)
@@ -337,7 +337,7 @@ class TestMaxPendingLockBoundedWaitUnit:
     ) -> None:
         """A network black hole (the blocking-acquire statement never
         returns) is bounded by the client-side wait_for backstop at
-        budget + slack — the server-side lock_timeout cannot fire if the
+        budget + slack - the server-side lock_timeout cannot fire if the
         server is unreachable, so this layer is the only bound left."""
         recorded = _spy_backpressure(monkeypatch)
         conn = _BlackHoleFakeConn()
@@ -360,7 +360,7 @@ class TestMaxPendingLockBoundedWaitUnit:
         assert recorded == [(_CAPPED_ACTOR, "max_pending_lock_timeout")]
 
     async def test_uncapped_enqueue_takes_no_advisory_lock(self) -> None:
-        """max_pending=None (the default) never touches the advisory lock —
+        """max_pending=None (the default) never touches the advisory lock -
         the bounded-wait machinery is scoped to capped actors only."""
         conn = _ContendedFakeConn(try_lock_result=True)
         args = make_enqueue_args(actor=_CAPPED_ACTOR)
@@ -457,7 +457,7 @@ class TestMaxPendingLockBoundedWait:
     ) -> None:
         """A racer facing a long-held lock fails with the typed backpressure
         error inside its budget instead of blocking until the holder
-        finishes — the server-side lock_timeout fires at the budget and the
+        finishes - the server-side lock_timeout fires at the budget and the
         savepoint rollback leaves the pool connection's transaction usable
         for its own rollback."""
         pg_schema: ModulePgSchema = module_pg_schema  # type: ignore[assignment]  # Why: fixture is typed ModulePgSchema; object keeps the test signature loose like test_backend_enqueue_with_conn
@@ -486,7 +486,7 @@ class TestMaxPendingLockBoundedWait:
                 elapsed = time.monotonic() - start
             assert isinstance(exc_info.value, MaxPendingLockTimeoutError)
             assert not isinstance(exc_info.value, MaxPendingExceededError), (
-                "the cap was not reached — the rejection must be the lock budget"
+                "the cap was not reached - the rejection must be the lock budget"
             )
             assert exc_info.value.timeout_ms == 250.0
             # The server-side timeout is precise: ~budget, not the 3 s wall
@@ -507,7 +507,7 @@ class TestMaxPendingLockBoundedWait:
         a savepoint and MUST restore the prior value before releasing the
         savepoint (``SET LOCAL`` effects persist through RELEASE), so a
         LATER lock acquire in the same transaction does not inherit the
-        stale bound — pinned with a second acquire that waits LONGER than
+        stale bound - pinned with a second acquire that waits LONGER than
         the first acquire's whole budget and must still succeed."""
         pg_schema: ModulePgSchema = module_pg_schema  # type: ignore[assignment]  # Why: fixture is typed ModulePgSchema; object keeps the test signature loose like test_postgres_enqueue_max_pending_lock
         deps = clean_jobs_app.deps
@@ -585,7 +585,7 @@ class TestMaxPendingLockBoundedWait:
     async def test_happy_path_statement_count_parity(self, clean_jobs_app: JobsApp) -> None:
         """Happy-path round-trip parity on real Postgres: an uncontended
         capped enqueue issues exactly ONE advisory-lock statement (the
-        try-lock fast path) — no savepoint, no GUC round trips — the same
+        try-lock fast path) - no savepoint, no GUC round trips - the same
         count as before the bounded-wait redesign."""
         deps = clean_jobs_app.deps
         schema = deps.settings.schema_name

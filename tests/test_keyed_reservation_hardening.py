@@ -184,7 +184,7 @@ async def test_max_keyed_reservations_guard_allows_reusing_existing_key() -> Non
     )
     assert len(reg._keyed_reservation_last_used) == 1  # pyright: ignore[reportPrivateUsage]
 
-    # Reusing the same key must not raise — no new entry is added.
+    # Reusing the same key must not raise - no new entry is added.
     name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
         ref, payload=_DefaultPayload(session_id="k1"), pg_pool=None, settings=settings
     )
@@ -213,14 +213,14 @@ async def test_max_keyed_reservations_guard_skipped_when_settings_none() -> None
 async def test_opportunistic_eviction_reclaims_idle_capacity_on_cap_hit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Materialising a new key at the cap succeeds when idle entries exist —
+    """Materialising a new key at the cap succeeds when idle entries exist -
     the acquisition path itself performs an opportunistic eviction, without
     the caller ever calling ``evict_idle_keyed_reservations`` directly.
 
     1. Fill the cap (3 entries) at t=1000.
     2. Advance past the 1-hour idle threshold.
     3. Re-stamp one key as fresh (so only 2 of 3 are stale).
-    4. Materialise a NEW key that would exceed the cap — the opportunistic
+    4. Materialise a NEW key that would exceed the cap - the opportunistic
        eviction inside ``_resolve_reservation_name`` reclaims the 2 stale
        entries, making room.  The call succeeds and the new key is
        registered.
@@ -251,12 +251,12 @@ async def test_opportunistic_eviction_reclaims_idle_capacity_on_cap_hit(
     fake_time = 5000.0
     monkeypatch.setattr(registry_mod, "monotonic", lambda: fake_time)
 
-    # 3. Re-stamp k3 as fresh (last_used=5000) — k1 and k2 remain stale.
+    # 3. Re-stamp k3 as fresh (last_used=5000) - k1 and k2 remain stale.
     await reg._resolve_reservation_name(
         ref, payload=_DefaultPayload(session_id="k3"), pg_pool=None, settings=settings
     )  # pyright: ignore[reportPrivateUsage]
 
-    # 4. Materialise a NEW key — would exceed the cap, but opportunistic
+    # 4. Materialise a NEW key - would exceed the cap, but opportunistic
     #    eviction reclaims the 2 stale entries first.
     name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
         ref, payload=_DefaultPayload(session_id="k4"), pg_pool=None, settings=settings
@@ -275,7 +275,7 @@ async def test_cap_hit_with_nothing_idle_still_raises_reservation_unavailable(
 ) -> None:
     """When all entries are recently used (nothing stale to reclaim), the
     opportunistic eviction has no effect and the cap hit still raises
-    ``ReservationUnavailable`` — the denial is a genuine
+    ``ReservationUnavailable`` - the denial is a genuine
     sustained-high-cardinality condition, not an artefact of sweep timing.
     """
     from importlib import import_module
@@ -286,7 +286,7 @@ async def test_cap_hit_with_nothing_idle_still_raises_reservation_unavailable(
     reg = RateLimitRegistry()
     ref = _keyed_ref(base_name="session-cap")
 
-    # Materialise 2 keys — all at the same recent time, nothing idle.
+    # Materialise 2 keys - all at the same recent time, nothing idle.
     fake_time = 1000.0
     monkeypatch.setattr(registry_mod, "monotonic", lambda: fake_time)
     await reg._resolve_reservation_name(
@@ -297,14 +297,14 @@ async def test_cap_hit_with_nothing_idle_still_raises_reservation_unavailable(
     )  # pyright: ignore[reportPrivateUsage]
     assert len(reg._keyed_reservation_last_used) == 2  # pyright: ignore[reportPrivateUsage]
 
-    # A third key at the same time — nothing is idle, so opportunistic
+    # A third key at the same time - nothing is idle, so opportunistic
     # eviction reclaims 0 entries and the cap hit is genuine.
     with pytest.raises(ReservationUnavailable):
         await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
             ref, payload=_DefaultPayload(session_id="k3"), pg_pool=None, settings=settings
         )
 
-    # Registry is unchanged — no eviction occurred.
+    # Registry is unchanged - no eviction occurred.
     assert len(reg._keyed_reservation_last_used) == 2  # pyright: ignore[reportPrivateUsage]
     assert "session-cap:k1" in reg.reservations
     assert "session-cap:k2" in reg.reservations
@@ -314,7 +314,7 @@ async def test_opportunistic_eviction_scan_is_amortized_under_sustained_denials(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The O(n) opportunistic eviction scan runs at most once per
-    ``_OPPORTUNISTIC_EVICT_MIN_INTERVAL`` — sustained cap-hit denials must
+    ``_OPPORTUNISTIC_EVICT_MIN_INTERVAL`` - sustained cap-hit denials must
     stay O(1) per request, not rescan the whole tracking dict every time.
 
     1. Fill the cap at t=1000 (nothing idle).
@@ -352,19 +352,19 @@ async def test_opportunistic_eviction_scan_is_amortized_under_sustained_denials(
     assert len(reg._keyed_reservation_last_used) == 2  # pyright: ignore[reportPrivateUsage]
     assert scan_calls == []
 
-    # 2. First denied new key — the scan runs once (nothing idle to reclaim).
+    # 2. First denied new key - the scan runs once (nothing idle to reclaim).
     with pytest.raises(ReservationUnavailable):
         await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
             ref, payload=_DefaultPayload(session_id="k3"), pg_pool=None, settings=settings
         )
     assert len(scan_calls) == 1
 
-    # 3. Immediate second denial — the scan is gated: no rescan.
+    # 3. Immediate second denial - the scan is gated: no rescan.
     with pytest.raises(ReservationUnavailable):
         await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
             ref, payload=_DefaultPayload(session_id="k4"), pg_pool=None, settings=settings
         )
-    assert len(scan_calls) == 1, "scan must be amortized — no rescan within the min interval"
+    assert len(scan_calls) == 1, "scan must be amortized - no rescan within the min interval"
 
     # 4. Past the min interval, the next cap-hit scans again. (The lambda
     # closes over fake_time, so no re-setattr is needed.)
@@ -382,7 +382,7 @@ async def test_gated_opportunistic_scan_still_reclaims_after_interval(
     """Guarantee test (the gate itself is pinned by the spy test above):
     a cap-hit at t=5000 scans (first cap-hit always scans), reclaims the
     two stale entries, and admits the new key; a further cap-hit at the
-    same instant is gated — nothing more to reclaim, still denied. I.e.
+    same instant is gated - nothing more to reclaim, still denied. I.e.
     the gate delays reclaim by at most the min-interval, never forever.
     """
     from importlib import import_module
@@ -415,7 +415,7 @@ async def test_gated_opportunistic_scan_still_reclaims_after_interval(
     await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
         ref, payload=_DefaultPayload(session_id="k4"), pg_pool=None, settings=settings
     )
-    # Same-instant cap-hit for a 4th key — the scan is gated (nothing new
+    # Same-instant cap-hit for a 4th key - the scan is gated (nothing new
     # could have gone idle since the scan moments ago); k3/k4 are fresh,
     # so the denial is genuine.
     with pytest.raises(ReservationUnavailable):
@@ -469,11 +469,11 @@ async def test_race_condition_eviction_during_ensure_slots(
     )
     assert name == "session-cap:s1"
     assert name in reg._reservations  # pyright: ignore[reportPrivateUsage]  # Re-registered after eviction.
-    assert name in reg._keyed_reservation_last_used  # pyright: ignore[reportPrivateUsage]  # Re-stamped after the await — without this the re-registered entry would become invisible to the idle sweep (unevictable, a slow leak).
+    assert name in reg._keyed_reservation_last_used  # pyright: ignore[reportPrivateUsage]  # Re-stamped after the await - without this the re-registered entry would become invisible to the idle sweep (unevictable, a slow leak).
 
 
 async def test_race_condition_no_key_error_when_pg_pool_none() -> None:
-    """When pg_pool is None there is no await and hence no race — the
+    """When pg_pool is None there is no await and hence no race - the
     reservation is simply registered and returned."""
     reg = RateLimitRegistry()
     ref = _keyed_ref(base_name="session-cap")
@@ -495,7 +495,7 @@ async def test_ensure_slots_failure_unwinds_materialization_for_retry(
     """A transient ``ensure_slots`` failure during first materialization
     must NOT poison the key: the half-registered entry is unwound so the
     next acquisition re-materializes and RETRIES ``ensure_slots`` (which is
-    idempotent). Without unwinding, the entry would be reused forever —
+    idempotent). Without unwinding, the entry would be reused forever -
     acquire() finds no slot rows and denies, and every attempt re-stamps
     recency so the entry is never idle-evicted either: a permanently
     wedged key until worker restart."""
@@ -546,7 +546,7 @@ async def test_ensure_slots_failure_unwinds_materialization_for_retry(
 
 async def test_keyed_cap_does_not_deny_static_colliding_reuse() -> None:
     """With the keyed tracking dict AT the cap, resolving a key whose
-    concrete name was STATICALLY pre-registered must still succeed — the
+    concrete name was STATICALLY pre-registered must still succeed - the
     cap bounds keyed-materialized growth, and static reuse grows nothing."""
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     settings = _settings(max_keyed=2)
@@ -586,7 +586,7 @@ async def test_colliding_concrete_names_same_config_share_primitive() -> None:
     """Two refs whose ``f"{base_name}:{key}"`` concrete names collide (one
     ref's base_name is a prefix of the other's, and ':' is an allowed key
     character) resolve to the SAME registered primitive when their configs
-    are identical — registration is idempotent, so they silently share one
+    are identical - registration is idempotent, so they silently share one
     reservation.  This pins the documented collision behavior: bounded and
     safe (the shared cap still holds), if surprising."""
     reg = RateLimitRegistry()
@@ -610,7 +610,7 @@ async def test_collision_guard_resets_after_idle_eviction(
 ) -> None:
     """Pins the guard's eviction boundary: the collision check fires only
     on LIVE tracked entries. Once the colliding entry is idle-evicted, a
-    different-config ref re-materializes its OWN config silently — eviction
+    different-config ref re-materializes its OWN config silently - eviction
     resets the guard (documented behavior, not a silent config flip of a
     live primitive)."""
     from importlib import import_module
@@ -632,7 +632,7 @@ async def test_collision_guard_resets_after_idle_eviction(
     evicted = reg.evict_idle_keyed_reservations(idle_for=timedelta(hours=1))
     assert evicted == 1
 
-    # The colliding ref now materializes its own config — no ValueError.
+    # The colliding ref now materializes its own config - no ValueError.
     name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
         ref_ab, payload=_DefaultPayload(session_id="c"), pg_pool=None, settings=None
     )
@@ -642,7 +642,7 @@ async def test_collision_guard_resets_after_idle_eviction(
 
 async def test_colliding_concrete_names_different_config_raise_value_error() -> None:
     """A concrete-name collision with DIFFERENT configs fails loudly with
-    ``ValueError`` naming the collision — never silently over- or
+    ``ValueError`` naming the collision - never silently over- or
     under-admits relative to one ref's declared config, and never
     reconfigures the existing primitive."""
     reg = RateLimitRegistry()
@@ -702,7 +702,7 @@ async def test_value_error_during_keyed_resolution_rolls_back_earlier_reservatio
     """Regression for the ``except ReservationUnavailable`` → ``except
     Exception`` rollback fix: a ``ValueError`` from key validation (invalid
     ``key_fn`` output) raised AFTER an earlier reservation was already
-    acquired must roll that reservation back — the old clause only caught
+    acquired must roll that reservation back - the old clause only caught
     ``ReservationUnavailable`` and leaked the slot until lease expiry."""
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     reg = RateLimitRegistry()
@@ -737,7 +737,7 @@ async def test_value_error_during_keyed_resolution_rolls_back_earlier_reservatio
 
 async def test_key_fn_exception_rolls_back_earlier_reservation() -> None:
     """Same rollback guarantee when ``key_fn`` itself raises (here:
-    ``RuntimeError``) — any exception mid-composition releases the
+    ``RuntimeError``) - any exception mid-composition releases the
     already-acquired handles in reverse order."""
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     reg = RateLimitRegistry()

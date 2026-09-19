@@ -13,7 +13,7 @@ loop:
                pre-started consumer task (per-event cost = ``put_nowait``)
   inline       ``await coro`` directly (the fallback context.py already has)
 
-Two numbers per variant: *schedule* µs/event (producer side only — what
+Two numbers per variant: *schedule* µs/event (producer side only - what
 ``ctx.progress()`` pays inline) and *schedule+execute* µs/event (producer +
 full drain of the side-channel).  The coroutine is a stand-in for
 ``_publish_progress_event``: a single ``await asyncio.sleep(0)`` I/O point.

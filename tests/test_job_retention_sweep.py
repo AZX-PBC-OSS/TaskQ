@@ -13,9 +13,9 @@ terminal parent job. Two consequences, both confirmed:
   (30-90 days), not by anything proportional to what operators read.
 
 The attached design (``docs/design/sql-hotpath-followups.md`` §2) settles
-the shape: a leader-gated, batched ``DELETE`` by ``occurred_at`` —
+the shape: a leader-gated, batched ``DELETE`` by ``occurred_at`` -
 ``sweep_expired_events()`` in ``taskq/backend/_sweeps.py``, mirroring
-``sweep_expired_results`` — driven by a worker-configurable
+``sweep_expired_results`` - driven by a worker-configurable
 ``event_retention_period`` / ``event_retention_batch_size`` under the
 ``TASKQ_`` prefix.
 
@@ -24,7 +24,7 @@ One carve-out is a hard constraint, not a preference: the
 ``job_events`` is the crash-reclaim outbox that ``poll_reclaim_events``
 and ``TaskQ.watch_reclaims()`` consume under a trailing-watermark
 protocol. An age sweep that deletes that slice races the watermark and
-silently corrupts crash reclamation — the failure this project's
+silently corrupts crash reclamation - the failure this project's
 bounded-writes rule was written about. The sweep must leave it alone.
 
 These tests target the seam the design names. They fail today because no
@@ -62,7 +62,7 @@ def _event_retention_sweep() -> _SweepFn:
 
     The design attached to the RCA names ``sweep_expired_events`` in
     ``taskq/backend/_sweeps.py``. If the fix lands the capability under a
-    different name, update this driver — the assertions below are the
+    different name, update this driver - the assertions below are the
     contract, not the spelling.
     """
     from taskq.backend import _sweeps
@@ -83,7 +83,7 @@ def _event_retention_sweep() -> _SweepFn:
 
 def test_event_retention_is_worker_configurable() -> None:
     """The retention window and batch size are worker settings under the
-    ``TASKQ_`` prefix — the operator directive is a *configurable* sweep,
+    ``TASKQ_`` prefix - the operator directive is a *configurable* sweep,
     not a hard-coded one."""
     missing = [
         name
@@ -94,7 +94,7 @@ def test_event_retention_is_worker_configurable() -> None:
         if name not in WorkerSettings.get_fields()
     ]
     assert not missing, (
-        f"WorkerSettings has no {missing} — the retention sweep must be "
+        f"WorkerSettings has no {missing} - the retention sweep must be "
         "configurable via DotEnvConfig under the TASKQ_ prefix (the design "
         "settles TASKQ_EVENT_RETENTION_PERIOD, default ~7 days, 0 disables; "
         "and a batch size bounded like the other sweeps). "
@@ -113,9 +113,9 @@ def test_event_retention_defaults_to_seven_days_out_of_the_box() -> None:
     and because the pre-existing cascade-only regime could never reclaim
     the events of a job that never terminates at all.
 
-    A silent drift of this default — to something long enough that the
+    A silent drift of this default - to something long enough that the
     table still grows without practical bound, or short enough to erase a
-    week of operator-visible timeline — changes shipped behaviour for
+    week of operator-visible timeline - changes shipped behaviour for
     every deployment at once, so it is pinned by value rather than by
     reference to the constant.
     """
@@ -134,7 +134,7 @@ def test_zero_event_retention_disables_the_sweep_rather_than_deleting_everything
     Zero reads two opposite ways for an age-bounded DELETE: "keep nothing
     older than now" (delete every event in the table) or "no window
     configured" (do not sweep). For a deletion loop the safe reading of a
-    misconfiguration is off, and that is the one this project ships — the
+    misconfiguration is off, and that is the one this project ships - the
     inverse of the prune family's zero-means-archive-immediately, so the
     inversion is worth pinning explicitly.
 
@@ -160,8 +160,8 @@ def test_zero_event_retention_disables_the_sweep_rather_than_deleting_everything
 
 def test_negative_event_retention_is_rejected_at_settings_load() -> None:
     """A negative retention window is an operator typo with no coherent
-    meaning, and it is rejected where the operator can still see it — at
-    settings load, on the worker's own boot path — rather than surfacing
+    meaning, and it is rejected where the operator can still see it - at
+    settings load, on the worker's own boot path - rather than surfacing
     later as an inexplicable sweep error on a leader tick."""
     with pytest.raises(Exception, match=r"(?i)negative|greater|positive|invalid"):
         WorkerSettings.load_from_dict(
@@ -203,7 +203,7 @@ async def test_event_retention_reclaims_old_events_of_live_jobs_in_bounded_batch
     clean_pg_conn: asyncpg.Connection,
 ) -> None:
     """Old events are reclaimed even while their parent job is still live
-    (non-terminal — the case the cascade can never reach), young events are
+    (non-terminal - the case the cascade can never reach), young events are
     kept, and one call deletes at most one bounded batch."""
     schema = module_pg_schema.schema_name
     sweep = _event_retention_sweep()
@@ -228,7 +228,7 @@ async def test_event_retention_reclaims_old_events_of_live_jobs_in_bounded_batch
         batch_size=2,
     )
     assert first_pass <= 2, (
-        f"one retention call deleted {first_pass} rows with batch_size=2 — "
+        f"one retention call deleted {first_pass} rows with batch_size=2 - "
         "the sweep must delete in bounded batches (one short transaction "
         "per batch), not drain the whole backlog in one statement."
     )
@@ -247,7 +247,7 @@ async def test_event_retention_reclaims_old_events_of_live_jobs_in_bounded_batch
     assert remaining == 1, (
         f"expected only the young event to survive, found {remaining} rows. "
         "The age sweep must reclaim every event older than the retention "
-        "window — including those of a job that is still 'running', whose "
+        "window - including those of a job that is still 'running', whose "
         "rows the terminality-keyed prune can never reach."
     )
 
@@ -259,7 +259,7 @@ async def test_event_retention_preserves_the_reclaim_outbox_slice(
     """``kind='state_change' AND reason='lock_expired'`` events are the
     crash-reclaim outbox (``poll_reclaim_events`` /
     ``TaskQ.watch_reclaims()``). However old they are, the age sweep must
-    not delete them — racing the trailing watermark silently corrupts
+    not delete them - racing the trailing watermark silently corrupts
     crash reclamation."""
     schema = module_pg_schema.schema_name
     sweep = _event_retention_sweep()
@@ -285,7 +285,7 @@ async def test_event_retention_preserves_the_reclaim_outbox_slice(
     )
     await _seed_events(clean_pg_conn, schema, job_id, occurred_at=_OLD, count=3)
 
-    # Drain fully — several bounded passes.
+    # Drain fully - several bounded passes.
     while await sweep(
         clean_pg_conn,
         schema=schema,
@@ -311,7 +311,7 @@ async def test_event_retention_deletes_reclaim_outbox_slice_past_the_multiplier_
     """The ``lock_expired`` outbox slice is exempt from *ordinary* retention
     but not from deletion outright: once an unconsumed outbox row is older
     than ``RECLAIM_OUTBOX_RETENTION_MULTIPLIER`` (100x) times the retention
-    setting, the sweep deletes it — a lagging or absent ``watch_reclaims``
+    setting, the sweep deletes it - a lagging or absent ``watch_reclaims``
     consumer does not get to retain the slice forever. This empirically
     pins the exact boundary rather than trusting the constant: a row just
     inside the 100x bound survives, a row just outside it is deleted by the
@@ -375,7 +375,7 @@ async def test_event_retention_deletes_reclaim_outbox_slice_past_the_multiplier_
         f"expected exactly 1 outbox row to survive the 100x bound, found "
         f"{len(remaining_ages)}. The sweep must delete an unconsumed "
         "lock_expired row once it exceeds RECLAIM_OUTBOX_RETENTION_MULTIPLIER "
-        "x retention, and keep one that has not yet reached that age — "
+        "x retention, and keep one that has not yet reached that age - "
         "silently keeping (or deleting) both breaks the documented "
         "bounded-exemption contract that settings.py, upgrading.md, and "
         "watch_reclaims' docstring all now describe."
@@ -394,9 +394,9 @@ async def test_attempt_and_retry_counters_survive_event_retention(
 
     A job cycling through retries and admission denials is exactly the
     job whose event history ages out first, because it produces the most
-    events. If the age sweep can reach the row's own accounting —
+    events. If the age sweep can reach the row's own accounting -
     ``attempt``, ``max_attempts``, ``snooze_count``,
-    ``rate_limit_blocked_count`` — then the loudest symptom of a
+    ``rate_limit_blocked_count`` - then the loudest symptom of a
     misconfigured queue disappears precisely on the jobs that exhibit it
     most, and the operator is left with a live job and no way to tell a
     job on its first attempt from one that has been churning for a week.
@@ -439,7 +439,7 @@ async def test_attempt_and_retry_counters_survive_event_retention(
         job_id,
     )
     assert row is not None, (
-        "event retention deleted the job row itself — a live running job vanished "
+        "event retention deleted the job row itself - a live running job vanished "
         "from the jobs table because its events aged out"
     )
     assert (

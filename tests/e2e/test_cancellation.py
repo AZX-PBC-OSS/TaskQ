@@ -1,4 +1,4 @@
-"""Cancellation e2e — single-job cancel + bulk cancel_by_filter.
+"""Cancellation e2e - single-job cancel + bulk cancel_by_filter.
 
 Single-job path:
 - ``JobsClient.cancel`` → ``PostgresBackend.write_cancel_request``
@@ -47,7 +47,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.timeout(900)]
 
 
 def _long_report_payload(run_id: str) -> GenerateReportPayload:
-    """4 stages x 2 s — slow enough to cancel deterministically mid-run."""
+    """4 stages x 2 s - slow enough to cancel deterministically mid-run."""
     return GenerateReportPayload(
         run_id=run_id,
         report_id=f"r-{run_id[:8]}",
@@ -67,7 +67,7 @@ async def test_cancel_long_running_job(
 
     The cooperative path is phase-1: the row stays ``running`` until the actor
     observes ``cancel_event`` at a stage boundary. The row flips to ``running``
-    at claim time — before the actor's first ``check_cancelled`` — and the
+    at claim time - before the actor's first ``check_cancelled`` - and the
     cancel NOTIFY wakes the worker's heartbeat immediately, so a cancel issued
     on ``running`` alone can legitimately land before stage 1 commits. The
     test therefore waits for the stage-1 effect (ground truth) before

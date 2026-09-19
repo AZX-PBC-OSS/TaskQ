@@ -5,17 +5,17 @@ backlog as bounded committed batches and only then finalizes (disable
 schedules, delete ``actor_config``, count, purge).  Two properties no
 pinned test exercises:
 
-* **Mid-drain failure recovery** — a non-deadlock statement failure on
+* **Mid-drain failure recovery** - a non-deadlock statement failure on
   batch 2: the call RAISES (no partial-success result), batch 1's
   cancels and events stay committed, batch 2 rolls back in full, the
   ``actor_config`` row SURVIVES (finalize never ran), and a re-run
   cancels exactly the remainder (EPQ re-selection skips the already
   cancelled), deletes the config, and writes exactly-once events per
   job across both runs.
-* **The check→drain gap** — a job claimed ``pending→running`` (the
+* **The check→drain gap** - a job claimed ``pending→running`` (the
   dispatch claim shape) on a real second connection between the
-  running-check and the drain: it stays ``running`` — not cancelled,
-  no events — while the rest of the actor drains and the config is
+  running-check and the drain: it stays ``running`` - not cancelled,
+  no events - while the rest of the actor drains and the config is
   deleted.  This is the TOCTOU the docstring documents verbatim; the
   test pins it so a rewrite cannot silently "fix" it into a
   running-job cancellation the safety check explicitly refuses to do.
@@ -79,11 +79,11 @@ async def _actor_config_exists(
 class _InstrumentedConn:
     """Delegates to a real connection with two injection points.
 
-    * ``fail_event_insert_at`` — raise before the Nth batched event
+    * ``fail_event_insert_at`` - raise before the Nth batched event
       INSERT (N counts the deregister drain's one INSERT per batch), a
       statement-level failure arriving after that batch's driving
       UPDATE already mutated its rows inside the open transaction.
-    * ``gate_first_driving_fetch`` — hold the FIRST driving cancel
+    * ``gate_first_driving_fetch`` - hold the FIRST driving cancel
       fetch open (after the running-check has executed, before any
       cancel UPDATE runs), which is exactly the check→drain window the
       TOCTOU docstring describes.
@@ -119,7 +119,7 @@ class _InstrumentedConn:
 
     async def fetchrow(self, sql: str, *args: object) -> Any:
         # The driving cancel statement is the one whose row aggregates
-        # carry prev_status — gated here, before any cancel UPDATE runs.
+        # carry prev_status - gated here, before any cancel UPDATE runs.
         if self._gate_driving and not self.gated and "prev_status" in sql:
             self.gated = True
             self.entered.set()
@@ -161,8 +161,8 @@ async def test_mid_drain_failure_leaves_batch1_committed_config_intact_and_rerun
     )
     batch1, rest = set(sorted(job_ids)[:100]), set(sorted(job_ids)[100:])
 
-    # Batch 1's drain writes event INSERT #1; the failure lands on
-    # batch 2's (#2), after batch 2's driving UPDATE already ran.
+    # Batch 1's drain writes event INSERT ; the failure lands on
+    # batch 2's, after batch 2's driving UPDATE already ran.
     conn = _InstrumentedConn(clean_pg_conn, fail_event_insert_at=2)
     with pytest.raises(RuntimeError, match="injected statement failure"):
         await deregister_actor(conn, actor, force=True, schema=schema, batch_size=100)
@@ -179,7 +179,7 @@ async def test_mid_drain_failure_leaves_batch1_committed_config_intact_and_rerun
     )
     assert b1_events == 100, "exactly one state_change per batch-1 job"
 
-    # Batch 2+3: fully rolled back — still pending, no event fragments.
+    # Batch 2+3: fully rolled back - still pending, no event fragments.
     rest_rows = await clean_pg_conn.fetch(
         f'SELECT status::text AS status FROM "{schema}".jobs WHERE id = ANY($1::uuid[])',  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() above.
         list(rest),
@@ -193,7 +193,7 @@ async def test_mid_drain_failure_leaves_batch1_committed_config_intact_and_rerun
 
     # The finalize never ran: the config row survives the failed drain.
     assert await _actor_config_exists(clean_pg_conn, schema, actor), (
-        "a mid-drain failure must not delete actor_config — the actor would be "
+        "a mid-drain failure must not delete actor_config - the actor would be "
         "deregistered with 150 jobs still pending and uncancelled"
     )
 
@@ -216,7 +216,7 @@ async def test_mid_drain_failure_leaves_batch1_committed_config_intact_and_rerun
     assert {r["kind"] for r in events} == {"state_change"}
     assert all(r["n"] == 1 for r in events), (
         "across the failed run and its re-run, every job must carry exactly one "
-        "state_change — the EPQ re-selection must cancel nothing twice"
+        "state_change - the EPQ re-selection must cancel nothing twice"
     )
     assert len(events) == 250
 
@@ -226,7 +226,7 @@ async def test_job_claimed_between_running_check_and_drain_stays_running(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """The check→drain gap: a job claimed running after the running-check
-    returned zero is skipped by the drain's status predicates — it stays
+    returned zero is skipped by the drain's status predicates - it stays
     running with no events while its 4 peers drain and the config is
     deleted (the documented TOCTOU, not a silent running-job cancel)."""
     schema = module_pg_schema.schema_name
@@ -278,7 +278,7 @@ async def test_job_claimed_between_running_check_and_drain_stays_running(
     )
     assert claimed is not None
     assert claimed["status"] == "running", (
-        "a job claimed between the running-check and the drain must stay running — "
+        "a job claimed between the running-check and the drain must stay running - "
         "cancelling it would be the running-job cancellation the check exists to refuse"
     )
     assert claimed["finished_at"] is None

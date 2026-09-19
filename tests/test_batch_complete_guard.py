@@ -9,9 +9,9 @@ have already made stale. The in-memory mirror models the same decision
 (``taskq.testing._batch.py``), so the guard's decision table is pinned
 here at unit tier.
 
-The concurrent-terminal race itself — two members terminating on
+The concurrent-terminal race itself - two members terminating on
 different connections, each hook's count statement reading the other as
-non-terminal from a stale READ COMMITTED snapshot — needs real PG
+non-terminal from a stale READ COMMITTED snapshot - needs real PG
 snapshots and lives in the integration lane.
 """
 
@@ -100,7 +100,7 @@ class TestCompleteBatchGuard:
         """The same complete call that was vetoed while a member was in
         flight lands once that member turns terminal: the decision reads
         the member set at write time, so no caller-side recount is
-        needed — the optimistic-attempt contract the terminal-outcome
+        needed - the optimistic-attempt contract the terminal-outcome
         hook relies on."""
         backend = _make_backend()
         bid = new_uuid()
@@ -144,7 +144,7 @@ class _StaleCountBackend(InMemoryBackend):
 
 class TestHookDoesNotTrustStaleCount:
     """The hook must complete the batch from the guarded statement's own
-    re-check, not from the increment/reset statement's count — two
+    re-check, not from the increment/reset statement's count - two
     members terminating concurrently can each read the other as
     non-terminal, and a hook that gates on that count leaves the row for
     the leader sweep."""
@@ -161,7 +161,7 @@ class TestHookDoesNotTrustStaleCount:
         row = await backend.get_batch(bid)
         assert row is not None
         assert row.status == "complete", (
-            "the hook trusted the stale count and skipped the completion attempt — "
+            "the hook trusted the stale count and skipped the completion attempt - "
             "the concurrent-terminal race that leaves the row for the leader sweep"
         )
         assert row.completed_at is not None
@@ -184,7 +184,7 @@ class TestHookOptimisticAttemptSafety:
         row = await backend.get_batch(bid)
         assert row is not None
         assert row.status == "active", "the optimistic attempt completed past an in-flight member"
-        # The reset still landed — the completion attempt is the only
+        # The reset still landed - the completion attempt is the only
         # write the guard vetoes.
         assert row.consecutive_failures == 0
 

@@ -2,8 +2,8 @@
 
 """Red-team attacks on the reclaim sweep's heartbeat arm.
 
-The settled direction is ENFORCEMENT (the earlier stack direction —
-refusal at the enqueue boundary, reclaim stays lease-based — was
+The settled direction is ENFORCEMENT (the earlier stack direction -
+refusal at the enqueue boundary, reclaim stays lease-based - was
 superseded): ``_SWEEP_1_SQL`` gained a second, disjoint
 eligibility arm (``src/taskq/backend/_sweeps.py``, the ``heartbeat_arm``
 CTE) that reclaims a running job whose holder has been silent past the
@@ -14,22 +14,22 @@ served by the partial index ``jobs_running_heartbeat_deadline_idx``
 ``tests/test_index_audit.py``.
 
 This file attacks what those pins do not reach. Verdicts expected at
-commit time (the reds are the deliverable — they stay red until fixed):
+commit time (the reds are the deliverable - they stay red until fixed):
 
 * RED ``test_heartbeat_reclaim_attempt_row_must_not_claim_the_lock_expired``
-  — the batched ``job_attempts`` INSERT hardcodes
+  - the batched ``job_attempts`` INSERT hardcodes
   ``'lock expired before worker reported terminal state'`` for BOTH arms,
   so the audit row for a heartbeat reclaim asserts a lock expiry that the
   sweep itself disproved when it selected the row
   (``lock_expires_at >= statement_timestamp()``).
-* RED ``test_twin_mirrors_the_sqls_past_beat_conjunct`` — the in-memory
+* RED ``test_twin_mirrors_the_sqls_past_beat_conjunct`` - the in-memory
   twin's heartbeat arm (``src/taskq/testing/_sweeps.py``) omits the SQL's
   ``last_heartbeat_at < statement_timestamp()`` conjunct, so a row the SQL
   provably never reclaims (a future-stamped beat plus a degenerate
-  negative timeout — direct-SQL-reachable, like the NULL-beat state the
+  negative timeout - direct-SQL-reachable, like the NULL-beat state the
   twin does guard) is reclaimed by the twin. Constitution line 99: the
   twin is observably equivalent at every seam.
-* ``test_ops_footgun_registry_names_the_inversion_trap`` — the
+* ``test_ops_footgun_registry_names_the_inversion_trap`` - the
   lease-inversion trap (a ``heartbeat_timeout`` at or
   above the fleet's lock lease can never govern: the lease arm requires
   the lease still valid, so the lease deadline always fires first)
@@ -77,8 +77,8 @@ _GRACE = timedelta(seconds=0)
 #: tests/test_heartbeat_timeout_enforced.py's ``_TWIN_START``).
 _TWIN_START = datetime(2025, 1, 1, tzinfo=UTC)
 
-#: The heartbeat arm's flat cancel safety margin at zero graces — the
-#: ``interval '60 seconds'`` literal in ``_SWEEP_1_SQL``'s carve-outs —
+#: The heartbeat arm's flat cancel safety margin at zero graces - the
+#: ``interval '60 seconds'`` literal in ``_SWEEP_1_SQL``'s carve-outs -
 #: stated as a constant so the seed arithmetic in the carve-out tests
 #: reads against the same number the SQL uses.
 _CANCEL_MARGIN_SECONDS = 60
@@ -102,7 +102,7 @@ async def _seed_hb_running_job(
     """Seed one running job with explicit heartbeat columns.
 
     ``heartbeat_age`` is the age of ``last_heartbeat_at`` at seed time (a
-    NEGATIVE value stamps a future beat — the direct-SQL state that
+    NEGATIVE value stamps a future beat - the direct-SQL state that
     discriminates the SQL's ``last_heartbeat_at < statement_timestamp()``
     conjunct); ``None`` stamps NULL (the direct-SQL unstamped state the
     SQL's comment says must "wait for its lease"). Both timestamps are
@@ -192,7 +192,7 @@ def _twin_running_row(
     attempt: int = 1,
 ) -> JobId:
     """Seed one running row in the twin's private store (the family's
-    test seam — tests/test_heartbeat_timeout_enforced.py and
+    test seam - tests/test_heartbeat_timeout_enforced.py and
     tests/test_in_memory_backend.py use the same)."""
     row = make_job_row(
         heartbeat_timeout=heartbeat_timeout,
@@ -231,12 +231,12 @@ async def test_null_knob_and_unstamped_beat_are_never_heartbeat_eligible(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """A row with no ``heartbeat_timeout`` — however ancient its beat —
+    """A row with no ``heartbeat_timeout`` - however ancient its beat -
     and a row with the knob but no stamped beat must both stay running
     while their lease is valid: the arm's first conjunct is
     ``heartbeat_timeout IS NOT NULL``, and NULL ``last_heartbeat_at`` is
     never eligible (NULL + interval is NULL, so the row waits for its
-    lease — ``_SWEEP_1_SQL``'s comment states this as the contract).
+    lease - ``_SWEEP_1_SQL``'s comment states this as the contract).
 
     The sibling file's rows all carry the knob AND a stamped beat, so
     neither half of this never-match pin exists there.
@@ -273,21 +273,21 @@ async def test_null_knob_and_unstamped_beat_are_never_heartbeat_eligible(
 
     assert count == 1, (
         f"the sweep reclaimed {count} rows; only the control (knob set, beat "
-        "1h stale, lease valid) is eligible — a NULL-knob row with an ancient "
+        "1h stale, lease valid) is eligible - a NULL-knob row with an ancient "
         "beat or a knob-carrying row with no beat must not match any arm."
     )
     assert await _job_status(clean_pg_conn, schema, control) != "running", (
         "the control row (knob set, beat 1h stale, lease valid) was not "
-        "reclaimed — the sweep did not run its heartbeat arm at all, so the "
+        "reclaimed - the sweep did not run its heartbeat arm at all, so the "
         "two never-match assertions above prove nothing."
     )
     assert await _job_status(clean_pg_conn, schema, no_knob) == "running", (
         "a running job with heartbeat_timeout NULL was reclaimed while its "
-        "lease was still valid — the heartbeat arm requires the knob."
+        "lease was still valid - the heartbeat arm requires the knob."
     )
     assert await _job_status(clean_pg_conn, schema, no_beat) == "running", (
         "a running job whose last_heartbeat_at is NULL was reclaimed while "
-        "its lease was still valid — NULL + interval is NULL, so the row "
+        "its lease was still valid - NULL + interval is NULL, so the row "
         "must wait for its lease (the _SWEEP_1_SQL comment's contract)."
     )
     for job_id in (no_knob, no_beat):
@@ -301,7 +301,7 @@ async def test_deadline_boundary_just_short_just_past(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """Silence age just SHORT of the timeout must not reclaim; just PAST
-    it must — with ``cancel_phase = 0`` so no carve-out applies.
+    it must - with ``cancel_phase = 0`` so no carve-out applies.
 
     The 5-second margins are comfortably above the seed-to-sweep
     round-trip latency, so both sides are deterministic. The just-past
@@ -309,7 +309,7 @@ async def test_deadline_boundary_just_short_just_past(
     cancel carve-out: 5s past the deadline is far inside the 60s margin,
     so a rewrite that drops the ``cancel_phase = 0 OR`` disjunct leaves
     this row running while the sibling file's 1h-stale row (past every
-    margin) stays green — exactly the gap a red-team pass exists to hold.
+    margin) stays green - exactly the gap a red-team pass exists to hold.
     """
     schema = module_pg_schema.schema_name
     worker_id = new_uuid()
@@ -337,13 +337,13 @@ async def test_deadline_boundary_just_short_just_past(
 
     assert count == 1, f"only the just-past row is eligible, got {count}"
     assert await _job_status(clean_pg_conn, schema, just_short) == "running", (
-        "a holder silent 5s SHORT of its heartbeat_timeout was reclaimed — "
+        "a holder silent 5s SHORT of its heartbeat_timeout was reclaimed - "
         "the arm's deadline comparison must be strict: silence must run "
         "PAST the timeout, not merely approach it."
     )
     assert await _job_status(clean_pg_conn, schema, just_past) == "crashed", (
         "a holder silent 5s past its heartbeat_timeout (cancel_phase=0, so "
-        "no carve-out) was not reclaimed on the heartbeat arm — the "
+        "no carve-out) was not reclaimed on the heartbeat arm - the "
         "carve-out must apply only to rows with a cancel in flight."
     )
     detail = await _latest_reclaim_detail(clean_pg_conn, schema, just_past)
@@ -361,7 +361,7 @@ async def test_row_eligible_for_both_arms_is_reclaimed_once_by_the_lease_arm(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """A row that is BOTH lease-expired and heartbeat-stale is owned by
-    the lease arm alone — the disjointness the heartbeat arm's
+    the lease arm alone - the disjointness the heartbeat arm's
     ``lock_expires_at >= statement_timestamp()`` exclusion buys, and the
     reason UNION ALL is safe: a row reaching both arms hits the batched
     ``job_attempts`` INSERT twice and violates its (job_id, attempt)
@@ -385,7 +385,7 @@ async def test_row_eligible_for_both_arms_is_reclaimed_once_by_the_lease_arm(
     count = await PostgresBackend.sweep_expired_locks(clean_pg_conn, _GRACE, _GRACE, schema=schema)
 
     assert count == 1, (
-        f"a both-eligible row was visited by both arms (count={count}) — the "
+        f"a both-eligible row was visited by both arms (count={count}) - the "
         "arms overlap, and the next batched attempt INSERT violates "
         "job_attempts' PRIMARY KEY (job_id, attempt)."
     )
@@ -398,7 +398,7 @@ async def test_row_eligible_for_both_arms_is_reclaimed_once_by_the_lease_arm(
     detail = await _latest_reclaim_detail(clean_pg_conn, schema, both)
     assert detail.get("cause") == "lock_expired", (
         f"the lease arm owns rows whose lease has expired, whichever other "
-        f"deadline is also past (detail={detail!r}) — the heartbeat arm "
+        f"deadline is also past (detail={detail!r}) - the heartbeat arm "
         "requires the lease still valid, by construction disjoint."
     )
 
@@ -417,8 +417,8 @@ async def test_cancel_carve_out_on_the_heartbeat_arm_rides_the_heartbeat_deadlin
     heartbeat arm can reach them at all: a copy-paste of the lease arm's
     ``lock_expires_at``-based carve-out would leave EVERY row ineligible
     (the lease is never past the margin) and the two deep-past rows would
-    stop being reclaimed — the discriminator this test exists to hold.
-    Both deep-past rows land 'cancelled' (#238: operator intent outranks
+    stop being reclaimed - the discriminator this test exists to hold.
+    Both deep-past rows land 'cancelled' (operator intent outranks
     the retry budget), with the cancel columns preserved as the audit
     trail of the honored request.
     """
@@ -470,25 +470,25 @@ async def test_cancel_carve_out_on_the_heartbeat_arm_rides_the_heartbeat_deadlin
     )
     assert await _job_status(clean_pg_conn, schema, inside_margin) == "running", (
         "a heartbeat-stale row with a cancel in flight, whose deadline is "
-        "only 40s past, was reclaimed — the heartbeat arm's carve-out must "
+        "only 40s past, was reclaimed - the heartbeat arm's carve-out must "
         "give the cancellation protocol its cancel_grace + cleanup_grace + "
         "60s headroom past the HEARTBEAT deadline."
     )
     assert await _job_status(clean_pg_conn, schema, deep_exhausted) == "cancelled", (
         "an exhausted heartbeat-stale row with a cancel in flight must land "
-        "on 'cancelled' — the caller's explicit request is the honest "
+        "on 'cancelled' - the caller's explicit request is the honest "
         "terminal label, on the heartbeat arm exactly as on the lease arm."
     )
     assert await _job_status(clean_pg_conn, schema, deep_retryable) == "cancelled", (
         "a retryable heartbeat-stale row with a cancel in flight must land "
         "on 'cancelled' too: operator intent outranks the retry budget "
-        "(#238): the pre-fix budget-first CASE re-pended this row 'pending' "
+        ": the pre-fix budget-first CASE re-pended this row 'pending' "
         "and wiped the operator's cancel, addressed to a holder the sweep "
         "itself had just declared dead."
     )
     detail = await _latest_reclaim_detail(clean_pg_conn, schema, deep_exhausted)
     assert detail.get("cause") == "heartbeat_timeout", (
-        f"the carve-out path is still the heartbeat arm's reclaim — the "
+        f"the carve-out path is still the heartbeat arm's reclaim - the "
         f"event must name it (detail={detail!r})."
     )
     retry_row = await clean_pg_conn.fetchrow(
@@ -510,9 +510,9 @@ async def test_future_beat_is_not_heartbeat_eligible_even_with_degenerate_timeou
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """The arm's ``last_heartbeat_at < statement_timestamp()`` conjunct —
+    """The arm's ``last_heartbeat_at < statement_timestamp()`` conjunct -
     the "necessary condition" the migration's header says is stated
-    explicitly as the partial index's range bound — must hold even when
+    explicitly as the partial index's range bound - must hold even when
     the row-exact deadline arithmetic alone would admit the row: a
     FUTURE-stamped beat plus a degenerate NEGATIVE timeout (direct-SQL
     reachable only; enqueue refuses non-positive values) makes
@@ -552,7 +552,7 @@ async def test_future_beat_is_not_heartbeat_eligible_even_with_degenerate_timeou
     )
     assert await _job_status(clean_pg_conn, schema, future_beat) == "running", (
         "a row whose last_heartbeat_at is stamped in the FUTURE was "
-        "reclaimed by the heartbeat arm — the arm requires "
+        "reclaimed by the heartbeat arm - the arm requires "
         "last_heartbeat_at < statement_timestamp() as its index range "
         "bound, and a beat that is not in the past is never holder silence."
     )
@@ -572,7 +572,7 @@ async def test_mid_write_heartbeat_row_is_skipped_not_lost(
     UPDATE touches ``last_heartbeat_at``/``lock_expires_at``); the sweep
     must SKIP that row (FOR UPDATE SKIP LOCKED) without blocking past
     its statement_timeout, without writing anything for it, and without
-    losing it — the next tick after the write aborts reclaims the same
+    losing it - the next tick after the write aborts reclaims the same
     silence.
 
     The sibling files pin the arm's predicate but never hold a row lock
@@ -604,7 +604,7 @@ async def test_mid_write_heartbeat_row_is_skipped_not_lost(
             )
             assert count == 0, (
                 f"the sweep reclaimed {count} rows while the only eligible "
-                "row's holder was mid-heartbeat-write — SKIP LOCKED must "
+                "row's holder was mid-heartbeat-write - SKIP LOCKED must "
                 "step over the locked row, not wait and not take it."
             )
             assert await _job_status(clean_pg_conn, schema, job_id) == "running"
@@ -615,7 +615,7 @@ async def test_mid_write_heartbeat_row_is_skipped_not_lost(
                 "a skipped row must not get a job_events row"
             )
         finally:
-            # The tick aborts — the beat never lands, the silence stands.
+            # The tick aborts - the beat never lands, the silence stands.
             await tx.rollback()
 
         count_after = await PostgresBackend.sweep_expired_locks(
@@ -640,7 +640,7 @@ async def test_each_arm_carries_its_own_batch_limit(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """``batch_size = 1`` with one row eligible per arm must reclaim BOTH
-    in one call — each arm's snap carries its own LIMIT (``_SWEEP_1_SQL``
+    in one call - each arm's snap carries its own LIMIT (``_SWEEP_1_SQL``
     documents "at most 2 x batch_size"), so a rewrite that moves the
     LIMIT to the union'd snap halves the sweep's throughput per call
     silently.
@@ -671,7 +671,7 @@ async def test_each_arm_carries_its_own_batch_limit(
 
     assert count == 2, (
         f"one heartbeat-eligible + one lease-eligible row at batch_size=1 "
-        f"reclaimed {count} — the two arms must carry independent LIMITs, "
+        f"reclaimed {count} - the two arms must carry independent LIMITs, "
         "not a shared one over the union."
     )
     assert await _job_status(clean_pg_conn, schema, heartbeat_row) != "running"
@@ -741,13 +741,13 @@ async def test_heartbeat_timeout_above_the_lease_never_governs_the_reclaim(
     ``heartbeat_timeout`` at or above the fleet's lock lease can NEVER
     govern, because the heartbeat arm requires the lease still valid
     while the lease deadline (last beat + lease) always precedes the
-    heartbeat deadline (last beat + timeout) — the lease arm fires
+    heartbeat deadline (last beat + timeout) - the lease arm fires
     first, every time.
 
     The row below carries a 1-hour heartbeat budget and a 30-second
     lease; its holder went silent 2 hours ago. The reclaim is the LEASE
-    arm's (cause='lock_expired'), honestly naming the deadline that
-    fired — but the caller's 1-hour patience budget silently no-oped,
+    arm's (cause='lock_expired'), explicitly naming the deadline that
+    fired - but the caller's 1-hour patience budget silently no-oped,
     and nothing at enqueue, dispatch, or sweep says so (the companion
     docs red below attacks that gap). This pin keeps the behaviour
     itself honest and visible: whoever changes it knows the trap exists.
@@ -756,7 +756,7 @@ async def test_heartbeat_timeout_above_the_lease_never_governs_the_reclaim(
     worker_id = new_uuid()
     await create_worker(clean_pg_conn, schema, worker_id)
     # Beat 2h old; lease = last beat + 30s (expired 1h59m30s ago);
-    # heartbeat deadline = last beat + 1h (past 1h ago) — both deadlines
+    # heartbeat deadline = last beat + 1h (past 1h ago) - both deadlines
     # are past, the lease's by an hour more.
     inverted = await _seed_hb_running_job(
         clean_pg_conn,
@@ -773,8 +773,8 @@ async def test_heartbeat_timeout_above_the_lease_never_governs_the_reclaim(
     detail = await _latest_reclaim_detail(clean_pg_conn, schema, inverted)
     assert detail.get("cause") == "lock_expired", (
         f"with heartbeat_timeout (1h) >= the lease (30s), the heartbeat arm "
-        f"can never fire — the lease deadline always precedes it. The "
-        f"reclaim must honestly name the lease (detail={detail!r}); the "
+        f"can never fire - the lease deadline always precedes it. The "
+        f"reclaim must explicitly name the lease (detail={detail!r}); the "
         "silent no-op of the caller's per-job budget is the inversion trap "
         "this pin documents."
     )
@@ -792,7 +792,7 @@ async def test_heartbeat_reclaim_attempt_row_must_not_claim_the_lock_expired(
     ``job_attempts`` INSERT (``_SWEEP_1_ATTEMPTS_BATCH_SQL``) hardcodes
     ``'lock expired before worker reported terminal state'`` for BOTH
     arms, so the audit row for a heartbeat-arm reclaim asserts a lock
-    expiry that the sweep itself disproved when it selected the row —
+    expiry that the sweep itself disproved when it selected the row -
     the heartbeat arm's predicate REQUIRES
     ``lock_expires_at >= statement_timestamp()``.
 
@@ -800,7 +800,7 @@ async def test_heartbeat_reclaim_attempt_row_must_not_claim_the_lock_expired(
     ``cause`` names the deadline); the attempt surface is the lie. An
     auditor reconciling ``job_attempts`` against ``jobs`` sees a job
     reclaimed with its lease an hour in the future and an attempt row
-    claiming the lock expired — the exact "honest terminal label"
+    claiming the lock expired - the exact "honest terminal label"
     standard the same sweep applies to the cancelled branch. The twin
     hardcodes the same string (``testing/_sweeps.py``), so the fix
     touches both.
@@ -835,7 +835,7 @@ async def test_heartbeat_reclaim_attempt_row_must_not_claim_the_lock_expired(
     # sweep disproved when it selected the row.
     assert "lock expired" not in str(attempt["error_message"]), (
         f"the attempt row for a HEARTBEAT reclaim claims "
-        f"{attempt['error_message']!r} — but the heartbeat arm selected this "
+        f"{attempt['error_message']!r} - but the heartbeat arm selected this "
         "row precisely because its lock_expires_at was still an hour in the "
         "future. The audit trail must not assert a lock expiry that never "
         "happened; name the heartbeat deadline (the event's cause key "
@@ -887,7 +887,7 @@ async def test_twin_deadline_boundary_is_strictly_past() -> None:
     exactly_at_row = await backend.get(exactly_at)
     assert exactly_at_row is not None and exactly_at_row.status == "running", (
         "a holder silent EXACTLY as long as its heartbeat_timeout was "
-        "reclaimed — the deadline comparison must be strict (silence must "
+        "reclaimed - the deadline comparison must be strict (silence must "
         "run PAST the timeout), matching the SQL's <."
     )
     one_us_row = await backend.get(one_us_past)
@@ -939,7 +939,7 @@ async def test_twin_null_knob_and_unstamped_beat_mirror_the_sql() -> None:
         row = await backend.get(job_id)
         assert row is not None and row.status == "running", (
             "the twin reclaimed a NULL-knob or unstamped-beat row whose "
-            "lease was valid — the SQL waits for the lease in both shapes."
+            "lease was valid - the SQL waits for the lease in both shapes."
         )
 
 
@@ -973,7 +973,7 @@ async def test_twin_cancel_carve_out_and_branch_labels_mirror_the_sql() -> None:
     """Twin parity for the carve-out pin: the grace ladder applies to the
     heartbeat deadline, both cancel-in-flight rows (exhausted AND
     retryable) land 'cancelled' with the cancel columns preserved
-    (operator intent outranks the retry budget (#238)), mirroring the
+    (operator intent outranks the retry budget), mirroring the
     reordered CASE, and the no-cancel exhausted row stays the crashed
     arm."""
     backend = _twin_backend()
@@ -1012,7 +1012,7 @@ async def test_twin_cancel_carve_out_and_branch_labels_mirror_the_sql() -> None:
     inside_row = await backend.get(inside_margin)
     assert inside_row is not None and inside_row.status == "running", (
         "the twin reclaimed a cancel-in-flight row inside the carve-out "
-        "margin — the twin's margin must ride the HEARTBEAT deadline too."
+        "margin - the twin's margin must ride the HEARTBEAT deadline too."
     )
     exhausted_row = await backend.get(deep_exhausted)
     assert exhausted_row is not None and exhausted_row.status == "cancelled"
@@ -1062,7 +1062,7 @@ async def test_twin_batch_caps_are_per_arm() -> None:
 async def test_twin_mirrors_the_sqls_past_beat_conjunct() -> None:
     """RED at commit time (expected, the deliverable): the twin's
     heartbeat arm (``src/taskq/testing/_sweeps.py``) omits the SQL's
-    ``last_heartbeat_at < statement_timestamp()`` conjunct — for
+    ``last_heartbeat_at < statement_timestamp()`` conjunct - for
     positive timeouts the deadline arithmetic implies it, but for the
     direct-SQL-reachable degenerate row (a FUTURE-stamped beat plus a
     negative timeout) the deadline alone admits a row the SQL provably
@@ -1070,11 +1070,11 @@ async def test_twin_mirrors_the_sqls_past_beat_conjunct() -> None:
 
     The twin's own docstring claims it mirrors ``_SWEEP_1_SQL``
     "exactly, in both directions", and it DOES guard the sibling
-    NULL-beat state — the future-beat state is the same direct-SQL
+    NULL-beat state - the future-beat state is the same direct-SQL
     class, one conjunct away. Severity is parity/defense-in-depth: the
     state is unreachable through the public API (enqueue refuses
     non-positive timeouts; dispatch stamps the beat), so no production
-    behaviour diverges — only the twin's seam contract does.
+    behaviour diverges - only the twin's seam contract does.
     """
     backend = _twin_backend()
     future_beat = _twin_running_row(
@@ -1102,7 +1102,7 @@ async def test_twin_mirrors_the_sqls_past_beat_conjunct() -> None:
     assert future_row is not None, "the twin must read back the seeded row"
     assert future_row.status == "running", (
         f"the twin reclaimed a row whose last_heartbeat_at is stamped in the "
-        f"FUTURE (status={future_row.status!r}) — the SQL's heartbeat arm "
+        f"FUTURE (status={future_row.status!r}) - the SQL's heartbeat arm "
         "requires last_heartbeat_at < statement_timestamp() and leaves this "
         "row running (pinned against PG above), so the twin's deadline-only "
         "predicate has drifted from the SQL it claims to mirror exactly."
@@ -1115,8 +1115,8 @@ async def test_twin_mirrors_the_sqls_past_beat_conjunct() -> None:
 def test_ops_footgun_registry_names_the_inversion_trap() -> None:
     """The ops guide's footgun registry must name the lease-inversion trap.
 
-    A ``heartbeat_timeout`` LARGER than the lock lease is meaningless —
-    the lease reclaims first — and under the enforcement direction that
+    A ``heartbeat_timeout`` LARGER than the lock lease is meaningless -
+    the lease reclaims first - and under the enforcement direction that
     trap is live: the knob
     silently no-ops for the entire at-or-above-the-lease range (pinned
     behaving exactly so one section above), the enqueue boundary cannot
@@ -1137,16 +1137,16 @@ def test_ops_footgun_registry_names_the_inversion_trap() -> None:
     text = _OPS_MD.read_text()
     collapsed = " ".join(text.split())
 
-    # Locator: the sibling lower-bound row must still be registered — if
+    # Locator: the sibling lower-bound row must still be registered - if
     # it moved, this pin's registry moved with it, and the locator should
     # be updated in the same change.
     assert "heartbeat_timeout" in collapsed and "below one heartbeat interval" in collapsed, (
         "the ops footgun table's heartbeat_timeout lower-bound row moved or "
-        "was renamed — update this pin's locator alongside the registry."
+        "was renamed - update this pin's locator alongside the registry."
     )
 
     lease_tokens = ("TASKQ_LOCK_LEASE", "lock_lease")
-    # Phrases that can only appear in an inversion statement — "governs"
+    # Phrases that can only appear in an inversion statement - "governs"
     # alone is deliberately excluded: the feature bullet already says "
     # the shorter of the two deadlines governs", which states the rule "
     # without naming the trap the rule creates.
@@ -1177,13 +1177,13 @@ def test_ops_footgun_registry_names_the_inversion_trap() -> None:
         "heartbeat_timeout trap (a value below one heartbeat interval "
         "reclaims a healthy job on a missed beat) but not the inversion: a "
         "heartbeat_timeout at or above the fleet's TASKQ_LOCK_LEASE never "
-        "governs — the lease deadline always fires first, the per-job "
+        "governs - the lease deadline always fires first, the per-job "
         "budget silently no-ops, and nothing at enqueue, dispatch, or sweep "
         "says so. That is the inversion class: a safety knob that "
         "silently does nothing. Register the trap (one footgun-table row: "
         "name the knob, name TASKQ_LOCK_LEASE, say the knob never governs / "
         "the lease reclaims first), or warn at dispatch where both values "
-        "are known — either satisfies this pin."
+        "are known - either satisfies this pin."
     )
 
 
@@ -1202,9 +1202,9 @@ async def test_non_positive_stored_heartbeat_timeout_never_reclaims_a_healthy_ho
 
     Enqueue validation refuses a non-positive ``heartbeat_timeout``, but
     that is the only gate in the system. A row can carry ``0`` or a
-    negative interval by any path that writes the column directly — rows
+    negative interval by any path that writes the column directly - rows
     stored before the knob was validated and enforced, a manual UPDATE,
-    any future write path — and the column carries no CHECK constraint.
+    any future write path - and the column carries no CHECK constraint.
     With such a value ``last_heartbeat_at + heartbeat_timeout <
     statement_timestamp()`` is true from the instant the row is written,
     so a maximally healthy holder, beating right now with an hour of
@@ -1212,7 +1212,7 @@ async def test_non_positive_stored_heartbeat_timeout_never_reclaims_a_healthy_ho
 
     Operationally this is worse than the documented lower-bound sizing
     trap: that trap at least requires a genuinely missed beat. A
-    degenerate stored value needs none — the row is eligible before the
+    degenerate stored value needs none - the row is eligible before the
     holder could possibly have missed anything, so a rolling upgrade
     silently discards in-flight work fleet-wide.
     """
@@ -1220,7 +1220,7 @@ async def test_non_positive_stored_heartbeat_timeout_never_reclaims_a_healthy_ho
     worker_id = new_uuid()
     await create_worker(clean_pg_conn, schema, worker_id)
 
-    # Healthy, actively-heartbeating job — degenerate zero timeout only.
+    # Healthy, actively-heartbeating job - degenerate zero timeout only.
     zero_timeout = await _seed_hb_running_job(
         clean_pg_conn,
         schema,
@@ -1254,20 +1254,20 @@ async def test_non_positive_stored_heartbeat_timeout_never_reclaims_a_healthy_ho
 
     assert await _job_status(clean_pg_conn, schema, control) == "running", (
         "control row (positive, well-sized heartbeat_timeout, fresh beat) "
-        "was reclaimed — seeding or sweep call is broken, not the bug under test."
+        "was reclaimed - seeding or sweep call is broken, not the bug under test."
     )
     assert await _job_status(clean_pg_conn, schema, zero_timeout) == "running", (
         f"a job with heartbeat_timeout=0 and a beat stamped at seed time (no "
         f"missed heartbeat whatsoever, lease valid for another hour) was "
         f"reclaimed by the sweep (count={count}). The heartbeat arm guards "
         f"only `heartbeat_timeout IS NOT NULL`, with no positivity conjunct, "
-        f"and the column carries no CHECK constraint — so a non-positive "
+        f"and the column carries no CHECK constraint - so a non-positive "
         f"stored value reclaims a perfectly healthy running job as a false "
         f"crash on the very first sweep after dispatch."
     )
     assert await _job_status(clean_pg_conn, schema, negative_timeout) == "running", (
         f"a healthy, actively-heartbeating job with heartbeat_timeout=-5s was "
-        f"reclaimed by the sweep (count={count}) with zero missed beats — the "
+        f"reclaimed by the sweep (count={count}) with zero missed beats - the "
         f"heartbeat arm must treat a non-positive stored timeout as inert and "
         f"let the lease govern."
     )
@@ -1278,9 +1278,9 @@ async def test_heartbeat_timeout_at_the_documented_sizing_leaves_a_beating_holde
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """A job sized exactly as the ops guide instructs — ``heartbeat_timeout``
+    """A job sized exactly as the ops guide instructs - ``heartbeat_timeout``
     at twice the fleet's heartbeat interval and comfortably below the lock
-    lease — must survive every sweep while its holder keeps beating.
+    lease - must survive every sweep while its holder keeps beating.
 
     This is the sizing an operator who follows the documentation actually
     deploys, so it is the shape that must never produce a false reclaim.
@@ -1314,7 +1314,7 @@ async def test_heartbeat_timeout_at_the_documented_sizing_leaves_a_beating_holde
         assert count == 0, (
             f"the sweep reclaimed {count} rows while the only running job was "
             "beating on schedule at the documented sizing (heartbeat_timeout = "
-            "2x heartbeat_interval, below lock_lease) — heartbeat enforcement "
+            "2x heartbeat_interval, below lock_lease) - heartbeat enforcement "
             "must never touch a healthy holder."
         )
         assert await _job_status(clean_pg_conn, schema, job_id) == "running"
@@ -1339,7 +1339,7 @@ async def test_twin_treats_a_non_positive_stored_heartbeat_timeout_as_inert() ->
 
     The twin is the backend every consumer test runs against, so a twin
     that reclaims these rows hides the production defect from the whole
-    suite — and a twin that keeps reclaiming them after the SQL is fixed
+    suite - and a twin that keeps reclaiming them after the SQL is fixed
     breaks the seam-equivalence contract from the other direction.
     """
     backend = _twin_backend()
@@ -1373,7 +1373,7 @@ async def test_twin_treats_a_non_positive_stored_heartbeat_timeout_as_inert() ->
         row = await backend.get(job_id)
         assert row is not None and row.status == "running", (
             f"the twin reclaimed a healthy, freshly-beating job carrying a "
-            f"{label} stored heartbeat_timeout — a non-positive timeout must be "
+            f"{label} stored heartbeat_timeout - a non-positive timeout must be "
             "inert on both backends, leaving the lease to govern."
         )
 
@@ -1408,6 +1408,6 @@ async def test_twin_heartbeat_attempt_row_does_not_claim_the_lock_expired() -> N
     assert "lock expired" not in str(attempt.error_message), (
         f"the twin's attempt row for a HEARTBEAT reclaim says "
         f"{attempt.error_message!r}, but the arm selected this row with its "
-        "lease an hour in the future — the audit trail must name the "
+        "lease an hour in the future - the audit trail must name the "
         "heartbeat deadline that actually fired."
     )

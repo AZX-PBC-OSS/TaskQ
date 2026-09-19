@@ -8,8 +8,8 @@ Two paths express it: ``mark_snoozed`` with an
 ``RetryAfter(consume_budget=False)`` arm an actor takes when honouring a
 server-provided ``Retry-After``. Both must behave identically.
 
-A denial carries HTTP-429 semantics — "come back later, with a
-Retry-After" — and nothing more. It says the fleet had no slot, which
+A denial carries HTTP-429 semantics - "come back later, with a
+Retry-After" - and nothing more. It says the fleet had no slot, which
 is a statement about capacity, not about the job. So it must never
 touch the job's retry budget and must never, by itself, terminally fail
 the job. A queue or rate-limit misconfiguration must not be able to
@@ -20,10 +20,10 @@ ordinary deadline path.
 
 The settled contract these tests pin:
 
-1. A denial must NOT persist per-occurrence rows — it is counted on the
+1. A denial must NOT persist per-occurrence rows - it is counted on the
    job row and emitted to OTEL; history belongs to collectors.
 2. A denial must NOT raise ``max_attempts``, and must NOT consume the
-   budget — the ceiling is a bound on executions, and a denial is not
+   budget - the ceiling is a bound on executions, and a denial is not
    an execution.
 3. A denial must NOT terminalise a job. A job denied on every cycle
    stays retryable forever; its only terminal exit is the deadline
@@ -124,7 +124,7 @@ async def test_reservation_denial_writes_no_event_or_attempt_rows(
         "machine consumer ever matches it (the reclaim outbox reads only "
         "kind='state_change' AND reason='lock_expired') and the only human "
         "reader is the admin job-detail page. The denial must be counted on "
-        "the job row and emitted to OTEL, never persisted per occurrence — "
+        "the job row and emitted to OTEL, never persisted per occurrence - "
         "a per-denial row is an unbounded-growth vector on a surface nothing "
         "reads back."
     )
@@ -132,7 +132,7 @@ async def test_reservation_denial_writes_no_event_or_attempt_rows(
         f"a reservation denial wrote {attempts} job_attempts row(s). The "
         "attempts table records failed EXECUTIONS; a denied job never "
         "executed. The row only fits because dispatch had already bumped "
-        "attempt — a conceptual error underneath the storage one."
+        "attempt - a conceptual error underneath the storage one."
     )
     assert max_attempts == 3, (
         f"a reservation denial raised max_attempts from 3 to {max_attempts}. "
@@ -145,12 +145,12 @@ async def test_reservation_denial_writes_no_event_or_attempt_rows(
     snoozed, blocked = await _counter_pair(clean_jobs_app, schema, job_id)
     assert blocked == 1, (
         f"a reservation denial left rate_limit_blocked_count at {blocked}; the "
-        "denial must be counted on the job row — the coalesced, O(1)-in-denials "
+        "denial must be counted on the job row - the coalesced, O(1)-in-denials "
         "record of how often admission was refused."
     )
     assert snoozed == 0, (
         f"a reservation denial bumped snooze_count to {snoozed}; the counters "
-        "are keyed by outcome — admission denials and plain snoozes are "
+        "are keyed by outcome - admission denials and plain snoozes are "
         "materially different signals."
     )
 
@@ -159,7 +159,7 @@ async def test_retry_after_without_budget_writes_no_event_or_attempt_rows(
     clean_jobs_app: JobsApp,
 ) -> None:
     """The sibling arm: ``RetryAfter(consume_budget=False)`` is the same
-    non-execution deferral and must follow the same rule — no rows, no
+    non-execution deferral and must follow the same rule - no rows, no
     ceiling raise."""
     schema, job_id, worker_id = await _seed_running(clean_jobs_app, max_attempts=3)
 
@@ -175,7 +175,7 @@ async def test_retry_after_without_budget_writes_no_event_or_attempt_rows(
     events, attempts, max_attempts, status = await _trail_counts(clean_jobs_app, schema, job_id)
     assert events == 0, (
         f"mark_retry_after(consume_budget=False) wrote {events} job_events "
-        "row(s) — same unbounded per-occurrence trail as the reservation "
+        "row(s) - same unbounded per-occurrence trail as the reservation "
         "denial path, one statement over."
     )
     assert attempts == 0, (
@@ -207,14 +207,14 @@ async def test_denial_loop_never_terminalises_and_never_spends_budget(
 
     A denial is capacity backpressure, not a failed execution, so it
     carries HTTP-429 semantics: come back later. A job that never gets a
-    slot must be rescheduled indefinitely — never terminally failed, and
-    never charged for the denial — so that a queue or rate-limit
+    slot must be rescheduled indefinitely - never terminally failed, and
+    never charged for the denial - so that a queue or rate-limit
     misconfiguration cannot kill work that did nothing wrong. The only
     exit for such a job is its own ``schedule_to_close`` deadline, which
     this job (like most) does not set.
 
-    Drives the real cycle — dispatch (which increments ``attempt``) →
-    reservation denial (``mark_snoozed``) → re-dispatch — on a job with
+    Drives the real cycle - dispatch (which increments ``attempt``) →
+    reservation denial (``mark_snoozed``) → re-dispatch - on a job with
     ``max_attempts=3`` and no ``schedule_to_close``. Well past the
     nominal budget the job must still be claimable and non-terminal,
     its ceiling untouched and its denial count the only thing rising.
@@ -259,7 +259,7 @@ async def test_denial_loop_never_terminalises_and_never_spends_budget(
         claimed = [r.id for r in rows]
         assert claimed == [job_id], (
             f"cycle {cycle}: the denied job was not claimable. A denial is "
-            "capacity backpressure with 429 semantics — the job must be "
+            "capacity backpressure with 429 semantics - the job must be "
             "rescheduled and re-dispatchable indefinitely until capacity "
             "frees, not dropped out of the dispatch set."
         )
@@ -297,7 +297,7 @@ async def test_denial_loop_never_terminalises_and_never_spends_budget(
         # which leaves the job 'scheduled' 1 s out; forcing scheduled_at
         # into the past stands in for that second passing, and the
         # scheduled_to_pending sweep is the promotion a real leader runs
-        # between dispatch rounds — the loop must go through it, because
+        # between dispatch rounds - the loop must go through it, because
         # dispatch only claims 'pending' rows.
         async with clean_jobs_app.deps.worker_pool.acquire() as conn:  # type: ignore[union-attr]  # Why: as above.
             await conn.execute(
@@ -321,7 +321,7 @@ async def test_denial_loop_never_terminalises_and_never_spends_budget(
         f"{cycles} reservation denials left rate_limit_blocked_count at "
         f"{blocked}. With per-denial rows removed, this aggregated counter is "
         "the only way an operator can see that a job is being starved of "
-        "admission rather than progressing — it must count every denial."
+        "admission rather than progressing - it must count every denial."
     )
     assert snoozed == 0, (
         f"admission denials bumped snooze_count to {snoozed}; the counters "
@@ -339,7 +339,7 @@ async def test_denial_at_exhausted_budget_reschedules_rather_than_failing(
     denial is not a run: the fleet had no slot, which is a fact about
     capacity, not about the job. So no combination of ``retry_kind`` and
     ``attempt``/``max_attempts`` may turn an admission denial into a
-    terminal failure — in particular never ``MaxAttemptsExceeded``, which
+    terminal failure - in particular never ``MaxAttemptsExceeded``, which
     asserts the actor ran and failed that many times and would be a lie
     about a job that never executed. Terminating here would let a
     misconfigured queue kill work with a retry count of 3.
@@ -365,7 +365,7 @@ async def test_denial_at_exhausted_budget_reschedules_rather_than_failing(
     )
     assert outcome == "scheduled", (
         f"a reservation denial on a budget-exhausted job returned {outcome!r}. "
-        "A denial has 429 semantics — come back later — and must reschedule, "
+        "A denial has 429 semantics - come back later - and must reschedule, "
         "never terminalise: the budget bounds executions, and a denied job "
         "never executed."
     )
@@ -394,7 +394,7 @@ async def test_denial_at_exhausted_budget_reschedules_rather_than_failing(
     assert row is not None
     assert row["error_class"] is None, (
         f"a reservation denial stamped error_class {row['error_class']!r} on a "
-        "job that is still live — in particular MaxAttemptsExceeded would "
+        "job that is still live - in particular MaxAttemptsExceeded would "
         "claim the actor ran and failed, which never happened."
     )
     assert row["error_message"] is None
@@ -449,13 +449,13 @@ async def test_denied_job_runs_to_success_once_capacity_frees(
     clean_jobs_app: JobsApp,
 ) -> None:
     """A job denied admission repeatedly still executes and succeeds when
-    a slot finally opens — the denials cost it nothing.
+    a slot finally opens - the denials cost it nothing.
 
     This is the operator-visible half of 429 semantics.  "Never terminally
     failed" alone is not reliability: a job could satisfy that and still be
     permanently unrunnable, having been pushed out of the dispatch set, had
     its fence epoch corrupted, or had its budget quietly spent so the first
-    real execution is refused.  What an operator needs is convergence — the
+    real execution is refused.  What an operator needs is convergence - the
     work eventually runs, exactly once, and reports success.
 
     The adverse condition is a long denial streak well past the nominal
@@ -490,7 +490,7 @@ async def test_denied_job_runs_to_success_once_capacity_frees(
         rows = await backend.dispatch_batch(worker_id, ["default"], 1, _LEASE)  # type: ignore[union-attr]  # Why: as above.
         assert [r.id for r in rows] == [job_id], (
             f"cycle {cycle}: a denied job fell out of the dispatch set. Work "
-            "that never got a slot must stay reachable — a job nobody can "
+            "that never got a slot must stay reachable - a job nobody can "
             "claim any more is lost, whatever its row says."
         )
         denial_outcome = await backend.mark_snoozed(  # type: ignore[union-attr]  # Why: as above.
@@ -502,7 +502,7 @@ async def test_denied_job_runs_to_success_once_capacity_frees(
         )
         assert denial_outcome == "scheduled", (
             f"cycle {cycle}: the denial returned {denial_outcome!r}. Denials "
-            "carry 429 semantics and must only ever reschedule — a denial "
+            "carry 429 semantics and must only ever reschedule - a denial "
             "that terminalises the job destroys work that never ran, which "
             "is exactly the outcome a capacity shortage must not produce."
         )
@@ -523,7 +523,7 @@ async def test_denied_job_runs_to_success_once_capacity_frees(
     )
     assert succeeded, (
         "the terminal success write matched no row after a denial streak. The "
-        "attempt-epoch fence must still admit the one real execution — a "
+        "attempt-epoch fence must still admit the one real execution - a "
         "denial that desynchronises the fence makes a job permanently "
         "unfinishable while it still looks healthy."
     )
@@ -568,14 +568,14 @@ async def test_denied_job_past_its_close_deadline_fails_visibly_not_silently(
     clean_jobs_app: JobsApp,
 ) -> None:
     """A job denied until its ``schedule_to_close`` passes reaches an
-    explicit terminal state an operator can see — it never goes quiet.
+    explicit terminal state an operator can see - it never goes quiet.
 
     Denials are deliberately invisible in the durable trail, which creates
     the opposite reliability hazard: work that is never admitted and never
     terminated becomes a row nobody watches, pending forever with no
     signal.  The bound is the job's own close deadline, and crossing it
-    must produce the ordinary terminal failure — status, error class,
-    finish timestamp, an attempt row and a state-change event — through the
+    must produce the ordinary terminal failure - status, error class,
+    finish timestamp, an attempt row and a state-change event - through the
     deadline sweep, not a silent disappearance from the dispatch set.
     """
     schema = module_pg_schema.schema_name
@@ -664,7 +664,7 @@ async def test_denied_job_past_its_close_deadline_fails_visibly_not_silently(
     )
     assert row["error_class"] == "DeadlineExceeded", (
         f"the terminal failure names error_class {row['error_class']!r}. The "
-        "cause must say the deadline expired — not MaxAttemptsExceeded, which "
+        "cause must say the deadline expired - not MaxAttemptsExceeded, which "
         "would claim executions that never happened."
     )
     assert row["finished_at"] is not None, (

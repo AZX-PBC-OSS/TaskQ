@@ -1,4 +1,4 @@
-"""Unit tests for taskq.testing.actor — FakeBackend and stub config helpers."""
+"""Unit tests for taskq.testing.actor - FakeBackend and stub config helpers."""
 
 from __future__ import annotations
 
@@ -214,7 +214,7 @@ async def test_fake_backend_succeed_after_cancelled_is_fenced_out() -> None:
 async def test_fake_backend_second_terminal_write_same_worker_is_fenced_out() -> None:
     """Same worker, same attempt, second write: the row is already terminal.
 
-    Even the write that landed cannot be repeated — the real fence's
+    Even the write that landed cannot be repeated - the real fence's
     ``status='running'`` conjunct rejects it, so the double's does too.
     """
     backend = FakeBackend()
@@ -226,7 +226,7 @@ async def test_fake_backend_second_terminal_write_same_worker_is_fenced_out() ->
 
 
 async def test_fake_backend_fenced_out_write_still_records_the_call() -> None:
-    """Fencing changes the return, not the recording — assertions on the
+    """Fencing changes the return, not the recording - assertions on the
     call log keep working for the stale write exactly as for the landed
     one."""
     backend = FakeBackend()

@@ -2,7 +2,7 @@
 
 ``_shutdown_admin`` lives at module level in ``tests/e2e/test_progress.py``
 (deliberately importable; the e2e lane itself needs Docker). These tests pin
-the liveness-guard polarity against real spawned child processes — an
+the liveness-guard polarity against real spawned child processes - an
 inverted ``poll()`` guard terminates only already-dead children and lets live
 ones eat the full ``communicate(timeout=10)`` before SIGKILL, on every
 teardown.
@@ -26,7 +26,7 @@ def _spawn(args: list[str]) -> subprocess.Popen[str]:
 
 
 def test_live_child_exits_promptly_on_sigterm_without_sigkill() -> None:
-    """A live child is SIGTERMed and reaped immediately — no 10s
+    """A live child is SIGTERMed and reaped immediately - no 10s
     ``communicate`` stall, no SIGKILL escalation."""
     proc = _spawn([sys.executable, "-c", "import time; time.sleep(60)"])
 

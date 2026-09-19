@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 
     type _Conn = asyncpg.Connection | PoolConnectionProxy
 else:
-    type _Conn = object  # pyright: ignore[reportInvalidTypeForm] # Why: runtime fallback — asyncpg is TYPE_CHECKING-only to avoid transitive import
+    type _Conn = object  # pyright: ignore[reportInvalidTypeForm] # Why: runtime fallback - asyncpg is TYPE_CHECKING-only to avoid transitive import
 
 pytestmark = pytest.mark.integration
 
@@ -83,7 +83,7 @@ async def _promote_scheduled_to_running(
 async def test_transient_retry_succeeds_after_retries(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """transient retry happy path — 3 attempts, final success.
+    """transient retry happy path - 3 attempts, final success.
 
     Enqueue a job with max_attempts=3; the actor raises RuntimeError on
     attempts 1 and 2 and returns successfully on attempt 3. The consumer
@@ -219,7 +219,7 @@ async def test_transient_retry_succeeds_after_retries(
 async def test_transient_exhaustion(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """transient exhaustion — max_attempts=2, always raises.
+    """transient exhaustion - max_attempts=2, always raises.
 
     Enqueue with max_attempts=2 and an actor that always raises
     RuntimeError. Run consumer. Assert: final status='failed' after
@@ -331,7 +331,7 @@ async def test_cancel_skips_classifier() -> None:
         cleanup_grace_period=timedelta(seconds=2),
     )
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="slow_actor")
 
     args = EnqueueArgs(
@@ -513,7 +513,7 @@ async def test_dispatch_filter_respects_schedule_to_close(
 #
 # Indefinite-tier actor fails 10 times, succeeds on
 # attempt 11. Verifies the "retry until done" pattern end-to-end against
-# real PG — the primary acceptance test.
+# real PG - the primary acceptance test.
 
 
 async def test_indefinite_retry_polling_pattern(
@@ -521,7 +521,7 @@ async def test_indefinite_retry_polling_pattern(
 ) -> None:
     """Indefinite-tier actor fails 10 times and succeeds on attempt 11.
     The job reaches succeeded status with attempt=11, and the
-    job_attempts table has 11 rows — 10 with outcome='failed' and 1
+    job_attempts table has 11 rows - 10 with outcome='failed' and 1
     with outcome='succeeded'. No row has outcome='retried_indefinite'
     (the AttemptOutcome literal is closed).
 
@@ -679,7 +679,7 @@ async def test_indefinite_retry_deadline_enforcement(
         start_to_close=None,
     )
     decision_2 = decide_after_failure(_StubConfig(policy), exception, job_state_2)
-    # C2: the classifier is not a deadline arbiter — it still decides Retry.
+    # C2: the classifier is not a deadline arbiter - it still decides Retry.
     assert isinstance(decision_2, Retry)
 
     # The SQL deadline guard arbitrates: the delay cannot land before the

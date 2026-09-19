@@ -1,13 +1,13 @@
 """The sweep loop's fleet-wide keyed-row reclaim wiring (the keyed-row residual).
 
-The reclaim seam itself (``sweep_idle_keyed_rows`` — one bounded,
+The reclaim seam itself (``sweep_idle_keyed_rows`` - one bounded,
 committed batch per table per call, the keyed mark plus the
 ``last_used_at`` horizon deciding eligibility) is pinned against real
 Postgres by ``tests/test_keyed_row_fleet_reclaim.py``. What that file
 cannot see is the LEADER LOOP's driving of the seam: the block inside
 ``_sweep_loop`` must run once per tick with the operator's configured
 horizon and batch size, and the settings-level disable sentinel
-(``timedelta(0)``) must keep the tick from invoking the sweep at all —
+(``timedelta(0)``) must keep the tick from invoking the sweep at all -
 the wiring contract, the same tier as
 ``tests/test_leader_sweep_event_retention_wiring.py`` pins for the
 event-retention drain and
@@ -164,9 +164,9 @@ async def _run_loop_until(ctx: SweepContext, done: Callable[[], bool]) -> None:
 async def test_sweep_loop_drives_keyed_row_reclaim_with_configured_horizon() -> None:
     """One leader tick invokes the keyed-row reclaim sweep once, on the
     dispatcher pool, with the operator's configured horizon and batch
-    size — the wiring that turns ``sweep_idle_keyed_rows`` into the
+    size - the wiring that turns ``sweep_idle_keyed_rows`` into the
     fleet-wide reclaim (one bounded, committed batch per table per
-    tick, deliberately NOT a ``_drain_bounded`` drain — the
+    tick, deliberately NOT a ``_drain_bounded`` drain - the
     slow-and-constant discipline the event-retention block settled)."""
     deps = _deps(keyed_row_reclaim_period="2h")
     backend = _KeyedReclaimBackend()
@@ -175,7 +175,7 @@ async def test_sweep_loop_drives_keyed_row_reclaim_with_configured_horizon() -> 
     await _run_loop_until(ctx, lambda: bool(backend.keyed_reclaim_calls))
 
     assert backend.keyed_reclaim_calls, (
-        "the leader tick did not invoke sweep_idle_keyed_rows — the reclaim seam "
+        "the leader tick did not invoke sweep_idle_keyed_rows - the reclaim seam "
         "exists but nothing drives it, so keyed rows orphaned by a dead worker are "
         "never reclaimed by the leader"
     )
@@ -186,7 +186,7 @@ async def test_sweep_loop_drives_keyed_row_reclaim_with_configured_horizon() -> 
     )
     assert call["batch_size"] == deps.settings.keyed_row_reclaim_batch_size, (
         "the tick must drive the sweep with the configured keyed_row_reclaim_batch_size "
-        "— the bound that keeps one tick's DELETE constant-size against any backlog"
+        "- the bound that keeps one tick's DELETE constant-size against any backlog"
     )
     assert call["schema"] == deps.settings.schema_name
 
@@ -195,7 +195,7 @@ async def test_disabled_keyed_row_reclaim_never_invokes_the_sweep() -> None:
     """``timedelta(0)`` is the settings-level disable sentinel: the tick
     must not invoke the keyed-row reclaim sweep at all (a disabled sweep
     acquires no connection and deletes nothing), while the rest of the
-    leader section — proven by the sibling sweeps on the same gate —
+    leader section - proven by the sibling sweeps on the same gate -
     keeps running."""
     deps = _deps(keyed_row_reclaim_period="0")
     backend = _KeyedReclaimBackend()
@@ -218,7 +218,7 @@ async def test_disabled_keyed_row_reclaim_never_invokes_the_sweep() -> None:
     )
     assert not backend.keyed_reclaim_calls, (
         "a disabled keyed-row reclaim (keyed_row_reclaim_period=timedelta(0)) must never "
-        "invoke sweep_idle_keyed_rows — zero is the documented disable sentinel, and a "
+        "invoke sweep_idle_keyed_rows - zero is the documented disable sentinel, and a "
         "sweep that ran anyway would delete every fleet-reclaimable keyed row older "
         "than 'now'"
     )

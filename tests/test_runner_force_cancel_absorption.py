@@ -268,11 +268,11 @@ async def test_second_force_cancel_episode_lands_between_jobs_and_is_absorbed_on
 
     This is the between-jobs cell of the force-cancel contract: the second
     episode's cancel() is requested while the drain has moved on from the
-    first job — a fresh dispatch, a fresh inflight registration. If the
+    first job - a fresh dispatch, a fresh inflight registration. If the
     first episode's balancing uncancel() were skipped, the count entering
     the second dispatch would already sit above its baseline, and the
     drain would misread the second force-cancel as the caller's stop and
-    die on it — the absorb would work exactly once. Production's dispatch
+    die on it - the absorb would work exactly once. Production's dispatch
     loop survives cancelling one attempt task per escalation for as long
     as it runs; the runner must too.
     """
@@ -346,7 +346,7 @@ async def test_second_force_cancel_episode_lands_between_jobs_and_is_absorbed_on
 
     async def escalate_each_once_running() -> None:
         # One escalation episode per stubborn job, each driven only once
-        # that job is genuinely running — the second episode is requested
+        # that job is genuinely running - the second episode is requested
         # after the drain resumed dispatching, i.e. between the two jobs'
         # execution scopes.
         await asyncio.wait_for(stubborn_a_started.wait(), timeout=2.0)
@@ -378,7 +378,7 @@ async def test_second_force_cancel_episode_lands_between_jobs_and_is_absorbed_on
 
     assert drain_escaped is None, (
         "the second force-cancel episode must be absorbed exactly like the "
-        "first — each dispatch carries its own cancel-count baseline, so an "
+        "first - each dispatch carries its own cancel-count baseline, so an "
         f"episode landing between jobs is not misread as the caller's stop. "
         f"CancelledError escaped: {drain_escaped!r}"
     )
@@ -410,7 +410,7 @@ async def test_second_force_cancel_episode_lands_between_jobs_and_is_absorbed_on
 async def test_external_cancel_after_an_absorbed_force_cancel_still_stops_the_drain() -> None:
     """The absorb is scoped to the force-cancelled dispatch: once it has
     been balanced, the drain task is an ordinary task again, and a caller
-    cancelling the DRAIN itself while it serves the next job still wins —
+    cancelling the DRAIN itself while it serves the next job still wins -
     the CancelledError propagates, the interrupted job is marked cancelled
     by the shared consumer's shielded write, and the abandoned row behind
     it is untouched.
@@ -418,7 +418,7 @@ async def test_external_cancel_after_an_absorbed_force_cancel_still_stops_the_dr
     Production cancels only the offending attempt task per escalation, but
     a cancelled dispatch loop still stops the worker. A runner that kept
     absorbing after the balance was restored would swallow the caller's
-    stop — the asyncio shutdown-hang antipattern — and a runner whose
+    stop - the asyncio shutdown-hang antipattern - and a runner whose
     uncancel() underflowed would raise with no cancellation pending. This
     pin holds the line between the two.
     """
@@ -480,7 +480,7 @@ async def test_external_cancel_after_an_absorbed_force_cancel_still_stops_the_dr
     try:
         # Deadline-based: the force-cancel of job A is only known to be
         # absorbed once the drain has moved on and parked inside job B's
-        # gate — cancelling before then would race the first episode.
+        # gate - cancelling before then would race the first episode.
         await asyncio.wait_for(gated_started.wait(), timeout=2.0)
         drain_task.cancel()
 
@@ -492,7 +492,7 @@ async def test_external_cancel_after_an_absorbed_force_cancel_still_stops_the_dr
 
         assert isinstance(propagated, asyncio.CancelledError), (
             "a caller cancel of the drain task after an absorbed "
-            "force-cancel must still propagate — the absorb is scoped to "
+            "force-cancel must still propagate - the absorb is scoped to "
             "the force-cancelled dispatch, and the drain is an ordinary, "
             f"killable task again once balanced; instead the drain "
             f"returned or raised something else: {propagated!r}"
@@ -518,6 +518,6 @@ async def test_external_cancel_after_an_absorbed_force_cancel_still_stops_the_dr
     assert row_b.status == "cancelled", (
         "the job interrupted by the external drain cancel is marked "
         "cancelled by the shared consumer's shielded write before the "
-        f"runner re-raises — the shutdown-cancellation contract; got "
+        f"runner re-raises - the shutdown-cancellation contract; got "
         f"{row_b.status!r}"
     )

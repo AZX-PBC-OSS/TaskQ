@@ -2,7 +2,7 @@
 
 Invoked via ``sys.executable -m tests._worker_harness`` by integration
 tests. Loads ``WorkerSettings`` from the environment and runs the
-production ``_main`` bootstrap. The harness is pure glue — no signal
+production ``_main`` bootstrap. The harness is pure glue - no signal
 handling, no health-socket probing, no business logic.
 """
 

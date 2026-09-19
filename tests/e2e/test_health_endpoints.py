@@ -1,12 +1,12 @@
-"""Health endpoint e2e — /live and /ready on the worker's Unix-socket health server.
+"""Health endpoint e2e - /live and /ready on the worker's Unix-socket health server.
 
 The worker container runs a :class:`HealthServer` on a Unix domain socket
 at ``/tmp/taskq_health.sock`` (default ``health_socket_path``). The server
 is a bare ``asyncio.start_unix_server`` HTTP responder (not FastAPI) with
 two endpoints:
 
-- ``GET /live`` — event-loop responsiveness probe (``{"status":"ok"}``).
-- ``GET /ready`` — readiness probe with watchdog observability fields:
+- ``GET /live`` - event-loop responsiveness probe (``{"status":"ok"}``).
+- ``GET /ready`` - readiness probe with watchdog observability fields:
   ``stale_loops``, ``loop_tick_ages``, ``shutdown_elapsed_seconds``,
   ``shutdown_phase``, ``active_jobs``, ``is_leader``, ``redis_configured``,
   ``pg_ping_ok``, ``live``, ``ready``, ``reasons``.
@@ -173,7 +173,7 @@ async def test_health_ready_endpoint(
     shutdown state after SIGTERM.
 
     (a) While the worker is running normally, ``/ready`` returns 200 with
-    fields: ``stale_loops`` (not in body — the readiness body includes
+    fields: ``stale_loops`` (not in body - the readiness body includes
     ``loop_tick_ages``, ``shutdown_elapsed_seconds``, ``shutdown_phase``,
     ``active_jobs``, ``is_leader``, ``redis_configured``, ``pg_ping_ok``,
     ``live``, ``ready``, ``reasons``). The ``ready`` field is ``true`` and

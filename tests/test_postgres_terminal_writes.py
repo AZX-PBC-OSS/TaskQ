@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
     type _Conn = asyncpg.Connection | PoolConnectionProxy
 else:
-    type _Conn = object  # pyright: ignore[reportInvalidTypeForm] # Why: runtime fallback — asyncpg is TYPE_CHECKING-only to avoid transitive import
+    type _Conn = object  # pyright: ignore[reportInvalidTypeForm] # Why: runtime fallback - asyncpg is TYPE_CHECKING-only to avoid transitive import
 
 pytestmark = pytest.mark.integration
 
@@ -38,7 +38,7 @@ pytestmark = pytest.mark.integration
 
 _GRACE = timedelta(seconds=30)
 
-# (Local enqueue_and_dispatch_memory removed — now in taskq.testing.jobs)
+# (Local enqueue_and_dispatch_memory removed - now in taskq.testing.jobs)
 
 
 # ── terminal writes actually update the row in PG ───────────────
@@ -133,7 +133,7 @@ class TestTerminalWritesUpdateRow:
         self, clean_jobs_app: JobsApp, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The applied abandon write records taskq.jobs.abandoned{actor}
-        once — the series TaskQAbandonedJobs pages on — and a predicate
+        once - the series TaskQAbandonedJobs pages on - and a predicate
         miss (second call, row already terminal) records nothing more."""
         from taskq.testing.otel import counter_data_points, setup_meter
 
@@ -193,7 +193,7 @@ class TestTerminalWritesUpdateRow:
             error_message="transient",
             error_traceback=None,
         )
-        # The decision is a delay — the server derives scheduled_at from it.
+        # The decision is a delay - the server derives scheduled_at from it.
         row = await backend.mark_failed_or_retry(
             job_id, worker_id, error_info, timedelta(seconds=10), attempt=1
         )
@@ -362,7 +362,7 @@ class TestWorkerRowDeletedBeforeTerminalWrite:
 
     cleanup_stale_workers (a different worker's leader sweep) deletes a
     row once its heartbeat is stale heartbeat_interval *
-    (max_heartbeat_failures + 3) — a live-but-blocked loop can cross that
+    (max_heartbeat_failures + 3) - a live-but-blocked loop can cross that
     threshold (watchdog off, or a lag budget above it) and still write its
     terminal state afterwards. The attempt INSERT must then record a NULL
     worker_id (mirroring the column's ON DELETE SET NULL) instead of
@@ -526,7 +526,7 @@ class TestWrongWorkerIdPG:
 
         Why this needs its own test: ``mark_failed_or_retry`` routes on
         ``retry_delay is None`` alone, so the sibling wrong-worker test above
-        — which passes ``None`` — only ever reaches ``mark_failed``.  Neither
+        - which passes ``None`` - only ever reaches ``mark_failed``.  Neither
         arm of the ``mark_retry`` CTE was covered by any wrong-worker test.
 
         The exposure is a double-execution, not a bookkeeping slip: a worker
@@ -536,7 +536,7 @@ class TestWrongWorkerIdPG:
         attempt back to pending/scheduled, and the actor would run twice
         concurrently.  ``retry_delay`` past ``schedule_to_close`` takes the
         ``deadline_failed`` arm instead, which would clobber the live attempt
-        into a terminal ``failed`` — so both arms are pinned here.
+        into a terminal ``failed`` - so both arms are pinned here.
         """
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend
@@ -547,7 +547,7 @@ class TestWrongWorkerIdPG:
             # A registered worker, not a bare UUID: the scenario is a job the
             # sweep re-dispatched to a real second worker, and only a real
             # workers row lets an unfenced write land instead of tripping the
-            # job_attempts FK — which would mask the fence failure as an
+            # job_attempts FK - which would mask the fence failure as an
             # unrelated database error.
             await create_worker(conn, schema, wrong_worker)
             worker_id, job_id = await setup_running_job(
@@ -610,7 +610,7 @@ class TestWrongWorkerIdPG:
 
 class TestPayloadValidationErrorPG:
     """(PG side): PayloadValidationError path through
-    mark_failed_or_retry. Verifies the write surface — the
+    mark_failed_or_retry. Verifies the write surface - the
     non-retryable classifier is enforced by the dispatch layer,
     not this write surface."""
 
@@ -672,7 +672,7 @@ class TestEquivalence:
 
         # ── PG backend ───────────────────────────────────────────
         # Real enqueue + dispatch, exactly like the memory side: a claim
-        # deliberately writes no job_events row (the events diet —
+        # deliberately writes no job_events row (the events diet -
         # backend/_dispatch.py), so a fixture-injected claim event would
         # leave the PG stream one row ahead of anything the memory twin
         # can produce and break the event-count equivalence below.
@@ -721,7 +721,7 @@ class TestEquivalence:
         mem_events = await memory_jobs.get_events(mem_job_id)
 
         # ── PG backend ───────────────────────────────────────────
-        # Real enqueue + dispatch — see test_mark_succeeded_equivalence
+        # Real enqueue + dispatch - see test_mark_succeeded_equivalence
         # for why a fixture-injected claim event cannot work here.
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend
@@ -754,7 +754,7 @@ class TestEquivalence:
 
 
 class TestMarkSnoozedRefundsAttempt:
-    """snooze refunds the claim's attempt increment — budget-free."""
+    """snooze refunds the claim's attempt increment - budget-free."""
 
     async def test_mark_snoozed_refunds_attempt(self, clean_jobs_app: JobsApp) -> None:
         deps = clean_jobs_app.deps
@@ -902,7 +902,7 @@ class TestMarkSnoozedReservationDenied:
     """mark_snoozed with outcome='reservation_denied' reschedules the job on
     429 semantics: the retry budget is untouched, no terminal failure is
     written, and the denial is recorded only as the aggregated count on the
-    row plus the metadata annotation — no attempt row (a denial is admission
+    row plus the metadata annotation - no attempt row (a denial is admission
     control, not an execution)."""
 
     async def test_mark_snoozed_outcome_reservation_denied(self, clean_jobs_app: JobsApp) -> None:
@@ -959,7 +959,7 @@ class TestMarkSnoozedReservationDenied:
         with Retry-After: the actor never ran, so nothing about the job was
         proven and nothing of its budget was used. A job already sitting at
         its last attempt must therefore still be rescheduled when a
-        reservation is denied — not failed as MaxAttemptsExceeded — and its
+        reservation is denied - not failed as MaxAttemptsExceeded - and its
         attempt counter must come back to the pre-claim value so the budget
         is intact for the attempt that eventually gets a slot. A queue or
         rate-limit misconfiguration must not be able to kill work that
@@ -1083,7 +1083,7 @@ class TestMarkRetryAfterConsumeTrue:
 
 class TestMarkRetryAfterConsumeFalse:
     """mark_retry_after with consume_budget=False refunds the claim's
-    attempt increment — same deferral contract as a Snooze."""
+    attempt increment - same deferral contract as a Snooze."""
 
     async def test_mark_retry_after_consume_budget_false_refunds_attempt(
         self, clean_jobs_app: JobsApp
@@ -1295,7 +1295,7 @@ class TestMarkSucceededResultExpiryFallback:
     ) -> tuple[object, object]:
         """Run the reported repro's setup: an operator sets then CLEARS the
         stored result_ttl override, and a running job whose
-        result_expires_at is pinned in the past — the state the enqueue
+        result_expires_at is pinned in the past - the state the enqueue
         path leaves behind (enqueue_now + literal) after the job sat in
         the queue longer than its TTL."""
         from taskq.actor_config_ops import set_actor_config_capacity
@@ -1338,7 +1338,7 @@ class TestMarkSucceededResultExpiryFallback:
             assert row is not None
             assert row["result"] is not None
             # Expiry recomputed from completion (clock_timestamp() at the
-            # write — it may lead finished_at = now() by statement
+            # write - it may lead finished_at = now() by statement
             # execution time): ≈ completion+5s, never 40s in the past.
             skew = row["result_expires_at"] - row["finished_at"]
             assert timedelta(seconds=4) < skew < timedelta(seconds=6)
@@ -1353,7 +1353,7 @@ class TestMarkSucceededResultExpiryFallback:
         self, clean_jobs_app: JobsApp
     ) -> None:
         """Control: no fallback (a completing worker that has no literal)
-        keeps the enqueue-pinned expiry — the old bug path — and the
+        keeps the enqueue-pinned expiry - the old bug path - and the
         sweep reaps the result. Pins both what the fallback fixes and
         that the fix, not something else, is what saves the result."""
         deps = clean_jobs_app.deps
@@ -1415,13 +1415,13 @@ class TestMarkSucceededResultExpiryFallback:
         write executes.
 
         This test opens a transaction, sleeps past the TTL, then calls
-        ``mark_succeeded_with_conn`` on the same connection — the
+        ``mark_succeeded_with_conn`` on the same connection - the
         LOOP-scope pattern. If the SQL used ``now()`` the expiry would
         be pinned at txn start (before the sleep) and the result would
         be immediately expired. With ``clock_timestamp()`` the expiry is
         computed at completion.
 
-        Also asserts ``finished_at`` uses ``clock_timestamp()`` too — a
+        Also asserts ``finished_at`` uses ``clock_timestamp()`` too - a
         long-running actor in the transactional path should record when
         it actually finished, not when the transaction started, so the
         two timestamp columns don't disagree by the full runtime.
@@ -1441,7 +1441,7 @@ class TestMarkSucceededResultExpiryFallback:
             # Record the transaction start time as PG sees it.
             txn_start = await conn.fetchval("SELECT now()")
 
-            # Sleep past the TTL — simulates a long-running actor.
+            # Sleep past the TTL - simulates a long-running actor.
             # now() stays frozen at txn_start; clock_timestamp() advances.
             await conn.execute(f"SELECT pg_sleep({sleep_seconds})")
 
@@ -1504,7 +1504,7 @@ class TestMarkSucceededResultExpiryFallback:
             await conn.execute("SELECT pg_sleep(3)")
 
             # Execute the mark_failed SQL directly on the txn conn.
-            # The trailing 1 is the attempt-epoch fence bind ($8) —
+            # The trailing 1 is the attempt-epoch fence bind ($8) -
             # the seeded row is at attempt 1.
             rec = await conn.fetchrow(
                 sql.mark_failed,
@@ -1556,7 +1556,7 @@ class TestMarkSucceededResultExpiryFallback:
                 0,
                 None,
                 "snoozed",
-                # The trailing 1 is the attempt-epoch fence bind ($8) —
+                # The trailing 1 is the attempt-epoch fence bind ($8) -
                 # the seeded row is at attempt 1.
                 1,
             )

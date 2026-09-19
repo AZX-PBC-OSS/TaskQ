@@ -374,7 +374,7 @@ async def test_orchestrate_shutdown_leaves_caller_owned_leader_conn_unclosed() -
     """Caller-owned leader_conn survives orchestrate_shutdown untouched.
 
     Ownership contract: "TaskQ never closes caller-owned resources". The
-    reference is also left in place — nulling it would make the still-
+    reference is also left in place - nulling it would make the still-
     running leader election loop open a *fresh* conn and possibly
     re-acquire the advisory lock mid-shutdown.
     """
@@ -406,7 +406,7 @@ def test_sigusr2_handler_dumps_task_stacks() -> None:
 
     This is the on-demand half of the watchdog's diagnostics: answering
     "what is this live-but-idle worker waiting on?" without rebuilding the
-    image with instrumentation. It must NOT terminate the worker — SIGUSR1
+    image with instrumentation. It must NOT terminate the worker - SIGUSR1
     would (default action), which is why the dump is on SIGUSR2.
     """
     deps = _worker_deps()

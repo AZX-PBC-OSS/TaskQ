@@ -1,7 +1,7 @@
 """Full-stack integration tests for actor deregistration via TaskQ.actors.
 
 Exercises the complete client path: TaskQ → ActorsClient → pool →
-deregister_actor → real Postgres. No Docker worker container needed —
+deregister_actor → real Postgres. No Docker worker container needed -
 the tests seed actor_config rows directly and call through the client.
 """
 

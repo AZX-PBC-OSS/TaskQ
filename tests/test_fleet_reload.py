@@ -3,7 +3,7 @@
 Credential rotation is routine: a short-lived database token expires, a
 secret is rotated, an operator sends SIGHUP rather than restarting the
 fleet. The whole point of reloading in place is that it is cheaper and
-safer than a restart — so it has to be, which means the pod's claims
+safer than a restart - so it has to be, which means the pod's claims
 survive it and the pod goes on claiming afterwards.
 
 A reload that quietly loses in-flight work is worse than a restart,
@@ -43,7 +43,7 @@ async def test_a_reload_does_not_release_the_jobs_a_pod_holds(pg_dsn: str) -> No
     locked to it.
 
     If a reload released them, the same job would be running on this pod
-    and claimable by every other pod at once — a duplicate run triggered
+    and claimable by every other pod at once - a duplicate run triggered
     by nothing more than a routine secret rotation.
     """
     schema = f"fleet_reload_hold_{new_base62()}".lower()
@@ -84,7 +84,7 @@ async def test_a_pod_keeps_claiming_and_completing_after_a_reload(
     Swapping pools out from under a running worker has to leave it able
     to do everything it did before: claim new work and write results
     through the replacement pools. A pod that survives a reload but can
-    no longer claim is worse than one that crashed — it stays in the
+    no longer claim is worse than one that crashed - it stays in the
     fleet, reports itself healthy, and does nothing.
     """
     schema = f"fleet_reload_work_{new_base62()}".lower()
@@ -100,7 +100,7 @@ async def test_a_pod_keeps_claiming_and_completing_after_a_reload(
         assert len(claimed) == 3, (
             f"a reloaded pod claimed {len(claimed)} of 3 jobs from a backlog of 6. It is "
             "still in the fleet and still reporting healthy, but it has stopped taking "
-            "work — the quietest way for a fleet to lose a pod's capacity."
+            "work - the quietest way for a fleet to lose a pod's capacity."
         )
 
         async def _work(_payload: FleetPayload, _ctx: object) -> str:
@@ -124,7 +124,7 @@ async def test_a_reload_request_is_observable_to_the_pod(pg_dsn: str) -> None:
     SIGHUP sets an event the worker's reload coordinator consumes; the
     programmatic trigger is the same path, and is what an embedder or a
     platform without SIGHUP uses. A request that does not raise the flag
-    is a rotation that silently never happens — and the failure surfaces
+    is a rotation that silently never happens - and the failure surfaces
     later, as authentication errors from a pod still using a credential
     everyone believes was replaced.
     """

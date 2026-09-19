@@ -9,7 +9,7 @@ per-(actor, queue) and due-time filtering happens in the candidates
 lateral's inner probe (``_ROUND_ROBIN_CANDIDATES_LATERAL``), downstream
 of the enumeration.
 
-Oracle: same doctrine as tests/test_dispatch_backlog_depth_bound.py —
+Oracle: same doctrine as tests/test_dispatch_backlog_depth_bound.py -
 EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) of the production
 DISPATCH_ROUND_ROBIN_SQL constant, executed once per seeded count of
 UNRELATED cohorts (0 vs 2,000, each on a different queue that the
@@ -101,7 +101,7 @@ async def _seed(conn: asyncpg.Connection, schema: str, unrelated_cohort_count: i
     _OWN_ROW_COUNT due rows throughout. Each unrelated cohort lives on
     its own queue (never polled by this round) with a single
     future-scheduled (not-yet-due) row, so it is excluded by BOTH the
-    round's (actor, queue) filter and the due-time bound — the only
+    round's (actor, queue) filter and the due-time bound - the only
     thing that can still see it is rr_keys's global, unfiltered
     enumeration over every pending row table-wide.
     """
@@ -223,7 +223,7 @@ async def test_round_robin_dispatch_row_work_is_cohort_scoped(
             f"{buffers_by_count[0]} -> {buffers_by_count[_UNRELATED_COHORT_COUNTS[-1]]}. "
             "The round-robin cohort enumeration (src/taskq/backend/"
             "_dispatch_sql.py, _RR_KEYS_CTE) must stay scoped to the "
-            "round's own queues — an unfiltered walk visits every pending "
+            "round's own queues - an unfiltered walk visits every pending "
             "cohort table-wide, not just the round's own."
         )
     finally:
@@ -255,7 +255,7 @@ async def _seed_divergent_repend_row(
 
     Returns the row's id. The shape cannot arise from a naive enqueue
     (producer-placed rows are always ``assignment_routed = false``), so
-    the seed writes the marker directly — exactly the divergent row an
+    the seed writes the marker directly - exactly the divergent row an
     operator ``retry_job`` on a never-claimed terminal job produces.
 
     *with_label_routed_row* adds one ordinary producer-placed due row on
@@ -319,7 +319,7 @@ async def test_claimable_probe_routes_divergent_repend_by_assignment_marker(
         assert assigned_rows, (
             "the probe is blind to a claimable re-pended row on the actor's "
             "assigned queue: the assignment-routed arm must match the marker "
-            "(assignment_routed), not started_at IS NOT NULL — this row was "
+            "(assignment_routed), not started_at IS NOT NULL - this row was "
             "never claimed, so its started_at is still NULL"
         )
         stale_rows = await conn.fetch(probe, [_MARKER_STALE_QUEUE])
@@ -342,7 +342,7 @@ async def test_label_routed_enumeration_skips_divergent_repend_row(
     rr_keys is the label-routed cohort enumeration; with the actor
     holding one ordinary row on its assigned queue plus the divergent
     re-pend carrying the stale label, the walk's materialized content is
-    exactly one (actor, queue, cohort) key under the marker predicate —
+    exactly one (actor, queue, cohort) key under the marker predicate -
     and two under the started_at proxy (the stale label joins the walk).
     The assertion reads the rr_keys CTE Scan actuals: the widest scan of
     the materialized enumeration is its unfiltered full read, exact for
@@ -376,7 +376,7 @@ async def test_label_routed_enumeration_skips_divergent_repend_row(
         assert rr_keys_scan_rows, "expected a CTE Scan over rr_keys in the plan"
         assert max(rr_keys_scan_rows) == 1.0, (
             "the label-routed cohort walk must enumerate exactly the one "
-            "legitimate (actor, assigned-queue, cohort) key — a second key "
+            "legitimate (actor, assigned-queue, cohort) key - a second key "
             "means the divergent re-pend's STALE label entered the walk, "
             "which is the started_at-proxy accounting drift: rr_keys must "
             "select producer-placed rows by the marker (NOT "
@@ -384,7 +384,7 @@ async def test_label_routed_enumeration_skips_divergent_repend_row(
         )
 
         # End to end: a fresh round over the same two queues admits both
-        # rows — the ordinary row by its label, the divergent re-pend by
+        # rows - the ordinary row by its label, the divergent re-pend by
         # its actor's current assignment.
         row_id = await _seed_divergent_repend_row(conn, cohort_schema, with_label_routed_row=True)
         claimed = await dispatch_batch_sql(
@@ -398,7 +398,7 @@ async def test_label_routed_enumeration_skips_divergent_repend_row(
         )
         claimed_ids = {rec["id"] for rec in claimed}
         assert len(claimed) == 2 and row_id in claimed_ids, (
-            "the round must admit both rows by their true routing — the "
+            "the round must admit both rows by their true routing - the "
             "producer-placed row by its label, the divergent re-pend by "
             f"its actor's assignment; claimed ids: {claimed_ids}"
         )

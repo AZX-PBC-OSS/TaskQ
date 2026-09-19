@@ -2,7 +2,7 @@
 
 Pins the promises the helpers' docstrings make but the suite previously
 never asserted: the helpers never raise EXCEPT ``asyncio.CancelledError``
-(which must still propagate so outer cancellation unwinds promptly — a
+(which must still propagate so outer cancellation unwinds promptly - a
 refactor to ``except BaseException`` would otherwise pass the whole suite);
 a hung conn close is terminated after the bound; and ``mid_run`` selects the
 structlog event family (``conn-close-*`` vs ``conn-teardown-close-*``) so a
@@ -33,7 +33,7 @@ class _FakePool:
 
     Real-semantics error path (asyncpg 0.31 ``Pool.close()``): on ANY close
     error the pool calls ``self.terminate()`` and sets ``self._closed = True``
-    in the ``finally`` before re-raising — so a raising close still leaves
+    in the ``finally`` before re-raising - so a raising close still leaves
     the pool terminated AND closed. ``terminate_calls`` counts only EXTERNAL
     terminate() invocations, so tests can still pin "the helper never
     terminates on the error path".
@@ -79,7 +79,7 @@ class _FakeConn:
         if self.close_error is not None:
             # Mirrors asyncpg 0.31 Connection.close(): on ANY close error it
             # calls self._abort() before re-raising, so is_closed() is True
-            # afterwards — a raising close still leaves the conn closed.
+            # afterwards - a raising close still leaves the conn closed.
             self.closed = True
             raise self.close_error
         self.closed = True
@@ -108,7 +108,7 @@ class _FakeRedisClient:
 
 async def test_close_pool_bounded_propagates_cancelled_error() -> None:
     """A pool close() raising CancelledError propagates out of
-    close_pool_bounded — the never-raise contract covers ``Exception`` only,
+    close_pool_bounded - the never-raise contract covers ``Exception`` only,
     so outer cancellation is never swallowed."""
     pool = _FakePool()
     pool.close_error = asyncio.CancelledError()
@@ -140,7 +140,7 @@ async def test_close_redis_bounded_propagates_cancelled_error() -> None:
 
 async def test_close_conn_bounded_mid_run_timeout_logs_conn_close_family() -> None:
     """A hung mid-run conn close is terminated after the bound and logs the
-    ``conn-close-*`` family — NOT ``conn-teardown-close-*`` — so a conn so
+    ``conn-close-*`` family - NOT ``conn-teardown-close-*`` - so a conn so
     dead that even close() hung while the worker is alive stays
     distinguishable in log alerts."""
     conn = _FakeConn()
@@ -167,8 +167,8 @@ async def test_close_conn_bounded_mid_run_timeout_logs_conn_close_family() -> No
 
 async def test_close_conn_bounded_teardown_timeout_logs_teardown_family() -> None:
     """A hung conn close on the default (final-teardown) path is terminated
-    after the bound and logs the ``conn-teardown-close-*`` family — NOT the
-    mid-run ``conn-close-*`` family — so final-teardown noise never
+    after the bound and logs the ``conn-teardown-close-*`` family - NOT the
+    mid-run ``conn-close-*`` family - so final-teardown noise never
     masquerades as a mid-run close failure in log alerts."""
     conn = _FakeConn()
     conn.close_wait.clear()  # close() blocks forever from now on
@@ -194,7 +194,7 @@ async def test_close_conn_bounded_teardown_timeout_logs_teardown_family() -> Non
 
 async def test_close_conn_bounded_mid_run_error_logs_conn_close_error() -> None:
     """A mid-run conn close() that raises is logged as ``conn-close-error``
-    and swallowed (never-raise); the HELPER does not terminate — termination
+    and swallowed (never-raise); the HELPER does not terminate - termination
     is the timeout path only. The conn IS still closed: real asyncpg aborts
     the conn before re-raising a close error, which the fake mirrors."""
     conn = _FakeConn()
@@ -216,7 +216,7 @@ async def test_close_conn_bounded_mid_run_error_logs_conn_close_error() -> None:
 
 async def test_close_conn_bounded_teardown_error_logs_teardown_family() -> None:
     """The same raising close() on the default (final-teardown) path logs
-    ``conn-teardown-close-error`` instead — the two families never mix."""
+    ``conn-teardown-close-error`` instead - the two families never mix."""
     conn = _FakeConn()
     boom = RuntimeError("simulated PG close failure")
     conn.close_error = boom
@@ -239,7 +239,7 @@ async def test_close_conn_bounded_teardown_error_logs_teardown_family() -> None:
 
 async def test_close_pool_bounded_error_logs_pool_teardown_close_error() -> None:
     """A pool close() that raises is logged as ``pool-teardown-close-error``
-    and swallowed (never-raise); the HELPER does not terminate — termination
+    and swallowed (never-raise); the HELPER does not terminate - termination
     by the helper is the timeout path only. The pool IS still terminated and
     closed: real asyncpg Pool.close() self-terminates and marks the pool
     closed before re-raising a close error, which the fake mirrors."""

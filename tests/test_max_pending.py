@@ -1,7 +1,7 @@
 """Unit, property, and negative tests for max_pending (in-memory backend).
 
 Coverage: structured-log test, bulk-enqueue-at-limit shape test.
-All tests run against InMemoryBackend with FakeClock — no PG required.
+All tests run against InMemoryBackend with FakeClock - no PG required.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -27,7 +27,7 @@ def _make_backend() -> InMemoryBackend:
     # Dispatch candidates come FROM the actor_config registry on both
     # backends (PG's per_actor_capacity CTE): the tier's worker registers
     # the actor it runs, so a bare backend with no registration dispatches
-    # NOTHING — never "no filter".
+    # NOTHING - never "no filter".
     backend.register_actor_config(actor=_ACTOR)
     return backend
 
@@ -167,7 +167,7 @@ async def test_unique_for_dedup_runs_before_max_pending() -> None:
 
     row_a2 = await backend.enqueue(_max_pending_args(identity_key=ik_a, **common))
 
-    assert row_a1.id == row_a2.id  # dedup hit — unique_for returned existing row.
+    assert row_a1.id == row_a2.id  # dedup hit - unique_for returned existing row.
     assert row_a2.status in ("pending", "scheduled")
     assert row_b.status in ("pending", "scheduled")
 
@@ -255,7 +255,7 @@ async def test_singleton_fires_before_max_pending() -> None:
 async def test_idempotency_key_does_not_bypass_max_pending() -> None:
     """idempotency_key does NOT bypass max_pending. Actor with
     max_pending=1, no unique_for. Enqueue with idempotency_key='k1'
-    (count=1). Re-enqueue with same key raises MaxPendingExceededError —
+    (count=1). Re-enqueue with same key raises MaxPendingExceededError -
     the count check (step 4) fires before the idempotency-key INSERT
     (step 5).
 
@@ -281,7 +281,7 @@ async def test_idempotency_key_does_not_bypass_max_pending() -> None:
 
 async def test_max_pending_zero_rejects_immediately() -> None:
     """max_pending=0 is valid; enqueue immediately raises
-    MaxPendingExceededError (count=0 >= 0 is True). Not a ValueError —
+    MaxPendingExceededError (count=0 >= 0 is True). Not a ValueError -
     zero is the documented 'never accept any jobs' configuration."""
     backend = _make_backend()
 

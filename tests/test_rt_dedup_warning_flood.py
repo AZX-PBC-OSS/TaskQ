@@ -1,15 +1,15 @@
 """Red-team: batch-scale dedup WARNINGs are unbounded per-item emissions.
 
 The contract under attack: an ``enqueue_batch()`` whose items all dedup
-emits one ``enqueue_deduplicated`` line per item — WARNING for every item
-that lands on a terminal target — with no aggregation or window-gating.
+emits one ``enqueue_deduplicated`` line per item - WARNING for every item
+that lands on a terminal target - with no aggregation or window-gating.
 A re-submitted 1000-item batch against 500 terminal and 500 live targets
 emits 500 WARNING lines from a single call. That is a flood, not a
 signal: operators answer a per-item WARNING flood by muting the channel,
 destroying the signal the WARNING exists to raise.
 
 The intended contract is the codebase's own answer to this exact flood
-shape — the window-gated dependency-failure WARNING in
+shape - the window-gated dependency-failure WARNING in
 ``worker/_consumer.py`` (``_DEPENDENCY_FAILURE_LOG_WINDOW_S``, one
 warning per window per error type): the WARNING emissions for a dedup
 flood are aggregated or window-gated to a small bounded count, while the
@@ -28,7 +28,7 @@ from taskq.testing.fixtures import JobsApp
 pytestmark = pytest.mark.integration
 
 #: The batch size at which a per-item WARNING stops being a signal and
-#: becomes channel noise an operator mutes — the claim's own scale.
+#: becomes channel noise an operator mutes - the claim's own scale.
 _FLOOD_N = 1000
 
 #: How many seeded targets are driven terminal before the attack batch:
@@ -39,7 +39,7 @@ _TERMINAL_N = 500
 #: The bound the intended contract demands. The house precedent
 #: (one WARNING per window per error type) lands at 1; a per-batch
 #: summary line lands at 1; 5 leaves headroom for either shape while
-#: staying a small constant — and stays falsified by any per-item
+#: staying a small constant - and stays falsified by any per-item
 #: emission at the seeded scale.
 _MAX_BATCH_DEDUP_WARNINGS = 5
 
@@ -63,7 +63,7 @@ async def test_batch_dedup_warning_flood_is_bounded(clean_jobs_app: JobsApp) -> 
 
     Seeded: 1000 stored jobs, the first 500 driven terminal (``failed``),
     the rest live (``pending``); the attack batch re-enqueues 1000 items
-    carrying the same idempotency keys, so every item dedups — 500 onto
+    carrying the same idempotency keys, so every item dedups - 500 onto
     terminal targets (the WARNING arm) and 500 onto live ones (the INFO
     arm). The WARNING emissions for that flood are aggregated or
     window-gated to a small bounded count.
@@ -106,12 +106,12 @@ async def test_batch_dedup_warning_flood_is_bounded(clean_jobs_app: JobsApp) -> 
     assert len(warnings) <= _MAX_BATCH_DEDUP_WARNINGS, (
         f"a fully-deduped {_FLOOD_N}-item batch ({_TERMINAL_N} items onto TERMINAL "
         f"targets) emitted {len(warnings)} WARNING-level enqueue_deduplicated lines "
-        f"(beside {len(infos)} info-level hits) — one WARNING per item, unaggregated "
+        f"(beside {len(infos)} info-level hits) - one WARNING per item, unaggregated "
         "and unwindow-gated. A per-item WARNING flood at batch scale is channel "
         "noise an operator mutes, destroying the signal it exists to raise; the "
         "dependency-failure WARNING in worker/_consumer.py is window-gated for "
         "exactly this flood shape, and the dedup WARNING must aggregate or "
-        "window-gate at batch scale the same way — without removing the per-hit "
+        "window-gate at batch scale the same way - without removing the per-hit "
         "INFO/status observability pinned for small batches."
     )
 
@@ -121,7 +121,7 @@ async def test_small_batch_dedup_keeps_per_hit_info_status(clean_jobs_app: JobsA
 
     The bound the flood test demands is not bought by silencing the
     per-hit observability: every hit on a small batch still gets its own
-    line at INFO, carrying the target's status — the contract
+    line at INFO, carrying the target's status - the contract
     ``TestBatchDedupIsObservable`` pins for the one-item shape, held here
     for a small multi-item batch.
     """

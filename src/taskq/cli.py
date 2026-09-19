@@ -86,28 +86,28 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.cli")
 #
 # The worker sources these bounds from WorkerSettings
 # (reload_factory_timeout, health_pg_ping_timeout,
-# dispatcher_command_timeout), but `taskq ui serve` loads TaskQSettings —
+# dispatcher_command_timeout), but `taskq ui serve` loads TaskQSettings ,
 # the base class carries none of them. The literals mirror those defaults
 # exactly; module-level so tests shrink them as seams (the
 # CLOSE_TIMEOUT_SECS convention).
 _UI_FACTORY_TIMEOUT_SECS: Final[float] = 30.0
-"""Bounds the UI's first-use awaits — ``pool_factory()`` /
+"""Bounds the UI's first-use awaits, ``pool_factory()`` /
 ``redis_factory()`` (the AAD first token fetch lives inside them) and the
 eager redis ``initialize()`` (the first broker round trip). Mirrors
-``WorkerSettings.reload_factory_timeout``'s default — the SAME bound the
+``WorkerSettings.reload_factory_timeout``'s default, the SAME bound the
 worker applies to every factory call it makes (worker/deps.py), not a
 second mechanism. A hung dependency fails UI startup loudly instead of
 parking the admin server forever."""
 
 _UI_PG_PING_TIMEOUT_SECS: Final[float] = 0.2
 """Bounds the ``/jobs/health/ready`` PG probe (acquire + SELECT 1).
-Mirrors ``WorkerSettings.health_pg_ping_timeout``'s default — the bound
+Mirrors ``WorkerSettings.health_pg_ping_timeout``'s default, the bound
 the worker's readiness ping (worker/health.py) applies to the identical
 probe; an unbounded probe turns a wedged PG into a wedged prober."""
 
 _UI_POOL_COMMAND_TIMEOUT_SECS: Final[float] = 5.0
 """Per-query ``command_timeout`` for the UI's admin pool. Mirrors
-``WorkerSettings.dispatcher_command_timeout``'s default — the per-query
+``WorkerSettings.dispatcher_command_timeout``'s default, the per-query
 bound on every other pool the repo builds. One pool-level bound covers
 every admin-page query on the pool (the sweep's ~20 admin query sites);
 without it a black-holed PG wedges each admin request forever."""
@@ -115,7 +115,7 @@ without it a black-holed PG wedges each admin request forever."""
 app = typer.Typer(
     name="taskq",
     no_args_is_help=True,
-    help="TaskQ — async Postgres-backed background jobs.",
+    help="TaskQ, async Postgres-backed background jobs.",
 )
 migrate_app = typer.Typer(no_args_is_help=True, help="Apply or inspect schema migrations.")
 app.add_typer(migrate_app, name="migrate")
@@ -207,18 +207,18 @@ def _load_actor_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
     ``ActorRef`` (keyed by name). An iterable is materialized once,
     before the validation pass reads it: a one-shot iterator consumed
     by validation cannot then be rebuilt into the registry it proved it
-    held. An empty registry is refused rather than returned — every
+    held. An empty registry is refused rather than returned, every
     downstream consumer checks ``is not None`` and cannot distinguish
     ``{}`` from a populated mapping, so a worker handed an empty
     registry boots and dispatches nothing. On any failure prints the
-    reason to stderr and raises ``typer.Exit(code=1)`` — shared by
+    reason to stderr and raises ``typer.Exit(code=1)``, shared by
     ``worker`` and ``actor-config diff``.
 
     That sharing is a deliberate trade-off for the read-only ``diff``
     command: it too exits 1 on an empty registry, because the shared
     loader cannot tell "an operator auditing stored rows against an
     intentionally empty registry" from "a misconfigured ``--actors``
-    ref that resolved to nothing" — and the second is far more likely.
+    ref that resolved to nothing", and the second is far more likely.
     The workaround for a legitimate empty-registry audit: point
     ``--actors`` at a populated registry containing nothing of interest
     to the comparison, or read the stored rows directly
@@ -231,7 +231,7 @@ def _load_actor_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
         registry = cast(Mapping[str, ActorRef[Any, Any]], raw)
     elif not isinstance(raw, (str, bytes)) and hasattr(raw, "__iter__"):
         # Unvalidated until the isinstance guard below passes, so the
-        # element type is Any here — annotating ActorRef would make the
+        # element type is Any here, annotating ActorRef would make the
         # guard look dead to the type checker.
         items: list[Any] = list(raw)
         if not all(isinstance(r, ActorRef) for r in items):
@@ -252,7 +252,7 @@ def _load_actor_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
 
     if not registry:
         typer.echo(
-            f"actor registry at {actors} is empty — a worker with no actors "
+            f"actor registry at {actors} is empty, a worker with no actors "
             "dispatches nothing; refusing to boot",
             err=True,
         )
@@ -269,7 +269,7 @@ def _resolve_provider(ref: str, *, option: str, method: str) -> Any:
     Accepts the same shapes an application naturally exports: a provider
     **instance** (``myapp.auth:PROVIDER``), a zero-arg **factory**
     returning one (``myapp.auth:make_provider``), or the provider
-    **class** itself when its constructor takes no required arguments —
+    **class** itself when its constructor takes no required arguments ,
     the same "resolve the ref, then adapt the accepted shapes" contract
     :func:`_load_actor_registry` uses for ``--actors``.
 
@@ -288,7 +288,7 @@ def _resolve_provider(ref: str, *, option: str, method: str) -> Any:
         typer.echo(
             f"{option}: {ref} resolved to {type(obj).__name__}, which does not implement "
             f"async {method}(). Provide a credential provider instance, a zero-arg factory "
-            "returning one, or the provider class — see docs/guides/managed-identities.md.",
+            "returning one, or the provider class, see docs/guides/managed-identities.md.",
             err=True,
         )
         raise typer.Exit(code=1)
@@ -331,7 +331,7 @@ def _credential_connections(
     instead of starting a worker whose SIGHUP rotates nothing.
 
     Returns the resolved Postgres provider alongside (``None`` when no
-    PG ref is set) — the worker-internal per-slot transaction pool does
+    PG ref is set), the worker-internal per-slot transaction pool does
     not read WorkerConnections, so the provider object is handed to the
     worker separately and must not be resolved twice.
     """
@@ -384,9 +384,9 @@ def worker(
         help="Allow sync_actor_config to overwrite a stored actor_config row whose "
         "metadata differs from the registered value. Use for one deploy to "
         "deliberately adopt a code-side metadata change, then unset. The queue "
-        "assignment is unaffected — boots never rewrite it; move an actor with "
+        "assignment is unaffected, boots never rewrite it; move an actor with "
         "`taskq actor-config move-queue`. Capacity fields (max_concurrent / "
-        "max_pending / result_ttl) are likewise unaffected — use `taskq "
+        "max_pending / result_ttl) are likewise unaffected, use `taskq "
         "actor-config set` for those. Equivalent to env var "
         "TASKQ_FORCE_UPDATE_ACTOR_CONFIG=true.",
     ),
@@ -458,7 +458,7 @@ def worker(
         None,
         "--pg-credential-provider",
         help="Module:attr reference to a PgCredentialProvider (e.g. "
-        f"{_PROVIDER_EXAMPLE}) — an instance, a zero-arg factory returning one, "
+        f"{_PROVIDER_EXAMPLE}), an instance, a zero-arg factory returning one, "
         "or the provider class. Every Postgres pool and dedicated connection is "
         "then built through it, so SIGHUP / TASKQ_RELOAD_INTERVAL rotate real "
         "credentials. Overrides TASKQ_PG_CREDENTIAL_PROVIDER (inherited by "
@@ -524,7 +524,7 @@ def worker(
         )
     except ActorConfigDriftList as e:
         # Why: the remedy hint is folded into ActorConfigDriftList.__str__
-        # itself (see exceptions.py) — don't print it a second time here.
+        # itself (see exceptions.py), don't print it a second time here.
         typer.echo(str(e), err=True)
         raise typer.Exit(code=1) from None
     raise typer.Exit(code=code)
@@ -554,10 +554,10 @@ def dev_watch(
     try:
         module = importlib.import_module(module_name)
     except ModuleNotFoundError:
-        typer.echo(f"Error: cannot import '{module_name}' — module not found", err=True)
+        typer.echo(f"Error: cannot import '{module_name}', module not found", err=True)
         raise typer.Exit(code=1) from None
     except Exception as exc:
-        typer.echo(f"Error: cannot import '{module_name}' — {exc}", err=True)
+        typer.echo(f"Error: cannot import '{module_name}', {exc}", err=True)
         raise typer.Exit(code=1) from None
 
     try:
@@ -572,7 +572,7 @@ def dev_watch(
     watch_paths: list[str] = list(watch) if watch else [str(Path.cwd())]
 
     watch_display = ", ".join(str(p) for p in watch_paths)
-    typer.echo(f"TaskQ dev mode — watching {watch_display}. Press Ctrl-C to stop.", err=True)
+    typer.echo(f"TaskQ dev mode, watching {watch_display}. Press Ctrl-C to stop.", err=True)
 
     with asyncio.Runner() as runner:
         runner.run(
@@ -704,7 +704,7 @@ async def _up(
     #
     # conn mirrors apply_pending_locked's conn-or-None pattern: connect
     # failures land in the same guarded region as apply failures, so both
-    # get the report — and the close is skipped when no conn was acquired.
+    # get the report, and the close is skipped when no conn was acquired.
     conn: asyncpg.Connection | None = None
     try:
         conn = await _open_migrate_conn(settings, conn_factory)
@@ -801,7 +801,7 @@ def actor_config_set(
             "--max-concurrent",
             min=0,
             help="New fleet-wide concurrency cap. Takes effect on the next dispatch cycle "
-            "(no worker restart) — the dispatch query re-reads this column every cycle.",
+            "(no worker restart), the dispatch query re-reads this column every cycle.",
         ),
     ] = None,
     clear_max_concurrent: Annotated[
@@ -814,7 +814,7 @@ def actor_config_set(
             min=0,
             help="New queue-depth backpressure cap. Takes effect within seconds on every "
             "enqueue-side process (bounded by each client's capacity-cache TTL, default 5s) "
-            "— no redeploy, no worker restart.",
+            ", no redeploy, no worker restart.",
         ),
     ] = None,
     clear_max_pending: Annotated[
@@ -830,7 +830,7 @@ def actor_config_set(
             "--result-ttl",
             min=0,
             help="New result TTL in seconds. Takes effect for jobs completing after this "
-            "change (no worker restart) — the terminal-write UPDATE re-reads this column "
+            "change (no worker restart), the terminal-write UPDATE re-reads this column "
             "for every job.",
         ),
     ] = None,
@@ -882,7 +882,7 @@ def actor_config_set(
 
     if isinstance(mc, Unset) and isinstance(mp, Unset) and isinstance(rt, Unset):
         typer.echo(
-            "nothing to change — pass at least one --max-concurrent/--max-pending/--result-ttl "
+            "nothing to change, pass at least one --max-concurrent/--max-pending/--result-ttl "
             "or --clear-* flag",
             err=True,
         )
@@ -911,14 +911,14 @@ async def _actor_config_set(
         )
     except ValueError as exc:
         # Validation failures (negative, NaN/±inf, bool) are operator
-        # errors — print the reason, not a traceback.
+        # errors, print the reason, not a traceback.
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from None
     finally:
         await close_conn_bounded(conn, "actor-config-set", CLOSE_TIMEOUT_SECS)
     if row is None:
         typer.echo(
-            f"no stored actor_config row for actor {actor!r} — it must be registered by a "
+            f"no stored actor_config row for actor {actor!r}, it must be registered by a "
             "worker startup first",
             err=True,
         )
@@ -1015,7 +1015,7 @@ def actor_config_move_queue(
     drain through the target's consumers. Running jobs finish on the
     workers that claimed them; any that re-pend instead (failure retry,
     crash reclaim, operator retry) keep their old queue label as an audit
-    trail but are ROUTED at dispatch by the actor's current assignment —
+    trail but are ROUTED at dispatch by the actor's current assignment ,
     the tail drains through the target queue's consumers, never stranded
     on the retired source queue. Cron fires follow the moved assignment
     from the flip on.
@@ -1052,7 +1052,7 @@ async def _actor_config_move_queue(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from None
     except DEADLINE_ERRORS:
-        # A drain batch ran out of its deadline — server-side
+        # A drain batch ran out of its deadline, server-side
         # (statement_timeout) or client-side (dropped connection, cancelled
         # await). Both are the same fact to an operator: this batch did not
         # land. Catching the named family rather than spelling the pair here
@@ -1060,13 +1060,13 @@ async def _actor_config_move_queue(
         # The batches that
         # committed before it are real progress and the drain's queue
         # predicate skips rows already moved, so the only action is to run
-        # the command again — which is a refusal to report, not a crash.
+        # the command again, which is a refusal to report, not a crash.
         # The error text is not echoed: the server appends DETAIL quoting
         # row values, which must not cross this boundary.
         typer.echo(
             f"move-queue of actor {actor!r} onto {new_queue!r} aborted: a drain batch "
             "exceeded its statement timeout. Batches committed before the abort are "
-            "kept, so the move is incomplete and safe to re-run — re-run the same "
+            "kept, so the move is incomplete and safe to re-run, re-run the same "
             "command to continue from where it stopped.",
             err=True,
         )
@@ -1084,14 +1084,14 @@ def queue_migrate(
         str,
         typer.Option(
             "--to",
-            help="Target queue name. Required — the target is never defaulted.",
+            help="Target queue name. Required, the target is never defaulted.",
         ),
     ],
 ) -> None:
     """Move an actor onto a different queue, and report the residual.
 
-    Applies the coordinated writes of a move — the stored assignment and
-    the target `queues` row carrying the source's mode and cap — in one
+    Applies the coordinated writes of a move, the stored assignment and
+    the target `queues` row carrying the source's mode and cap, in one
     transaction, so a failure leaves the deployment exactly where it
     started rather than half-moved. The actor's pending/scheduled backlog
     is rewritten onto the target first, as bounded committed batches.
@@ -1099,7 +1099,7 @@ def queue_migrate(
     The target is named by `--to` rather than positionally: the two
     arguments of a move are an actor and a queue, both plain strings, and
     two bare positionals are the shape an operator transposes under
-    pressure — with the consequence that the backlog drains onto a queue
+    pressure, with the consequence that the backlog drains onto a queue
     that was never the target.
 
     Reports how many pending jobs still carry the source queue label.
@@ -1120,7 +1120,7 @@ def _report_queue_move(result: ActorQueueMoveResult) -> None:
 
     The residual goes to stderr because it drives the operator's next
     action while it is non-zero (keep the source queue's consumers up
-    until it drains), not part of the move's result record — the move
+    until it drains), not part of the move's result record, the move
     itself succeeded.
     """
     typer.echo(
@@ -1136,7 +1136,7 @@ def _report_queue_move(result: ActorQueueMoveResult) -> None:
     )
     if residual > 0:
         # The operator's next action is only advice while there is a
-        # residual to drain — at zero the condition is already met and
+        # residual to drain, at zero the condition is already met and
         # repeating it reads as an outstanding action.
         residual_line += (
             " Keep that queue's consumers running until every producer carries "
@@ -1146,7 +1146,7 @@ def _report_queue_move(result: ActorQueueMoveResult) -> None:
     typer.echo(
         f"NOTE: ensure workers consume {result.to_queue!r} now, and keep "
         f"consuming {result.from_queue!r} until every producer runs the "
-        f"matching literal — stale producers keep enqueueing to "
+        f"matching literal, stale producers keep enqueueing to "
         f"{result.from_queue!r}, and those strays stay served by "
         f"{result.from_queue!r}'s consumers. Left-behind running jobs "
         f"(running_jobs_left={result.running_jobs_left}) finish on their "
@@ -1172,7 +1172,7 @@ def _effective_capacity(field: str, literal: object, row: ActorConfigRow) -> tup
     """The value the engine enforces for one capacity field, and its source.
 
     Mirrors the enforcement semantics field by field: ``max_concurrent``
-    is read by the dispatch SQL, which cannot see the code literal — once
+    is read by the dispatch SQL, which cannot see the code literal, once
     a row exists, the stored column is fully authoritative and NULL means
     unlimited. ``max_pending`` / ``result_ttl`` fall back to the literal
     when the stored value is NULL (clearing reverts to the code default).
@@ -1190,14 +1190,14 @@ def _print_actor_diff(
 ) -> bool:
     """Print one actor's diff; return whether its state fails the gate.
 
-    Three states fail: a queue mismatch (assignment drift — boot adopts the
+    Three states fail: a queue mismatch (assignment drift, boot adopts the
     stored queue, but the cron leader's fires follow it while producers
     enqueue by their own literal, so the two routing halves disagree until
     the move or the deploy completes), a metadata mismatch (the next worker
     startup raises ActorConfigDriftList), and a registry actor with no
     stored row (the dispatch capacity gate reads only actor_config rows, so
     the actor does not dispatch until a row is seeded). Capacity-only
-    differences never fail — stored capacity is operator-owned by design —
+    differences never fail, stored capacity is operator-owned by design ,
     and neither does a leftover row for an actor that is no longer
     registered: it only serves already-queued jobs.
     """
@@ -1206,12 +1206,12 @@ def _print_actor_diff(
         # Registry-only actor: nothing has ever seeded a row. Enforcement
         # differs per field: the dispatch CTE builds its candidate gate
         # FROM actor_config (inner join), so with no row the actor is
-        # NEVER dispatched — max_concurrent is effectively 0, not the
+        # NEVER dispatched, max_concurrent is effectively 0, not the
         # literal. max_pending / result_ttl enforcement can see the code
         # literal, so those fall back to it.
         assert ref is not None  # row is None only when the name came from the registry
         typer.echo(
-            "  no stored row — never synced; the row is seeded at the next "
+            "  no stored row, never synced; the row is seeded at the next "
             "worker startup. Until then the actor DOES NOT DISPATCH (the "
             "dispatch capacity gate reads only actor_config rows)."
         )
@@ -1219,7 +1219,7 @@ def _print_actor_diff(
             literal = _literal_for_field(ref, field)
             if field == "max_concurrent":
                 typer.echo(
-                    f"  {field:<15} literal={literal}  effective=0 (no stored row — "
+                    f"  {field:<15} literal={literal}  effective=0 (no stored row, "
                     "actor cannot dispatch)"
                 )
             else:
@@ -1228,7 +1228,7 @@ def _print_actor_diff(
         return True
     if ref is None:
         typer.echo(
-            "  stored row's actor is not in the registry — leftover row; "
+            "  stored row's actor is not in the registry, leftover row; "
             "only already-queued jobs can still reference it"
         )
         _print_actor_config_row(row)
@@ -1243,7 +1243,7 @@ def _print_actor_diff(
     queue_mismatch = ref.queue != row.queue
     if queue_mismatch:
         typer.echo(
-            f"  {'queue':<15} literal={ref.queue}  stored={row.queue}  MISMATCH — assignment "
+            f"  {'queue':<15} literal={ref.queue}  stored={row.queue}  MISMATCH, assignment "
             "drift: boot adopts the stored queue (actor-config-queue-override) and "
             "cron fires follow it while producers enqueue by their own literal. "
             "Reconcile with `taskq actor-config move-queue ACTOR NEW_QUEUE` or "
@@ -1254,7 +1254,7 @@ def _print_actor_diff(
     metadata_mismatch = dict(ref.metadata) != row.metadata
     if metadata_mismatch:
         typer.echo(
-            f"  {'metadata':<15} literal={dict(ref.metadata)}  stored={row.metadata}  MISMATCH — "
+            f"  {'metadata':<15} literal={dict(ref.metadata)}  stored={row.metadata}  MISMATCH, "
             "structural drift; the next worker startup raises ActorConfigDriftList unless run "
             "with --force-update-actor-config"
         )
@@ -1280,15 +1280,15 @@ def actor_config_diff(
     and the value the engine actually enforces right now ("effective").
     Reach for this when debugging "why is my change not taking effect":
     a capacity literal that differs from the stored row is IGNORED at
-    runtime — the stored value wins; tune it with `taskq actor-config
-    set` — and a queue mismatch means the two routing halves disagree
+    runtime, the stored value wins; tune it with `taskq actor-config
+    set`, and a queue mismatch means the two routing halves disagree
     (boot adopts the stored queue and cron fires follow it while producers
     enqueue by their own literal); reconcile with `taskq actor-config
     move-queue`. A metadata mismatch still refuses the next worker
     startup with ActorConfigDriftList.
 
     Exit codes: 0 no gate-failing drift; 1 at least one actor fails the
-    gate — a registry actor with no stored row (it does not dispatch until
+    gate, a registry actor with no stored row (it does not dispatch until
     one is seeded), a queue assignment mismatch (producer literals and
     cron routing disagree), or a metadata mismatch (startup-blocking).
     Capacity-only differences never affect the exit code: stored capacity
@@ -1334,9 +1334,9 @@ def _describe_actor_capacity(row: ActorConfigRow) -> str:
     actor-level cap" it actually configures. Both get a word.
     """
     if row.max_concurrent is None:
-        concurrent = "uncapped (stored NULL — no actor-level cap)"
+        concurrent = "uncapped (stored NULL, no actor-level cap)"
     elif row.max_concurrent == 0:
-        concurrent = "0 — DRAIN MODE (deliberately stopped; jobs enqueue and never run)"
+        concurrent = "0, DRAIN MODE (deliberately stopped; jobs enqueue and never run)"
     else:
         concurrent = str(row.max_concurrent)
     pending = "unlimited (stored NULL)" if row.max_pending is None else str(row.max_pending)
@@ -1370,7 +1370,7 @@ async def _list_stranded_pending_jobs(
     routing-queue discriminator (a re-pended row routes by its actor's
     stored assignment, not its label) is dispatch's own contract, mirrored
     from the sweep so both surfaces answer the same question the same way.
-    The result is per ACTOR — bounded by the distinct-actor count, never
+    The result is per ACTOR, bounded by the distinct-actor count, never
     by backlog depth.
     """
     if not _IDENT_RE.match(schema):
@@ -1474,10 +1474,10 @@ def _doctor_findings(
     findings: list[str] = []
 
     # The dispatch capacity gate joins actor_config, so a registered actor
-    # with no row is not merely uncapped — it is never a candidate.
+    # with no row is not merely uncapped, it is never a candidate.
     for name in sorted(set(registry) - set(stored_by_actor)):
         findings.append(
-            f"{name}: no stored actor_config row — NEVER DISPATCHES. The dispatch "
+            f"{name}: no stored actor_config row, NEVER DISPATCHES. The dispatch "
             "capacity gate reads only stored rows, so jobs accumulate pending "
             "with no error anywhere. A worker startup seeds the row."
         )
@@ -1485,7 +1485,7 @@ def _doctor_findings(
     # The same gate seen from the jobs side: rows already pending/scheduled
     # whose actor has no stored config row (a renamed or removed actor that
     # old producers or old rows still reference) never dispatch either, and
-    # no registry walk can name them — the registry no longer knows the name.
+    # no registry walk can name them, the registry no longer knows the name.
     # The unserved-queue arm is the fleet-liveness twin: the row's routing
     # queue (its actor's stored assignment once re-pended) has no live
     # worker subscribed, so every dispatch round annihilates the pair.
@@ -1496,7 +1496,7 @@ def _doctor_findings(
             )
             findings.append(
                 f"{entry.actor}: {entry.no_actor_config} pending/scheduled job(s) whose "
-                f"actor has no stored actor_config row{registry_note} — NEVER DISPATCHES. "
+                f"actor has no stored actor_config row{registry_note}, NEVER DISPATCHES. "
                 "The dispatch capacity gate reads only stored rows, so these jobs wait "
                 "forever with no error anywhere. Re-register the actor and seed its row "
                 "(a worker startup does this), or purge the jobs if the actor was retired."
@@ -1505,7 +1505,7 @@ def _doctor_findings(
             queue_names = ", ".join(repr(q) for q in entry.unserved_queues)
             findings.append(
                 f"{entry.actor}: {entry.unserved_queue} pending/scheduled job(s) routed to "
-                f"queue(s) {queue_names} that no live worker serves — they wait while "
+                f"queue(s) {queue_names} that no live worker serves, they wait while "
                 "nothing consumes them. Start a worker subscribed to the queue or move "
                 "the actor onto a served one."
             )
@@ -1518,7 +1518,7 @@ def _doctor_findings(
         key=lambda q: q.name,
     ):
         findings.append(
-            f"queue {queue.name!r}: STALE queues row — max_concurrent="
+            f"queue {queue.name!r}: STALE queues row, max_concurrent="
             f"{queue.max_concurrent} but no actor is assigned to it. The cap is "
             "inert now and silently applies to the next actor moved onto this queue."
         )
@@ -1534,7 +1534,7 @@ def _doctor_findings(
             and row.max_pending < row.max_concurrent
         ):
             findings.append(
-                f"{name}: INCOHERENT — max_pending={row.max_pending} is below "
+                f"{name}: INCOHERENT, max_pending={row.max_pending} is below "
                 f"max_concurrent={row.max_concurrent}, so the actor may queue fewer "
                 "jobs than it may run at once and its concurrency cap is unreachable."
             )
@@ -1545,7 +1545,7 @@ def _doctor_findings(
             and queue_cap < row.max_concurrent
         ):
             findings.append(
-                f"{name}: INCOHERENT — max_concurrent={row.max_concurrent} exceeds "
+                f"{name}: INCOHERENT, max_concurrent={row.max_concurrent} exceeds "
                 f"queue {row.queue!r}'s max_concurrent={queue_cap}, which binds first; "
                 "raising the actor cap alone changes nothing."
             )
@@ -1568,7 +1568,7 @@ def _doctor_findings(
             )
             findings.append(
                 f"worker {worker_id}: actor {actor_name} has stalled the event loop "
-                f"{total} time(s) ({kind_desc}; {dominant} dominates) — "
+                f"{total} time(s) ({kind_desc}; {dominant} dominates), "
                 f"{remedy_for_kind(dominant)}. The worker's "
                 "`event-loop-stall-attributed` warnings name the file:line."
             )
@@ -1648,7 +1648,7 @@ async def _doctor(
     # timeout, compose stop_grace_period, systemd TimeoutStopSec) is
     # invisible to the running worker, and when it sits below the worker's
     # own modelled worst case the orchestrator SIGKILLs the teardown
-    # mid-flight — the shutdown degrades to crash reclaim (leases expire,
+    # mid-flight, the shutdown degrades to crash reclaim (leases expire,
     # work re-runs) exactly when a deploy is already in progress. The
     # comparison runs here, where the worst case is computed from the same
     # settings the fleet boots with.
@@ -1671,7 +1671,7 @@ async def _doctor(
 
     typer.echo("")
     if not findings:
-        typer.echo("no findings — every registered actor has a stored row and every")
+        typer.echo("no findings, every registered actor has a stored row and every")
         typer.echo("queue row backs a live assignment.")
         return
     typer.echo(f"findings ({len(findings)}):")
@@ -1682,15 +1682,15 @@ async def _doctor(
 async def _report_up_failure(conn: asyncpg.Connection | None, schema: str, exc: Exception) -> None:
     """Print a self-diagnosing ``migrate up`` failure report to stderr.
 
-    TaskQ users must never inspect catalog state by hand, so this reports —
-    gathered on the still-open connection — what failed, what state the
+    TaskQ users must never inspect catalog state by hand, so this reports ,
+    gathered on the still-open connection, what failed, what state the
     schema is in (INVALID indexes included), and the single action to take.
     The diagnosis lives in :mod:`taskq.migrate` (shared with the
     worker/startup path).
 
     The report must NEVER mask the original error: when the conn was never
     acquired (connect itself failed) or the diagnosis itself raises, the
-    fallback is the generic two-line report — the original error's headline
+    fallback is the generic two-line report, the original error's headline
     and the fix-and-re-run action.
     """
     diagnosis: migrate_mod.ApplyFailureDiagnosis | None = None
@@ -1811,8 +1811,8 @@ def _build_sso_bundle(settings: TaskQSettings, base_path: str) -> Any | None:
             session_secret=saml.session_secret.get_secret_value(),
             # Must be threaded through explicitly, exactly as the OIDC branch above does:
             # SAMLAuthConfig carries its own 28800 default, so omitting this silently pinned
-            # every SAML deployment to 8h and made TASKQ_SAML_SESSION_MAX_AGE_SECONDS — a
-            # documented, `ge=60`-validated knob — a no-op. It bounds the itsdangerous
+            # every SAML deployment to 8h and made TASKQ_SAML_SESSION_MAX_AGE_SECONDS, a
+            # documented, `ge=60`-validated knob, a no-op. It bounds the itsdangerous
             # signature max_age (auth/_session.py), i.e. how long a stolen admin cookie stays
             # valid, so an operator shortening it must actually take effect.
             session_max_age_seconds=saml.session_max_age_seconds,
@@ -1832,7 +1832,7 @@ def _build_sso_bundle(settings: TaskQSettings, base_path: str) -> Any | None:
 async def _build_ui_pool(pool_factory: PoolFactory) -> asyncpg.Pool:
     """Invoke *pool_factory* under the UI's first-use bound.
 
-    Why bounded: UI startup arms no watchdog — a hung token endpoint inside
+    Why bounded: UI startup arms no watchdog, a hung token endpoint inside
     the factory would park `taskq ui serve` forever before any request is
     served, and a hung rotation would park the reload loop with the old
     pool still serving and nothing reporting it. _UI_FACTORY_TIMEOUT_SECS
@@ -1844,7 +1844,7 @@ async def _build_ui_pool(pool_factory: PoolFactory) -> asyncpg.Pool:
     except TimeoutError as exc:
         raise TimeoutError(
             f"taskq ui serve: pool_factory did not return within "
-            f"{_UI_FACTORY_TIMEOUT_SECS}s — the credential "
+            f"{_UI_FACTORY_TIMEOUT_SECS}s, the credential "
             "provider behind it (e.g. a token endpoint) is "
             "black-holed. UI startup fails loudly instead of "
             "parking forever."
@@ -1996,8 +1996,8 @@ def _ui_serve(
 
         if run_migrate:
             # Pre phase only. This path fires on process lifecycle events
-            # nobody sequences — a pod restart, a rollout, an autoscale
-            # event — not on an operator's decision. Post-phase migrations
+            # nobody sequences, a pod restart, a rollout, an autoscale
+            # event, not on an operator's decision. Post-phase migrations
             # exist to be withheld until the whole fleet is confirmed
             # upgraded, so applying them here would let an unrelated
             # restart close a rolling-deploy overlap window mid-rollout.
@@ -2029,7 +2029,7 @@ def _ui_serve(
                 # asyncpg.create_pool.
                 stmt_kwargs = statement_cache_kwargs(settings)
                 # Why command_timeout: every admin-page query runs on this
-                # pool — the pool-level per-query bound that closes all of
+                # pool, the pool-level per-query bound that closes all of
                 # the sweep's admin query sites at once (a black-holed PG
                 # wedges each request forever without it). Mirrors
                 # dispatcher_command_timeout's default, the per-query bound
@@ -2057,7 +2057,7 @@ def _ui_serve(
                 await close_pool_bounded(application.state.pg_pool, "ui-admin", CLOSE_TIMEOUT_SECS)
 
             # Why a pushed callback instead of stack.enter_async_context(pool):
-            # Pool.__aexit__ closes UNBOUNDED — a dead PG would wedge UI
+            # Pool.__aexit__ closes UNBOUNDED, a dead PG would wedge UI
             # shutdown. The bounded helper terminates the pool on
             # timeout and never raises.
             stack.push_async_callback(_close_ui_pool)
@@ -2074,7 +2074,7 @@ def _ui_serve(
 
                 if redis_factory is not None:
                     # Why bounded: same first-use factory discipline as the
-                    # pool factory above — the worker's reload bounds its
+                    # pool factory above, the worker's reload bounds its
                     # identical redis factory call with reload_factory_timeout
                     # (worker/deps.py); a hung Redis credential provider must
                     # fail UI startup loudly, not park it forever.
@@ -2085,7 +2085,7 @@ def _ui_serve(
                     except TimeoutError as exc:
                         raise TimeoutError(
                             f"taskq ui serve: redis_factory did not return "
-                            f"within {_UI_FACTORY_TIMEOUT_SECS}s — the Redis "
+                            f"within {_UI_FACTORY_TIMEOUT_SECS}s, the Redis "
                             "credential provider is black-holed. UI startup "
                             "fails loudly instead of parking forever."
                         ) from exc
@@ -2093,7 +2093,7 @@ def _ui_serve(
                     client = aioredis.from_url(redis_url)
 
                 # Why not stack.enter_async_context(client): Redis.__aexit__
-                # calls aclose() UNBOUNDED (and shielded) — a hung broker
+                # calls aclose() UNBOUNDED (and shielded), a hung broker
                 # would wedge UI shutdown. initialize()
                 # preserves __aenter__'s eager-setup semantics; the pushed
                 # callback bounds the close instead (taskq._close
@@ -2109,12 +2109,12 @@ def _ui_serve(
                 # Why push BEFORE initialize(): from_url() has already
                 # allocated the connection pool, so if initialize() raises
                 # (broker down) the failed eager setup must still release it
-                # — the unwind runs the pushed callback through the bounded
+                # , the unwind runs the pushed callback through the bounded
                 # close (never raises; aclose() on a never-initialized client
                 # is a no-op).
                 stack.push_async_callback(_close_ui_redis)
                 # Why bounded: initialize() is the eager first broker round
-                # trip — a black-holed Redis would park UI startup forever,
+                # trip, a black-holed Redis would park UI startup forever,
                 # and the UI process arms no watchdog. Same wait_for
                 # discipline as JobsClient._open_redis; the pushed callback
                 # above already bounds the unwind's close.
@@ -2123,7 +2123,7 @@ def _ui_serve(
                 except TimeoutError as exc:
                     raise TimeoutError(
                         f"taskq ui serve: Redis initialize() did not complete "
-                        f"within {_UI_FACTORY_TIMEOUT_SECS}s — the broker at "
+                        f"within {_UI_FACTORY_TIMEOUT_SECS}s, the broker at "
                         f"{redis_url} is unreachable or black-holed. UI "
                         "startup fails loudly instead of parking forever."
                     ) from exc
@@ -2311,7 +2311,7 @@ def ui_serve(
             resolved_pg_provider_ref, option="--pg-credential-provider"
         )
         providers.append(pg_provider)
-        # Why command_timeout: this factory builds the UI's admin pool —
+        # Why command_timeout: this factory builds the UI's admin pool ,
         # the factory-path twin of the create_pool bound in the lifespan,
         # or the credential-provider deployment would be the one unbounded
         # admin pool left standing. (The migrate conn_factory below is
@@ -2430,7 +2430,7 @@ def workgroup_validate(
         typer.echo(f"failed to read config: {e}", err=True)
         raise typer.Exit(code=1) from None
 
-    typer.echo(f"config OK — {len(cfg.workers)} worker(s), actors={cfg.actors!r}")
+    typer.echo(f"config OK, {len(cfg.workers)} worker(s), actors={cfg.actors!r}")
     for w in cfg.workers:
         health = "health=on" if w.health.enabled else "health=off"
         typer.echo(
@@ -2614,8 +2614,8 @@ wire. Both ``jobs`` and ``jobs_archive`` carry every column listed.
 def _format_max_attempts(max_attempts: int, retry_kind: str) -> str:
     """The ``max_attempts`` display for a job row.
 
-    Under ``retry_kind='indefinite'`` the stored ceiling is inert — the
-    retry path never consults it — so printing the number would claim a
+    Under ``retry_kind='indefinite'`` the stored ceiling is inert, the
+    retry path never consults it, so printing the number would claim a
     budget the job does not carry. Render the inertness instead, the same
     framing the retries guide gives the field on an indefinite job.
     """

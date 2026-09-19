@@ -1,10 +1,10 @@
-"""``worker_main_async`` — the supported async worker entrypoint.
+"""``worker_main_async`` - the supported async worker entrypoint.
 
 The gap this guards: ``worker_main`` owns its ``asyncio.Runner``, and asyncpg
 pools are loop-bound. A consumer that must build dependencies on the running
 loop *before* its actors are constructed (actors close over those deps) could
 not use ``worker_main`` at all, and imported ``taskq.worker._bootstrap._main``
-instead — a private name, with the private ``_cron_registry`` /``_registry``
+instead - a private name, with the private ``_cron_registry`` /``_registry``
 test seams in its signature.
 
 ``worker_main_async`` is that entrypoint with ``worker_main``'s exact public
@@ -54,7 +54,7 @@ def test_worker_main_async_is_a_coroutine_function() -> None:
 
 
 def test_signature_matches_worker_main() -> None:
-    """Same parameters as the sync entrypoint — no private seams, no divergence.
+    """Same parameters as the sync entrypoint - no private seams, no divergence.
 
     A divergent signature would push every caller back to ``_main`` for
     whatever the async form dropped, which is the bug this closes.
@@ -83,7 +83,7 @@ def test_signature_exposes_no_private_seams() -> None:
 async def test_runs_to_completion_on_a_caller_owned_loop(pg_dsn: str) -> None:
     """The consumer's real shape: a pool built on THIS loop, then the worker.
 
-    ``worker_main`` cannot express this — it would drive the worker under its
+    ``worker_main`` cannot express this - it would drive the worker under its
     own ``Runner``, on a different loop from the pool the actors close over.
     """
     conn = await asyncpg.connect(pg_dsn)
@@ -94,7 +94,7 @@ async def test_runs_to_completion_on_a_caller_owned_loop(pg_dsn: str) -> None:
         await conn.close()
 
     running_loop = asyncio.get_running_loop()
-    # Built BEFORE the worker starts, bound to the caller's loop — exactly the
+    # Built BEFORE the worker starts, bound to the caller's loop - exactly the
     # ordering constraint that forced the private import.
     caller_pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=1, max_size=2)
     assert caller_pool is not None
@@ -112,7 +112,7 @@ async def test_runs_to_completion_on_a_caller_owned_loop(pg_dsn: str) -> None:
             idle_max_runtime=30.0,
         )
         assert code == 0
-        # The pool outlives the worker and is still usable on THIS loop —
+        # The pool outlives the worker and is still usable on THIS loop -
         # an asyncpg pool bound to a different (or finished) loop cannot be.
         assert asyncio.get_running_loop() is running_loop
         assert not caller_pool.is_closing()

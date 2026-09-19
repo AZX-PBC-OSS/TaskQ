@@ -1,8 +1,8 @@
-"""SPIKE B — multi-worker contention: N real worker PROCESSES on one shared PG.
+"""SPIKE B - multi-worker contention: N real worker PROCESSES on one shared PG.
 
 Never tested before: everything upstream was single-process. This spike runs
 TaskQ's REAL worker bootstrap (``worker_main`` from ``taskq.worker._bootstrap``
-— same entry point as ``examples/worker.py``) in N separate python processes
+- same entry point as ``examples/worker.py``) in N separate python processes
 (max_concurrency=4 each) against the shared Postgres, then drains 5000 jobs
 from a client process and measures:
 
@@ -10,7 +10,7 @@ from a client process and measures:
   - dispatch CTE contention: pg_stat_activity wait events + ungranted
     pg_locks sampled at 250 ms during the drain
   - leader behaviour: who holds ``maintenance_leader`` (sampled), and
-    non-leader workers' CPU (``ps -o cputime`` deltas — they should be
+    non-leader workers' CPU (``ps -o cputime`` deltas - they should be
     mostly asleep)
   - per-actor fairness HOL: optional round_robin phase compares per-actor
     completion skew across workers vs strict_fifo

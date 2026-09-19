@@ -45,7 +45,7 @@ from taskq.web.admin._jsonb import decode_jsonb
 # ── Jobs list page constants ─────────────────────────────────────────────
 
 # Sortable columns per tab, as the same :class:`SortColumn` the backend's
-# ``list_jobs`` orderings are built from — so the admin's keyset and the
+# ``list_jobs`` orderings are built from, so the admin's keyset and the
 # client's page through one implementation instead of two that drift.
 # ``descending`` here is a placeholder: the request's ``order`` supplies
 # it in _build_order.  ``nullable`` marks the columns that take NULLS
@@ -103,7 +103,7 @@ _LIVE_COLS = (
     # budget the job is not enforcing (retries.md §2).
     "attempt, max_attempts, retry_kind, priority, identity_key, fairness_key, "
     # The lease columns: lock_expires_at for display, and lease_expired
-    # computed server-side against the database clock — the lease is
+    # computed server-side against the database clock, the lease is
     # written by that clock, so "is it past" is a stored predicate, not a
     # Python-clock guess (the same domain-mixing rule _build_where applies
     # to time windows). The zombie-running shape (running, lease past)
@@ -397,7 +397,7 @@ def _cursor_field(value: Any) -> str:
 
     A NULL sort value is an empty parameter, never the string ``"None"``:
     under NULLS LAST the unfinished rows are a real range that has to be
-    paged through, and ``str(None)`` made its seam unparseable — the page
+    paged through, and ``str(None)`` made its seam unparseable, the page
     turn then silently re-served the page the operator was already on.
     """
     return "" if value is None else str(value)
@@ -418,7 +418,7 @@ def _blob_display_text(value: Any) -> str | None:
 
     The jsonb size settings (``result_max_bytes`` and siblings) are *storage*
     caps a deployment can raise, so a stored blob of any size can reach this
-    page; the render gets the same display bound ``error_traceback`` gets —
+    page; the render gets the same display bound ``error_traceback`` gets ,
     one number for how much stored text an operator page renders, reporting
     the dropped character count so the operator can tell truncation from an
     actually-small value.
@@ -466,7 +466,7 @@ def register(router: APIRouter) -> None:
 
         # NUL guard before the text binds: each of these reaches a `text`
         # (or `text::timestamptz`) parameter, which asyncpg rejects with an
-        # opaque 22021 — the same class the client path's JobFilter guards.
+        # opaque 22021, the same class the client path's JobFilter guards.
         actor = parse_text_filter(actor, "actor")
         queue = parse_text_filter(queue, "queue")
         identity_key = parse_text_filter(identity_key, "identity_key")
@@ -546,7 +546,7 @@ def register(router: APIRouter) -> None:
         # `overfetched` only tells us whether more rows exist on the side of
         # the result set we just queried (the direction actually walked).
         # A page reached via "prev" already knows a "next" page exists (we
-        # came from it), and vice versa — so has_next/has_prev must be
+        # came from it), and vice versa, so has_next/has_prev must be
         # direction-aware rather than both derived from the same flag.
         #
         # Paged-into means a cursor was APPLIED, which is what the resolved
@@ -704,7 +704,7 @@ def register(router: APIRouter) -> None:
         for _jsonb_key in ("progress_state", "payload", "metadata", "result"):
             job_dict[_jsonb_key] = decode_jsonb(job_dict.get(_jsonb_key))
         # Every blob this page renders as text is display-bounded; the
-        # mappings the template reads structurally stay decoded —
+        # mappings the template reads structurally stay decoded ,
         # progress_state feeds the Progress timeline, and metadata feeds the
         # Batch section, whose text render uses the parallel
         # ``metadata_display`` key instead of the mapping.
@@ -754,7 +754,7 @@ def register(router: APIRouter) -> None:
 
         # reason is the one mutation text this route binds: it reaches the
         # job_events ``detail`` jsonb insert via write_cancel_request, and
-        # PostgreSQL rejects \u0000 in jsonb strings — the same
+        # PostgreSQL rejects \u0000 in jsonb strings, the same
         # opaque-driver-error class the list filters reject with
         # parse_text_filter, so reason gets the same clean 400 here.
         reason = parse_text_filter(reason, "reason")
@@ -769,6 +769,6 @@ def register(router: APIRouter) -> None:
 
         # The redirect must carry base_path: a relative ../../ URL only
         # resolves back to the job page when the router is mounted at the
-        # root — under a host prefix it climbs out of the mount and 404s
+        # root, under a host prefix it climbs out of the mount and 404s
         # (or lands in the host's own routes).
         return RedirectResponse(url=f"{base_path}/jobs/{job_id}", status_code=303)

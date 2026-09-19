@@ -119,8 +119,8 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
             )
 
     # PG binds payload/metadata through jsonb_param → dumps_jsonb_str at
-    # INSERT time — after the preflights above, before any idempotency
-    # conflict resolution — and rejects a NUL there. Mirror that exact
+    # INSERT time, after the preflights above, before any idempotency
+    # conflict resolution, and rejects a NUL there. Mirror that exact
     # guard (same function, so the same error) here: without it a payload
     # InMemory accepted raised ValueError on the first real PG enqueue, so
     # an app validated against InMemory broke in production.  The guard
@@ -128,7 +128,7 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
     # a struct-level check would double-scan the PG hot path, which
     # already guards at bind time.  The guard's serialization is also
     # what PG stores: the jsonb column holds the orjson text and reads it
-    # back through loads, so the stored values are its round-trip —
+    # back through loads, so the stored values are its round-trip ,
     # values whose encoding differs from the Python object (NaN/Infinity
     # → null, UUID → string, tuple → array) read back exactly as PG
     # reads them.
@@ -156,7 +156,7 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
 
     now = self._clock.now()
     # None means immediate: stamp from this backend's own (single-domain)
-    # clock — the InMemory mirror of the server's COALESCE stamp.
+    # clock, the InMemory mirror of the server's COALESCE stamp.
     stamped_scheduled_at = args.scheduled_at if args.scheduled_at is not None else now
     status: object = "pending" if stamped_scheduled_at <= now else "scheduled"
 
@@ -221,9 +221,9 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
 
         # PG's enqueue INSERT has no ON CONFLICT arbiter for the primary
         # key (only the singleton and legacy-idempotency constraints are
-        # typed conversions — backend/_enqueue.py), so an INSERT carrying
+        # typed conversions, backend/_enqueue.py), so an INSERT carrying
         # an existing job id propagates the RAW UniqueViolationError from
-        # jobs_pkey. The twin refuses identically — never silently
+        # jobs_pkey. The twin refuses identically, never silently
         # overwriting a live row, which certified code that would corrupt
         # on PG.
         raise UniqueViolationError(
@@ -236,8 +236,12 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
     if args.idempotency_key is not None:
         self._idempotency_index[(args.idempotency_scope, args.idempotency_key)] = args.id
 
-    for event in self._wake_subscribers:
-        event.set()
+    # Queue-scoped wake, the PG trigger's payload filter mirrored: a
+    # subscriber registered with a queue set is not woken by an enqueue
+    # to a queue it would never claim (None = wake on everything).
+    for event, queues in self._wake_queues.items():
+        if queues is None or args.queue in queues:
+            event.set()
 
     logger.debug(
         "state-change",
@@ -284,7 +288,7 @@ async def _enqueue_batch(
         # Per-actor partition parity with the PG bulk tier: over-cap
         # actors' items are refused as a group, every other actor's items
         # are admitted, and the typed refusal raises AFTER the admitted
-        # rows are stored — matching what PostgresBackend.enqueue_batch
+        # rows are stored, matching what PostgresBackend.enqueue_batch
         # enforces (there: after the admitting transaction commits).
         refusals = await _batch_cap_refusals(self, args_list)
         if refusals:
@@ -296,14 +300,14 @@ async def _enqueue_batch(
             admitted_args = [a for a in args_list if a.actor not in refused_names]
     # PG-tier atomicity for job-id collisions: the PG bulk tier is
     # one unnest INSERT in one transaction with no ON CONFLICT arbiter
-    # for the primary key, so a duplicate id — against a stored row or
-    # another item in this batch — aborts the ENTIRE call with nothing
+    # for the primary key, so a duplicate id, against a stored row or
+    # another item in this batch, aborts the ENTIRE call with nothing
     # admitted. Pre-validate the whole ADMITTED subset (refused actors'
     # items never reach the PG INSERT either) before the loop below
     # stores its first row, so the same batch raises the same
     # UniqueViolationError with the same empty stored-row state on both
     # backends. The per-item loop previously discovered the collision at
-    # the poisoned item's index and left the good prefix stored —
+    # the poisoned item's index and left the good prefix stored ,
     # certifying code that leaves phantom rows behind on PG.
     _check_batch_job_ids(self, admitted_args)
     _check_batch_singletons(self, admitted_args)
@@ -338,7 +342,7 @@ async def _enqueue_batch(
             # aggregate's idempotency discount, refusing pure-retry batches
             # the aggregate just admitted. unique_for is stripped for the
             # same parity reason: the PG batch tiers (the unnest INSERT and
-            # the COPY) never run the unique_for preflight — a bulk statement
+            # the COPY) never run the unique_for preflight, a bulk statement
             # cannot take a per-identity advisory lock without per-item round
             # trips that defeat bulk throughput, so every batch item writes
             # and unique_for items are conservatively fully counted toward
@@ -365,11 +369,11 @@ async def _enqueue_batch(
 
 def _check_batch_job_ids(self: "InMemoryBackend", admitted_args: list[EnqueueArgs]) -> None:
     """Reject the whole batch BEFORE any insert when an admitted item's
-    job id collides — with a stored row or another item in this batch.
+    job id collides, with a stored row or another item in this batch.
 
     Same typed error as the single-enqueue path's stored-id collision
     (the raw ``UniqueViolationError`` PG's jobs_pkey raises, no arbiter
-    conversion), raised with NOTHING from the batch admitted — the PG
+    conversion), raised with NOTHING from the batch admitted, the PG
     bulk tier's whole-call atomicity, mirrored. In-batch duplicates
     violate the same constraint in the same single statement on PG.
     """
@@ -418,12 +422,12 @@ def _check_batch_idempotency_actors(
 
 def _check_batch_singletons(self: "InMemoryBackend", admitted_args: list[EnqueueArgs]) -> None:
     """Reject the whole batch BEFORE any insert when an admitted singleton
-    item collides — with a live singleton job or another singleton item for
+    item collides, with a live singleton job or another singleton item for
     the same actor in this batch.
 
     The PG bulk tier is one ``unnest`` INSERT in one transaction, so the
     partial unique index covering live singleton rows aborts the entire
-    statement and admits nothing — including the items that precede the
+    statement and admits nothing, including the items that precede the
     colliding one. The per-item loop below discovers the collision at the
     offending item's index and would leave the good prefix stored, which
     certifies application code that on Postgres leaves no such rows behind.
@@ -432,8 +436,8 @@ def _check_batch_singletons(self: "InMemoryBackend", admitted_args: list[Enqueue
     preflight raises, not the driver's constraint violation: a singleton
     collision is a retryable admission denial, and a caller must be able
     to branch on it without reading a driver traceback. The colliding
-    actor comes from the shared ``first_singleton_collision_actor`` rule —
-    the same rule the PG bulk tier's post-abort attribution applies — so
+    actor comes from the shared ``first_singleton_collision_actor`` rule ,
+    the same rule the PG bulk tier's post-abort attribution applies, so
     the two backends cannot drift on which actor gets named.
 
     The live-row scan matches on ``is True``, the same predicate the
@@ -484,7 +488,7 @@ def _check_batch_jsonb(args_list: list[EnqueueArgs], *, index_base: int = 0) -> 
     index, actor, field) and the same NUL_JSONB_ERROR wording; tags
     included because the PG batch path binds them through jsonb[]
     (see item_tags_jsonb_param). ``index_base`` is the position of
-    ``args_list[0]`` in the caller's coordinate space — the PG build
+    ``args_list[0]`` in the caller's coordinate space, the PG build
     loop adds the same shift via its ``index_base`` parameter, and the
     mirror's atomic chunk loop passes the consumed prefix so both
     backends annotate at identical STREAM-GLOBAL indices.
@@ -504,8 +508,8 @@ async def _batch_cap_refusals(
     Same effective-cap rule as the PG tier: a registered operator
     override (``_actor_configs_meta``) wins over the carried literal,
     cleared/unknown falls back to it. Idempotency pairs already stored
-    (or repeated in-batch) are discounted — they dedupe instead of
-    writing — mirroring the PG tier's ``ON CONFLICT`` discount. Returns
+    (or repeated in-batch) are discounted, they dedupe instead of
+    writing, mirroring the PG tier's ``ON CONFLICT`` discount. Returns
     one :class:`MaxPendingExceededError` per over-cap actor; the caller
     decides partition-vs-abort (see ``_enqueue_batch``).
     """
@@ -567,15 +571,15 @@ async def _enqueue_batch_fast(
 ) -> int:
     if not args_list:
         raise ValueError("args_list must not be empty")
-    # COPY has no ON CONFLICT arbiter: any duplicate idempotency key —
-    # within the batch or already stored — aborts the ENTIRE batch on PG
+    # COPY has no ON CONFLICT arbiter: any duplicate idempotency key ,
+    # within the batch or already stored, aborts the ENTIRE batch on PG
     # (a violation of jobs_idempotency_scope_key_uniq; nothing is
     # written).  Mirror that here instead of silently deduplicating
     # item-by-item, which reported a count that included rows PG would
     # never have written (protocol parity; see
     # Backend.enqueue_batch_fast's docstring). The mirror raises the
     # SAME typed classification the PG COPY path gives
-    # (DuplicateIdempotencyKeyError, not a raw asyncpg violation) — and
+    # (DuplicateIdempotencyKeyError, not a raw asyncpg violation), and
     # names the offending pair through the SAME shared rule
     # (first_duplicate_idempotency_pair: first item in batch order whose
     # pair repeats an earlier item or is already stored), so the two
@@ -585,7 +589,7 @@ async def _enqueue_batch_fast(
     # Why this check ORDER: PG's fast path surfaces defects build-loop
     # NUL guard → pre-COPY cap count → COPY duplicate violation, so a
     # multi-defect batch raises PayloadValidationError (or the cap
-    # refusal) there — the duplicate is never reached. The mirror checks
+    # refusal) there, the duplicate is never reached. The mirror checks
     # in the same order so the same batch raises the same typed error on
     # both backends; checking duplicates first made a NUL+duplicate
     # batch raise DuplicateIdempotencyKeyError in memory while PG raised
@@ -648,7 +652,7 @@ async def _enqueue_batch_fast(
     # above is this tier's only admission decision, and re-running the
     # aggregate inside _enqueue_batch would refuse again (it is not the
     # no-op it was pre-partition). An empty admitted list skips storage
-    # entirely — the boundary raise below is the whole outcome, matching
+    # entirely, the boundary raise below is the whole outcome, matching
     # the PG fast tier's "no COPY, no fixup, no notify" arm.
     rows: list[JobRow] = []
     if admitted_args:

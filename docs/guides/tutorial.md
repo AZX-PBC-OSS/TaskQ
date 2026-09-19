@@ -6,7 +6,7 @@ will have a cron-scheduled, retried, deduplicated, DI-wired, batch-fan-out job
 pipeline with progress reporting, cancellation, and unit tests.
 
 All code lives in a single `myapp/actors.py` module (plus a few scripts). Each
-part shows the **new or changed code** — earlier definitions remain in place
+part shows the **new or changed code**; earlier definitions remain in place
 unless explicitly replaced.
 
 ---
@@ -15,7 +15,7 @@ unless explicitly replaced.
 
 - Python 3.12+, TaskQ installed (`uv add taskq-py`)
 - Postgres with schema applied (`taskq migrate up`)
-- Redis (optional — for real-time progress streaming)
+- Redis (optional; for real-time progress streaming)
 
 See [Getting Started](../getting-started/quick-start.md) for initial setup.
 
@@ -270,7 +270,7 @@ asyncio.run(main())
 
 !!! warning "`identity_key` is required for `unique_for`"
     If `identity_key` is omitted at enqueue time, `unique_for` is a **silent
-    no-op** — the library logs a warning and creates a fresh job every time.
+    no-op**: the library logs a warning and creates a fresh job every time.
 
 ---
 
@@ -454,7 +454,7 @@ python -m myapp.enqueue_batch
 ## Part 7: Cron Scheduling
 
 Wire up a cron schedule so the batch digest fires every day at 03:00 UTC.
-Declare it with `cron()` — the worker auto-discovers and persists it at startup.
+Declare it with `cron()`; the worker auto-discovers and persists it at startup.
 
 ```python
 from taskq import cron
@@ -487,7 +487,7 @@ maintenance leader fires the job daily at 03:00 UTC.
 | Parameter | Description |
 |---|---|
 | `expression` | Standard 5-field cron expression. |
-| `actor` | Actor name — must match a registered `ActorRef.name`. |
+| `actor` | Actor name; must match a registered `ActorRef.name`. |
 | `payload_factory` | Dotted path to a callable returning `dict` or `BaseModel`. |
 | `static_payload` | Fixed payload dict. Mutually exclusive with `payload_factory`. |
 | `identity_key` | Opaque key passed to `enqueue()` on every fire. Enables cron↔on-demand dedup. |
@@ -628,7 +628,7 @@ uv run pytest tests/test_digest.py -v
 | Testing primitive | Purpose |
 |---|---|
 | `InMemoryBackend` | In-process backend simulating the full enqueue-dispatch-execute cycle. |
-| `FakeClock` | Deterministic clock — `advance()` and `move_to()` control time. |
+| `FakeClock` | Deterministic clock (`advance()` and `move_to()` control time). |
 | `register_stub(name, fn)` | Register `(payload, ctx) -> dict` that `run_until_drained` executes. |
 | `run_until_drained()` | Drive the dispatch loop to completion, auto-advancing through snoozes. |
 

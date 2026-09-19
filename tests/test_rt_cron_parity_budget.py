@@ -2,21 +2,21 @@
 
 Two surfaces the bounded-tick contract has never been pinned against:
 
-* **The statement budget under the policy preflights** — the bounded-file
+* **The statement budget under the policy preflights** - the bounded-file
   tests pass no ``actor_policies``, so nobody has pinned that a tick over
   a large mixed due set (singleton-flagged actors, capped actors, healthy
   actors) still spends a bounded handful of statements.  The preflights
   are one statement per DISTINCT flagged actor set (``ANY($1::text[])``
   + ``GROUP BY actor``), not per schedule, and the intra-batch gates are
-  in memory — a regression to per-schedule preflighting would trip the
+  in memory - a regression to per-schedule preflighting would trip the
   leader's deadline under exactly the catch-up burst the bound exists
   for.
-* **Genuine failures under the policy stamping path** — the failure
+* **Genuine failures under the policy stamping path** - the failure
   classification exists to absorb policy collisions, and the existing
   pin exercises a failing factory with the policy mapping present but no
   stamped enqueue ever built (the factory raises before stamping).  The
   sharper shape: a failing schedule and a stamp-carrying fire for the
-  SAME singleton actor in ONE tick — the classification must strike the
+  SAME singleton actor in ONE tick - the classification must strike the
   real failure while the stamping path is provably active.
 """
 
@@ -47,7 +47,7 @@ pytestmark = pytest.mark.integration
 
 _QUEUE = "rt_budget_queue"
 
-# 20 singleton-flagged actors (2 due schedules each — the intra-batch gate
+# 20 singleton-flagged actors (2 due schedules each - the intra-batch gate
 # fires one, suppresses one), 5 capped actors at their cap (pre-seeded
 # pending job), 5 healthy actors: 50 due schedules in one tick.
 _SINGLETON_ACTOR_COUNT = 20
@@ -128,7 +128,7 @@ class TestBoundedTickWithPolicies:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """50 due schedules — 40 for 20 singleton actors (one fire + one
+        """50 due schedules - 40 for 20 singleton actors (one fire + one
         intra-batch suppression each), 5 for capped actors at their cap
         (suppressed), 5 healthy (fire): the tick spends at most the
         reproduction budget (20) awaited statements, the two preflights
@@ -177,33 +177,33 @@ class TestBoundedTickWithPolicies:
                 )
 
         assert fired == 25, (
-            f"{fired} fires from 50 due schedules — expected 20 singleton (one per "
+            f"{fired} fires from 50 due schedules - expected 20 singleton (one per "
             "actor, the intra-batch gate suppressing each actor's later slot) + "
             "0 capped + 5 healthy"
         )
         assert counting.count <= 20, (
             f"a tick over 50 due schedules with both policy preflights issued "
-            f"{counting.count} awaited round trips (budget 20) — the preflight is "
+            f"{counting.count} awaited round trips (budget 20) - the preflight is "
             "per-schedule somewhere, so a catch-up burst trips the leader's "
-            "deadline exactly when the bound is load-bearing"
+            "deadline exactly when the bound is critical"
         )
         # Needles chosen to sit inside the harness's 200-char statement
         # truncation: both preflight bodies are longer than that, so a
         # "GROUP BY actor" tail can be cut off.
         assert counting.matching("blocking_job_id") == 1, (
             "exactly one singleton-blocker preflight statement may run, over the "
-            "whole flagged-actor set — never one per schedule"
+            "whole flagged-actor set - never one per schedule"
         )
         assert counting.matching("pending_count") == 1, (
             "exactly one pending-count preflight statement may run, over the whole "
-            "capped-actor set — never one per schedule"
+            "capped-actor set - never one per schedule"
         )
 
         total_jobs: int = await clean_pg_conn.fetchval(
             f'SELECT count(*) FROM "{schema}".jobs'  # noqa: S608  # Why: schema is a test-fixture identifier.
         )
         assert total_jobs == 30, (
-            f"{total_jobs} jobs — expected 20 singleton fires + 5 seeded cap "
+            f"{total_jobs} jobs - expected 20 singleton fires + 5 seeded cap "
             "blockers + 5 healthy fires, nothing more"
         )
         singleton_grouped = await clean_pg_conn.fetch(
@@ -213,7 +213,7 @@ class TestBoundedTickWithPolicies:
         )
         assert len(singleton_grouped) == _SINGLETON_ACTOR_COUNT
         assert all(rec["n"] == 1 for rec in singleton_grouped), (
-            "every singleton actor keeps exactly one job — the earlier slot's fire"
+            "every singleton actor keeps exactly one job - the earlier slot's fire"
         )
 
         fired_schedules: int = await clean_pg_conn.fetchval(
@@ -222,7 +222,7 @@ class TestBoundedTickWithPolicies:
         )
         assert fired_schedules == 25
         # The suppressed slots (each singleton actor's later slot + every
-        # capped slot) advanced by their own cadence from their own slot —
+        # capped slot) advanced by their own cadence from their own slot -
         # sequential catch-up, so the advance can still sit in the past;
         # the pinned property is the exact target, not future-ness.
         suppressed_rows = await clean_pg_conn.fetch(
@@ -254,7 +254,7 @@ class TestBoundedTickWithPolicies:
 
 
 class TestGenuineFailureUnderPolicy:
-    """A9: the classification absorbs collisions only — a real defect still
+    """A9: the classification absorbs collisions only - a real defect still
     strikes while the stamping path is active in the same tick."""
 
     async def test_failing_factory_strikes_while_a_stamped_fire_lands(
@@ -266,7 +266,7 @@ class TestGenuineFailureUnderPolicy:
         slot's payload factory raises (a genuine defect), the later slot is
         healthy. The tick must strike the failing schedule (failure count
         1, error text recorded) while the healthy fire carries the
-        singleton stamp — the stamping path active, the failure path
+        singleton stamp - the stamping path active, the failure path
         unblunted."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
@@ -311,7 +311,7 @@ class TestGenuineFailureUnderPolicy:
 
         failing = await schedule_row(clean_pg_conn, schema, failing_id)
         assert failing["consecutive_failures"] == 1, (
-            "a genuine payload-factory failure must still strike — the suppression "
+            "a genuine payload-factory failure must still strike - the suppression "
             "classification may only absorb policy collisions"
         )
         assert "budget-check factory exploded" in (failing["last_fire_error"] or "")

@@ -42,7 +42,7 @@ def _sw_memory(
 
 
 # ════════════════════════════════════════════════════════════════════
-# TokenBucket — in-memory peek tests
+# TokenBucket - in-memory peek tests
 # ════════════════════════════════════════════════════════════════════
 
 
@@ -81,7 +81,7 @@ async def test_peek_on_empty_bucket() -> None:
 
 
 async def test_peek_refill_computation() -> None:
-    """Wait, then peek() — tokens have refilled (but not consumed)."""
+    """Wait, then peek() - tokens have refilled (but not consumed)."""
     tb = _tb_memory(capacity=100, refill=10)
     clock = FakeClock(_START)
 
@@ -143,7 +143,7 @@ async def test_peek_capacity_and_refill_fields() -> None:
 
 
 # ════════════════════════════════════════════════════════════════════
-# TokenBucket — in-memory reset tests
+# TokenBucket - in-memory reset tests
 # ════════════════════════════════════════════════════════════════════
 
 
@@ -212,7 +212,7 @@ async def test_reset_fixed_quota() -> None:
 
 
 # ════════════════════════════════════════════════════════════════════
-# SlidingWindow — in-memory log-style peek/reset tests
+# SlidingWindow - in-memory log-style peek/reset tests
 # ════════════════════════════════════════════════════════════════════
 
 
@@ -297,7 +297,7 @@ async def test_sw_log_peek_fields() -> None:
 
 
 # ════════════════════════════════════════════════════════════════════
-# SlidingWindow — in-memory GCRA peek/reset tests
+# SlidingWindow - in-memory GCRA peek/reset tests
 # ════════════════════════════════════════════════════════════════════
 
 
@@ -440,7 +440,7 @@ async def test_registry_peek_all_includes_reservations() -> None:
 
 
 # ════════════════════════════════════════════════════════════════════
-# TokenBucket peek/reset — memory backend error paths
+# TokenBucket peek/reset - memory backend error paths
 # ════════════════════════════════════════════════════════════════════
 
 
@@ -464,7 +464,7 @@ async def test_reset_memory_without_clock_raises() -> None:
 
 
 def test_ratelimit_state_is_frozen() -> None:
-    """RateLimitState is frozen — cannot assign attributes."""
+    """RateLimitState is frozen - cannot assign attributes."""
     state = RateLimitState(
         bucket_name="test",
         backend="memory",
@@ -669,7 +669,7 @@ async def test_reset_nonexistent_key_redis(redis_url: str) -> None:
         },
     )
 
-    # reset on nonexistent key — DEL returns 0, no error
+    # reset on nonexistent key - DEL returns 0, no error
     await tb.reset(redis_client=client, settings=settings)
 
     # peek still shows full
@@ -809,7 +809,7 @@ async def test_reset_on_sw_log_pg(clean_pg_conn: object, module_pg_schema: objec
 
 
 # ════════════════════════════════════════════════════════════════════
-# Registry peek_all/reset — the caller-supplied timeout bound
+# Registry peek_all/reset - the caller-supplied timeout bound
 # ════════════════════════════════════════════════════════════════════
 
 
@@ -838,7 +838,7 @@ class _HangingPrimitive:
 
 async def test_peek_all_timeout_bounds_a_hung_bucket_read() -> None:
     """A bucket whose store never answers must raise TimeoutError at the
-    bound — not park peek_all() (and the page awaiting it) forever."""
+    bound - not park peek_all() (and the page awaiting it) forever."""
     reg = RateLimitRegistry()
     reg.register(_tb_memory(capacity=10, refill=1, name="healthy"))
     reg.register(_HangingPrimitive("hung"))
@@ -861,7 +861,7 @@ async def test_peek_all_with_timeout_still_returns_when_the_store_answers() -> N
 
 async def test_registry_reset_timeout_bounds_a_hung_backend_write() -> None:
     """A reset whose backend round trip never completes raises TimeoutError
-    at the bound — the reset route answers 503 instead of parking."""
+    at the bound - the reset route answers 503 instead of parking."""
     reg = RateLimitRegistry()
     hanging = _HangingPrimitive("hung")
     reg.register(hanging)

@@ -1,6 +1,6 @@
 # Admin UI
 
-The TaskQ admin UI is a read-only-by-default observability dashboard built with FastAPI and Jinja2. It shows live job, queue, worker, schedule, rate-limit, and reservation state drawn from Postgres. CSRF-protected write operations are available for job cancellation, job retry, and cron schedule management (enable, disable, skip, run-now), but are gated by `TASKQ_ADMIN_ACTIONS_ENABLED` (default `false` — set to `true` to enable them). The rate-limit reset endpoint is additionally gated by `TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET=true`.
+The TaskQ admin UI is a read-only-by-default observability dashboard built with FastAPI and Jinja2. It shows live job, queue, worker, schedule, rate-limit, and reservation state drawn from Postgres. CSRF-protected write operations are available for job cancellation, job retry, and cron schedule management (enable, disable, skip, run-now), but are gated by `TASKQ_ADMIN_ACTIONS_ENABLED` (default `false`; set to `true` to enable them). The rate-limit reset endpoint is additionally gated by `TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET=true`.
 
 The frontend uses [Alpine.js](https://alpinejs.dev/) for reactive components, [HTMX](https://htmx.org/) for partial-page updates, and Jinja2 partial templates for composable UI pieces. SSE (Server-Sent Events) provides real-time updates when Redis is available; a polling fallback keeps the UI functional when it is not.
 
@@ -72,7 +72,7 @@ is configured. `admin_ui_require_auth` defaults to `True`, so
 deploying an unauthenticated admin UI in production.
 
 ```sh
-# The default — fails closed in non-dev:
+# The default: fails closed in non-dev:
 TASKQ_ENVIRONMENT=production taskq ui serve
 # RuntimeError: admin UI requires auth_dependency in non-dev environments
 ```
@@ -84,7 +84,7 @@ To opt out (e.g. when relying on a reverse proxy for authentication), set
 export TASKQ_ENVIRONMENT=production
 export TASKQ_ADMIN_UI_REQUIRE_AUTH=false
 taskq ui serve
-# WARNING log: admin-ui-no-auth — but server starts
+# WARNING log: admin-ui-no-auth: but server starts
 ```
 
 Dev environments (`TASKQ_ENVIRONMENT=dev` or `development`) bypass the
@@ -127,7 +127,7 @@ bundle = create_router(
 )
 ```
 
-Any FastAPI dependency callable works — `HTTPBearer`, `HTTPBasic`, OAuth2,
+Any FastAPI dependency callable works: `HTTPBearer`, `HTTPBasic`, OAuth2,
 custom session middleware, etc.
 
 ### Protecting `taskq ui serve` with a reverse proxy
@@ -174,7 +174,7 @@ form POST. Resets are logged at `WARNING` level.
 
 Keep this disabled in production unless operators need fast incident-response
 capability. If enabled, ensure the authentication layer (middleware or reverse
-proxy) covers this endpoint — it is protected by the same `auth_dependency`
+proxy) covers this endpoint; it is protected by the same `auth_dependency`
 as all other routes.
 
 ### Job cancel and retry endpoints
@@ -185,7 +185,7 @@ When `admin_actions_enabled` is `false`, both endpoints return `403`. Set
 `TASKQ_ADMIN_ACTIONS_ENABLED=true` to enable them. Both are CSRF-protected.
 Cancel writes a cancel request to Postgres; retry resets a terminal job to
 `pending` via `backend.retry_job`. Ensure the authentication layer covers
-these endpoints in production — they can modify job state.
+these endpoints in production: they can modify job state.
 
 ---
 
@@ -193,7 +193,7 @@ these endpoints in production — they can modify job state.
 
 All `GET` routes are read-only HTML pages. `POST` routes (cancel, retry, schedule management, rate-limit reset) are CSRF-protected write operations. Every page is reachable from the top navigation bar (Queues, Jobs, History, Workers, Actors, Batches, Schedules, Rate Limits, Reservations, Leader); the job detail page is linked from any job ID in the lists.
 
-Every route checks its database connection out with a bound: a checkout that does not arrive within `TASKQ_ADMIN_ACQUIRE_TIMEOUT` (default 5 s — the pool is exhausted or Postgres is not answering) is answered with `503` and `Retry-After: 2`, and logged as `pool-acquire-timeout` with the pool's occupancy. The query itself is bounded by the pool's `command_timeout` (`taskq ui serve` sets one).
+Every route checks its database connection out with a bound: a checkout that does not arrive within `TASKQ_ADMIN_ACQUIRE_TIMEOUT` (default 5 s; the pool is exhausted or Postgres is not answering) is answered with `503` and `Retry-After: 2`, and logged as `pool-acquire-timeout` with the pool's occupancy. The query itself is bounded by the pool's `command_timeout` (`taskq ui serve` sets one).
 
 ### `GET /admin/`
 
@@ -243,11 +243,11 @@ Archived rows (from `jobs_archive`) are shown with an "archived" badge in the So
 
 ### `GET /admin/jobs`
 
-Job listing page with "Live Jobs" and "Archived" tabs. Supports filtering by status (multi-select), actor (substring match), queue, time range, identity key, fairness key, free-text search (matches job ID or actor), and tags. Results are paginated at 100 rows using keyset pagination and can be sorted by created_at, started_at, actor, queue, status, or attempt. HTMX partial refreshes update the table without a full page reload. The table is polled at `TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS` whenever the Live Jobs tab is open; with the live toggle on, an SSE stream (`/admin/sse/jobs`, PG `LISTEN` on the schema's events channel) additionally brings a refresh forward the moment an event arrives. The events channel carries only the running-job cancel fast-path today — terminal writes and dispatch do not NOTIFY it — which is why polling stays the source of truth and SSE is an accelerator, never a replacement.
+Job listing page with "Live Jobs" and "Archived" tabs. Supports filtering by status (multi-select), actor (substring match), queue, time range, identity key, fairness key, free-text search (matches job ID or actor), and tags. Results are paginated at 100 rows using keyset pagination and can be sorted by created_at, started_at, actor, queue, status, or attempt. HTMX partial refreshes update the table without a full page reload. The table is polled at `TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS` whenever the Live Jobs tab is open; with the live toggle on, an SSE stream (`/admin/sse/jobs`, PG `LISTEN` on the schema's events channel) additionally brings a refresh forward the moment an event arrives. The events channel carries only the running-job cancel fast-path today; terminal writes and dispatch do not NOTIFY it, which is why polling stays the source of truth and SSE is an accelerator, never a replacement.
 
 Sorting by `started_at` ascending together with a `status=running` filter is the "running longest" view: the jobs that have held a worker the longest come first. `started_at` is NULL for jobs that have not started, and those rows sort last in both directions (NULLS LAST) so paging through live rows is never interrupted by the not-yet-started tail.
 
-The **Duration** column carries a live twin for exactly that view: a running row has no `finished_at`, so its settled `duration_ms` is NULL while it runs — the cell renders `running_for_ms` instead, the elapsed span since `started_at` computed by the database at render time (`clock_timestamp() - started_at`, the same single-arbiter shape the lease column uses; a Python-clock span would skew by the admin process's offset from the database clock). The live span renders amber with a "still running" tooltip so it cannot be misread as a settled duration, and disappears the row transitions terminal, where `duration_ms` takes over. Because the value is computed server-side on each request, both refresh modes — polling and the SSE-accelerated refresh — re-render it through the same table partial, as fresh as the last refresh.
+The **Duration** column carries a live twin for exactly that view: a running row has no `finished_at`, so its settled `duration_ms` is NULL while it runs; the cell renders `running_for_ms` instead, the elapsed span since `started_at` computed by the database at render time (`clock_timestamp() - started_at`, the same single-arbiter shape the lease column uses; a Python-clock span would skew by the admin process's offset from the database clock). The live span renders amber with a "still running" tooltip so it cannot be misread as a settled duration, and disappears the row transitions terminal, where `duration_ms` takes over. Because the value is computed server-side on each request, both refresh modes (polling and the SSE-accelerated refresh) re-render it through the same table partial, as fresh as the last refresh.
 
 **Query parameters (selected):**
 
@@ -255,10 +255,10 @@ The **Duration** column carries a live twin for exactly that view: a running row
 |---|---|---|
 | `tab` | `live` | `live` (jobs table) or `archived` (jobs_archive table). |
 | `status` | all (live) or terminal (archived) | Repeatable status filter: `?status=pending&status=running`. |
-| `actor` | — | Substring match on actor name (ILIKE). |
-| `queue` | — | Exact match on queue name. |
+| `actor` | n/a | Substring match on actor name (ILIKE). |
+| `queue` | n/a | Exact match on queue name. |
 | `sort` / `order` | `created_at` / `desc` | Sort column and direction. |
-| `cursor_at` / `cursor_id` | — | Keyset pagination cursor (both required together). |
+| `cursor_at` / `cursor_id` | n/a | Keyset pagination cursor (both required together). |
 
 ### `GET /admin/jobs/{job_id}`
 
@@ -266,7 +266,7 @@ Job detail. Shows the full job record, attempt history from `job_attempts`, and 
 
 If the job has already been pruned to `jobs_archive`, the page loads from the archive table instead; attempt history comes from `job_attempts_archive` and the event log is empty (events are not archived). An "archived" banner is shown at the top of the page.
 
-The job detail page includes a **Cancel** button (for non-terminal jobs) and a **Retry** button (for jobs in any terminal state — `succeeded`, `failed`, `cancelled`, `crashed`, or `abandoned`). Both are CSRF-protected POST forms guarded by a browser `confirm()` dialog, so a double-click or stray Enter cannot fire the write. When `admin_actions_enabled` is `false` (the default), both buttons return `403` on submit; set `TASKQ_ADMIN_ACTIONS_ENABLED=true` to enable them.
+The job detail page includes a **Cancel** button (for non-terminal jobs) and a **Retry** button (for jobs in any terminal state: `succeeded`, `failed`, `cancelled`, `crashed`, or `abandoned`). Both are CSRF-protected POST forms guarded by a browser `confirm()` dialog, so a double-click or stray Enter cannot fire the write. When `admin_actions_enabled` is `false` (the default), both buttons return `403` on submit; set `TASKQ_ADMIN_ACTIONS_ENABLED=true` to enable them.
 
 ### `POST /admin/jobs/{job_id}/cancel`
 
@@ -274,7 +274,7 @@ Cancels a non-terminal job by writing a cancel request via `backend.write_cancel
 
 ### `POST /admin/jobs/{job_id}/retry`
 
-Puts a job that has come to rest back to `pending` via `backend.retry_job`, allowing it to be re-dispatched by a worker. Every resting state is a valid source — `failed`, `crashed`, `cancelled`, `abandoned` and `succeeded` — so the replay path after a bad deploy and the put-back path after a worker restart are both supported. Returns `403` if `admin_actions_enabled` is `false`, `404` if the job does not exist, `409` if the job is `running` (re-pending a live attempt could run it twice) or already queued as `pending`/`scheduled`. Redirects to the job detail page on success. The retry leaves `attempt` where it is and raises `max_attempts` just enough to fund one more run, clears error fields and any stored result, and sets `status='pending'`. It also clears `schedule_to_close` **only when that deadline has already elapsed** — dispatch never claims a row whose deadline has passed, so keeping a stale deadline would leave the retried row undispatchable (swept back to `failed` on the next tick) even though the retry reported success. A still-future `schedule_to_close` is preserved unchanged: the original time budget still applies to the re-run.
+Puts a job that has come to rest back to `pending` via `backend.retry_job`, allowing it to be re-dispatched by a worker. Every resting state is a valid source (`failed`, `crashed`, `cancelled`, `abandoned` and `succeeded`), so the replay path after a bad deploy and the put-back path after a worker restart are both supported. Returns `403` if `admin_actions_enabled` is `false`, `404` if the job does not exist, `409` if the job is `running` (re-pending a live attempt could run it twice) or already queued as `pending`/`scheduled`. Redirects to the job detail page on success. The retry leaves `attempt` where it is and raises `max_attempts` just enough to fund one more run, clears error fields and any stored result, and sets `status='pending'`. It also clears `schedule_to_close` **only when that deadline has already elapsed**; dispatch never claims a row whose deadline has passed, so keeping a stale deadline would leave the retried row undispatchable (swept back to `failed` on the next tick) even though the retry reported success. A still-future `schedule_to_close` is preserved unchanged: the original time budget still applies to the re-run.
 
 ### `GET /admin/jobs/count`
 
@@ -284,7 +284,7 @@ Used by the jobs list page to render the result count without re-fetching the fu
 
 ### `GET /admin/api/history/stats`
 
-Per-actor metrics as JSON. Returns aggregate execution statistics for all completed jobs the fleet still has a record of — `jobs_archive` UNIONed with the terminal rows still live in `jobs` — grouped by `(actor, queue)`. A terminal row stays in `jobs` for its whole prune retention before the prune sweep archives it, so an archive-only aggregate would hide an actor's freshest failures for exactly as long as they matter most; the live side counts terminal rows only (running/pending work never inflates executor totals, and its population is capped by prune retention).
+Per-actor metrics as JSON. Returns aggregate execution statistics for all completed jobs the fleet still has a record of (`jobs_archive` UNIONed with the terminal rows still live in `jobs`), grouped by `(actor, queue)`. A terminal row stays in `jobs` for its whole prune retention before the prune sweep archives it, so an archive-only aggregate would hide an actor's freshest failures for exactly as long as they matter most; the live side counts terminal rows only (running/pending work never inflates executor totals, and its population is capped by prune retention).
 
 Accepts an optional `window` query parameter (`1h`, `24h`, `7d`, `30d`; omitted or `all` is the default) that bounds both sides by `finished_at` on the database's clock. Unknown values are a clean `400`, never a silent fallback to all-time. Does not paginate; returns at most 200 rows ordered by total job count descending. This endpoint and the actors page render the same aggregate read through a shared helper, so the two cannot drift.
 
@@ -312,13 +312,13 @@ Response shape:
 }
 ```
 
-Duration percentiles are derived from the attempt rows' `duration_ms` via `percentile_cont` (`job_attempts_archive` on the archive side, `job_attempts` on the live side). Actors with no recorded attempt rows will have `null` for duration fields. `last_activity_at` is the freshest `finished_at` the actor has on either side; `total` counts attempt rows (which equals the job count in the common single-attempt case). `last_error_class` is the error class of the actor's most recent completed row that carries one — the job row's own `error_class`, which every terminal failure path stamps (the classifier's exception name, `WorkerCrashed` on crash-reclaim, `DeadlineExceeded` on the deadline sweep) — so "what is this actor dying of" reads without opening a job; `null` when none of the actor's rows ever carried one.
+Duration percentiles are derived from the attempt rows' `duration_ms` via `percentile_cont` (`job_attempts_archive` on the archive side, `job_attempts` on the live side). Actors with no recorded attempt rows will have `null` for duration fields. `last_activity_at` is the freshest `finished_at` the actor has on either side; `total` counts attempt rows (which equals the job count in the common single-attempt case). `last_error_class` is the error class of the actor's most recent completed row that carries one: the job row's own `error_class`, which every terminal failure path stamps (the classifier's exception name, `WorkerCrashed` on crash-reclaim, `DeadlineExceeded` on the deadline sweep), so "what is this actor dying of" reads without opening a job; `null` when none of the actor's rows ever carried one.
 
 ### `GET /admin/workers`
 
 Workers overview. Lists all rows from the `workers` table ordered by `last_seen_at DESC`, with an `is_leader` flag computed by a LEFT JOIN on `maintenance_leader`, and a **Running / Max** column: the count of `jobs` rows in `status = 'running'` locked by that worker (one index seek per worker over `jobs_locked_by_worker_running_idx`, the same population the `taskq.worker.active_jobs` metric counts per process) against the `max_concurrency` the worker registered in its row metadata. Amber when the worker is at capacity; a dash when an older registration carried no capacity. Reserved-but-unclaimed capacity (rate-limit slots, in-flight dispatch probes) is in neither number.
 
-The **Stall hotspots** column renders the worker's rolling tally of attributed event-loop stalls from the same metadata (`send_email x12 (gil_held)`, hottest actor first) — the actors whose synchronous code blocked that worker's event loop, as the lag watchdog attributed them. Empty when the worker attributed none. The tally counts ATTRIBUTED stalls per actor; the Running / Max column counts running rows. See [runbooks.md — Event-loop stall attribution](runbooks.md#event-loop-stall-attribution-worker-warnings).
+The **Stall hotspots** column renders the worker's rolling tally of attributed event-loop stalls from the same metadata (`send_email x12 (gil_held)`, hottest actor first), the actors whose synchronous code blocked that worker's event loop, as the lag watchdog attributed them. Empty when the worker attributed none. The tally counts ATTRIBUTED stalls per actor; the Running / Max column counts running rows. See [runbooks.md: Event-loop stall attribution](runbooks.md#event-loop-stall-attribution-worker-warnings).
 
 ### `GET /admin/leader`
 
@@ -326,7 +326,7 @@ Maintenance leader detail. Shows the current leader worker (hostname, pid, last 
 
 ### `GET /admin/schedules`
 
-Cron schedule list. Reads from `cron_schedules` ordered by `next_fire_at`. If the table does not exist (cron migration not yet applied), renders with a notice: `"cron scheduling not installed — run taskq migrate up to enable"`.
+Cron schedule list. Reads from `cron_schedules` ordered by `next_fire_at`. If the table does not exist (cron migration not yet applied), renders with a notice: `"cron scheduling not installed, run taskq migrate up to enable"`.
 
 Each schedule row includes buttons for the following CSRF-protected POST operations:
 
@@ -346,7 +346,7 @@ Advances `next_fire_at` to the next computed fire time after the current one. Re
 
 Enqueues a job for the schedule's actor immediately, using the schedule's `payload_factory` and the actor's stored `actor_config` row for queue, `max_attempts`, and `retry_kind`. Returns `403` if `admin_actions_enabled` is `false`, `404` if the schedule does not exist, `303` redirect with an error query parameter if the payload factory fails or the actor is not configured. A per-process 10-second cooldown prevents rapid re-triggering of the same schedule.
 
-!!! warning "Per-process cooldown — not distributed"
+!!! warning "Per-process cooldown, not distributed"
     The run-now cooldown is tracked in-process (`asyncio` loop time), not in
     Postgres or Redis. In multi-replica deployments, each process has its own
     cooldown timer, so N replicas get N× the trigger rate. If you need a
@@ -376,11 +376,11 @@ Each row also carries the executor statistics the shared per-actor stats read co
 
 - **Jobs**: total completed attempt rows for the actor (live terminal rows included, so a fresh failure counts before the prune sweep archives it), hottest actor first
 - **Failures**: failed count with its share of the total, red when non-zero
-- **Last Error**: the most recent error class the actor's completed rows carry (`null` → a dash) — the job row's own `error_class`, which every terminal failure path stamps, so "what is this actor dying of" reads without opening a job
+- **Last Error**: the most recent error class the actor's completed rows carry (`null` → a dash), the job row's own `error_class`, which every terminal failure path stamps, so "what is this actor dying of" reads without opening a job
 - **p50 / p95 (ms)**: execution duration percentiles from the attempt rows' `duration_ms`
 - **Last Activity**: the freshest `finished_at` the actor has on either side of the read
 
-A **window toggle** beside the heading (`All time | 1h | 24h | 7d | 30d`, `?window=`) bounds both sides of the read by `finished_at`. The default is **all time** — the whole retained completed-job history; a named window is the recency view ("who failed in the last day"), anchored to the database clock server-side. Unknown window values are a clean `400`, never a silent fallback to all-time.
+A **window toggle** beside the heading (`All time | 1h | 24h | 7d | 30d`, `?window=`) bounds both sides of the read by `finished_at`. The default is **all time** (the whole retained completed-job history); a named window is the recency view ("who failed in the last day"), anchored to the database clock server-side. Unknown window values are a clean `400`, never a silent fallback to all-time.
 
 The stats read is capped at the 200 most active actors; the page says so when the cap is reached. Actors with completed-job history but no `actor_config` row (for example, one deregistered while its history is retained) render as "history only": their stats show, but they have no capacity fields and no Deregister button.
 
@@ -392,15 +392,15 @@ CSRF-protected via the synchronizer-token pattern.
 ### POST /admin/actors/{actor}/deregister
 
 Deregisters an actor. Form fields:
-- `csrf_token` — CSRF synchronizer token (set by GET)
-- `force` — checkbox; cancels pending/scheduled jobs and disables schedules
-- `purge_queue` — checkbox; deletes the orphaned queues row
+- `csrf_token`: CSRF synchronizer token (set by GET)
+- `force`: checkbox; cancels pending/scheduled jobs and disables schedules
+- `purge_queue`: checkbox; deletes the orphaned queues row
 
 Response codes:
-- `303` — success, redirects to `/actors?notice=deregistered+{actor}`
-- `403` — admin actions disabled or CSRF validation failed
-- `404` — actor not found (no `actor_config` row)
-- `409` — actor has active jobs or enabled schedules (force=False)
+- `303`: success, redirects to `/actors?notice=deregistered+{actor}`
+- `403`: admin actions disabled or CSRF validation failed
+- `404`: actor not found (no `actor_config` row)
+- `409`: actor has active jobs or enabled schedules (force=False)
 
 ### `GET /admin/batches`
 
@@ -433,7 +433,7 @@ These endpoints use a lightweight PG pool ping for readiness (not the full
 The Prometheus metrics endpoint is mounted automatically when
 `taskq[prometheus]` is installed. The route mounting is the automatic part;
 the `taskq_*` series it serves are populated by the shipped `taskq ui serve`
-and worker startup wiring, which configure the metrics reader for you — see
+and worker startup wiring, which configure the metrics reader for you;
 [observability.md](observability.md) for the series inventory and alerting
 rules.
 
@@ -450,7 +450,7 @@ taskq ui serve
 ```
 
 When `TASKQ_HEALTH_TOKEN` is empty (the default), health and metrics endpoints
-are unauthenticated — standard for cluster-internal endpoints behind a network
+are unauthenticated, standard for cluster-internal endpoints behind a network
 policy. However, in non-dev environments (`TASKQ_ENVIRONMENT` not set to `dev`
 or `development`), `taskq ui serve` **fails closed**: it raises `RuntimeError`
 if `TASKQ_HEALTH_TOKEN` is empty and `TASKQ_HEALTH_REQUIRE_TOKEN` is `true`
@@ -482,7 +482,7 @@ configuration. Two things sit on top of it, and neither replaces it:
 * **The jobs page's SSE accelerator.** With the *Live refresh* toggle on, the jobs
   list also opens an `EventSource` to `GET /admin/sse/jobs`, a PG `LISTEN` on the
   schema's events channel. That channel carries only the running-job cancel
-  fast-path today — terminal writes and dispatch never `NOTIFY` it — so an event can
+  fast-path today; terminal writes and dispatch never `NOTIFY` it, so an event can
   bring a refresh forward or update one row's badge in place, never stand in for
   the poll. If the stream drops (a proxy idle timeout, a server restart) the
   browser's own `EventSource` reconnect runs; the poll carries the page meanwhile.
@@ -500,7 +500,7 @@ minimum `0.1` s) on every page.
 ### The mode badge
 
 Every page shows a badge in the top-right corner. It reports the Redis health
-check that gates the **progress stream** — it says nothing about the jobs page's
+check that gates the **progress stream**; it says nothing about the jobs page's
 `LISTEN` accelerator, which needs no Redis.
 
 | Badge label | `data-mode` value | Meaning |
@@ -570,34 +570,34 @@ long as the client stays connected, which is what the caps bound.
 
 ### Alpine.js components
 
-**`jobsPage`** (`admin.js:47-185`) — the main job listing page component. Registered via
+**`jobsPage`** (`admin.js:47-185`): the main job listing page component. Registered via
 `Alpine.data("jobsPage", ...)` and wired in `jobs.html` with `x-data="jobsPage"`.
 Configuration is passed from the Jinja2 template via `window.__taskqJobConfig`, set in
 a `<script>` block in the page's `{% block head %}`.
 
 Key features:
-- **Tab switching** (`switchTab`) — switches between "Live Jobs" and "Archived" views
+- **Tab switching** (`switchTab`): switches between "Live Jobs" and "Archived" views
   by submitting the filter form with `tab` parameter.
-- **Polling** — the Live Jobs tab polls on `poll_interval_ms` via
+- **Polling**: the Live Jobs tab polls on `poll_interval_ms` via
   `setInterval` while live refresh is on; the poll is the source of truth for
   the table. The poll refetches the page the operator is on: the keyset cursor
   synced from the last pagination click rides along, so live mode never yanks
   a reader back to page one, and the SSE refresh-forward is skipped while a
   cursor is active (the poll already refreshes that page in place).
-- **Live refresh toggle** — on, the poll runs and SSE is connected so a
+- **Live refresh toggle**: on, the poll runs and SSE is connected so a
   state-change event brings a refresh forward; paused, both stop and the table is
   frozen until the operator resumes (which reloads it) or acts on it.
-- **SSE integration** — `connectSSE()` opens an `EventSource` to
+- **SSE integration**: `connectSSE()` opens an `EventSource` to
   `{base_path}/sse/jobs`. On `error` the stream is left to the browser's own
   reconnect and polling carries on unchanged. A `state_change` event whose `status` matches a row in the table
-  updates that row's badge in place; any other event — a payload without a
+  updates that row's badge in place; any other event (a payload without a
   `status` (the cancel NOTIFY names the job only) or a transition for a job the
-  table does not show — refreshes the table from the server.
-- **Table refresh** — `refreshTable()` fetches `{base_path}/jobs` with current
+  table does not show) refreshes the table from the server.
+- **Table refresh**: `refreshTable()` fetches `{base_path}/jobs` with current
   filter parameters via HTMX (`HX-Request: true` header), swaps the
   `#job-table-container` element.
 
-**`statusCombobox`** (`admin.js:187-217`) — a reactive multi-select dropdown for
+**`statusCombobox`** (`admin.js:187-217`): a reactive multi-select dropdown for
 job status filtering. Supports Select All, Active, Terminal, and Clear presets.
 Statuses are rendered with color-coded classes from `STATUS_COLORS` and `CHIP_COLORS`
 lookup maps.
@@ -636,7 +636,7 @@ unstyled content on page load).
 
 ---
 
-## `create_router()` — embedding in your own FastAPI app
+## `create_router()`: embedding in your own FastAPI app
 
 If you have an existing FastAPI application, you can mount the admin router directly instead of running `taskq ui serve`.
 
@@ -694,7 +694,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 ```
 
-`setup_admin_state()` writes `pg_pool`, `schema`, `redis_client`, `templates`, `settings`, `base_path`, and `backend` onto `app.state`. Route handlers resolve these via `Depends(get_pg_pool)`, `Depends(get_templates)`, etc. You do not need to set `app.state` manually — `setup_admin_state()` handles it.
+`setup_admin_state()` writes `pg_pool`, `schema`, `redis_client`, `templates`, `settings`, `base_path`, and `backend` onto `app.state`. Route handlers resolve these via `Depends(get_pg_pool)`, `Depends(get_templates)`, etc. You do not need to set `app.state` manually; `setup_admin_state()` handles it.
 
 !!! note "When the host already writes `app.state.settings`"
     `setup_admin_state()` overwrites `app.state.settings` with TaskQ's

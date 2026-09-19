@@ -250,7 +250,7 @@ def test_static_file_rejects_sibling_directory_with_shared_prefix(tmp_path: Path
     app.include_router(router)
 
     client = TestClient(app)
-    # Resolves to <tmp_path>/static_evil/secret.txt — outside static_dir but
+    # Resolves to <tmp_path>/static_evil/secret.txt - outside static_dir but
     # shares the "/static" string prefix. %2e%2e avoids client-side path
     # normalisation so the traversal reaches the handler.
     response = client.get("/static/%2e%2e/static_evil/secret.txt")  # pyright: ignore[reportUnknownVariableType]

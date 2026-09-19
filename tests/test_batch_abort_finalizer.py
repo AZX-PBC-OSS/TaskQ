@@ -2,7 +2,7 @@
 
 Tests that a finalizer actor which catches ``BatchAbortedError`` inside
 its body reaches ``succeeded`` (not ``failed``), and that the snooze
-path does not consume retry budget — proving the catch path works
+path does not consume retry budget - proving the catch path works
 end-to-end through the consumer's exception routing.
 
 Also includes clock-skew resilience tests: a ``FakeClock`` that jumps
@@ -153,7 +153,7 @@ class TestAbortFinalizerSucceeds:
 
         # Finalizer should have caught BatchAbortedError
         assert abort_error is not None, (
-            "finalizer never received BatchAbortedError — "
+            "finalizer never received BatchAbortedError - "
             "wait_for_batch may not have seen the aborted batch"
         )
         assert abort_error.batch_id == batch_id
@@ -217,7 +217,7 @@ class TestClockSkewResilience:
         )
         backend._jobs[job.id] = job
 
-        # Snooze the job (simulates wait_for_batch raising Snooze — the
+        # Snooze the job (simulates wait_for_batch raising Snooze - the
         # handler writes no metadata_update; the row's snooze_count
         # column is the deferral's record)
         snooze = Snooze(timedelta(seconds=2))
@@ -248,7 +248,7 @@ class TestClockSkewResilience:
 
         ``decide_after_failure`` takes no clock/deadline input at all (C1/C2:
         the ``schedule_to_close`` deadline is arbitrated server-side, inside
-        ``mark_failed_or_retry``'s SQL, never by the classifier) — so a
+        ``mark_failed_or_retry``'s SQL, never by the classifier) - so a
         client-side clock jump cannot influence its decision either way.
         """
         from taskq.retry import JobRetryState, RetryPolicy, decide_after_failure
@@ -364,7 +364,7 @@ class TestClockSkewResilience:
 
 
 class TestSnoozeBudgetInvariant:
-    """Snooze must never consume retry budget — the ceiling stays fixed
+    """Snooze must never consume retry budget - the ceiling stays fixed
     while the refund returns every claim's increment, so the attempt
     oscillates and never walks toward the ceiling."""
 
@@ -373,7 +373,7 @@ class TestSnoozeBudgetInvariant:
         configured value and the attempt returns to its post-dispatch
         value every cycle: each snooze refunds the claim's increment
         (attempt - 1, floored at 0) and each re-dispatch re-claims it,
-        so a snooze cycle never shrinks the remaining budget — the
+        so a snooze cycle never shrinks the remaining budget - the
         deferral is unbounded and budget-free, counted on the row's
         snooze_count.
         """
@@ -410,7 +410,7 @@ class TestSnoozeBudgetInvariant:
             assert row.snooze_count == i + 1
 
             # Re-dispatch: scheduled → running, the claim re-increments
-            # the refunded base (0 → 1) — exactly as the dispatch CTE
+            # the refunded base (0 → 1) - exactly as the dispatch CTE
             # does on the real path.
             backend._jobs[job.id] = replace(
                 row,

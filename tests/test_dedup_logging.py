@@ -92,7 +92,7 @@ def _unique_for_args(
 #: Every field the unified ``enqueue_deduplicated`` line carries, on every
 #: arm (idempotency_key and unique_for) and on both backends. One field set
 #: is the observable of the shared helper: a site that re-implements the
-#: dict inline drifts — the unique_for site omitted ``idempotency_scope``
+#: dict inline drifts - the unique_for site omitted ``idempotency_scope``
 #: until it was routed through the same helper as the idempotency seam.
 _UNIFIED_DEDUP_FIELDS: frozenset[str] = frozenset(
     {
@@ -244,7 +244,7 @@ async def test_idempotency_dedup_onto_terminal_job_warns_with_status() -> None:
 
 async def test_idempotency_dedup_onto_live_job_stays_info() -> None:
     """A dedup hit on a still-pending job is normal single-flight operation
-    and must stay at info — carrying the status on every hit, not only
+    and must stay at info - carrying the status on every hit, not only
     terminal ones."""
     backend = _make_backend()
     key = IdempotencyKey("live-dedup-mem")
@@ -268,7 +268,7 @@ async def test_idempotency_dedup_onto_live_job_stays_info() -> None:
 
 async def test_unique_for_dedup_line_matches_the_unified_contract() -> None:
     """The unique_for arm emits the same unified ``enqueue_deduplicated``
-    event, carrying the target's status at info — matching the PG path.
+    event, carrying the target's status at info - matching the PG path.
     With the default ``unique_states`` the preflight only matches active
     rows, so a hit is normal single-flight operation; the
     terminal-target case (custom ``unique_states``) has its own pin
@@ -291,7 +291,7 @@ async def test_unique_for_dedup_line_matches_the_unified_contract() -> None:
 
 async def test_unique_for_dedup_line_carries_the_full_field_set() -> None:
     """The unique_for arm's line carries the same fields as the
-    idempotency seam's — one field set, per-site ``dedup_reason`` only.
+    idempotency seam's - one field set, per-site ``dedup_reason`` only.
 
     A site that builds its own field dict drifts from the shared
     contract: the unique_for site omitted ``idempotency_scope`` while
@@ -318,7 +318,7 @@ async def test_unique_for_dedup_line_carries_the_full_field_set() -> None:
 
 async def test_unique_for_dedup_onto_terminal_target_warns_with_status() -> None:
     """A unique_for dedup whose target is TERMINAL must warn and name its
-    status — mirroring the idempotency seam's terminal-target pin above.
+    status - mirroring the idempotency seam's terminal-target pin above.
 
     The default ``unique_states`` excludes terminal states, but the set
     is caller-configurable (``@actor(unique_states=...)``), and a window
@@ -389,7 +389,7 @@ async def test_idempotency_dedup_hit_counts_on_enqueue_dedups(
     assert second.id == first.id, "precondition: the hit dedupes"
     assert _dedup_points_by_reason(otel_reader) == {"idempotency_key": 1}, (
         "an idempotency dedup hit must land on taskq.enqueue.dedups with "
-        "dedup_reason='idempotency_key' — a dedup stampede has no rate signal "
+        "dedup_reason='idempotency_key' - a dedup stampede has no rate signal "
         "otherwise"
     )
 
@@ -398,7 +398,7 @@ async def test_unique_for_dedup_hit_counts_on_enqueue_dedups(
     otel_reader: InMemoryMetricReader,
 ) -> None:
     """A unique_for dedup hit lands on the same counter under its own
-    ``dedup_reason`` — the two reasons a dedup hit can occur are the whole
+    ``dedup_reason`` - the two reasons a dedup hit can occur are the whole
     label set, and neither arm may be the uncounted one."""
     backend = _make_backend()
     identity = IdentityKey("account:11")
@@ -409,7 +409,7 @@ async def test_unique_for_dedup_hit_counts_on_enqueue_dedups(
     assert second.id == first.id, "precondition: the hit dedupes"
     assert _dedup_points_by_reason(otel_reader) == {"unique_for": 1}, (
         "a unique_for dedup hit must land on taskq.enqueue.dedups with "
-        "dedup_reason='unique_for' — the identity-pinned-to-dead-job stampede "
+        "dedup_reason='unique_for' - the identity-pinned-to-dead-job stampede "
         "is exactly the case that needs a rate signal"
     )
 
@@ -425,7 +425,7 @@ async def test_fresh_enqueue_emits_no_dedup_counter_datapoint(
     await backend.enqueue(_unique_for_args(IdentityKey("account:12")))
 
     assert _dedup_points_by_reason(otel_reader) == {}, (
-        "fresh inserts must not touch taskq.enqueue.dedups — a counter that "
+        "fresh inserts must not touch taskq.enqueue.dedups - a counter that "
         "also counts fresh enqueues cannot serve as a dedup rate signal"
     )
 
@@ -435,7 +435,7 @@ async def test_batch_dedup_stampede_counts_every_hit_despite_warning_suppression
 ) -> None:
     """A terminal-target dedup stampede at batch scale counts EVERY hit on
     the counter even where the per-hit WARNING budget suppresses the log
-    lines — the counter is the rate signal that survives the flood bound.
+    lines - the counter is the rate signal that survives the flood bound.
 
     The WARNING budget bounds per-hit terminal WARNINGs to
     three plus one summary line; a stampede that once emitted 500
@@ -467,11 +467,11 @@ async def test_batch_dedup_stampede_counts_every_hit_despite_warning_suppression
         if e.get("event") == "enqueue_deduplicated" and e.get("log_level") == "warning"
     ]
     assert len(warnings) <= _DEDUP_WARN_PER_HIT_LIMIT + 1, (
-        f"precondition: the WARNING flood bound must hold ({len(warnings)} lines) — "
+        f"precondition: the WARNING flood bound must hold ({len(warnings)} lines) - "
         "this pin is about the counter surviving the bound, not re-litigating it"
     )
     assert _dedup_points_by_reason(otel_reader) == {"idempotency_key": n_items}, (
         f"a {n_items}-item dedup stampede must count {n_items} on "
-        "taskq.enqueue.dedups even when the per-hit WARNINGs are suppressed — "
+        "taskq.enqueue.dedups even when the per-hit WARNINGs are suppressed - "
         "after the flood bound, the counter IS the rate signal"
     )

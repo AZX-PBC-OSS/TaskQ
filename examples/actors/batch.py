@@ -1,4 +1,4 @@
-"""Batch actors — fan-out-then-finalize with enqueue_batch and wait_for_batch.
+"""Batch actors - fan-out-then-finalize with enqueue_batch and wait_for_batch.
 
 These actors demonstrate:
 
@@ -44,7 +44,7 @@ async def batch_counter(payload: BatchCounterPayload, ctx: JobContext[BatchCount
         )
         for _ in range(payload.n)
     ]
-    # Pass batch_id explicitly so it matches the id given to batch_finalizer below —
+    # Pass batch_id explicitly so it matches the id given to batch_finalizer below -
     # otherwise enqueue_batch auto-generates its own id and wait_for_batch would
     # track nothing.
     await ctx.jobs.enqueue_batch(items, batch_id=batch_id)

@@ -73,7 +73,7 @@ class TestSubJobExplicitTags:
 
     async def test_explicit_tags_no_parent_tags_inherit_true(self) -> None:
         """inherit_tags=True (default) with no parent tags and explicit
-        tags returns only the explicit tags — no merge with empty parent."""
+        tags returns only the explicit tags - no merge with empty parent."""
         backend = InMemoryBackend(clock=FakeClock(_NOW))
         enqueuer = _make_enqueuer(backend)
 
@@ -204,7 +204,7 @@ class TestSubJobTagInheritance:
         Caller tags union with the parent's, and [] is the identity
         element, so it resolves exactly as ``None`` does. Why this and
         not "[] suppresses": every non-empty list unions, so making the
-        empty one suppress puts a discontinuity mid-function — a list
+        empty one suppress puts a discontinuity mid-function - a list
         built by a comprehension that happens to filter down to empty
         would silently drop the parent's tags instead of adding nothing.
         Suppression is spelled ``inherit_tags=False``.

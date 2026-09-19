@@ -38,7 +38,7 @@ def _load_settings(**overrides: str) -> WorkerSettings:
     return WorkerSettings.load_from_dict(base)
 
 
-# ── S1: Worker fallback — default_start_to_close validation ────────────────
+# ── S1: Worker fallback - default_start_to_close validation ────────────────
 
 
 class TestDefaultStartToCloseSettings:
@@ -65,7 +65,7 @@ class TestDefaultStartToCloseSettings:
         assert s.default_start_to_close is None
 
 
-# ── S1: Actor default — @actor(start_to_close=...) validation ──────────────
+# ── S1: Actor default - @actor(start_to_close=...) validation ──────────────
 
 
 class TestActorStartToClose:
@@ -93,7 +93,7 @@ class TestActorStartToClose:
         assert _pos_actor.start_to_close == timedelta(seconds=30)
 
 
-# ── S1: Per-enqueue — build_enqueue_args validation ────────────────────────
+# ── S1: Per-enqueue - build_enqueue_args validation ────────────────────────
 
 
 class TestEnqueueStartToClose:

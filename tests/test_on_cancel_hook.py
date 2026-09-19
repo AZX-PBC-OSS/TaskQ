@@ -141,7 +141,7 @@ async def test_invoke_on_cancel_is_best_effort_and_timeout_bounded() -> None:
     The cancel hook runs next to the shielded terminal write that moves the job
     to ``cancelled``. If a buggy hook could raise into that path, or hang on a
     remote call that never answers, the row would be left ``running`` with a
-    lease that only the reclaim sweep eventually clears — a cleanup callback
+    lease that only the reclaim sweep eventually clears - a cleanup callback
     turning into a stuck job. The hook is therefore best-effort and
     timeout-bounded exactly like ``on_success`` and ``on_retry_exhausted``:
     failures are logged, never propagated, and a slow hook is abandoned.
@@ -282,7 +282,7 @@ def test_actor_config_exposes_on_cancel_and_its_timeout() -> None:
     )
     assert hasattr(ActorConfigLike, "on_cancel_timeout"), (
         "on_cancel has no paired timeout, so a slow cleanup hook would be "
-        "unbounded — unlike on_success and on_retry_exhausted"
+        "unbounded - unlike on_success and on_retry_exhausted"
     )
 
     from taskq.testing.actor import StubActorConfig
@@ -327,7 +327,7 @@ async def test_on_cancel_fires_when_the_actor_ends_cancelled() -> None:
     actor's work ends in cancellation.
 
     This is the whole point of the hook: work cut short mid-flight usually
-    holds something that has to be released — an external reservation, a
+    holds something that has to be released - an external reservation, a
     remote session, a caller waiting on a callback. Without the
     invocation, an actor can declare cleanup that silently never runs, and
     the only trace of the cancelled job is a row quietly going terminal.
@@ -378,7 +378,7 @@ async def test_on_cancel_is_not_called_when_the_job_succeeds() -> None:
     """A job that runs to completion never fires ``on_cancel``.
 
     A cleanup hook that fires on the happy path would release resources the
-    finished work still owns — the failure mode is worse than not having
+    finished work still owns - the failure mode is worse than not having
     the hook at all.
     """
     import taskq.obs as obs_mod
@@ -424,7 +424,7 @@ async def test_a_raising_on_cancel_hook_does_not_break_the_terminal_write() -> N
     The hook runs beside the shielded terminal write. If a hook's
     exception could escape into that path, a cleanup callback would leave
     the row stuck in ``running`` under a lease only the reclaim sweep
-    eventually clears — turning best-effort cleanup into a stuck job.
+    eventually clears - turning best-effort cleanup into a stuck job.
     """
     import asyncio
 
@@ -477,7 +477,7 @@ async def test_a_hanging_on_cancel_hook_is_bounded_by_its_timeout_end_to_end() -
     pins the raising case end-to-end rather than only at the unit level.
     A hook that never returns must still let the shielded terminal write
     land and ``consume_one_job`` return within ``on_cancel_timeout`` plus
-    a small margin — never hang forever waiting on cleanup.
+    a small margin - never hang forever waiting on cleanup.
     """
     import asyncio
     import time
@@ -542,7 +542,7 @@ def test_docs_state_the_hook_cannot_fire_for_a_job_cancelled_before_it_runs() ->
 
     That job never enters a worker, so no hook of any kind can run for it;
     bookkeeping on that path stays the caller's job. Leaving the boundary
-    undocumented invites exactly the bug the hook is meant to prevent — an
+    undocumented invites exactly the bug the hook is meant to prevent - an
     operator relying on cleanup that structurally cannot happen for the
     most common cancel of all, the one an operator issues on a queued job.
     """

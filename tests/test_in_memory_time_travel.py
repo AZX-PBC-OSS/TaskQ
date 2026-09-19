@@ -1,7 +1,7 @@
 """In-memory backend time-travel tests proving works end-to-end.
 
 Uses the ``memory_jobs`` fixture (FakeClock + InMemoryBackend) to exercise
-scheduled-job promotion, deadline sweep, and cron-pattern dispatch — all
+scheduled-job promotion, deadline sweep, and cron-pattern dispatch - all
 driven by FakeClock advancement with zero real-time waits.
 
 These tests collectively cover the in-memory backend half of the
@@ -28,9 +28,9 @@ async def test_tt1_scheduled_job_promoted_after_clock_advance(
     constructed with FakeClock(start=datetime(2025, 1, 1, tzinfo=UTC));
     test code advances the FakeClock and calls
     memory_jobs.scheduled_to_pending() to trigger scheduled-job
-    processing — the backend's injected clock is the arbiter.
+    processing - the backend's injected clock is the arbiter.
     """
-    fake_clock: FakeClock = memory_jobs._clock  # type: ignore[reportPrivateUsage] # Why: verbatim pattern — direct FakeClock access is the prescribed test interface
+    fake_clock: FakeClock = memory_jobs._clock  # type: ignore[reportPrivateUsage] # Why: verbatim pattern - direct FakeClock access is the prescribed test interface
 
     scheduled_at = datetime(2025, 1, 1, 5, 0, tzinfo=UTC)
     args = EnqueueArgs(
@@ -68,9 +68,9 @@ async def test_tt2_deadline_sweep_fails_job_after_clock_advance(
 
     Proves the acceptance definition (in-memory backend half): test code
     advances FakeClock and calls deadline_sweep() to trigger deadline
-    processing — the backend's injected clock is the arbiter.
+    processing - the backend's injected clock is the arbiter.
     """
-    fake_clock: FakeClock = memory_jobs._clock  # type: ignore[reportPrivateUsage] # Why: verbatim pattern — direct FakeClock access is the prescribed test interface
+    fake_clock: FakeClock = memory_jobs._clock  # type: ignore[reportPrivateUsage] # Why: verbatim pattern - direct FakeClock access is the prescribed test interface
 
     schedule_to_close = datetime(2025, 1, 1, 10, 0, tzinfo=UTC)
     args = EnqueueArgs(
@@ -107,9 +107,9 @@ async def test_tt4_cron_pattern_completes_under_one_second(
 
     Proves the acceptance definition (in-memory backend half): test code
     advances FakeClock and calls memory_jobs.scheduled_to_pending() to
-    trigger scheduled-job processing — the backend's injected clock is
+    trigger scheduled-job processing - the backend's injected clock is
     the arbiter. The contract requires this test to complete in under 1
-    second of wall-clock time — FakeClock advancement replaces real-time
+    second of wall-clock time - FakeClock advancement replaces real-time
     waits entirely.
     """
 
@@ -131,7 +131,7 @@ async def test_tt4_cron_pattern_completes_under_one_second(
     )
     await memory_jobs.enqueue(args)
 
-    fake_clock: FakeClock = memory_jobs._clock  # type: ignore[reportPrivateUsage] # Why: verbatim pattern — direct FakeClock access is the prescribed test interface
+    fake_clock: FakeClock = memory_jobs._clock  # type: ignore[reportPrivateUsage] # Why: verbatim pattern - direct FakeClock access is the prescribed test interface
     fake_clock.move_to(scheduled_at)
 
     wall_start = time.monotonic()
@@ -141,9 +141,9 @@ async def test_tt4_cron_pattern_completes_under_one_second(
 
     wall_elapsed = time.monotonic() - wall_start
     # Widened from 1.0s: this asserts the FakeClock time-travel doesn't
-    # actually block on wall-clock time, not a tight perf budget — give it
+    # actually block on wall-clock time, not a tight perf budget - give it
     # headroom to survive scheduler contention under parallel test load.
-    assert wall_elapsed < 5.0, f"Test took {wall_elapsed:.3f}s — must complete in < 5 seconds"
+    assert wall_elapsed < 5.0, f"Test took {wall_elapsed:.3f}s - must complete in < 5 seconds"
 
     dispatched_job = None
     for row in memory_jobs._jobs.values():  # type: ignore[reportPrivateUsage] # Why: test-only private access to verify terminal state

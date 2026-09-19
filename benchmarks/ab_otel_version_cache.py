@@ -8,13 +8,13 @@ remaining per-call cost against the same harness.
 
 Rows, in order of what they isolate:
 
-  1. ``importlib.metadata.version`` alone — the removed per-call tax.
-  2. ``get_tracer()`` as shipped — hot path: memo hit, module-global return.
-  3. ``get_tracer()`` with the tracer memo cleared per call — isolates the
+  1. ``importlib.metadata.version`` alone - the removed per-call tax.
+  2. ``get_tracer()`` as shipped - hot path: memo hit, module-global return.
+  3. ``get_tracer()`` with the tracer memo cleared per call - isolates the
      ``trace.get_tracer`` + ``_version()`` resolution share (what a fresh
      subprocess would pay once).
-  4. Prebound tracer return — the floor.
-  5. ``safe_start_span`` no-SDK round trip with the memoized tracer — the
+  4. Prebound tracer return - the floor.
+  5. ``safe_start_span`` no-SDK round trip with the memoized tracer - the
      per-span cost jobs actually pay with telemetry on and no exporter.
 
 No provider is installed here (the OTel API forbids unsetting providers,
@@ -62,7 +62,7 @@ def bench() -> list[tuple[str, float, str]]:
         (
             "importlib.metadata.version('taskq-py') alone",
             solo_ns(lambda: importlib.metadata.version("taskq-py"), batch),
-            "the removed tax — was paid inside every get_tracer() pre-fix",
+            "the removed tax - was paid inside every get_tracer() pre-fix",
         )
     )
     rows.append(
@@ -81,7 +81,7 @@ def bench() -> list[tuple[str, float, str]]:
         (
             "get_tracer() with tracer memo cleared per call",
             solo_ns(_fresh_resolution, batch),
-            "the resolution share (trace.get_tracer + cached _version) — paid once per process now",
+            "the resolution share (trace.get_tracer + cached _version) - paid once per process now",
         )
     )
 
@@ -102,7 +102,7 @@ def bench() -> list[tuple[str, float, str]]:
         (
             "safe_start_span + end, no SDK (memoized tracer)",
             solo_ns(_span_no_sdk, batch),
-            "per-span cost jobs pay with telemetry on and no exporter — was ~326µs pre-fix",
+            "per-span cost jobs pay with telemetry on and no exporter - was ~326µs pre-fix",
         )
     )
     return rows

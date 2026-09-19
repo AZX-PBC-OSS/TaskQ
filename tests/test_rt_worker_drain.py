@@ -5,10 +5,10 @@ to ``sweep_drain_batches - 1`` further committed batches after the parent
 call, the bound READ FROM SETTINGS (not hardcoded), liveness ticked
 between batches so the watchdog cannot age the loop out mid-drain,
 cooperative shutdown AND mid-drain demotion between batches (the gate
-re-consults ``deps.leading()`` per batch — a leader whose role ended
+re-consults ``deps.leading()`` per batch - a leader whose role ended
 stops at the same batch boundary shutdown uses, the split-brain guard
 for a process that resumed after its lease was taken over), and per-call
-telemetry — a mid-drain abort keeps the already-committed batches' row
+telemetry - a mid-drain abort keeps the already-committed batches' row
 samples and records the failed call as a timeout, NOT as zero rows.
 """
 
@@ -131,7 +131,7 @@ def _drain_ctx(
         liveness=recorder,  # pyright: ignore[reportArgumentType]
     )
     # The drain re-consults the production leadership predicate between
-    # batches, so the fixture must model a process that holds the role —
+    # batches, so the fixture must model a process that holds the role -
     # never bypass the gate. The event set with no term is the state
     # ``WorkerDeps.leading`` documents as led (an embedder driving the
     # event itself), the same state tests/_leader_stub_deps.py's
@@ -139,7 +139,7 @@ def _drain_ctx(
     # tests/test_leader_sweeps_coverage.py's real-deps seam sets by hand.
     deps.is_leader.set()
     assert deps.leading(), (
-        "the drain's between-batches gate consults leading() — the fixture "
+        "the drain's between-batches gate consults leading() - the fixture "
         "must model a process holding the role, or every pin below stops "
         "before the drain's first call"
     )
@@ -260,7 +260,7 @@ async def test_mid_drain_cancel_keeps_committed_rows_and_marks_only_failed_call(
 ) -> None:
     """Batches 1-2 commit (5 rows each), batch 3 is cancelled server-side:
     the committed batches' 10 rows stay on the rows counter, the failed
-    call increments ``sweep_timeouts`` and records a duration — and no row
+    call increments ``sweep_timeouts`` and records a duration - and no row
     sample for it (rows stayed unbound; 0 would read as a healthy empty
     batch). The drain reports unclean so the backstop streak is not reset."""
     ctx, _ = _drain_ctx(sweep_drain_batches=8)
@@ -276,7 +276,7 @@ async def test_mid_drain_cancel_keeps_committed_rows_and_marks_only_failed_call(
     assert clean is False
     assert call.calls == 3
     assert _rows_value(telemetry_reader, "expired_locks") == 10, (
-        "the two committed batches' rows must stay recorded — an aborted third "
+        "the two committed batches' rows must stay recorded - an aborted third "
         "call must not erase or zero them"
     )
     assert _timeout_value(telemetry_reader, "expired_locks") == 1
@@ -289,7 +289,7 @@ async def test_mid_drain_connection_loss_records_no_timeout(
     telemetry_reader: InMemoryMetricReader,
 ) -> None:
     """A NON-deadline transient mid-drain (connection loss) ends the drain
-    unclean with the committed rows intact — and the timeout counter must
+    unclean with the committed rows intact - and the timeout counter must
     NOT increment: it counts deadline-aborted batches, not dead sockets."""
     ctx, _ = _drain_ctx(sweep_drain_batches=8)
     clean, call = await _drain(
@@ -330,7 +330,7 @@ async def test_drain_stops_promptly_when_shutdown_set_midway() -> None:
 
     assert clean is True, "a shutdown-paused drain is a clean stop, not a failure"
     assert call.calls == 3, (
-        "shutdown set on batch 3's return must stop the drain there — batch 4 "
+        "shutdown set on batch 3's return must stop the drain there - batch 4 "
         "would only run if the between-batches check were missing"
     )
 
@@ -339,7 +339,7 @@ async def test_drain_stops_at_the_batch_boundary_when_demoted_midway() -> None:
     """Losing the leader role mid-drain stops the drain before the next
     batch: the gate re-consults ``leading()`` between batches, so a
     process demoted mid-drain (its lease taken over by a peer) stops at
-    the same boundary a shutdown pause uses — every batch already
+    the same boundary a shutdown pause uses - every batch already
     committed keeps its progress for the successor to resume from, and
     the demoted process runs no further leader work."""
     ctx, _ = _drain_ctx(sweep_drain_batches=8)
@@ -360,7 +360,7 @@ async def test_drain_stops_at_the_batch_boundary_when_demoted_midway() -> None:
 
     assert clean is True, "a demote-paused drain is a clean stop, not a failure"
     assert call.calls == 3, (
-        "demotion on batch 3's return must stop the drain there — batch 4 "
+        "demotion on batch 3's return must stop the drain there - batch 4 "
         "would only run if the between-batches leadership check were missing"
     )
 
@@ -379,7 +379,7 @@ async def test_drain_ticks_liveness_between_batches() -> None:
     assert call.calls == 4
     sweep_ticks = [t for t in recorder.ticks if t[0] == "leader.sweep"]
     assert len(sweep_ticks) >= call.calls, (
-        "the drain must tick liveness between batches — a watchdog reading "
+        "the drain must tick liveness between batches - a watchdog reading "
         f"these stamps would see a stale loop; ticks={recorder.ticks}"
     )
     assert all(period == 7.0 for _, period in sweep_ticks), (

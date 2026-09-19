@@ -1,13 +1,13 @@
 # ruff: noqa: S608  # Why: every interpolated identifier is the module fixture's generated schema name, validated by _IDENT_RE inside build_leader_lease_sql; all values are $-bound.
 """Contract tests for the maintenance-leader lease statements.
 
-Leadership failover is exactly three statements — elect, renew, resign —
+Leadership failover is exactly three statements - elect, renew, resign -
 so their predicates are pinned against a real database rather than
 trusted from reading.  The properties pinned here:
 
 * An unclaimed role is always winnable.  Whether the role is claimable
   is a property of the row alone (absent, or both of its liveness
-  signals lapsed) — never of anything a session can hold.  A candidate
+  signals lapsed) - never of anything a session can hold.  A candidate
   that dies between taking the courtesy advisory lock and writing the
   row, and a leader that resigns while its own session outlives the
   delete, both leave the lock held with no row behind it; the fleet must
@@ -19,12 +19,12 @@ trusted from reading.  The properties pinned here:
   predates the column names only four columns in its upsert).
 * A lapsed holder is always displaceable: once the lease has passed and
   the ping has stopped, any pod takes the row, and concurrent takers get
-  exactly one winner — the loser's conflict update re-evaluates against
+  exactly one winner - the loser's conflict update re-evaluates against
   the winner's fresh row and matches nothing.
 * Renew and resign are fenced on the holder's term
   (``worker_id``, ``elected_at``): a deposed holder's late statements
   never touch a successor's row, and a lease already lapsed at the
-  server cannot be renewed — the previous holder re-elects through the
+  server cannot be renewed - the previous holder re-elects through the
   same statement every peer runs, with no advantage.
 
 The loop-level behaviour built on these statements (renewal cadence,
@@ -52,7 +52,7 @@ from taskq.worker.leader import build_leader_lease_sql
 pytestmark = pytest.mark.integration
 
 # Generous horizons: these tests pin WHICH rows the predicates accept, not
-# how time passes — the lapsed states are arranged by backdating, never by
+# how time passes - the lapsed states are arranged by backdating, never by
 # sleeping.
 _LEASE_SECS = 3600.0
 _STALE_AFTER_SECS = 3600.0
@@ -63,7 +63,7 @@ async def lease_conn(module_pg_schema: ModulePgSchema) -> AsyncIterator[asyncpg.
     """A raw connection over a maintenance_leader table proven empty.
 
     The module schema is shared across this file's tests, so the row is
-    deleted up front and the emptiness asserted — a leftover row turning
+    deleted up front and the emptiness asserted - a leftover row turning
     an INSERT into an UPDATE would let every assertion here pass for the
     wrong reason.
     """
@@ -150,7 +150,7 @@ async def test_unclaimed_role_is_winnable_while_another_session_holds_the_courte
     The deadlock this pins: the row is ABSENT (a resigning leader's delete
     landed, or a candidate died between its lock attempt and its election
     write) while the courtesy advisory lock stays held by a session the
-    fleet cannot reap — a partitioned peer, or simply a departed leader
+    fleet cannot reap - a partitioned peer, or simply a departed leader
     whose connection outlives its row.  If claimability consulted the
     lock, every pod would observe it held and no pod could elect until
     the server's connection reaping fired (stock keepalives: hours).  The
@@ -161,7 +161,7 @@ async def test_unclaimed_role_is_winnable_while_another_session_holds_the_courte
     await _create_worker(lease_conn, schema, candidate)
 
     # A session the fleet does not control holds the schema's courtesy lock
-    # — the shape a dead-without-FIN candidate or a slow-to-exit resigning
+    # - the shape a dead-without-FIN candidate or a slow-to-exit resigning
     # leader leaves behind.
     holder = await asyncpg.connect(module_pg_schema.pg_dsn)
     try:
@@ -173,7 +173,7 @@ async def test_unclaimed_role_is_winnable_while_another_session_holds_the_courte
 
         elected_at = await _elect(lease_conn, schema, candidate)
         assert elected_at is not None, (
-            "the role is unclaimed — the row is absent — so the elect must land no "
+            "the role is unclaimed - the row is absent - so the elect must land no "
             "matter what any session holds; gating the insert on the courtesy lock "
             "leaves the whole fleet unelectable until the server reaps a session it "
             "may never reap"
@@ -204,7 +204,7 @@ async def test_live_lease_is_not_takeable(
     assert before is not None
 
     took = await _elect(lease_conn, schema, taker)
-    assert took is None, "a live lease must never be taken over — that is two leaders"
+    assert took is None, "a live lease must never be taken over - that is two leaders"
 
     after = await _leader_row(lease_conn, schema)
     assert after is not None
@@ -267,7 +267,7 @@ async def test_pre_lease_row_is_held_by_its_ping_and_takeable_once_the_ping_stop
 
     took = await _elect(lease_conn, schema, taker)
     assert took is None, (
-        "a pinging pre-lease holder must keep the role — judging the row on its "
+        "a pinging pre-lease holder must keep the role - judging the row on its "
         "(absent) lease alone would depose a live pod mid-roll"
     )
     row = await _leader_row(lease_conn, schema)
@@ -320,7 +320,7 @@ async def test_renew_does_not_revive_a_lapsed_lease(
     """A lease already past at the server refuses renewal even to its holder.
 
     The holder must re-elect through the same statement every peer runs,
-    so being the previous holder confers no advantage — and a pod that
+    so being the previous holder confers no advantage - and a pod that
     wakes from a long suspension cannot quietly extend a role a peer may
     already be taking.
     """
@@ -333,7 +333,7 @@ async def test_renew_does_not_revive_a_lapsed_lease(
     await _backdate_holder(lease_conn, schema, stale_after_secs=_STALE_AFTER_SECS)
 
     renewed = await _renew(lease_conn, schema, holder, elected_at)
-    assert renewed is None, "a lapsed lease is not renewable — the holder must re-elect"
+    assert renewed is None, "a lapsed lease is not renewable - the holder must re-elect"
 
 
 async def test_resign_is_fenced_on_the_term(
@@ -341,7 +341,7 @@ async def test_resign_is_fenced_on_the_term(
 ) -> None:
     """Resign deletes only the resignment's own term.
 
-    A resign issued late — after a takeover — must not delete the
+    A resign issued late - after a takeover - must not delete the
     successor's row, or a graceful shutdown would hand the fleet a fresh
     no-leader window.
     """
@@ -394,14 +394,14 @@ async def test_concurrent_takers_on_an_unclaimed_row_get_exactly_one_winner(
     expected = first if won_a is not None else second
     assert row["worker_id"] == expected, "the row names the taker that won"
     count = await lease_conn.fetchval(f'SELECT count(*) FROM "{schema}".maintenance_leader')
-    assert count == 1, "the role is a singleton — two rows is two leaders"
+    assert count == 1, "the role is a singleton - two rows is two leaders"
 
 
 async def test_concurrent_takers_on_a_lapsed_row_get_exactly_one_winner(
     module_pg_schema: ModulePgSchema, lease_conn: asyncpg.Connection
 ) -> None:
     """Two pods racing a lapsed row: the loser's conflict update re-evaluates
-    against the winner's fresh lease and matches nothing — exactly one wins."""
+    against the winner's fresh lease and matches nothing - exactly one wins."""
     schema = module_pg_schema.schema_name
     holder, first, second = new_uuid(), new_uuid(), new_uuid()
     for worker_id in (holder, first, second):
@@ -421,7 +421,7 @@ async def test_concurrent_takers_on_a_lapsed_row_get_exactly_one_winner(
 
     winners = [w for w in (won_a, won_b) if w is not None]
     assert len(winners) == 1, (
-        "exactly one taker may win a lapsed row — the conflict predicate must be "
+        "exactly one taker may win a lapsed row - the conflict predicate must be "
         f"re-checked against the winner's fresh expiry: {won_a=}, {won_b=}"
     )
     row = await _leader_row(lease_conn, schema)
@@ -437,9 +437,9 @@ async def test_the_recorded_holder_can_re_elect_its_own_live_row(
 ) -> None:
     """The holder may take its own live row again, starting a fresh term.
 
-    A leader that stepped down without its lease lapsing — a dropped
+    A leader that stepped down without its lease lapsing - a dropped
     leader_conn on a credential reload, a renewal that spent the trust
-    window — re-elects through this arm instead of waiting its own lease
+    window - re-elects through this arm instead of waiting its own lease
     out. It cannot create a second leader: while the row names this worker
     with an unexpired lease, no peer could have taken it.
     """
@@ -453,7 +453,7 @@ async def test_the_recorded_holder_can_re_elect_its_own_live_row(
 
     second_term = await _elect(lease_conn, schema, holder)
     assert second_term is not None, (
-        "the recorded holder re-electing its own live row must win — "
+        "the recorded holder re-electing its own live row must win - "
         "the alternative is a leadership gap the width of the lease on "
         "every credential reload"
     )
@@ -470,14 +470,14 @@ async def test_a_holder_can_extend_its_own_row_repeatedly(
     module_pg_schema: ModulePgSchema, lease_conn: asyncpg.Connection
 ) -> None:
     """The steady state: one holder renews every heartbeat indefinitely, and
-    the row keeps naming it with a rolling expiry — no re-election churn."""
+    the row keeps naming it with a rolling expiry - no re-election churn."""
     schema = module_pg_schema.schema_name
     holder = new_uuid()
     await _create_worker(lease_conn, schema, holder)
 
     elected_at = await _elect(lease_conn, schema, holder)
     assert elected_at is not None
-    expiry = (await _leader_row(lease_conn, schema))["expires_at"]  # type: ignore[union-attr]  # Why: the row exists — the elect just returned its term.
+    expiry = (await _leader_row(lease_conn, schema))["expires_at"]  # type: ignore[union-attr]  # Why: the row exists - the elect just returned its term.
 
     for _ in range(3):
         renewed = await _renew(lease_conn, schema, holder, elected_at)
@@ -497,7 +497,7 @@ async def test_an_old_release_pod_taking_over_the_row_does_not_open_a_stale_expi
     upsert leaves ``expires_at`` at its PREVIOUS holder's stamped value rather
     than clearing it. If a new pod judged claimability on ``expires_at`` alone,
     once that leftover instant passed a new pod would take over from an
-    old-release pod that is still alive and still pinging ``last_seen_at`` —
+    old-release pod that is still alive and still pinging ``last_seen_at`` -
     the exact split-brain window this design exists to close.
 
     This mirrors what a real old pod does: its upsert (``INSERT ... (singleton,

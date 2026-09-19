@@ -6,7 +6,7 @@ terminal write. Its cost must not grow with the batch's member count, or a
 batch of N members costs O(N²) member visits to complete: the
 consecutive-failure counter writes are single keyed ``batches``-row
 updates, and ``complete_batch``'s "any member still open?" probe is served
-by ``jobs_batch_open_members_idx`` — a partial B-tree over exactly the
+by ``jobs_batch_open_members_idx`` - a partial B-tree over exactly the
 non-terminal members, keyed by ``batch_id``, which the probe seeks by
 equality and leaves at the first hit.
 
@@ -250,8 +250,8 @@ async def test_complete_batch_probe_is_served_by_the_open_members_index(
 ) -> None:
     """The completion probe seeks ``jobs_batch_open_members_idx`` with the
     batch id as an Index Cond and no post-scan status Filter: the index
-    holds only open members, so the probe stops at the first entry — or
-    at an empty range — instead of visiting every member of the batch."""
+    holds only open members, so the probe stops at the first entry - or
+    at an empty range - instead of visiting every member of the batch."""
     conn, schema, bid = seeded_schema
     sql = render_batch_sql(schema)
 
@@ -264,7 +264,7 @@ async def test_stale_batch_sweep_probes_members_through_the_open_members_index(
     seeded_schema: Any,
 ) -> None:
     """The leader's complete_stale_batches asks the same question per
-    active batch — any member still open? — and is served by the same
+    active batch - any member still open? - and is served by the same
     index, so a fleet with large batches does not pay a member walk per
     batch on every sweep tick."""
     from taskq.worker._leader_shared import complete_stale_batches_sql

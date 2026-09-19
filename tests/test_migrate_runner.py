@@ -209,7 +209,7 @@ async def test_apply_pending_tags_exception_with_failing_transactional_migration
     monkeypatch: Any,
 ) -> None:
     """The self-diagnosis can only name the right file if the failure
-    carries WHICH migration failed — the first-unrecorded-in-discover-order
+    carries WHICH migration failed - the first-unrecorded-in-discover-order
     heuristic is wrong under ``--phase``. apply_pending must tag the raised
     exception with the failing migration and re-raise the SAME object (the
     type pins in test_migrate_no_transaction.py forbid wrapping)."""
@@ -248,7 +248,7 @@ async def test_phase_guard_failure_report_names_offending_migration(
     """``migrate up --phase post`` on a stale schema trips the ordering
     guard BEFORE the per-migration loop, so its ValueError carries no
     ``taskq_failed_migration`` tag and the diagnosis fell back to the
-    first-unrecorded heuristic — the report named the pre_initial FILE
+    first-unrecorded heuristic - the report named the pre_initial FILE
     while the headline named the post VIOLATION. The guard knows the
     offending migration; it must tag it (the loop's mechanism) so the
     report is self-consistent."""
@@ -285,7 +285,7 @@ async def test_guard_rejection_report_is_truthful_about_zero_execution(
 ) -> None:
     """A transaction-control guard rejection executes ZERO migration
     statements, and re-running fails identically until the offending line
-    is removed — yet the report rendered the generic no-transaction wording
+    is removed - yet the report rendered the generic no-transaction wording
     ("statements before the failure remain applied", "the migration is
     idempotent"), both false for a guard rejection. The report must say
     nothing was executed and that the fix is removing the statement."""
@@ -323,7 +323,7 @@ async def test_guard_rejection_report_is_truthful_about_zero_execution(
 
 
 class _FailLockTimeoutResetConn(_FakeMigrateConn):
-    """_FakeMigrateConn whose ``SET lock_timeout = 0`` reset raises — a
+    """_FakeMigrateConn whose ``SET lock_timeout = 0`` reset raises - a
     caller-owned connection whose session is wedged. Every other SQL
     (acquire, DDL, unlock) completes normally."""
 
@@ -340,7 +340,7 @@ class _FailLockTimeoutResetConn(_FakeMigrateConn):
 
 async def test_migration_advisory_lock_warns_when_reset_fails() -> None:
     """A caller-owned connection whose ``SET lock_timeout`` reset silently
-    fails keeps lock_timeout=120000ms for the rest of the session — later
+    fails keeps lock_timeout=120000ms for the rest of the session - later
     deliberate long lock waits abort at 120s. The reset failure must be
     visible to the connection's owner: log a warning naming the connection,
     without raising or invalidating the lock flow (acquire, body, and
@@ -381,7 +381,7 @@ async def test_migration_advisory_lock_widens_statement_timeout_before_the_apply
     """The apply phase must run with the session statement_timeout widened
     to unlimited: a caller-supplied session bound (server_settings, a
     role/database default, a DSN options clause) would abort a long DDL
-    statement — an index build over a large table — mid-statement, and
+    statement - an index build over a large table - mid-statement, and
     identically on every retry, since the runner re-executes the same
     migration after a failure. The widening happens once, under the
     advisory lock, after the acquire and before any apply-phase statement
@@ -411,7 +411,7 @@ async def test_migration_advisory_lock_widens_statement_timeout_before_the_apply
 
 class _ContendedLockConn(_FakeMigrateConn):
     """_FakeMigrateConn whose ``pg_advisory_lock`` raises
-    ``LockNotAvailableError`` — a caller-owned connection that merely lost
+    ``LockNotAvailableError`` - a caller-owned connection that merely lost
     the lock race. Every other SQL completes normally."""
 
     def __init__(self, applied: set[str]) -> None:
@@ -431,7 +431,7 @@ async def test_migration_advisory_lock_contention_does_not_widen_statement_timeo
 
     The contention path raises SystemExit before any migration runs, and
     the connection returns to its owner (the CLI keeps it precisely to
-    run diagnostics after a failure) — a widening that fires on this path
+    run diagnostics after a failure) - a widening that fires on this path
     leaves an unbounded statement timeout on a session that will never
     run DDL, with no restore anywhere.
     """
@@ -452,7 +452,7 @@ async def test_migration_advisory_lock_contention_does_not_widen_statement_timeo
 
 class _FailStatementTimeoutWidenConn(_FakeMigrateConn):
     """_FakeMigrateConn whose ``SET statement_timeout = 0`` widening raises
-    — a wedged caller-owned connection. Every other SQL (acquire, DDL,
+    - a wedged caller-owned connection. Every other SQL (acquire, DDL,
     unlock) completes normally."""
 
     def __init__(self, applied: set[str]) -> None:
@@ -469,7 +469,7 @@ class _FailStatementTimeoutWidenConn(_FakeMigrateConn):
 async def test_migration_advisory_lock_warns_when_statement_timeout_widen_fails() -> None:
     """A caller-owned connection whose ``SET statement_timeout = 0``
     widening silently fails keeps its session statement_timeout for the
-    rest of the session — a long DDL step on it can still be aborted
+    rest of the session - a long DDL step on it can still be aborted
     mid-statement. The widening failure must be visible to the
     connection's owner: log a warning naming the connection, without
     raising or invalidating the lock flow (acquire, body, and unlock still

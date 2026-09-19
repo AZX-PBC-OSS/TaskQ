@@ -1,4 +1,4 @@
-"""Reconnect-storm simulation (Hunt 5) — worker/notify.py:357-392 backoff shape.
+"""Reconnect-storm simulation (Hunt 5) - worker/notify.py:357-392 backoff shape.
 
 Models the notify health-check reconnect loop verbatim:
   - detection on the per-worker health-check tick (notify_health_check_interval)
@@ -6,7 +6,7 @@ Models the notify health-check reconnect loop verbatim:
   - on failure: sleep(delay); delay = min(delay * 2, 30.0)   <-- NO jitter
 
 Three scenarios over a 100-worker fleet, PG down 47s then up:
-  a) aligned phases  (fleet deployed together — the common k8s case)
+  a) aligned phases  (fleet deployed together - the common k8s case)
   b) random phases   (workers started at random offsets within the interval)
   c) random phases + +-25% multiplicative jitter (the candidate fix)
 
@@ -100,7 +100,7 @@ def say(line: str = "") -> None:
 
 async def main() -> None:
     say("=" * 78)
-    say("RECONNECT STORM — notify.py:357-392 backoff (initial=1.0s, x2, cap 30s, NO jitter)")
+    say("RECONNECT STORM - notify.py:357-392 backoff (initial=1.0s, x2, cap 30s, NO jitter)")
     say(f"fleet={W} workers, health_check_interval={INTERVAL}s, PG down {PG_DOWN_FOR}s,")
     say(f"each attempt = 1 connect + 3 LISTEN round-trips ~{ATTEMPT_COST}s of server work")
     say("=" * 78)

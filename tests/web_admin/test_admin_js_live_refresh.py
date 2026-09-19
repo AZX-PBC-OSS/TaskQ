@@ -2,8 +2,8 @@
 
 The component is driven under Node with the browser surface it touches
 stubbed (``document``, ``Alpine.data``, ``EventSource``, timers, ``fetch``),
-so the assertions are on what the page does — which requests it issues and
-when — not on the source text. Node is the only JS runtime the repository
+so the assertions are on what the page does - which requests it issues and
+when - not on the source text. Node is the only JS runtime the repository
 has; the tests skip where it is absent on a developer machine, and fail
 in CI, where the workflow installs Node so that a skip there would be
 silent coverage loss.
@@ -253,8 +253,8 @@ def test_sse_error_leaves_the_stream_to_reconnect_and_keeps_polling() -> None:
 @requires_node
 def test_paused_freezes_the_table() -> None:
     """Paused means the table stays as the operator left it: the poll
-    stops, SSE is closed, and nothing — not even a late event on the old
-    stream — fetches the table."""
+    stops, SSE is closed, and nothing - not even a late event on the old
+    stream - fetches the table."""
     log = _drive("paused-freezes-the-table")
     assert "sse-close" in log
     assert log.count("fetch:/admin/jobs") == 0, log

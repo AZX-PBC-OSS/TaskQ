@@ -63,11 +63,11 @@ def test_isinstance_base_class() -> None:
     assert isinstance(policy, BatchFailurePolicy)
 
 
-# ── base class is abstract — cannot be instantiated ──────────────
+# ── base class is abstract - cannot be instantiated ──────────────
 
 
 def test_base_class_cannot_be_instantiated() -> None:
-    """BatchFailurePolicy is abstract — direct instantiation raises TypeError."""
+    """BatchFailurePolicy is abstract - direct instantiation raises TypeError."""
     with pytest.raises(TypeError, match="abstract"):
         BatchFailurePolicy()
 

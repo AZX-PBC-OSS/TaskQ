@@ -1,7 +1,7 @@
 """Integration test for ``make_pg_pool_factory(init=...)``.
 
 Against real Postgres: an ``init`` hook forwarded through the factory runs
-once per physical connection — on the initial connection, on connections
+once per physical connection - on the initial connection, on connections
 opened by pool growth, and on replacements opened after
 ``max_inactive_connection_lifetime`` recycling. The hook registers a real
 per-connection ``set_type_codec`` (the same mechanism
@@ -79,7 +79,7 @@ async def test_init_hook_registers_codec_on_every_physical_connection(pg_dsn: st
         assert {pid1, pid2} <= set(initialized_pids)
 
         # Recycling: both idle connections are terminated after 0.5s, so the
-        # next acquire is a NEW physical connection — init must re-run on it.
+        # next acquire is a NEW physical connection - init must re-run on it.
         await asyncio.sleep(1.0)
         async with pool.acquire() as c3:
             pid3 = await c3.fetchval("SELECT pg_backend_pid()")

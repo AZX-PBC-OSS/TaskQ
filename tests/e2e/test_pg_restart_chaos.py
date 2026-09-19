@@ -154,8 +154,8 @@ def chaos_pg(e2e_network: Network) -> Iterator[ChaosPg]:
 
     The HOST port is pinned explicitly with ``with_bind_ports``. Docker
     does NOT preserve a *Docker-assigned* ephemeral host port across
-    stop/start — it allocates a fresh one on start (observed: 34252 →
-    34253) — which would silently invalidate ``host_dsn`` mid-test and
+    stop/start - it allocates a fresh one on start (observed: 34252 →
+    34253) - which would silently invalidate ``host_dsn`` mid-test and
     strand the test-side pool, TaskQ client, and schema teardown on a
     port nothing listens on. An explicitly published port is part of the
     container's declared config and is restored verbatim on start.
@@ -296,7 +296,7 @@ def _worker_env(
         # is PG-restart isolation and replacement recovery, not lease
         # tightness. long_running_job stays in flight for 30 s, and the
         # lease is renewed only on each 0.5 s heartbeat tick, so the lease
-        # doubles as the loop-stall budget — at 3.0 s any transient stall
+        # doubles as the loop-stall budget - at 3.0 s any transient stall
         # (full-tier Docker load) reclaimed the LIVE attempt mid-run and
         # produced a third ``started`` effect. 10 s keeps the reclaim path
         # the test asserts on (the lease expires during the ~22 s outage)

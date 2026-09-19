@@ -5,13 +5,13 @@ Two redteam findings live here:
 
 - The ``schedule_to_close`` DeprecationWarning must blame the USER's call
   line, not taskq internals.  A static stacklevel cannot serve both public
-  entries — the user's line is 3 frames above ``build_enqueue_args`` via
-  ``JobsClient.enqueue`` and 4 via the ``TaskQ.enqueue`` facade — so the
+  entries - the user's line is 3 frames above ``build_enqueue_args`` via
+  ``JobsClient.enqueue`` and 4 via the ``TaskQ.enqueue`` facade - so the
   warning walks to the first frame outside the taskq package.
 - Naive datetimes must be rejected for ``scheduled_at`` /
   ``schedule_to_close`` (docs already claim "naive datetimes are not
   accepted at the backend boundary"), and negative ``result_ttl`` /
-  ``schedule_to_close_interval`` must be rejected — mirroring
+  ``schedule_to_close_interval`` must be rejected - mirroring
   ``start_to_close``'s boundary checks.
 """
 
@@ -61,7 +61,7 @@ def _make_client() -> JobsClient:
 
 def _next_line() -> int:
     """Line number of the statement immediately after the call to this
-    helper minus one — i.e. the line the caller places directly below it,
+    helper minus one - i.e. the line the caller places directly below it,
     which each test pins as the user's enqueue call line."""
     return sys._getframe(1).f_lineno + 1
 
@@ -72,7 +72,7 @@ def _next_line() -> int:
 async def test_schedule_to_close_warning_blames_jobs_client_caller() -> None:
     """Via the JobsClient.enqueue public entry (user → JobsClient.enqueue →
     build_enqueue_args → warn), the warning's reported location must be the
-    USER's enqueue line — 3 frames up — not taskq/client/_jobs.py."""
+    USER's enqueue line - 3 frames up - not taskq/client/_jobs.py."""
     client = _make_client()
     with pytest.warns(DeprecationWarning) as record:
         expected_line = _next_line()  # the enqueue call below is the blamed frame
@@ -89,8 +89,8 @@ async def test_schedule_to_close_warning_blames_jobs_client_caller() -> None:
 
 async def test_schedule_to_close_warning_blames_taskq_facade_caller() -> None:
     """Via the TaskQ.enqueue facade (user → TaskQ.enqueue →
-    JobsClient.enqueue → build_enqueue_args → warn) — one delegation frame
-    deeper, 4 frames up — the warning must still blame the USER's line."""
+    JobsClient.enqueue → build_enqueue_args → warn) - one delegation frame
+    deeper, 4 frames up - the warning must still blame the USER's line."""
     from taskq.client._taskq import TaskQ
 
     tq = TaskQ.__new__(TaskQ)  # Why: facade-only wiring; no pool is opened or used.
@@ -114,7 +114,7 @@ async def test_schedule_to_close_warning_blames_taskq_facade_caller() -> None:
 
 async def test_naive_scheduled_at_rejected() -> None:
     """A naive (tz-unaware) scheduled_at raises ValueError at the client
-    boundary — docs already claim naive datetimes are not accepted."""
+    boundary - docs already claim naive datetimes are not accepted."""
     client = _make_client()
     with pytest.raises(ValueError, match=r"scheduled_at.*timezone-aware"):
         await client.enqueue(_boundary_actor, _Payload(), scheduled_at=datetime(2025, 1, 2))
@@ -138,7 +138,7 @@ async def test_naive_schedule_to_close_rejected() -> None:
 
 async def test_negative_result_ttl_rejected() -> None:
     """An actor declaring a negative result_ttl is rejected at the enqueue
-    boundary — validation existed only in actor-config ops before."""
+    boundary - validation existed only in actor-config ops before."""
     client = _make_client()
     with pytest.raises(ValueError, match=r"result_ttl.*non-negative"):
         await client.enqueue(_neg_result_ttl_actor, _Payload())

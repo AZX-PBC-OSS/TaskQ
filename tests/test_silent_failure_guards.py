@@ -5,7 +5,7 @@ corresponding defect is fixed and RED on ``16c991d``.
 
 1. ``heartbeat_timeout`` is accepted on the public enqueue API, stored on
    ``EnqueueArgs``/``JobRow``, written to PG and hydrated back, but is
-   read by nothing under ``src/taskq/worker/`` — no dispatch path, no
+   read by nothing under ``src/taskq/worker/`` - no dispatch path, no
    sweep path, no validation, no warning.  The only enforced sibling is
    the GLOBAL ``lock_lease``.
 2. ``taskq.cli._load_actor_registry`` type-guards an iterable with
@@ -17,7 +17,7 @@ corresponding defect is fixed and RED on ``16c991d``.
    so an idempotency key whose job failed weeks ago still dedupes.  The
    dedup log line omits the target's ``status`` and logs at ``info``.
 4. Three failure paths log and never count: reservation/rate-limit
-   denial, sub-enqueue flush failure, and progress FLUSH failure — while
+   denial, sub-enqueue flush failure, and progress FLUSH failure - while
    structurally identical siblings (``taskq.ratelimit.refund_failures``,
    ``taskq.progress.publish_failures``) do have counters.  Both
    progress-flush handlers additionally emit the identical event name
@@ -121,11 +121,11 @@ def otel_reader(monkeypatch: pytest.MonkeyPatch) -> InMemoryMetricReader:
 
 
 class TestHeartbeatTimeoutIsNotSilentlyDiscarded:
-    """Contract chosen: **enforced** (direction (a) — the reclamation
+    """Contract chosen: **enforced** (direction (a) - the reclamation
     contract the original refusal docstring named as the alternative).
 
-    ``heartbeat_timeout`` was once enforced NOWHERE — accepted on the
-    public API, stored on the row, and read by nothing — and the interim
+    ``heartbeat_timeout`` was once enforced NOWHERE - accepted on the
+    public API, stored on the row, and read by nothing - and the interim
     contract this suite pinned was refusal at the enqueue boundary. The
     project has since chosen the other acceptable contract: the leader's
     reclaim sweep reclaims a running job whose holder has been silent
@@ -138,12 +138,12 @@ class TestHeartbeatTimeoutIsNotSilentlyDiscarded:
     10-second heartbeat timeout and gets the 60-second global lease
     instead has no way to learn that from the library. Under direction
     (a) that guard is "the value reaches the stored row the sweep
-    reads" — an enqueue that drops it would silently revert the caller
+    reads" - an enqueue that drops it would silently revert the caller
     to lease-only reclamation with no signal.
     """
 
     async def test_enqueue_with_heartbeat_timeout_is_carried_to_the_row(self) -> None:
-        """The value must reach the stored row — the row the reclaim
+        """The value must reach the stored row - the row the reclaim
         sweep's heartbeat arm reads. An enqueue that dropped it would
         silently revert the caller to global-lease-only reclamation."""
         backend = InMemoryBackend(clock=FakeClock(_NOW))
@@ -158,7 +158,7 @@ class TestHeartbeatTimeoutIsNotSilentlyDiscarded:
         assert row is not None, "enqueue returned a handle for a row the backend cannot read"
         assert row.heartbeat_timeout == timedelta(seconds=10), (
             f"heartbeat_timeout was silently discarded on the way to the row "
-            f"(got {row.heartbeat_timeout!r}) — the reclaim sweep reads the "
+            f"(got {row.heartbeat_timeout!r}) - the reclaim sweep reads the "
             "stored column, so the caller's per-job liveness promise would "
             "silently no-op."
         )
@@ -187,7 +187,7 @@ _EMPTY_ACTOR_LIST: list[ActorRef[Any, Any]] = []
 
 
 def _actor_generator() -> Iterator[ActorRef[Any, Any]]:
-    """A one-shot generator of ActorRefs — the shape ``Iterable[ActorRef]`` documents."""
+    """A one-shot generator of ActorRefs - the shape ``Iterable[ActorRef]`` documents."""
     yield _ITER_ACTOR_A
     yield _ITER_ACTOR_B
 
@@ -267,7 +267,7 @@ class TestActorRegistryFromOneShotIterator:
         assert set(captured["registry"]) == {"iter_actor_a", "iter_actor_b"}
 
     def test_empty_iterable_is_rejected_before_boot(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """An empty registry cannot dispatch anything — refuse it rather than boot idle.
+        """An empty registry cannot dispatch anything - refuse it rather than boot idle.
 
         ``_worker_main`` is stubbed to a success return so the only way this
         test can exit non-zero is the registry check itself.
@@ -290,7 +290,7 @@ class TestTerminalDedupIsObservable:
 
     ``enqueue_select_by_key`` (``_sql_templates.py:855``) is
     ``SELECT * FROM jobs WHERE idempotency_scope = $1 AND idempotency_key = $2``
-    — no status predicate, no time window — so a key whose job failed
+    - no status predicate, no time window - so a key whose job failed
     weeks ago still dedupes, bounded only by ``DEFAULT_PRUNE_RETENTION``
     (30 days).  The library never distinguishes a terminal target from a
     live one at the point of return: the dedup log line is ``info`` and
@@ -299,9 +299,9 @@ class TestTerminalDedupIsObservable:
     Scope note: ``JobHandle.was_existing`` and ``handle.row.status`` DO
     exist, so a caller *can* detect this today.  These tests therefore
     assert the missing **observable** (a warning carrying the target's
-    status), not a new handle field.  ``unique_for`` is NOT affected —
+    status), not a new handle field.  ``unique_for`` is NOT affected -
     ``unique_states`` defaults to ``("pending", "scheduled", "running")``
-    — and is deliberately not asserted on here.
+    - and is deliberately not asserted on here.
     """
 
     pytestmark = pytest.mark.integration
@@ -380,7 +380,7 @@ class TestReservationDenialIsCounted:
     """Rate-limit / reservation denial logs and emits no metric.
 
     ``grep -rn "denial\\|denied" src/taskq/obs/`` finds only an unrelated
-    docstring — there is no denial counter at all, while the adjacent
+    docstring - there is no denial counter at all, while the adjacent
     refund-failure path has ``taskq.ratelimit.refund_failures``.
     """
 
@@ -416,7 +416,7 @@ class TestReservationDenialIsCounted:
         """The reservation-denial arm needs its own observable too."""
         obs_record = getattr(obs_mod, "record_reservation_denial", None)
         assert obs_record is not None, (
-            "taskq.obs exposes no record_reservation_denial — the "
+            "taskq.obs exposes no record_reservation_denial - the "
             "ReservationUnavailable raise sites log only"
         )
         exc = ReservationUnavailable(
@@ -443,7 +443,7 @@ class TestSubEnqueueFlushFailureIsCounted:
         """A sub-enqueue flush failure must be countable, not only loggable."""
         record = getattr(obs_mod, "record_sub_enqueue_failure", None)
         assert record is not None, (
-            "taskq.obs exposes no record_sub_enqueue_failure — the "
+            "taskq.obs exposes no record_sub_enqueue_failure - the "
             "sub_enqueue_flush_failed catch site in worker/_consumer.py logs only"
         )
         record("test_actor", 2)
@@ -463,7 +463,7 @@ def _dirty_buffer(job_id: UUID, *, state: dict[str, object] | None = None) -> _P
 
 
 class _FailingPool:
-    """A pool whose ``acquire`` raises — a pool-wide outage: every job's
+    """A pool whose ``acquire`` raises - a pool-wide outage: every job's
     flush that tick is lost, not just one job's."""
 
     def acquire(self) -> Any:
@@ -472,7 +472,7 @@ class _FailingPool:
 
 class _StatementFailingPool:
     """A pool that acquires fine but hands out a connection whose
-    ``fetchrow`` raises — the per-job flush failure path (the UPDATE
+    ``fetchrow`` raises - the per-job flush failure path (the UPDATE
     itself fails; only this job's delta is lost)."""
 
     def acquire(self) -> "_FailingConnCtx":
@@ -497,10 +497,10 @@ class TestProgressFlushFailureIsCounted:
     different incidents distinguishable in both the metric stage label
     and the log kind.
 
-    A per-job flush failure (the UPDATE statement itself fails — one
+    A per-job flush failure (the UPDATE statement itself fails - one
     job's progress delta is lost) is labeled ``stage='per_job'`` /
-    ``kind="progress_flush_error"``. A pool-stage failure — the flush
-    loop cannot obtain a pool at all, or the per-job acquire fails —
+    ``kind="progress_flush_error"``. A pool-stage failure - the flush
+    loop cannot obtain a pool at all, or the per-job acquire fails -
     loses EVERY job's progress delta and is labeled ``stage='pool'`` /
     ``kind="progress_flush_pool_error"``. The two must stay
     distinguishable in an alert rule, which is why the acquire failure
@@ -535,7 +535,7 @@ class TestProgressFlushFailureIsCounted:
     async def test_pool_acquire_failure_records_the_pool_stage(
         self, otel_reader: InMemoryMetricReader
     ) -> None:
-        """A pool-wide acquire failure loses every job's flush that tick —
+        """A pool-wide acquire failure loses every job's flush that tick -
         it must be counted at ``stage='pool'`` with the pool log kind, not
         folded into the per-job taxonomy."""
         job_id = UUID(str(new_job_id()))

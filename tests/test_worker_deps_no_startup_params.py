@@ -4,7 +4,7 @@
 that rejects unknown startup parameters (PgBouncer: ``unsupported startup
 parameter: jit``) fails every connect through it: with a single
 ``TASKQ_PG_DSN`` pointed at the pooler, the worker's eagerly-opened boot
-pools (``min_size=1``) never come up (#247). The dispatcher pool carried
+pools (``min_size=1``) never come up. The dispatcher pool carried
 ``server_settings={"jit": "off"}`` for exactly that reason's opposite: a
 JIT guard whose measured win had already moved into the statement itself
 (perf-evidence-dispatch.md: the depth oracle passes with JIT enabled on
@@ -128,7 +128,7 @@ async def test_worker_dsn_pools_boot_without_any_startup_params(
             "the entry rides the startup packet, which a pooler that rejects "
             "unknown startup parameters (PgBouncer) refuses before auth; "
             "worker boot fails behind it with an error naming neither the "
-            "parameter nor the pool (#247). Session GUCs belong server-side "
+            "parameter nor the pool. Session GUCs belong server-side "
             "(ALTER ROLE ... SET / DSN options); see "
             "docs/guides/ops.md §'Database performance knobs'."
         )

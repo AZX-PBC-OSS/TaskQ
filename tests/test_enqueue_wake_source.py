@@ -1,7 +1,7 @@
 """The ``tr_notify_job_insert`` trigger is the sole wake source for inserts.
 
 Every enqueue path used to follow its INSERT with its own
-``SELECT pg_notify(wake_channel, '')`` — a statement the trigger already
+``SELECT pg_notify(wake_channel, '')`` - a statement the trigger already
 issues for every pending row, on the same channel with the same empty
 payload. Inside one transaction Postgres coalesces the pair, so on the pool
 path the app-side statement was pure cost; on a caller's bare connection
@@ -105,7 +105,7 @@ async def test_a_future_dated_copy_batch_wakes_nobody(clean_jobs_app: JobsApp) -
     """The COPY tier decides status in its fixup UPDATE, after the rows
     are in: rows that land ``pending`` at COPY time and are flipped to
     ``scheduled`` afterwards would fire the INSERT trigger for work
-    nobody can dispatch — the herd the trigger's gate exists to prevent."""
+    nobody can dispatch - the herd the trigger's gate exists to prevent."""
     async with _listener(clean_jobs_app) as listener:
         later = clean_jobs_app.backend._clock.now() + timedelta(hours=1)  # pyright: ignore[reportPrivateUsage]  # Why: the backend's own clock keeps the stamp in the store's domain.
         await clean_jobs_app.backend.enqueue_batch_fast(

@@ -1,4 +1,4 @@
-"""Trigger FastAPI app — enqueue jobs via TaskQ and view them in the embedded admin UI.
+"""Trigger FastAPI app - enqueue jobs via TaskQ and view them in the embedded admin UI.
 
 Renders one card per actor at ``GET /``, each with an HTML form for the
 actor's payload fields.  ``POST /enqueue/{actor_name}`` parses form data,
@@ -8,7 +8,7 @@ detail page at ``/taskq/jobs/{job_id}``.  All configuration is loaded
 through :meth:`TaskQSettings.load`; no raw ``os.environ`` access.
 
 The admin UI is mounted at ``/taskq`` using ``create_router`` and
-``setup_admin_state`` — no sidecar process required.
+``setup_admin_state`` - no sidecar process required.
 
 Special handling:
 - Backpressure errors (:class:`~taskq.SingletonCollisionError`,
@@ -24,9 +24,9 @@ Special handling:
   enqueue.
 
 Additional routes:
-- ``POST /batch-fast`` — demonstrates :meth:`TaskQ.enqueue_batch_fast`
+- ``POST /batch-fast`` - demonstrates :meth:`TaskQ.enqueue_batch_fast`
   by enqueuing N counter jobs via COPY FROM.
-- ``GET /rate-limits`` — JSON peek at all registered rate-limit bucket
+- ``GET /rate-limits`` - JSON peek at all registered rate-limit bucket
   states via :meth:`RateLimitRegistry.peek_all`.
 """
 
@@ -126,7 +126,7 @@ ACTORS: dict[str, ActorRef[Any, Any]] = {
 settings = TaskQSettings.load()
 
 # Owned rate-limit registry for this process. The example's actors reference
-# primitives by NAME, so they are registered explicitly here — the
+# primitives by NAME, so they are registered explicitly here - the
 # worker-side pattern is instead to declare primitive INSTANCES on the actor
 # (@actor(rate_limits=[TokenBucket(...)])) and let the worker bootstrap's
 # collection pass register them automatically. Configs mirror
@@ -307,7 +307,7 @@ async def stream_progress(job_id: UUID, request: Request) -> Response:
     The stream ends when the job reaches a terminal state
     (``terminal=True`` on the event) or the client disconnects.
 
-    Requires Redis — returns 503 if the handle has no Redis connection.
+    Requires Redis - returns 503 if the handle has no Redis connection.
     """
     tq: TaskQ = request.app.state.tq
     handle = await tq.get(JobId(job_id), result_adapter=_NONE_RESULT_ADAPTER)
@@ -343,7 +343,7 @@ async def get_result(job_id: UUID, request: Request) -> Response:
     if handle is None:
         return Response(content="job not found", status_code=404)
 
-    # The row get() just fetched — no second backend read for the status.
+    # The row get() just fetched - no second backend read for the status.
     status = handle.row.status
     if status == "succeeded":
         try:
@@ -409,7 +409,7 @@ async def batch_fast(request: Request) -> JSONResponse:
     """Enqueue N counter jobs via :meth:`TaskQ.enqueue_batch_fast` (COPY FROM).
 
     Returns ``{"count": N}`` on success. The high-throughput variant uses
-    COPY protocol — no per-job handles, no idempotency-key collision
+    COPY protocol - no per-job handles, no idempotency-key collision
     handling, no max_pending check. Suitable for bulk import with 1K-50K rows.
     """
     try:

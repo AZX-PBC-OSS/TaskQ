@@ -195,7 +195,7 @@ async def test_compute_health_redis_configured_via_client() -> None:
     """redis_configured is True when a redis_client exists without redis_url.
 
     Managed-identity deployments inject a client via redis_client_factory
-    (or pass a caller-owned client) and never set TASKQ_REDIS_URL — the
+    (or pass a caller-owned client) and never set TASKQ_REDIS_URL - the
     health report must reflect the working client, not the absent URL.
     """
     deps = _make_deps(redis_client=object())
@@ -265,7 +265,7 @@ async def test_compute_health_pings_slot_pool_when_present() -> None:
     """A worker on the per-slot path must have its slot pool pinged.
 
     The dispatcher ping alone cannot see a dead slot pool, so the ping
-    must actually run when the pool exists — a readiness gate that
+    must actually run when the pool exists - a readiness gate that
     skipped it would report ready on the strength of a pool the
     transactional path never uses.
     """
@@ -284,7 +284,7 @@ async def test_compute_health_slot_pool_unexpected_error_fails_closed() -> None:
     """A ping failure outside the asyncpg family must still fail closed.
 
     A broken pool raising something the typed handlers don't name must
-    mark the worker unready — never propagate out of readiness and never
+    mark the worker unready - never propagate out of readiness and never
     report ready on the dispatcher pool's strength.
     """
     slot_pool = _StubPool(error=RuntimeError("bogus pool"))
@@ -304,7 +304,7 @@ async def test_compute_health_dead_slot_pool_marks_unready() -> None:
     Every transactional job on such a worker fails to acquire its
     transaction connection; reporting ready on the dispatcher pool's
     strength would be the shared-connection misattribution moved to the
-    orchestrator — traffic routed to a worker that cannot transact.
+    orchestrator - traffic routed to a worker that cannot transact.
     """
     slot_pool = _StubPool(error=asyncpg.InterfaceError("pool is closed"))
     deps = _make_deps(slot_pool=slot_pool, slot_pool_probe_task=None)
@@ -320,8 +320,8 @@ async def test_compute_health_coded_server_error_on_slot_ping_is_not_unexpected(
     """A revoked credential on the slot ping's fresh-connection acquire
     is infrastructure, not a programming error.
 
-    ``InvalidPasswordError`` is a coded server error — a ``PostgresError``
-    that is not a ``PostgresConnectionError`` child — exactly what a
+    ``InvalidPasswordError`` is a coded server error - a ``PostgresError``
+    that is not a ``PostgresConnectionError`` child - exactly what a
     rotation or terminate produces when the ping must open a fresh
     connection. It takes the connection-error path (fail-closed outcome
     unchanged) and never the ``ping-unexpected`` label that reads as a
@@ -358,8 +358,8 @@ async def test_compute_health_every_pool_infra_family_member_classifies_as_infra
     """The shared family is only as strong as its member list: every
     member of ``POOL_INFRA_EXCEPTIONS`` must take the connection-error
     path at the consumer (fail closed, connection-error reason, never the
-    ``ping-unexpected`` label). A member dropped from the tuple — or a
-    site reverting to a hand-rolled family — falls into the
+    ``ping-unexpected`` label). A member dropped from the tuple - or a
+    site reverting to a hand-rolled family - falls into the
     unexpected-error branch and fails here, so the single-source family
     cannot silently shrink."""
     import structlog
@@ -378,7 +378,7 @@ async def test_compute_health_every_pool_infra_family_member_classifies_as_infra
 
 async def test_compute_health_coded_server_error_on_dispatcher_ping_is_not_unexpected() -> None:
     """The dispatcher ping's acquire fails with the same infrastructure
-    family — a coded server error there is a connection failure, not an
+    family - a coded server error there is a connection failure, not an
     unexpected error."""
     import structlog
 
@@ -568,7 +568,7 @@ async def _echo_nothing_and_close(
 async def test_stop_never_unlinks_a_path_this_server_never_bound() -> None:
     """The collision warn path: a live peer owns the socket file, this
     server's bind was refused, and boot continued elsewhere. ``stop()`` must
-    leave the file exactly where it is — it is the peer's serving surface,
+    leave the file exactly where it is - it is the peer's serving surface,
     and deleting it breaks every probe already routed to the peer.
     """
     peer_path = _next_sock_path()
@@ -593,7 +593,7 @@ async def test_stop_never_unlinks_a_path_this_server_never_bound() -> None:
 
 
 async def test_shutdown_phase_serialisation_none() -> None:
-    """shutdown_phase JSON serialisation — NONE.
+    """shutdown_phase JSON serialisation - NONE.
 
     With deps.shutdown_phase=NONE (and otherwise healthy), drive /ready;
     parse JSON; assert body['shutdown_phase'] is None.
@@ -616,7 +616,7 @@ async def test_shutdown_phase_serialisation_none() -> None:
 
 
 async def test_shutdown_phase_serialisation_cancelling() -> None:
-    """shutdown_phase JSON serialisation — CANCELLING.
+    """shutdown_phase JSON serialisation - CANCELLING.
 
     With deps.shutdown_phase=CANCELLING, assert body['shutdown_phase'] == 2.
     (.)
@@ -849,7 +849,7 @@ async def test_tasks_endpoint_disabled_by_default_returns_404() -> None:
 
 
 async def test_tasks_endpoint_enabled_returns_dump_records() -> None:
-    """Enabled: 200 with minimized records (name, coro, await sites) — and
+    """Enabled: 200 with minimized records (name, coro, await sites) - and
     the socket is owner-only from bind time (no group/other bits)."""
     sock_path = _next_sock_path()
     deps = _make_deps(

@@ -1,4 +1,4 @@
-"""Retries & failure-taxonomy e2e — transient retry, permanent fail, snooze requeue.
+"""Retries & failure-taxonomy e2e - transient retry, permanent fail, snooze requeue.
 
 Scenario:
 transient ``fail_times=2`` with ``max_attempts=3`` → succeeded on attempt 3;
@@ -170,11 +170,11 @@ async def test_snooze_requeues_then_succeeds(
 
     The snooze is budget-free: ``mark_snoozed`` refunds the claim's
     attempt increment (1 → 0) and never touches ``max_attempts``, so the
-    re-dispatch re-claims exactly one increment — both ``fetch`` effects
+    re-dispatch re-claims exactly one increment - both ``fetch`` effects
     carry attempt 1, the terminal row's attempt is 1, and the row's
     ``snooze_count`` is the cycle's durable record. The ``synced``
     effect's attempt number (1) proves success happened only on the
-    post-snooze dispatch — never on the snoozed one.
+    post-snooze dispatch - never on the snoozed one.
     """
     handle = await e2e_client.enqueue(
         sync_user_profile,

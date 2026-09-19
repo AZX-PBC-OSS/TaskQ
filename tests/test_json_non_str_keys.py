@@ -5,7 +5,7 @@ str-keyed input; these tests pin the resulting fail-fast contract at every
 boundary that serializes a RAW (unvalidated) caller dict, plus the
 empty-``result_bytes`` ValueError both terminal implementations must raise
 (decoded empty bytes bind as ``''``, which ``jsonb`` rejects with a
-``PostgresError`` — a permanent data defect the terminal-write
+``PostgresError`` - a permanent data defect the terminal-write
 classification would otherwise read as transient infrastructure failure).
 
 Pydantic-validated payloads are unaffected: ``dict[str, ...]`` model fields
@@ -145,7 +145,7 @@ async def test_pg_terminal_rejects_empty_result_bytes() -> None:
 async def test_testing_terminal_rejects_empty_result_bytes() -> None:
     backend = InMemoryBackend(clock=FakeClock(_START))
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="test_actor")
     args = EnqueueArgs(
         id=new_job_id(),
@@ -186,7 +186,7 @@ def test_pydantic_dict_field_rejects_int_keys() -> None:
 # The rejection contracts above pin what both backends refuse; these pin
 # what they READ BACK. PG persists every caller dict through jsonb (the
 # orjson text at bind time, loads at read), so a value whose orjson
-# encoding differs from the Python object comes back morphed — NaN and
+# encoding differs from the Python object comes back morphed - NaN and
 # Infinity as null, UUIDs as their string form, tuples as arrays. The
 # mirror must read back the same shapes or a test author sees different
 # results under the two backends for the same call.
@@ -215,7 +215,7 @@ async def test_in_memory_enqueue_stores_pg_jsonb_round_trip_values(
     them."""
     backend = InMemoryBackend(clock=FakeClock(_START))
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="test_actor")
     args = EnqueueArgs(
         id=new_job_id(),
@@ -242,11 +242,11 @@ async def test_in_memory_enqueue_stores_pg_jsonb_round_trip_values(
 async def test_in_memory_terminal_progress_merge_stores_pg_jsonb_round_trip_values() -> None:
     """The terminal writes' progress merge stores the round-trip of the
     same serialization PG's ``COALESCE(progress_state,'{}') || new``
-    binds — actor-supplied progress values read back exactly as PG reads
+    binds - actor-supplied progress values read back exactly as PG reads
     them."""
     backend = InMemoryBackend(clock=FakeClock(_START))
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="test_actor")
     args = EnqueueArgs(
         id=new_job_id(),
@@ -283,14 +283,14 @@ async def test_in_memory_terminal_progress_merge_stores_pg_jsonb_round_trip_valu
 async def test_in_memory_snooze_metadata_update_stores_pg_jsonb_round_trip_values() -> None:
     """``mark_snoozed``'s ``metadata_update`` binds as ``jsonb`` on PG
     (``metadata = j.metadata || COALESCE(metadata_update, ...)``), so its
-    values read back JSON-round-tripped — UUID → string, NaN/Infinity →
-    null, tuple → array — exactly like every other metadata write path
+    values read back JSON-round-tripped - UUID → string, NaN/Infinity →
+    null, tuple → array - exactly like every other metadata write path
     above. The merge must store that same round-trip, not the caller's
     Python objects, or the one snooze path reads back differently from
     production."""
     backend = InMemoryBackend(clock=FakeClock(_START))
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="test_actor")
     args = EnqueueArgs(
         id=new_job_id(),
@@ -344,11 +344,11 @@ async def test_in_memory_snooze_metadata_update_with_nul_raises_value_error() ->
     """The round-trip the snooze merge now runs is also its NUL guard:
     PG's jsonb_param rejects a NUL value before the UPDATE fires, and the
     mirror must reject at the same boundary with the row untouched.
-    Before the round-trip landed here, a NUL value was stored silently —
+    Before the round-trip landed here, a NUL value was stored silently -
     a result PG never could hold."""
     backend = InMemoryBackend(clock=FakeClock(_START))
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="test_actor")
     args = EnqueueArgs(
         id=new_job_id(),
@@ -422,7 +422,7 @@ async def test_in_memory_attempt_metadata_with_nul_raises_value_error() -> None:
     same boundary and store nothing."""
     backend = InMemoryBackend(clock=FakeClock(_START))
     # Register the actor so dispatch_batch finds it (mirrors PG's
-    # actor_config requirement — candidates come FROM the registry).
+    # actor_config requirement - candidates come FROM the registry).
     backend.register_actor_config(actor="test_actor")
     args = EnqueueArgs(
         id=new_job_id(),
@@ -460,7 +460,7 @@ async def test_in_memory_attempt_metadata_with_nul_raises_value_error() -> None:
 
 async def test_in_memory_schedule_metadata_stores_pg_jsonb_round_trip_values() -> None:
     """Schedule metadata persists through the same jsonb round-trip on
-    both backends — create and update alike."""
+    both backends - create and update alike."""
     backend = InMemoryBackend(clock=FakeClock(_START))
 
     record = await backend.create_schedule(
@@ -485,7 +485,7 @@ async def test_in_memory_attempt_metadata_stores_pg_jsonb_round_trip_values() ->
     """``write_attempt`` is a Backend-protocol method a direct caller can
     reach with any metadata dict; PG binds it through the NUL-guarded
     serialization and reads it back round-tripped, so the mirror must
-    store the same round-trip — not the caller's Python objects."""
+    store the same round-trip - not the caller's Python objects."""
     backend = InMemoryBackend(clock=FakeClock(_START))
     job_id = new_job_id()
 

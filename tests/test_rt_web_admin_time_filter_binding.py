@@ -1,12 +1,12 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
 """Red-team attacks on the admin jobs list's absolute time filters (PG tier).
 
-Hunt scope: ``src/taskq/web/admin/jobs.py`` — ``/jobs`` and ``/jobs/count``
+Hunt scope: ``src/taskq/web/admin/jobs.py`` - ``/jobs`` and ``/jobs/count``
 input validation for ``time_from``/``time_to``.
 
 Papered defect
 --------------
-REAL DEFECT — the absolute time filter cannot bind, so every request that
+REAL DEFECT - the absolute time filter cannot bind, so every request that
 uses it is a 500 (jobs.py:154-160)::
 
     if time_from:
@@ -18,27 +18,27 @@ uses it is a 500 (jobs.py:154-160)::
 
 ``time_from``/``time_to`` are raw query STRINGS bound against
 ``$n::timestamptz``. asyncpg's timestamptz encoder accepts only
-``datetime.date``/``datetime.datetime`` instances — a ``str`` argument is
+``datetime.date``/``datetime.datetime`` instances - a ``str`` argument is
 rejected client-side with
 ``DataError: invalid input for query argument … expected a
 datetime.date or datetime.datetime instance`` (verified against a real
 PostgreSQL 18 server with this repo's pinned asyncpg). The exception is
 unhandled in ``jobs_list``/``jobs_count``, so:
 
-* a WELL-FORMED window (``2025-01-01T00:00:00+00:00``) → HTTP 500 — the
+* a WELL-FORMED window (``2025-01-01T00:00:00+00:00``) → HTTP 500 - the
   shipped feature is unusable, not merely mis-validated;
 * a GARBAGE window (``yesterday``) → HTTP 500 too, where the admin
   family's own convention (history.py:178-184, queues.py cursor
   validation) is a clean 400 for unparseable timestamps.
 
 Desired observables pinned below (all RED today):
-* ``test_jobs_list_absolute_time_filter_binds`` — a well-formed window
+* ``test_jobs_list_absolute_time_filter_binds`` - a well-formed window
   returns 200 with the in-window row visible and the out-of-window row
   excluded (the route must parse the strings to datetimes, or otherwise
   bind them).
-* ``test_jobs_list_garbage_time_filter_is_400`` — a malformed window is a
+* ``test_jobs_list_garbage_time_filter_is_400`` - a malformed window is a
   400 input error, never a 500.
-* ``test_jobs_count_absolute_time_filter_binds`` — the count endpoint
+* ``test_jobs_count_absolute_time_filter_binds`` - the count endpoint
   shares ``_build_where``, so it must bind the same way (200, and the
   count reflects the window).
 """
@@ -90,7 +90,7 @@ def _mount_admin(pool: asyncpg.Pool, schema: str) -> httpx.AsyncClient:
     ``raise_app_exceptions=False`` so an unhandled route exception is
     observable as the HTTP 500 the deployment would serve (Starlette's
     ServerErrorMiddleware answer) instead of exploding out of the
-    transport — the RED state must be an asserted status, not a traceback.
+    transport - the RED state must be an asserted status, not a traceback.
     """
     bundle = create_router(pool, schema=schema, redis_client=None)
     app = FastAPI()
@@ -125,13 +125,13 @@ async def _drop_schema(pool: asyncpg.Pool, schema: str) -> None:
 
 async def test_jobs_list_absolute_time_filter_binds(pg_dsn: str) -> None:
     """A well-formed time_from/time_to pair must return 200 with the window
-    applied — not a 500 before a single row is read.
+    applied - not a 500 before a single row is read.
 
     CONTRACT: /jobs with a well-formed absolute window must bind and return
     200, the in-window row visible, the out-of-window row excluded. The
     route parses ISO strings (the family's own convention: history.py:178-184
     parses cursor timestamps with a 400 on garbage) or otherwise binds
-    datetimes — never hands the raw query STRING to a ``$n::timestamptz``
+    datetimes - never hands the raw query STRING to a ``$n::timestamptz``
     parameter.
 
     CURRENT VIOLATION: jobs.py:154-160 appends the raw strings;
@@ -155,11 +155,11 @@ async def test_jobs_list_absolute_time_filter_binds(pg_dsn: str) -> None:
                 )
                 assert resp.status_code == 200, (
                     "CONTRACT: /jobs with a well-formed absolute time window must "
-                    "return 200 with the window applied — time_from/time_to are "
+                    "return 200 with the window applied - time_from/time_to are "
                     "shipped filters of the page. CURRENT VIOLATION: jobs.py:154-160 "
                     "binds the raw query STRING against $n::timestamptz and asyncpg "
                     "rejects a str for timestamptz ('expected a datetime.date or "
-                    "datetime.datetime instance' — verified against PG 18), so the "
+                    "datetime.datetime instance' - verified against PG 18), so the "
                     f"unhandled DataError turns every window request into a "
                     f"{resp.status_code}."
                 )
@@ -180,7 +180,7 @@ async def test_jobs_list_absolute_time_filter_binds(pg_dsn: str) -> None:
                 )
                 assert str(inside_id)[:8] not in past.text, (
                     "CONTRACT: the created-now job is outside a 2019 window and must "
-                    "be excluded once the filter binds — a 'fixed' route that 200s "
+                    "be excluded once the filter binds - a 'fixed' route that 200s "
                     "but ignores the window is a silent lie, not a fix."
                 )
         finally:
@@ -195,7 +195,7 @@ async def test_jobs_list_garbage_time_filter_is_400(pg_dsn: str) -> None:
     """A malformed time_from must be a clean 400 input error.
 
     CONTRACT: an unparseable timestamp in a caller-supplied filter is a 400
-    — the admin family's own convention (history.py:178-184 returns 400 for
+    - the admin family's own convention (history.py:178-184 returns 400 for
     a bad cursor timestamp; queues.py validates cursor_at the same way).
 
     CURRENT VIOLATION: the garbage string reaches the asyncpg bind, whose
@@ -215,10 +215,10 @@ async def test_jobs_list_garbage_time_filter_is_400(pg_dsn: str) -> None:
                 )
                 assert resp.status_code == 400, (
                     "CONTRACT: a malformed absolute time window is a 400 input error "
-                    "(the admin family's convention — history.py:178-184 400s on a "
+                    "(the admin family's convention - history.py:178-184 400s on a "
                     "bad cursor timestamp). CURRENT VIOLATION: the raw string "
                     "reaches the $n::timestamptz bind and the resulting asyncpg "
-                    f"DataError is unhandled in jobs_list — got {resp.status_code} "
+                    f"DataError is unhandled in jobs_list - got {resp.status_code} "
                     f"{resp.text[:200]!r}"
                 )
         finally:
@@ -257,7 +257,7 @@ async def test_jobs_count_absolute_time_filter_binds(pg_dsn: str) -> None:
                     "CONTRACT: /jobs/count with a well-formed window must bind and "
                     "return 200. CURRENT VIOLATION: jobs_count reuses _build_where "
                     "(jobs.py:535-542) whose raw-string ::timestamptz bind raises "
-                    f"asyncpg DataError unhandled — got {covering.status_code}."
+                    f"asyncpg DataError unhandled - got {covering.status_code}."
                 )
                 assert covering.json()["count"] == 1, (
                     "CONTRACT: the covering window counts the one seeded job."
@@ -272,7 +272,7 @@ async def test_jobs_count_absolute_time_filter_binds(pg_dsn: str) -> None:
                 )
                 assert past.status_code == 200, "the past window must bind too (200)."
                 assert past.json()["count"] == 0, (
-                    "CONTRACT: a 2019 window excludes the created-now job — the "
+                    "CONTRACT: a 2019 window excludes the created-now job - the "
                     "count must reflect the window, not ignore it."
                 )
         finally:

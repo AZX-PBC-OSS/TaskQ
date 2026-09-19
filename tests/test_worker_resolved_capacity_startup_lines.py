@@ -6,7 +6,7 @@ configuration surface shows together: the worker's own ``max_concurrency``
 the ``queues`` row's ``max_concurrent`` for the queue the actor is
 assigned to, and the actor's declared reservations / ``singleton=True``.
 Whichever of those is smallest is the one that binds, and an operator who
-raises the wrong one sees no change at all — the classic "I bumped the
+raises the wrong one sees no change at all - the classic "I bumped the
 cap and nothing happened" report. The boot line is the answer: one
 ``actor-resolved-capacity`` record per registered actor carrying both the
 number that binds and the layer that produced it, so the fix is a single
@@ -16,7 +16,7 @@ A second, narrower line rides the same pass: when the stored
 ``actor_config`` row's capacity disagrees with the value declared in the
 ``@actor(...)`` literal, the stored value silently wins (the startup
 UPSERT deliberately leaves the capacity columns alone once a row exists).
-That divergence is legitimate — stored capacity is operator-owned — but
+That divergence is legitimate - stored capacity is operator-owned - but
 it is exactly the state where a code change appears to be ignored, so
 boot says so out loud instead of leaving the operator to infer it.
 
@@ -24,7 +24,7 @@ Neither line ever refuses boot: a worker that can do work must start.
 These are observability, and observability is what stands in for the
 refusals TaskQ deliberately does not issue here.
 
-Pure-Python unit tests — no PG required. Lines are asserted as actually
+Pure-Python unit tests - no PG required. Lines are asserted as actually
 emitted (event, level, fields) via ``structlog.testing.capture_logs``,
 following ``tests/test_worker_unconsumed_queue_warning.py``.
 """
@@ -181,7 +181,7 @@ def test_process_cap_named_when_it_is_the_smallest_layer() -> None:
 
 def test_actor_cap_named_when_the_stored_row_binds() -> None:
     """The stored ``actor_config.max_concurrent`` is the fleet-wide cap and
-    the value the dispatch gate actually reads — when it is below the
+    the value the dispatch gate actually reads - when it is below the
     process cap it is the binding layer, and the stored row (not the code
     literal) is the number that must be reported."""
     settings = _make_settings(max_concurrency=8)
@@ -197,7 +197,7 @@ def test_actor_cap_named_when_the_stored_row_binds() -> None:
 
 def test_queue_cap_named_when_the_queues_row_binds() -> None:
     """A ``queues`` row cap is shared by every actor assigned to that queue,
-    so it can throttle an actor whose own cap was never touched — the
+    so it can throttle an actor whose own cap was never touched - the
     hardest of the four layers to discover by hand, because nothing about
     the actor mentions it."""
     settings = _make_settings(max_concurrency=8)
@@ -252,7 +252,7 @@ def test_drain_mode_actor_cap_of_zero_is_labelled_not_reported_as_uncapped() -> 
     """A stored ``max_concurrent=0`` is deliberate drain mode, and zero is
     the value most likely to be mistaken for "unset" by a reader (and by
     a falsy-check implementation). It must resolve to 0 with the actor
-    layer binding — never silently fall through to the process cap."""
+    layer binding - never silently fall through to the process cap."""
     settings = _make_settings(max_concurrency=8)
     registry = {"alpha": _make_actor_ref(name="alpha")}
 
@@ -263,14 +263,14 @@ def test_drain_mode_actor_cap_of_zero_is_labelled_not_reported_as_uncapped() -> 
     assert entry["resolved"] == 0
     assert entry["binding"] == "actor"
     assert entry["drain_mode"] is True, (
-        "drain mode must be labelled explicitly — an actor that dispatches nothing "
+        "drain mode must be labelled explicitly - an actor that dispatches nothing "
         "looks identical to a broken one otherwise"
     )
 
 
 def test_actor_with_no_stored_row_reports_that_it_does_not_dispatch() -> None:
     """The dispatch capacity gate joins ``actor_config``, so an actor whose
-    row has never been seeded dispatches nothing at all — effective zero,
+    row has never been seeded dispatches nothing at all - effective zero,
     not the code literal. A boot line that reported the literal here
     would actively mislead."""
     settings = _make_settings(max_concurrency=8)
@@ -286,7 +286,7 @@ def test_actor_with_no_stored_row_reports_that_it_does_not_dispatch() -> None:
 
 def test_stored_null_capacity_is_labelled_uncapped_rather_than_blank() -> None:
     """``NULL`` in the stored column means "no actor-level cap", which is a
-    real, intentional configuration — it must read as ``uncapped`` in the
+    real, intentional configuration - it must read as ``uncapped`` in the
     line rather than as an empty field an operator reads as missing
     data."""
     settings = _make_settings(max_concurrency=8)
@@ -302,8 +302,8 @@ def test_stored_null_capacity_is_labelled_uncapped_rather_than_blank() -> None:
 
 def test_stored_capacity_below_declared_literal_logs_a_divergence_warning() -> None:
     """The startup UPSERT leaves capacity columns alone once a row exists, so
-    a deployed literal change is silently ignored. That is by design —
-    stored capacity is operator-owned — but "my change did nothing" is
+    a deployed literal change is silently ignored. That is by design -
+    stored capacity is operator-owned - but "my change did nothing" is
     the most expensive way for an operator to discover it, so the
     divergence is stated at boot with both values."""
     settings = _make_settings(max_concurrency=8)
@@ -335,8 +335,8 @@ def test_matching_stored_and_declared_capacity_logs_no_divergence() -> None:
 
 def test_capacity_lines_never_raise_and_never_refuse_boot() -> None:
     """The governing rule: a worker that can do work must start. Every one of
-    these conditions — drain mode, a missing row, a queue with no row at
-    all, divergence — is diagnosable-but-workable, so the pass returns
+    these conditions - drain mode, a missing row, a queue with no row at
+    all, divergence - is diagnosable-but-workable, so the pass returns
     normally on all of them at once rather than raising."""
     settings = _make_settings(queues_csv="default,batch", max_concurrency=8)
     registry = {
@@ -365,7 +365,7 @@ def test_main_wires_the_capacity_lines_after_config_sync() -> None:
     """Structural wiring pin: helper-level tests stay green when the
     production call in ``_main`` is deleted, so the call site gets its own
     guard. It must run after ``sync_actor_config``, because only then is
-    every registered actor guaranteed a stored row to resolve against —
+    every registered actor guaranteed a stored row to resolve against -
     reporting capacity from a pre-sync read would label freshly deployed
     actors as never-dispatching on their very first boot.
 

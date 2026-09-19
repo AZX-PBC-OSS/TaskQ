@@ -1,7 +1,7 @@
 """`taskq doctor`: a read-only capacity and configuration health report.
 
 TaskQ deliberately refuses to fail boot on anything short of structural
-stored-config drift — a worker that can do work must start. The cost of
+stored-config drift - a worker that can do work must start. The cost of
 that choice is that a whole family of misconfigurations produces no
 error anywhere: an actor with no stored ``actor_config`` row never
 dispatches, a ``queues`` row left behind by a queue move caps an actor
@@ -11,7 +11,7 @@ one command an operator runs against a live deployment to see every one
 of those conditions at once, named and explained.
 
 Two properties make it usable, and both are pinned here. It is read-only
-— an operator must be able to run it against production during an
+- an operator must be able to run it against production during an
 incident without wondering whether it will write anything. And it never
 exits non-zero on a warning: a diagnostic that fails the shell trains
 people to stop running it, and `doctor` reports exactly the conditions
@@ -94,7 +94,7 @@ def _patch_db(
     ``stranded_rows`` feeds the pending/scheduled jobs scan (the one read
     that reaches the raw connection rather than a patched helper): rows in
     the per-actor shape ``_list_stranded_pending_jobs`` returns.  The scan
-    is identified by its ``.jobs`` table reference — it is the only
+    is identified by its ``.jobs`` table reference - it is the only
     jobs-table statement the command issues.
     """
     executed: list[str] = []
@@ -147,7 +147,7 @@ def test_doctor_reports_actor_with_no_stored_config_row_as_never_dispatching(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The dispatch capacity gate joins ``actor_config``, so a registered
-    actor with no row is not merely uncapped — it is never selected at
+    actor with no row is not merely uncapped - it is never selected at
     all. Nothing fails anywhere; the jobs simply accumulate pending. This
     is the condition `doctor` most exists to surface, so the report must
     say what actually happens, not just note the row's absence."""
@@ -164,7 +164,7 @@ def test_doctor_reports_actor_with_no_stored_config_row_as_never_dispatching(
 
 
 def test_doctor_reports_queue_cap_staleness(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A ``queues`` row for a queue no actor is assigned to is a leftover — a
+    """A ``queues`` row for a queue no actor is assigned to is a leftover - a
     queue move retires the assignment but the row's cap survives, and the
     next actor moved onto that queue silently inherits a cap nobody chose.
     The stale row is inert until it is not, which is exactly why it
@@ -212,7 +212,7 @@ def test_doctor_labels_drain_mode_explicitly(monkeypatch: pytest.MonkeyPatch) ->
 def test_doctor_labels_stored_null_capacity_as_uncapped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``NULL`` means "no actor-level cap" — a real configuration, not
+    """``NULL`` means "no actor-level cap" - a real configuration, not
     missing data. Printed as a blank it reads as a partially written row
     and sends the operator looking for a problem that is not there."""
     _patch_db(
@@ -248,7 +248,7 @@ def test_doctor_reports_incoherent_max_pending_below_max_concurrent(
 def test_doctor_reports_queue_cap_below_actor_cap_as_incoherent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An actor cap above its queue's cap can never be reached — the queue
+    """An actor cap above its queue's cap can never be reached - the queue
     binds first. It is the "I raised the cap and nothing happened" report
     in its stored form, and only visible by reading two tables together."""
     _patch_db(
@@ -343,7 +343,7 @@ def test_doctor_on_a_healthy_deployment_exits_zero_and_reports_no_findings(
 def test_doctor_does_not_gate_boot(monkeypatch: pytest.MonkeyPatch) -> None:
     """`doctor` is a separate command, not a step the worker runs. Pinning
     that the worker entry point does not call it keeps the diagnostic
-    from quietly becoming a boot dependency — which would hand it the
+    from quietly becoming a boot dependency - which would hand it the
     power to refuse a worker that can do work."""
     import ast
     from pathlib import Path
@@ -359,7 +359,7 @@ def test_doctor_does_not_gate_boot(monkeypatch: pytest.MonkeyPatch) -> None:
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name | ast.Attribute)
     }
     assert not any("doctor" in name for name in called), (
-        "worker bootstrap must not invoke doctor — a diagnostic must never gate boot"
+        "worker bootstrap must not invoke doctor - a diagnostic must never gate boot"
     )
 
 
@@ -369,24 +369,24 @@ def test_doctor_reports_pending_jobs_whose_actor_has_no_registry_or_config_row(
     """`doctor`'s own stated purpose is to surface "an actor with no stored
     ``actor_config`` row [that] never dispatches" (module docstring, and
     the previous test's assertion string). But `_doctor_findings` only
-    computes ``set(registry) - set(stored_by_actor)`` — actors the CURRENT
+    computes ``set(registry) - set(stored_by_actor)`` - actors the CURRENT
     process still declares. It never reads the ``jobs`` table, so a job
     already sitting ``pending``/``scheduled`` for an actor name that is in
-    NEITHER the registry NOR ``actor_config`` — the shape left behind when
+    NEITHER the registry NOR ``actor_config`` - the shape left behind when
     an actor is renamed or removed from the codebase but old producers or
-    old rows still reference the retired name — is invisible to `doctor`
+    old rows still reference the retired name - is invisible to `doctor`
     even though it can never dispatch for exactly the reason `doctor`
     exists to name.
 
     Confirmed live against a real worker+Postgres: a job was inserted with
     ``actor='ghost_actor_not_registered'`` (no registry entry, no
     actor_config row). `taskq doctor --actors myapp.actors:registry`
-    printed "no findings — every registered actor has a stored row and
+    printed "no findings - every registered actor has a stored row and
     every queue row backs a live assignment." The only place this
     surfaced was a leader-only sweep log line
     (``stranded-jobs-no-actor-config``, ``taskq/worker/_leader_sweeps.py``)
     that does not fire for 60 seconds and only when a worker happens to be
-    elected leader — not something `doctor`, a read-only, on-demand,
+    elected leader - not something `doctor`, a read-only, on-demand,
     run-anytime command, should depend on.
 
     Resolving an unknown worker module is NOT silent in the enqueue-time
@@ -394,12 +394,12 @@ def test_doctor_reports_pending_jobs_whose_actor_has_no_registry_or_config_row(
     with a named error
     rather than sitting unclaimed forever with nothing to say why. TaskQ's
     dispatch SQL instead joins ``actor_config``, so a job like this is
-    never even a dispatch candidate — no attempt, no error, nothing. If
+    never even a dispatch candidate - no attempt, no error, nothing. If
     TaskQ keeps the "never a candidate" dispatch design (its documented,
-    deliberate tradeoff — troubleshooting.md, "Stranded jobs: ... The
-    detector only warns — it does not delete or reassign."), the burden
+    deliberate tradeoff - troubleshooting.md, "Stranded jobs: ... The
+    detector only warns - it does not delete or reassign."), the burden
     shifts entirely onto `doctor` and the stranded-jobs sweep to be the
-    loud surface instead of a dispatch-time error — and
+    loud surface instead of a dispatch-time error - and
     `doctor` is the one of those two an operator can run on demand,
     read-only, mid-incident, without waiting up to 60s for a leader tick.
 
@@ -438,17 +438,17 @@ def test_doctor_reports_pending_jobs_whose_actor_has_no_registry_or_config_row(
     output = result.output.lower()
     assert "ghost_actor_not_registered" not in output or "no findings" not in output, (
         "if doctor is ever fed the stranded actor name it must not still "
-        "print 'no findings' — that combination means the report and the "
+        "print 'no findings' - that combination means the report and the "
         "reality it should describe have diverged"
     )
     # The behaviour this test pins: doctor must name an orphaned pending
     # job's actor even though that actor is in neither the registry nor
-    # actor_config — the jobs-side scan is what makes the name knowable,
+    # actor_config - the jobs-side scan is what makes the name knowable,
     # where the registry walk (set(registry) - set(stored_by_actor)) cannot
     # surface a name the current process no longer declares.
     assert "ghost_actor_not_registered" in output, (
         "doctor did not report a pending job for an actor absent from both "
-        "the registry and actor_config — this is the exact 'never "
+        "the registry and actor_config - this is the exact 'never "
         "dispatches, no error anywhere' condition doctor's own docstring "
         "says it exists to surface. The scan must cover pending/scheduled "
         "jobs rows with no stored actor_config row, the same condition the "

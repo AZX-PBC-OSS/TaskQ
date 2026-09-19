@@ -8,11 +8,11 @@ and integration testing.
 ## Prerequisites
 
 - **Python 3.12+** (3.13 is also supported)
-- **Postgres** — Postgres 18 (the bundled Docker Compose pins the `postgres:18` image).
+- **Postgres**: Postgres 18 (the bundled Docker Compose pins the `postgres:18` image).
   Production requires
   a direct connection (not PgBouncer in transaction-pooling mode) for advisory locks and
   `LISTEN/NOTIFY`.
-- **Redis** (optional) — required only for real-time progress fanout and admin UI live
+- **Redis** (optional): required only for real-time progress fanout and admin UI live
   updates.
 - **uv** or **pip** for package management.
 
@@ -70,7 +70,7 @@ Services started:
 |---------|------|-------|
 | `postgres` | 5432 | Postgres with `max_connections=200`, `shared_buffers=256MB` |
 | `redis` | 6379 | Redis without persistence (`appendonly no`) |
-| `admin` | 8080 | TaskQ admin UI — runs `taskq ui serve --migrate` on startup |
+| `admin` | 8080 | TaskQ admin UI (runs `taskq ui serve --migrate` on startup) on startup |
 
 The `admin` service runs `taskq ui serve --migrate` which applies pending migrations before starting the UI. When
 using the full compose stack you do not need to run migrations manually.
@@ -91,12 +91,12 @@ Copy the example env file and adjust as needed:
 cp .env.example .env
 ```
 
-No env var is strictly required — `TASKQ_PG_DSN` defaults to
+No env var is strictly required: `TASKQ_PG_DSN` defaults to
 `postgresql://taskq:taskq@localhost:5432/taskq`. For any real deployment, set it to your
 actual database.
 
 ```dotenv
-# Direct PG DSN — sessions, LISTEN/NOTIFY, and advisory locks require this.
+# Direct PG DSN: sessions, LISTEN/NOTIFY, and advisory locks require this.
 TASKQ_PG_DSN=postgresql://taskq:taskq@localhost:5432/taskq
 
 # Schema name for all TaskQ tables. Override if multi-tenanting.
@@ -108,20 +108,20 @@ TASKQ_REDIS_URL=redis://localhost:6379/0
 
 `TASKQ_SCHEMA_NAME` is the one schema truth for every entry point: the worker, the CLI, and
 the `TaskQ` client all resolve it (the client consults it whenever `TaskQ(schema=...)` is
-omitted — an explicit `schema=` always wins). Keep it identical across every process that
+omitted; an explicit `schema=` always wins). Keep it identical across every process that
 enqueues or consumes: an enqueuer on a different schema than its workers lands jobs that are
 never picked up, with no error raised.
 
 !!! warning "PgBouncer"
     Advisory locks and `LISTEN/NOTIFY` require a direct Postgres connection. Do not point
     `TASKQ_PG_DSN` at a PgBouncer endpoint in transaction-pooling mode. Use
-    `TASKQ_PG_DSN_DIRECT` and `TASKQ_PG_DSN_POOLED` to split traffic — see
+    `TASKQ_PG_DSN_DIRECT` and `TASKQ_PG_DSN_POOLED` to split traffic; see
     [Configuration](../guides/configuration.md).
 
 TaskQ loads configuration through `dotenvmodel` with cascading `.env` discovery:
 `.env` → `.env.local` → `.env.{env}` → `.env.{env}.local`, where `{env}` comes from the
 `ENV` variable (default `dev`). Real environment variables take precedence over `.env`
-files — see [Configuration](../guides/configuration.md) for the full resolution rules.
+files; see [Configuration](../guides/configuration.md) for the full resolution rules.
 
 ---
 
@@ -133,7 +133,7 @@ Apply all pending migrations before starting a worker:
 taskq migrate up
 ```
 
-The command is idempotent — re-running against an up-to-date schema is a no-op. To inspect
+The command is idempotent: re-running against an up-to-date schema is a no-op. To inspect
 applied and pending migrations without making changes:
 
 ```bash
@@ -148,7 +148,7 @@ before the worker process starts.
 
 ## Next steps
 
-- [:material-rocket-launch: Quick Start](quick-start.md) — Define an actor, start a worker, enqueue a job
-- [:material-atom: Actors](../guides/actors.md) — `@actor` decorator reference
-- [:material-engine: Workers](../guides/workers.md) — Worker configuration and lifecycle
-- [:material-cog: Configuration](../guides/configuration.md) — All `TASKQ_*` environment variables
+- [:material-rocket-launch: Quick Start](quick-start.md): Define an actor, start a worker, enqueue a job
+- [:material-atom: Actors](../guides/actors.md): `@actor` decorator reference
+- [:material-engine: Workers](../guides/workers.md): Worker configuration and lifecycle
+- [:material-cog: Configuration](../guides/configuration.md): All `TASKQ_*` environment variables

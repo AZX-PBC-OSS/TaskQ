@@ -2,16 +2,16 @@
 """Red-team locks: an open actor-body transaction's hold on cross-actor enqueue serialization.
 
 The transactional consumer runs the actor inside its transaction
-connection's transaction (``worker/_consumer.py`` — ``async with
+connection's transaction (``worker/_consumer.py`` - ``async with
 transaction_conn.transaction():`` + ``SAVEPOINT _tq_actor`` around
 ``asyncio.wait_for(run_actor(...), timeout=timeout)``) and
-``default_start_to_close`` is ``None`` by default (``settings.py`` —
+``default_start_to_close`` is ``None`` by default (``settings.py`` -
 "None (the default) means unbounded"), so the actor's database
 transaction is open for the actor's whole runtime. Sub-enqueues made by
 the actor (``ctx.jobs``) join that transaction, and the enqueue path
 deliberately binds its serialization to a caller-owned transaction
-(``backend/_enqueue.py`` — "A caller who already holds a transaction
-owns the scope — the advisory locks then span that caller's
+(``backend/_enqueue.py`` - "A caller who already holds a transaction
+owns the scope - the advisory locks then span that caller's
 transaction"): the ``max_pending`` advisory lock and the idempotency
 INSERT's ``ON CONFLICT (idempotency_scope, idempotency_key) ... DO
 NOTHING`` speculative token (``backend/_sql_templates.py``).
@@ -21,11 +21,11 @@ holder's transaction stays open and uncommitted:
 
 * max_pending: the advisory-lock budget (5 s) bounds the other
   producer's wait and raises the typed ``MaxPendingLockTimeoutError``
-  — pinned as today's designed observable; the defect it exposes is
+  - pinned as today's designed observable; the defect it exposes is
   that the error storm lasts for the actor's whole runtime.
 * idempotency: the same-key INSERT blocks on the uncommitted
-  speculative token with NO bound at all — not the advisory budget, not
-  ``lock_timeout``, nothing — until the holder's transaction resolves.
+  speculative token with NO bound at all - not the advisory budget, not
+  ``lock_timeout``, nothing - until the holder's transaction resolves.
   The RED contract: an unbounded actor body must not hold cross-actor
   enqueue serialization; the desired behavior needs either a documented
   bound or decoupling.
@@ -54,7 +54,7 @@ pytestmark = pytest.mark.integration
 #: (DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS = 5 s, backend/_enqueue.py) so the
 #: designed typed refusal at the budget lands INSIDE the window; the margin
 #: separates "the test's own wait_for ended the wait" (elapsed at the full
-#: window — the unbounded-block regression) from any earlier exit (a bound
+#: window - the unbounded-block regression) from any earlier exit (a bound
 #: fired). Same geometry as the sweep/notify pool twin
 #: (tests/test_rt_locks_sweep_notify_pool_unbounded.py).
 _TEST_BOUND_S: float = 8.0
@@ -92,12 +92,12 @@ async def test_open_tx_max_pending_lock_times_out_other_producer_typed(pg_dsn: s
 
     Contract being pinned: while a transactional consumer's actor body runs
     inside its uncommitted transaction (worker/_consumer.py runs the actor
-    inside transaction_conn.transaction() with timeout=None by default —
+    inside transaction_conn.transaction() with timeout=None by default -
     settings.py default_start_to_close), a sub-enqueue's max_pending
     advisory lock spans that whole transaction ("the advisory locks then
     span that caller's transaction", backend/_enqueue.py), so another
     producer's enqueue waits out the DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS
-    budget and fails typed — for the actor's entire runtime. A deliberate
+    budget and fails typed - for the actor's entire runtime. A deliberate
     decoupling of sub-enqueue locks from the actor transaction must show up
     here as a transition (the other producer's enqueue succeeding).
     """
@@ -129,20 +129,20 @@ async def test_open_tx_max_pending_lock_times_out_other_producer_typed(pg_dsn: s
 async def test_open_tx_idempotency_token_must_not_block_other_client_unbounded(pg_dsn: str) -> None:
     """PIN of today's observable: enqueueing the same
     (idempotency_scope, idempotency_key) from another client while the
-    holder's transaction is still open resolves within a bounded window —
+    holder's transaction is still open resolves within a bounded window -
     the typed IdempotencyKeyLockTimeoutError at the 5 s idempotency
     lock_timeout budget.
 
     Contract being pinned: an unbounded actor body
     (default_start_to_close=None) must not hold cross-actor enqueue
-    serialization — the same-key enqueue from a second client carries a
+    serialization - the same-key enqueue from a second client carries a
     documented bound: the savepoint-scoped lock_timeout around the
     speculative-token INSERT (backend/_enqueue.py's idempotency arm,
     DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS = 5 s) expires and raises the
     typed refusal. The window (8 s) sits beyond that budget so the
     designed refusal lands inside it and is asserted as the pass shape;
     the elapsed-margin discrimination fails only when the wait survives to
-    the window itself — the only thing that ended such a wait is the
+    the window itself - the only thing that ended such a wait is the
     test's own wait_for, proving the enqueue carries no bound of its own.
     A deliberate decoupling of the token wait from the holder's
     transaction must show up here as a transition (the second client's
@@ -178,14 +178,14 @@ async def test_open_tx_idempotency_token_must_not_block_other_client_unbounded(p
                     pytest.fail(
                         "Contract: a same-key idempotency enqueue from another client must "
                         "resolve within a bounded window while the holder's transaction "
-                        "is open — an unbounded actor body must not hold cross-actor "
+                        "is open - an unbounded actor body must not hold cross-actor "
                         "enqueue serialization (a documented bound or decoupling). "
                         "Regression shape: conn B's INSERT ... ON CONFLICT "
                         "(idempotency_scope, idempotency_key) DO NOTHING (backend/"
                         "_sql_templates.py speculative-token arbiter) blocked on conn "
-                        "A's uncommitted row with NO bound — not the savepoint-scoped "
+                        "A's uncommitted row with NO bound - not the savepoint-scoped "
                         "lock_timeout (backend/_enqueue.py, 5 s default), not the "
-                        "client-side wait — and was still blocked at the test's own "
+                        "client-side wait - and was still blocked at the test's own "
                         f"{elapsed:.1f} s bound ({exc!r}) while A's transaction stayed "
                         "open; the only thing that ended the wait was this test's "
                         "wait_for, proving the enqueue carries no bound of its own"
@@ -203,7 +203,7 @@ async def test_idempotency_enqueue_blocked_until_holder_tx_commits_then_dedups(p
     UNCOMMITTED speculative token and is released exactly at the holder's
     COMMIT, then dedup-returns the winner's row.
 
-    Contract being pinned: the dedup outcome itself is correct — once the
+    Contract being pinned: the dedup outcome itself is correct - once the
     holder's transaction commits, the blocked racer's ON CONFLICT fires and
     the follow-up SELECT hands back the winner's row. This pin documents the
     mechanism the RED twin above attacks: the block ends only at the
@@ -231,7 +231,7 @@ async def test_idempotency_enqueue_blocked_until_holder_tx_commits_then_dedups(p
                 early = False
             assert not early, (
                 "Contract: the racer must still be blocked while the holder's "
-                "speculative token is uncommitted — completing before the holder's "
+                "speculative token is uncommitted - completing before the holder's "
                 "commit would mean the token does not serialize same-key enqueues at all"
             )
         row_b = await asyncio.wait_for(b_task, timeout=5.0)
@@ -258,7 +258,7 @@ async def test_pool_enqueue_bounded_token_wait_refuses_and_returns_a_clean_conne
     so the bounded token wait must still bound: the bounded arm opens a
     short transaction on the bare pooled connection so its transaction-
     local ``lock_timeout`` spans the INSERT, the refusal aborts that
-    transaction, and the connection goes back to the pool bare — no
+    transaction, and the connection goes back to the pool bare - no
     savepoint, no restore, nothing leaked onto the next borrower."""
     from taskq.testing.fixtures import _open_pg_backend
 

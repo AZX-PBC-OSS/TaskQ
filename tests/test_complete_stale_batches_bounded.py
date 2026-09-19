@@ -1,7 +1,7 @@
 """``complete_stale_batches``: one call = one bounded, committed batch.
 
 The stale-batch safety net used to be an UNBOUNDED UPDATE with a
-correlated NOT EXISTS — one call could complete every stale batch in the
+correlated NOT EXISTS - one call could complete every stale batch in the
 table inside the leader's single-deadline iteration. The rewrite windows
 candidates in a MATERIALIZED CTE (``LIMIT $1``) and updates by id, so one
 call commits at most ``batch_size`` completions and the sweep loop drains
@@ -74,7 +74,7 @@ def test_signature_carries_batch_size() -> None:
     ``complete_stale_batches`` exposes a keyword-only ``batch_size``."""
     params = inspect.signature(complete_stale_batches).parameters
     assert "batch_size" in params, (
-        "complete_stale_batches has no batch_size parameter — one call is an "
+        "complete_stale_batches has no batch_size parameter - one call is an "
         "unbounded UPDATE again; signature is "
         f"{inspect.signature(complete_stale_batches)}"
     )
@@ -98,7 +98,7 @@ async def test_one_call_completes_at_most_batch_size_and_drains(
     remaining = await clean_pg_conn.fetchval(_count_active_sql(schema))
     assert remaining == _TOTAL_STALE - _BATCH, (
         f"{remaining} batches still active after a bounded call; expected "
-        f"{_TOTAL_STALE - _BATCH} — the uncapped remainder must be left for "
+        f"{_TOTAL_STALE - _BATCH} - the uncapped remainder must be left for "
         "later calls"
     )
 
@@ -129,7 +129,7 @@ async def test_statement_carries_the_limit(
     assert recorder.fetchval_calls, "complete_stale_batches must issue its statement"
     sql, args = recorder.fetchval_calls[0]
     assert "LIMIT $1" in sql, (
-        f"the completion statement carries no parameterized LIMIT — one call "
+        f"the completion statement carries no parameterized LIMIT - one call "
         f"is unbounded again; got: {sql!r}"
     )
     assert args == (1,), f"the LIMIT parameter must bind batch_size; got {args!r}"

@@ -225,7 +225,7 @@ def test_lag_budget_at_or_below_check_interval_raises() -> None:
 
     The lag detector samples the loop once per check interval, so a budget
     at or below its own sampling period trips on a healthy loop's beat
-    cadence — the beat is scheduled by the same poll that measures it
+    cadence - the beat is scheduled by the same poll that measures it
     (measured: budget 1.0 against the 1.0s default check interval killed
     an idle worker on its first armed poll).
     """
@@ -237,7 +237,7 @@ def test_lag_budget_at_or_below_check_interval_raises() -> None:
             TASKQ_CLEANUP_GRACE_PERIOD="5.0",
             TASKQ_WATCHDOG_LOOP_LAG_BUDGET="1.0",
             # Pinned below the 1.0s budget so the check-interval violation
-            # is the ONLY one — the warn-vs-budget invariant stays quiet
+            # is the ONLY one - the warn-vs-budget invariant stays quiet
             # and the raised error is the one this test matches on.
             TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET="0.5",
         )
@@ -344,7 +344,7 @@ def test_statement_cache_defaults() -> None:
     """statement_cache_size defaults to 512, max_cached_statement_lifetime to 3600.
 
     The defaults ARE the taskq.connections module constants every
-    TaskQ-built pool passes at its construction site — one source of
+    TaskQ-built pool passes at its construction site - one source of
     truth, so a tuning change to a constant moves the settings default
     with it.
     """
@@ -389,7 +389,7 @@ def test_statement_cache_via_dict() -> None:
 
 def test_statement_cache_zero_is_valid_on_both() -> None:
     """0 is meaningful per asyncpg's contract: cache disabled entirely /
-    no lifetime cap (cached indefinitely) — neither is an operator error."""
+    no lifetime cap (cached indefinitely) - neither is an operator error."""
     s = _load(TASKQ_STATEMENT_CACHE_SIZE="0", TASKQ_MAX_CACHED_STATEMENT_LIFETIME="0")
     assert s.statement_cache_size == 0
     assert s.max_cached_statement_lifetime == 0
@@ -639,7 +639,7 @@ def test_lock_lease_invariant_universality(lock_lease: float, heartbeat_interval
         derived as 0.7 x lease, which keeps every other invariant quiet
         wherever the cascade invariant holds (hb <= (lease - 16)/4 < 0.3 x lease,
         so 0.7 x lease + hb < lease; and lease >= 10 in that branch, so
-        0.7 x lease > 1.0 = the default check interval) — except where the
+        0.7 x lease > 1.0 = the default check interval) - except where the
         draw cannot satisfy the lease invariant at all (heartbeat >= lease
         leaves no legal positive budget), in which case the cascade violation and
         the lag-lease violation aggregate into MultipleValidationErrors;
@@ -890,8 +890,8 @@ def test_is_dev_environment(environment: str | None, expected: bool) -> None:
 
     The dev label is the single carve-out from the fail-closed auth gates
     (admin UI, health/metrics token, progress router), so the predicate
-    must treat None (the unset default) and every other label — including
-    the empty string — as not dev, keeping those gates closed.
+    must treat None (the unset default) and every other label - including
+    the empty string - as not dev, keeping those gates closed.
     """
     s = TaskQSettings.load_from_dict(
         {} if environment is None else {"TASKQ_ENVIRONMENT": environment}
@@ -1699,7 +1699,7 @@ def test_suite_ignores_developer_dotfiles(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert not list(dotenv_path.iterdir()), "DOTENV_DIR must be empty"
 
     # A dotfile in the CWD that WOULD set heartbeat_interval if read (no env
-    # var is set for it below, so precedence/override doesn't enter into it —
+    # var is set for it below, so precedence/override doesn't enter into it -
     # only whether the cascade reads this directory at all).
     (tmp_path / ".env").write_text("TASKQ_HEARTBEAT_INTERVAL=123\n")
     monkeypatch.chdir(tmp_path)
@@ -1707,7 +1707,7 @@ def test_suite_ignores_developer_dotfiles(monkeypatch: pytest.MonkeyPatch, tmp_p
     monkeypatch.delenv("TASKQ_HEARTBEAT_INTERVAL", raising=False)
 
     s = WorkerSettings.load()
-    assert s.heartbeat_interval == 10.0  # default — the dotfile value is 123
+    assert s.heartbeat_interval == 10.0  # default - the dotfile value is 123
 
 
 # ── dotenvmodel 1.0.0: .env precedence & type coercion ──────────────
@@ -1738,7 +1738,7 @@ def _clear_load_knobs(monkeypatch: pytest.MonkeyPatch) -> None:
     from ``tmp_path``, ``DOTENV_READ_DOTFILES=false`` skips files
     entirely, ``ENV`` / ``DOTENV_LOAD_LOCAL`` change which files are
     selected, ``DOTENV_OVERRIDE`` flips the precedence being pinned, and
-    ``DOTENV_READ_ENVIRON=false`` drops ``os.environ`` as a value source —
+    ``DOTENV_READ_ENVIRON=false`` drops ``os.environ`` as a value source -
     inverting every env-beats-file pin in this section.
     """
     for var in _LOAD_KNOB_VARS:
@@ -1751,7 +1751,7 @@ def _chdir_with_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     Clearing the load knobs (see :func:`_clear_load_knobs`) keeps the
     fixture's single ``.env`` the only file variable: the cascade always
     probes ``.env``, and ``ENV`` (any value, including the ``dev`` default)
-    merely *adds* ``.env.{env}`` layers on top of it (later files win) —
+    merely *adds* ``.env.{env}`` layers on top of it (later files win) -
     with no such files here, the cascade reads exactly this one file.
     ``monkeypatch.chdir`` restores the previous cwd afterwards.
     """
@@ -1800,7 +1800,7 @@ def test_load_dotenv_override_env_var_lets_env_file_beat_env_var(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``DOTENV_OVERRIDE=true`` in the environment flips precedence for a
-    plain ``load()`` — the deployment-level equivalent of ``override=True``."""
+    plain ``load()`` - the deployment-level equivalent of ``override=True``."""
     _chdir_with_env_file(tmp_path, monkeypatch)
     monkeypatch.setenv("TASKQ_SCHEMA_NAME", "env_value")
     monkeypatch.setenv("DOTENV_OVERRIDE", "true")
@@ -1822,7 +1822,7 @@ def test_env_file_beats_field_default_when_no_env_var(
 def test_load_read_dotfiles_false_ignores_env_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``read_dotfiles=False`` skips the ``.env`` cascade entirely — a
+    """``read_dotfiles=False`` skips the ``.env`` cascade entirely - a
     present ``.env`` has no effect and the field default wins."""
     _chdir_with_env_file(tmp_path, monkeypatch)
     monkeypatch.delenv("TASKQ_SCHEMA_NAME", raising=False)
@@ -1833,7 +1833,7 @@ def test_load_read_dotfiles_false_ignores_env_files(
 def test_load_read_environ_false_ignores_process_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``read_environ=False`` skips the process environment — a real env
+    """``read_environ=False`` skips the process environment - a real env
     var loses to the ``.env`` file value, the mirror image of the default
     precedence."""
     _chdir_with_env_file(tmp_path, monkeypatch)
@@ -1871,7 +1871,7 @@ _LOCAL_SKIP_FILES = {
 def test_load_env_test_skips_both_local_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Under ``ENV=test`` both ``.local`` files are skipped — gitignored
+    """Under ``ENV=test`` both ``.local`` files are skipped - gitignored
     local overrides cannot decide test outcomes, so ``.env`` wins."""
     _chdir_with_env_files(tmp_path, monkeypatch, _LOCAL_SKIP_FILES)
     monkeypatch.setenv("ENV", "test")
@@ -1884,7 +1884,7 @@ def test_load_env_test_dotenv_load_local_restores_local_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``DOTENV_LOAD_LOCAL=true`` restores the skipped ``.local`` files
-    under ``ENV=test`` — and the later ``.env.test.local`` still beats
+    under ``ENV=test`` - and the later ``.env.test.local`` still beats
     ``.env`` (later files in the chain win)."""
     _chdir_with_env_files(tmp_path, monkeypatch, _LOCAL_SKIP_FILES)
     monkeypatch.setenv("ENV", "test")
@@ -1898,7 +1898,7 @@ def test_load_env_unset_dev_default_reads_env_local(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """With ``ENV`` unset (dev default) ``.env.local`` IS read and beats
-    ``.env`` — the ``.local`` skip is test-env-only."""
+    ``.env`` - the ``.local`` skip is test-env-only."""
     _chdir_with_env_files(tmp_path, monkeypatch, _LOCAL_SKIP_FILES)
     monkeypatch.delenv("TASKQ_SCHEMA_NAME", raising=False)
     s = TaskQSettings.load()
@@ -1929,7 +1929,7 @@ def test_load_env_var_selects_env_specific_file(
 def test_load_explicit_env_arg_beats_env_var(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Explicit ``load(env=...)`` beats the ``ENV`` process var — the
+    """Explicit ``load(env=...)`` beats the ``ENV`` process var - the
     documented argument > env var > default tier."""
     _chdir_with_env_files(tmp_path, monkeypatch, _STAGING_FILES)
     monkeypatch.setenv("ENV", "dev")
@@ -1958,7 +1958,7 @@ def test_load_explicit_override_arg_beats_dotenv_override_env_var(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``load(override=False)`` beats ``DOTENV_OVERRIDE=true`` in the
-    process env — the documented argument > ``DOTENV_*`` env var > default
+    process env - the documented argument > ``DOTENV_*`` env var > default
     tier, so callers can pin precedence regardless of deployment knobs."""
     _chdir_with_env_file(tmp_path, monkeypatch)
     monkeypatch.setenv("TASKQ_SCHEMA_NAME", "env_value")
@@ -2123,7 +2123,7 @@ def test_secret_str_fields_load_from_env_and_unwrap_explicitly() -> None:
     """The native mechanism round-trips the env: a raw env var loads as a
     SecretStr (masked in repr), and get_secret_value() is the only way out.
 
-    Pins dotenvmodel's own coercion path — the reason SecretStr fields are
+    Pins dotenvmodel's own coercion path - the reason SecretStr fields are
     used instead of a display-layer mask: the value crosses env → config →
     repr masked end to end, and unwrapping is an explicit, greppable act.
     """
@@ -2136,7 +2136,7 @@ def test_secret_str_fields_load_from_env_and_unwrap_explicitly() -> None:
     assert "env-oidc-secret-DO-NOT-PRINT" not in repr(s)
     assert s.client_secret.get_secret_value() == "env-oidc-secret-DO-NOT-PRINT"
     # A non-empty value wraps as a SecretStr; an empty value loads as unset
-    # (None — dotenv's empty-means-not-provided convention), the shape the
+    # (None - dotenv's empty-means-not-provided convention), the shape the
     # cli's None-safe emptiness check exists for.
     empty = SAMLSettings.load_from_dict({"TASKQ_SAML_SESSION_SECRET": ""})
     assert empty.session_secret is None

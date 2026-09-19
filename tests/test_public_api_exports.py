@@ -135,10 +135,10 @@ def test_terminal_statuses_is_five_status_frozenset() -> None:
 
 
 def test_terminal_statuses_is_backend_reexport() -> None:
-    """``taskq.TERMINAL_STATUSES`` IS ``taskq.backend.TERMINAL_STATUSES`` —
+    """``taskq.TERMINAL_STATUSES`` IS ``taskq.backend.TERMINAL_STATUSES`` -
     the same object, not an equal copy. Identity, not ``==``: a hand-copied
     frozenset that has drifted in lockstep with nothing passes ``==`` and
-    defeats the drift pin — the exact failure mode the re-export rule exists to
+    defeats the drift pin - the exact failure mode the re-export rule exists to
     prevent."""
     assert taskq.TERMINAL_STATUSES is taskq.backend.TERMINAL_STATUSES
 
@@ -184,11 +184,11 @@ def test_all_exports_match_all_list() -> None:
 
 def test_all_is_sorted() -> None:
     """``taskq.__all__`` is sorted isort-style, matching RUF022: SCREAMING_SNAKE
-    constants first, then capitalised names, then the rest — each group held to
+    constants first, then capitalised names, then the rest - each group held to
     code-point order.
 
     Classification strips leading underscores before deciding the group
-    (RUF022 puts ``_``-prefixed names in their stripped core's group —
+    (RUF022 puts ``_``-prefixed names in their stripped core's group -
     ``_PRIVATE`` sorts with the constants, verified against ruff itself),
     so a future underscore-prefixed export cannot create a false conflict
     between this test and the lint.

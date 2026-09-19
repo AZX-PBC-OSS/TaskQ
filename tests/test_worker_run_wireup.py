@@ -1,4 +1,4 @@
-"""Unit tests for ``make_heartbeat_kwargs`` — the production wire-up.
+"""Unit tests for ``make_heartbeat_kwargs`` - the production wire-up.
 
 Tests the heartbeat-spawn wiring surface in isolation: constructs a synthetic
 WorkerDeps + InMemoryBackend, calls make_heartbeat_kwargs, and verifies the
@@ -61,7 +61,7 @@ async def test_value_matches_cancel_controller_protocol() -> None:
     """The ``cancel_controller`` value satisfies the CancelController Protocol.
 
     Verified via runtime_checkable isinstance check and async-method
-    introspection — confirms the returned object has ``run_in_tx`` and
+    introspection - confirms the returned object has ``run_in_tx`` and
     ``run_post_tx`` as coroutine methods.
     """
     worker_id = new_uuid()
@@ -84,7 +84,7 @@ async def test_value_matches_cancel_controller_protocol() -> None:
     assert inspect.iscoroutinefunction(controller.run_post_tx)
 
 
-# ── smoke test — wiring did not swap factory arguments ─────────────
+# ── smoke test - wiring did not swap factory arguments ─────────────
 
 
 class _Recorder:
@@ -117,7 +117,7 @@ async def test_cancel_controller_run_in_tx_polls_cancel_flags() -> None:
     """Smoke test: ``run_in_tx`` issues the SELECT against the mock connection.
 
     Constructs a WorkerDeps with an empty ActiveJobRegistry so no per-job
-    processing occurs — only the initial cancel-flag poll is asserted.
+    processing occurs - only the initial cancel-flag poll is asserted.
     Verifies the factory arguments (worker_id, deps) were not accidentally
     swapped during wiring.
     """

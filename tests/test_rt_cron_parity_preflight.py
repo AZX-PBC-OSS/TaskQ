@@ -4,35 +4,35 @@ Four attack surfaces against the singleton / ``max_pending`` preflight the
 cron tick runs between planning and the batched enqueue:
 
 * **Intra-batch ``max_pending`` (the parity hole the stamping itself
-  created)** — the singleton gate is in memory (two due schedules for one
+  created)** - the singleton gate is in memory (two due schedules for one
   singleton actor: the earlier fires, the later suppresses against the
   fired job), but the ``max_pending`` check reads the DB count alone.
   Two due schedules for one ``max_pending=1`` actor in the SAME tick both
   pass (neither of this tick's jobs exists yet) and both enqueue: cap+N
-  jobs from one tick.  The client path cannot do this — its second,
+  jobs from one tick.  The client path cannot do this - its second,
   sequential enqueue sees the first job's row and raises
   ``MaxPendingExceededError``; parity requires the tick to account for
   its own kept plans.
-* **The snoozed blocker** — a singleton job snoozed to ``scheduled`` is
+* **The snoozed blocker** - a singleton job snoozed to ``scheduled`` is
   as active as a running one; the suppression predicate is
   ``status IN ('pending','scheduled','running')`` and the snooze is the
   issue's own named shape.
-* **Cross-direction parity** — the stamps must close the loop in BOTH
+* **Cross-direction parity** - the stamps must close the loop in BOTH
   directions through the REAL paths: a cron-fired singleton job (stamped
   by the tick) must make a CLIENT enqueue raise
   ``SingletonCollisionError``, and a client-enqueued singleton job (via
   ``enqueue_with_conn``, the client path's own preflight + INSERT) must
   make the cron fire suppress.  Either half alone would mean the two
   paths key on different metadata.
-* **Return value and metric semantics** — suppressed slots are absent
+* **Return value and metric semantics** - suppressed slots are absent
   from the tick's return count, and the ``taskq.backpressure.errors``
   counter increments once per suppressed slot, mirroring the enqueue
   path's once-per-attempt increment.
-* **Suppression x catch-up recompute** — a schedule missed beyond the
+* **Suppression x catch-up recompute** - a schedule missed beyond the
   catch-up window AND singleton-blocked takes BOTH branches in one tick:
   planning re-anchors ``fire_at`` on the server clock, then the
   suppression UPDATE must advance ``next_fire_at`` to exactly that
-  recomputed target — one advance, the recompute's own value, no stale
+  recomputed target - one advance, the recompute's own value, no stale
   slot, no ``last_fired_at``, and the re-anchored target keeps the
   schedule out of the due set so no hot re-fire loop runs against the
   blocker.
@@ -194,7 +194,7 @@ class TestCrossDirectionParity:
                 )
 
         assert exc_info.value.blocking_job_id == cron_job_id, (
-            "the client preflight must see (and name) the cron-fired singleton job — "
+            "the client preflight must see (and name) the cron-fired singleton job - "
             "otherwise the two paths key on different metadata"
         )
         assert await count_jobs(clean_pg_conn, schema, _SINGLETON_ACTOR) == 1
@@ -207,7 +207,7 @@ class TestCrossDirectionParity:
         """The mirror direction, driven through the real client enqueue
         (``enqueue_with_conn`` with client-stamped metadata) rather than a
         hand-seeded row: the active client job must suppress the cron fire
-        with the client job named as the blocker — the seeded-blocker shape
+        with the client job named as the blocker - the seeded-blocker shape
         the parity pins use, proven representative of what the client path
         actually writes."""
         schema = module_pg_schema.schema_name
@@ -267,7 +267,7 @@ class TestIntraBatchMaxPending:
         """Two due schedules for one ``max_pending=1`` actor in the same
         tick, no pre-existing jobs: the earlier slot fires (count 0), the
         later one must be evaluated against the intra-batch reality (the
-        fired job is pending the moment the batch commits — exactly the row
+        fired job is pending the moment the batch commits - exactly the row
         a second, sequential CLIENT enqueue would see) and suppress. Today
         both pass the DB-only count and both enqueue: the cap is violated
         by the tick itself, a parity hole the stamping created."""
@@ -318,7 +318,7 @@ class TestIntraBatchMaxPending:
 
         assert fired == 1, "the earlier slot fires; the later one is suppressed"
         assert await count_jobs(clean_pg_conn, schema, _CAPPED_ACTOR) == 1, (
-            "both due schedules for a max_pending=1 actor enqueued from one tick — "
+            "both due schedules for a max_pending=1 actor enqueued from one tick - "
             "the DB-only count admits every plan in the batch, so the tick itself "
             "violates the cap the client path enforces"
         )
@@ -345,8 +345,8 @@ class TestReturnAndMetricSemantics:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """A mixed batch — two healthy fires and one suppressed singleton
-        slot — returns 2: the return value counts fires, and a suppressed
+        """A mixed batch - two healthy fires and one suppressed singleton
+        slot - returns 2: the return value counts fires, and a suppressed
         slot is neither a fire nor a failure."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
@@ -402,7 +402,7 @@ class TestReturnAndMetricSemantics:
     ) -> None:
         """Two due schedules for one capped actor already at its cap: both
         slots suppress, and ``taskq.backpressure.errors`` increments once
-        per suppressed slot (2) — mirroring the enqueue path, which counts
+        per suppressed slot (2) - mirroring the enqueue path, which counts
         once per attempted enqueue that finds the cap."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
@@ -447,7 +447,7 @@ class TestReturnAndMetricSemantics:
         points = counter_data_points(reader, _BACKPRESSURE_COUNTER)
         assert [(p.value, p.attributes) for p in points] == [
             (2, {"actor": _CAPPED_ACTOR, "kind": "max_pending"})
-        ], "once per suppressed slot — the enqueue path's per-attempt semantic"
+        ], "once per suppressed slot - the enqueue path's per-attempt semantic"
 
 
 class TestSuppressionCatchUpInterplay:
@@ -462,7 +462,7 @@ class TestSuppressionCatchUpInterplay:
         """A 90-minute-stale slot (beyond the 1h window) with an active
         singleton blocker: the tick suppresses, and the one advance that
         lands is the RECOMPUTED, server-clock-anchored target (strictly
-        future, on the schedule's grid) — not the stale slot's cadence.
+        future, on the schedule's grid) - not the stale slot's cadence.
         No fire, no strike, and the next tick finds nothing due: the
         re-anchored target holds the schedule out of the due set instead
         of looping it against the blocker."""
@@ -506,19 +506,19 @@ class TestSuppressionCatchUpInterplay:
         }
         assert row["next_fire_at"] in expected, (
             f"the suppressed advance landed on {row['next_fire_at']}, not the "
-            f"recomputed server-clock anchor {expected} — the suppression UPDATE "
+            f"recomputed server-clock anchor {expected} - the suppression UPDATE "
             "and the catch-up recompute disagree on the target"
         )
         assert row["next_fire_at"] > now_after, (
             "a stale-slot advance would sit in the past and re-fire against the blocker every tick"
         )
-        assert row["last_fired_at"] is None, "nothing fired — no last_fired_at stamp"
+        assert row["last_fired_at"] is None, "nothing fired - no last_fired_at stamp"
         assert row["consecutive_failures"] == 0, "suppression is not a strike"
         assert row["enabled"] is True
         assert row["last_fire_error"] is None
 
         # The re-anchored target holds: the next tick finds nothing due and
-        # leaves the row bit-for-bit alone — no hot re-fire loop.
+        # leaves the row bit-for-bit alone - no hot re-fire loop.
         before_second = await schedule_row(clean_pg_conn, schema, schedule_id)
         async with clean_pg_conn.transaction():
             second = await tick_cron(

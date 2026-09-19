@@ -170,7 +170,7 @@ async def test_tc1_transaction_conn_dies_mid_enqueue(
             parent_job.id,
         )
 
-    assert len(child_rows) == 0, "no child row should exist in PG — transaction rolled back"
+    assert len(child_rows) == 0, "no child row should exist in PG - transaction rolled back"
     assert parent_row is not None
     assert parent_row["status"] in ("failed", "scheduled"), (
         f"parent should be failed or scheduled for retry, got {parent_row['status']!r}"

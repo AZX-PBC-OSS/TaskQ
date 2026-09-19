@@ -182,9 +182,9 @@ async def test_gauge_excludes_cancelling_rows_but_counts_genuinely_stuck_ones(
 
     assert expired_lease == 1, (
         f"a cancelling row (cancel_phase={cancel_phase}) within its reclaim "
-        "grace window must not read as an expired lease — the "
+        "grace window must not read as an expired lease - the "
         "TaskQRunningLeaseExpired alert would page on reclaim working "
-        "exactly as designed — while the genuinely stuck row beside it "
+        "exactly as designed - while the genuinely stuck row beside it "
         f"must still count; the gauge read {expired_lease!r}, expected 1"
     )
 
@@ -219,7 +219,7 @@ async def test_gauge_excludes_a_lone_cancelling_row(
 
     assert expired_lease == 0, (
         f"a lone cancelling row (cancel_phase={cancel_phase}) inside its "
-        "reclaim grace window read as an expired lease — the gauge's "
+        "reclaim grace window read as an expired lease - the gauge's "
         "cancel_phase carve-out is gone and TaskQRunningLeaseExpired fires "
         "on the cancellation protocol working as designed"
     )
@@ -314,7 +314,7 @@ async def test_gauge_freezes_at_last_good_value_when_sampling_fails(
     assert pool.calls >= 2, "setup: the sampler must have attempted a second round"
     assert observed[-1] == 1, (
         f"the gauge cache should keep its last good value (1) while sampling "
-        f"fails — a held value is a missing sample the sweep-timeouts counter "
-        f"names; observed {observed!r} — if it dropped to 0 the except branch "
+        f"fails - a held value is a missing sample the sweep-timeouts counter "
+        f"names; observed {observed!r} - if it dropped to 0 the except branch "
         "wrote a fake zero that reads as recovery"
     )

@@ -3,7 +3,7 @@
 CI flake: ``WorkerSettings.health_socket_path`` defaults to the shared
 production path ``/tmp/taskq_health.sock`` and ``_main`` starts a real
 :class:`HealthServer`. Under pytest-xdist, two workers inside ``_main``
-concurrently then race on one filesystem path — the loser raises
+concurrently then race on one filesystem path - the loser raises
 ``EADDRINUSE`` (a TOCTOU window in ``asyncio.create_unix_server``'s
 stale-file removal), or worse, silently steals the socket from the live
 winner. The conftest shim redirects any ``HealthServer.start`` that targets
@@ -54,7 +54,7 @@ def test_unique_health_sock_path_module_scoped_and_short() -> None:
     path = unique_health_sock_path("mymod")
     assert "mymod" in path
     assert str(os.getpid()) in path
-    # macOS AF_UNIX sun_path limit is 104 chars — keep well under it.
+    # macOS AF_UNIX sun_path limit is 104 chars - keep well under it.
     assert len(path) < 80
 
 
@@ -73,7 +73,7 @@ def test_unique_health_sock_path_rejects_path_separators() -> None:
 async def test_concurrent_health_servers_with_default_settings_do_not_conflict() -> None:
     """Two in-flight worker bootstraps (xdist siblings) must not share one socket.
 
-    Both servers are started with the shared default path in settings —
+    Both servers are started with the shared default path in settings -
     exactly what ``_main``-driving tests did before the fix. The shim must
     redirect each to a distinct path, and the first server's socket must
     still be its own (not stolen) after the second starts.
@@ -86,14 +86,14 @@ async def test_concurrent_health_servers_with_default_settings_do_not_conflict()
         server_b = HealthServer()
         await server_b.start(_deps(_default_settings()))
         try:
-            path_a = server_a._socket_path  # pyright: ignore[reportPrivateUsage]  # Why: test seam — asserting the bound path, which start() does not expose publicly.
+            path_a = server_a._socket_path  # pyright: ignore[reportPrivateUsage]  # Why: test seam - asserting the bound path, which start() does not expose publicly.
             path_b = server_b._socket_path  # pyright: ignore[reportPrivateUsage]  # Why: same as above.
             assert path_a is not None and path_b is not None
             assert path_a != default_path
             assert path_b != default_path
             assert path_a != path_b
-            # A still owns its path — B did not steal it by rebinding.
-            inode_a = server_a._socket_inode  # pyright: ignore[reportPrivateUsage]  # Why: test seam — ownership is tracked via the bound inode.
+            # A still owns its path - B did not steal it by rebinding.
+            inode_a = server_a._socket_inode  # pyright: ignore[reportPrivateUsage]  # Why: test seam - ownership is tracked via the bound inode.
             assert os.stat(path_a).st_ino == inode_a
         finally:
             await server_b.stop()
@@ -103,7 +103,7 @@ async def test_concurrent_health_servers_with_default_settings_do_not_conflict()
 
 async def test_reused_settings_object_across_servers_still_gets_distinct_paths() -> None:
     """One settings object reused across two starts (e.g. a worker-restart
-    test) must still yield two distinct sockets — the first redirect must
+    test) must still yield two distinct sockets - the first redirect must
     not 'consume' the isolation."""
     settings = _default_settings()
 
@@ -113,11 +113,11 @@ async def test_reused_settings_object_across_servers_still_gets_distinct_paths()
         server_b = HealthServer()
         await server_b.start(_deps(settings))
         try:
-            path_a = server_a._socket_path  # pyright: ignore[reportPrivateUsage]  # Why: test seam — asserting the bound path, which start() does not expose publicly.
+            path_a = server_a._socket_path  # pyright: ignore[reportPrivateUsage]  # Why: test seam - asserting the bound path, which start() does not expose publicly.
             path_b = server_b._socket_path  # pyright: ignore[reportPrivateUsage]  # Why: same as above.
             assert path_a is not None and path_b is not None
             assert path_a != path_b
-            inode_a = server_a._socket_inode  # pyright: ignore[reportPrivateUsage]  # Why: test seam — ownership is tracked via the bound inode.
+            inode_a = server_a._socket_inode  # pyright: ignore[reportPrivateUsage]  # Why: test seam - ownership is tracked via the bound inode.
             assert os.stat(path_a).st_ino == inode_a
         finally:
             await server_b.stop()
@@ -140,7 +140,7 @@ async def test_explicit_non_default_path_is_bound_verbatim() -> None:
     server = HealthServer()
     await server.start(_deps(settings))
     try:
-        assert server._socket_path == explicit  # pyright: ignore[reportPrivateUsage]  # Why: test seam — asserting the bound path, which start() does not expose publicly.
+        assert server._socket_path == explicit  # pyright: ignore[reportPrivateUsage]  # Why: test seam - asserting the bound path, which start() does not expose publicly.
         assert settings.health_socket_path == explicit
     finally:
         await server.stop()
@@ -151,9 +151,9 @@ async def test_explicit_non_default_path_is_bound_verbatim() -> None:
 # The tests above pin the *test-suite* shim, which mints a distinct path per
 # start(). Production has no such shim: TASKQ_HEALTH_SOCKET_PATH names one
 # fixed path, and any deployment where two worker processes see the same
-# filesystem at that path — a sidecar pair sharing an emptyDir/tmpfs mount, a
+# filesystem at that path - a sidecar pair sharing an emptyDir/tmpfs mount, a
 # workgroup whose children were given one path, a restart whose predecessor is
-# still draining inside its termination grace period — puts two live servers
+# still draining inside its termination grace period - puts two live servers
 # on one path. The tests below drive that shape through the real code and
 # assert what an operator's probe actually receives.
 
@@ -198,8 +198,8 @@ async def test_live_health_socket_is_not_taken_over_by_a_later_server() -> None:
     on the socket its orchestrator probes; every probe an operator believes is
     checking that worker is answered by a different process entirely. A
     liveness probe then reports healthy for a worker nobody is checking, and a
-    readiness probe reports the newcomer's state — including its shutdown
-    phase — for a worker that is not shutting down.
+    readiness probe reports the newcomer's state - including its shutdown
+    phase - for a worker that is not shutting down.
 
     Either outcome is acceptable here: the second start refuses (the operator
     sees the conflict immediately), or both servers end up on distinct paths.
@@ -260,7 +260,7 @@ async def test_probe_on_a_shared_socket_path_still_answers_for_the_first_worker(
     lock and reports ``is_leader: true``; the second loses it and reports
     ``is_leader: false``. Both keep running. If a probe at the shared path
     flips from the leader's answer to the follower's, the operator's readiness
-    check for the first worker is being served by the second — the first
+    check for the first worker is being served by the second - the first
     worker's real state (its shutdown phase, its in-flight job count, its
     leadership) has become unobservable at the address the orchestrator was
     told to use, while it continues to hold the leader lock and run work.
@@ -323,7 +323,7 @@ async def test_probe_on_a_shared_socket_path_still_answers_for_the_first_worker(
         )
 
         assert not worker_a.done(), (
-            "the first worker must still be running — it holds the leader lock "
+            "the first worker must still be running - it holds the leader lock "
             "and is the worker whose health the operator's probe is configured to read"
         )
 
@@ -333,7 +333,7 @@ async def test_probe_on_a_shared_socket_path_still_answers_for_the_first_worker(
             "first worker once a second worker booted on the same path: it now reports "
             f"the second worker's state ({body!r}). The first worker is still alive and "
             "still holds the maintenance leader lock, but its liveness and readiness are "
-            "no longer observable at the address its orchestrator probes — a probe "
+            "no longer observable at the address its orchestrator probes - a probe "
             "failure will restart, or a probe success will keep routing to, a worker "
             "nobody is actually checking"
         )
@@ -358,7 +358,7 @@ async def test_second_worker_on_a_colliding_health_port_refuses_to_start(
     """TCP sibling of the unix-socket collision pin, with the OPPOSITE
     contract: the TCP probe port is the one the deployment manifest routed
     to this replica, so a worker that boots without it answers nothing
-    there — or worse, under a tcpSocket probe on a port a live peer holds,
+    there - or worse, under a tcpSocket probe on a port a live peer holds,
     the peer's listener answers for it and masks this worker's death. The
     newcomer must refuse to start (HealthTcpBindError) while the worker
     already bound keeps serving untouched.
@@ -447,7 +447,7 @@ async def test_second_worker_on_a_colliding_health_port_refuses_to_start(
         )
 
         assert not worker_a.done(), (
-            "the first worker must still be running — the newcomer's refusal "
+            "the first worker must still be running - the newcomer's refusal "
             "must not disturb the worker already bound there"
         )
         assert await _tcp_answering(), (
@@ -476,7 +476,7 @@ async def test_second_worker_on_a_colliding_socket_path_still_boots_and_register
 
     ``HealthServer.start`` now refuses a colliding path loudly instead of
     silently stealing it (``_bind_unix_socket`` raises ``OSError`` on
-    ``EADDRINUSE``) — that half of the fix is real and covered elsewhere in
+    ``EADDRINUSE``) - that half of the fix is real and covered elsewhere in
     this file. But that refusal propagates out of ``HealthServer.start``
     completely unguarded: the call site in ``_bootstrap._main`` is
 
@@ -487,8 +487,8 @@ async def test_second_worker_on_a_colliding_socket_path_still_boots_and_register
 
     with nothing catching the ``OSError``. A worker whose only misfortune is
     sharing a health-socket path with a still-live sibling therefore fails
-    its entire boot — it never opens its Postgres pool for work, never
-    registers in the fleet, never claims a job — over a problem confined to
+    its entire boot - it never opens its Postgres pool for work, never
+    registers in the fleet, never claims a job - over a problem confined to
     one diagnostic side-channel.
 
     This contradicts the project's own governing principle for worker boot
@@ -563,7 +563,7 @@ async def test_second_worker_on_a_colliding_socket_path_still_boots_and_register
             # It never registered. Find out why: did its boot task die?
             assert worker_b.done(), (
                 "the second worker neither registered in the fleet nor is its "
-                "boot task still running — it is stuck, not merely slow"
+                "boot task still running - it is stuck, not merely slow"
             )
             exc = worker_b.exception()
             assert exc is None, (

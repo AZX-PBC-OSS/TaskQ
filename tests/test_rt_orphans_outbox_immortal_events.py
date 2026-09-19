@@ -1,19 +1,19 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
 """Red-team attacks on the outbox slice's immortality (event retention exemption).
 
-The crash-reclaim outbox — ``kind='state_change' AND detail.reason='lock_expired'``
-— is exempt from the event-retention sweep at EVERY age
+The crash-reclaim outbox - ``kind='state_change' AND detail.reason='lock_expired'``
+- is exempt from the event-retention sweep at EVERY age
 (src/taskq/backend/_sweeps.py:477-478), and ``poll_reclaim_events`` can only
 reach ``id > $1`` (the trailing watermark cursor,
 src/taskq/backend/_sql_templates.py:1138). Two consequences nothing bounds:
 
 * (a) a fleet with NO watch_reclaims consumer retains every lock_expired
-  event forever — unbounded growth (the orphaned-row class);
+  event forever - unbounded growth (the orphaned-row class);
 * (b) an event committed late, below a cursor that already passed it, is
   both unreachable (the cursor cannot go back) and immortal (the exemption
   has no age cap).
 
-The contract: unconsumed outbox rows must be bounded by SOME mechanism — an
+The contract: unconsumed outbox rows must be bounded by SOME mechanism - an
 age cap beyond the visibility delay, a consumption watermark, or a
 no-consumer detector.
 """
@@ -113,7 +113,7 @@ async def test_unconsumed_outbox_rows_survive_every_retention_batch(pg_dsn: str)
     """With no watch_reclaims consumer, age-expired unconsumed lock_expired
     events must be bounded by SOME mechanism. Today all of them survive a
     full retention drain (the exemption has no age cap, no watermark, and no
-    no-consumer detector) — while the ordinary events next to them are
+    no-consumer detector) - while the ordinary events next to them are
     deleted, proving the sweep ran."""
     schema = f"torp_{new_base62()}".lower()
     conn = await asyncpg.connect(pg_dsn)
@@ -132,13 +132,13 @@ async def test_unconsumed_outbox_rows_survive_every_retention_batch(pg_dsn: str)
         after = await _count_outbox(conn, schema)
 
         assert after < n_outbox, (
-            "Contract: unconsumed outbox rows must be bounded by SOME mechanism — an age cap "
+            "Contract: unconsumed outbox rows must be bounded by SOME mechanism - an age cap "
             "beyond the visibility delay, a consumption watermark, or a no-consumer detector; "
             "a fleet with NO watch_reclaims consumer cannot retain every lock_expired event "
             "forever. Current behavior violates it: the retention sweep deleted only the "
             f"ordinary events (deleted={deleted} of {n_ordinary}) while all {n_outbox} "
             f"age-expired unconsumed outbox rows survived every batch (before={before}, "
-            f"after={after}) — the exemption at src/taskq/backend/_sweeps.py:478 has no bound "
+            f"after={after}) - the exemption at src/taskq/backend/_sweeps.py:478 has no bound "
             "of any kind."
         )
     finally:
@@ -194,7 +194,7 @@ async def test_below_cursor_late_event_is_unreachable_and_immortal(pg_dsn: str) 
         )
         assert late_poll == [], (
             "The trailing watermark cannot re-deliver a below-cursor id "
-            "(src/taskq/backend/_sql_templates.py:1138, `id > $1`) — which is exactly why "
+            "(src/taskq/backend/_sql_templates.py:1138, `id > $1`) - which is exactly why "
             "retention, not the poll, must bound this row."
         )
 
@@ -207,12 +207,12 @@ async def test_below_cursor_late_event_is_unreachable_and_immortal(pg_dsn: str) 
 
         assert late_surviving == 0, (
             "Contract: an event the cursor already passed must not be both unreachable and "
-            "immortal — some mechanism (an age cap beyond visibility, a backfill poll, or a "
+            "immortal - some mechanism (an age cap beyond visibility, a backfill poll, or a "
             "detector) must bound it. Current behavior violates it: the late row (id="
             f"{freed_id}, below cursor {cursor}) is undeliverable (poll after cursor returned "
             f"{late_poll!r}) and undeletable (retention drain deleted {deleted} rows, all "
             "ordinary; the lock_expired exemption at src/taskq/backend/_sweeps.py:478 keeps it "
-            "at every age) — permanently lost reclaim signal AND permanent storage."
+            "at every age) - permanently lost reclaim signal AND permanent storage."
         )
     finally:
         if pool is not None:

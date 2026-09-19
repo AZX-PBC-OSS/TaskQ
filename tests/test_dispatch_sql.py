@@ -63,7 +63,7 @@ class TestDispatchStrictFifoSql:
         assert rendered.index("UPDATE") > rendered.index("WITH"), "UPDATE must follow CTEs"
         # The strict-FIFO variant defines NO recursive arm: rr_keys is
         # the round-robin-only cohort enumeration (the template's prose
-        # may mention the name; the arm must not exist — identity_dedup's
+        # may mention the name; the arm must not exist - identity_dedup's
         # UNION ALL is a plain set operation, not a recursion).
         assert "rr_keys AS (" not in rendered
         assert "WITH RECURSIVE" in rendered
@@ -76,8 +76,8 @@ class TestDispatchStrictFifoSql:
         status='running' GROUP BY actor``) was referenced three times, so
         Postgres materialized it on every claim round: one scan and
         aggregate of the fleet's ENTIRE running population per round,
-        paid whether or not any actor declared a cap — O(fleet running
-        rows) on the hottest statement in the library (#226). The count
+        paid whether or not any actor declared a cap - O(fleet running
+        rows) on the hottest statement in the library. The count
         is now a cap-gated correlated count per read (see
         test_running_counts_are_cap_gated_correlated_counts), so an
         uncapped fleet pays zero running-row work.
@@ -90,7 +90,7 @@ class TestDispatchStrictFifoSql:
             assert "running_per_actor AS (" not in rendered, (
                 f"{variant}: a fleet-wide running-count CTE is materialized "
                 "on every claim round (three references) at a cost "
-                "proportional to the fleet's total running rows — the "
+                "proportional to the fleet's total running rows - the "
                 "count must stay a cap-gated correlated count"
             )
 
@@ -107,7 +107,7 @@ class TestDispatchStrictFifoSql:
         a scan over the actor's own running-row partial-index entries
         (the planner picks jobs_actor_running_idx or the
         jobs_locked_by_worker_running_idx partial at its own cost
-        discretion) — bounded by that actor's running rows, never the
+        discretion) - bounded by that actor's running rows, never the
         fleet's.
         """
         for variant, sql in (
@@ -157,7 +157,7 @@ class TestDispatchStrictFifoSql:
         estimated at the whole pending index range and planned as a hash
         join over a Seq Scan of the entire backlog (O(depth) row work). The bound now lives in top_ids as a direct
         $2 parameter (folds to its value in custom-plan estimates), and
-        locked drives jobs by primary key through a correlated LATERAL —
+        locked drives jobs by primary key through a correlated LATERAL -
         correlation denies the hash-join path, so the lock step is
         limit_n pkey probes at every depth, shallow ones included.
         """
@@ -165,7 +165,7 @@ class TestDispatchStrictFifoSql:
         locked_body = _cte_body(rendered, "locked")
         assert "FOR UPDATE" in locked_body
         assert "LIMIT" not in locked_body, (
-            "locked must not carry its own LIMIT — the bound lives in "
+            "locked must not carry its own LIMIT - the bound lives in "
             "top_ids; a LIMIT here re-opens the whole-backlog re-join shape"
         )
         assert "CROSS JOIN LATERAL" in locked_body, (
@@ -175,7 +175,7 @@ class TestDispatchStrictFifoSql:
         assert "j2.id = t.id" in locked_body
         top_ids_body = _cte_body(rendered, "top_ids")
         assert "LIMIT $2::int" in top_ids_body, (
-            "top_ids' bound must be the direct $2 parameter — subquery "
+            "top_ids' bound must be the direct $2 parameter - subquery "
             "LIMITs never fold into row estimates and re-open the "
             "estimate cascade (see docs/design/sql-hotpath-followups.md)"
         )
@@ -185,7 +185,7 @@ class TestDispatchStrictFifoSql:
         LIMIT bounds: the planner cannot fold a subquery bound into a row
         estimate in ANY plan, so the candidate chain is estimated at the
         whole index range and the terminal joins get planned as hash
-        joins over a Seq Scan of the entire pending backlog — the
+        joins over a Seq Scan of the entire pending backlog - the
         measured 1.04ms→55.8ms (1k→200k) depth scaling of that
         unbounded shape.
         Direct $n parameters fold in custom-plan row estimates, unlike
@@ -197,7 +197,7 @@ class TestDispatchStrictFifoSql:
         ):
             rendered = sql.format(schema="taskq")
             assert "LIMIT (SELECT" not in rendered, (
-                f"{variant}: a LIMIT bound rendered as a subquery — the "
+                f"{variant}: a LIMIT bound rendered as a subquery - the "
                 "planner cannot fold it; use the direct $n parameter"
             )
 
@@ -214,7 +214,7 @@ class TestDispatchStrictFifoSql:
         assert "schedule_to_close > statement_timestamp()" in candidates_body
 
     def test_locked_has_no_window_function(self) -> None:
-        """locked CTE must NOT contain a window function — PG forbids
+        """locked CTE must NOT contain a window function - PG forbids
         FOR UPDATE + window functions in the same SELECT."""
         rendered = DISPATCH_STRICT_FIFO_SQL.format(schema="taskq")
         locked_body = _cte_body(rendered, "locked")
@@ -244,7 +244,7 @@ class TestDispatchStrictFifoSql:
         rendered = DISPATCH_STRICT_FIFO_SQL.format(schema="taskq")
         body = _cte_body(rendered, "eligible")
         # Direct $2 parameter (folds in custom-plan estimates), never the
-        # subquery form — see test_no_subquery_limit_bounds_anywhere.
+        # subquery form - see test_no_subquery_limit_bounds_anywhere.
         assert "LIMIT $2::int" in body
 
     def test_final_update_contains_j_status_pending(self) -> None:
@@ -287,7 +287,7 @@ class TestDispatchStrictFifoSql:
         assert "OVER (" in candidates_body or "OVER (" in eligible_candidates_body
 
     def test_eligible_candidates_contains_boolean_gate_and_actor_rank_columns(self) -> None:
-        """Both boolean_gate and actor_rank columns are load-bearing for
+        """Both boolean_gate and actor_rank columns are critical for
         concurrency enforcement."""
         rendered = DISPATCH_STRICT_FIFO_SQL.format(schema="taskq")
         body = _cte_body(rendered, "eligible_candidates")
@@ -296,9 +296,9 @@ class TestDispatchStrictFifoSql:
 
     def test_oversample_parameterized(self) -> None:
         """oversample is a parameterized multiplier used in the candidates
-        LATERAL LIMIT — as the direct $5 parameter.
+        LATERAL LIMIT - as the direct $5 parameter.
 
-        The direct form is load-bearing, not stylistic: a parameter folds
+        The direct form is critical, not stylistic: a parameter folds
         to its value in custom-plan row estimates, where the subquery
         form never folds and the garbage estimate cascades through the
         CTE chain into the terminal whole-backlog hash joins.
@@ -307,8 +307,8 @@ class TestDispatchStrictFifoSql:
         params_body = _cte_body(rendered, "params")
         assert "oversample" in params_body
         candidates_body = _cte_body(rendered, "candidates")
-        # The admission LIMIT carries the queue-cap headroom fold
-        # (#242): LEAST(pac.residual, queue_cap_headroom) * $5, NULL
+        # The admission LIMIT carries the queue-cap headroom fold:
+        # LEAST(pac.residual, queue_cap_headroom) * $5, NULL
         # (no held cap bucket for the pair) leaves the residual alone.
         assert "LIMIT LEAST(" in candidates_body
         assert "SELECT qc.headroom FROM queue_cap_headroom qc" in candidates_body
@@ -322,10 +322,10 @@ class TestDispatchStrictFifoSql:
         terminal write: the array materializes once as an InitPlan and
         ``id = ANY(<array>)`` is served either as a Bitmap Index Scan on
         jobs_pkey (deep backlogs) or as a scan-level filter (shallow
-        ones) — both carry at most limit_n rows per node. A FROM-clause
+        ones) - both carry at most limit_n rows per node. A FROM-clause
         join against eligible would leave the join strategy to the
-        planner, which at shallow depths honestly prefers a whole-backlog
-        seq scan + hash over limit_n random pkey probes — re-introducing
+        planner, which at shallow depths genuinely prefers a whole-backlog
+        seq scan + hash over limit_n random pkey probes - re-introducing
         depth-proportional row work exactly where it hides.
 
         The race guard itself is unchanged: a candidate that left the
@@ -356,7 +356,7 @@ class TestDispatchStrictFifoSql:
         and the planner executes it as a hash semi-join over a Seq Scan
         of the entire pending backlog whenever actor_config's row
         estimate makes one pass over jobs look cheaper than per-actor
-        probes — and actor_config genuinely carries that estimate in
+        probes - and actor_config genuinely carries that estimate in
         production (one row per actor, far below autovacuum's insert
         threshold, so usually never analyzed; the planner defaults to
         ~440 rows even for a one-actor fleet). The LATERAL shape removes
@@ -367,9 +367,9 @@ class TestDispatchStrictFifoSql:
         marker-partial twin of jobs_actor_dispatch_idx, so the probe
         never reads a re-pended row).
 
-        Override-safety is the load-bearing half of the shape: the
-        probe must cover exactly the queues in the round's params —
-        NOT the actor's actor_config home queue — so an
+        Override-safety is the critical half of the shape: the
+        probe must cover exactly the queues in the round's params -
+        NOT the actor's actor_config home queue - so an
         ``enqueue(queue=...)`` override that lands a pending job on any
         subscribed queue keeps that actor probed. An actor filtered here
         contributes zero candidate rows either way (the lateral's
@@ -385,14 +385,14 @@ class TestDispatchStrictFifoSql:
             body = _cte_body(rendered, "per_actor_capacity")
             assert "CROSS JOIN LATERAL" in body, (
                 f"{variant}: per_actor_capacity lost the correlated LATERAL "
-                "probe — an EXISTS form is a semi-join the planner can "
+                "probe - an EXISTS form is a semi-join the planner can "
                 "execute as a hash over a whole-backlog Seq Scan"
             )
             assert "unnest(p.queues)" in body, (
                 f"{variant}: the probe must fan out over the round's queues from params"
             )
             assert "j.queue = pq.q" in body, (
-                f"{variant}: one plain-equality probe per round queue — a "
+                f"{variant}: one plain-equality probe per round queue - a "
                 "queue = ANY(...) array predicate cannot serve the "
                 "ORDER BY that pins the index-ordered read"
             )
@@ -406,7 +406,7 @@ class TestDispatchStrictFifoSql:
             )
             assert "ac.queue" not in body, (
                 f"{variant}: the prefilter must not consult the actor's "
-                "home queue — an enqueue(queue=...) override onto a "
+                "home queue - an enqueue(queue=...) override onto a "
                 "subscribed queue must keep the actor probed"
             )
 
@@ -463,7 +463,7 @@ class TestDispatchRoundRobinSql:
 
         Postgres 18 has no native skip scan (no enable_indexskipscan GUC),
         so `SELECT DISTINCT fairness_key` over a pair's pending rows is a
-        full scan of them — the depth-proportional read the depth pin
+        full scan of them - the depth-proportional read the depth pin
         (tests/test_dispatch_backlog_depth_bound.py) forbids. The
         recursion enumerates one cohort key per bounded index seek, so
         its work is proportional to the cohort COUNT, never to any
@@ -488,7 +488,7 @@ class TestDispatchRoundRobinSql:
     def test_rr_candidates_are_bounded_per_cohort_probes(self) -> None:
         """The round-robin lateral must probe each cohort with
         ORDER BY + LIMIT and run the fairness window over that bounded
-        union — never a window over every due row of the pair.
+        union - never a window over every due row of the pair.
 
         A window function cannot short-circuit: the shipped shape
         computed ROW_NUMBER over EVERY due pending row and only then
@@ -507,14 +507,14 @@ class TestDispatchRoundRobinSql:
             "cannot share the keyed cohorts' path; IS NOT DISTINCT FROM "
             "never indexes)"
         )
-        # The admission LIMIT carries the queue-cap headroom fold
-        # (#242): LEAST(pac.residual, queue_cap_headroom) * $5, NULL
+        # The admission LIMIT carries the queue-cap headroom fold:
+        # LEAST(pac.residual, queue_cap_headroom) * $5, NULL
         # (no held cap bucket for the pair) leaves the residual alone.
         assert "LIMIT LEAST(" in candidates_body
         assert "SELECT qc.headroom FROM queue_cap_headroom qc" in candidates_body
         assert "pac.residual * $5::int" not in candidates_body
         # The fairness window sits INSIDE the per-pair lateral, over the
-        # bounded probe union — one partition per cohort of THIS
+        # bounded probe union - one partition per cohort of THIS
         # (actor, queue) pair, never a cross-pair merge of equal keys.
         assert "PARTITION BY COALESCE(c.fairness_key, '__null__')" in candidates_body
         assert "ROW_NUMBER() OVER (" in candidates_body

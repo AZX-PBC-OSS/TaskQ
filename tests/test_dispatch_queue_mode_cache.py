@@ -7,14 +7,14 @@ data that changes only through queue ops. The worker-side
 statement to a per-TTL resolve. These pins hold the two halves that make
 the collapse safe:
 
-* TTL — a mode change made out of band (another process, raw SQL) is
+* TTL - a mode change made out of band (another process, raw SQL) is
   picked up once the entry expires: the next dispatch re-resolves through
   the existing query, never through a cached stale mode.
-* invalidation — a mode change made in THIS process through the queue-ops
+* invalidation - a mode change made in THIS process through the queue-ops
   seam (``set_queue_mode``) is picked up by the very next dispatch: the
   seam clears every live cache, so no TTL window applies to the process
   that made the change.
-* the miss path — unknown queues still resolve through the query with the
+* the miss path - unknown queues still resolve through the query with the
   ``strict_fifo`` fallback, and an absent row is cached with the same TTL
   bound (a queue configured mid-flight is picked up within the TTL, the
   same propagation bound a mode change gets).
@@ -52,10 +52,10 @@ class _FakeDispatchConn:
     """Serves the queue-mode resolve from a mutable row map and records
     every dispatch-CTE fetch, distinguishing the three statements by shape:
     the resolve query reads the queues *table* (``.queues WHERE``); the
-    dispatch CTE's ``queues`` is a params column — qualified references
+    dispatch CTE's ``queues`` is a params column - qualified references
     like ``p.queues`` in the idle-actor prefilter must NOT match; the
     empty-round claimable-rows probe (``ac.queue = ANY($1...)``) is the
-    window-expansion gate — this fake's claim returns empty, so the probe
+    window-expansion gate - this fake's claim returns empty, so the probe
     fires each round and answers "nothing remains" (idle), matching the
     claim's own result.
     """
@@ -142,13 +142,13 @@ async def test_resolve_runs_once_per_ttl_not_once_per_round() -> None:
 
     assert conn.resolve_fetches == 1, (
         f"expected ONE queue-mode resolve for 5 dispatch rounds inside the "
-        f"TTL, got {conn.resolve_fetches} — the per-round statement is back"
+        f"TTL, got {conn.resolve_fetches} - the per-round statement is back"
     )
     assert len(conn.dispatch_sqls) == 5, "every round must still dispatch"
     assert conn.probe_fetches == 5, (
         "every round here comes back empty (the fake's claim returns no rows), "
         "so each must pay exactly one claimable-rows probe and never a widened "
-        "re-claim — the idle-round cost contract of window expansion"
+        "re-claim - the idle-round cost contract of window expansion"
     )
 
 
@@ -164,14 +164,14 @@ async def test_mode_change_is_picked_up_within_the_ttl() -> None:
     await _dispatch(conn, cache, queues=["default"])
     assert conn.dispatch_sqls[-1] == tmpl.dispatch_strict_fifo
 
-    # Out-of-band flip — invisible to this process until the TTL expires.
+    # Out-of-band flip - invisible to this process until the TTL expires.
     conn.queue_rows["default"] = "round_robin"
     clock.advance(timedelta(seconds=QUEUE_MODE_CACHE_TTL_SECONDS + 0.1))
     await _dispatch(conn, cache, queues=["default"])
 
     assert conn.resolve_fetches == 2, "an expired entry must re-resolve"
     assert conn.dispatch_sqls[-1] == tmpl.dispatch_round_robin, (
-        "the re-resolved mode must select the round-robin SQL variant — a "
+        "the re-resolved mode must select the round-robin SQL variant - a "
         "stale cached mode after TTL expiry silently changes dispatch "
         "ordering"
     )
@@ -195,7 +195,7 @@ class _FakeQueueOpsConn:
 
 async def test_mode_change_is_picked_up_immediately_after_queue_ops_invalidation() -> None:
     """A mode change made in this process through the queue-ops seam is
-    visible to the very next dispatch — no TTL window applies to the
+    visible to the very next dispatch - no TTL window applies to the
     process that made the change, because set_queue_mode clears every
     live cache."""
     clock = _fake_clock()
@@ -217,7 +217,7 @@ async def test_mode_change_is_picked_up_immediately_after_queue_ops_invalidation
     # Clock NOT advanced: only the seam's invalidation can make this miss.
     await _dispatch(conn, cache, queues=["default"])
     assert conn.resolve_fetches == 2, (
-        "set_queue_mode must clear the live cache — a same-process mode "
+        "set_queue_mode must clear the live cache - a same-process mode "
         "change served stale for a full TTL is a self-inflicted "
         "propagation delay"
     )
@@ -261,7 +261,7 @@ async def test_without_a_cache_every_round_resolves() -> None:
 async def test_backend_instances_cache_independently() -> None:
     """Two PostgresBackend instances never share mode state: a resolve
     that filled one backend's cache does nothing for the other backend's
-    next dispatch — each pays its own one resolve per TTL."""
+    next dispatch - each pays its own one resolve per TTL."""
     from taskq.backend.postgres import PostgresBackend
 
     clock = _fake_clock()
@@ -305,7 +305,7 @@ async def test_backend_instances_cache_independently() -> None:
 
     assert conn_a.resolve_fetches == 1
     assert conn_b.resolve_fetches == 1, (
-        "backend B must pay its own resolve — a cache shared across "
+        "backend B must pay its own resolve - a cache shared across "
         "backend instances couples workers that share a process (two "
         "workers, two schemas) into one mode view"
     )

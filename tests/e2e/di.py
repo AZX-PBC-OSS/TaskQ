@@ -1,4 +1,4 @@
-"""DI registry for the e2e worker container — ``pg_pool`` (LOOP) + fake HTTP client (TRANSIENT).
+"""DI registry for the e2e worker container - ``pg_pool`` (LOOP) + fake HTTP client (TRANSIENT).
 
 Importable standalone (no sibling imports): only the in-container
 ``e2e.worker_entry`` calls :func:`build_registry`; the test process never
@@ -16,7 +16,7 @@ from taskq.settings import WorkerSettings
 
 
 class FakeHttpClient:
-    """Deterministic fake HTTP client — never touches a socket.
+    """Deterministic fake HTTP client - never touches a socket.
 
     Registered at TRANSIENT scope, so each actor invocation receives a
     fresh instance. ``call_count`` / ``calls`` record invocations for
@@ -42,7 +42,7 @@ async def _pg_pool_factory() -> AsyncIterator[asyncpg.Pool]:
 
 
 def _fake_http_factory() -> FakeHttpClient:
-    """TRANSIENT-scope factory — a fresh fake client per invocation."""
+    """TRANSIENT-scope factory - a fresh fake client per invocation."""
     return FakeHttpClient()
 
 
@@ -50,7 +50,7 @@ def build_registry() -> ProviderRegistry:
     """Build and return the e2e DI registry.
 
     Called by ``worker_entry`` and passed to ``worker_main(di_registry=...)``.
-    Do NOT call ``validate()`` here — the worker does that during bootstrap.
+    Do NOT call ``validate()`` here - the worker does that during bootstrap.
     Registering ``asyncpg.Pool`` overrides the worker's default pool
     registration (see ``taskq.worker._bootstrap``).
     """

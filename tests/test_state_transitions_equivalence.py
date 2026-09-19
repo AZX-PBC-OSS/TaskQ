@@ -5,7 +5,7 @@ VALID_TRANSITIONS plus the Sweep 1 bypass entries (running→pending and
 running→crashed via reclaim_expired_locks), run the transition on both
 backends and assert the oracle tuple matches.
 
-The isolate_self bypass paths are NOT included — they are exercised via
+The isolate_self bypass paths are NOT included - they are exercised via
 in test_state_transitions_pg.py (the isolate_self
 function operates on a fresh asyncpg connection, not through the Backend
 protocol, so it cannot be parametrized via backend_pair).
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 
     type _Conn = asyncpg.Connection | PoolConnectionProxy
 else:
-    type _Conn = object  # pyright: ignore[reportInvalidTypeForm] # Why: runtime fallback — asyncpg is TYPE_CHECKING-only to avoid transitive import
+    type _Conn = object  # pyright: ignore[reportInvalidTypeForm] # Why: runtime fallback - asyncpg is TYPE_CHECKING-only to avoid transitive import
 
 pytestmark = pytest.mark.integration
 
@@ -367,7 +367,7 @@ async def _perform_transition_pg(
 
     elif (from_status, to_status) == ("scheduled", "pending"):
         async with deps.worker_pool.acquire() as conn:
-            # 5s margin, not 1s — see test_backend_equivalence.py's identical
+            # 5s margin, not 1s - see test_backend_equivalence.py's identical
             # fix for why (PG-server-clock vs. Python-client-clock skew).
             await conn.execute(
                 f"UPDATE \"{schema}\".jobs SET scheduled_at = now() - interval '5 seconds' WHERE id = $1",
@@ -619,7 +619,7 @@ async def _perform_transition_memory(
         from taskq.testing.clock import FakeClock
 
         assert isinstance(backend._clock, FakeClock)  # type: ignore[reportPrivateUsage] # Why: test-only private access
-        backend.advance_clock_to(backend._clock.now() + timedelta(minutes=2))  # type: ignore[reportPrivateUsage] # Why: test-only private access — lock_expires_at = now + 60s at dispatch, advance past it
+        backend.advance_clock_to(backend._clock.now() + timedelta(minutes=2))  # type: ignore[reportPrivateUsage] # Why: test-only private access - lock_expires_at = now + 60s at dispatch, advance past it
         await backend.reclaim_expired_locks(
             _CANCEL_GRACE,
             _CLEANUP_GRACE,
@@ -641,7 +641,7 @@ async def _perform_transition_memory(
         from taskq.testing.clock import FakeClock
 
         assert isinstance(backend._clock, FakeClock)  # type: ignore[reportPrivateUsage] # Why: test-only private access
-        backend.advance_clock_to(backend._clock.now() + timedelta(minutes=2))  # type: ignore[reportPrivateUsage] # Why: test-only private access — lock_expires_at = now + 60s at dispatch, advance past it
+        backend.advance_clock_to(backend._clock.now() + timedelta(minutes=2))  # type: ignore[reportPrivateUsage] # Why: test-only private access - lock_expires_at = now + 60s at dispatch, advance past it
         await backend.reclaim_expired_locks(
             _CANCEL_GRACE,
             _CLEANUP_GRACE,

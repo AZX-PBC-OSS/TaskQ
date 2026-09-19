@@ -1,5 +1,5 @@
 """Pin: the rolling-deploy overlap window closes by operator decision, not by a
-runner-level guard — and the shipped adoption path keeps old pods working until
+runner-level guard - and the shipped adoption path keeps old pods working until
 it closes.
 
 ## Why this pin was rewritten (the argument)
@@ -10,7 +10,7 @@ previous release. Verified against the shipped system, that demand is
 unsatisfiable:
 
 * The only fleet-level oracle the runner could consult is the `workers` table,
-  and it carries liveness only — hostname, pid, queues, heartbeat timestamps.
+  and it carries liveness only - hostname, pid, queues, heartbeat timestamps.
   It has no release or schema-version column, so the runner cannot tell an old
   pod from a new one. Any liveness-based refusal would stay armed while the
   fully-upgraded fleet heartbeats, which is exactly the state the shipped
@@ -38,7 +38,7 @@ needs a signal that distinguishes releases, and none exists.
 ## What this file pins (a regression in any of these fails)
 
 1. **The docs cannot reach the broken state.** The deployment manifest's
-   migrate step carries `--phase pre` and the post close-out is human-gated —
+   migrate step carries `--phase pre` and the post close-out is human-gated -
    asserted by delegating to the docs-contract source of truth rather than
    restating it, so the two cannot drift apart.
 2. **The runner documents and enforces the operator-decision boundary.**
@@ -47,17 +47,17 @@ needs a signal that distinguishes releases, and none exists.
    (the `apply_pending_locked` docstring, which governs the locked startup
    paths) states that lifecycle events decide nothing ("not on an operator's
    decision") and that the post phase "stays behind the operator's explicit
-   ``taskq migrate up --phase post``". The enforcement halves — post-before-
-   pre refusal, locked startup path defaulting to pre-only — are pinned green
+   ``taskq migrate up --phase post``". The enforcement halves - post-before-
+   pre refusal, locked startup path defaulting to pre-only - are pinned green
    in `tests/test_idempotency_scope_migrations.py` and referenced here, not
    duplicated.
 3. **The old-pod hazard stays nameable.** On the pre-phase-only mid-rollout
    steady state, previous-release enqueue SQL keeps working (the overlap
-   window is real and safe). The shipped CLI behaviour is pinned truthfully:
+   window is real and safe). The pin names the shipped CLI behaviour exactly:
    a bare `migrate up` applies the post phase in that same run, after which
    previous-release enqueue SQL fails with SQLSTATE 42P10, exactly as the
    post migration file's own header predicts. That consequence is the
-   operator's knowledge — the reason property 1 exists — not a behaviour the
+   operator's knowledge - the reason property 1 exists - not a behaviour the
    runner is expected to refuse: the runner has no signal that could
    distinguish an old pod from a new one.
 """
@@ -125,9 +125,9 @@ class TestOverlapWindowClosesOnlyByOperatorDecision:
     The Kubernetes manifest's initContainer applies `--phase pre` only (docs
     contract); old pods keep enqueueing throughout the rollout; the post
     phase that breaks them is applied solely by the operator's explicit,
-    human-gated close-out; and a bare `migrate up` — the command an adopter
-    would have to write to reach the broken state — applies the post phase
-    with no refusal, which is why the manifest pin above is load-bearing.
+    human-gated close-out; and a bare `migrate up` - the command an adopter
+    would have to write to reach the broken state - applies the post phase
+    with no refusal, which is why the manifest pin above is critical.
     """
 
     def test_docs_contract_manifest_applies_only_the_pre_phase(self) -> None:
@@ -148,7 +148,7 @@ class TestOverlapWindowClosesOnlyByOperatorDecision:
         """`migrate up --phase post` is a first-class, forwarded operator action.
 
         The close-out step of the documented deploy sequence has to exist on
-        the CLI surface and reach the runner as `phase="post"` — the operator
+        the CLI surface and reach the runner as `phase="post"` - the operator
         is the mechanism that closes the overlap window, so the flag that
         expresses the decision must not silently disappear or stop being
         forwarded. (The forwarding of `--phase pre` is pinned in
@@ -196,13 +196,13 @@ class TestOverlapWindowClosesOnlyByOperatorDecision:
     ) -> None:
         """Drive the deploy sequence and pin each step's truthful outcome.
 
-          1. Mid-rollout steady state: 01.00.03_01:pre applied, post not —
+          1. Mid-rollout steady state: 01.00.03_01:pre applied, post not -
              the schema state the manifest's `--phase pre` initContainer
              produces on every pod. A previous-release pod is connected and
              enqueuing with the old `ON CONFLICT` shape; the enqueue must
              succeed, which is the entire payoff of the phase split.
-          2. Shipped CLI behaviour, pinned truthfully: a bare `migrate up`
-             applies every pending migration, post included, in one run —
+          2. Shipped CLI behaviour, pinned as it ships: a bare `migrate up`
+             applies every pending migration, post included, in one run -
              the exact `apply_pending` call the CLI's `_up` issues with no
              `--phase` (the CLI forwarding itself is pinned in
              tests/test_cli_migrate.py, and the fresh-schema pre-before-post
@@ -214,9 +214,9 @@ class TestOverlapWindowClosesOnlyByOperatorDecision:
              (the arbiter index is resolved at plan time), exactly as the
              post migration file's own header predicts.
 
-        Step 3 is why step 1's docs pin is load-bearing: the manifest must
+        Step 3 is why step 1's docs pin is critical: the manifest must
         never run the bare command mid-rollout, and closing the window is
-        the operator's deliberate, human-gated act — not something the
+        the operator's deliberate, human-gated act - not something the
         runner can time, because the `workers` table cannot tell a
         heartbeating old pod from a heartbeating new one.
         """
@@ -229,7 +229,7 @@ class TestOverlapWindowClosesOnlyByOperatorDecision:
         assert "01.00.03_01:post" not in applied
 
         # The previous-release pod's connection is open and enqueuing
-        # successfully against this schema — the overlap window is open and
+        # successfully against this schema - the overlap window is open and
         # safe, which must hold for the entire rollout.
         await _old_release_enqueue(pg_conn, schema, key="steady-state-key")
 
@@ -239,13 +239,13 @@ class TestOverlapWindowClosesOnlyByOperatorDecision:
         applied_now = await migrate_mod.apply_pending(pg_conn, schema=schema)
         assert "01.00.03_01:post" in {m.key for m in applied_now}, (
             "bare `migrate up` must keep applying every pending phase in one "
-            "run — if this now refuses, the single-run contract and this pin "
+            "run - if this now refuses, the single-run contract and this pin "
             "need a deliberate redesign together"
         )
 
         # Step 3: the same previous-release pod, still connected, enqueues
         # again with the same SQL shape that worked one step ago. The old
-        # arbiter index is gone, so the statement fails at plan time — the
+        # arbiter index is gone, so the statement fails at plan time - the
         # hazard the operator's human-gated close-out exists to sequence.
         with pytest.raises(asyncpg.InvalidColumnReferenceError) as exc_info:
             await _old_release_enqueue(pg_conn, schema, key="post-migration-key")
@@ -257,7 +257,7 @@ class TestPostPhaseApplyHasNoReleaseAwareFleetSignal:
 
     The `workers` table (populated at pod startup, heartbeated, swept by the
     leader per docs/guides/workers.md) carries liveness only: no release or
-    schema-version column. A live row is therefore ambiguous — it is what a
+    schema-version column. A live row is therefore ambiguous - it is what a
     fully-upgraded fleet looks like during the documented close-out AND what
     a half-rolled-out fleet looks like mid-rollout. The runner cannot
     distinguish them, which is precisely why applying the post phase is the
@@ -274,8 +274,8 @@ class TestPostPhaseApplyHasNoReleaseAwareFleetSignal:
         Sequence mirroring the documented deploy: the manifest's `--phase
         pre` runs, pods (old and new alike) heartbeat, and the operator's
         explicit `--phase post` then applies WITHOUT being refused. A guard
-        keyed on live heartbeats would break exactly this — the shipped
-        close-out runs while the upgraded fleet is heartbeating — which is
+        keyed on live heartbeats would break exactly this - the shipped
+        close-out runs while the upgraded fleet is heartbeating - which is
         the core reason the demand for a liveness-based refusal was dropped.
         """
         schema = settings.schema_name
@@ -296,7 +296,7 @@ class TestPostPhaseApplyHasNoReleaseAwareFleetSignal:
         )
 
         # Tripwire: if a release-aware fleet-currency guard ever ships on
-        # taskq.migrate, this pin's premise changes — wire it into the CLI's
+        # taskq.migrate, this pin's premise changes - wire it into the CLI's
         # documented paths and REWRITE this assertion (do not just delete
         # it): with a real release signal, a guard could finally distinguish
         # the mid-rollout state from the close-out state.
@@ -308,7 +308,7 @@ class TestPostPhaseApplyHasNoReleaseAwareFleetSignal:
         )
 
         # The operator's explicit close-out proceeds despite the live worker
-        # row — by design: the runner defers the fleet-wide decision to the
+        # row - by design: the runner defers the fleet-wide decision to the
         # party typing the command.
         applied_now = await migrate_mod.apply_pending(pg_conn, schema=schema, phase="post")
         assert "01.00.03_01:post" in {m.key for m in applied_now}

@@ -7,7 +7,10 @@ no SDK configured, span-creation exception safety, and a property test
 asserting exactly one PRODUCER span per enqueue.
 """
 
+import contextlib
 import re
+from collections.abc import Generator
+from uuid import UUID
 
 import pytest
 from hypothesis import HealthCheck, given, settings
@@ -17,10 +20,12 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from pydantic import BaseModel
 
+import taskq.client._args as args_mod
 import taskq.obs as obs_mod
 import taskq.obs._otel as otel_mod
 from taskq.actor import actor
 from taskq.client import JobsClient
+from taskq.testing.actor import FakeBackend
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.otel import (
@@ -32,6 +37,18 @@ from taskq.testing.otel import (
 )
 
 _START = "2025-01-01T00:00:00+00:00"
+
+
+class _BufferingBackend(FakeBackend):
+    """FakeBackend admitting the transactional sub-enqueue buffer path.
+
+    The SubJobEnqueuer wired with a LOOP-scope connection buffers args in
+    memory when the backend advertises transactional simulation, which is
+    the shape the message-id guard tests need: the attribute work happens
+    in enqueue() before any backend call, so a buffering fake isolates it.
+    """
+
+    supports_transactional_simulation: bool = True
 
 
 class _Payload(BaseModel):
@@ -351,6 +368,147 @@ class TestOtelDisabled:
         assert row.trace_id is None
         assert row.span_id is None
 
+    async def test_disabled_enqueue_never_starts_span_or_builds_attributes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With telemetry off, enqueue must not build the span name or the
+        attribute dict at all: they are per-enqueue allocations whose only
+        reader is the tracer, and safe_start_span discards them unread when
+        the flag is off. The spy stands where safe_start_span is called; the
+        attributes are arguments to it, so a call that never happens is an
+        allocation that never happens."""
+        setup_tracer(monkeypatch)
+        otel_mod.set_otel_enabled(False)
+
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        @contextlib.contextmanager
+        def spy(name: str, **kwargs: object) -> Generator[trace.Span, None, None]:
+            calls.append((name, kwargs))
+            yield trace.NonRecordingSpan(trace.INVALID_SPAN_CONTEXT)
+
+        monkeypatch.setattr(args_mod, "safe_start_span", spy)
+        backend, client = _make_client()
+
+        handle = await client.enqueue(_otel_test_actor, _Payload())
+
+        assert calls == []
+        row = await backend.get(handle.job_id)
+        assert row is not None
+
+
+class _SpySpan:
+    """Span double that records set_attribute calls and reports recording-ness.
+
+    Stands in for the span enqueue_span yields, so the
+    ``messaging.message.id`` guard can be observed on both branches: a
+    non-recording span (no SDK, sampled out) must not pay the ``str()`` of
+    the job id, a recording one must still receive the attribute.
+    """
+
+    def __init__(self, recording: bool) -> None:
+        self._recording = recording
+        self.attributes: dict[str, object] = {}
+
+    def is_recording(self) -> bool:
+        return self._recording
+
+    def get_span_context(self) -> trace.SpanContext:
+        return trace.INVALID_SPAN_CONTEXT
+
+    def set_attribute(self, key: str, value: object) -> None:
+        self.attributes[key] = value
+
+    def set_status(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+
+class TestMessageIdAttributeGuard:
+    """``messaging.message.id`` is set only when the span can record."""
+
+    async def _enqueue_with_spy(
+        self, monkeypatch: pytest.MonkeyPatch, recording: bool
+    ) -> tuple[_SpySpan, UUID]:
+        otel_mod.set_otel_enabled(True)
+        setup_meter(monkeypatch)
+        span = _SpySpan(recording=recording)
+
+        @contextlib.contextmanager
+        def fake_span(name: str, **kwargs: object) -> Generator[trace.Span, None, None]:
+            yield span  # type: ignore[return-value]  # Why: the spy structurally satisfies the slice of Span this path touches (is_recording, get_span_context, set_attribute, set_status).
+
+        monkeypatch.setattr(args_mod, "safe_start_span", fake_span)
+        _backend, client = _make_client()
+        handle = await client.enqueue(_otel_test_actor, _Payload())
+        return span, handle.job_id
+
+    async def test_non_recording_span_skips_the_attribute(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        span, _job_id = await self._enqueue_with_spy(monkeypatch, recording=False)
+        assert span.attributes == {}
+
+    async def test_recording_span_stores_the_job_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        span, job_id = await self._enqueue_with_spy(monkeypatch, recording=True)
+        assert span.attributes == {"messaging.message.id": str(job_id)}
+
+    async def test_sub_enqueuer_non_recording_span_skips_the_attribute(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncpg
+
+        from taskq.backend.clock import SystemClock
+        from taskq.client._enqueuer import SubJobEnqueuer
+
+        otel_mod.set_otel_enabled(True)
+        setup_meter(monkeypatch)
+        span = _SpySpan(recording=False)
+
+        @contextlib.contextmanager
+        def fake_span(name: str, **kwargs: object) -> Generator[trace.Span, None, None]:
+            yield span  # type: ignore[return-value]  # Why: same structural slice as above.
+
+        monkeypatch.setattr(args_mod, "safe_start_span", fake_span)
+        # LOOP-scope wiring like tests/test_consumer_sub_enqueue.py: the
+        # enqueuer requires a loop scope (or worker pool) to hand out
+        # ctx.jobs at all; the sub-job buffers there, which is fine, the
+        # pinned attribute work happens in enqueue() before any of it.
+        enqueuer = SubJobEnqueuer(
+            loop_scope_resolved={asyncpg.Connection: object()},
+            worker_pool=None,
+            backend=_BufferingBackend(),
+            clock=SystemClock(),
+        )
+        handle = await enqueuer.enqueue(_otel_test_actor, _Payload())
+        assert span.attributes == {}
+        assert handle.job_id is not None
+
+    async def test_sub_enqueuer_recording_span_stores_the_job_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncpg
+
+        from taskq.backend.clock import SystemClock
+        from taskq.client._enqueuer import SubJobEnqueuer
+
+        otel_mod.set_otel_enabled(True)
+        setup_meter(monkeypatch)
+        span = _SpySpan(recording=True)
+
+        @contextlib.contextmanager
+        def fake_span(name: str, **kwargs: object) -> Generator[trace.Span, None, None]:
+            yield span  # type: ignore[return-value]  # Why: same structural slice as above.
+
+        monkeypatch.setattr(args_mod, "safe_start_span", fake_span)
+        enqueuer = SubJobEnqueuer(
+            loop_scope_resolved={asyncpg.Connection: object()},
+            worker_pool=None,
+            backend=_BufferingBackend(),
+            clock=SystemClock(),
+        )
+        handle = await enqueuer.enqueue(_otel_test_actor, _Payload())
+        assert span.attributes == {"messaging.message.id": str(handle.job_id)}
+
 
 # ── no SDK configured (API-only no-op) ────────────────────────
 
@@ -423,7 +581,7 @@ class TestSpanExceptionSafety:
         assert handle.job_id is not None
 
 
-# ── Property test — every enqueue produces exactly one PRODUCER span ──
+# ── Property test - every enqueue produces exactly one PRODUCER span ──
 
 
 class TestProperty:

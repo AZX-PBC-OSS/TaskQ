@@ -3,8 +3,8 @@
 ``_post_write_row`` (taskq/worker/_handlers.py) re-reads the job row a
 terminal hook is handed, post-write, so ``on_retry_exhausted`` /
 ``error_reporter`` see the failed row rather than the dispatch-time
-``running`` snapshot. When that re-read fails — an infra error, or the
-row gone — the handler degrades to the stale snapshot *and must report
+``running`` snapshot. When that re-read fails - an infra error, or the
+row gone - the handler degrades to the stale snapshot *and must report
 itself*: a stale row handed to hooks silently is a failure that looks
 like a success. These tests pin both degraded branches (report +
 fallback), the fresh-row control, and the narrow exception boundary.
@@ -54,7 +54,7 @@ def _reread_events(captured: list[structlog.typing.EventDict]) -> list[structlog
 
 async def test_fresh_reread_replaces_the_snapshot_and_stays_quiet() -> None:
     """The re-read's purpose: hooks are handed the post-write row, not the
-    dispatch-time snapshot — and a healthy re-read emits no report."""
+    dispatch-time snapshot - and a healthy re-read emits no report."""
     stale = make_job_row(status="running", attempt=1)
     fresh = make_job_row(status="failed", attempt=1, error_class="MaxAttemptsExceeded")
     backend = _RereadStubBackend(result=fresh)
@@ -82,7 +82,7 @@ async def test_failed_reread_reports_itself_and_hands_hooks_the_stale_row(
     same contract: the stale row goes to the hooks (the terminal write
     already landed; dropping the hooks would be worse), and the
     degradation is reported as a warning naming the job and the error
-    class — never silently."""
+    class - never silently."""
     stale = make_job_row(status="running", attempt=1)
     backend = _RereadStubBackend(error=infra_error)
 
@@ -102,7 +102,7 @@ async def test_failed_reread_reports_itself_and_hands_hooks_the_stale_row(
 async def test_missing_row_reports_itself_and_hands_hooks_the_stale_row() -> None:
     """A row gone between the terminal write and the re-read (retention
     sweep, operator delete) degrades identically: stale row to the hooks,
-    and a warning that says the row was *missing* — distinguishable from
+    and a warning that says the row was *missing* - distinguishable from
     the infra-failure report, since the two have different causes."""
     stale = make_job_row(status="running", attempt=1)
     backend = _RereadStubBackend(result=None)
@@ -117,13 +117,13 @@ async def test_missing_row_reports_itself_and_hands_hooks_the_stale_row() -> Non
     line = hits[0]
     assert line.get("log_level") == "warning"
     assert line.get("job_id") == str(stale.id)
-    assert "error_class" not in line, "no error occurred — the row was absent"
+    assert "error_class" not in line, "no error occurred - the row was absent"
 
 
 async def test_non_infra_error_propagates() -> None:
     """The degraded fallback exists for *infrastructure* failure only. A
     programming error from the backend (a bug, not an outage) must
-    propagate — swallowing it would hide the defect behind a plausible
+    propagate - swallowing it would hide the defect behind a plausible
     stale row."""
     stale = make_job_row(status="running", attempt=1)
     backend = _RereadStubBackend(error=ValueError("deserialization bug"))

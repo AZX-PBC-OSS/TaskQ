@@ -1,4 +1,4 @@
-"""Workgroup supervisor — spawns and manages multiple TaskQ worker processes.
+"""Workgroup supervisor, spawns and manages multiple TaskQ worker processes.
 
 A workgroup is a single-process orchestrator that manages N child ``taskq worker``
 subprocesses, each with potentially different queues, poll intervals, concurrency
@@ -36,7 +36,7 @@ Config format (TOML)::
     consecutive_failure_limit = 3
 
 A ``pg_credential_provider`` set at the ``[defaults]`` level applies to
-every worker, and TOML has no per-worker ``null`` — a worker cannot opt
+every worker, and TOML has no per-worker ``null``, a worker cannot opt
 out of a defaults-level provider, so a workgroup mixing provider-backed
 and provider-less workers must set the field per worker instead of in
 ``[defaults]``.
@@ -92,7 +92,7 @@ _HEALTH_QUERY_TIMEOUT_SECS: float = 2.0
 """Client-side deadline on the health-check query itself.
 
 Why a bound: the pool acquire beside it is already bounded (2.0 s), but
-the query was not — a server that accepts the query and never answers
+the query was not, a server that accepts the query and never answers
 parked the health loop inside the child's ``restart_lock``, and because
 the liveness monitor and the shutdown path acquire the same locks
 sequentially, one black-holed query froze restart scheduling for every
@@ -104,9 +104,9 @@ paths bind theirs with ``SET LOCAL`` inside a transaction
 (taskq.backend._sweeps), a scope an autocommit pool check does not
 have, and capture/restore on a pooled session adds round trips that can
 themselves hang. Why 2.0: consistent with the neighboring pool-acquire
-bound — the query is an indexed LIMIT-1 lookup, so 2.0 s is already
-generous. A timeout is a client-side deadline — transient per
-``taskq.worker._transient`` — so it lands in the existing
+bound, the query is an indexed LIMIT-1 lookup, so 2.0 s is already
+generous. A timeout is a client-side deadline, transient per
+``taskq.worker._transient``, so it lands in the existing
 ``consecutive_failure_limit`` accounting, which errs on the healthy
 side for exactly the DB-outage case where killing children would be
 wrong.
@@ -123,20 +123,20 @@ def _health_socket_path(name: str, instance_id: UUID) -> str:
     the config validator's worker-name budget derive from it, so the
     budget and the built path cannot drift apart.
     """
-    return f"/tmp/taskq_health_{name}_{instance_id}.sock"  # noqa: S108  # Why: workgroup-child socket files live in /tmp — the shortest prefix that keeps the full path inside every platform's AF_UNIX budget; handed to the child via --health-socket-path.
+    return f"/tmp/taskq_health_{name}_{instance_id}.sock"  # noqa: S108  # Why: workgroup-child socket files live in /tmp, the shortest prefix that keeps the full path inside every platform's AF_UNIX budget; handed to the child via --health-socket-path.
 
 
 _SUN_PATH_BUDGET: int = 104 - 1
 """Usable ``sockaddr_un.sun_path`` chars on the tightest supported
 platform (macOS/BSD: 104 bytes including the NUL terminator). Budgeted
-for the tightest platform rather than the local one — a config authored
+for the tightest platform rather than the local one, a config authored
 on a Linux host (107 usable chars) must still bind on a macOS deploy."""
 
 
 _MAX_WORKER_NAME_LEN: int = _SUN_PATH_BUDGET - len(_health_socket_path("", UUID(int=0)))
 """Longest worker name whose health socket path still binds on every
 supported platform. With the name empty the path is exactly its fixed
-overhead — prefix, separator, instance-id uuid, suffix — so the name
+overhead, prefix, separator, instance-id uuid, suffix, so the name
 budget is the platform budget minus that overhead, derived from the real
 construction rather than restated beside it."""
 
@@ -189,7 +189,7 @@ class WorkerSpec:
     max_concurrency: int = 8
     worker_group: str = "default"
     force_update_actor_config: bool = False
-    pg_credential_provider: str | None = None  # module:attr — forwarded to the child CLI
+    pg_credential_provider: str | None = None  # module:attr, forwarded to the child CLI
     stream_limit: int = _STREAM_LIMIT  # per-line stdout/stderr buffer (bytes)
     health: WorkerHealthConfig = field(default_factory=WorkerHealthConfig)
 
@@ -336,7 +336,7 @@ def _resolve_actor_registry(ref: str) -> Mapping[str, Any]:
     try:
         # Why no bound on this call: importing the actors module is not an
         # I/O wait on an external party but in-process execution of the
-        # application's own module top-level — the same code every child
+        # application's own module top-level, the same code every child
         # runs at spawn and the worker CLI runs at startup. Python has no
         # safe preemption for module execution: a thread-based deadline
         # cannot interrupt it and would leak a thread still holding the
@@ -370,7 +370,7 @@ def _resolve_actor_registry(ref: str) -> Mapping[str, Any]:
 def _warn_on_actor_queues_no_child_consumes(
     cfg: WorkgroupConfig, registry: Mapping[str, Any]
 ) -> None:
-    """Warn — loudly, once — about actors no child of this workgroup serves.
+    """Warn, loudly, once, about actors no child of this workgroup serves.
 
     Never refuses. A workgroup is not the whole fleet: another workgroup,
     another deployment, or a worker started by hand may consume the
@@ -382,7 +382,7 @@ def _warn_on_actor_queues_no_child_consumes(
     That makes the log line the only diagnosis there is, which is why it
     names each affected actor and its queue: without it, jobs for that
     actor enqueue successfully and pend forever with no signal anywhere.
-    One aggregated event rather than one per actor — the whole registry
+    One aggregated event rather than one per actor, the whole registry
     is imported by every child, so per-actor lines would storm exactly
     the split-queue deployments this blesses.
     """
@@ -402,7 +402,7 @@ def _warn_on_actor_queues_no_child_consumes(
         note=(
             "no child in this workgroup consumes these actors' queues, so "
             "their jobs enqueue and stay pending here. Intended when another "
-            "workgroup or deployment consumes the queue — no single supervisor "
+            "workgroup or deployment consumes the queue, no single supervisor "
             "can know the whole fleet, which is why this never refuses to "
             "start. If nothing consumes it, those jobs never run: add the "
             "queue to some [[workers]] entry's queues."
@@ -485,7 +485,7 @@ def _validate_config(cfg: WorkgroupConfig) -> None:
             )
         if not w.queues:
             raise ValueError(
-                f"worker[{w.name!r}].queues must list at least one queue — a worker "
+                f"worker[{w.name!r}].queues must list at least one queue, a worker "
                 "that consumes no queue dispatches nothing; omit the key to fall back "
                 "to [defaults].queues, or ['default'] when no default is set"
             )
@@ -556,9 +556,15 @@ class _ChildState:
     health_failures: int = 0
     stdout_task: asyncio.Task[None] | None = None
     stderr_task: asyncio.Task[None] | None = None
+    respawn_task: asyncio.Task[None] | None = None
+    """The child's in-flight backoff-then-respawn, run detached so one
+    child's backoff cannot pin the monitor's tick (a crash-looping child
+    would otherwise blind the monitor to every sibling for up to
+    ``backoff_max`` per cycle). The reference prevents garbage collection
+    of the detached task."""
     gave_up: bool = False
     """Set when the burst budget is exhausted. The monitor stops
-    scheduling this child entirely — the give-up critical fires once,
+    scheduling this child entirely, the give-up critical fires once,
     never per tick (a 2 Hz critical flood would drown every other
     signal on the box), and a supervisor restart is the operator's
     remedy. Never reset in-process: the window-clearing revival in
@@ -568,7 +574,7 @@ class _ChildState:
 def _health_check_sql(schema: str) -> str:
     """Build the health-check query for a worker.
 
-    Freshness is decided server-side — ``last_seen_at`` is written by PG
+    Freshness is decided server-side, ``last_seen_at`` is written by PG
     (``clock_timestamp()``), so only the server clock can measure its age
     without mixing clock domains; a skewed supervisor clock must not be
     able to read a healthy child as stale (the verdict kills processes).
@@ -601,14 +607,14 @@ async def _child_health_check(
     ``consecutive_failure_limit`` consecutive query failures the check returns
     False to prevent a persistent DB outage from masking hung workers.
     The query is bounded by :data:`_HEALTH_QUERY_TIMEOUT_SECS`; a timeout
-    counts as one query failure (a client-side deadline is transient —
-    ``taskq.worker._transient`` — not evidence the child is hung).
+    counts as one query failure (a client-side deadline is transient ,
+    ``taskq.worker._transient``, not evidence the child is hung).
     """
     sql = _health_check_sql(schema)
     try:
         async with pg_pool.acquire(timeout=2.0) as conn:
             # Why wait_for: the query must carry the deadline the acquire
-            # already has — without it a black-holed server holds the
+            # already has, without it a black-holed server holds the
             # caller's restart_lock past every other bound in the file.
             # A timeout lands in the except below like any other
             # transient DB failure: logged, counted, healthy until the
@@ -650,7 +656,7 @@ async def _child_health_check(
         return False
 
     fresh: bool | None = row["fresh"]
-    if fresh is None:  # last_seen_at IS NULL — never registered a beat
+    if fresh is None:  # last_seen_at IS NULL, never registered a beat
         return False
     if not fresh:
         logger.warning(
@@ -744,7 +750,7 @@ async def _read_line(stream: asyncio.StreamReader) -> tuple[bytes, bool]:
     Why not ``stream.readline()``: past the limit it raises ``ValueError``
     *and* clears the whole buffer on the way out. Uncaught, that kills
     ``_stream_output`` and with it every subsequent line from that child
-    for the rest of the process's life — one 1 MiB JSON log line or a deep
+    for the rest of the process's life, one 1 MiB JSON log line or a deep
     traceback is enough. ``readuntil()`` reports the same condition as
     ``LimitOverrunError`` while leaving the buffer intact, so the overlong
     line can be drained deliberately (``consumed`` bytes at a time, up to
@@ -764,7 +770,7 @@ async def _read_line(stream: asyncio.StreamReader) -> tuple[bytes, bool]:
                 head = chunk
                 truncated = True
             # read(n>0) returns empty only at EOF, so this is the "child died
-            # mid-line" exit — and it also makes the loop unable to spin.
+            # mid-line" exit, and it also makes the loop unable to spin.
             if not chunk:
                 return head, truncated
         else:
@@ -779,7 +785,7 @@ async def _stream_output(
     """Forward child process output lines to the supervisor logger.
 
     Total by design: an unexpected failure in the pump (transport error,
-    decoder fault) is logged loudly — the child's output is a
+    decoder fault) is logged loudly, the child's output is a
     supervisor's primary diagnostic surface, and the alternative is an
     unretrieved task exception plus silently lost output for the rest
     of the child's life. Cancellation still propagates: it is the
@@ -840,13 +846,13 @@ def _schedule_restart(
 
     Shared by the exit path and the spawn-failure path so a child that
     cannot start at all consumes the same restart budget as one that
-    keeps dying — without this, a permanently broken command line would
+    keeps dying, without this, a permanently broken command line would
     retry forever at monitor-tick cadence. Must be called with
     ``child.restart_lock`` held.
 
     Returns the delay to sleep before the spawn attempt, or ``None`` if
     the burst budget is exhausted and no restart is permitted. Budget
-    exhaustion latches ``gave_up`` — the caller must not schedule this
+    exhaustion latches ``gave_up``, the caller must not schedule this
     child again (the monitor skips given-up children), so the critical
     fires exactly once per child.
     """
@@ -886,7 +892,7 @@ async def _handle_child_exit(
     """React to a child process exiting; compute restart delay.
 
     Must be called with ``child.restart_lock`` held.  Does **not** sleep or
-    spawn — callers must release the lock before sleeping.
+    spawn, callers must release the lock before sleeping.
 
     Returns:
         Backoff delay in seconds if a restart should be attempted after
@@ -928,9 +934,9 @@ async def _delay_then_respawn(
     Shared by the exit and spawn-failure restart paths: the backoff
     sleep always happens OUTSIDE ``child.restart_lock`` (health checks
     and shutdown must never queue behind a sleeping monitor), a
-    shutdown signal interrupts the sleep immediately — the supervisor
+    shutdown signal interrupts the sleep immediately, the supervisor
     must not sit in backoff for ``backoff_max`` past SIGTERM before it
-    even begins forwarding the signal to other children — and the
+    even begins forwarding the signal to other children, and the
     spawn re-checks the process slot under the lock.
     """
     _sleep_task = asyncio.create_task(asyncio.sleep(delay))
@@ -956,11 +962,35 @@ async def _delay_then_respawn(
                 )
 
 
+def _start_respawn(
+    child: _ChildState,
+    delay: float,
+    actors: str,
+    wg_instance: UUID,
+    shutting_down: asyncio.Event,
+) -> None:
+    """Run one child's backoff-then-respawn detached from the monitor's tick.
+
+    Awaiting the respawn inline would serialize child-failure detection
+    behind one child's backoff sleep: a crash-looping child pinning the
+    monitor at ``backoff_max`` per cycle leaves every sibling undetected
+    for minutes. Detached, the monitor keeps ticking at its own cadence;
+    the respawn task is per-child (the spawn re-checks the process slot
+    under the lock, so overlap is safe) and self-terminates on shutdown.
+    """
+    if child.respawn_task is not None and not child.respawn_task.done():
+        return
+    child.respawn_task = asyncio.create_task(
+        _delay_then_respawn(child, delay, actors, wg_instance, shutting_down),
+        name=f"workgroup.respawn.{child.spec.name}",
+    )
+
+
 async def run_forever(config_path: Path) -> None:
     """Load config, spawn children, manage lifecycle until a signal arrives.
 
     Blocks until SIGTERM or SIGINT, then shuts down all children gracefully.
-    Returns normally after shutdown — the CLI caller handles the exit code.
+    Returns normally after shutdown, the CLI caller handles the exit code.
     """
     config = load_workgroup_config(config_path)
     scfg = config.supervisor
@@ -985,7 +1015,7 @@ async def run_forever(config_path: Path) -> None:
             if scfg.health_pg_dsn:
                 pg_dsn = scfg.health_pg_dsn
                 pg_schema = scfg.health_pg_schema or "taskq"
-                # No WorkerSettings for an explicit health DSN — the module
+                # No WorkerSettings for an explicit health DSN, the module
                 # constants (statement_cache_kwargs' fallback) apply.
                 stmt_kwargs = statement_cache_kwargs()
             else:
@@ -1046,11 +1076,11 @@ async def run_forever(config_path: Path) -> None:
                 "workgroup.spawn_failed",
                 worker=child.spec.name,
             )
-            # Continue — the liveness monitor retries never-spawned
+            # Continue, the liveness monitor retries never-spawned
             # children under the same burst/backoff budget as exited
             # ones.
 
-    # ── Signal handler — just sets the event; real cleanup follows ────
+    # ── Signal handler, just sets the event; real cleanup follows ────
     loop = asyncio.get_running_loop()
 
     def _on_signal() -> None:
@@ -1061,21 +1091,21 @@ async def run_forever(config_path: Path) -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, _on_signal)
 
-    # ── Liveness monitor — detects exited children and restarts them ──
+    # ── Liveness monitor, detects exited children and restarts them ──
     async def liveness_monitor() -> None:
         while not shutting_down.is_set():
             for child in list(children.values()):
                 if child.gave_up:
                     # Burst budget exhausted: one critical, logged when
                     # the budget refused, then this child is never
-                    # scheduled again — the monitor must not re-decide
+                    # scheduled again, the monitor must not re-decide
                     # every tick (a 2 Hz critical flood would drown every
                     # other signal on the box).
                     continue
                 proc = child.process
                 if proc is None:
                     # A child whose spawn failed (initial or restart) has
-                    # no process to observe — without this branch it
+                    # no process to observe, without this branch it
                     # would stay dead until the whole supervisor
                     # restarts. Retry it under the same burst/backoff
                     # budget as an exited child.
@@ -1091,9 +1121,7 @@ async def run_forever(config_path: Path) -> None:
                         )
                     if delay is None:
                         continue
-                    await _delay_then_respawn(
-                        child, delay, config.actors, wg_instance, shutting_down
-                    )
+                    _start_respawn(child, delay, config.actors, wg_instance, shutting_down)
                     continue
                 if proc.returncode is not None:
                     async with child.restart_lock:
@@ -1110,14 +1138,13 @@ async def run_forever(config_path: Path) -> None:
                         delay = await _handle_child_exit(
                             child, config.actors, wg_instance, scfg, shutting_down
                         )
-                    # Lock released.  Sleep outside the lock, racing against shutdown.
+                    # Lock released.  The respawn runs detached: the
+                    # monitor keeps ticking while this child backs off.
                     if delay is not None:
-                        await _delay_then_respawn(
-                            child, delay, config.actors, wg_instance, shutting_down
-                        )
+                        _start_respawn(child, delay, config.actors, wg_instance, shutting_down)
             await asyncio.sleep(0.5)
 
-    # ── Health-check loop — kills hung workers via DB ─────────────────
+    # ── Health-check loop, kills hung workers via DB ─────────────────
     async def health_loop() -> None:
         if pg_pool is None:
             return
@@ -1217,7 +1244,7 @@ async def run_forever(config_path: Path) -> None:
 
     if pg_pool:
         # Why bounded: the supervisor's health-pool close is the same
-        # dead-PG hang class as worker teardown — an unbounded close
+        # dead-PG hang class as worker teardown, an unbounded close
         # would wedge the supervisor between workgroup-shutdown-begin and
         # workgroup-shutdown-complete. The helper never raises and terminates the
         # pool on timeout.

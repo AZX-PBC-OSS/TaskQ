@@ -1,4 +1,4 @@
-"""Batch fan-out e2e — ``import_contacts_csv`` fans out 5 chunk jobs as one batch.
+"""Batch fan-out e2e - ``import_contacts_csv`` fans out 5 chunk jobs as one batch.
 
 Scenario:
 2500 rows / 500-chunk → parent fans out 5 chunk jobs →
@@ -11,12 +11,12 @@ Verified against the library, not guessed:
   it blocks (asyncio.sleep loop) until every child is terminal, then returns
   ``BatchCompletionStatus``; ``snooze_interval`` is clamped to >= 1 s. Batch
   children are matched by the GIN-indexed ``metadata @> {"batch_id": ...}``
-  containment — the ``batch_id`` metadata key is library-injected by
+  containment - the ``batch_id`` metadata key is library-injected by
   ``enqueue_batch`` (callers must not set it themselves).
 - The parent records the explicit ``batch_id`` on its ``dispatched`` effect
   (tests/e2e/actors.py), which is how the test correlates.
 - Range ground truth: the ``chunk_done`` effect detail carries ``chunk_id``
-  and ``rows_processed`` — NOT the ``[start_row, end_row)`` range. The range
+  and ``rows_processed`` - NOT the ``[start_row, end_row)`` range. The range
   lives in the chunk job's ``jobs.payload`` column, so the partition
   assertion joins effects to payloads by ``job_id``.
 
@@ -119,7 +119,7 @@ async def test_csv_fanout_all_chunks_complete(
     )
     assert len(chunk_effects) == _CHUNKS
 
-    # Chunk payloads by batch containment — the authoritative source of the
+    # Chunk payloads by batch containment - the authoritative source of the
     # [start_row, end_row) ranges (see module docstring).
     job_rows = await e2e_pg_pool.fetch(
         f"""
@@ -141,7 +141,7 @@ async def test_csv_fanout_all_chunks_complete(
         ranges.append((payload.start_row, payload.end_row))
     ranges.sort()
 
-    # Sorted ranges tile [0, 2500) exactly — no overlap, no gaps.
+    # Sorted ranges tile [0, 2500) exactly - no overlap, no gaps.
     assert ranges == [(0, 500), (500, 1000), (1000, 1500), (1500, 2000), (2000, 2500)]
 
 

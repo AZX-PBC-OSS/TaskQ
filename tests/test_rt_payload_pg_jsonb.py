@@ -1,7 +1,7 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
 """Red-team: the serialization/payload/result boundary against REAL jsonb.
 
-The load-bearing tier for the values where asyncpg's client codecs and
+The critical tier for the values where asyncpg's client codecs and
 PG's ``jsonb_in`` decide -- not orjson alone. Hunts:
 
 * an actor exception whose message/traceback carries a lone surrogate

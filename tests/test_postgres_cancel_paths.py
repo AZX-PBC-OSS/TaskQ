@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 
     type _Conn = asyncpg.Connection | PoolConnectionProxy
 else:
-    type _Conn = object  # pyright: ignore[reportInvalidTypeForm] # Why: runtime fallback — asyncpg is TYPE_CHECKING-only to avoid transitive import
+    type _Conn = object  # pyright: ignore[reportInvalidTypeForm] # Why: runtime fallback - asyncpg is TYPE_CHECKING-only to avoid transitive import
 
 pytestmark = pytest.mark.integration
 
@@ -253,7 +253,7 @@ class TestWriteCancelEscalation:
 
         await backend.write_cancel_request(job_id, None)
 
-        # Escalate with the *wrong* worker — locked_by_worker != worker_id
+        # Escalate with the *wrong* worker - locked_by_worker != worker_id
         r = await backend.write_cancel_escalation(job_id, other_worker, 2)  # type: ignore[arg-type] # Why: Literal[2] not narrowed from int literal
         assert r is False
 
@@ -266,7 +266,7 @@ class TestWriteCancelEscalation:
             )
 
         assert row is not None
-        assert row["cancel_phase"] == 1  # unchanged — escalation did not apply
+        assert row["cancel_phase"] == 1  # unchanged - escalation did not apply
         # Only state_change from create_running_job + cancel_request; no escalation event
         assert_has_event(events, "state_change")
         assert_has_event(events, "cancel_request")
@@ -276,7 +276,7 @@ class TestWriteCancelEscalation:
 
 
 class TestDoubleWriteIdempotency:
-    """double-write idempotency — second write returns False
+    """double-write idempotency - second write returns False
     and produces no duplicate event rows.
     """
 
@@ -345,7 +345,7 @@ class TestDoubleWriteIdempotency:
                 f'SELECT * FROM "{schema}".job_events WHERE job_id = $1', job_id
             )
         # state_change from create + cancel_request + one escalation state_change, no duplicate
-        # The job has been cancelled (cancel_request on running) — verify the state_change events
+        # The job has been cancelled (cancel_request on running) - verify the state_change events
         state_events = [e for e in events if e["kind"] == "state_change"]
         assert len(state_events) == 2  # original + escalation
 
@@ -426,7 +426,7 @@ class TestEquivalence:
         # ── PG backend ───────────────────────────────────────────
         # The job reaches 'running' through the REAL enqueue + dispatch
         # path, exactly like the memory side: a claim deliberately writes
-        # no job_events row (the events diet — backend/_dispatch.py), so
+        # no job_events row (the events diet - backend/_dispatch.py), so
         # a fixture-injected one would count an event production never
         # writes and break the cross-backend event comparison below.
         deps = clean_jobs_app.deps
@@ -651,7 +651,7 @@ class TestCancelOriginAuditability:
     means an actor honoured ``ctx.cancellation_requested``, one means a
     worker had to stop an actor that would not yield, and one means the
     work never reached a worker at all. Operators triage those
-    differently, and logs are not a durable audit trail — so each
+    differently, and logs are not a durable audit trail - so each
     terminal cancel path stamps its own distinguishing ``error_class``
     on the row, exactly as every terminal failure path already does.
     Without it, monitoring can see that jobs are being cancelled but
@@ -679,7 +679,7 @@ class TestCancelOriginAuditability:
         assert row is not None
         assert row["status"] == "cancelled"
         assert row["error_class"] is not None, (
-            "a cooperative cancel wrote no error_class — cancel origin is "
+            "a cooperative cancel wrote no error_class - cancel origin is "
             "unauditable on the job row"
         )
 
@@ -732,7 +732,7 @@ class TestCancelOriginAuditability:
     ) -> None:
         """A job cancelled before it ever reached a worker still has a
         terminal transition on its event timeline. Trimming per-denial
-        bookkeeping rows cut noise, not state transitions — no cancelled
+        bookkeeping rows cut noise, not state transitions - no cancelled
         job may end with a timeline that never shows it ending."""
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend
@@ -757,7 +757,7 @@ class TestCancelOriginAuditability:
     ) -> None:
         """A running job cancelled while still only ASKED (cancel_phase=1)
         reads exactly ``CancelledCooperatively`` on the row and the attempt
-        — the constant itself, not merely a non-NULL distinct value: the
+        - the constant itself, not merely a non-NULL distinct value: the
         distinctness pin above would also pass if the phase arms were
         swapped."""
         deps = clean_jobs_app.deps
@@ -785,7 +785,7 @@ class TestCancelOriginAuditability:
 
     async def test_phase_2_cancel_stamps_the_forced_marker(self, clean_jobs_app: JobsApp) -> None:
         """A running job cancelled after escalation (cancel_phase=2) reads
-        exactly ``CancelledForced`` on the row and the attempt — the marker
+        exactly ``CancelledForced`` on the row and the attempt - the marker
         says the actor had to be interrupted, the operational signal to go
         look at that actor."""
         deps = clean_jobs_app.deps

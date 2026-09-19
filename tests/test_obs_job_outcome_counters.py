@@ -1,5 +1,5 @@
 """Unit tests for the job-outcome counters ``taskq.jobs.attempt_failures``
-and ``taskq.jobs.abandoned`` — the series that replaced the consumed-messages
+and ``taskq.jobs.abandoned`` - the series that replaced the consumed-messages
 ``outcome="abandoned"`` relabelling of every retry and snooze.
 
 Both are call-time-resolved (lazy) counters: recorded through the meter
@@ -52,7 +52,7 @@ def test_attempt_failure_derives_error_type_from_the_handled_exception(
     otel_reader: InMemoryMetricReader,
 ) -> None:
     """The failure-counter idiom: an omitted error_type is the class of the
-    exception being handled — a closed set — never caller text."""
+    exception being handled - a closed set - never caller text."""
 
     class _FlakyError(RuntimeError):
         pass
@@ -87,7 +87,7 @@ def test_both_counters_respect_the_otel_switch(otel_reader: InMemoryMetricReader
 
 def test_consumed_outcome_set_has_no_value_without_a_producer() -> None:
     """Every value of the closed set is something the consumer path emits:
-    ``scheduled`` for a released row, and never ``abandoned`` — the
+    ``scheduled`` for a released row, and never ``abandoned`` - the
     operator-cancel outcome lives on its own counter."""
     from typing import get_args
 

@@ -228,7 +228,7 @@ class TestListJobs:
 
     async def test_cursor_pagination_without_field_filters(self, clean_jobs_app: JobsApp) -> None:
         """Cursor-only list_jobs (no queue/status/actor filters) must
-        produce valid SQL — regression test for the AND-without-WHERE bug."""
+        produce valid SQL - regression test for the AND-without-WHERE bug."""
 
         backend = clean_jobs_app.backend
 

@@ -12,7 +12,7 @@ it, and the dispatch twin's reservation-headroom gate reads it to
 exclude keyed buckets from the per-actor fold, the same exclusion the
 PG claim's ``reservation_holdings`` CTE applies (a keyed bucket's
 concrete name is payload-derived per job, so claim time cannot know
-which pending row needs it; #242).
+which pending row needs it).
 """
 
 import threading

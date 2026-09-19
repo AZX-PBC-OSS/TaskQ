@@ -4,10 +4,10 @@ Runs against the shared session Postgres via the ``pg_dsn`` fixture from
 ``tests/conftest.py`` (one container for the whole run), spawning a worker
 subprocess via ``tests/_worker_harness.py`` and driving CLI commands through
 the Unix health socket. The pause/unpause chaos test uses its own disposable
-container (``paused_pg``) — the shared one must never be paused.
+container (``paused_pg``) - the shared one must never be paused.
 
 Tests poll ``os.path.exists(socket_path)`` with a 5 s deadline for worker
-readiness rather than relying on a ``worker-ready`` stderr line — the
+readiness rather than relying on a ``worker-ready`` stderr line - the
 polling approach keeps the harness slim and avoids buffering concerns.
 """
 
@@ -49,7 +49,7 @@ async def _off_loop_container(
 ) -> AsyncGenerator[PostgresContainer, None]:
     """Enter/exit a testcontainers container with the blocking calls off the event loop.
 
-    Why: docker-py is requests-based — container start (+ readiness wait) and
+    Why: docker-py is requests-based - container start (+ readiness wait) and
     stop are blocking HTTP round-trips that can run for seconds; executed on
     the loop they stall it for the whole round-trip, defeating every
     client-side timeout sharing that loop. Skips the test with a reason
@@ -88,7 +88,7 @@ def _worker_settings_dict(pg_dsn: str, socket_path: str, schema: str) -> dict[st
         # <= 3.0, hence the tiny heartbeat command timeout) and
         # cancel+cleanup < lock_lease (/).
         # Watchdog off: these tests exercise the health server and shutdown
-        # phases, not the detectors — and the 3s lease leaves no room for a
+        # phases, not the detectors - and the 3s lease leaves no room for a
         # lag budget that is both inside the lease and above the check
         # interval, so the honest fast-test config is the invariant's
         # watchdog-disabled exemption.
@@ -244,7 +244,7 @@ async def paused_pg() -> AsyncIterator[tuple[str, PostgresContainer, str]]:
             dbname="taskq",
         ).with_kwargs(labels=creator_labels())
     ) as container:
-        # Why: get_connection_url resolves the mapped port via docker HTTP — off-loop.
+        # Why: get_connection_url resolves the mapped port via docker HTTP - off-loop.
         dsn = (await asyncio.to_thread(container.get_connection_url)).replace(
             "postgresql+psycopg2://", "postgresql://"
         )
@@ -280,7 +280,7 @@ def test_ti2_ready_fails_when_pg_stopped(
                 f"stdout={post_stop.stdout!r} stderr={post_stop.stderr!r}"
             )
             # When the PG ping times out the worker may take longer than the CLI's
-            # 2 s request timeout to respond — in that case stdout is empty and the
+            # 2 s request timeout to respond - in that case stdout is empty and the
             # exit-1 alone is sufficient evidence. When a body is present, verify
             # the schema matches the acceptance definition.
             if post_stop.stdout.strip():
@@ -477,10 +477,10 @@ def test_ti6_stale_socket_sigkill(pg_dsn: str, health_schema_name: str) -> None:
             live = _run_cli("health", "live", env=worker_env)
             if live.returncode != 0:
                 raise AssertionError(
-                    f"iteration {iteration}: worker B liveness failed — "
+                    f"iteration {iteration}: worker B liveness failed - "
                     f"stdout={live.stdout!r}, stderr={live.stderr!r}"
                 )
             break
         finally:
             _cleanup_worker(proc_b, socket_path)
-            # socket unlinked by cleanup — ready for next iteration
+            # socket unlinked by cleanup - ready for next iteration

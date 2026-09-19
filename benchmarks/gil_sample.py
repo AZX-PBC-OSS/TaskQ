@@ -1,4 +1,4 @@
-"""In-process GIL sampler + flamegraph — py-spy fallback for macOS.
+"""In-process GIL sampler + flamegraph - py-spy fallback for macOS.
 
 py-spy needs root on macOS (``task_for_pid``), which is unavailable here.
 This script profiles the same workload in-process instead:
@@ -8,7 +8,7 @@ This script profiles the same workload in-process instead:
   - samples ``sys._current_frames()`` from the sampler thread at ~1kHz
 
 Because the workload is a single CPU-bound Python thread, every sample
-of the worker thread is a GIL-holding sample — the same population
+of the worker thread is a GIL-holding sample - the same population
 py-spy ``--gil`` would report.
 
 Outputs (in benchmarks/):
@@ -127,7 +127,7 @@ def write_flamegraph(collapsed: dict[tuple[str, ...], int]) -> None:
     )
     out.write(
         f"<text x='{width // 2}' y='18' text-anchor='middle' font-size='13'>"
-        f"TaskQ dispatch stress — GIL-holding samples (total {total})</text>\n"
+        f"TaskQ dispatch stress - GIL-holding samples (total {total})</text>\n"
     )
 
     def emit(node: dict, x: float, w: float, depth: int) -> None:
@@ -135,7 +135,7 @@ def write_flamegraph(collapsed: dict[tuple[str, ...], int]) -> None:
         name = node["name"]
         pct = node["value"] / total * 100
         out.write(
-            f"<g><title>{escape(name)} — {node['value']} samples "
+            f"<g><title>{escape(name)} - {node['value']} samples "
             f"({pct:.2f}%)</title>"
             f"<rect x='{x:.1f}' y='{y:.1f}' width='{max(w - 0.4, 0.2):.1f}' "
             f"height='{row_h - 2}' fill='{_color(depth, name)}' rx='1'/>"
@@ -144,7 +144,7 @@ def write_flamegraph(collapsed: dict[tuple[str, ...], int]) -> None:
             label = name if len(name) * 6.6 < w else name[: int(w / 6.6) - 2] + "…"
             out.write(
                 f"<text x='{x + 2:.1f}' y='{y + row_h - 5:.1f}' "
-                f"font-size='10' fill='#000'>{escape(label)}</text>"
+                f"font-size='10' fill=''>{escape(label)}</text>"
             )
         out.write("</g>\n")
         child_x = x

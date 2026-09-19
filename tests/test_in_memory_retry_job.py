@@ -2,7 +2,7 @@
 
 Verifies that retry_job:
 - Re-pends a failed/crashed/cancelled job with cleared error fields
-- Keeps attempt monotonic (never reset — the attempt counter is the epoch
+- Keeps attempt monotonic (never reset - the attempt counter is the epoch
   identifier for the job's attempt record) and raises max_attempts to
   GREATEST(max_attempts, attempt + 1) so the budget gates open
 - Resets cancel_phase=0, scheduled_at=now()
@@ -77,15 +77,15 @@ class TestInMemoryRetryJob:
         assert row.status == "pending"
         assert row.attempt == 1, (
             "MONOTONIC-ATTEMPT CONTRACT: retry_job must never reset the "
-            f"attempt counter — observed {row.attempt!r}. A reset revisits "
+            f"attempt counter - observed {row.attempt!r}. A reset revisits "
             "the spent epoch's attempt numbers, causing a PRIMARY KEY "
             "collision on the attempt record (verified in "
             "tests/test_retry_job_attempt_epoch_pk.py)."
         )
         assert row.max_attempts == 3, (
             "CEILING-RAISE CONTRACT: a mid-budget re-run keeps the original "
-            "ceiling (GREATEST(max_attempts, attempt + 1) — attempt 1 of 3 "
-            f"stays 3) — observed {row.max_attempts!r}."
+            "ceiling (GREATEST(max_attempts, attempt + 1) - attempt 1 of 3 "
+            f"stays 3) - observed {row.max_attempts!r}."
         )
         assert row.error_class is None
         assert row.error_message is None
@@ -196,7 +196,7 @@ class TestInMemoryRetryJob:
 
     async def test_retry_resets_cancel_phase(self) -> None:
         """retry_job resets the whole cancel trail: cancel_phase to 0 (NONE)
-        and cancel_requested_at to None — the re-run is a fresh epoch, so it
+        and cancel_requested_at to None - the re-run is a fresh epoch, so it
         must not inherit the spent epoch's request stamp (PG's SET clause
         clears both)."""
         from taskq.backend._protocol import CancelPhase
@@ -218,7 +218,7 @@ class TestInMemoryRetryJob:
         assert row.cancel_phase == CancelPhase.NONE
         assert row.cancel_requested_at is None, (
             "FRESH-EPOCH CONTRACT: retry_job clears cancel_requested_at "
-            "alongside cancel_phase — a stale request stamp on a re-pended "
+            "alongside cancel_phase - a stale request stamp on a re-pended "
             "row breaks the cancel safety contract (verified in "
             "tests/test_rt_diff_terminal.py)."
         )
@@ -251,7 +251,7 @@ class TestInMemoryRetryJob:
         clock_timestamp() THEN NULL`` arm: the twin's own dispatch claim
         (testing/_dispatch.py) admits a row only when its deadline is NULL
         or strictly in the future, so re-pending with a stale deadline
-        intact would hand back a row no claim can ever reach — the operator
+        intact would hand back a row no claim can ever reach - the operator
         sees a successful retry and the next deadline-sweep tick silently
         re-fails the job. The PG pin for the end-to-end contract is
         tests/test_retry_job_stale_deadline_operator_footgun.py.
@@ -270,13 +270,13 @@ class TestInMemoryRetryJob:
         assert row is not None
         assert row.status == "pending"
         assert row.schedule_to_close is None, (
-            "an already-elapsed deadline is a spent epoch's artifact — it "
+            "an already-elapsed deadline is a spent epoch's artifact - it "
             "must be cleared with the error fields so the re-pended row is "
             f"dispatchable. observed schedule_to_close={row.schedule_to_close!r}"
         )
 
     async def test_retry_preserves_a_future_schedule_to_close(self) -> None:
-        """A still-future schedule_to_close survives the retry — the
+        """A still-future schedule_to_close survives the retry - the
         operator's original budget intent is preserved for an in-window
         retry; only an elapsed deadline is a stale artifact."""
         clock = FakeClock(_START)
@@ -300,7 +300,7 @@ class TestInMemoryRetryJob:
     async def test_retry_clears_a_deadline_at_exactly_now(self) -> None:
         """Boundary: a deadline exactly at the backend's now is already
         undispatchable (dispatch requires ``schedule_to_close > now``), so
-        the retry clears it too — the SQL twin's ``WHEN`` arm is
+        the retry clears it too - the SQL twin's ``WHEN`` arm is
         ``schedule_to_close <= clock_timestamp()``."""
         clock = FakeClock(_START)
         backend = _make_backend(clock)

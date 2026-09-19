@@ -2,13 +2,13 @@
 
 This module owns the parts shared by both the OIDC and SAML backends:
 
-* :class:`IdentityClaims` — normalized identity regardless of which protocol
+* :class:`IdentityClaims`, normalized identity regardless of which protocol
   produced it.
-* :class:`AuthBundle` — the router + dependency pair returned by each backend
+* :class:`AuthBundle`, the router + dependency pair returned by each backend
   factory.
-* :class:`SessionManager` — stateless signed-cookie session via
+* :class:`SessionManager`, stateless signed-cookie session via
   ``itsdangerous.URLSafeTimedSerializer`` (no Redis/DB dependency).
-* :func:`create_auth_dependency` — the FastAPI dependency that gates every
+* :func:`create_auth_dependency`, the FastAPI dependency that gates every
   admin route on a valid session cookie and the optional group allowlist.
 
 Importing this module does **not** require ``itsdangerous``; the dependency is
@@ -138,7 +138,7 @@ class IdentityClaims:
 class AuthBundle:
     """Returned by each SSO backend factory.
 
-    ``router`` carries the login/callback/logout (and SAML metadata) routes —
+    ``router`` carries the login/callback/logout (and SAML metadata) routes ,
     mount it at the admin router's ``base_path``.  ``dependency`` is the
     FastAPI dependency to pass to ``create_router(auth_dependency=...)``.
     """
@@ -152,7 +152,7 @@ class SessionManager:
     """Stateless signed-cookie session backed by itsdangerous.
 
     Cookie payload stores only ``subject``, ``email``, and ``groups`` (as a
-    sorted list) — no raw tokens/assertions, no PII beyond what the allowlist
+    sorted list), no raw tokens/assertions, no PII beyond what the allowlist
     check needs.  Cookie flags: ``httponly``, ``secure`` (configurable for
     local http dev), ``samesite="lax"``, ``path`` (scoped to the admin mount).
     """
@@ -271,8 +271,8 @@ def create_auth_dependency(
 
     Reads the session cookie, verifies signature + expiry, re-checks the group
     allowlist (in case ``allowed_groups`` changed since the cookie was issued),
-    and raises ``HTTPException`` — redirecting to *login_path* for browser
-    navigation (``Accept: text/html``) or 401 for API clients — if invalid.
+    and raises ``HTTPException``, redirecting to *login_path* for browser
+    navigation (``Accept: text/html``) or 401 for API clients, if invalid.
     """
 
     async def _dependency(request: Request) -> IdentityClaims:

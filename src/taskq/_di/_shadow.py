@@ -5,7 +5,7 @@ from typing import Any, cast
 
 from taskq._di.solver import (
     _cached_introspection,  # pyright: ignore[reportPrivateUsage]  # Why: the shadow-derivation walk mirrors the solver's own parameter introspection; reusing its memoized introspection keeps the walk at cached-tuple access instead of re-running get_type_hints.
-    _unwrap_scope_override,  # pyright: ignore[reportPrivateUsage]  # Why: same — the walk must unwrap Annotated[...] exactly as the solver does, or a Scope-marked shadowed parameter would be misread.
+    _unwrap_scope_override,  # pyright: ignore[reportPrivateUsage]  # Why: same, the walk must unwrap Annotated[...] exactly as the solver does, or a Scope-marked shadowed parameter would be misread.
 )
 from taskq._di.types import FactoryShape, ProviderEntry
 
@@ -18,10 +18,10 @@ def shadow_derived_providers(
 ) -> frozenset[type]:
     """The provider types whose dependency closure reaches a shadowed type.
 
-    Walks the provider graph statically — the same parameter
+    Walks the provider graph statically, the same parameter
     introspection the solver performs at resolution time (memoized by
     ``_cached_introspection``), followed recursively through
-    provider→provider edges — and returns every NON-value provider whose
+    provider→provider edges, and returns every NON-value provider whose
     own parameters, or any transitively injected provider's parameters,
     name a type in *shadow_types*. Those are the LOOP-scoped factories
     that bake a LOOP-registered connection (or anything derived from
@@ -36,7 +36,7 @@ def shadow_derived_providers(
 
     def _entry_callable(entry: ProviderEntry[object]) -> object | None:
         # The callable whose parameters name this provider's
-        # dependencies: the factory itself, or the class's __init__ —
+        # dependencies: the factory itself, or the class's __init__ ,
         # the same pair the solver resolves through.
         if entry.factory_shape is FactoryShape.VALUE:
             return None

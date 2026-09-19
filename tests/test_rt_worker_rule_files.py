@@ -6,7 +6,7 @@ annotations point at anchors in docs/guides/runbooks.md. Two drift
 shapes nothing pins today: an annotation pointing at a runbook anchor
 that does not exist (the alert pages and the runbook 404s), and an expr
 referencing a series name the bridge never emits (the alert never fires
-— silently, because a non-matching series selector is not a Prometheus
+- silently, because a non-matching series selector is not a Prometheus
 error).
 """
 
@@ -33,9 +33,9 @@ _NEW_ALERTS = (
     "TaskQLeaderLockContention",
 )
 
-#: The alerts the observability burn added on top — the denial/outage
+#: The alerts the observability burn added on top - the denial/outage
 #: family (rate-limit store dependency, cron lock contention, the
-#: zombie-running lease gauge) — under the same runbook and emitted-series
+#: zombie-running lease gauge) - under the same runbook and emitted-series
 #: discipline.
 _OUTAGE_ALERTS = (
     "TaskQRateLimitDependencyOutage",
@@ -44,9 +44,9 @@ _OUTAGE_ALERTS = (
 )
 
 #: The outage family's severities: the first two are degradation signals
-#: (work deferred, not lost — warning, like the sweep family); a SUSTAINED
+#: (work deferred, not lost - warning, like the sweep family); a SUSTAINED
 #: non-zero zombie-running count means reclaim is not draining while
-#: health probes stay green — that one is the 3am page.
+#: health probes stay green - that one is the 3am page.
 _OUTAGE_SEVERITIES = {
     "TaskQRateLimitDependencyOutage": "warning",
     "TaskQCronLockContention": "warning",
@@ -69,7 +69,7 @@ _JOB_OUTCOME_SEVERITIES = {
 }
 
 #: The unserved-queue family: a queue with work and no live worker
-#: (critical — nothing will consume it), and the per-reason stranded gauge.
+#: (critical - nothing will consume it), and the per-reason stranded gauge.
 _UNSERVED_ALERTS = ("TaskQQueueUnserved", "TaskQStrandedJobs")
 
 _UNSERVED_SEVERITIES = {
@@ -118,7 +118,7 @@ def _runbook_anchors(md_path: Path) -> set[str]:
 
 def test_new_alert_annotations_point_at_existing_runbook_anchors() -> None:
     """Every runbook link in the runbooked alerts' annotations must resolve
-    to a real heading anchor in docs/guides/runbooks.md — in BOTH rule
+    to a real heading anchor in docs/guides/runbooks.md - in BOTH rule
     files. And every such alert must CARRY a runbook link: an annotation
     that lost its link entirely would otherwise pass vacuously."""
     assert _RUNBOOKS_MD.exists(), f"runbooks.md not found at {_RUNBOOKS_MD}"
@@ -134,13 +134,13 @@ def test_new_alert_annotations_point_at_existing_runbook_anchors() -> None:
             links = list(re.finditer(r"docs/guides/runbooks\.md#([a-z0-9-]+)", text))
             assert links, (
                 f"{rules_path.name}: alert {rule['alert']!r} carries no runbook "
-                "link at all — an operator following the alert has nowhere to go"
+                "link at all - an operator following the alert has nowhere to go"
             )
             for match in links:
                 anchor = match.group(1)
                 assert anchor in anchors, (
                     f"{rules_path.name}: alert {rule['alert']!r} points at "
-                    f"runbook anchor #{anchor}, which does not exist — the "
+                    f"runbook anchor #{anchor}, which does not exist - the "
                     "alert pages and the runbook 404s"
                 )
 
@@ -149,7 +149,7 @@ def test_new_alert_exprs_reference_series_the_bridge_emits() -> None:
     """Every taskq_* / messaging_* series name in the runbooked alerts'
     exprs must be a Prometheus name the bridge actually emits (per the
     authoritative _NAME_MAP the scrape tests verify). A typo'd series name
-    is not a Prometheus error — the alert just silently never fires."""
+    is not a Prometheus error - the alert just silently never fires."""
     from tests.test_prometheus_metrics import _NAME_MAP
 
     emitted = {prom_name for _, prom_name, _kind in _NAME_MAP}
@@ -163,19 +163,19 @@ def test_new_alert_exprs_reference_series_the_bridge_emits() -> None:
             referenced = set(re.findall(r"\b(?:taskq|messaging)_[a-z0-9_]+", expr))
             assert referenced, (
                 f"{rules_path.name}: alert {rule['alert']!r} references no "
-                "taskq or messaging series at all — the expr is wrong"
+                "taskq or messaging series at all - the expr is wrong"
             )
             unknown = referenced - emitted
             assert not unknown, (
                 f"{rules_path.name}: alert {rule['alert']!r} references series "
-                f"the bridge never emits: {sorted(unknown)} — the alert can "
+                f"the bridge never emits: {sorted(unknown)} - the alert can "
                 "never fire"
             )
 
 
 def test_sweep_degraded_expr_compares_actual_to_configured_series() -> None:
     """TaskQSweepDegraded must compare the sweep's used batch size against
-    the configured-size series the worker emits — in BOTH rule files.
+    the configured-size series the worker emits - in BOTH rule files.
 
     A hardcoded threshold (any literal) is blind whenever a deployment's
     ``event_writer_batch_size`` is not the default: a worker degraded to
@@ -198,7 +198,7 @@ def test_sweep_degraded_expr_compares_actual_to_configured_series() -> None:
         }, (
             f"{rules_path.name}: the TaskQSweepDegraded expr must compare exactly the "
             f"used-size and configured-size series (gauge to gauge); saw {sorted(referenced)} "
-            "— a literal threshold cannot track per-worker event_writer_batch_size"
+            "- a literal threshold cannot track per-worker event_writer_batch_size"
         )
 
 
@@ -206,8 +206,8 @@ def test_sweep_degraded_expr_compares_actual_to_configured_series() -> None:
 def test_scheduled_backlog_growing_asserts_count_growth_not_self_referenced_age(
     rules_path: Path,
 ) -> None:
-    """TaskQScheduledBacklogGrowing must compare a genuine growth signal —
-    a job COUNT rising over the window — not join
+    """TaskQScheduledBacklogGrowing must compare a genuine growth signal -
+    a job COUNT rising over the window - not join
     taskq_jobs_oldest_due_age_seconds against itself.
 
     taskq_jobs_oldest_due_age_seconds tracks whichever single job is
@@ -216,7 +216,7 @@ def test_scheduled_backlog_growing_asserts_count_growth_not_self_referenced_age(
     is draining. `taskq_jobs_oldest_due_age_seconds >=
     taskq_jobs_oldest_due_age_seconds offset 5m` is therefore satisfied
     by a perfectly healthy, steadily draining backlog for the entire
-    5-minute straggler wait — the "growing" half of the check adds
+    5-minute straggler wait - the "growing" half of the check adds
     nothing beyond the bare `age > 300` threshold it is supposed to
     sharpen. The fix compares a count series (taskq_jobs_scheduled_count,
     the label-less twin of taskq_jobs_by_status{status="scheduled"})
@@ -230,7 +230,7 @@ def test_scheduled_backlog_growing_asserts_count_growth_not_self_referenced_age(
 
     assert "taskq_jobs_oldest_due_age_seconds >= taskq_jobs_oldest_due_age_seconds" not in expr, (
         f"{rules_path.name}: TaskQScheduledBacklogGrowing still self-joins the "
-        f"oldest-due-age gauge against its own offset value — that pairing is "
+        f"oldest-due-age gauge against its own offset value - that pairing is "
         f"satisfied by a healthy draining backlog for the whole straggler wait "
         f"and degenerates to a bare age>300 threshold. expr: {expr}"
     )
@@ -255,7 +255,7 @@ def test_sweep_timeouts_alert_counts_every_sampler_failure_class() -> None:
     """TaskQSweepTimeouts must count the gauge samplers' read failures, not
     only sweep batches, and must keep doing so.
 
-    The per-actor backlog read's failure arms (#249) count on the
+    The per-actor backlog read's failure arms count on the
     sweep-timeouts counter under the actor_backlog sweep_name; the queue
     depth, backlog-detection and reservation-slots samplers already do
     under theirs. The alert's expression must therefore stay UNFILTERED on
@@ -276,16 +276,16 @@ def test_sweep_timeouts_alert_counts_every_sampler_failure_class() -> None:
         )
         assert "{" not in expr, (
             f"{rules_path.name}: TaskQSweepTimeouts filters its series ({expr!r}) "
-            "— a sweep_name selector that excludes the gauge-sampler names "
+            "- a sweep_name selector that excludes the gauge-sampler names "
             "(queue_depth, backlog_detection, actor_backlog, "
             "reservation_slots) silently un-wires the sampler-failure "
-            "class, and #249's silent alert resolution returns with the "
+            "class, and the silent alert resolution returns with the "
             "counting alert green"
         )
         text = " ".join(str(v) for v in rule["annotations"].values()).lower()
         assert "sampler" in text, (
             f"{rules_path.name}: TaskQSweepTimeouts' annotations no longer "
-            "mention the gauge-sampler failure class — the page will send "
+            "mention the gauge-sampler failure class - the page will send "
             "the operator hunting batch timeouts when a sampler stopped "
             "reading"
         )
@@ -300,7 +300,7 @@ def test_both_rule_files_carry_the_five_new_alerts() -> None:
         by_name = {r["alert"]: r for r in rules}
         for alert in _NEW_ALERTS:
             assert alert in by_name, (
-                f"{rules_path.name} is missing the new alert {alert!r} — the "
+                f"{rules_path.name} is missing the new alert {alert!r} - the "
                 "two rule files have drifted"
             )
             assert by_name[alert]["labels"]["severity"] == "warning"
@@ -310,13 +310,13 @@ def test_both_rule_files_carry_the_outage_alerts_at_their_severities() -> None:
     """The observability-burn alerts live in BOTH rule files at their own
     severities: the denial-family degradation signals at warning, the
     sustained zombie-running count at critical (work claimed and stuck
-    while health probes stay green — the 3am page)."""
+    while health probes stay green - the 3am page)."""
     for rules_path in (_RULES_YAML, _K8S_RULES_YAML):
         rules = _rules_from(rules_path)
         by_name = {r["alert"]: r for r in rules}
         for alert, severity in _OUTAGE_SEVERITIES.items():
             assert alert in by_name, (
-                f"{rules_path.name} is missing the alert {alert!r} — under a "
+                f"{rules_path.name} is missing the alert {alert!r} - under a "
                 "Redis outage every rate-limited dispatch snoozes silently "
                 "and nothing fires"
             )
@@ -334,7 +334,7 @@ def test_both_rule_files_carry_the_cron_budget_alert_at_warning() -> None:
         by_name = {r["alert"]: r for r in rules}
         for alert, severity in _CRON_BUDGET_SEVERITIES.items():
             assert alert in by_name, (
-                f"{rules_path.name} is missing the alert {alert!r} — the "
+                f"{rules_path.name} is missing the alert {alert!r} - the "
                 "observability guide points operators at its runbook, so "
                 "without it nothing ever pages on a sustained deferral rate"
             )
@@ -354,7 +354,7 @@ def test_job_outcome_alerts_read_the_series_that_mean_what_they_say() -> None:
         by_name = {r["alert"]: r for r in _rules_from(rules_path)}
         assert "TaskQCrashedJobRateHigh" not in by_name, (
             f"{rules_path.name}: the terminal-failed alert measures outcome=failed, "
-            "not crashes — it is TaskQFailedJobRateHigh"
+            "not crashes - it is TaskQFailedJobRateHigh"
         )
         for alert, severity in _JOB_OUTCOME_SEVERITIES.items():
             assert alert in by_name, f"{rules_path.name} is missing {alert!r}"
@@ -396,7 +396,7 @@ def test_unserved_queue_alerts_join_depth_to_live_workers_on_queue() -> None:
 def test_dimensionless_series_annotations_carry_no_label_references() -> None:
     """Alerts on series the bridge emits with NO dimensions must not
     reference ``$labels.<dim>`` in their annotations: the rendered alert
-    summary would show an empty worker — a 3am page that names nobody.
+    summary would show an empty worker - a 3am page that names nobody.
 
     taskq.heartbeat.misses and taskq.lock.expires_in_seconds are
     dimensionless by the cardinality rule (obs/_otel.py's worker_id
@@ -419,13 +419,13 @@ def test_dimensionless_series_annotations_carry_no_label_references() -> None:
             assert not offenders, (
                 f"{rules_path.name}: alert {rule['alert']!r} fires on a "
                 f"dimensionless series but its annotations reference "
-                f"{offenders} — the rendered summary carries an empty value"
+                f"{offenders} - the rendered summary carries an empty value"
             )
 
 
 @pytest.mark.parametrize("rules_path", [_RULES_YAML, _K8S_RULES_YAML])
 def test_rule_file_parses_with_expected_alert_count(rules_path: Path) -> None:
-    """Both files parse and carry the same alert set — the drift backstop
+    """Both files parse and carry the same alert set - the drift backstop
     the plain/k8s lockstep test in the scrape suite asserts pairwise; this
     pins the count so a sixth alert added to ONE file fails here too."""
     rules = _rules_from(rules_path)
@@ -447,7 +447,7 @@ _SERIES_LABELS: dict[str, frozenset[str]] = {
     "taskq_maintenance_leader_sweep_batch_size": frozenset({"sweep_name"}),
     "taskq_maintenance_leader_sweep_batch_size_configured": frozenset({"sweep_name"}),
     # Label-free leader-lease gauge: one series per pod, present only
-    # while that pod holds the lease — pinned label-free so a join
+    # while that pod holds the lease - pinned label-free so a join
     # against it can never silently go empty.
     "taskq_maintenance_leader_lease_expires_in_seconds": frozenset(),
     "taskq_queue_depth": frozenset({"queue"}),
@@ -578,7 +578,7 @@ def test_vector_comparisons_use_compatible_or_modified_label_sets(rules_path: Pa
 @pytest.mark.parametrize("rules_path", [_RULES_YAML, _K8S_RULES_YAML])
 def test_backlog_alerts_make_an_unconsumed_actor_visible(rules_path: Path) -> None:
     """The backlog-growing alert family must be able to name an actor whose
-    jobs accumulate and are never consumed — in BOTH rule files.
+    jobs accumulate and are never consumed - in BOTH rule files.
 
     A worker that can do work never refuses to start, so an actor whose
     queue no child of this supervisor consumes boots with a warning and
@@ -589,9 +589,9 @@ def test_backlog_alerts_make_an_unconsumed_actor_visible(rules_path: Path) -> No
     identical to healthy load while one actor's jobs never move.
 
     So at least one alert must evaluate backlog depth or oldest-pending age
-    at actor granularity — an ``actor`` dimension in a selector, a
+    at actor granularity - an ``actor`` dimension in a selector, a
     ``by (actor)`` / ``by (queue, actor)`` aggregation, or an ``actor``
-    grouping label — and name that actor in its rendered summary so the
+    grouping label - and name that actor in its rendered summary so the
     page points at the starving actor rather than at a number.
     """
     rules = _rules_from(rules_path)
@@ -605,7 +605,7 @@ def test_backlog_alerts_make_an_unconsumed_actor_visible(rules_path: Path) -> No
         )
     ]
     assert backlog_rules, (
-        f"{rules_path.name} carries no backlog alert at all — an actor whose "
+        f"{rules_path.name} carries no backlog alert at all - an actor whose "
         "jobs are never consumed would be invisible"
     )
 
@@ -623,7 +623,7 @@ def test_backlog_alerts_make_an_unconsumed_actor_visible(rules_path: Path) -> No
         f"{rules_path.name}: no backlog alert evaluates depth or oldest-pending "
         "age at actor granularity. Every backlog expr here aggregates away the "
         "actor, so an actor whose queue nothing consumes is indistinguishable "
-        "from healthy load on a busy shared queue — and the boot-time warning "
+        "from healthy load on a busy shared queue - and the boot-time warning "
         "is the only other signal an operator ever gets. Exprs seen: "
         + "; ".join(
             f"{r.get('alert')!r}: {' '.join(str(r.get('expr', '')).split())}" for r in backlog_rules
@@ -634,7 +634,7 @@ def test_backlog_alerts_make_an_unconsumed_actor_visible(rules_path: Path) -> No
         text = " ".join(str(v) for v in rule.get("annotations", {}).values())
         assert "$labels.actor" in text, (
             f"{rules_path.name}: alert {rule['alert']!r} groups backlog by actor "
-            "but its annotations never render $labels.actor — the page reports a "
+            "but its annotations never render $labels.actor - the page reports a "
             "starving actor without naming it"
         )
 

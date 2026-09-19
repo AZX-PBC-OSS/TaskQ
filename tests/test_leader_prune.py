@@ -289,7 +289,7 @@ async def _count(conn: asyncpg.Connection, table: str, *, schema: str, where: st
     return row["count"]
 
 
-# ── Acceptance A — archive move ────────────────────────────────────
+# ── Acceptance A - archive move ────────────────────────────────────
 
 
 async def test_archive_move(pg_conn: asyncpg.Connection, settings: TaskQSettings) -> None:
@@ -613,7 +613,7 @@ async def test_partial_retry(pg_conn: asyncpg.Connection, settings: TaskQSetting
     assert jobs_remaining == 0
 
 
-# ── Acceptance D — index usage ────────────────────────────────────
+# ── Acceptance D - index usage ────────────────────────────────────
 
 
 async def test_prune_uses_finished_at_index(
@@ -725,7 +725,7 @@ async def test_per_actor_retention(pg_conn: asyncpg.Connection, settings: TaskQS
     assert b_in_jobs is not None, "actor_b job should remain in jobs (30d retention)"
 
 
-# ── Acceptance B — expiry sweep ───────────────────────────────────
+# ── Acceptance B - expiry sweep ───────────────────────────────────
 
 
 async def test_expiry_sweep(pg_conn: asyncpg.Connection, settings: TaskQSettings) -> None:
@@ -776,7 +776,7 @@ async def test_expiry_drain(pg_conn: asyncpg.Connection, settings: TaskQSettings
     assert archive_count == 0
 
 
-# ── Acceptance E — index usage ───────────────────────────────────
+# ── Acceptance E - index usage ───────────────────────────────────
 
 
 async def test_expiry_uses_expire_at_index(
@@ -1035,7 +1035,7 @@ async def test_concurrent_prune_lock(pg_conn: asyncpg.Connection, settings: Task
     """Two asyncpg connections both attempt the schema-qualified prune-loop
     advisory lock (``taskq:prune:{schema}``, the name the prune loop
     acquires via ``schema_lock_name``). Assert: first acquires; second
-    returns false — mutual exclusion within one schema for the same
+    returns false - mutual exclusion within one schema for the same
     loop's lock. No duplicate inserts."""
     await _apply(pg_conn, settings)
     lock_name = schema_lock_name("prune", settings.schema_name)
@@ -1076,7 +1076,7 @@ async def test_concurrent_archive_expiry_lock(
     """Two asyncpg connections both attempt the schema-qualified
     archive-expiry-loop advisory lock (``taskq:archive_expiry:{schema}``,
     the name the loop acquires via ``schema_lock_name``). Assert: first
-    acquires; second returns false — mutual exclusion within one schema
+    acquires; second returns false - mutual exclusion within one schema
     for the same loop's lock."""
     await _apply(pg_conn, settings)
     lock_name = schema_lock_name("archive_expiry", settings.schema_name)
@@ -1120,7 +1120,7 @@ async def test_prune_cutoff_anchored_to_server_clock(
     pruned even when the worker's Python clock is 120 s behind.  Pre-fix:
     cutoff = python_now - 30 s = server_now - 150 s → ``finished_at <
     cutoff`` is false → retention silently extended.  The predicate must be
-    computed by the same clock that wrote ``finished_at`` — the server's."""
+    computed by the same clock that wrote ``finished_at`` - the server's."""
     from taskq.worker import _leader_shared
 
     class _SkewedDatetime:
@@ -1143,4 +1143,4 @@ async def test_prune_cutoff_anchored_to_server_clock(
         archive_retention=timedelta(days=1),
         schema=settings.schema_name,
     )
-    assert result.total_deleted == 1  # pre-fix: 0 — the job survives past its retention
+    assert result.total_deleted == 1  # pre-fix: 0 - the job survives past its retention

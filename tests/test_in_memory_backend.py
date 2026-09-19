@@ -3,7 +3,7 @@
 Covers ``src/taskq/testing/in_memory.py``:
 - BACKEND_PROTOCOL_VERSION, bool-returning terminal writes
 - heartbeat_jobs with wrong worker_id returns 0
-- isinstance(InMemoryBackend, Backend) — xfail until - Terminal-write happy-path and no-op (False return) tests
+- isinstance(InMemoryBackend, Backend) - xfail until - Terminal-write happy-path and no-op (False return) tests
 - write_cancel_request three cases (a)/(b)/(c)
 - Sweep methods: scheduled_to_pending, deadline_sweep, reclaim_expired_locks
 - isolation: two InMemoryBackend instances do not share state
@@ -429,7 +429,7 @@ class TestMarkFailedOrRetry:
             job_id,
             backend._worker_id,  # type: ignore[reportPrivateUsage]  # Why: test-only private access
             error_info,
-            # A delay — the backend's own clock (FakeClock at _START)
+            # A delay - the backend's own clock (FakeClock at _START)
             # derives scheduled_at = now + 10s == next_scheduled.
             next_scheduled - _START,
             attempt=1,
@@ -616,7 +616,7 @@ class TestMarkAbandoned:
         """cancel_phase must be 2 for mark_abandoned to succeed."""
         backend = _make_backend()
         job_id, _ = await _make_running_row(backend)
-        # cancel_phase is 0 by default — mark_abandoned returns False
+        # cancel_phase is 0 by default - mark_abandoned returns False
         assert await backend.mark_abandoned(job_id) is False
 
 
@@ -978,7 +978,7 @@ class TestDeadlineSweep:
         assert count == 0
 
     async def test_idempotent_double_sweep(self) -> None:
-        """re-sweep idempotence — after a first
+        """re-sweep idempotence - after a first
         ``deadline_sweep`` transitions the job to ``failed``, a second
         sweep returns 0 and writes no duplicate ``AttemptRow`` or
         ``EventRow``.  The ``'failed'`` status is excluded by the
@@ -1101,7 +1101,7 @@ class TestReclaimExpiredLocks:
         assert count == 0
 
     async def test_deeply_expired_cancel_phase_nonzero_is_reclaimed(self) -> None:
-        """Mirrors PostgresBackend's carve-out and its #238 ordering: a
+        """Mirrors PostgresBackend's carve-out and its ordering: a
         job with an in-flight cancel request is still reclaimed once its
         lock has been expired for cancel_grace + cleanup_grace + 60s,
         and, operator intent outranking the retry budget, the reclaim
@@ -1145,10 +1145,10 @@ class TestReclaimExpiredLocks:
         """Retries-exhausted reclaim of a job with an in-flight cancel
         request terminates as 'cancelled', not 'crashed': the worker died
         mid-cancel-protocol, and the caller's explicit cancel is the
-        honest terminal label — anyone reconciling terminal states sees
+        honest terminal label - anyone reconciling terminal states sees
         the cancel was honored.  The attempt row still records
-        outcome='crashed' (WorkerCrashed) — that IS what happened to the
-        attempt — while the job status and the job_events outbox row
+        outcome='crashed' (WorkerCrashed) - that IS what happened to the
+        attempt - while the job status and the job_events outbox row
         carry the honest caller-visible terminal label."""
         backend = _make_backend()
         job_id, _ = await _make_running_row(backend, max_attempts=1, retry_kind="transient")
@@ -1739,7 +1739,7 @@ class TestArchiveTerminalJobs:
             assert await backend.get_archived(jid) is None
 
     async def test_per_status_retention(self) -> None:
-        """per-status retention — succeeded/cancelled archived at 35d,
+        """per-status retention - succeeded/cancelled archived at 35d,
         failed retained at 35d when failure retention=90d. Uses the `statuses`
         parameter to simulate per-status retention calls."""
         from dataclasses import replace as _replace

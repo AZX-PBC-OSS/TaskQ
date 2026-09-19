@@ -2,9 +2,9 @@
 
 Jobs 1/2/3/5 of the observability-cost hunt. Measured here:
 
-  1. ``get_tracer()`` — per-call ``importlib.metadata.version("taskq-py")``
+  1. ``get_tracer()`` - per-call ``importlib.metadata.version("taskq-py")``
      (obs/_otel.py:77-86); cached-vs-uncached delta; whether the OTel API
-     memoizes ``trace.get_tracer`` (it does not — evidence below).
+     memoizes ``trace.get_tracer`` (it does not - evidence below).
   2. Span bookkeeping per job with NO SDK configured (proxy tracer) vs
      ``_otel_enabled=False`` vs stripped, plus the
      ``trace.get_current_span`` contextvar read the structlog processor pays.
@@ -137,7 +137,7 @@ def bench_get_tracer() -> list[tuple[str, float, str]]:
         (
             "get_tracer() as shipped (uncached _version)",
             solo_ns(otel_mod.get_tracer, batch),
-            "obs/_otel.py:84-86 — calls _version() every time",
+            "obs/_otel.py:84-86 - calls _version() every time",
         )
     )
 
@@ -249,7 +249,7 @@ def bench_span_tax_no_provider() -> list[tuple[str, float, str]]:
         (
             "trace.get_current_span().get_span_context() (no provider)",
             solo_ns(lambda: trace.get_current_span().get_span_context(), 500),
-            "per LOG LINE, _otel_span_processor — is_valid=False path",
+            "per LOG LINE, _otel_span_processor - is_valid=False path",
         )
     )
 
@@ -273,7 +273,7 @@ def bench_span_tax_no_provider() -> list[tuple[str, float, str]]:
         (
             "consumer_attrs 9-key dict build (dispatch.py:205-215)",
             solo_ns(_build_consumer_attrs, 500),
-            "unconditional — runs even with _otel_enabled=False",
+            "unconditional - runs even with _otel_enabled=False",
         )
     )
     return rows
@@ -450,7 +450,7 @@ def bench_metric_tax_real_sdk(reader: object) -> list[tuple[str, float, str]]:  
         (
             "single add(), real SDK, BRAND-NEW queue label",
             solo_ns(_emit_cold, 50),
-            "series-creation cost — see ab_metric_labels.py for growth",
+            "series-creation cost - see ab_metric_labels.py for growth",
         )
     )
 

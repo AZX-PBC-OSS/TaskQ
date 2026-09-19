@@ -27,7 +27,7 @@ change (a payload schema migration) adopters make constantly.
 The fix pinned here: ``register_stub`` auto-resolves the actor's declared
 payload model when ``payload_type`` is omitted, so the runner knows the
 actor's contract without per-call repetition. The resolution source is
-the :class:`~taskq.actor.ActorRef` itself — pass the ref
+the :class:`~taskq.actor.ActorRef` itself - pass the ref
 (``register_stub(my_actor, ...)``) instead of a bare name and the
 declared model is looked up from it. A bare name leaves the runner
 unable to see any declared model; that path still falls back to
@@ -161,7 +161,7 @@ async def test_register_stub_default_payload_type_accepts_what_real_model_reject
     )
     # Stronger halves of the same contract: the job failed AS a payload
     # validation failure (not some unrelated error), and the stub body
-    # never ran — validation happens before invocation, as on a worker.
+    # never ran - validation happens before invocation, as on a worker.
     assert row.error_class == "PayloadValidationError"
     assert calls == []
 
@@ -169,7 +169,7 @@ async def test_register_stub_default_payload_type_accepts_what_real_model_reject
 @pytest.mark.asyncio
 async def test_register_stub_bare_name_without_payload_type_warns_loudly() -> None:
     """The unresolvable fallback: a bare actor name carries no declared
-    model, so the permissive default survives (backward compatibility —
+    model, so the permissive default survives (backward compatibility -
     the suite's existing bare-name stubs keep working) but ONLY with a
     loud StubPayloadTypeWarning naming the actor and the consequences.
     """
@@ -180,7 +180,7 @@ async def test_register_stub_bare_name_without_payload_type_warns_loudly() -> No
         backend.register_stub("bare_actor", lambda p, ctx: {"ok": True})
     assert len(record) == 1
 
-    # The permissive fallback still runs the job — the warning is the
+    # The permissive fallback still runs the job - the warning is the
     # signal, not a behaviour break.
     job_id = new_job_id()
     await backend.enqueue(
@@ -204,7 +204,7 @@ async def test_register_stub_bare_name_without_payload_type_warns_loudly() -> No
 async def test_register_stub_explicit_passthrough_is_the_quiet_escape_hatch() -> None:
     """The escape hatch is explicit: an operator who MEANS passthrough
     says so. ``payload_type=PassthroughPayload`` keeps the permissive
-    behaviour with no warning — silence is reserved for deliberate
+    behaviour with no warning - silence is reserved for deliberate
     choices (this, or a resolved ActorRef), never for an omission."""
     clock = FakeClock(start=_START)
     backend = InMemoryBackend(clock=clock)
