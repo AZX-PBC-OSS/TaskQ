@@ -202,8 +202,9 @@ def test_progress_buffer_fields() -> None:
         "encoded_data",
         "dirty",
         "last_flush_at",
-        # The Redis publish gate: at most one publish in flight per job,
-        # superseded calls latched on pending_publish (JobContext.progress).
+        # The publish-coalescing gate: at most one Redis publish in flight
+        # per job, with the superseding call latched until its round trip
+        # lands (the no-lost-final guarantee).
         "publish_in_flight",
         "pending_publish",
     }
