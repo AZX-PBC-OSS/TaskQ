@@ -186,7 +186,7 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
         f"WHERE locked_by_worker=$1 AND status='running' AND j.cancel_phase = 0"
     )
     # The cancel fence (``cancel_phase = 0``): a row carrying an operator
-    # cancel in flight must NOT re-enter the fleet through the drain — the
+    # cancel in flight must NOT re-enter the fleet through the drain: the
     # same fence every other deferral/release arm carries (the snooze and
     # retry-after arms, mark_interrupted's release arm, sweep-1's
     # cancel-first CASE, the isolate template). Without it, a cancel
