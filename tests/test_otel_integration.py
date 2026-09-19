@@ -18,6 +18,7 @@ Also covers:
 
 import asyncio
 import contextlib
+import sys
 import time
 from contextlib import AsyncExitStack
 from datetime import timedelta
@@ -1063,6 +1064,23 @@ class TestMalformedTraceId:
 class TestEnqueueSpanOverhead:
     """Measure enqueue span overhead with no-op exporter."""
 
+    @staticmethod
+    def _interpreter_is_traced() -> bool:
+        """True when a coverage tool instruments the interpreter right now.
+
+        The coverage lane runs the whole suite unfiltered (the 90 percent
+        floor counts the slow family's lines), so this benchmark executes
+        under tracing there. A per-enqueue timing under an instrumented
+        interpreter measures the tracer, not the enqueue; the guard below
+        is only meaningful untraced.
+        """
+        if sys.gettrace() is not None:
+            return True
+        monitoring = getattr(sys, "monitoring", None)
+        if monitoring is None:
+            return False
+        return any(monitoring.get_tool(i) is not None for i in range(6))
+
     async def test_enqueue_overhead_with_noop_exporter(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1096,6 +1114,12 @@ class TestEnqueueSpanOverhead:
             elapsed = time.monotonic() - t0
             best_batch_us = min(best_batch_us, (elapsed / n) * 1_000_000)
 
+        if self._interpreter_is_traced():
+            # Under coverage tracing the number is the tracer's overhead;
+            # the enqueues above still ran so the coverage lane keeps
+            # exercising the instrumented path. The guard holds only where
+            # it can measure: the untraced lanes (this file's lane and dev).
+            return
         assert best_batch_us < 500, (
             f"Per-enqueue overhead {best_batch_us:.1f}us exceeds 500us threshold"
         )
