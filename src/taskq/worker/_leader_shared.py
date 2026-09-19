@@ -317,11 +317,23 @@ _ARCHIVE_CTE_SQL = (
     "    AND finished_at < statement_timestamp() - $2::interval"
     "  ORDER BY finished_at"
     "  LIMIT $3"
+    # The candidates' row locks are the race fence: a retry_job committing
+    # after this statement's snapshot updates the row version, and without
+    # the lock the delete arm's lock-time re-check (EvalPlanQual) would
+    # re-evaluate only its own quals (id membership), accept the now-live
+    # row, and remove work an operator was just told was retried. The
+    # lock serialises: the retry waits for this transaction to finish
+    # (the row is archived and gone; the retry then reports the row
+    # missing) or commits first and drops out of the candidate window.
+    "  FOR UPDATE SKIP LOCKED"
     "), moved AS ("
     f'  INSERT INTO "{{schema}}".jobs_archive ({_JOBS_COLUMNS_CSV}, archived_at, expire_at)'
     f"  SELECT {_JOBS_COLUMNS_QUALIFIED_CSV}, clock_timestamp(), clock_timestamp() + $4"
     '  FROM "{schema}".jobs j'
     "  JOIN candidate_ids c ON j.id = c.id"
+    # Belt and braces for the same race under the lock: only a row still
+    # in the terminal state it was selected as is archived.
+    "  AND j.status = $1::\"{schema}\".job_status"
     "  RETURNING id, actor, status"
     "), moved_attempts AS ("
     f'  INSERT INTO "{{schema}}".job_attempts_archive ({_JOB_ATTEMPTS_COLUMNS_CSV})'
@@ -331,6 +343,10 @@ _ARCHIVE_CTE_SQL = (
     "), deleted AS ("
     '  DELETE FROM "{schema}".jobs'
     "  WHERE id IN (SELECT id FROM moved)"
+    # The lock-time re-check: the row version this statement deletes must
+    # still be the terminal one it archived. A row that changed (retry
+    # won, status pending) is left live.
+    '  AND status = $1::"{schema}".job_status'
     "  RETURNING id, actor, status"
     ") SELECT actor, status, count(*) AS cnt"
     "  FROM deleted GROUP BY actor, status"
@@ -346,11 +362,16 @@ _ARCHIVE_CTE_ACTOR_SQL = (
     "    AND actor = $5"
     "  ORDER BY finished_at"
     "  LIMIT $3"
+    # Same race fence as _ARCHIVE_CTE_SQL (this pass runs after the
+    # fleet-wide one, giving a concurrent retry a second and later
+    # window).
+    "  FOR UPDATE SKIP LOCKED"
     "), moved AS ("
     f'  INSERT INTO "{{schema}}".jobs_archive ({_JOBS_COLUMNS_CSV}, archived_at, expire_at)'
     f"  SELECT {_JOBS_COLUMNS_QUALIFIED_CSV}, clock_timestamp(), clock_timestamp() + $4"
     '  FROM "{schema}".jobs j'
     "  JOIN candidate_ids c ON j.id = c.id"
+    "  AND j.status = $1::\"{schema}\".job_status"
     "  RETURNING id, actor, status"
     "), moved_attempts AS ("
     f'  INSERT INTO "{{schema}}".job_attempts_archive ({_JOB_ATTEMPTS_COLUMNS_CSV})'
@@ -360,6 +381,7 @@ _ARCHIVE_CTE_ACTOR_SQL = (
     "), deleted AS ("
     '  DELETE FROM "{schema}".jobs'
     "  WHERE id IN (SELECT id FROM moved)"
+    '  AND status = $1::"{schema}".job_status'
     "  RETURNING id, actor, status"
     ") SELECT actor, status, count(*) AS cnt"
     "  FROM deleted GROUP BY actor, status"
