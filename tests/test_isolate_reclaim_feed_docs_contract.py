@@ -30,15 +30,28 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 
-from taskq._ids import new_base62, new_uuid
-from taskq.backend.clock import SystemClock
-from taskq.backend.postgres import PostgresBackend
-from taskq.migrate import apply_pending
-from taskq.settings import WorkerSettings
-from taskq.testing.pg import _create_worker, create_running_job
-from taskq.web.admin import create_router, setup_admin_state
-from taskq.worker.deps import WorkerDeps
-from taskq.worker.heartbeat import isolate_self
+# The admin surface under test lives behind the [fastapi] extra; the
+# vault/aws extras legs collect this file without it, so the guard must
+# precede every import that can reach taskq.web.admin (and its jinja2
+# templates), skipping the module cleanly instead of erroring collection.
+pytest.importorskip("fastapi")
+pytest.importorskip("jinja2")
+
+from taskq._ids import new_base62, new_uuid  # Why: importorskip guard must precede.
+from taskq.backend.clock import SystemClock  # Why: importorskip guard must precede.
+from taskq.backend.postgres import PostgresBackend  # Why: importorskip guard must precede.
+from taskq.migrate import apply_pending  # Why: importorskip guard must precede.
+from taskq.settings import WorkerSettings  # Why: importorskip guard must precede.
+from taskq.testing.pg import (  # Why: importorskip guard must precede.
+    _create_worker,
+    create_running_job,
+)
+from taskq.web.admin import (  # Why: importorskip guard must precede.
+    create_router,
+    setup_admin_state,
+)
+from taskq.worker.deps import WorkerDeps  # Why: importorskip guard must precede.
+from taskq.worker.heartbeat import isolate_self  # Why: importorskip guard must precede.
 
 pytestmark = pytest.mark.integration
 
@@ -210,7 +223,7 @@ async def test_isolate_heartbeat_loss_is_off_feed_and_discoverable_in_tables(
             # The admin pool must live on the loop the TestClient runs the
             # app on: open it in the app's own lifespan, then point app.state
             # at it (handlers resolve the pool from app.state per request).
-            holder: dict = {}
+            holder: dict[str, asyncpg.Pool] = {}
 
             @asynccontextmanager
             async def _admin_lifespan(api: object) -> AsyncGenerator[None]:
