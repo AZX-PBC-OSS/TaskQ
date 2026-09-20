@@ -202,6 +202,11 @@ def test_progress_buffer_fields() -> None:
         "encoded_data",
         "dirty",
         "last_flush_at",
+        # The flush serialization gate: at most one flush of this
+        # buffer's unretired delta in flight (tick vs immediate path),
+        # so a delta can never be applied twice and the terminal write's
+        # absolute SET never regresses the row.
+        "flush_in_flight",
         # The publish-coalescing gate: at most one Redis publish in flight
         # per job, with the superseding call latched until its round trip
         # lands (the no-lost-final guarantee).
