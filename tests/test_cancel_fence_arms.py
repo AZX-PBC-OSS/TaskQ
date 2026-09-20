@@ -29,9 +29,10 @@ import pytest
 
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend import Backend, EnqueueArgs
-from taskq.backend._protocol import CancelPhase, JobFilter, JobId
+from taskq.backend._protocol import CancelPhase, ErrorInfo, JobFilter, JobId, JobRow
 from taskq.backend.postgres import PostgresBackend
 from taskq.constants import CANCEL_ORIGIN_COOPERATIVE, CANCEL_ORIGIN_FORCED
+from taskq.exceptions import WorkerOwnershipMismatch
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 
@@ -482,6 +483,185 @@ class TestDeadlineArmsHonourInFlightCancel:
         assert result == expected
         row = await backend.get(job_id)
         assert row is not None
+        assert row.status == "failed"
+        assert row.error_class == "DeadlineExceeded"
+        assert row.cancel_phase == CancelPhase.NONE
+
+
+# ── Issue: mark_retry's arms reset the cancel columns with no cancel fence ──
+
+
+_RETRY_ERROR_INFO = ErrorInfo(
+    error_class="BoomError",
+    error_message="boom",
+    error_traceback=None,
+)
+
+
+async def _retry_call(backend: Backend, job_id: JobId, wid: UUID) -> JobRow:
+    """The failure-retry decision's write: a Retry with attempts remaining."""
+    return await backend.mark_failed_or_retry(
+        job_id,
+        wid,
+        _RETRY_ERROR_INFO,
+        timedelta(seconds=30),
+        attempt=1,
+    )
+
+
+class TestMarkRetryCarriesTheCancelFence:
+    """A failure-retry landing on a phase-carrying row must refuse it.
+
+    ``mark_retry``'s arms reset ``cancel_phase``/``cancel_requested_at``
+    with no ``cancel_phase = 0`` fence, the one arm of the re-pend family
+    the deferral fences missed: a retryable failure landing mid-cancel
+    launders the operator's in-flight request and reschedules the job
+    (the engine re-runs it), and a phase-carrying row past its deadline
+    terminalises ``failed:DeadlineExceeded`` (the deadline hooks fire on
+    a cancel in flight) instead of leaving the row to the cancel ladder.
+    Both arms must refuse the row the way the four sibling templates and
+    ``mark_interrupted`` do: the fence mismatch reads back as the same
+    ``WorkerOwnershipMismatch`` a wrong-worker retry raises, the handler
+    treats it as a no-op, and the row stays 'running' carrying its phase
+    for the cancel ladder to terminalise.
+    """
+
+    async def test_mark_retry_refuses_in_flight_cancel(self) -> None:
+        backend = _make_backend()
+        job_id, wid = await _enqueue_and_dispatch(backend)
+        _set_in_flight_cancel(backend, job_id)
+
+        with pytest.raises(WorkerOwnershipMismatch):
+            await _retry_call(backend, job_id, wid)
+
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.status == "running", (
+            "a failure retry landing mid-cancel must not reschedule the row: "
+            "the retried arm lacks the cancel_phase = 0 fence and launders "
+            "the operator's in-flight cancel, and the job runs again"
+        )
+        assert row.cancel_phase == CancelPhase.COOPERATIVE
+        assert row.cancel_requested_at == _START
+
+    async def test_mark_retry_deadline_arm_refuses_in_flight_cancel(self) -> None:
+        backend = _make_backend()
+        job_id, wid = await _enqueue_and_dispatch(backend)
+        # The deadline lapsed BEFORE the cancel: the retried arm's own
+        # deadline guard would route the row to the deadline arm, so the
+        # phase-carrying row must be refused there too.
+        row = backend._jobs[job_id]  # type: ignore[reportPrivateUsage]  # Why: forcing a race-window state the public API cannot reach directly
+        backend._jobs[job_id] = replace(  # type: ignore[reportPrivateUsage]  # Why: same
+            row, schedule_to_close=_START - timedelta(seconds=1)
+        )
+        _set_in_flight_cancel(backend, job_id)
+
+        with pytest.raises(WorkerOwnershipMismatch):
+            await _retry_call(backend, job_id, wid)
+
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.status == "running", (
+            "a failure retry landing mid-cancel past the deadline must not "
+            "terminalise the row 'failed:DeadlineExceeded': the deadline "
+            "arm lacks the cancel-first arbitration and fires the deadline "
+            "hooks on a cancel in flight"
+        )
+        assert row.cancel_phase == CancelPhase.COOPERATIVE
+        assert row.error_class is None
+
+    async def test_mark_retry_still_retries_clean_rows(self) -> None:
+        """The fence narrows nothing for the clean case: a phase-0 row
+        with attempts remaining retries as before."""
+        backend = _make_backend()
+        job_id, wid = await _enqueue_and_dispatch(backend)
+
+        row = await _retry_call(backend, job_id, wid)
+
+        assert row.status == "scheduled"
+        assert row.cancel_phase == CancelPhase.NONE
+        assert row.cancel_requested_at is None
+
+    async def test_mark_retry_clean_row_still_fails_on_lapsed_deadline(self) -> None:
+        backend = _make_backend()
+        job_id, wid = await _enqueue_and_dispatch(backend)
+        row = backend._jobs[job_id]  # type: ignore[reportPrivateUsage]  # Why: forcing a race-window state the public API cannot reach directly
+        backend._jobs[job_id] = replace(  # type: ignore[reportPrivateUsage]  # Why: same
+            row, schedule_to_close=_START - timedelta(seconds=1)
+        )
+
+        row = await _retry_call(backend, job_id, wid)
+
+        assert row.status == "failed"
+        assert row.error_class == "DeadlineExceeded"
+        assert row.cancel_phase == CancelPhase.NONE
+
+
+@pytest.mark.integration
+class TestMarkRetryCarriesTheCancelFencePair:
+    """The same fence pins against the PG backend (the pair)."""
+
+    async def test_mark_retry_refuses_in_flight_cancel(self, backend_pair: Backend) -> None:
+        backend = backend_pair
+        job_id, wid = await _pair_enqueue_and_dispatch(backend)
+        await _pair_set_in_flight_cancel(backend, job_id, CancelPhase.COOPERATIVE)
+
+        with pytest.raises(WorkerOwnershipMismatch):
+            await _retry_call(backend, job_id, wid)
+
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.status == "running", (
+            "mark_retry's retried arm laundered the operator's in-flight "
+            "cancel and rescheduled the row: the cancel_phase = 0 fence is "
+            "missing"
+        )
+        assert row.cancel_phase == CancelPhase.COOPERATIVE
+        assert row.cancel_requested_at is not None
+
+    async def test_mark_retry_deadline_arm_refuses_in_flight_cancel(
+        self, backend_pair: Backend
+    ) -> None:
+        backend = backend_pair
+        job_id, wid = await _pair_enqueue_and_dispatch(backend)
+        await _pair_force_deadline_lapsed(backend, job_id)
+        await _pair_set_in_flight_cancel(backend, job_id, CancelPhase.COOPERATIVE)
+
+        with pytest.raises(WorkerOwnershipMismatch):
+            await _retry_call(backend, job_id, wid)
+
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.status == "running", (
+            "mark_retry's deadline arm terminalised a phase-carrying row "
+            "past its deadline instead of leaving it to the cancel ladder: "
+            "the cancel-first arbitration is missing"
+        )
+        assert row.error_class != "DeadlineExceeded", (
+            "the deadline arm fired the DeadlineExceeded marker on a cancel in flight"
+        )
+        assert row.cancel_phase == CancelPhase.COOPERATIVE
+        assert row.cancel_requested_at is not None
+
+    async def test_mark_retry_still_retries_clean_rows(self, backend_pair: Backend) -> None:
+        backend = backend_pair
+        job_id, wid = await _pair_enqueue_and_dispatch(backend)
+
+        row = await _retry_call(backend, job_id, wid)
+
+        assert row.status == "scheduled"
+        assert row.cancel_phase == CancelPhase.NONE
+        assert row.cancel_requested_at is None
+
+    async def test_mark_retry_clean_row_still_fails_on_lapsed_deadline(
+        self, backend_pair: Backend
+    ) -> None:
+        backend = backend_pair
+        job_id, wid = await _pair_enqueue_and_dispatch(backend)
+        await _pair_force_deadline_lapsed(backend, job_id)
+
+        row = await _retry_call(backend, job_id, wid)
+
         assert row.status == "failed"
         assert row.error_class == "DeadlineExceeded"
         assert row.cancel_phase == CancelPhase.NONE

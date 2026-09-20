@@ -309,6 +309,26 @@ async def _mark_failed_or_retry(
         raise WorkerOwnershipMismatch(job_id, worker_id, row.locked_by_worker)
 
     if retry_delay is not None:
+        # The cancel fence (the SQL retried and deadline_failed arms'
+        # `cancel_phase = 0` conjunct, the sibling deferral arms'
+        # semantics): an operator cancel in flight WINS over the failure
+        # retry. Both arms of the retry below reset or overwrite state a
+        # cancel in flight owns (the retried arm resets the cancel
+        # columns; the deadline arm stamps DeadlineExceeded), so a
+        # phase-carrying row must never reach either: the reset would
+        # launder the operator's request mid-flight and the job would
+        # run again. The fenced-out row stays 'running' carrying its
+        # phase, the caller reads back the same WorkerOwnershipMismatch
+        # a wrong-worker retry raises (the handler's no-op), and the
+        # worker's cancel ladder terminalises it. On a clean row the
+        # check is trivially false and the retry semantics are
+        # unchanged. The TERMINAL fail path below is deliberately NOT
+        # fenced: it writes no re-pend and keeps the cancel columns as
+        # the audit trail, the doctrine every terminal cancel path
+        # carries.
+        if row.cancel_phase != CancelPhase.NONE:
+            raise WorkerOwnershipMismatch(job_id, worker_id, row.locked_by_worker)
+
         now = self._clock.now()
         # The failure-retry arm's deferral floor, the same bound
         # mark_snoozed and the non-consuming retry-after arm apply, and the
