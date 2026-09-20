@@ -9,6 +9,7 @@ and concurrent-lock behavior.
 """
 
 import asyncio
+import contextlib
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -21,7 +22,7 @@ from taskq._json import dumps_str
 from taskq.backend._sql_templates import COPY_FROM_COLUMNS
 from taskq.constants import schema_lock_name
 from taskq.settings import TaskQSettings
-from taskq.worker.leader import archive_expiry_sweep, prune_terminal_jobs
+from taskq.worker.leader import PruneResult, archive_expiry_sweep, prune_terminal_jobs
 
 pytestmark = pytest.mark.integration
 
@@ -498,8 +499,10 @@ async def test_archive_move_preserves_every_mirrored_column(
 async def test_archive_move_preserves_scope_via_actor_override_path(
     pg_conn: asyncpg.Connection, settings: TaskQSettings
 ) -> None:
-    """The per-actor archive CTE (_ARCHIVE_CTE_ACTOR_SQL) has the same
-    explicit-column contract; exercise it with a non-default scope."""
+    """The per-actor candidate window (_ARCHIVE_CANDIDATE_ACTOR_SQL) and
+    the shared write statement (_ARCHIVE_CTE_SQL) it feeds have the same
+    explicit-column contract; exercise the actor override path end to end
+    with a non-default scope."""
     await _apply(pg_conn, settings)
     schema = settings.schema_name
     jid = await _seed_fully_distinctive_terminal_job(
@@ -1147,23 +1150,101 @@ async def test_prune_cutoff_anchored_to_server_clock(
     assert result.total_deleted == 1  # pre-fix: 0 - the job survives past its retention
 
 
+# The in-flight-retry protocol's bounds. The grace must sit well under the
+# batch statement_timeout: on the pre-fix shape the blocked delete arm is
+# released by the retry's commit, not killed by the batch timeout - a cancel
+# would roll the batch back and mask which side won.
+_RACE_GRACE_S = 10.0
+_RACE_STATEMENT_TIMEOUT_MS = 60_000
+
+
+async def _prune_with_retry_in_flight(
+    pg_conn: asyncpg.Connection,
+    retry_conn: asyncpg.Connection,
+    retry_sql: str,
+    jid: uuid.UUID,
+    schema: str,
+) -> PruneResult:
+    """Run one prune batch against a retry that is in flight for the whole
+    batch: the retry's UPDATE has locked the row (its transaction open,
+    uncommitted) before the prune's first statement runs, and it commits
+    only after the batch's write side has passed the row.
+
+    This is the deterministic form of the window a concurrent retry
+    occupies - the interleaving an asyncio.gather race leaves to the
+    scheduler, which on the pre-fix single-statement shape never landed
+    it (the retry either committed before the statement's snapshot or
+    blocked behind its delete arm until the batch committed). Here the
+    candidate window reads the pre-retry committed version whatever the
+    scheduler does, and the retry's commit lands between that snapshot
+    and the write side's lock-time re-read: on the pre-fix shape the
+    delete arm blocks on the retry's in-flight lock, the grace above
+    expires (the proof the statement is blocked mid-flight), and the
+    commit is what releases it - the exact window the ghost forms in.
+    The fixed shape never waits: its write locks the batch with
+    SKIP LOCKED and commits around the in-flight retry, which keeps its
+    own commit.
+    """
+    retry_tx = retry_conn.transaction()
+    await retry_tx.start()
+    # fetchrow, exactly as the backend's retry_job reads it: the
+    # statement's row presence IS the retry's success signal (the
+    # execute tag is always "SELECT 1").
+    retried = await retry_conn.fetchrow(retry_sql, jid)
+    assert retried is not None, "fixture broken: the retry did not match the seeded row"
+
+    prune_task = asyncio.create_task(
+        prune_terminal_jobs(
+            pg_conn,
+            retention_per_status={"succeeded": timedelta(days=30)},
+            archive_retention=timedelta(days=365),
+            batch_size=10000,
+            schema=schema,
+            statement_timeout_ms=_RACE_STATEMENT_TIMEOUT_MS,
+        )
+    )
+    # Wait for either the batch's completion (fixed shape: it commits
+    # around the in-flight retry) or the grace's expiry (pre-fix shape:
+    # the write statement is blocked on the retry's lock). The shield
+    # keeps the task alive through the expiry - canceling it would cancel
+    # the statement mid-flight and roll the batch back before the retry's
+    # commit could land.
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(asyncio.shield(prune_task), _RACE_GRACE_S)
+    await retry_tx.commit()
+    # Both shapes: the task is either already done or unblocked by the
+    # commit above.
+    return await prune_task
+
+
 @pytest.mark.integration
 async def test_prune_never_deletes_a_row_a_concurrent_retry_retried(
     pg_conn: asyncpg.Connection, settings: TaskQSettings
 ) -> None:
-    """A retry committing against the prune window cannot lose the live row.
+    """A retry committing against the prune window cannot lose the live row,
+    and cannot ghost it either.
 
-    The failure this pin exists for: the archive CTE selected a terminal
-    row, a concurrent ``retry_job`` flipped it back to pending (its
-    caller already told the operator the retry landed), and the delete
-    arm's lock-time re-check only tested id membership, so it removed the
-    live row: the job never runs again and no shipped path recovers it.
-    The candidates now carry row locks (a retry waits for the prune, then
-    reports the row missing) and both the archive and delete arms
-    re-check the terminal status at lock time (a retry that commits first
-    drops out of the window entirely). Either order is clean; the
-    invariant asserted here is: whenever the retry's UPDATE reports a
-    row, the live row still exists.
+    The failure this pin exists for: the archive statement copied the
+    snapshot's terminal version into ``jobs_archive``, a concurrent
+    ``retry_job`` flipped the row back to pending (its caller already
+    told the operator the retry landed), and the delete arm's lock-time
+    re-check met the version the retry had committed - the row stayed
+    live AND archived: a ghost that wedges every later prune batch on
+    the archive's primary key once the retried job re-terminalizes and
+    re-enters the window.
+
+    The candidates stay a lock-free selection window (a FOR UPDATE on
+    that scan forced the planner off the bounded index-only shape); the
+    race fence is the lock-bearing `locked` arm between the window and
+    the archive INSERT: it takes the batch's row locks with the
+    terminal-status qual re-evaluated at lock time (EvalPlanQual), so a
+    retry that committed first drops out of the pipeline before anything
+    is archived, and a retry still in flight is skipped and keeps its
+    own commit. The interleaving is fixed by
+    :func:`_prune_with_retry_in_flight`, and the invariants asserted
+    here are: the retry's UPDATE matched the row, so after the prune the
+    row is still live and claimable, the archive holds NO row for it,
+    and the prune reports no deletion.
 
     The retry runs as the raw rendered statement ``retry_job`` issues,
     against its own connection: the race under test is between the two
@@ -1174,42 +1255,253 @@ async def test_prune_never_deletes_a_row_a_concurrent_retry_retried(
     await _apply(pg_conn, settings)
     schema = settings.schema_name
     old = datetime.now(UTC) - timedelta(days=31)
+    jid = await _seed_terminal_job(pg_conn, status="succeeded", finished_at=old, schema=schema)
     retry_sql = render(schema).retry_job
 
     retry_conn = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        result = await _prune_with_retry_in_flight(pg_conn, retry_conn, retry_sql, jid, schema)
 
-    trials = 50
-    for _trial in range(trials):
-        jid = await _seed_terminal_job(pg_conn, status="succeeded", finished_at=old, schema=schema)
-        prune_result, retried = await asyncio.gather(
-            prune_terminal_jobs(
-                pg_conn,
-                retention_per_status={"succeeded": timedelta(days=30)},
-                archive_retention=timedelta(days=365),
-                batch_size=10000,
-                schema=schema,
-            ),
-            # fetchrow, exactly as the backend's retry_job reads it: the
-            # statement's row presence IS the retry's success signal (the
-            # execute tag is always "SELECT 1").
-            retry_conn.fetchrow(retry_sql, jid),
-        )
         live = await pg_conn.fetchrow(
             f"SELECT status FROM {schema}.jobs WHERE id = $1",  # noqa: S608
             jid,
         )
-        if retried is not None:
-            # The retry's UPDATE landed: the row MUST still be live and
-            # claimable. This is the assertion the old statement failed.
-            assert live is not None, (
-                "the retry's update reported a row but the live row is "
-                "gone: the prune deleted concurrently retried work"
-            )
-            assert live["status"] == "pending"
-        else:
-            # The prune won the race: the row is archived and gone (the
-            # retry's write found no row).
-            assert live is None
-            assert prune_result.total_deleted >= 0
+        ghost = await pg_conn.fetchrow(
+            f"SELECT id FROM {schema}.jobs_archive WHERE id = $1",  # noqa: S608
+            jid,
+        )
+        assert live is not None, (
+            "the retry's update matched the row but the live row is gone: "
+            "the prune deleted concurrently retried work"
+        )
+        assert live["status"] == "pending"
+        assert ghost is None, (
+            "the live retried row is also archived: a ghost row that wedges "
+            "the prune on the archive's primary key once the retried job "
+            "re-terminalizes and re-enters the window"
+        )
+        assert result.total_deleted == 0, (
+            "the prune reports deletions for a batch whose only row was retried out from under it"
+        )
+    finally:
+        await retry_conn.close()
 
-    await retry_conn.close()
+
+@pytest.mark.integration
+async def test_prune_rearchives_a_retried_job_without_primary_key_violation(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """A retried job that re-terminalizes and re-enters the prune window
+    archives cleanly, no primary key violation.
+
+    The failure this pin exists for: a prune that archives a row while
+    leaving it live (the ghost) wedges the whole prune family forever.
+    The ghost sits in jobs_archive with the live row still present;
+    when the retried job runs to terminal again and ages past retention,
+    every later archive batch tries to INSERT a second row with the same
+    id, the archive's primary key rejects it, the error is not
+    transient, and the batch containing that row aborts on every
+    attempt: the drain never passes the head of the window again.
+
+    The retried-then-re-terminalized cycle runs for real, with the race
+    window fixed by :func:`_prune_with_retry_in_flight` (the retry's
+    commit lands between the batch's candidate snapshot and its write
+    side's lock-time re-read): the first prune must leave the row live
+    with nothing archived, the re-terminalization stamps it back into
+    the prune window (the state a re-run job reaches), and the second
+    prune must archive it cleanly - exactly one archive row for the id,
+    no live row left. On the ghosting shape the first prune leaves the
+    ghost behind and this pin fails at that assertion: the exact state
+    whose re-prune raises the archive primary key violation.
+    """
+    from taskq.backend._sql_templates import render
+
+    await _apply(pg_conn, settings)
+    schema = settings.schema_name
+    old = datetime.now(UTC) - timedelta(days=31)
+    jid = await _seed_terminal_job(pg_conn, status="succeeded", finished_at=old, schema=schema)
+    retry_sql = render(schema).retry_job
+
+    retry_conn = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        await _prune_with_retry_in_flight(pg_conn, retry_conn, retry_sql, jid, schema)
+
+        ghost = await pg_conn.fetchval(
+            f"SELECT count(*) FROM {schema}.jobs_archive WHERE id = $1",  # noqa: S608
+            jid,
+        )
+        assert ghost == 0, (
+            "the retried row was archived while the retry left it live: a "
+            "ghost row that wedges every later prune batch on the archive's "
+            "primary key once the retried job re-terminalizes"
+        )
+
+        # Re-terminalize past retention (the state the re-run job
+        # reaches) and re-enter the prune window.
+        await pg_conn.execute(
+            f"UPDATE {schema}.jobs SET status = $1::{schema}.job_status, "  # noqa: S608
+            f"finished_at = $2 WHERE id = $3",
+            "succeeded",
+            old,
+            jid,
+        )
+        second = await prune_terminal_jobs(
+            pg_conn,
+            retention_per_status={"succeeded": timedelta(days=30)},
+            archive_retention=timedelta(days=365),
+            schema=schema,
+        )
+        assert second.total_deleted == 1
+
+        archive_count = await pg_conn.fetchval(
+            f"SELECT count(*) FROM {schema}.jobs_archive WHERE id = $1",  # noqa: S608
+            jid,
+        )
+        assert archive_count == 1, (
+            "the archive must hold exactly one row for the id after the "
+            f"full cycle (got {archive_count})"
+        )
+        final_live = await pg_conn.fetchrow(
+            f"SELECT 1 FROM {schema}.jobs WHERE id = $1",  # noqa: S608
+            jid,
+        )
+        assert final_live is None
+    finally:
+        await retry_conn.close()
+
+
+class _RaceBetweenStatementsConn:
+    """ConnLike proxy that commits a retry and a re-terminalization on a
+    second connection in the gap between the batch's candidate window and
+    its write statement (the duck-type surface is fetch/execute/
+    transaction/fetchval, the same one the sweep helpers proxy)."""
+
+    def __init__(
+        self,
+        inner: asyncpg.Connection,
+        race_conn: asyncpg.Connection,
+        race_statements: list[tuple[str, tuple[object, ...]]],
+        trigger: str,
+    ) -> None:
+        self._inner = inner
+        self._race_conn = race_conn
+        self._race_statements = race_statements
+        self._trigger = trigger
+        self.raced = False
+
+    def transaction(self) -> object:
+        return self._inner.transaction()
+
+    async def fetchval(self, sql: str, *args: object) -> object:
+        return await self._inner.fetchval(sql, *args)
+
+    async def fetch(self, sql: str, *args: object) -> list[asyncpg.Record]:
+        rows = await self._inner.fetch(sql, *args)
+        if not self.raced and rows and self._trigger in sql:
+            self.raced = True
+            for stmt, args_ in self._race_statements:
+                await self._race_conn.fetchrow(stmt, *args_)
+        return rows
+
+    async def execute(self, sql: str, *args: object) -> str:
+        return await self._inner.execute(sql, *args)
+
+
+@pytest.mark.integration
+async def test_prune_write_statement_rechecks_retention_age_at_lock_time(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """A job that re-terminalizes between the candidate window and the
+    write statement drops out at lock time; it is not archived at zero
+    age.
+
+    The interleaving the two race pins above cannot produce: their
+    re-terminalize stamps the row back into the past, but a real re-run
+    stamps ``finished_at = clock_timestamp()`` (mark_succeeded /
+    mark_failed). When the retry AND the re-run both commit in the gap
+    between the prune's two statements, the row is terminal again (the
+    status re-check passes) but zero seconds old. The lock-time
+    re-check must verify every candidate predicate, not just the
+    status: the row drops out here, stays live, and re-enters a later
+    window when it has actually aged past retention. A prune that
+    archived it would silently delete a just-finished job from the
+    live tables the moment it failed (its retention not served), and
+    every metric would report the archive as routine.
+    """
+    from taskq.backend._sql_templates import render
+
+    await _apply(pg_conn, settings)
+    schema = settings.schema_name
+    old = datetime.now(UTC) - timedelta(days=31)
+    jid = await _seed_terminal_job(pg_conn, status="succeeded", finished_at=old, schema=schema)
+    retry_sql = render(schema).retry_job
+
+    race_conn = await asyncpg.connect(str(settings.pg_dsn))
+    # The pre-fix shape cannot interleave an external statement between its
+    # snapshot and its write - one statement is both - so the injected
+    # retry blocks on the row lock the batch's own delete arm holds until
+    # the batch commits, a commit that cannot happen while this test waits
+    # on the prune (the first draft of this pin died as a 300 s
+    # pytest-timeout deadlock exactly there). lock_timeout bounds that wait
+    # server-side and turns the pre-fix failure into the fast, precise one
+    # below: this pin's scenario only exists on the two-statement shape.
+    await race_conn.execute("SET lock_timeout = '2s'")
+    reterminalize_sql = (
+        f"UPDATE {schema}.jobs SET status = $1::{schema}.job_status, "  # noqa: S608
+        "finished_at = clock_timestamp() WHERE id = $2"
+    )
+    proxy = _RaceBetweenStatementsConn(
+        pg_conn,
+        race_conn,
+        [
+            # The full retry-then-re-run cycle, both committed before the
+            # write statement takes the batch's row locks: the state the
+            # row is in when a worker re-fails it while the prune's batch
+            # is between its two statements.
+            (retry_sql, (jid,)),
+            (reterminalize_sql, ("succeeded", jid)),
+        ],
+        # The candidate window's signature: the only bounded selection
+        # the batch runs. Firing after it lands the race exactly where
+        # the two statements meet.
+        "ORDER BY finished_at",
+    )
+
+    try:
+        result = await prune_terminal_jobs(
+            proxy,
+            retention_per_status={"succeeded": timedelta(days=30)},
+            archive_retention=timedelta(days=365),
+            schema=schema,
+        )
+    except asyncpg.LockNotAvailableError:
+        pytest.fail(
+            "pre-fix: the archive is one statement, so the injected "
+            "retry+re-run cannot commit between its snapshot and its lock "
+            "acquisition - the retry's UPDATE blocks on the lock the batch's "
+            "own delete arm holds until the batch commits. The lock-time "
+            "retention-age re-check needs the two-statement shape; on the "
+            "single-statement shape a re-terminalized candidate is archived "
+            "from the statement snapshot with no age re-check at all."
+        )
+    finally:
+        await race_conn.close()
+
+    assert proxy.raced, "the candidate window must have selected the row for the race to exist"
+    assert result.total_deleted == 0, (
+        "the re-terminalized row was archived at zero age: the write "
+        "statement's lock-time re-check verified the status but not the "
+        "retention age"
+    )
+    assert result.archived == 0
+    live = await pg_conn.fetchrow(
+        f"SELECT status, finished_at FROM {schema}.jobs WHERE id = $1",  # noqa: S608
+        jid,
+    )
+    assert live is not None, "the just-re-failed job was removed from the live tables"
+    assert live["status"] == "succeeded"
+    ghost = await pg_conn.fetchval(
+        f"SELECT count(*) FROM {schema}.jobs_archive WHERE id = $1",  # noqa: S608
+        jid,
+    )
+    assert ghost == 0

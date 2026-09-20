@@ -72,7 +72,8 @@ from taskq.constants import (
     RECLAIM_OUTBOX_RETENTION_MULTIPLIER,
 )
 from taskq.worker._leader_shared import (
-    _ARCHIVE_CTE_ACTOR_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: same as above - pin the production statement, not a copy.
+    _ARCHIVE_CANDIDATE_ACTOR_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: same as above - pin the production statement, not a copy.
+    _ARCHIVE_CANDIDATE_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: same.
     _ARCHIVE_CTE_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: same.
     _CLEANUP_STALE_WORKERS_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: same.
     _EXPIRY_CTE_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: same.
@@ -1247,10 +1248,10 @@ async def _explain_prepared(
     return "\n".join(r["QUERY PLAN"] for r in rows)
 
 
-async def test_archive_cte_drained_steady_state_is_index_bounded(
+async def test_archive_candidate_drained_steady_state_is_index_bounded(
     prune_audit_schema: Any, pg_dsn: str
 ) -> None:
-    """The once-a-day prune's archive candidate scan against the drained
+    """The once-a-day prune's archive candidate window against the drained
     steady state (nothing eligible, 70k-entry terminal population): the
     STABLE bound must be an Index Cond on jobs_finished_at_idx so the
     scan terminates at the range boundary - the VOLATILE form
@@ -1261,11 +1262,10 @@ async def test_archive_cte_drained_steady_state_is_index_bounded(
     try:
         plan = await _explain(
             conn,
-            _ARCHIVE_CTE_SQL.format(schema=schema),
+            _ARCHIVE_CANDIDATE_SQL.format(schema=schema),
             _DRAINED_STATUS,
             _RETENTION,
             _BATCH,
-            _ARCHIVE_RETENTION,
         )
         _assert_index_cond_line(
             plan, "jobs_finished_at_idx", "finished_at <", "statement_timestamp"
@@ -1275,8 +1275,10 @@ async def test_archive_cte_drained_steady_state_is_index_bounded(
         await conn.close()
 
 
-async def test_archive_cte_backlog_is_index_bounded(prune_audit_schema: Any, pg_dsn: str) -> None:
-    """The same candidate scan against the eligible backlog (30k
+async def test_archive_candidate_backlog_is_index_bounded(
+    prune_audit_schema: Any, pg_dsn: str
+) -> None:
+    """The same candidate window against the eligible backlog (30k
     'failed' rows older than retention): the bound must still be an
     Index Cond - in the backlog the VOLATILE form only "works" because
     the oldest entries happen to pass its Filter, and any youngest-first
@@ -1287,11 +1289,10 @@ async def test_archive_cte_backlog_is_index_bounded(prune_audit_schema: Any, pg_
     try:
         plan = await _explain(
             conn,
-            _ARCHIVE_CTE_SQL.format(schema=schema),
+            _ARCHIVE_CANDIDATE_SQL.format(schema=schema),
             _BACKLOG_STATUS,
             _RETENTION,
             _BATCH,
-            _ARCHIVE_RETENTION,
         )
         _assert_index_cond_line(
             plan, "jobs_finished_at_idx", "finished_at <", "statement_timestamp"
@@ -1301,23 +1302,22 @@ async def test_archive_cte_backlog_is_index_bounded(prune_audit_schema: Any, pg_
         await conn.close()
 
 
-async def test_archive_actor_cte_is_index_bounded_drained_and_backlog(
+async def test_archive_candidate_actor_is_index_bounded_drained_and_backlog(
     prune_audit_schema: Any, pg_dsn: str
 ) -> None:
-    """The per-actor-retention override CTE has the same selection shape
-    plus an actor equality; both states must carry the range as an Index
-    Cond (the actor filter rides along as a Filter, like status)."""
+    """The per-actor-retention candidate window has the same selection
+    shape plus an actor equality; both states must carry the range as an
+    Index Cond (the actor filter rides along as a Filter, like status)."""
     schema = prune_audit_schema
     conn = await asyncpg.connect(pg_dsn)
     try:
         for status in (_DRAINED_STATUS, _BACKLOG_STATUS):
             plan = await _explain(
                 conn,
-                _ARCHIVE_CTE_ACTOR_SQL.format(schema=schema),
+                _ARCHIVE_CANDIDATE_ACTOR_SQL.format(schema=schema),
                 status,
                 _RETENTION,
                 _BATCH,
-                _ARCHIVE_RETENTION,
                 "test_actor",
             )
             _assert_index_cond_line(
@@ -1328,7 +1328,76 @@ async def test_archive_actor_cte_is_index_bounded_drained_and_backlog(
         await conn.close()
 
 
-async def test_archive_cte_prepared_statement_stays_index_bounded(
+async def _sample_ids(conn: asyncpg.Connection, schema: str, status: str) -> list[object]:
+    """A batch of ids of *status* rows: the write-statement pins feed the
+    production statement real ids (the plan shape is what is pinned; the
+    drained corpus holds none eligible by design, and the write
+    statement's plan does not depend on eligibility)."""
+    rows = await conn.fetch(
+        f'SELECT id FROM "{schema}".jobs WHERE status = $1::"{schema}".job_status '
+        "ORDER BY finished_at LIMIT $2",
+        status,
+        _BATCH,
+    )
+    return [r["id"] for r in rows]
+
+
+async def test_archive_write_statement_moves_by_bound_ids_drained_and_backlog(
+    prune_audit_schema: Any, pg_dsn: str
+) -> None:
+    """The archive write statement (lock arm, archive INSERT, attempts
+    INSERT, DELETE) locks by the candidate ids bound as an array, and
+    the lock-time re-check (terminal status and retention age) rides
+    that lock in every plan form.
+
+    The correctness-bearing property is the LOCK arm's shape: the
+    EvalPlanQual fence lives in that arm's scan quals, so a plan that
+    stopped seeking the bound ids there would lock rows the candidate
+    window never selected (and lose the fence). It must be pkey-driven
+    (id = ANY, no population walk inside the CTE locked section) and
+    must still carry the finished_at age re-check - a job re-terminalized
+    between the candidate window and this statement (status terminal
+    again, finished_at zero seconds old) drops out at the lock instead
+    of being archived before its retention was served.
+
+    The moved/deleted arms' read shape is deliberately not pinned: their
+    write set is fenced by `locked` regardless of join shape, and the
+    planner legitimately prices a hash join over a Seq Scan when the
+    batch is a large fraction of the table (the default batch is 10,000
+    of this corpus's 70,000 rows)."""
+    schema = prune_audit_schema
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        for status in (_DRAINED_STATUS, _BACKLOG_STATUS):
+            ids = await _sample_ids(conn, schema, status)
+            assert ids, f"the {status} corpus must hold rows"
+            plan = await _explain(
+                conn,
+                _ARCHIVE_CTE_SQL.format(schema=schema),
+                status,
+                _ARCHIVE_RETENTION,
+                ids,
+                _RETENTION,
+            )
+            locked_section = plan.split("CTE moved", 1)[0]
+            assert "= ANY" in locked_section, (
+                "the lock arm's jobs access must be driven by the bound "
+                f"candidate id array:\n{plan}"
+            )
+            assert not re.search(r"Seq Scan on jobs\b", locked_section), (
+                "the lock arm walked the jobs population - the candidate "
+                f"ids did not drive the lock:\n{plan}"
+            )
+            assert "finished_at <" in locked_section, (
+                "the lock-time retention-age re-check left the write "
+                "statement - the EvalPlanQual fence against a "
+                f"re-terminalized candidate is gone:\n{plan}"
+            )
+    finally:
+        await conn.close()
+
+
+async def test_archive_candidate_prepared_statement_stays_index_bounded(
     prune_audit_schema: Any, pg_dsn: str
 ) -> None:
     """PREPARE x6 with production parameter typing: after five
@@ -1343,18 +1412,16 @@ async def test_archive_cte_prepared_statement_stays_index_bounded(
     try:
         warm = (
             f"EXECUTE taskq_pin_archive('{_DRAINED_STATUS}', "
-            f"interval '{_RETENTION.days} days', {_BATCH}, "
-            f"interval '{_ARCHIVE_RETENTION.days} days')"
+            f"interval '{_RETENTION.days} days', {_BATCH})"
         )
         backlog = (
             f"EXECUTE taskq_pin_archive('{_BACKLOG_STATUS}', "
-            f"interval '{_RETENTION.days} days', {_BATCH}, "
-            f"interval '{_ARCHIVE_RETENTION.days} days')"
+            f"interval '{_RETENTION.days} days', {_BATCH})"
         )
         plan = await _explain_prepared(
             conn,
-            f'PREPARE taskq_pin_archive ("{schema}".job_status, interval, int, '
-            f"interval) AS {_ARCHIVE_CTE_SQL.format(schema=schema)}",
+            f'PREPARE taskq_pin_archive ("{schema}".job_status, interval, int) '
+            f"AS {_ARCHIVE_CANDIDATE_SQL.format(schema=schema)}",
             warm,
             backlog,
         )
@@ -1366,27 +1433,72 @@ async def test_archive_cte_prepared_statement_stays_index_bounded(
         await conn.close()
 
 
-async def test_archive_actor_cte_prepared_statement_bound_stays_stable(
+async def test_archive_write_statement_prepared_form_moves_by_bound_ids(
     prune_audit_schema: Any, pg_dsn: str
 ) -> None:
-    """PREPARE x6 for the per-actor override CTE, pinning what the bound
-    must guarantee on EVERY plan form the server can pick for it.
+    """PREPARE x6 for the write statement, then EXPLAIN the next
+    execution: whichever plan form the plancache picks (its generic form
+    cannot prove the partial candidate index either), the LOCK arm must
+    still be driven by the bound id array and must still carry the
+    lock-time re-check (terminal status and retention age). Measured
+    with the age qual present: the prepared form keeps the jobs_pkey
+    Bitmap Index Scan under LockRows with both re-checks as its Filter -
+    the EvalPlanQual fence a re-terminalized candidate hits. The
+    moved/deleted arms' read shape is not pinned (their write set is
+    fenced by `locked` regardless; see the custom-form pin above)."""
+    schema = prune_audit_schema
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        ids = await _sample_ids(conn, schema, _BACKLOG_STATUS)
+        assert ids, "the backlog corpus must hold rows"
+        id_literals = ", ".join(f"'{i}'::uuid" for i in ids[:3])
+        warm = (
+            f"EXECUTE taskq_pin_write('{_BACKLOG_STATUS}', "
+            f"interval '{_ARCHIVE_RETENTION.days} days', "
+            f"ARRAY[{id_literals}]::uuid[], "
+            f"interval '{_RETENTION.days} days')"
+        )
+        plan = await _explain_prepared(
+            conn,
+            f'PREPARE taskq_pin_write ("{schema}".job_status, interval, uuid[], '
+            f"interval) AS {_ARCHIVE_CTE_SQL.format(schema=schema)}",
+            warm,
+            warm,
+        )
+        locked_section = plan.split("CTE moved", 1)[0]
+        assert "= ANY" in locked_section, (
+            "the prepared lock arm's jobs access must be driven by the "
+            f"bound candidate id array:\n{plan}"
+        )
+        assert not re.search(r"Seq Scan on jobs\b", locked_section), (
+            "the prepared lock arm walked the jobs population - the "
+            f"candidate ids did not drive the lock:\n{plan}"
+        )
+        assert "finished_at <" in locked_section, (
+            "the lock-time retention-age re-check left the prepared write "
+            f"statement - the EvalPlanQual fence is gone in the plan form "
+            f"a long-lived connection settles into:\n{plan}"
+        )
+    finally:
+        await conn.close()
 
-    Measured on this corpus: past the threshold the server flips this
+
+async def test_archive_candidate_actor_prepared_statement_bound_stays_stable(
+    prune_audit_schema: Any, pg_dsn: str
+) -> None:
+    """PREPARE x6 for the per-actor candidate window, pinning what the
+    bound must guarantee on EVERY plan form the server can pick for it.
+
+    Measured on this corpus: past the threshold the server can flip a
     prepared statement to a GENERIC plan (the actor equality makes the
-    generic seq-scan cost-competitive - the custom plan's total is
-    dominated by the INSERT/DELETE join sides, not the candidate scan),
-    and no index can serve that generic form at all: ``status = $1`` /
-    ``actor = $5`` as Params cannot prove the partial predicates of
-    jobs_finished_at_idx or the actor partial indexes, so the generic
-    plan seq-scans jobs whatever the bound's volatility. That generic
-    seq-scan shape is a reported follow-up (it needs a full
-    (actor, finished_at)-style index - a DDL change), not something the
-    bound can fix; the Index-Cond property itself stays pinned by the
-    actor CTE's custom-plan pins above. What the bound MUST guarantee
-    here is that neither plan form ever regresses to the VOLATILE
-    clock_timestamp() bound, which measurably degrades both (the custom
-    form Filter-walks the partial-index population; the generic form's
+    generic seq-scan cost-competitive), and no index can serve that
+    generic form at all: ``status = $1`` / ``actor = $4`` as Params
+    cannot prove the partial predicates of jobs_finished_at_idx or the
+    actor partial indexes, so the generic plan seq-scans jobs whatever
+    the bound's volatility. What the bound MUST guarantee here is that
+    neither plan form ever regresses to the VOLATILE clock_timestamp()
+    bound, which measurably degrades both (the custom form
+    Filter-walks the partial-index population; the generic form's
     Filter walks it too). The write stamps never surface in EXPLAIN
     output, so ``clock_timestamp()`` absent from the plan is exactly
     the selection bound's absence."""
@@ -1395,29 +1507,28 @@ async def test_archive_actor_cte_prepared_statement_bound_stays_stable(
     try:
         warm = (
             f"EXECUTE taskq_pin_actor('{_DRAINED_STATUS}', "
-            f"interval '{_RETENTION.days} days', {_BATCH}, "
-            f"interval '{_ARCHIVE_RETENTION.days} days', 'test_actor')"
+            f"interval '{_RETENTION.days} days', {_BATCH}, 'test_actor')"
         )
         backlog = (
             f"EXECUTE taskq_pin_actor('{_BACKLOG_STATUS}', "
-            f"interval '{_RETENTION.days} days', {_BATCH}, "
-            f"interval '{_ARCHIVE_RETENTION.days} days', 'test_actor')"
+            f"interval '{_RETENTION.days} days', {_BATCH}, 'test_actor')"
         )
         plan = await _explain_prepared(
             conn,
-            f'PREPARE taskq_pin_actor ("{schema}".job_status, interval, int, '
-            f"interval, text) AS {_ARCHIVE_CTE_ACTOR_SQL.format(schema=schema)}",
+            f'PREPARE taskq_pin_actor ("{schema}".job_status, interval, int, text) '
+            f"AS {_ARCHIVE_CANDIDATE_ACTOR_SQL.format(schema=schema)}",
             warm,
             backlog,
         )
         assert "statement_timestamp" in plan, (
-            "the prepared actor CTE's selection bound must be STABLE "
+            "the prepared actor candidate's selection bound must be STABLE "
             "statement_timestamp() in whichever plan form (custom or generic) "
             f"the server picks:\n{plan}"
         )
         assert "clock_timestamp()" not in plan, (
-            "a VOLATILE selection bound regressed into the prepared actor CTE's "
-            "plan - it degrades every plan form this statement can run:\n{plan}"
+            "a VOLATILE selection bound regressed into the prepared actor "
+            "candidate's plan - it degrades every plan form this statement "
+            f"can run:\n{plan}"
         )
     finally:
         await conn.close()
@@ -1504,28 +1615,28 @@ async def test_archive_expiry_cte_prepared_statement_stays_index_bounded(
 
 def test_prune_archive_two_clock_split_is_pinned() -> None:
     """Drift-guard for the documented two-clock split in the
-    prune/archive selection CTEs: the row-SELECTION bounds must be
-    STABLE statement_timestamp() (index-servable - the plan pins above
-    catch a regression there), and the WRITE stamps (archived_at /
-    expire_at) must stay VOLATILE clock_timestamp() (co-monotonic with
-    the other clock-domain writes in the same statement - see
-    _sweeps.py's module docstring). A stamp regression is invisible to
-    every plan and behavior pin at microsecond granularity, so the
-    split is pinned at its source here."""
-    for cte_sql in (_ARCHIVE_CTE_SQL, _ARCHIVE_CTE_ACTOR_SQL):
-        assert "finished_at < statement_timestamp() - $2::interval" in cte_sql, (
+    prune/archive statements: the row-SELECTION bounds must be STABLE
+    statement_timestamp() (index-servable - the plan pins above catch a
+    regression there), and the WRITE stamps (archived_at / expire_at)
+    must stay VOLATILE clock_timestamp() (co-monotonic with the other
+    clock-domain writes in the same statement - see _sweeps.py's module
+    docstring). A stamp regression is invisible to every plan and
+    behavior pin at microsecond granularity, so the split is pinned at
+    its source here."""
+    for candidate_sql in (_ARCHIVE_CANDIDATE_SQL, _ARCHIVE_CANDIDATE_ACTOR_SQL):
+        assert "finished_at < statement_timestamp() - $2::interval" in candidate_sql, (
             "the archive candidate SELECTION bound must be STABLE "
             "statement_timestamp() so jobs_finished_at_idx serves it as an "
             "Index Cond"
         )
-        assert "finished_at < clock_timestamp()" not in cte_sql, (
+        assert "finished_at < clock_timestamp()" not in candidate_sql, (
             "a VOLATILE selection bound degrades to a post-scan Filter over "
             "the partial-index population"
         )
-        assert "clock_timestamp(), clock_timestamp() + $4" in cte_sql, (
-            "the archived_at/expire_at WRITE stamps must stay clock_timestamp() "
-            "(co-monotonic with the same statement's other clock-domain writes)"
-        )
+    assert "clock_timestamp(), clock_timestamp() + $2" in _ARCHIVE_CTE_SQL, (
+        "the archived_at/expire_at WRITE stamps must stay clock_timestamp() "
+        "(co-monotonic with the same statement's other clock-domain writes)"
+    )
     assert "expire_at < statement_timestamp()" in _EXPIRY_CTE_SQL, (
         "the expiry SELECTION bound must be STABLE statement_timestamp() so "
         "jobs_archive_expire_at_idx serves it as an Index Cond"
@@ -1534,6 +1645,34 @@ def test_prune_archive_two_clock_split_is_pinned() -> None:
         "a VOLATILE selection bound degrades to a post-scan Filter over the "
         "whole archive population"
     )
+
+
+def test_archive_candidate_window_carries_no_row_lock() -> None:
+    """The candidate window stays lock-free, pinned at its source: a
+    lock-bearing arm priced into THIS statement (a FOR UPDATE on the
+    window, or a lock-by-id CTE joined beside it) pushes the statement's
+    custom-plan cost estimate past the generic plan's - the lock prices
+    heap fetches - and past five same-statement executions the plancache
+    flips to the generic form, which cannot prove
+    jobs_finished_at_idx's partial predicate for bound parameters, so
+    the candidate scan degrades into a bitmap-plus-sort population walk
+    (measured on the 70k-terminal-row corpus; see
+    _ARCHIVE_CANDIDATE_SQL's comment). The race fence is the write
+    statement's `locked` arm instead, which locks the small batch by
+    primary key. The plan pins above catch the executed shape with a
+    live server; this contract pin catches the constant's shape on
+    arrival, no PG needed."""
+    for name, candidate_sql in (
+        ("_ARCHIVE_CANDIDATE_SQL", _ARCHIVE_CANDIDATE_SQL),
+        ("_ARCHIVE_CANDIDATE_ACTOR_SQL", _ARCHIVE_CANDIDATE_ACTOR_SQL),
+    ):
+        assert "FOR UPDATE" not in candidate_sql, (
+            f"{name} grew a row lock: the lock-bearing arm flips the "
+            "plancache to the generic plan past five same-statement "
+            "executions and the candidate scan degrades into a population "
+            "walk; the race fence belongs on the write statement's `locked` "
+            "arm, which locks the batch by primary key"
+        )
 
 
 # ── 4. move-queue backlog drain plan pin ─────────────────────────────
