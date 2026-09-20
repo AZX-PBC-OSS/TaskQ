@@ -445,6 +445,15 @@ transaction as the reclaim UPDATE.  Consumers observe crash-reclaimed jobs via
 `Backend.poll_reclaim_events(after_id)` or `TaskQ.watch_reclaims(after_id)`
 without enumerating every `job_id`.
 
+Coverage caveat: the feed carries Sweep 1 reclaims only.  `isolate_self`
+(worker heartbeat loss) performs the same `running → pending` / `running →
+crashed` transitions but deliberately writes no `job_events` row (a graceful
+self-isolation is not a crash-reclaim), so heartbeat-loss reclaims are outside
+`poll_reclaim_events` / `watch_reclaims` coverage.  They are discoverable only
+by querying `jobs` (`status='crashed'`, `error_class='HeartbeatLost'`),
+`job_attempts`, or the admin views; see the isolate asymmetries under
+[Crash-reclaim interaction](#crash-reclaim-interaction).
+
 A `running → pending` reclaim (crash or heartbeat) reschedules through the
 job's own `RetryPolicy` (base, cap, backoff kind and jitter), exactly as an
 application-level failure does, not a hardcoded flat interval, and clamped at
@@ -550,35 +559,37 @@ other assumption about the deployment is wrong).
 **Worked example: fan-out completion.** The motivating use case: a
 producer fans out N jobs and must fire a callback when *all* of them
 reach a terminal state. Without a reclaim feed, a SIGKILLed worker
-leaves the counter stuck at 1 forever (the job is retried or crashed in
-SQL, and nobody in application code hears about it):
+leaves those jobs invisible forever (the job is retried or crashed in
+SQL, and nobody in application code hears about it). Count the
+remaining jobs from the `jobs` table and use the feed as a wake
+signal, never as the ledger: `isolate_self` (worker heartbeat loss)
+writes no `job_events` row, so a consumer that decrements a counter
+once per event stalls above zero the moment a worker loses heartbeat
+while the feed, and the counter, look healthy:
 
 ```python
-outstanding = len(job_ids)
-
-
 async def track_completions(tq: TaskQ) -> None:
-    global outstanding
     cursor = await load_reclaim_cursor()  # your own durable store
-    async for evt in tq.watch_reclaims(after_id=cursor):
-        # evt.detail: from_state/to_state ('pending' retry, or terminal
-        # 'crashed'/'cancelled'), reason='lock_expired', worker_id.
-        if evt.detail["to_state"] != "pending":  # terminal reclaim only;
-            outstanding -= 1  # retries redispatch normally
-        cursor = evt.event_id
-        await save_reclaim_cursor(cursor)  # persist AFTER processing;
-        # a crash before this re-delivers the event (at-least-once;
-        # dedupe on event_id if your decrement isn't idempotent)
-        if outstanding == 0:
-            await fire_completion_callback()
+    while True:
+        async for evt in tq.watch_reclaims(after_id=cursor):
+            cursor = evt.event_id
+            await save_reclaim_cursor(cursor)  # persist AFTER processing;
+            # a crash before this re-delivers the event (at-least-once;
+            # dedupe on event_id if your recount isn't idempotent)
+        # Recount, don't decrement: heartbeat-loss reclaims (isolate_self)
+        # never appear on this feed, so per-event counting can never reach
+        # zero when a worker's heartbeat dies mid-fan-out.
+        if await count_unfinished(tq, job_ids) == 0:  # your own query over
+            await fire_completion_callback()          # jobs / the admin views
+            return
 ```
 
 Terminal states reached on the normal path (success, failure,
-cooperative cancel) are counted as each job's own result is recorded:
-`watch_reclaims` exists to close the crash gap, where *no* application
-code runs. Only terminal reclaims decrement the counter: a
-`to_state='pending'` event means the job was rescheduled and will be
-counted when it eventually lands terminal. The producer must only prune
+cooperative cancel) need no feed at all: the recount sees them as soon
+as each job's own terminal write commits. `watch_reclaims` exists to
+close the crash gap, where *no* application code runs, and to wake the
+tracker the moment a reclaim lands instead of leaving it to a fixed
+polling cadence. The producer must only prune
 `job_events` rows older than every live consumer's persisted cursor;
 rows pruned before a slow consumer reads them are permanently lost to
 that consumer.
@@ -638,7 +649,11 @@ each build. It stays transactional deliberately: the `CONCURRENTLY` form
 deadlocks under the runner's own serialized-migrator advisory lock, so apply
 it during a maintenance window (or when `jobs` is small/quiescent, e.g. right
 after a prune sweep) on any deployment where `jobs` is large; the migration
-file's header carries the full derivation.
+file's header carries the full derivation. The archive-candidate index
+migration `01.00.17_01` has a strictly wider profile still: its `DROP INDEX`
+takes `ACCESS EXCLUSIVE` on `jobs` and holds it, same transaction as the
+`CREATE INDEX`, for the whole build, so reads queue behind it too (see
+[the `01.00.17_01` note in the upgrading guide](guides/upgrading.md#migration-010017_01-holds-access-exclusive-on-jobs-for-the-whole-index-rebuild)).
 
 ---
 

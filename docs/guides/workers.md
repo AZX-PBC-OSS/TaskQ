@@ -502,6 +502,8 @@ If `heartbeat_pool.acquire()` times out, raises a connection error, or `run_in_t
 3. For each job: transitions retryable jobs to `pending` (scheduled 5s in the future) and non-retryable jobs to `crashed`. Writes an attempt record with `error_class=HeartbeatLost`.
 4. Always sets `shutdown_event` so the process exits.
 
+No `job_events` row is written (a graceful self-isolation is not a crash-reclaim), so heartbeat-loss reclaims never appear on the `Backend.poll_reclaim_events()` / `TaskQ.watch_reclaims()` feed. Consumers that must observe every reclaim learn about these jobs from the `jobs` row (`status='crashed'`, `error_class='HeartbeatLost'`), `job_attempts`, or the admin views.
+
 ---
 
 ## Leader election
