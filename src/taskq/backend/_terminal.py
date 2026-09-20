@@ -780,9 +780,9 @@ async def _mark_snoozed(
     # identical error), before the pool is even touched, so an illegal
     # outcome raises loudly whatever the job's state instead of firing
     # no arm and stranding the row 'running'. denial_reason keeps the
-    # same boundary check even though the statement no longer branches
-    # on it, a caller naming a reason the protocol does not define is a
-    # coding error the API must refuse rather than silently accept.
+    # same boundary check even though no arm branches on it, a caller
+    # naming a reason the protocol does not define is a coding error the
+    # API must refuse rather than silently accept.
     validate_snooze_outcome(outcome)
     validate_denial_reason(denial_reason)
     branch: SqlOutcomeBranch
@@ -797,6 +797,7 @@ async def _mark_snoozed(
             _progress_jsonb_escaped(progress_state),
             outcome,
             attempt,
+            denial_reason,
         )
         if rec is None:
             return "noop"

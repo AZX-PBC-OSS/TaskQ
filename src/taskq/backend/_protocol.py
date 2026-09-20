@@ -2048,12 +2048,17 @@ class Backend(Protocol):
         are how sustained contention stays visible.
 
         *denial_reason* names the cause of a denial-class outcome
-        (:data:`DenialReason`) for the caller's own observability ,
-        ``"capacity"`` (the default) is a saturation denial, the store
-        answering "full"; ``"unavailable"`` is the store failing to
-        answer.  Both take the identical non-consuming path; the value is
-        validated at the boundary so an undefined reason is refused
-        rather than silently accepted.
+        (:data:`DenialReason`), ``"capacity"`` (the default) is a
+        saturation denial, the store answering "full"; ``"unavailable"`` is
+        the store failing to answer.  Both take the identical non-consuming
+        path; the value is validated at the boundary so an undefined reason
+        is refused rather than silently accepted.  It is persisted, not
+        discarded: the mark_snoozed deadline arm's ``state_change`` event
+        carries it in the detail of the terminal exit that ends a
+        perpetually-denied job, so an operator reading the event sees
+        which starvation (saturation vs store outage) killed the job.  A
+        non-denial deferral writes no event row and the reason reaches no
+        other surface.
         """
         ...
 

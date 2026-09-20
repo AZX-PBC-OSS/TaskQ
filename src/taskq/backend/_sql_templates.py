@@ -717,12 +717,13 @@ SELECT * FROM upd""",
         #                     schedule_to_close, or there is none;
         #   deadline_failed, the reschedule point passes
         #                     schedule_to_close.
-        # denial_reason never reaches this statement: 'capacity' (the
+        # denial_reason never branches this statement: 'capacity' (the
         # store answered "full") and 'unavailable' (the store could not
         # answer) are both admission backpressure about a job whose actor
-        # never ran, and take the identical non-consuming shape. The
-        # reason is validated at the Python boundary for the caller's own
-        # observability, not branched on here.
+        # never ran, and take the identical non-consuming shape. It rides
+        # the $9 bind only so the deadline arm's terminal event can name
+        # WHICH starvation ended a perpetually-denied job (the params CTE
+        # comment); a non-denial deferral's event detail is unchanged.
         #
         # The refund revisits attempt numbers, which is collision-safe:
         # a non-terminal snooze/denial writes NO job_attempts/job_events
@@ -774,7 +775,15 @@ WITH params AS (
             $4::jsonb AS metadata_update,
             $5::int AS progress_seq,
             $6::jsonb AS progress_state,
-            $8::int AS attempt
+            $8::int AS attempt,
+            -- The denial class the caller reported for THIS deferral (the
+            -- bounded DenialReason set). No arm branches on it, a denial
+            -- takes the identical non-consuming path whatever the reason;
+            -- the deadline arm's event below reads it so the terminal
+            -- record of a starved-out job names WHICH starvation it was
+            -- (saturation vs a store outage), the observability the row
+            -- counters alone cannot carry.
+            $9::text AS denial_reason
 ),
 snoozed AS (
     UPDATE "{s}".jobs j
@@ -942,9 +951,19 @@ deadline_evt AS (
     INSERT INTO "{s}".job_events
     (job_id, occurred_at, kind, detail)
     SELECT d.id, clock_timestamp(), 'state_change',
-           jsonb_build_object('from_state', 'running', 'to_state', 'failed',
+           -- jsonb_strip_nulls keeps the non-denial exit's detail shape
+           -- unchanged (a plain snooze past the deadline carries no
+           -- denial_reason key); a denial-keyed row's terminal event
+           -- names the denial class the caller reported ($9), so an
+           -- operator reading the event sees which starvation killed
+           -- the job without joining the counter columns.
+           jsonb_strip_nulls(jsonb_build_object(
+                              'from_state', 'running', 'to_state', 'failed',
                               'error_class', '{ERROR_CLASS_DEADLINE_EXCEEDED}',
-                              'worker_id', $2::text)
+                              'worker_id', $2::text,
+                              'denial_reason',
+                              CASE WHEN $7::text IN ('reservation_denied', 'rate_limit_denied')
+                                   THEN (SELECT denial_reason FROM params) END))
     FROM deadline_failed d
 )
 SELECT * FROM snoozed

@@ -885,6 +885,16 @@ async def _mark_snoozed(
             now=now,
             error_class="DeadlineExceeded",
             worker_id=worker_id,
+            # The terminal event names which starvation ended a
+            # perpetually-denied job, the twin of the SQL deadline arm's
+            # conditional denial_reason detail (absent for a plain
+            # snooze past the deadline, exactly as jsonb_strip_nulls
+            # drops it PG-side).
+            **(
+                {"denial_reason": denial_reason}
+                if outcome in ("reservation_denied", "rate_limit_denied")
+                else {}
+            ),
         )
         logger.debug(
             "state-change",
