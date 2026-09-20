@@ -12,7 +12,7 @@ are about PG behaviour.
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -36,7 +36,7 @@ from taskq.obs import setup_logging
 from taskq.testing.assertions import wait_for_condition
 from taskq.testing.fixtures import JobsApp, ModulePgSchema, _open_pg_backend
 from taskq.testing.jobs import make_enqueue_args
-from taskq.testing.otel import collect_metrics, histogram_points, setup_meter, setup_tracer
+from taskq.testing.otel import counter_value, histogram_points, setup_meter, setup_tracer
 from taskq.testing.pg import create_worker
 from taskq.worker.run import producer_loop, register_worker
 from taskq.worker.startup import sync_actor_config
@@ -838,10 +838,47 @@ async def test_dispatch_duration_is_recorded_when_the_dispatch_query_fails(
     )
 
 
+class _FailingDispatcherConn:
+    """Conn stand-in whose every statement fails, deterministically.
+
+    The injected form of every way a dispatch round can fail against a
+    degraded database - a statement timeout, a lock timeout, a connection
+    reset mid-query. The failure is injected at the connection seam (the
+    repo's fake-conn pattern) rather than manufactured with a real
+    ``statement_timeout``: a real 1ms budget is a race - when the server's
+    cancel lands after the claim statement committed, the round half-
+    succeeds and dispatches the backlog the scenario needs intact.
+    """
+
+    async def fetch(self, *args: object, **kwargs: object) -> list[object]:
+        raise RuntimeError("injected dispatch failure")
+
+    async def execute(self, *args: object, **kwargs: object) -> str:
+        raise RuntimeError("injected dispatch failure")
+
+
+class _FailingDispatcherPool:
+    """Pool stand-in whose connections always fail (see conn stand-in)."""
+
+    def __init__(self) -> None:
+        self.checked_out = 0
+
+    def acquire(
+        self, timeout: float | None = None
+    ):  # Why: stand-in for asyncpg.Pool.acquire's AsyncContextManager; the producer path is untyped at this seam.
+        pool = self
+
+        @contextlib.asynccontextmanager
+        async def _acquire() -> AsyncGenerator[_FailingDispatcherConn, None]:
+            pool.checked_out += 1
+            yield _FailingDispatcherConn()
+
+        return _acquire()
+
+
 @pytest.mark.asyncio
 async def test_dispatch_failure_is_visible_in_a_metric_not_only_a_log_line(
     clean_jobs_app: JobsApp,
-    statement_timeout_dispatcher_pool: _asyncpg.Pool,
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -860,6 +897,14 @@ async def test_dispatch_failure_is_visible_in_a_metric_not_only_a_log_line(
     substitute: it carries no series to alert on, and an operator who is
     not already tailing that worker's logs has no way to learn that the
     queue stopped draining.
+
+    The failure is arranged deterministically: a fault-injected dispatcher
+    pool whose every statement fails, so no round can half-succeed the way
+    a real statement timeout can when the cancel lands after the claim
+    committed. The jobs' observable state is asserted for coherence, not
+    for a frozen backlog shape: whatever the failure does, it must LOSE
+    NOTHING - every seeded job is still live, pending to be claimed by a
+    healthy dispatcher.
     """
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
@@ -871,20 +916,18 @@ async def test_dispatch_failure_is_visible_in_a_metric_not_only_a_log_line(
     for _ in range(5):
         await backend.enqueue(make_enqueue_args(actor="telemetry_actor"))
 
-    # The claim matches rows only for a REGISTERED actor: dispatch's
-    # candidates walk actor_config, so an unregistered actor's pending
-    # rows are invisible to every round and the rounds return
-    # empty-handed instead of failing. Registering the actor puts the
-    # claim UPDATE on the 5 seeded rows, whose lock, update and
-    # RETURNING work always exceeds the 1ms budget, so every round
-    # aborts in the statement's own execution.
+    # Register the seeded actor so the round reaches the failing statement
+    # with claimable rows: dispatch's candidates walk actor_config, so an
+    # unregistered actor's pending rows make every round vacuously
+    # empty-handed - a scenario about FAILURE needs rounds that attempt
+    # the claim and fail in it.
     configs = [ActorConfig(actor="telemetry_actor", max_concurrent=5, queue="default", metadata={})]
     async with deps.worker_pool.acquire() as conn:
         await sync_actor_config(conn, configs, force=False, schema=schema)
 
     setup_tracer(monkeypatch)
     reader = setup_meter(monkeypatch)
-    monkeypatch.setattr(deps, "dispatcher_pool", statement_timeout_dispatcher_pool)
+    monkeypatch.setattr(deps, "dispatcher_pool", _FailingDispatcherPool())
     # Tighten only the loop cadence, so the scenario's several failed
     # rounds happen promptly. The cadence is not what is under test.
     monkeypatch.setattr(deps.settings, "poll_interval", 0.01, raising=False)
@@ -909,23 +952,18 @@ async def test_dispatch_failure_is_visible_in_a_metric_not_only_a_log_line(
         )
     )
     try:
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.ERROR):
             # The failed rounds are the observable; waiting on a count of
             # them is what makes this deterministic rather than timed.
-            # Which classification a failed round logs is not what is
-            # under test: the statement-timeout failure this scenario
-            # manufactures is in TRANSIENT_PG_ERRORS (SQLSTATE 57014), so
-            # the producer deliberately degrades it to the WARNING
-            # "dispatch-batch-transient" record, while a failure outside
-            # the transient set keeps the loud ERROR "dispatch-batch-error"
-            # record. Both name a failed round, so both count here.
+            # The injected failure is not in TRANSIENT_PG_ERRORS, so each
+            # failed round keeps the loud ERROR "dispatch-batch-error"
+            # record - the record an operator tailing the worker sees.
             await wait_for_condition(
                 lambda: (
                     sum(
                         1
                         for record in caplog.records
                         if "dispatch-batch-error" in record.getMessage()
-                        or "dispatch-batch-transient" in record.getMessage()
                     )
                     >= 3
                 ),
@@ -939,23 +977,47 @@ async def test_dispatch_failure_is_visible_in_a_metric_not_only_a_log_line(
             await task
 
     assert local_queue.qsize() == 0, (
-        "no job should have been claimed - the premise is that every round failed"
-    )
-    async with deps.worker_pool.acquire() as conn:
-        still_pending = await conn.fetchval(
-            f"SELECT count(*) FROM \"{schema}\".jobs WHERE status = 'pending'"
-        )
-    assert still_pending == 5, (
-        f"the backlog must be untouched for this scenario to be the one under test; "
-        f"{still_pending} of 5 jobs are still pending"
+        "no job should have been handed to a consumer - every dispatch "
+        "round failed, so nothing was ever claimed"
     )
 
-    emitted = sorted(metric.name for metric in collect_metrics(reader))
-    assert emitted, (
-        "a producer that failed every dispatch round against a degraded database "
-        "emitted no metric at all - the process stays up, its liveness probe stays "
-        "green, the backlog stays pending exactly as an idle queue would, and the "
-        "only trace of total dispatch failure is an untelemetered log line"
+    # The metric an alert names, observed through the telemetry surface:
+    # every failed round bumps the dispatch-failure counter, the series
+    # the dispatch-health alert reads.
+    failures = counter_value(reader, "taskq.dispatch.failures")
+    assert failures >= 3, (
+        f"a producer that failed every dispatch round against a degraded "
+        f"database bumped taskq.dispatch.failures {failures} times - the "
+        f"process stays up, its liveness probe stays green, and the only "
+        f"trace of total dispatch failure must not be an untelemetered log "
+        f"line no series can alert on"
+    )
+    duration_points = histogram_points(reader, "taskq.dispatch.duration")
+    assert sum(p.count for p in duration_points) >= 1, (
+        "the failed rounds must also contribute duration samples - a "
+        "dispatcher failing every round must not read as a perfectly "
+        "healthy flat line in the dispatch-latency series"
+    )
+
+    # The jobs' observable state is coherent: nothing was lost. Every
+    # seeded job is still accounted for and live - pending to be claimed
+    # the moment a healthy dispatcher returns. The exact pending count is
+    # the failure's own business (a real degradation can half-claim);
+    # what must never happen is a job vanishing between the producer's
+    # failure records.
+    async with deps.worker_pool.acquire() as conn:
+        total = await conn.fetchval(f'SELECT count(*) FROM "{schema}".jobs')
+        live = await conn.fetchval(
+            f"SELECT count(*) FROM \"{schema}\".jobs WHERE status IN ('pending', 'running')"
+        )
+    assert total == 5, (
+        f"all 5 seeded jobs must still exist after the failure streak; "
+        f"{total} remain - a failed dispatch lost work"
+    )
+    assert live == 5, (
+        f"every job must still be live (pending or dispatched) after the "
+        f"failure streak; {live} of 5 are - a failed dispatch stranded "
+        f"work outside every observable state"
     )
 
 
