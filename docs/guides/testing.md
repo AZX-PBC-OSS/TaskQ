@@ -269,8 +269,8 @@ async def test_cancel_mid_drain() -> None:
     backend = InMemoryBackend(clock=clock)
 
     async def victim(payload, ctx):
-        await ctx.cancel_event.wait()   # park until the poller fires it
-        ctx.check_cancelled()           # documented cooperative exit
+        await ctx.cancel_event.wait()  # park until the poller fires it
+        ctx.check_cancelled()  # documented cooperative exit
 
     backend.register_stub("victim", victim)
 
