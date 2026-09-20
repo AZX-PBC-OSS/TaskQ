@@ -158,6 +158,7 @@ new Function(src)();
 if (scenario === "realtime-empty-progress") {
     global.lastEventSource.emit("terminal", { terminal: true }, "0");
 } else if (scenario === "realtime-progress") {
+    global.lastEventSource.emit("progress", {}, "0");
     global.lastEventSource.emit("progress", { percent: 50 }, "1");
 } else if (scenario === "sse-to-polling") {
     global.lastEventSource.emit("progress", { percent: 50 }, "1");
@@ -245,7 +246,7 @@ def test_realtime_does_not_render_the_empty_initial_progress_state() -> None:
 
 @requires_node
 def test_realtime_renders_a_later_progress_update_once() -> None:
-    """SSE ignores sequence zero without suppressing real progress events."""
+    """An SSE sequence-zero snapshot does not suppress later real progress."""
     log = _drive("realtime-progress")
     assert log.count("append-progress") == 1
 
