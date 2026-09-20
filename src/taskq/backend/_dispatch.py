@@ -250,6 +250,12 @@ async def _dispatch_batch(
         record_pool_acquire_duration(queue_attr, time.monotonic() - acquire_started)
         record_dispatch_failure(queue_attr)
         raise
+    # The wait ended in a connection: record it here too. A completed
+    # wait is still a wait — the pool-exhausted pod whose multi-second
+    # waits eventually SUCCEED (the case the histogram exists to make
+    # visible) runs its SQL only after the wait, and only this record
+    # separates the two quantities in the metric stream.
+    record_pool_acquire_duration(queue_attr, time.monotonic() - acquire_started)
     try:
         try:
             queue_modes = (
