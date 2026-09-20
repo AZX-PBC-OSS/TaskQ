@@ -57,13 +57,26 @@ async def _watch_build_locks(
     stop: asyncio.Event,
 ) -> set[str]:
     """Collect every table-lock mode observed on job_events (any pid) until
-    *stop* is set."""
+    *stop* is set.
+
+    Each poll is one short fully-resolved query on this dedicated
+    connection - the loop never holds an operation open across iterations,
+    so the connection is idle when ``stop`` ends the loop and closing it
+    cannot race a mid-flight statement. The ``pg_locks`` row set is
+    database-scoped via ``l.database`` (``pg_locks`` itself is
+    cluster-wide; the regclass cast resolves in this database, the
+    explicit oid match keeps the probe honest about it), pinned
+    suite-wide by ``test_suite_hygiene.py``.
+    """
     observed: set[str] = set()
     while not stop.is_set():
         rows = await conn.fetch(
             """
             SELECT l.mode FROM pg_locks l
-            WHERE l.relation = $1::regclass AND l.granted
+            WHERE l.relation = $1::regclass
+              AND l.database = (SELECT oid FROM pg_database
+                                WHERE datname = current_database())
+              AND l.granted
             """,
             f'"{schema}".job_events',
         )
@@ -74,14 +87,25 @@ async def _watch_build_locks(
 
 async def _wait_writer_blocked(
     conn: asyncpg.Connection,
-    schema: str,
 ) -> bool:
-    """Poll pg_stat_activity until the writer INSERT is waiting on a lock."""
+    """Poll pg_stat_activity until the writer INSERT is waiting on a lock.
+
+    Runs on its OWN dedicated connection: the watcher loop above is a
+    second session polling the same server, and two overlapping
+    operations on one asyncpg connection raise ``InterfaceError``. The
+    query is scoped to the current database (``pg_stat_activity`` is
+    cluster-wide and the shared container hosts every xdist worker's
+    database), and to *active* lock waiters other than the probing
+    backend itself, so only our writer can satisfy it.
+    """
     for _ in range(500):
         rows = await conn.fetch(
             """
             SELECT 1 FROM pg_stat_activity
-            WHERE wait_event_type = 'Lock'
+            WHERE datname = current_database()
+              AND wait_event_type = 'Lock'
+              AND state = 'active'
+              AND pid <> pg_backend_pid()
               AND query LIKE '%writer_probe%'
             """
         )
@@ -98,8 +122,20 @@ async def test_index_build_share_lock_lets_readers_flow_and_writers_queue(
     """The migration's CREATE INDEX holds SHARE on job_events: a reader
     returns while the build holds the lock, a writer waits it out."""
     schema = await _migrated_schema(pg_dsn)
+    conns: list[asyncpg.Connection] = []
+
+    async def _close_all() -> None:
+        # Every session here is a dedicated connection and every await is
+        # fully resolved before this runs (the watcher's last poll resolves
+        # before ``stop`` ends its loop), so no close can race a mid-flight
+        # operation.
+        for c in conns:
+            if not c.is_closed():
+                await c.close()
+
     try:
         setup = await asyncpg.connect(pg_dsn)
+        conns.append(setup)
         # A parent row for job_events' FK, then enough events that the build
         # is observably long.
         await setup.execute(
@@ -124,12 +160,14 @@ async def test_index_build_share_lock_lets_readers_flow_and_writers_queue(
         # executed statement is a real build, not an IF NOT EXISTS no-op.
         await setup.execute(f'DROP INDEX "{schema}".job_events_reclaim_idx')
 
-        build, reader, writer, watcher = await asyncio.gather(
+        build, reader, writer, watcher, prober = await asyncio.gather(
+            asyncpg.connect(pg_dsn),
             asyncpg.connect(pg_dsn),
             asyncpg.connect(pg_dsn),
             asyncpg.connect(pg_dsn),
             asyncpg.connect(pg_dsn),
         )
+        conns.extend([build, reader, writer, watcher, prober])
         ddl = next(m for m in mig.discover() if m.version == "01.00.02_01").render(schema)
 
         build_task = asyncio.create_task(build.execute(ddl))
@@ -150,7 +188,7 @@ async def test_index_build_share_lock_lets_readers_flow_and_writers_queue(
                            '{{}}'::jsonb FROM "{schema}".jobs LIMIT 1"""
             )
         )
-        writer_blocked = await _wait_writer_blocked(watcher, schema)
+        writer_blocked = await _wait_writer_blocked(prober)
 
         await asyncio.gather(build_task, read_task, write_task)
         stop.set()
@@ -174,8 +212,6 @@ async def test_index_build_share_lock_lets_readers_flow_and_writers_queue(
             "build: SHARE is no longer queueing ROW EXCLUSIVE writers, which "
             "invalidates the write-stall warning the doc carries"
         )
-
-        for c in (build, reader, writer, watcher, setup):
-            await c.close()
     finally:
+        await _close_all()
         await _drop_schema(pg_dsn, schema)
