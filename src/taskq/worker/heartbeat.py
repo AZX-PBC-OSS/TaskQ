@@ -848,9 +848,17 @@ async def isolate_self(
                             new_status = "crashed"
                         # The reclaim rides the crash-reclaim outbox
                         # channel exactly like the sweep's rows (see the
-                        # module comment): reason='lock_expired' is the
-                        # channel key poll_reclaim_events tails, cause
-                        # names the isolate origin, worker_id is the
+                        # module comment). reason='lock_expired' is the
+                        # CHANNEL key -- the slice poll_reclaim_events
+                        # tails and the retention carve-out keeps -- not
+                        # a per-row lease claim: this row's lease may
+                        # still be live (isolate fires on heartbeat-
+                        # connection loss, not lease expiry), exactly as
+                        # the sweep's heartbeat_timeout arm stamps the
+                        # same channel value for rows whose global lease
+                        # never expired. The per-event truth is
+                        # cause='isolate_self' (the sweep's rows name the
+                        # deadline that fired); worker_id is the
                         # last-known holder, the sweep's detail shape.
                         detail: dict[str, object] = {
                             "from_state": "running",
