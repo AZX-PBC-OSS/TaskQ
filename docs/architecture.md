@@ -1660,11 +1660,9 @@ the placeholder in SQL files and `_IDENT_RE`-validated interpolation in Python.
 - `job_events` records every state transition and cancel request as an immutable
   audit log. Also pruned via `ON DELETE CASCADE`.
 
-`attempt` is the displayed, saturating retry counter (clamped at the smallint
-ceiling so one over-budget row cannot poison a claim round); `claim_epoch` is
-its fencing twin, a `bigint` the dispatch claim bumps by exactly 1 and every
-terminal/ownership write fences on, so two executions can never share a
-terminal-write fence even once `attempt` stops advancing. See
+`attempt` is the displayed, saturating retry counter; `claim_epoch` is its
+non-saturating fencing twin, a `bigint` bumped by exactly 1 per claim and
+fenced on by every terminal/ownership write. See
 `01.00.18_02_pre_claim_epoch.sql` for the invariant.
 
 This separation keeps the `jobs` hot path narrow (fewer columns updated per

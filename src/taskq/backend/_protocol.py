@@ -981,18 +981,14 @@ class JobRow:
     materialised before the marker existed read producer-placed.
     """
     claim_epoch: int = 0
-    """The row's non-saturating claim-epoch fence, bumped by exactly 1 on
-    every successful dispatch claim (the displayed ``attempt`` counter
-    saturates at the smallint ceiling, so at 32767 a reclaim plus a
-    redispatch would leave a stale handler and the live one sharing the
-    same (worker, attempt) pair, where the stale terminal write would
-    win). Every terminal/ownership write that fences on ``attempt`` also
-    fences on this column equalling the epoch from the writer's own
-    claim view; the reclaim sweeps that clear locks leave the column,
-    so the next claim's bump is what stales the previous writer.
-    Fences compare equality, never magnitude. Trailing default: rows
-    materialised before the column existed read 0, the one epoch no
-    claim can ever stamp (the first claim of any row stamps 1).
+    """The row's non-saturating claim-epoch fence: bumped by exactly 1 on
+    every successful dispatch claim, left untouched by the reclaim sweeps
+    that clear locks, and fenced on by equality (against the writer's own
+    claim view) by every terminal/ownership write that fences on
+    ``attempt``. Trailing default: rows materialised before the column
+    existed read 0, the one epoch no claim can ever stamp (the first
+    claim of any row stamps 1). The invariant lives in
+    01.00.18_02_pre_claim_epoch.sql.
     """
 
 

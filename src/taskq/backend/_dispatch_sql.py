@@ -999,16 +999,10 @@ SET status = 'running',
     -- is absorbed by the ON CONFLICT guard every job_attempts insert
     -- carries, so the audit trail keeps the first record of the number
     -- and no terminal path raises.
-    -- The displayed counter saturates on purpose; the FENCE must not.
-    -- claim_epoch is the non-saturating claim identity (bigint, no
-    -- ceiling): every claim bumps it, the reclaim sweeps that clear
-    -- locks leave it, and every terminal/ownership write that fences on
-    -- attempt also fences on ``claim_epoch = $n`` with the epoch this
-    -- RETURNING handed the claiming worker. At the ceiling a reclaim
-    -- plus a redispatch leaves the stale handler and the live one
-    -- holding the SAME (worker, attempt) pair, where the stale write
-    -- would win; their epochs always differ, so the stale write can
-    -- only no-op. See 01.00.18_02_pre_claim_epoch.sql for the invariant.
+    -- The displayed counter saturates on purpose; the FENCE must not:
+    -- the +1 epoch stamp below is what keeps two executions of one row
+    -- from ever sharing a fence. See 01.00.18_02_pre_claim_epoch.sql
+    -- for the invariant.
     attempt = LEAST(j.attempt + 1, 32767),
     claim_epoch = j.claim_epoch + 1
 -- The UPDATE finds its rows through a one-shot id array, not a

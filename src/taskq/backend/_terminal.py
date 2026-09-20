@@ -32,15 +32,13 @@ aborts the write whole, still classifies through
 Invariants preserved verbatim from the three-statement form:
 
 * The UPDATE stays the single arbiter: its fencing WHERE (``status =
-  'running' AND locked_by_worker = $2``, now two epochs deeper with the
-  attempt conjunct ``AND attempt = $k``, the handler's dispatch-time
-  job-row attempt snapshot, and the claim-epoch conjunct ``AND
-  claim_epoch = $m``, the handler's own claim view, threaded from every
-  call site: a stale attempt's write after a same-worker
-  reclaim/redispatch no-ops exactly like a different worker's late
-  write, and at the attempt ceiling, where the displayed counter stops
-  advancing, the non-saturating claim epoch is what keeps the stale and
-  the live execution from sharing a fence)
+  'running' AND locked_by_worker = $2``, two epochs deeper with the
+  attempt conjunct ``AND attempt = $k`` and the claim-epoch conjunct
+  ``AND claim_epoch = $m``, the handler's own claim view, threaded from
+  every call site, so a stale execution's write after a reclaim and
+  redispatch no-ops exactly like a different worker's late write, at the
+  attempt ceiling included; the invariant lives in
+  ``01.00.18_02_pre_claim_epoch.sql``)
   decides everything, and an empty ``upd`` CTE makes the INSERT CTEs
   insert nothing and the final ``SELECT`` return no row, the exact
   ``rec is None`` / ``WorkerOwnershipMismatch`` / ``False`` contract,

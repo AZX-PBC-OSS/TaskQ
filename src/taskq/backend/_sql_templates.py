@@ -264,22 +264,15 @@ def render(schema: str) -> SqlTemplates:
         # through the same machinery as the worker fence (rowcount 0 →
         # False / WorkerOwnershipMismatch / "noop", no publish).
         #
-        # CLAIM-EPOCH FENCING: the attempt counter SATURATES at the
-        # smallint ceiling (the claim's LEAST clamp, _dispatch_sql.py),
-        # so at 32767 a reclaim plus a same-worker redispatch gives the
-        # stale handler and the live one the SAME attempt number and the
-        # attempt conjunct can no longer tell them apart. Every fenced
-        # template therefore carries one conjunct deeper still,
-        # ``claim_epoch = $m``, the non-saturating claim counter the
-        # dispatch claim bumps by exactly 1 per claim (bigint; the
-        # reclaim sweeps that clear locks leave it, the next claim
-        # bumps it, so a stale writer's epoch is stale the moment a new
-        # claim exists, at the ceiling or anywhere else). The value is
-        # the handler's own claim view (JobRow.claim_epoch, threaded
-        # beside attempt from every call site); NULL never satisfies
-        # the equality, the same cannot-prove-it doctrine the attempt
-        # conjunct applies. Fences compare EQUALITY, never magnitude;
-        # see 01.00.18_02_pre_claim_epoch.sql for the invariant.
+        # CLAIM-EPOCH FENCING: every fenced template carries one conjunct
+        # deeper still, ``claim_epoch = $m``, the writer's own claim view
+        # (JobRow.claim_epoch, threaded beside attempt from every call
+        # site). Attempt saturates at the smallint ceiling (the claim's
+        # LEAST clamp, _dispatch_sql.py); the epoch does not, so a stale
+        # handler and the live one can never share a fence. NULL never
+        # satisfies the equality, the same cannot-prove-it doctrine the
+        # attempt conjunct applies. See 01.00.18_02_pre_claim_epoch.sql
+        # for the invariant.
         #
         # duration_ms is computed IN the statement from the same
         # database-written timestamp pair Python used to receive and

@@ -2231,22 +2231,15 @@ fence column instead of touching it.
 
 Every row now carries `claim_epoch bigint NOT NULL DEFAULT 0`
 (`jobs` and `jobs_archive`; `ADD COLUMN` with a constant default, metadata
-only, no table rewrite). The dispatch claim bumps it by exactly 1 per claim
-(a `bigint` never saturates), and every terminal/ownership write that
-already fenced on `attempt` gained the conjunct
-`claim_epoch = <the writer's own claim view>`: `mark_succeeded`,
-`mark_failed`, `mark_cancelled`, `mark_retry`, `mark_snoozed`, both
-`mark_retry_after` variants, and `mark_interrupted`, every arm of the
-multi-arm arbiters included. The reclaim sweeps that clear locks leave the
-column untouched; the NEXT claim's bump is what stales the previous writer.
-Fences compare equality, never magnitude, so epoch `0` on pre-migration
-rows is simply the one identity no claim can stamp (the first claim of any
-row writes `1`).
+only, no table rewrite). The dispatch claim bumps it by exactly 1 per claim,
+and every terminal/ownership write that already fenced on `attempt` gained
+the conjunct `claim_epoch = <the writer's own claim view>`:
+`mark_succeeded`, `mark_failed`, `mark_cancelled`, `mark_retry`,
+`mark_snoozed`, both `mark_retry_after` variants, and `mark_interrupted`,
+every arm of the multi-arm arbiters included.
 
-The invariant, spelled out in the migration: between two fenced writes to
-the same row, a successful claim must have bumped the epoch, so two
-executions can never hold the same fence, at the ceiling or anywhere else.
-The value the writer presents is the `claim_epoch` of the `JobRow` its own
+The invariant itself lives in the migration file. The operational shape: the
+value the writer presents is the `claim_epoch` of the `JobRow` its own
 dispatch returned (and of the actor context, `ctx.claim_epoch`, which the
 shutdown release reads); a caller that cannot present one (a `None` bind)
 no-ops through the same machinery the attempt fence uses, the same
