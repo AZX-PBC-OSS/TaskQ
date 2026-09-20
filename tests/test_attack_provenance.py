@@ -9,9 +9,10 @@ and cancellation visibility (``poll_cancel_flags``). A failure is a RED.
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
@@ -98,6 +99,88 @@ async def _isolate_feed_events(app: "JobsApp", job_id: JobId) -> list[EventRow]:
     """The reclaim feed's deliveries for one job (public feed contract)."""
     feed = await app.backend.poll_reclaim_events(0, visibility_delay=timedelta(0))
     return [event for event in feed if event.job_id == job_id]
+
+
+# Bounds every injected wait below so a wedged interleaving fails, never hangs.
+_WAIT = 15.0
+
+
+class _ParkedIsolateConn:
+    """Real connection wrapper that parks isolate_self at an injected
+    suspension point inside its own transaction, so a race test can
+    interleave the opposing writer exactly inside the race window instead
+    of hoping sleep head starts sample the winning order (a scheduling
+    lottery: green on a fast runner, red on a loaded one).
+
+    isolate_self's per-row sequence on this one connection is a plain
+    ``fetch`` (the running-rows SELECT, no locks taken) then ``execute``
+    calls (the guarded UPDATE arbiter, the attempt INSERT, the batched
+    event INSERT). The park point picks which racing side the iteration
+    is forced to let win:
+
+    - ``park_after="select"``: parked between the SELECT and the guarded
+      UPDATE -- the exact window the opposing writer wins from (isolate
+      has read the row as running but holds no row locks).
+    - ``park_after="arbiter"``: parked after the guarded UPDATE itself,
+      before the transaction's commit -- isolate holds the jobs-row lock,
+      so the opposing writer's own UPDATE is forced to arbitrate against
+      isolate's committed outcome.
+    """
+
+    def __init__(
+        self,
+        conn: Any,
+        *,
+        park_after: str,
+        parked: asyncio.Event,
+        release: asyncio.Event,
+    ) -> None:
+        self._conn = conn
+        self._park_after = park_after
+        self._parked = parked
+        self._release = release
+        self._fetches = 0
+        self._executes = 0
+
+    def transaction(self, **kwargs: object) -> Any:
+        return self._conn.transaction(**kwargs)
+
+    async def fetch(self, sql: str, *args: object) -> list[asyncpg.Record]:
+        rows = await self._conn.fetch(sql, *args)
+        self._fetches += 1
+        if self._park_after == "select" and self._fetches == 1:
+            self._parked.set()
+            await asyncio.wait_for(self._release.wait(), timeout=_WAIT)
+        return rows
+
+    async def execute(self, sql: str, *args: object) -> str:
+        tag = await self._conn.execute(sql, *args)
+        self._executes += 1
+        if self._park_after == "arbiter" and self._executes == 1:
+            self._parked.set()
+            await asyncio.wait_for(self._release.wait(), timeout=_WAIT)
+        return tag
+
+    async def close(self) -> None:
+        await self._conn.close()
+
+    def terminate(self) -> None:
+        self._conn.terminate()
+
+
+def _parked_isolate_connect(
+    dsn: str, iso_conn: Any, park_after: str, parked: asyncio.Event, release: asyncio.Event
+) -> Any:
+    """The ``asyncpg.connect`` stand-in isolate_self's fresh connection is
+    routed through: the already-open real connection behind the parking
+    wrapper, with the iteration's park point bound (no loop-variable
+    capture)."""
+
+    async def fake_connect(dsn_arg: str, **_kwargs: object) -> _ParkedIsolateConn:
+        assert dsn_arg == dsn
+        return _ParkedIsolateConn(iso_conn, park_after=park_after, parked=parked, release=release)
+
+    return fake_connect
 
 
 async def test_cancel_origin_truth_table_all_phases(clean_jobs_app: "JobsApp") -> None:
@@ -238,103 +321,172 @@ async def test_isolate_self_zero_running_jobs_is_a_clean_noop(
 
 async def test_isolate_self_racing_a_terminal_write(
     clean_jobs_app: "JobsApp",
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """RACE, looped: isolate_self (crash reclaim) vs the worker's own
-    mark_cancelled terminal write, same job, same worker.
+    """RACE, forced both ways: isolate_self (crash reclaim) vs the worker's
+    own mark_cancelled terminal write, same job, same worker.
 
-    Observable invariants under arbitration:
+    The arbiter on BOTH sides is the server-side guarded UPDATE: whichever
+    writer's guarded UPDATE commits first owns the outcome, and the loser's
+    re-check no-ops. The two legal commit orders are not sampled with sleep
+    head starts -- a harness that hopes N iterations sample both orders is
+    a scheduling lottery (green on a fast runner, red on a loaded CI
+    runner, and a random red trains people to ignore red). Each order is
+    FORCED by an injected suspension point inside isolate_self's own
+    transaction (``_ParkedIsolateConn`` on isolate's fresh connection, the
+    repo's gated-connection pattern), alternating per iteration, so both
+    arbiters win by construction:
+
+    - forced terminal win: isolate is parked between its running-rows
+      SELECT (no row locks held) and its guarded UPDATE; the terminal
+      write commits 'cancelled' inside that window; isolate's UPDATE must
+      then re-check against the committed outcome and no-op (lost race).
+    - forced isolate win: isolate is parked after its guarded UPDATE has
+      executed, before its commit -- it holds the jobs-row lock; the
+      terminal write's UPDATE is issued into that contention and can only
+      arbitrate once isolate commits: it must re-check to a no-op (False).
+
+    Observable invariants under EITHER winner:
     - the job ends in exactly one legal state (never half-written);
     - the attempt history records the epoch exactly once;
     - the reclaim feed carries an isolate event iff the job was
       isolate-reclaimed (a feed event for a job the terminal write owns is
-      a phantom; a missing one orphans every feed consumer);
-    - every job is always in exactly one of queued / running / terminal.
+      a phantom; a missing one orphans every feed consumer).
     """
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
     schema = deps.settings.schema_name
+    iso_deps = _iso_deps(clean_jobs_app)
+    dsn = str(iso_deps.settings.pg_dsn_direct)
 
-    terminal_won = 0
-    isolate_won = 0
-    for i in range(40):
+    # The REAL connect, captured once before any monkeypatching: the loop
+    # must not re-capture the previous iteration's stand-in.
+    real_connect = asyncpg.connect
+
+    for i, forced_winner in enumerate(("terminal", "isolate") * 3):
         async with deps.worker_pool.acquire() as conn:
             worker_id, job_id = await _running_row(conn, schema, attempt=1, max_attempts=3)
 
-        # Alternate the head start so both arbiters really contend: a
-        # harness that always lets one side win is not a race.
-        terminal_head_start = 0.05 if i % 2 == 0 else 0.0
-        isolate_head_start = 0.05 if i % 2 else 0.0
+        # The park point IS the forced winner: parked in the select window
+        # the terminal write wins from, parked on the arbiter's row lock
+        # isolate wins from.
+        park_after = "select" if forced_winner == "terminal" else "arbiter"
+        parked, release = asyncio.Event(), asyncio.Event()
+        iso_conn = await real_connect(dsn)
 
-        async def _terminal(
-            _job_id: JobId = job_id,
-            _worker_id: UUID = worker_id,
-            _head_start: float = terminal_head_start,
-        ) -> None:
-            await asyncio.sleep(_head_start)
-            # The worker runtime's own unrequested cancel: phase 0, no request.
-            await backend.mark_cancelled(_job_id, _worker_id, attempt=1)
-
-        async def _isolate(
-            _worker_id: UUID = worker_id,
-            _head_start: float = isolate_head_start,
-        ) -> None:
-            await asyncio.sleep(_head_start)
-            await isolate_self(_iso_deps(clean_jobs_app), _worker_id, asyncio.Event())
-
-        await asyncio.gather(_terminal(), _isolate())
-
-        status, _origin, _requested = await _observable_state(clean_jobs_app, job_id)
-        # ── Partition invariant: queued / running / terminal ──
-        assert status in {
-            "pending",
-            "scheduled",
-            "running",
-            "crashed",
-            "cancelled",
-        }, f"RED iter {i}: job observed in an illegal state {status!r}"
-
-        attempts = await backend.get_attempts(job_id)
-        feed_events = await _isolate_feed_events(clean_jobs_app, job_id)
-
-        if status == "cancelled":
-            terminal_won += 1
-            assert feed_events == [], (
-                f"RED iter {i}: the terminal write owns the outcome but the "
-                "feed still advertises an isolate reclaim for the job"
-            )
-        else:
-            # isolate won (its guarded UPDATE is the arbiter): crashed or
-            # re-pended with the budget arm.
-            isolate_won += 1
-            assert status in {"crashed", "pending"}, (
-                f"RED iter {i}: the isolate owns the outcome but the job reads {status!r}"
-            )
-            assert len(feed_events) == 1, (
-                f"RED iter {i}: an isolate-owned reclaim delivered "
-                f"{len(feed_events)} feed events for one job"
-            )
-            assert feed_events[0].detail["cause"] == "isolate_self"
-        assert len(attempts) == 1, (
-            f"RED iter {i}: the attempt history shows {len(attempts)} records "
-            "for one attempt (a lost or duplicated write)"
+        monkeypatch.setattr(
+            asyncpg,
+            "connect",
+            _parked_isolate_connect(dsn, iso_conn, park_after, parked, release),
         )
-    # Both arbiters must have actually raced; a harness that only ever picks
-    # one winner is not a race.
-    assert terminal_won > 0, "attack broken: mark_cancelled never won the race"
-    assert isolate_won > 0, "attack broken: isolate_self never won the race"
+        try:
+            isolate_task = asyncio.create_task(isolate_self(iso_deps, worker_id, asyncio.Event()))
+            await asyncio.wait_for(parked.wait(), timeout=_WAIT)
+
+            if forced_winner == "terminal":
+                # isolate parked mid-window (it read the row as running and
+                # mine): the terminal write commits into the window.
+                applied = await backend.mark_cancelled(job_id, worker_id, attempt=1)
+                assert applied, (
+                    f"fixture broken iter {i}: the terminal write no-oped "
+                    "before isolate's arbiter ran"
+                )
+                release.set()
+                await asyncio.wait_for(isolate_task, timeout=_WAIT)
+            else:
+                # isolate parked holding the jobs-row lock (its guarded
+                # UPDATE executed, uncommitted): the terminal write is
+                # issued into that contention and cannot win.
+                terminal_task = asyncio.create_task(
+                    backend.mark_cancelled(job_id, worker_id, attempt=1)
+                )
+                release.set()
+                await asyncio.wait_for(isolate_task, timeout=_WAIT)
+                applied = await asyncio.wait_for(terminal_task, timeout=_WAIT)
+                assert not applied, (
+                    f"RED iter {i}: the terminal write applied against a row "
+                    "isolate's guarded UPDATE already owned -- the attempt "
+                    "fence did not hold"
+                )
+
+            status, origin, _requested = await _observable_state(clean_jobs_app, job_id)
+            attempts = await backend.get_attempts(job_id)
+            feed_events = await _isolate_feed_events(clean_jobs_app, job_id)
+
+            if forced_winner == "terminal":
+                assert status == "cancelled", (
+                    f"RED iter {i}: the terminal write committed inside the "
+                    f"window but the job reads {status!r}"
+                )
+                assert origin == UNREQUESTED, (
+                    f"RED iter {i}: the runtime's own unrequested cancel stamped origin {origin!r}"
+                )
+                assert feed_events == [], (
+                    f"RED iter {i}: the terminal write owns the outcome but the "
+                    "feed still advertises an isolate reclaim for the job"
+                )
+            else:
+                # isolate owns the outcome; the budget arm applies (transient,
+                # attempt 1 of 3), so the re-pend reads pending.
+                assert status == "pending", (
+                    f"RED iter {i}: the isolate owns the outcome but the job reads {status!r}"
+                )
+                assert len(feed_events) == 1, (
+                    f"RED iter {i}: an isolate-owned reclaim delivered "
+                    f"{len(feed_events)} feed events for one job"
+                )
+                assert feed_events[0].detail["cause"] == "isolate_self"
+            assert len(attempts) == 1, (
+                f"RED iter {i}: the attempt history shows {len(attempts)} records "
+                "for one attempt (a lost or duplicated write)"
+            )
+        finally:
+            release.set()
+            await iso_conn.close()
 
 
 async def test_isolate_self_racing_the_reclaim_sweep(
     clean_jobs_app: "JobsApp",
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """RACE: isolate_self vs the leader's reclaim sweep, both arbiters on
-    the same lease-expired job. Exactly one wins; the loser must not crash,
-    duplicate the attempt history, or double-deliver the feed event."""
+    """RACE, forced both ways: isolate_self vs the leader's reclaim sweep,
+    both arbiters on the same lease-expired job. Exactly one wins; the
+    loser must not crash, duplicate the attempt history, or double-deliver
+    the feed event.
+
+    Both arbiters' guarded UPDATEs decide, so the two legal commit orders
+    are FORCED by the injected suspension point (``_ParkedIsolateConn``),
+    alternating per iteration -- not sampled by timing (a scheduling
+    lottery random-fails on a loaded CI runner):
+
+    - forced sweep win: isolate is parked between its running-rows SELECT
+      (no row locks held) and its guarded UPDATE; the sweep reclaims the
+      expired row inside that window. isolate's UPDATE must re-check
+      against the committed outcome and no-op (lost race).
+    - forced isolate win: isolate is parked after its guarded UPDATE has
+      executed, before its commit -- it holds the jobs-row lock; the
+      sweep's ``FOR UPDATE SKIP LOCKED`` snap must step over the
+      contended row and reclaim nothing, and the row's outcome is
+      isolate's.
+
+    The winner is deterministic per iteration, so the outcome's own
+    signature is asserted, not just its shape: the sweep's reclaim stamps
+    'WorkerCrashed' on the attempt history and a feed event naming its
+    deadline; isolate's stamps 'HeartbeatLost' and cause 'isolate_self'.
+    Either way: exactly one attempt row, exactly one feed event.
+    """
     deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
     schema = deps.settings.schema_name
+    iso_deps = _iso_deps(clean_jobs_app)
+    dsn = str(iso_deps.settings.pg_dsn_direct)
     expired = datetime.now(UTC) - timedelta(seconds=5)
 
-    for i in range(25):
+    # The REAL connect, captured once before any monkeypatching: the loop
+    # must not re-capture the previous iteration's stand-in.
+    real_connect = asyncpg.connect
+
+    for i, forced_winner in enumerate(("sweep", "isolate") * 3):
         async with deps.worker_pool.acquire() as conn:
             worker_id, job_id = await setup_running_job(
                 conn,
@@ -345,31 +497,89 @@ async def test_isolate_self_racing_the_reclaim_sweep(
                 lock_expires_at=expired,
             )
 
-        async def _sweep() -> None:
+        park_after = "select" if forced_winner == "sweep" else "arbiter"
+        parked, release = asyncio.Event(), asyncio.Event()
+        iso_conn = await real_connect(dsn)
+
+        monkeypatch.setattr(
+            asyncpg,
+            "connect",
+            _parked_isolate_connect(dsn, iso_conn, park_after, parked, release),
+        )
+
+        async def _sweep() -> int:
             async with deps.worker_pool.acquire() as sweep_conn:
-                await sweep_expired_locks(sweep_conn, timedelta(0), timedelta(0), schema=schema)
+                return await sweep_expired_locks(
+                    sweep_conn, timedelta(0), timedelta(0), schema=schema
+                )
 
-        await asyncio.gather(
-            isolate_self(_iso_deps(clean_jobs_app), worker_id, asyncio.Event()),  # type: ignore[arg-type]
-            _sweep(),
-        )
+        try:
+            isolate_task = asyncio.create_task(isolate_self(iso_deps, worker_id, asyncio.Event()))
+            await asyncio.wait_for(parked.wait(), timeout=_WAIT)
 
-        status, _origin, _requested = await _observable_state(clean_jobs_app, job_id)
-        assert status == "crashed", (
-            f"RED iter {i}: an exhausted non_retryable job must read crashed "
-            f"under either arbiter, got {status!r}"
-        )
-        attempts = await clean_jobs_app.backend.get_attempts(job_id)
-        assert len(attempts) == 1, (
-            f"RED iter {i}: the attempt history shows {len(attempts)} records "
-            "for one attempt (a double write)"
-        )
-        feed = await clean_jobs_app.backend.poll_reclaim_events(0, visibility_delay=timedelta(0))
-        delivered = [event for event in feed if event.job_id == job_id]
-        assert len(delivered) == 1, (
-            f"RED iter {i}: the feed delivered {len(delivered)} reclaim events "
-            "for one reclaim (a consumer double-counts the job as outstanding)"
-        )
+            if forced_winner == "sweep":
+                # isolate parked mid-window (it read the row as running and
+                # mine, no locks held): the sweep reclaims it in the window.
+                reclaimed = await _sweep()
+                assert reclaimed == 1, (
+                    f"fixture broken iter {i}: the sweep did not reclaim the expired row"
+                )
+                release.set()
+                await asyncio.wait_for(isolate_task, timeout=_WAIT)
+            else:
+                # isolate parked holding the jobs-row lock (its guarded
+                # UPDATE executed, uncommitted): the sweep's SKIP LOCKED
+                # snap runs into that contention and must step over the row.
+                sweep_task = asyncio.create_task(_sweep())
+                release.set()
+                await asyncio.wait_for(isolate_task, timeout=_WAIT)
+                reclaimed = await asyncio.wait_for(sweep_task, timeout=_WAIT)
+                assert reclaimed == 0, (
+                    f"RED iter {i}: the sweep reclaimed a row isolate's "
+                    "guarded UPDATE already owned -- a double reclaim "
+                    "double-writes the attempt history"
+                )
+
+            status, _origin, _requested = await _observable_state(clean_jobs_app, job_id)
+            assert status == "crashed", (
+                f"RED iter {i}: an exhausted non_retryable job must read "
+                f"crashed under either arbiter, got {status!r}"
+            )
+            attempts = await backend.get_attempts(job_id)
+            assert len(attempts) == 1, (
+                f"RED iter {i}: the attempt history shows {len(attempts)} records "
+                "for one attempt (a double write)"
+            )
+            feed = await backend.poll_reclaim_events(0, visibility_delay=timedelta(0))
+            delivered = [event for event in feed if event.job_id == job_id]
+            assert len(delivered) == 1, (
+                f"RED iter {i}: the feed delivered {len(delivered)} reclaim events "
+                "for one reclaim (a consumer double-counts the job as outstanding)"
+            )
+            if forced_winner == "sweep":
+                assert attempts[0].error_class == "WorkerCrashed", (
+                    f"RED iter {i}: the sweep owns the reclaim but the attempt "
+                    f"history reads {attempts[0].error_class!r}"
+                )
+                assert delivered[0].detail["cause"] in {
+                    "lock_expired",
+                    "heartbeat_timeout",
+                }, (
+                    f"RED iter {i}: the sweep's feed event names cause "
+                    f"{delivered[0].detail['cause']!r}, no deadline"
+                )
+            else:
+                assert attempts[0].error_class == "HeartbeatLost", (
+                    f"RED iter {i}: the isolate owns the reclaim but the attempt "
+                    f"history reads {attempts[0].error_class!r}"
+                )
+                assert delivered[0].detail["cause"] == "isolate_self", (
+                    f"RED iter {i}: an isolate-owned reclaim's feed event "
+                    f"names cause {delivered[0].detail['cause']!r}"
+                )
+        finally:
+            release.set()
+            await iso_conn.close()
 
 
 async def test_double_isolate_delivers_one_event_per_job(
