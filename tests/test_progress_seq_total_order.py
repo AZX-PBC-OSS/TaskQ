@@ -30,6 +30,7 @@ from taskq.progress._buffer import (
     _seq_and_state_after_flush_attempt,
 )
 from taskq.progress._flush import _flush_buffer
+from taskq.progress._publish import _publish_state_change_event
 from taskq.retry import RetryPolicy
 from taskq.settings import WorkerSettings
 from taskq.testing.actor import EmptyPayload, StubActorConfig, default_actor_config
@@ -357,6 +358,62 @@ async def test_flush_across_state_change_boundary_neither_double_consumes_nor_re
         f"the terminal event must consume exactly one past the flushed head "
         f"(17), got {terminal_seq}: either it repeated the head (a seq-cursor "
         f"consumer drops it) or the consumption was applied twice"
+    )
+
+
+# ── Pin 3b: a state-change publish after a flush retire carries the
+#    consumed seq, never the retired head ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_state_change_publish_after_flush_retire_carries_the_consumed_seq() -> None:
+    """A successful pre-terminal flush retires the buffer: the delta lands
+    in ``base_seq`` and the flushed keys are deleted from
+    ``pending_state``, so ``_seq_and_state_after_flush_attempt`` returns
+    ``(consumed, None)``. The state-change publish must carry that
+    consumed seq — exactly the value the ``mark_*`` write SETs durably —
+    and must NOT fall back to reading the buffer: the retired head is the
+    LAST event's seq, so a fallback publishes a duplicate of the progress
+    event before the state change and drops the consumed seq the row now
+    holds (a seq-cursor consumer discards the state-change event as a
+    duplicate and the stream never closes)."""
+    row_seq = [10]
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=10, attempt=1)
+    buf.pending_seq_delta += 1  # the running transition's consumption
+    buf.pending_seq_delta += 1  # one progress event
+    buf.pending_state["step"] = 1
+    buf.dirty = True
+    await _flush_buffer(_MergePool(row_seq), "taskq_test", _JOB_ID, _WORKER_ID, buf, {})
+
+    # The retire: flushed head adopted, delta cleared, keys deleted.
+    assert buf.base_seq == 12
+    assert buf.pending_seq_delta == 0
+    assert buf.pending_state == {}
+
+    consumed, state = _seq_and_state_after_flush_attempt(buf)
+    assert consumed == 13
+    assert state is None  # no state delta left to write: the flush took it
+
+    # Publish exactly as the consumer does after the mark_* write.
+    redis_client = _RecordingRedis()
+    await _publish_state_change_event(
+        redis_client,
+        _settings(),
+        _JOB_ID,
+        "order_actor",
+        {_JOB_ID: buf},
+        status="succeeded",
+        terminal=True,
+        _override_seq=consumed,
+        _override_pending_state=state,
+    )
+
+    events = _wire_events(redis_client)
+    assert len(events) == 1, f"expected exactly the state-change event, got {events}"
+    assert events[0]["seq"] == consumed, (
+        f"the state-change event must carry the consumed seq ({consumed}), "
+        f"got {events[0]['seq']}: a retired-head fallback duplicates the "
+        f"progress event before it on the wire"
     )
 
 

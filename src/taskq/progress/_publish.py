@@ -342,8 +342,19 @@ async def _publish_state_change_event(
     if redis_client is None:
         return
 
-    if _override_pending_state is not None:
-        pending_state = _override_pending_state
+    if _override_seq is not None or _override_pending_state is not None:
+        # The caller's terminal/requeue write computed the seq (and usually
+        # the state) it already durably SET: publish exactly those. A None
+        # state means the write had no state delta to carry - a successful
+        # pre-terminal flush retires the buffer (delta into base_seq,
+        # flushed keys deleted from pending_state), so
+        # _seq_and_state_after_flush_attempt legitimately returns None
+        # there. Falling back to the buffer read would publish the RETIRED
+        # head, which is the last event's seq: the wire would duplicate the
+        # progress event before the state change and drop the consumed seq
+        # the mark_* write SETs, so a seq-cursor consumer discards the
+        # state-change event as a duplicate of the event before it.
+        pending_state = dict(_override_pending_state) if _override_pending_state is not None else {}
         seq = _override_seq if _override_seq is not None else 0
     else:
         buffer = progress_buffers.get(job_id) if progress_buffers is not None else None
