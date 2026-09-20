@@ -257,6 +257,7 @@ def _restore_heartbeat_module_globals() -> Any:  # pyright: ignore[reportUnusedF
     saved_isolate = hb_mod.isolate_self
     saved_record = hb_mod._tick_duration.record  # type: ignore[reportPrivateUsage]
     saved_update = hb_mod.update_heartbeat_consecutive_failures
+    saved_miss = hb_mod.record_heartbeat_miss
     saved_hb_count = otel_mod._heartbeat_consecutive_failures_count
     try:
         yield
@@ -264,6 +265,7 @@ def _restore_heartbeat_module_globals() -> Any:  # pyright: ignore[reportUnusedF
         hb_mod.isolate_self = saved_isolate  # type: ignore[method-assign]
         hb_mod._tick_duration.record = saved_record  # type: ignore[method-assign,reportPrivateUsage]
         hb_mod.update_heartbeat_consecutive_failures = saved_update
+        hb_mod.record_heartbeat_miss = saved_miss
         otel_mod._heartbeat_consecutive_failures_count = saved_hb_count
 
 
@@ -410,6 +412,192 @@ async def test_failure_counter_resets_after_success() -> None:
     assert deps.heartbeat_failures == 0
     shutdown.set()
     await task
+
+
+# ── Failed-tick pacing: a failed tick is not a beat ────────────────
+
+
+class _OneShotFastFailPool(FakePool):
+    """Fails the FIRST acquire instantly with a transient error, then
+    behaves like a healthy pool for every later tick.
+
+    The fast shape is the common transient blip (a refused connection
+    raises the moment the acquire is attempted); it is the shape whose
+    post-failure wait the loop controls outright, because the tick
+    consumed none of the cadence it would then sleep off.
+    """
+
+    def __init__(self, exc: BaseException) -> None:
+        super().__init__()
+        self._blip_exc = exc
+        self._blipped = False
+
+    @asynccontextmanager
+    async def acquire(self, *, timeout: float | None = None) -> AsyncGenerator[FakeConn, None]:  # noqa: ASYNC109 # Why: asyncpg.Pool.acquire signature takes `timeout: float | None`; this subclass mirrors the parent's drop-in signature.
+        self.acquire_count += 1
+        if not self._blipped:
+            self._blipped = True
+            raise self._blip_exc
+        conn = FakeConn()
+        self._conn = conn
+        yield conn
+
+
+async def test_one_fast_transient_failure_is_one_miss_retried_promptly() -> None:
+    """Behavior pin for the failed-tick pacing contract.
+
+    ONE fast transient tick failure - its prompt retry succeeding - must
+    cost the ledger exactly ONE miss, leave the consecutive-failure count
+    reset to zero (the isolate budget is NOT consumed: at
+    max_heartbeat_failures=1 a second counted failure would isolate, and
+    none does), and the recovery beat must land PROMPTLY - well inside
+    the interval, not a full interval after the failure.
+
+    The pacing half is the regression that motivated the pin: the loop
+    used to sleep the FULL remaining interval after a tick that failed
+    instantly, so the recovery beat landed a whole interval late - at
+    twice the interval after the last good beat, the reclaim deadline
+    the ops guidance calls safe at ``heartbeat_timeout = 2x interval``.
+    A failed tick is not a beat: it stamps nothing, so the one-beat-per-
+    interval cadence promise does not spend a full inter-beat sleep on
+    it. The margins are wide (the retry waits a quarter interval; the
+    assert allows under three quarters) so scheduler jitter under
+    parallel test load cannot flip a correct pacing, while the old
+    full-interval sleep fails the assert on every run.
+    """
+    import taskq.worker.heartbeat as hb_mod
+
+    await _patch_tick_duration(lambda v: None)
+    isolate_calls: list[tuple[WorkerDeps, UUID, asyncio.Event]] = []
+
+    async def fake_isolate(deps: WorkerDeps, worker_id: UUID, shutdown: asyncio.Event) -> None:
+        isolate_calls.append((deps, worker_id, shutdown))
+        shutdown.set()
+
+    hb_mod.isolate_self = fake_isolate  # type: ignore[method-assign] # Why: restored by _restore_heartbeat_module_globals autouse fixture.
+
+    misses: list[float] = []
+    prev_miss = hb_mod.record_heartbeat_miss
+
+    def _record_miss(worker_id: str) -> None:
+        prev_miss(worker_id)
+        misses.append(time.monotonic())
+
+    hb_mod.record_heartbeat_miss = _record_miss  # type: ignore[method-assign] # Why: restored by _restore_heartbeat_module_globals autouse fixture.
+
+    interval = 1.0  # the retry backoff is a quarter of this; the old pacing slept it all
+    pool = _OneShotFastFailPool(asyncpg.PostgresConnectionError("boom"))
+    deps = _make_deps(heartbeat_pool=pool, heartbeat_interval=interval, max_heartbeat_failures=1)
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(heartbeat_loop(deps, new_uuid(), shutdown))
+
+    # Event-driven, on the counter-flip hook: the failure signal fires in
+    # the same event-loop turn as the increment (before the retry's
+    # backoff sleep can start), the success signal on the retry's reset.
+    await _wait_for_heartbeat_failures(deps, at_least=1)
+    failed_at = time.monotonic()
+    await _wait_for_heartbeat_failures(deps, exactly=0)
+    recovered_at = time.monotonic()
+    # The isolate observation must land BEFORE the test's own
+    # shutdown.set(): the loop is parked in its inter-tick wait, and
+    # nothing but a threshold trip could have isolated it.
+    assert not isolate_calls, (
+        "one transient failure plus a successful prompt retry must not "
+        "consume the isolate threshold (max_heartbeat_failures=1 here: any "
+        "second counted failure would have isolated the worker)"
+    )
+
+    shutdown.set()
+    await task
+
+    assert len(misses) == 1, (
+        f"one fast transient failure must cost exactly one heartbeat miss, "
+        f"got {len(misses)} (the prompt retry is a normal tick, its success "
+        f"resets the ledger - it must not record a second miss)"
+    )
+    assert deps.heartbeat_failures == 0
+    retry_gap = recovered_at - failed_at
+    assert retry_gap < 0.75 * interval, (
+        f"the recovery beat after one fast transient failure landed "
+        f"{retry_gap:.3f}s after the failure - at {retry_gap / interval:.2f}x the "
+        f"interval. A failed tick is not a beat: sleeping the full remaining "
+        f"interval after a tick that failed instantly pushes the gap between "
+        f"good beats to 2x interval, the reclaim deadline the "
+        f"heartbeat_timeout >= 2x interval sizing calls safe. The retry must "
+        f"be prompt (a bounded fraction of the interval) so the recovery beat "
+        f"lands well inside that floor."
+    )
+    assert retry_gap > 0.1, (
+        f"the retry backoff must be a real bounded wait, not a hot spin (gap was {retry_gap:.3f}s)"
+    )
+
+
+async def test_repeated_failures_isolate_at_the_documented_tick_without_hammering() -> None:
+    """The backoff applies PER FAILURE, and the isolate contract is
+    unchanged: a tick that fails repeatedly still isolates on the
+    (max_heartbeat_failures + 1)-th consecutive failure.
+
+    The prompt retry shortens each failed cycle (failure -> backoff ->
+    next failure), so the same tick-count contract arrives in less
+    wall-clock time; the pacing bounds here pin that the cycles are
+    neither a hot spin (each failure still pays a real backoff) nor the
+    old full-interval wait (the cascade no longer drags the isolate
+    decision toward the lease deadline it must stay inside - see
+    _lease_renewal_threshold's cascade floor, which bounds from above and
+    is only satisfied more comfortably by shorter cycles).
+    """
+    import taskq.worker.heartbeat as hb_mod
+
+    await _patch_tick_duration(lambda v: None)
+    isolate_calls: list[tuple[WorkerDeps, UUID, asyncio.Event]] = []
+
+    async def fake_isolate(deps: WorkerDeps, worker_id: UUID, shutdown: asyncio.Event) -> None:
+        isolate_calls.append((deps, worker_id, shutdown))
+        shutdown.set()
+
+    hb_mod.isolate_self = fake_isolate  # type: ignore[method-assign] # Why: restored by _restore_heartbeat_module_globals autouse fixture.
+
+    interval = 1.0
+    pool = FakePool(fail_acquire_with=asyncpg.PostgresConnectionError("boom"))
+    # 20.0 = the cascade floor at this interval: 4 * (1.0 + 2 * 2.0).
+    deps = _make_deps(
+        heartbeat_pool=pool,
+        heartbeat_interval=interval,
+        lock_lease=20.0,
+        max_heartbeat_failures=3,
+    )
+    shutdown = asyncio.Event()
+    started_at = time.monotonic()
+    task = asyncio.create_task(heartbeat_loop(deps, new_uuid(), shutdown))
+
+    # The loop isolates on the 4th consecutive failure (3 + 1); the hook
+    # fires in the same turn as that increment, before the loop can
+    # cycle again.
+    await _wait_for_heartbeat_failures(deps, at_least=4)
+    isolated_at = time.monotonic()
+    assert deps.heartbeat_failures == 4, (
+        f"isolation must fire on exactly the (max + 1)-th consecutive "
+        f"failure, got {deps.heartbeat_failures}"
+    )
+    await task
+    assert len(isolate_calls) == 1
+
+    cascade_span = isolated_at - started_at
+    # Four failed cycles at a quarter-interval backoff each: ~1s of
+    # waits. A hot spin would land far under half a second; the old
+    # full-interval-sleep pacing needed ~4s.
+    assert cascade_span > 0.5 * interval, (
+        f"four consecutive failed ticks completed in {cascade_span:.3f}s - "
+        f"the retry backoff must be a real bounded wait per failure, not a "
+        f"hot spin against the pool"
+    )
+    assert cascade_span < 2.5 * interval, (
+        f"the isolate decision on the 4th consecutive failure took "
+        f"{cascade_span:.3f}s ({cascade_span / interval:.2f}x the interval) - "
+        f"failed ticks must retry promptly on a bounded backoff, not sleep "
+        f"the full interval after each failure, which drags the cascade "
+        f"toward the lease deadline the (F+1)-gap floor has to stay inside"
+    )
 
 
 # ── Isolation after max_heartbeat_failures+1 failures ──────────────
@@ -1635,12 +1823,16 @@ def test_gated_renewal_never_lets_a_live_lease_lapse(
       or the bounded close (server-side rollback on disconnect), drawn
       up to (strictly under) one command timeout.
 
-    The beat-to-beat gap is ``max(interval, tick_duration)`` - the loop
-    anchors its wait to the tick's START - so a fast failed tick gaps at
-    exactly the interval and only a tick LONGER than the interval
-    stretches the gap. The lease respects the enforced invariant (>= 4 x
-    interval); the cascade is sized to the loop's actual behaviour (the
-    loop isolates on the F+1-th consecutive failure).
+    The beat-to-beat gap is bounded by ``max(interval, tick_duration)`` -
+    the loop anchors its wait to the tick's START, and a FAILED tick
+    retries promptly (a bounded quarter-interval backoff, never more
+    than the remaining cadence), so a fast failed tick gaps at strictly
+    under the interval and only a tick LONGER than the interval can
+    stretch the gap as far as its own duration. The model here is that
+    upper bound, so the property holds a fortiori against the loop's
+    actual (shorter) gaps. The lease respects the enforced invariant
+    (>= 4 x interval); the cascade is sized to the loop's actual
+    behaviour (the loop isolates on the F+1-th consecutive failure).
     """
     from taskq.worker.heartbeat import _lease_renewal_threshold
 
