@@ -84,6 +84,92 @@ def _capped_args(side: DiffSide, token: str, actor: str, *, max_pending: int) ->
 # ── Atomicity: a mid-batch statement failure aborts the whole call ──────
 
 
+def _keyed_batch_item(
+    side: DiffSide,
+    token: str,
+    actor: str,
+    key: str,
+) -> EnqueueArgs:
+    """One idempotency-keyed batch item in the side's clock domain, token-registered."""
+    args = EnqueueArgs(
+        id=new_job_id(),
+        actor=actor,
+        queue="default",
+        payload={"value": 1},
+        max_attempts=3,
+        retry_kind="transient",
+        scheduled_at=side.ts(-1.0),
+        idempotency_key=key,
+    )
+    side.register_job_id(token, args.id)
+    return args
+
+
+async def _mid_batch_cross_actor_idempotency_poison(side: DiffSide) -> None:
+    """Two items of ONE batch call sharing an (idempotency_scope,
+    idempotency_key) pair across actors, nothing pre-stored.
+
+    PG's bulk tier is one unnest INSERT in one transaction: the second
+    item's pair conflicts inside the statement (the ``ON CONFLICT``
+    arbiter skips its row), the result assembly resolves it to the first
+    item's just-inserted row, and the cross-actor refusal propagates out
+    of the transaction, withdrawing the first item's row too. The mirror
+    must refuse with the same typed error BEFORE its first insert, never
+    store the good prefix and raise at the offending item's index.
+    """
+    good = _batch_item(side, "good")
+    first = _keyed_batch_item(side, "first", "actor_a", "shared-key")
+    second = _keyed_batch_item(side, "second", "actor_b", "shared-key")
+    try:
+        rows = await side.backend.enqueue_batch([good, first, second])
+        side.record("batch", "admitted-all")
+        side.record("returned", [side.token_of(r.id) for r in rows])
+    except Exception as exc:  # Why: the differential records the typed outcome; the exception type IS the observable.
+        side.record("batch", type(exc).__name__)
+        side.record("mismatch_actor", getattr(exc, "actor", None))
+        side.record("mismatch_existing_actor", getattr(exc, "existing_actor", None))
+        holder_id = getattr(exc, "existing_job_id", None)
+        side.record(
+            "mismatch_existing_job_id",
+            side.token_of(holder_id) if holder_id is not None else None,
+        )
+        side.record("mismatch_key", getattr(exc, "idempotency_key", None))
+    stored_from_batch: list[str] = []
+    for token, args in (("good", good), ("first", first), ("second", second)):
+        if await side.backend.get(args.id) is not None:
+            stored_from_batch.append(token)
+    side.record("stored_from_batch", stored_from_batch)
+
+
+async def test_diff_enqueue_batch_in_batch_cross_actor_idempotency_aborts_whole_call(
+    pg_dsn: str,
+) -> None:
+    """Two items of one enqueue_batch call sharing an idempotency pair
+    across actors must abort the WHOLE call on both backends: the
+    mismatch raises with the first item's row withdrawn along with the
+    batch, nothing stored, and the error names incoming actor, holder
+    actor, and the holder row's id (the first item's) identically."""
+    mem, pg = await run_differential(
+        _mid_batch_cross_actor_idempotency_poison,
+        pg_dsn=pg_dsn,
+        actors=("test_actor", "actor_a", "actor_b"),
+    )
+    assert_mirror(
+        "an in-batch cross-actor idempotency duplicate aborts the entire "
+        "enqueue_batch call with the same typed attribution and no item "
+        "from the batch stored, on either backend",
+        mem,
+        pg,
+    )
+    assert pg["records"]["batch"] == "IdempotencyKeyActorMismatchError"
+    assert pg["records"]["mismatch_actor"] == "actor_b"
+    assert pg["records"]["mismatch_existing_actor"] == "actor_a"
+    assert pg["records"]["mismatch_existing_job_id"] == "first"
+    assert pg["records"]["mismatch_key"] == "shared-key"
+    assert pg["records"]["stored_from_batch"] == []
+    assert pg["status_counts"] == {}
+
+
 async def _mid_batch_duplicate_id_poison(side: DiffSide) -> None:
     stored = await side.enqueue("existing")
     good1 = _batch_item(side, "good1")

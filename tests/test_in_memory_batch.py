@@ -20,7 +20,7 @@ from taskq.backend._protocol import (
     EnqueueArgs,
     JobRow,
 )
-from taskq.exceptions import SingletonCollisionError
+from taskq.exceptions import IdempotencyKeyActorMismatchError, SingletonCollisionError
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.jobs import make_enqueue_args, make_job_row
@@ -613,6 +613,32 @@ class TestInMemoryEnqueueBatchAtomic:
         batch_jobs = [r for r in backend._jobs.values() if r.metadata.get("batch_id") == str(bid)]
         assert len(batch_jobs) == 0
         # No batch row should remain after rollback.
+        assert bid not in backend._batches
+
+    async def test_enqueue_batch_atomic_cross_actor_in_batch_duplicate_rolls_back(self) -> None:
+        """An in-batch cross-actor idempotency duplicate refuses the atomic
+        arm too: PG's arm runs every chunk through ONE transaction, so the
+        refusal withdraws the member chunks already inserted, and the
+        mirror's compensating rollback must leave the identical empty
+        stored-row state - no member rows, no batch row."""
+        backend = _make_backend()
+        bid = new_uuid()
+        batch_row = _make_batch_row(id=bid, queue="default", expected_size=2)
+
+        item_a = make_enqueue_args(actor="actor-a", queue="default", idempotency_key="k1")
+        item_b = make_enqueue_args(actor="actor-b", queue="default", idempotency_key="k1")
+
+        with pytest.raises(IdempotencyKeyActorMismatchError):
+            await backend.enqueue_batch_atomic(
+                [item_a, item_b],
+                batch_id=bid,
+                queue="default",
+                batch_row=batch_row,
+                finalizer_args=None,
+            )
+
+        assert await backend.get(item_a.id) is None, "the refused batch must leave no rows behind"
+        assert await backend.get(item_b.id) is None
         assert bid not in backend._batches
 
 
