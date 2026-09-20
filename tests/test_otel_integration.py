@@ -78,6 +78,20 @@ _LOCK_LEASE = 750.0
 # validator refuses anything under it. Nothing here waits on the lease:
 # rows are stamped with explicit expiry timestamps.
 
+# The setup connection in _setup_worker is the only await surface in these
+# tests with no bound of its own: asyncpg's connect timeout covers only the
+# handshake, and nothing here sets a server-side statement/lock timeout, so
+# a stalled Postgres (a wedged shared test container under xdist) suspends
+# the test forever on an in-flight query with an idle event loop — the
+# signature of the one 300s pytest-timeout hang this module produced in CI
+# (loop parked in epoll with no timer pending, task still awaiting). These
+# bounds convert that into a fast asyncpg TimeoutError naming the phase.
+# Generous for an empty per-test schema (the full migration run measures
+# ~1s); the teardown paths stay wait_for-bounded separately.
+_SETUP_CONNECT_TIMEOUT = 10.0
+_SETUP_STATEMENT_TIMEOUT = "30s"
+_SETUP_LOCK_TIMEOUT = "10s"
+
 
 class _Payload(BaseModel):
     value: int = 1
@@ -110,8 +124,14 @@ async def _setup_worker(
         }
     )
 
-    conn = await asyncpg.connect(str(settings.pg_dsn))
+    conn = await asyncpg.connect(str(settings.pg_dsn), timeout=_SETUP_CONNECT_TIMEOUT)
     try:
+        # Session-level bounds on every statement below (the schema drop, the
+        # migration run, the actor-config insert): a stalled server or an
+        # unexpected DDL lock wait fails fast here instead of hanging the
+        # test until pytest-timeout fires.
+        await conn.execute(f"SET statement_timeout = '{_SETUP_STATEMENT_TIMEOUT}'")
+        await conn.execute(f"SET lock_timeout = '{_SETUP_LOCK_TIMEOUT}'")
         await conn.execute(f'DROP SCHEMA IF EXISTS "{settings.schema_name}" CASCADE')
         await apply_pending(conn, schema=settings.schema_name)
         await conn.execute(
