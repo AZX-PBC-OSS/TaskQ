@@ -973,14 +973,16 @@ async def safe_mark_failed_or_retry(
     *,
     log: structlog.stdlib.BoundLogger | None = None,
     attempt: int | None = None,
+    claim_epoch: int | None = None,
 ) -> JobRow | None:
     """Wrap mark_failed_or_retry, catching WorkerOwnershipMismatch .
 
     Returns the persisted JobRow on success, or None on ownership mismatch
     (signals the caller to skip the on_retry_exhausted hook). *attempt* is
     the attempt-identity epoch threaded from the handler's job-row
-    snapshot, see ``Backend.mark_failed_or_retry``; a fenced-out epoch
-    surfaces here as the same None a worker-fence miss produces.
+    snapshot, and *claim_epoch* the claim-identity epoch, see
+    ``Backend.mark_failed_or_retry``; a fenced-out epoch surfaces here as
+    the same None a worker-fence miss produces.
     """
     logger: structlog.stdlib.BoundLogger = (
         log if log is not None else structlog.get_logger("taskq.retry")
@@ -994,6 +996,7 @@ async def safe_mark_failed_or_retry(
             progress_seq=progress_seq,
             progress_state=progress_state,
             attempt=attempt,
+            claim_epoch=claim_epoch,
         )
     except WorkerOwnershipMismatch as exc:
         logger.warning(

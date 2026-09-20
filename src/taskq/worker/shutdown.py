@@ -485,6 +485,7 @@ async def orchestrate_shutdown(
                         active.job_id,
                         worker_id,
                         attempt=active.ctx.attempt,
+                        claim_epoch=active.ctx.claim_epoch,
                         hold=hold,
                         progress_seq=_seq,
                         progress_state=_state if _buf is not None and _buf.dirty else None,

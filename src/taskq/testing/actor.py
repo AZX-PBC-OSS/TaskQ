@@ -193,6 +193,7 @@ class FakeBackend:
         *,
         result_bytes: bytes | None = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         self.mark_succeeded_calls.append((job_id, worker_id, result, result_bytes))
         return self._land_terminal_write(job_id, "succeeded")
@@ -209,6 +210,7 @@ class FakeBackend:
         *,
         result_bytes: bytes | None = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         return await self.mark_succeeded(
             job_id,
@@ -219,6 +221,7 @@ class FakeBackend:
             fallback_result_ttl,
             result_bytes=result_bytes,
             attempt=attempt,
+            claim_epoch=claim_epoch,
         )
 
     async def mark_failed_or_retry(
@@ -231,6 +234,7 @@ class FakeBackend:
         progress_state: dict[str, object] | None = None,
         *,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> JobRow:
         self.mark_failed_or_retry_calls.append(
             {
@@ -250,6 +254,7 @@ class FakeBackend:
         progress_state: dict[str, object] | None = None,
         *,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         self.mark_cancelled_calls.append(
             {
@@ -285,6 +290,7 @@ class FakeBackend:
         progress_state: dict[str, object] | None = None,
         outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
+        claim_epoch: int | None = None,
         denial_reason: DenialReason = "capacity",
     ) -> Literal["scheduled", "failed", "noop"]:
         self.mark_snoozed_calls.append(
@@ -311,6 +317,7 @@ class FakeBackend:
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> Literal["scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"]:
         self.mark_retry_after_calls.append(
             {
@@ -333,6 +340,7 @@ class FakeBackend:
         hold: timedelta,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        claim_epoch: int | None = None,
     ) -> Literal["pending", "scheduled", "failed:DeadlineExceeded", "noop"]:
         self.mark_interrupted_calls.append(
             {

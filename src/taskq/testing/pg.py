@@ -233,12 +233,12 @@ async def create_running_job(
     await conn.execute(
         f"""INSERT INTO "{schema}".jobs (
             id, actor, queue, payload, max_attempts, retry_kind,
-            status, priority, attempt, scheduled_at,
+            status, priority, attempt, claim_epoch, scheduled_at,
             locked_by_worker, lock_expires_at, started_at, last_heartbeat_at,
             cancel_phase, cancel_requested_at, schedule_to_close
         ) VALUES (
             $1, $2, $3, $4::jsonb, $5, $6,
-            'running', 0, $7, clock_timestamp(),
+            'running', 0, $7, $13, clock_timestamp(),
             $8, $9, clock_timestamp(), clock_timestamp(),
             $10, $11, $12
         )""",  # noqa: S608
@@ -253,7 +253,12 @@ async def create_running_job(
         expires_at,
         cancel_phase,
         cancel_requested_at,
+        # A running row owned by a worker exists because a claim stamped
+        # it, so the seeded epoch mirrors the attempt the claim wrote
+        # (the claim advances both); the terminal-write fences under
+        # test then see the shape production hands them.
         schedule_to_close,
+        attempt,
     )
     if with_events:
         detail = dumps_str(

@@ -88,6 +88,13 @@ class JobContext[P: BaseModel]:
     actor: str
     queue: str
     attempt: int
+    # The non-saturating claim-identity fence, the row's claim_epoch at
+    # dispatch: the displayed attempt counter saturates at the smallint
+    # ceiling, so a reclaim plus a redispatch there would hand a stale
+    # handler and the live one the same (worker, attempt) pair. The
+    # backend's terminal writes fence on this epoch beside attempt; the
+    # shutdown release threads it from here.
+    claim_epoch: int
     worker_id: UUID
     payload: P
     jobs: SubJobEnqueuer

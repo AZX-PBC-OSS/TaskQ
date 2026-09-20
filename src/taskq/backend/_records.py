@@ -224,6 +224,7 @@ def _job_row_from_record(rec: "asyncpg.Record") -> JobRow:
         retry_backoff=rec["retry_backoff"],  # type: ignore[arg-type]  # Why: DB text column; domain is CHECK-constrained to the Literal's values
         retry_jitter=rec["retry_jitter"],
         assignment_routed=rec["assignment_routed"],
+        claim_epoch=rec["claim_epoch"],
     )
 
 

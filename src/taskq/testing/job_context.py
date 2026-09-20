@@ -47,6 +47,9 @@ class JobContext[P: BaseModel]:
     actor: str
     queue: str
     attempt: int
+    # Mirrors the production context's claim-identity fence (see
+    # taskq.context.JobContext.claim_epoch).
+    claim_epoch: int
     payload: P
     cancel_event: asyncio.Event
     worker_id: UUID

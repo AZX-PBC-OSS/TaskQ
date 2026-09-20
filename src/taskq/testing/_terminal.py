@@ -127,20 +127,35 @@ def _round_trip_progress_state(state: dict[str, object]) -> dict[str, object]:
             raise exc from None
 
 
-def _fenced(row: JobRow, worker_id: UUID, attempt: int | None) -> bool:
+def _fenced(
+    row: JobRow,
+    worker_id: UUID,
+    attempt: int | None,
+    claim_epoch: int | None,
+) -> bool:
     """True when *row* fails the terminal-write fence: the SQL arms'
-    ``status = 'running' AND locked_by_worker = ... AND attempt = ...``
-    conjuncts (the ``JOB_FENCE_SQL`` fragment in backend/_sql_fragments.py,
-    the bound spelling's ``JOB_FENCE_BOUND_SQL`` single-row form).
+    ``status = 'running' AND locked_by_worker = ... AND attempt = ...
+    AND claim_epoch = ...`` conjuncts (the ``JOB_FENCE_SQL`` fragment in
+    backend/_sql_fragments.py, the bound spelling's ``JOB_FENCE_BOUND_SQL``
+    single-row form).
 
     One helper, not a hand-restated predicate per method: the fence is the
     invariant every terminal write leans on, a conjunct edited in one twin
     method but not its siblings would let a stale handler's write land
-    exactly where the SQL fence refuses it. ``attempt is None`` (a caller
-    that cannot present the epoch) never matches, mirroring PG's NULL bind
-    never satisfying the equality.
+    exactly where the SQL fence refuses it. ``attempt is None`` or
+    ``claim_epoch is None`` (a caller that cannot present the epochs) never
+    matches, mirroring PG's NULL binds never satisfying the equality. The
+    claim epoch rides beside the attempt because at the attempt ceiling,
+    where the displayed counter stops advancing, the non-saturating claim
+    epoch is what keeps a stale handler's write off the re-dispatched
+    attempt.
     """
-    return row.status != "running" or row.locked_by_worker != worker_id or row.attempt != attempt
+    return (
+        row.status != "running"
+        or row.locked_by_worker != worker_id
+        or row.attempt != attempt
+        or row.claim_epoch != claim_epoch
+    )
 
 
 async def _mark_succeeded(
@@ -154,6 +169,7 @@ async def _mark_succeeded(
     *,
     result_bytes: bytes | None = None,
     attempt: int | None = None,
+    claim_epoch: int | None = None,
 ) -> bool:
     # Caller-input validation precedes the state fence, matching the PG
     # terminal's order (its guards run before the fencing UPDATE): a
@@ -211,7 +227,7 @@ async def _mark_succeeded(
     # The fence folds the missing row into the same check (_fenced's
     # docstring carries the conjuncts' contract, the attempt-epoch
     # mirror included).
-    if row is None or _fenced(row, worker_id, attempt):
+    if row is None or _fenced(row, worker_id, attempt, claim_epoch):
         return False
     now = self._clock.now()
     # Mirror the PG COALESCE: stored (operator-owned) result_ttl applied at
@@ -280,6 +296,7 @@ async def _mark_succeeded_with_conn(
     *,
     result_bytes: bytes | None = None,
     attempt: int | None = None,
+    claim_epoch: int | None = None,
 ) -> bool:
     return await _mark_succeeded(
         self,
@@ -291,6 +308,7 @@ async def _mark_succeeded_with_conn(
         fallback_result_ttl,
         result_bytes=result_bytes,
         attempt=attempt,
+        claim_epoch=claim_epoch,
     )
 
 
@@ -304,6 +322,7 @@ async def _mark_failed_or_retry(
     progress_state: dict[str, object] | None = None,
     *,
     attempt: int | None = None,
+    claim_epoch: int | None = None,
 ) -> JobRow:
     row = self._jobs.get(job_id)
     if row is None:
@@ -324,7 +343,11 @@ async def _mark_failed_or_retry(
     if row.status != "running":
         raise WorkerOwnershipMismatch(job_id, worker_id, row.locked_by_worker)
 
-    if row.locked_by_worker != worker_id or row.attempt != attempt:
+    if (
+        row.locked_by_worker != worker_id
+        or row.attempt != attempt
+        or row.claim_epoch != claim_epoch
+    ):
         raise WorkerOwnershipMismatch(job_id, worker_id, row.locked_by_worker)
 
     if retry_delay is not None:
@@ -494,13 +517,14 @@ async def _mark_cancelled(
     progress_state: dict[str, object] | None = None,
     *,
     attempt: int | None = None,
+    claim_epoch: int | None = None,
 ) -> bool:
     row = self._jobs.get(job_id)
     if row is None:
         return False
     # Attempt-epoch fence, one predicate shared with the sibling writes
     # (_fenced's docstring).
-    if _fenced(row, worker_id, attempt):
+    if _fenced(row, worker_id, attempt, claim_epoch):
         return False
 
     now = self._clock.now()
@@ -752,6 +776,7 @@ async def _mark_snoozed(
     progress_state: dict[str, object] | None = None,
     outcome: SnoozeOutcome = "snoozed",
     attempt: int | None = None,
+    claim_epoch: int | None = None,
     denial_reason: DenialReason = "capacity",
 ) -> Literal["scheduled", "failed", "noop"]:
     # Caller-input validation precedes the state fence, matching the PG
@@ -768,7 +793,7 @@ async def _mark_snoozed(
     row = self._jobs.get(job_id)
     # The fence folds the missing row into the same check; a fenced-out
     # epoch returns "noop" through the same machinery as the worker fence.
-    if row is None or _fenced(row, worker_id, attempt):
+    if row is None or _fenced(row, worker_id, attempt, claim_epoch):
         return "noop"
 
     now = self._clock.now()
@@ -991,11 +1016,12 @@ async def _mark_retry_after(
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
     attempt: int | None = None,
+    claim_epoch: int | None = None,
 ) -> Literal["scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"]:
     row = self._jobs.get(job_id)
     # Attempt-epoch fence, one predicate shared with the sibling writes
     # (_fenced's docstring); a fenced-out epoch returns "noop".
-    if row is None or _fenced(row, worker_id, attempt):
+    if row is None or _fenced(row, worker_id, attempt, claim_epoch):
         return "noop"
 
     now = self._clock.now()
@@ -1262,6 +1288,7 @@ async def _mark_interrupted(
     hold: timedelta,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
+    claim_epoch: int | None = None,
 ) -> Literal["pending", "scheduled", "failed:DeadlineExceeded", "noop"]:
     row = self._jobs.get(job_id)
     # The fence mirrors the SQL arm conjunct-for-conjunct: the shared
@@ -1269,7 +1296,11 @@ async def _mark_interrupted(
     # extra cancel conjunct (cancel_phase = 0: an operator cancel in
     # flight wins and reads back as "noop", since a row with a cancel
     # timestamp set is cancelled, never re-available).
-    if row is None or _fenced(row, worker_id, attempt) or row.cancel_phase != CancelPhase.NONE:
+    if (
+        row is None
+        or _fenced(row, worker_id, attempt, claim_epoch)
+        or row.cancel_phase != CancelPhase.NONE
+    ):
         return "noop"
 
     now = self._clock.now()
