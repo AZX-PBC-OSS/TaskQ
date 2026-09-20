@@ -40,6 +40,7 @@ from taskq.constants import (
     CANCEL_ORIGIN_ABANDONED,
     CANCEL_ORIGIN_COOPERATIVE,
     CANCEL_ORIGIN_FORCED,
+    CANCEL_ORIGIN_UNREQUESTED,
     MIN_DEFERRAL_INTERVAL,
 )
 from taskq.exceptions import (
@@ -486,13 +487,19 @@ async def _mark_cancelled(
     now = self._clock.now()
     merged_progress = _merge_progress(row.progress_state, progress_state)
     # Twin of the PG template's CASE: an actor stopped while still only
-    # asked (phase 1) stopped cooperatively; one interrupted at phase 2
-    # was forced. One local feeds the row, the attempt and the event so
-    # the three writes can never disagree (upd.error_class in the SQL).
+    # asked (phase 1, a request on the row) stopped cooperatively; one
+    # interrupted at phase 2 was forced; and a row carrying neither
+    # evidence (phase 0, no request) was cancelled by the worker's
+    # runtime itself, a sibling crash or an actor self cancel, so the
+    # cooperative marker would forge a request that never existed. One
+    # local feeds the row, the attempt and the event so the three writes
+    # can never disagree (upd.error_class in the SQL).
     origin = (
         CANCEL_ORIGIN_FORCED
         if row.cancel_phase == CancelPhase.FORCED
         else CANCEL_ORIGIN_COOPERATIVE
+        if row.cancel_requested_at is not None
+        else CANCEL_ORIGIN_UNREQUESTED
     )
     self._jobs[job_id] = replace(
         row,

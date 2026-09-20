@@ -29,6 +29,7 @@ from taskq.constants import (
     CANCEL_ORIGIN_COOPERATIVE,
     CANCEL_ORIGIN_FORCED,
     CANCEL_ORIGIN_PENDING,
+    CANCEL_ORIGIN_UNREQUESTED,
     MIN_DEFERRAL_INTERVAL,
 )
 
@@ -537,15 +538,24 @@ SELECT * FROM retried UNION ALL SELECT * FROM deadline_failed""",
         # terminal failure path records its reason: error_class on the
         # row, on the attempt, and in the state_change detail. Three
         # cancelled rows read side by side then say which actor yielded,
-        # which had to be taken away and which never ran, a distinction
-        # worker logs carry today and lose the moment they roll off.
-        # mark_cancelled splits its marker on the phase the row was at:
-        # an actor that stopped while still only ASKED (phase 1) stopped
+        # which had to be taken away, which never ran, and which the
+        # worker's runtime cancelled on its own. mark_cancelled splits
+        # its marker on the row's evidence: an actor that stopped while
+        # still only ASKED (phase 1, a request on the row) stopped
         # cooperatively; one that had to be interrupted at phase 2 was
-        # forced. mark_abandoned and cancel_pending_scheduled stamp their
-        # own origins. The SET clause owns the choice; the attempt row
-        # and event detail read it back off upd so the three writes can
-        # never disagree.
+        # forced; and a row carrying NEITHER evidence (phase 0, no
+        # request) was cancelled by the worker's runtime itself, a
+        # sibling crash or an actor self cancel: stamping it
+        # cooperatively would forge an operator request that never
+        # existed. mark_abandoned and cancel_pending_scheduled stamp
+        # their own origins. The SET clause owns the choice; the attempt
+        # row and event detail read it back off upd so the three writes
+        # can never disagree. The phase-0/no-request arm is reachable
+        # only through the consumer's CancelledError handler for a
+        # cancellation no controller stamped: every request-carrying
+        # writer (cancel_running) stamps cancel_requested_at and phase 1
+        # together, so ``cancel_requested_at IS NOT NULL`` is exactly the
+        # operator-request evidence.
         mark_cancelled=f"""\
 WITH upd AS (
     UPDATE "{s}".jobs
@@ -554,7 +564,8 @@ WITH upd AS (
         locked_by_worker = NULL,
         lock_expires_at = NULL,
         error_class = CASE WHEN cancel_phase = 2 THEN '{CANCEL_ORIGIN_FORCED}'
-                           ELSE '{CANCEL_ORIGIN_COOPERATIVE}' END,
+                           WHEN cancel_requested_at IS NOT NULL THEN '{CANCEL_ORIGIN_COOPERATIVE}'
+                           ELSE '{CANCEL_ORIGIN_UNREQUESTED}' END,
         progress_seq = $3,
         progress_state = CASE WHEN $4::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $4::jsonb ELSE progress_state END
     WHERE id = $1 AND status = 'running' AND locked_by_worker = $2 AND attempt = $5
