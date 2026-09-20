@@ -642,6 +642,113 @@ class TestInMemoryEnqueueBatchAtomic:
         assert bid not in backend._batches
 
 
+class TestEnqueueBatchAtomicRollbackSparesDedupHits:
+    """The compensating rollback must withdraw only rows THIS call
+    inserted, never rows a dedup hit returned.
+
+    Postgres' atomic arm runs every chunk in ONE transaction: a failure
+    partway through rolls the TRANSACTION back, so a row that already
+    existed (a dedup hit returning the holder row) is untouched and stays
+    stored. A compensating rollback that pops every returned row id
+    withdraws the pre-existing holder too, certifying code that loses
+    live jobs on a failed batch.
+    """
+
+    async def _failed_batch_after_dedup_hit(self, backend: InMemoryBackend) -> JobRow:
+        """Seed a stored keyed row, fail an atomic batch whose FIRST item
+        dedups onto it, and return the holder row."""
+        holder = await backend.enqueue(make_enqueue_args(idempotency_key="k1", scheduled_at=_START))
+        bid = new_uuid()
+        hit = make_enqueue_args(idempotency_key="k1", scheduled_at=_START)
+
+        def gen() -> Iterable[EnqueueArgs]:
+            yield hit
+            raise ValueError("generator exploded")
+
+        # chunk_size=1 lands the failure AFTER the hit: chunk one resolves
+        # the hit (returning the holder row), chunk two raises mid-stream.
+        with pytest.raises(ValueError, match="generator exploded"):
+            await backend.enqueue_batch_atomic(
+                gen(),
+                batch_id=bid,
+                queue="default",
+                batch_row=None,
+                finalizer_args=None,
+                chunk_size=1,
+            )
+        return holder
+
+    async def test_rollback_leaves_dedup_hit_holder_row_stored(self) -> None:
+        """A pre-existing row a dedup hit returned must survive the failed
+        batch: PG's transaction rollback leaves it intact."""
+        backend = _make_backend()
+        holder = await self._failed_batch_after_dedup_hit(backend)
+
+        assert await backend.get(holder.id) is not None, (
+            "the compensating rollback must not withdraw a row this call never inserted"
+        )
+
+    async def test_dedup_hit_id_resolves_after_failed_batch(self) -> None:
+        """After the failed batch the holder row is still resolvable: a
+        fresh enqueue with the same pair dedups onto it, not a new row."""
+        backend = _make_backend()
+        holder = await self._failed_batch_after_dedup_hit(backend)
+
+        again = await backend.enqueue(make_enqueue_args(idempotency_key="k1", scheduled_at=_START))
+
+        assert again.id == holder.id
+
+    async def test_successful_batch_after_failed_batch_sees_preexisting_row(self) -> None:
+        """A successful batch after the failed one still sees the
+        pre-existing row: the keyed item dedups onto the holder and only
+        the clean item is stored."""
+        backend = _make_backend()
+        holder = await self._failed_batch_after_dedup_hit(backend)
+
+        bid = new_uuid()
+        keyed = make_enqueue_args(idempotency_key="k1", scheduled_at=_START)
+        clean = make_enqueue_args(scheduled_at=_START)
+        rows = await backend.enqueue_batch_atomic(
+            [keyed, clean],
+            batch_id=bid,
+            queue="default",
+            batch_row=None,
+            finalizer_args=None,
+        )
+
+        assert [r.id for r in rows] == [holder.id, clean.id]
+        assert await backend.get(holder.id) is not None
+
+    async def test_in_batch_dedup_holder_still_withdrawn_on_rollback(self) -> None:
+        """The carve-out is only for rows this call NEVER inserted: an
+        in-batch dedup holder (the first item's row) rides the rollback
+        with the rest of the transaction's inserts, exactly PG's."""
+        backend = _make_backend()
+        bid = new_uuid()
+        first = make_enqueue_args(actor="actor-a", idempotency_key="k1", scheduled_at=_START)
+        repeat = make_enqueue_args(actor="actor-a", idempotency_key="k1", scheduled_at=_START)
+
+        def gen() -> Iterable[EnqueueArgs]:
+            yield first
+            yield repeat
+            raise ValueError("generator exploded")
+
+        with pytest.raises(ValueError, match="generator exploded"):
+            await backend.enqueue_batch_atomic(
+                gen(),
+                batch_id=bid,
+                queue="default",
+                batch_row=None,
+                finalizer_args=None,
+                chunk_size=1,
+            )
+
+        assert await backend.get(first.id) is None, (
+            "an in-batch holder was inserted by this call, the rollback withdraws it"
+        )
+        assert bid not in backend._batches
+
+
 # ── TestInMemoryPruneOldBatches ─────────────────────────────────────────
 
 
