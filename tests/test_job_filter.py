@@ -7,6 +7,7 @@ is exercised too). Uses the InMemoryBackend so behaviour is exercised
 end-to-end without a Postgres dependency.
 """
 
+import warnings
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -268,6 +269,66 @@ def test_job_filter_active_alias_conflict_with_unfinished_raises() -> None:
     misconfiguration, not a silently-won race between the two fields."""
     with pytest.raises(ValueError, match="disagree"):
         JobFilter(unfinished=True, active=False)  # type: ignore[arg-type]  # Why: exercising the deprecated alias deliberately
+
+
+def test_job_filter_pre_rename_positional_layout_still_binds() -> None:
+    """An 11-argument positional call written before the rename still
+    binds its 10th argument to the terminality filter and its 11th to
+    created_before: ``unfinished`` was appended after ``created_before``,
+    not slotted into ``active``'s old position. Without this, a positional
+    call would hand a datetime to the alias and fail on the alias/
+    ``unfinished`` disagreement check.
+    """
+    created_before = datetime(2025, 6, 1, tzinfo=UTC)
+    with pytest.warns(DeprecationWarning, match="deprecated alias"):
+        positional = JobFilter(  # type: ignore[misc]  # Why: exercising the pre-rename positional call shape deliberately
+            "q", None, "a", None, None, 50, "c", ("t",), None, True, created_before
+        )
+    assert positional.unfinished is True
+    assert positional.created_before == created_before
+    assert positional == JobFilter(
+        queue="q",
+        actor="a",
+        limit=50,
+        cursor="c",
+        tags=("t",),
+        unfinished=True,
+        created_before=created_before,
+    )
+
+
+def test_job_filter_active_alias_warns_once_across_replace_copies() -> None:
+    """A filter built with the deprecated alias warns exactly once, at
+    construction: the promotion clears the alias, so the
+    ``dataclasses.replace`` copies the client's list probe and the
+    bulk-cancel sanitizer make do not re-trip the warning.
+    """
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        from_alias = JobFilter(active=True)
+        for _ in range(3):
+            replace(from_alias, limit=1)
+    assert from_alias.unfinished is True
+    deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+    assert len(deprecations) == 1
+
+
+async def test_cancel_where_with_active_alias_warns_once() -> None:
+    """Realistic flow through the bulk-cancel sanitizer: the filter copy
+    the sanitizer makes with ``dataclasses.replace`` must not re-trip the
+    alias warning, so a cancel_where on an alias-built filter warns once,
+    not once per internal copy.
+    """
+    backend = _backend()
+    job = _job(status="pending")
+    backend._jobs[job.id] = job
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = await backend.cancel_where(JobFilter(active=True), reason="done")
+    assert result.cancelled_directly == 1
+    deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+    assert len(deprecations) == 1
 
 
 # ── Unknown status validation ──────────────────────────────────────────

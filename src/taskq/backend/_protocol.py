@@ -1084,7 +1084,7 @@ class JobFilter:
     raises :class:`ValueError` in :meth:`__post_init__`.
 
     Deprecated alias: ``unfinished`` was named ``active``, and that name
-    stays accepted as a constructor kwarg and readable as a field, it
+    stays accepted as a constructor kwarg (positional or keyword), it
     raises :class:`DeprecationWarning` and feeds the same predicate.
     The rename exists because 'active' read as 'currently executing' to
     every new reader, while the predicate is 'not yet finished'.
@@ -1107,17 +1107,18 @@ class JobFilter:
     cursor: str | None = None
     tags: tuple[str, ...] | None = None
     order_by: JobSortField | None = None
-    # True selects every non-terminal status (still running or pending);
-    # False selects only terminal statuses. See the class docstring.
-    unfinished: bool | None = None
     # Deprecated constructor alias for `unfinished`, kept as a field
     # (not a property) because a frozen dataclass cannot alias an
-    # __init__ parameter. Excluded from eq and repr: the two spellings
-    # must compare equal, and the alias must not surface in repr.
-    # __post_init__ promotes it onto `unfinished`; it is never written
-    # back the other way, so filters built with `unfinished` never trip
-    # the deprecation warning in the dataclasses.replace copies the
-    # client's list probe and the bulk-cancel sanitizer make.
+    # __init__ parameter. It holds the PRE-RENAME positional slot (10,
+    # before created_before) so a positional call written before the
+    # rename still binds its 10th argument to the terminality filter
+    # and its 11th to created_before. Excluded from eq and repr: the
+    # two spellings must compare equal, and the alias must not surface
+    # in repr. __post_init__ promotes it onto `unfinished` and then
+    # clears it (constructor input only): the dataclasses.replace
+    # copies the client's list probe and the bulk-cancel sanitizer
+    # make carry the canonical `unfinished` value, so a filter warns
+    # exactly once, at construction.
     active: bool | None = field(default=None, compare=False, repr=False)
     # Matches jobs enqueued strictly before this instant (``created_at <
     # created_before``). An aware datetime: the column is timestamptz, so
@@ -1126,14 +1127,27 @@ class JobFilter:
     # both backends apply it (build_filter_conditions / _list_jobs), so
     # the bulk-cancel CLI's --older-than previews exactly what it writes.
     created_before: datetime | None = None
+    # True selects every non-terminal status (still running or pending);
+    # False selects only terminal statuses. See the class docstring.
+    # Deliberately the LAST field, after created_before, rather than
+    # slotted into `active`'s old position: inserting it mid-list would
+    # shift every later positional argument one slot left, so a
+    # pre-rename positional call would hand a datetime to the alias and
+    # fail on the alias/unfinished disagreement check. Appended, the
+    # old positional layout survives untouched.
+    unfinished: bool | None = None
 
     def __post_init__(self) -> None:
         # Deprecated-alias promotion, before every other check so the
         # alias participates in them identically. One-directional
-        # (active → unfinished, never back): a filter built with
-        # `unfinished` keeps active None, so the dataclasses.replace
-        # copies the client and the bulk-cancel path make of it stay
-        # warning-free.
+        # (active → unfinished, never back): after promotion the alias
+        # is cleared, so a filter built with `unfinished` keeps active
+        # None and one built with `active` ends up indistinguishable
+        # from one built with `unfinished`. Either way the
+        # dataclasses.replace copies the client and the bulk-cancel
+        # path make re-enter __post_init__ with active None and stay
+        # warning-free: one DeprecationWarning per filter, at
+        # construction, no matter how many internal copies follow.
         if self.active is not None:
             if self.unfinished is not None and self.active != self.unfinished:
                 raise ValueError(
@@ -1148,6 +1162,7 @@ class JobFilter:
                 stacklevel=3,  # Why: three frames to the caller, warn → __post_init__ → the dataclass-generated __init__ → user code
             )
             object.__setattr__(self, "unfinished", self.active)
+            object.__setattr__(self, "active", None)
         # A negative limit diverges across backends: PG raises
         # "LIMIT must not be negative" while the in-memory slice would
         # silently drop rows.  Reject it here so both fail identically.

@@ -492,6 +492,25 @@ every enqueue arm writes the deadline from one domain (server clock +
 interval). The rate-limit Redis Lua scripts derive `now` from
 `redis.call('TIME')`; the caller-supplied `now` ARGV is removed.
 
+### `JobFilter.active` renamed to `unfinished`
+
+> **Unreleased.** Not a breaking change: the old name still constructs.
+> Positional callers are unaffected: `unfinished` was appended after
+> `created_before` rather than slotted into `active`'s old position, so
+> an 11-argument positional call binds its arguments exactly as before
+> the rename.
+
+`JobFilter.active` read as 'currently executing' but the predicate is
+terminality: `True` selects every non-terminal status (pending, scheduled,
+running), `False` the terminal ones. The field is now `unfinished`, which
+states the predicate it applies. The old name stays accepted as a
+deprecated constructor kwarg — it raises a `DeprecationWarning` once, at
+construction, and feeds the same predicate. The warning fires once per
+filter even across the `dataclasses.replace` copies the client's list
+probe and the bulk-cancel sanitizer make. Update call sites to
+`unfinished=`; `JobFilter(active=True)` becomes
+`JobFilter(unfinished=True)`.
+
 ### `firstof`/`allof` DST strategies become live
 
 > **Unreleased.** Breaking for schedules that already exist and declare

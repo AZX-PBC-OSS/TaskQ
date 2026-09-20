@@ -157,7 +157,7 @@ async def test_cancel_where_filter_by_queue_and_actor() -> None:
 
 
 async def test_cancel_where_active_filter() -> None:
-    """cancel_where with active=True targets only non-terminal jobs."""
+    """cancel_where with unfinished=True targets only non-terminal jobs."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))
 
     await backend.enqueue(make_enqueue_args(scheduled_at=_NOW))

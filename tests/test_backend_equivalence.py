@@ -2129,7 +2129,7 @@ async def test_indefinite_tier_fail_retry_succeed(backend_pair: Backend) -> None
     assert row.attempt == 2
 
 
-# ── multi-status and active meta-filter equivalence ─────────────────
+# ── multi-status and unfinished meta-filter equivalence ────────────────
 
 
 _ALL_STATUSES: tuple[JobStatus, ...] = (
@@ -2195,7 +2195,7 @@ async def test_eq_active_true_filter(
     backend_pair: Backend,
     all_statuses_seeded: dict[str, JobId],
 ) -> None:
-    """Query with active=True - both backends must return exactly the
+    """Query with unfinished=True - both backends must return exactly the
     non-terminal job ids (pending, scheduled, running).
     """
     ids = all_statuses_seeded
@@ -2209,8 +2209,8 @@ async def test_eq_full_state_coverage_status_and_active(
     all_statuses_seeded: dict[str, JobId],
 ) -> None:
     """For every one of the 8 JobStatus values, a single-status filter
-    returns exactly that one job. active=True returns the 3 non-terminal
-    ids; active=False returns the 5 terminal ids.
+    returns exactly that one job. unfinished=True returns the 3 non-terminal
+    ids; unfinished=False returns the 5 terminal ids.
     """
     ids = all_statuses_seeded
 
@@ -2534,11 +2534,11 @@ async def test_eq_cursor_stable_when_rows_change_status_mid_pagination(
     assert page3 == []
 
 
-# ── active meta-filter: cursor pagination and non-default order_by ──────
+# ── unfinished meta-filter: cursor pagination and non-default order_by ──
 
 
 async def test_eq_active_true_cursor_pagination(backend_pair: Backend) -> None:
-    """Cursor-paginate ``active=True`` across both backends: exactly the
+    """Cursor-paginate ``unfinished=True`` across both backends: exactly the
     non-terminal jobs are returned, in keyset order, with no skips or
     duplicates; terminal jobs never leak through."""
     priorities = [10, 8, 5, 3, 1]
@@ -2560,7 +2560,7 @@ async def test_eq_active_true_cursor_pagination(backend_pair: Backend) -> None:
         if st != "pending":
             await _force_job_state(backend_pair, jid, status=st)
 
-    # Terminal jobs that must never appear in active=True results.
+    # Terminal jobs that must never appear in unfinished=True results.
     for st in ("succeeded", "failed", "cancelled"):
         jid = new_job_id()
         await backend_pair.enqueue(
@@ -2594,7 +2594,7 @@ async def test_eq_active_true_cursor_pagination(backend_pair: Backend) -> None:
 
 
 async def test_eq_active_true_with_created_at_desc(backend_pair: Backend) -> None:
-    """``active=True`` combined with ``order_by=CREATED_AT_DESC`` returns
+    """``unfinished=True`` combined with ``order_by=CREATED_AT_DESC`` returns
     only non-terminal jobs, newest-created first, identically on both
     backends - terminal jobs are excluded entirely, not just re-sorted."""
     t0 = _START

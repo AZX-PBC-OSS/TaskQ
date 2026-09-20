@@ -717,8 +717,10 @@ class TestJobFilterRoundTrip:
 
     def test_field_count(self) -> None:
         # 11 predicate/paging fields + the deprecated `active` alias
-        # field (compare=False, repr=False), kept so the pre-rename
-        # constructor kwarg still works.
+        # field (compare=False, repr=False). The alias keeps the
+        # pre-rename positional slot (10, before created_before) and
+        # `unfinished` is appended last, so pre-rename positional calls
+        # still bind their arguments the way they did before the rename.
         expected = 12
         assert len(fields(JobFilter)) == expected
 
