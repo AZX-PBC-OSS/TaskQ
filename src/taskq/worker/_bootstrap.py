@@ -59,6 +59,7 @@ from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex for defence-in-depth schema validation at this SQL interpolation site, per architecture.md §8 Invariant 4
     TERMINAL_WRITE_BUDGET_SECS,  # Why: the release write's own budget: one of the two numbers the release-park lease warning's remedy arithmetic names.
 )
+from taskq.context import CancelOrigin
 from taskq.cron import (
     CronScheduleSpec,
     compute_next_fire_after,
@@ -2211,6 +2212,21 @@ async def _main(
                         # drains, and exits; the shutdown watchdog sees the
                         # event too, so its deadline trip arms and bounds the
                         # whole exit exactly as on the signal path.
+                        # Stamp the in-flight jobs as shutdown-interrupted
+                        # BEFORE the re-raise starts the group's teardown:
+                        # this path never runs orchestrate_shutdown (the
+                        # orchestrator is reachable only from the signal and
+                        # drain paths), so without the stamp every running
+                        # job's registry entry stays origin-less and the
+                        # consumer's terminal routing falls through to
+                        # mark_cancelled, a phantom operator cancel. The
+                        # bare cancel is the supervisor tearing the worker
+                        # process down, the same external event the signal
+                        # path delivers, and the signal path lands every
+                        # in-flight job interrupted/pending; see
+                        # _stamp_interrupt_origins for why only origin-less
+                        # entries are stamped.
+                        _stamp_interrupt_origins(deps)
                         shutdown_event.set()
                         # Stamp the shutdown start HERE, synchronously: the
                         # watchdog's own stamping is asynchronous (its task
@@ -2279,6 +2295,43 @@ async def _main(
     return exit_code
 
 
+def _stamp_interrupt_origins(deps: WorkerDeps) -> None:
+    """Stamp every active job's cancel origin SHUTDOWN before the
+    TaskGroup teardown delivers its cancellations.
+
+    A crashing TaskGroup tears the consumers down by cancellation, and the
+    consumer's terminal routing reads the registry entry's ``cancel_origin``:
+    OPERATOR keeps the cancel ladder, SHUTDOWN releases the attempt back to
+    the fleet via ``mark_interrupted``, and NONE falls through to
+    ``mark_cancelled``, which fences only on id/status/worker/attempt. The
+    pre-fix shape terminalised every in-flight job 'cancelled' with
+    ``cancel_phase = 0`` and ``cancel_requested_at = NULL``, a phantom
+    operator cancel no operator ever issued: it spent an attempt, wrote a
+    ``job_attempts`` row with ``outcome='cancelled'``, fired ``on_cancel``,
+    and was indistinguishable in the database from a real request (the
+    phantom signature: a 'cancelled' row with a NULL ``cancel_requested_at``).
+
+    A sibling crash is an infrastructure interruption, the same class of
+    event the shutdown orchestrator's CANCELLING phase and ``isolate_self``
+    stamp SHUTDOWN for, so the crash stamps the same origin. The stamp runs
+    synchronously in the failing sibling, BEFORE ``shutdown_event.set()``
+    and before the group's ``__aexit__`` starts cancelling the remaining
+    siblings, so no consumer can read the registry mid-stamp. Only
+    origin-less entries are stamped: a real operator cancel already carries
+    OPERATOR and keeps its ladder untouched; the row-side fences
+    (``mark_interrupted``'s ``cancel_phase = 0``, the escalation probe)
+    remain the final arbiters either way.
+
+    Deliberately no cancel-phase or task changes here: the TaskGroup's own
+    teardown delivers the cancellations, and a local phase stamp the row
+    does not carry would lie about a ladder no one advanced.
+    """
+    for active in deps.active_jobs.all():
+        if active.cancel_origin is CancelOrigin.NONE:
+            active.cancel_origin = CancelOrigin.SHUTDOWN
+            active.ctx._set_cancel_origin(CancelOrigin.SHUTDOWN)  # pyright: ignore[reportPrivateUsage]  # Why: the crash path is the other designated shutdown-side writer of the context's origin stamp, same contract as the orchestrator's CANCELLING phase and isolate_self.
+
+
 def _make_sibling_spawner(
     tg: asyncio.TaskGroup,
     shutdown_event: asyncio.Event,
@@ -2317,6 +2370,11 @@ def _make_sibling_spawner(
             raise
         except BaseException:
             _sibling_crashes.add(1, {"loop": getattr(coro, "__qualname__", repr(coro))})
+            # Stamp BEFORE shutdown_event.set(): both are synchronous, but
+            # the stamp must be in place before the group's teardown starts
+            # cancelling the consumer siblings, whose terminal routing reads
+            # it (see _stamp_interrupt_origins).
+            _stamp_interrupt_origins(deps)
             shutdown_event.set()
             raise
         if may_return:
