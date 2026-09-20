@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from taskq.backend._protocol import AttemptRow, CancelPhase, JobId, JobRow
-from taskq.backend._sql_templates import DEADLINE_EXCEEDED_MESSAGE
+from taskq.backend._sql_fragments import DEADLINE_EXCEEDED_MESSAGE
 from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the twins must enforce the identical contract the Postgres sweeps enforce: one validator, one message map, one disposition map and total lookup, one seam, no drift.
     _ATTEMPT_MESSAGES,
     _reclaim_disposition,

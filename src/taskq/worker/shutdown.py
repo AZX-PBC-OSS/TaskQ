@@ -46,7 +46,7 @@ from taskq.backend._protocol import Backend, CancelPhase, JobId
 from taskq.backend._sql import (
     parse_rowcount,  # pyright: ignore[reportPrivateUsage]  # Why: parse_rowcount is the canonical command-tag parser; used identically in worker/cancel.py.
 )
-from taskq.backend._sql_templates import (
+from taskq.backend._sql_fragments import (
     _ATTEMPT_REFUND_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the one shared attempt-refund fragment, the drain's hand-back is the same non-consuming release shape as the template arms that interpolate it.
 )
 from taskq.constants import (

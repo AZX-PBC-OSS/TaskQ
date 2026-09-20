@@ -40,8 +40,9 @@ from taskq.backend._protocol import (
 # Why: the twin's deadline arms must stamp the exact failure text the SQL
 # arms stamp (the differential corpus pins the two sides equal), so the
 # message is read from the shared constant the templates interpolate, never
-# restated here.
-from taskq.backend._sql_templates import (
+# restated here. The constants live in the driver-free _sql_fragments module
+# (no backend imports): this file is part of the driver-free testing surface.
+from taskq.backend._sql_fragments import (
     DEADLINE_EXCEEDED_MESSAGE,
     DEADLINE_RETRY_EXCEEDED_MESSAGE,
 )
@@ -129,7 +130,7 @@ def _round_trip_progress_state(state: dict[str, object]) -> dict[str, object]:
 def _fenced(row: JobRow, worker_id: UUID, attempt: int | None) -> bool:
     """True when *row* fails the terminal-write fence: the SQL arms'
     ``status = 'running' AND locked_by_worker = ... AND attempt = ...``
-    conjuncts (the ``_JOB_FENCE_SQL`` fragment in backend/_sql_templates.py,
+    conjuncts (the ``_JOB_FENCE_SQL`` fragment in backend/_sql_fragments.py,
     the bound spelling's ``$2``/``$8`` mark_succeeded/mark_failed form).
 
     One helper, not a hand-restated predicate per method: the fence is the

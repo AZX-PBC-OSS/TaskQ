@@ -298,7 +298,7 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
         "an intermediate carrying the quota-predicate holes; "
         "_SWEEP_IDLE_KEYED_BUCKETS_SQL is the rendered statement production sends",
     ),
-    "taskq.backend._sql_templates:_JOB_FENCE_SQL": (
+    "taskq.backend._sql_fragments:_JOB_FENCE_SQL": (
         (
             "taskq.backend._sql_templates:SqlTemplates.mark_retry",
             "taskq.backend._sql_templates:SqlTemplates.mark_snoozed",
