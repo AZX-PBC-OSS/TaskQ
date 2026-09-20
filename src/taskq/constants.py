@@ -574,7 +574,7 @@ def check_priority_domain(value: int, *, what: str = "priority") -> None:
 FLOAT_EXACT_INTEGER_LIMIT = 2**53
 
 
-def check_payload_float_constraints(model: type, *, what: str) -> None:
+def check_payload_float_constraints(model: object, *, what: str) -> None:
     """Refuse a payload model whose float fields carry integral constraints
     beyond the f64 exact-integer range.
 
@@ -593,7 +593,7 @@ def check_payload_float_constraints(model: type, *, what: str) -> None:
     """
     import pydantic
 
-    if not issubclass(model, pydantic.BaseModel):
+    if not (isinstance(model, type) and issubclass(model, pydantic.BaseModel)):
         return
     for field_name, info in model.model_fields.items():
         annotation = info.annotation
