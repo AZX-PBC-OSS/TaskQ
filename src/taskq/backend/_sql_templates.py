@@ -29,6 +29,8 @@ from taskq.constants import (
     CANCEL_ORIGIN_COOPERATIVE,
     CANCEL_ORIGIN_FORCED,
     CANCEL_ORIGIN_PENDING,
+    ERROR_CLASS_DEADLINE_EXCEEDED,
+    ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED,
     MIN_DEFERRAL_INTERVAL,
 )
 
@@ -460,7 +462,7 @@ deadline_failed AS (
     UPDATE "{s}".jobs j
     SET status = 'failed',
         finished_at = clock_timestamp(),
-        error_class = 'DeadlineExceeded',
+        error_class = '{ERROR_CLASS_DEADLINE_EXCEEDED}',
         error_message = 'schedule_to_close reached before next retry dispatch',
         error_traceback = NULL,
         locked_by_worker = NULL,
@@ -513,7 +515,7 @@ deadline_att AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
-           'DeadlineExceeded', 'schedule_to_close reached before next retry dispatch', NULL,
+           '{ERROR_CLASS_DEADLINE_EXCEEDED}', 'schedule_to_close reached before next retry dispatch', NULL,
            -- Terminal arm: duration reads the arm's finished_at, not now_ts.
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
@@ -528,7 +530,7 @@ deadline_evt AS (
     (job_id, occurred_at, kind, detail)
     SELECT d.id, clock_timestamp(), 'state_change',
            jsonb_build_object('from_state', 'running', 'to_state', 'failed',
-                              'error_class', 'DeadlineExceeded',
+                              'error_class', '{ERROR_CLASS_DEADLINE_EXCEEDED}',
                               'worker_id', $2::text)
     FROM deadline_failed d
 )
@@ -836,7 +838,7 @@ deadline_failed AS (
     UPDATE "{s}".jobs j
     SET status = 'failed',
         finished_at = clock_timestamp(),
-        error_class = 'DeadlineExceeded',
+        error_class = '{ERROR_CLASS_DEADLINE_EXCEEDED}',
         error_message = 'schedule_to_close reached before next dispatch',
         error_traceback = NULL,
         locked_by_worker = NULL,
@@ -902,7 +904,7 @@ deadline_att AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
-           'DeadlineExceeded', 'schedule_to_close reached before next dispatch', NULL,
+           '{ERROR_CLASS_DEADLINE_EXCEEDED}', 'schedule_to_close reached before next dispatch', NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
@@ -916,7 +918,7 @@ deadline_evt AS (
     (job_id, occurred_at, kind, detail)
     SELECT d.id, clock_timestamp(), 'state_change',
            jsonb_build_object('from_state', 'running', 'to_state', 'failed',
-                              'error_class', 'DeadlineExceeded',
+                              'error_class', '{ERROR_CLASS_DEADLINE_EXCEEDED}',
                               'worker_id', $2::text)
     FROM deadline_failed d
 )
@@ -1010,7 +1012,7 @@ max_attempts_failed AS (
     UPDATE "{s}".jobs j
     SET status = 'failed',
         finished_at = clock_timestamp(),
-        error_class = 'MaxAttemptsExceeded',
+        error_class = '{ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED}',
         error_message = 'retry budget exhausted',
         error_traceback = NULL,
         locked_by_worker = NULL,
@@ -1043,7 +1045,7 @@ deadline_failed AS (
     UPDATE "{s}".jobs j
     SET status = 'failed',
         finished_at = clock_timestamp(),
-        error_class = 'DeadlineExceeded',
+        error_class = '{ERROR_CLASS_DEADLINE_EXCEEDED}',
         error_message = 'schedule_to_close reached before next dispatch',
         error_traceback = NULL,
         locked_by_worker = NULL,
@@ -1124,7 +1126,7 @@ max_attempts_att AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT m.id, m.attempt, m.started_at, clock_timestamp(), 'failed',
-           'MaxAttemptsExceeded', 'retry budget exhausted', NULL,
+           '{ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED}', 'retry budget exhausted', NULL,
            trunc(EXTRACT(EPOCH FROM (m.finished_at - m.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM max_attempts_failed m
@@ -1138,7 +1140,7 @@ max_attempts_evt AS (
     (job_id, occurred_at, kind, detail)
     SELECT m.id, clock_timestamp(), 'state_change',
            jsonb_build_object('from_state', 'running', 'to_state', 'failed',
-                              'error_class', 'MaxAttemptsExceeded',
+                              'error_class', '{ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED}',
                               'worker_id', $2::text)
     FROM max_attempts_failed m
 ),
@@ -1147,7 +1149,7 @@ deadline_att AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
-           'DeadlineExceeded', 'schedule_to_close reached before next dispatch', NULL,
+           '{ERROR_CLASS_DEADLINE_EXCEEDED}', 'schedule_to_close reached before next dispatch', NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
@@ -1161,7 +1163,7 @@ deadline_evt AS (
     (job_id, occurred_at, kind, detail)
     SELECT d.id, clock_timestamp(), 'state_change',
            jsonb_build_object('from_state', 'running', 'to_state', 'failed',
-                              'error_class', 'DeadlineExceeded',
+                              'error_class', '{ERROR_CLASS_DEADLINE_EXCEEDED}',
                               'worker_id', $2::text)
     FROM deadline_failed d
 )
@@ -1269,7 +1271,7 @@ deadline_failed AS (
     UPDATE "{s}".jobs j
     SET status = 'failed',
         finished_at = clock_timestamp(),
-        error_class = 'DeadlineExceeded',
+        error_class = '{ERROR_CLASS_DEADLINE_EXCEEDED}',
         error_message = 'schedule_to_close reached before next dispatch',
         error_traceback = NULL,
         locked_by_worker = NULL,
@@ -1327,7 +1329,7 @@ deadline_att AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
-           'DeadlineExceeded', 'schedule_to_close reached before next dispatch', NULL,
+           '{ERROR_CLASS_DEADLINE_EXCEEDED}', 'schedule_to_close reached before next dispatch', NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
@@ -1341,7 +1343,7 @@ deadline_evt AS (
     (job_id, occurred_at, kind, detail)
     SELECT d.id, clock_timestamp(), 'state_change',
            jsonb_build_object('from_state', 'running', 'to_state', 'failed',
-                              'error_class', 'DeadlineExceeded',
+                              'error_class', '{ERROR_CLASS_DEADLINE_EXCEEDED}',
                               'worker_id', $2::text)
     FROM deadline_failed d
 )
@@ -1453,7 +1455,7 @@ deadline_failed AS (
     UPDATE "{s}".jobs j
     SET status = 'failed',
         finished_at = clock_timestamp(),
-        error_class = 'DeadlineExceeded',
+        error_class = '{ERROR_CLASS_DEADLINE_EXCEEDED}',
         error_message = 'schedule_to_close reached before next dispatch',
         error_traceback = NULL,
         locked_by_worker = NULL,
@@ -1491,7 +1493,7 @@ deadline_att AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
-           'DeadlineExceeded', 'schedule_to_close reached before next dispatch', NULL,
+           '{ERROR_CLASS_DEADLINE_EXCEEDED}', 'schedule_to_close reached before next dispatch', NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
@@ -1505,7 +1507,7 @@ deadline_evt AS (
     (job_id, occurred_at, kind, detail)
     SELECT d.id, clock_timestamp(), 'state_change',
            jsonb_build_object('from_state', 'running', 'to_state', 'failed',
-                              'error_class', 'DeadlineExceeded',
+                              'error_class', '{ERROR_CLASS_DEADLINE_EXCEEDED}',
                               'worker_id', $2::text)
     FROM deadline_failed d
 )

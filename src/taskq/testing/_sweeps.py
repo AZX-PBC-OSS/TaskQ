@@ -32,7 +32,11 @@ from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Wh
     _reclaim_disposition,
     _validate_positive,
 )
-from taskq.constants import DEFAULT_EVENT_WRITER_BATCH_SIZE
+from taskq.constants import (
+    DEFAULT_EVENT_WRITER_BATCH_SIZE,
+    ERROR_CLASS_DEADLINE_EXCEEDED,
+    ERROR_CLASS_WORKER_CRASHED,
+)
 from taskq.obs import record_deadline_exceeded_swept, record_reclaimed_jobs
 from taskq.retry import (  # pyright: ignore[reportPrivateUsage]  # Why: the twin must compute the identical reclaim delay the SQL fragment computes, one curve twin, one hash fraction, no drift surface.
     RetryPolicy,
@@ -122,7 +126,7 @@ async def _deadline_sweep(
             row,
             status="failed",
             finished_at=now,
-            error_class="DeadlineExceeded",
+            error_class=ERROR_CLASS_DEADLINE_EXCEEDED,
             error_message="schedule_to_close reached before next dispatch",
         )
         if (job_id, row.attempt) not in written_keys:
@@ -134,7 +138,7 @@ async def _deadline_sweep(
                     started_at=row.started_at if row.started_at is not None else now,
                     finished_at=now,
                     outcome="failed",
-                    error_class="DeadlineExceeded",
+                    error_class=ERROR_CLASS_DEADLINE_EXCEEDED,
                     error_message="schedule_to_close reached before next dispatch",
                     error_traceback=None,
                     duration_ms=None,
@@ -147,7 +151,7 @@ async def _deadline_sweep(
             from_state=row.status,
             to_state="failed",
             now=now,
-            error_class="DeadlineExceeded",
+            error_class=ERROR_CLASS_DEADLINE_EXCEEDED,
         )
         record_deadline_exceeded_swept(actor=row.actor)
         logger.debug(
@@ -284,7 +288,7 @@ async def _reclaim_expired_locks(
             started_at=row.started_at if row.started_at is not None else now,
             finished_at=now,
             outcome="crashed",
-            error_class="WorkerCrashed",
+            error_class=ERROR_CLASS_WORKER_CRASHED,
             # Names the deadline that fired (the PG batched INSERT's $6
             # array comes from the same map), never the sibling arm's.
             error_message=_ATTEMPT_MESSAGES[cause],
@@ -469,7 +473,7 @@ async def _reclaim_expired_locks(
                 # self-describes (WorkerCrashed plus the deadline that
                 # fired, drawn from the same _ATTEMPT_MESSAGES map the
                 # attempt row uses: one map, no drift).
-                error_class="WorkerCrashed",
+                error_class=ERROR_CLASS_WORKER_CRASHED,
                 error_message=_ATTEMPT_MESSAGES[cause],
             )
             self._append_state_change_event(

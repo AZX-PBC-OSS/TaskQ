@@ -57,6 +57,8 @@ from taskq.backend._protocol import (
     SnoozeOutcome as BackendSnoozeOutcome,
 )
 from taskq.constants import (
+    ERROR_CLASS_DEADLINE_EXCEEDED,
+    ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED,
     TERMINAL_WRITE_BUDGET_SECS,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical seconds behind _TERMINAL_WRITE_BUDGET: the settings layer's release-park lease floor reserves exactly this much, so the number is shared rather than re-declared.
 )
 from taskq.exceptions import (
@@ -447,7 +449,9 @@ async def _report_terminal_failure(
         attributes={
             "from_state": "running",
             "to_state": "failed",
-            "error_class": cause if cause == "DeadlineExceeded" else error_info.error_class,
+            "error_class": cause
+            if cause == ERROR_CLASS_DEADLINE_EXCEEDED
+            else error_info.error_class,
         },
     )
     log_state_change(
@@ -617,7 +621,7 @@ async def _handle_timeout(
                 error_info=error_info,
                 log_message=log_message,
                 log_traceback=log_traceback,
-                cause="DeadlineExceeded",
+                cause=ERROR_CLASS_DEADLINE_EXCEEDED,
                 retryable=True,
                 actor_config=actor_config,
                 error_reporter=error_reporter,
@@ -734,7 +738,7 @@ async def _handle_snooze(
             attributes={
                 "from_state": "running",
                 "to_state": "failed",
-                "error_class": "DeadlineExceeded",
+                "error_class": ERROR_CLASS_DEADLINE_EXCEEDED,
             },
         )
         hook_row = await _post_write_row(backend, job)
@@ -744,27 +748,27 @@ async def _handle_snooze(
         _log_job_failed(
             log,
             job,
-            cause="DeadlineExceeded",
-            error_class="DeadlineExceeded",
+            cause=ERROR_CLASS_DEADLINE_EXCEEDED,
+            error_class=ERROR_CLASS_DEADLINE_EXCEEDED,
             snooze_count=hook_row.snooze_count,
         )
         log_state_change(
             log,
             from_state="running",
             to_state="failed",
-            cause="DeadlineExceeded",
+            cause=ERROR_CLASS_DEADLINE_EXCEEDED,
         )
         await invoke_on_retry_exhausted(
             actor_config.on_retry_exhausted,
             hook_row,
-            TimeoutError("DeadlineExceeded"),
+            TimeoutError(ERROR_CLASS_DEADLINE_EXCEEDED),
             actor_config.on_retry_exhausted_timeout,
             log=log,
         )
         await invoke_error_reporter(
             error_reporter,
             hook_row,
-            TimeoutError("DeadlineExceeded"),
+            TimeoutError(ERROR_CLASS_DEADLINE_EXCEEDED),
             log=log,
         )
         return "failed"
@@ -826,7 +830,7 @@ async def _handle_retry_after(
         return "scheduled"
     elif tri in ("failed:DeadlineExceeded", "failed:MaxAttemptsExceeded"):
         cause = tri.split(":")[1]
-        if cause == "DeadlineExceeded":
+        if cause == ERROR_CLASS_DEADLINE_EXCEEDED:
             record_job_timeout(job.actor, kind="schedule_to_close")
         span.add_event(
             "lifecycle.failed",
@@ -852,9 +856,9 @@ async def _handle_retry_after(
             consume_budget=r.consume_budget,
         )
         exc = (
-            TimeoutError("DeadlineExceeded")
-            if cause == "DeadlineExceeded"
-            else RuntimeError("MaxAttemptsExceeded")
+            TimeoutError(ERROR_CLASS_DEADLINE_EXCEEDED)
+            if cause == ERROR_CLASS_DEADLINE_EXCEEDED
+            else RuntimeError(ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED)
         )
         await invoke_on_retry_exhausted(
             actor_config.on_retry_exhausted,
@@ -950,35 +954,35 @@ async def _handle_reservation_class_denied(
             attributes={
                 "from_state": "running",
                 "to_state": "failed",
-                "error_class": "DeadlineExceeded",
+                "error_class": ERROR_CLASS_DEADLINE_EXCEEDED,
             },
         )
         hook_row = await _post_write_row(backend, job)
         _log_job_failed(
             log,
             job,
-            cause="DeadlineExceeded",
-            error_class="DeadlineExceeded",
+            cause=ERROR_CLASS_DEADLINE_EXCEEDED,
+            error_class=ERROR_CLASS_DEADLINE_EXCEEDED,
             bucket_name=e.bucket_name,
         )
         log_state_change(
             log,
             from_state="running",
             to_state="failed",
-            cause="DeadlineExceeded",
+            cause=ERROR_CLASS_DEADLINE_EXCEEDED,
             bucket_name=e.bucket_name,
         )
         await invoke_on_retry_exhausted(
             actor_config.on_retry_exhausted,
             hook_row,
-            TimeoutError("DeadlineExceeded"),
+            TimeoutError(ERROR_CLASS_DEADLINE_EXCEEDED),
             actor_config.on_retry_exhausted_timeout,
             log=log,
         )
         await invoke_error_reporter(
             error_reporter,
             hook_row,
-            TimeoutError("DeadlineExceeded"),
+            TimeoutError(ERROR_CLASS_DEADLINE_EXCEEDED),
             log=log,
         )
         return "failed"
@@ -1085,7 +1089,7 @@ async def _handle_generic_exception(
                 error_info=error_info,
                 log_message=log_message,
                 log_traceback=log_traceback,
-                cause="DeadlineExceeded",
+                cause=ERROR_CLASS_DEADLINE_EXCEEDED,
                 retryable=True,
                 actor_config=actor_config,
                 error_reporter=error_reporter,

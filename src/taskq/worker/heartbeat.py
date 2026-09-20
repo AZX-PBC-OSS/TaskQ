@@ -44,6 +44,7 @@ from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Wh
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    ERROR_CLASS_HEARTBEAT_LOST,
 )
 from taskq.context import CancelOrigin
 from taskq.obs import (
@@ -644,7 +645,7 @@ SET status = CASE
     -- request the row preserves above.
     error_class = CASE
         WHEN j.cancel_phase = 0 AND NOT ({has_budget})
-            THEN 'HeartbeatLost'
+            THEN '{heartbeat_lost_class}'
         ELSE j.error_class
     END,
     error_message = CASE
@@ -658,6 +659,7 @@ WHERE j.id = $1 AND j.status = 'running' AND j.locked_by_worker = $2""".replace(
     .replace("{reclaim_delay}", _RECLAIM_DELAY_SQL)
     .replace("{max_backoff_seconds}", "$3")
     .replace("{isolate_crashed_message}", _ISOLATE_CRASHED_MESSAGE)
+    .replace("{heartbeat_lost_class}", ERROR_CLASS_HEARTBEAT_LOST)
 )
 
 
@@ -825,7 +827,7 @@ async def isolate_self(
                             row["attempt"],
                             row["started_at"],
                             "crashed",
-                            "HeartbeatLost",
+                            ERROR_CLASS_HEARTBEAT_LOST,
                             None,
                             None,
                             None,

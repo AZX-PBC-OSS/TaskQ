@@ -32,6 +32,12 @@ __all__ = [
     "DEFAULT_PRUNE_STATEMENT_TIMEOUT_MS",
     "DEFAULT_RECLAIM_POLL_LIMIT",
     "DEFAULT_RESERVATION_BACKOFF",
+    "ERROR_CLASS_ACTOR_DEREGISTERED",
+    "ERROR_CLASS_BATCH_ABORTED",
+    "ERROR_CLASS_DEADLINE_EXCEEDED",
+    "ERROR_CLASS_HEARTBEAT_LOST",
+    "ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED",
+    "ERROR_CLASS_WORKER_CRASHED",
     "EVENTS_CHANNEL_FMT",
     "IDEMPOTENCY_KEY_BYTES_CEILING",
     "MAX_ATTEMPTS_SMALLINT_CEILING",
@@ -195,6 +201,35 @@ distinction that is not a different state. The cancel is recorded
 durably on the row itself: a row whose cancel timestamp is set is
 cancelled, never re-available.
 """
+
+ERROR_CLASS_DEADLINE_EXCEEDED: Final[str] = "DeadlineExceeded"
+"""``error_class`` the schedule_to_close deadline arms stamp (the retry
+and retry-after terminal writes, the deadline sweep, the
+``mark_interrupted`` deadline arm). One literal, every surface: the row,
+the attempt record, and the state_change event detail must read the same
+or an operator cross-reading them sees two different incidents."""
+
+ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED: Final[str] = "MaxAttemptsExceeded"
+"""``error_class`` the retry-budget-exhausted arm stamps when a job's
+attempts are spent."""
+
+ERROR_CLASS_WORKER_CRASHED: Final[str] = "WorkerCrashed"
+"""``error_class`` the leader sweeps stamp on a row whose worker died
+with its lease held (lock expiry, heartbeat timeout), where the worker
+cannot describe its own death."""
+
+ERROR_CLASS_HEARTBEAT_LOST: Final[str] = "HeartbeatLost"
+"""``error_class`` the heartbeat isolate-recovery arm stamps, distinct
+from ``ERROR_CLASS_WORKER_CRASHED`` on purpose: the worker may still be
+alive but has lost its say in the row."""
+
+ERROR_CLASS_ACTOR_DEREGISTERED: Final[str] = "ActorDeregistered"
+"""``error_class`` actor deregistration stamps on the not-yet-running
+jobs it cancels."""
+
+ERROR_CLASS_BATCH_ABORTED: Final[str] = "BatchAbortedError"
+"""``error_class`` batch abort stamps on the not-yet-running jobs it
+cancels."""
 
 MIN_DEFERRAL_INTERVAL: Final[timedelta] = timedelta(seconds=1)
 """Minimum effective delay a NON-consuming deferral reschedules out.

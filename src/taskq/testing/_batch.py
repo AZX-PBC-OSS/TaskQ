@@ -24,7 +24,7 @@ from taskq.backend._protocol import (
     JobRow,
 )
 from taskq.backend.statemachine import TERMINAL_STATUSES
-from taskq.constants import DEFAULT_CHUNK_SIZE
+from taskq.constants import DEFAULT_CHUNK_SIZE, ERROR_CLASS_BATCH_ABORTED
 from taskq.testing._enqueue import _check_batch_jsonb
 from taskq.testing._reads import _batch_row_read_copy
 
@@ -161,7 +161,7 @@ def _abort_batch(
                 row,
                 status="cancelled",
                 finished_at=now,
-                error_class="BatchAbortedError",
+                error_class=ERROR_CLASS_BATCH_ABORTED,
                 error_message="Batch aborted due to consecutive failures",
                 cancel_requested_at=now,
                 cancel_phase=CancelPhase.FORCED,
