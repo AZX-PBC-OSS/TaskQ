@@ -298,6 +298,20 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
         "an intermediate carrying the quota-predicate holes; "
         "_SWEEP_IDLE_KEYED_BUCKETS_SQL is the rendered statement production sends",
     ),
+    "taskq.backend._sql_templates:_JOB_FENCE_SQL": (
+        (
+            "taskq.backend._sql_templates:SqlTemplates.mark_retry",
+            "taskq.backend._sql_templates:SqlTemplates.mark_snoozed",
+            "taskq.backend._sql_templates:SqlTemplates.mark_retry_after_consume_true",
+            "taskq.backend._sql_templates:SqlTemplates.mark_retry_after_consume_false",
+            "taskq.backend._sql_templates:SqlTemplates.mark_interrupted",
+        ),
+        None,
+        "a fence-conjunct fragment, never a standalone statement; interpolated "
+        "verbatim into the five multi-arm terminal arbiters, so their rendered "
+        "bundle fields (resolved through the prepared inventory, the arbiters "
+        "are built inside render()) carry and validate its text",
+    ),
 }
 
 # Prefix constants completed at their sole call site: qualified name ->
@@ -464,6 +478,10 @@ def test_the_guard_has_no_silent_gaps() -> None:
     discovered = _discover_sql_constants()
     inventory = _build_inventory(schema)
     prepared_sources = {name for names in inventory.values() for name in names}
+    # name -> rendered body for every source that reached the inventory,
+    # rendered bundle fields included: a fragment's registered products may
+    # name either a discovered constant or a rendered SqlTemplates field.
+    rendered_by_name = {name: sql for sql, names in inventory.items() for name in names}
 
     unhandled = [
         name
@@ -489,7 +507,7 @@ def test_the_guard_has_no_silent_gaps() -> None:
     for name, (products, marker, _reason) in _COVERED_BY.items():
         needle = discovered[name] if marker is None else marker
         for product in products:
-            product_body = discovered.get(product)
+            product_body = discovered.get(product) or rendered_by_name.get(product)
             if product_body is None:
                 broken_cover.append(f"{name}: product {product} is no longer discovered")
                 continue
