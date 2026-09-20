@@ -551,8 +551,11 @@ SELECT * FROM retried UNION ALL SELECT * FROM deadline_failed""",
         # their own origins. The SET clause owns the choice; the attempt
         # row and event detail read it back off upd so the three writes
         # can never disagree. The phase-0/no-request arm is reachable
-        # only through the consumer's CancelledError handler for a
-        # cancellation no controller stamped: every request-carrying
+        # from two writers, neither of which stamps a request: the
+        # consumer's CancelledError handler for a cancellation no
+        # controller stamped, and the stub consumer loop's terminal
+        # write (worker/run.py's _stub_terminal_write, which cancels
+        # without a request by construction). Every request-carrying
         # writer (cancel_running) stamps cancel_requested_at and phase 1
         # together, so ``cancel_requested_at IS NOT NULL`` is exactly the
         # operator-request evidence.

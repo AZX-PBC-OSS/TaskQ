@@ -77,6 +77,18 @@ async def test_isolate_reaches_poll_reclaim_events(clean_jobs_app: "JobsApp") ->
     await isolate_self(iso_deps, iso_worker, shutdown)
     assert shutdown.is_set()
 
+    # The reclaim itself happened: the row terminalised the way the
+    # isolate's crashed arm writes it, so the feed event below is
+    # provenance for a transition that actually landed, not an orphan.
+    async with deps.worker_pool.acquire() as conn:
+        iso_row = await conn.fetchrow(
+            f'SELECT status, error_class FROM "{schema}".jobs WHERE id = $1',
+            iso_job,
+        )
+    assert iso_row is not None
+    assert iso_row["status"] == "crashed"
+    assert iso_row["error_class"] == "HeartbeatLost"
+
     # Control: the leader sweep reclaims its job.
     async with deps.worker_pool.acquire() as conn:
         n = await sweep_expired_locks(conn, timedelta(0), timedelta(0), schema=schema)
