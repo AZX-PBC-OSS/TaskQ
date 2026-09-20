@@ -137,6 +137,20 @@ async def test_mark_failed_or_retry_refuses_a_row_carrying_a_cancel_phase(
     assert row.cancel_phase == CancelPhase.FORCED
     assert row.cancel_requested_at is not None
 
+    # The escalation ladder must stay armed: the worker's cancel-flag
+    # poll STILL returns the in-flight cancel - that poll is what feeds
+    # the ladder that terminalises the row. This is the pin's real
+    # teeth: on the unfenced write the retried arm resets
+    # cancel_requested_at to NULL, so the poll comes back empty and the
+    # cancel vanishes entirely.
+    flags = await backend_pair.poll_cancel_flags(worker_id)
+    assert [f.job_id for f in flags] == [job_id], (
+        "the fenced-out row's in-flight cancel vanished from the "
+        "worker's cancel-flag poll: the escalation ladder can never "
+        "terminalise it"
+    )
+    assert flags[0].cancel_phase == CancelPhase.FORCED
+
 
 async def test_mark_snoozed_refuses_a_row_carrying_a_cancel_phase(
     backend_pair: Backend,
