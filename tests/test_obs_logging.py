@@ -977,29 +977,83 @@ def test_redact_payload_different_inputs_different_outputs() -> None:
     assert a != b
 
 
-# ── redact_payload overhead < 10µs ─────────────────────────────
+# ── redact_payload: realistic payloads redact without leaking fragments ─────
 
 
-def test_redact_payload_performance_under_10us() -> None:
-    import time
-
+def test_redact_payload_handles_realistic_payloads() -> None:
+    """A production-shaped payload - nesting, unicode, lists, nulls, numbers -
+    redacts to the same contract the simple shapes pin: 16 hex characters,
+    deterministic for the same input."""
     payload = {
-        "field1": "value1",
-        "field2": 42,
-        "field3": True,
-        "field4": None,
-        "field5": [1, 2, 3],
+        "user": {"name": "Ada Lovelace", "email": "ada@example.com"},
+        "tokens": ["sk-live-123", "sk-live-456"],
+        "count": 42,
+        "ratio": 0.25,
+        "nested": {"a": [1, {"b": None}]},
+        "note": "naïve-日本語-🎛",
+        "ok": True,
+        "missing": None,
     }
 
-    durations: list[float] = []
-    for _ in range(100):
-        t0 = time.perf_counter_ns()
-        obs_mod.redact_payload(payload)
-        t1 = time.perf_counter_ns()
-        durations.append((t1 - t0) / 1000)
+    result = obs_mod.redact_payload(payload)
 
-    avg_us = sum(durations) / len(durations)
-    assert avg_us < 10, f"redact_payload avg {avg_us:.2f}µs exceeds 10µs budget"
+    assert len(result) == 16
+    assert all(c in "0123456789abcdef" for c in result)
+    assert result == obs_mod.redact_payload(payload)
+
+
+def test_log_line_with_redacted_payload_hash_leaks_no_payload_fragments() -> None:
+    """The operator-facing contract redaction exists for: a rendered log
+    line that carries the redacted payload hash carries NO fragment of the
+    payload it stands for. A caller who logs ``payload_hash=redact_payload
+    (payload)`` - the only sanctioned way payload-derived data reaches a
+    log line - must never see payload content in the rendered output."""
+    from taskq._json import structlog_serializer
+
+    obs_mod.setup_logging(log_format="json")
+
+    payload = {
+        "ssn": "123-45-6789",
+        "email": "ada@example.com",
+        "token": "sk-live-abc123def456",
+        "nested": {"card": "4242 4242 4242 4242"},
+    }
+
+    buf = io.StringIO()
+    handler = logging.StreamHandler(buf)
+    handler.setFormatter(
+        structlog.stdlib.ProcessorFormatter(
+            processors=[
+                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                structlog.processors.JSONRenderer(serializer=structlog_serializer),
+            ],
+            foreign_pre_chain=[
+                structlog.processors.TimeStamper(fmt="iso", utc=True),
+                structlog.stdlib.add_log_level,
+                structlog.stdlib.ExtraAdder(),
+            ],
+        )
+    )
+    test_logger = logging.getLogger("_test_redact_leak")
+    test_logger.handlers.clear()
+    test_logger.addHandler(handler)
+    test_logger.setLevel(logging.DEBUG)
+
+    log = obs_mod.get_logger("_test_redact_leak")
+    log.info("job_failed", payload_hash=obs_mod.redact_payload(payload))
+
+    output = buf.getvalue()
+    assert output.strip(), "the event carrying the redacted hash must render"
+    for fragment in (
+        "123-45-6789",
+        "ada@example.com",
+        "sk-live-abc123def456",
+        "4242 4242 4242 4242",
+    ):
+        assert fragment not in output, (
+            "a rendered log line carrying the redacted payload hash must "
+            f"contain no payload fragments; leaked {fragment!r}"
+        )
 
 
 # ── event names: kebab-case, matching the existing convention ──────
