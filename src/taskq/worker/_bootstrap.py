@@ -90,7 +90,7 @@ from taskq.worker._watchdog import (
     await_tracked_actor_reap,
     loop_watchdog_loop,
 )
-from taskq.worker.cancel import make_cancel_controller
+from taskq.worker.cancel import ActiveJobRegistry, make_cancel_controller
 from taskq.worker.cron_loop import ActorFirePolicy
 from taskq.worker.deps import WorkerDeps, open_worker_deps
 from taskq.worker.health import HealthServer, HealthTcpBindError, HealthUnixBindCollisionError
@@ -2316,7 +2316,16 @@ def _stamp_interrupt_origins(deps: WorkerDeps) -> None:
     stamp SHUTDOWN for, so the crash stamps the same origin. The stamp runs
     synchronously in the failing sibling, BEFORE ``shutdown_event.set()``
     and before the group's ``__aexit__`` starts cancelling the remaining
-    siblings, so no consumer can read the registry mid-stamp. Only
+    siblings, so every job claimed BEFORE the stamp point carries its
+    origin before its cancellation is delivered. That narrows the
+    phantom-cancel window; it does not close it. A consumer can complete a
+    fresh claim in the gap between the stamp and the delivery of that
+    task's own cancellation, and the entry registered there is still
+    origin-less when the consumer's terminal routing reads it: that one
+    in-flight dispatch falls through to ``mark_cancelled`` exactly as
+    pre-fix. Closing the window fully would need a claim-side fence the
+    crash path does not have, so the residual exposure is bounded to the
+    claims racing the stamp. Only
     origin-less entries are stamped: a real operator cancel already carries
     OPERATOR and keeps its ladder untouched; the row-side fences
     (``mark_interrupted``'s ``cancel_phase = 0``, the escalation probe)
@@ -2328,10 +2337,33 @@ def _stamp_interrupt_origins(deps: WorkerDeps) -> None:
     """
     registry = getattr(deps, "active_jobs", None)
     if registry is None:
+        if isinstance(deps, WorkerDeps):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: not unnecessary at runtime - a MagicMock(spec=WorkerDeps) aliases __class__ to the spec, so this is the test that tells a production-shaped double from a registry-less stub; the static type is the real WorkerDeps, where the check is trivially true.
+            # Loud, not silent: a production-shaped double (a
+            # MagicMock(spec=WorkerDeps), say) that forgot to configure
+            # active_jobs lands HERE - the field is a default_factory
+            # dataclass field, so it is not in the spec's dir(), the read
+            # raises AttributeError and getattr's default swallows it.
+            # Stamping over that hole would quietly no-op: the exact
+            # silent regression this stamp exists to prevent, surfacing
+            # later as a phantom cancel on the next real crash. A real
+            # WorkerDeps can never get here (the field always exists).
+            raise TypeError(
+                "deps.active_jobs is missing on a production-shaped deps "
+                "surface: the interrupt stamp needs the real "
+                "ActiveJobRegistry, and a silent no-op would turn the next "
+                "real crash into a phantom cancel"
+            )
         # A deps surface without a registry (the hand-built test stubs)
         # has nothing to stamp. The crash signal that follows is the
         # spawner's primary contract and must never depend on the stamp.
         return
+    if not isinstance(registry, ActiveJobRegistry):
+        # Loud for the same reason: whatever sits here is not the registry
+        # the stamp must walk, and iterating it would silently no-op.
+        raise TypeError(
+            "deps.active_jobs must be an ActiveJobRegistry for the "
+            f"interrupt stamp, got {type(registry).__name__}"
+        )
     for active in registry.all():
         if active.cancel_origin is CancelOrigin.NONE:
             active.cancel_origin = CancelOrigin.SHUTDOWN

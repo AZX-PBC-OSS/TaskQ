@@ -216,9 +216,12 @@ async def _failed_tick_ledger(
 
     The in-tx cancel-hook failure keeps its carve-out: it increments
     ``deps.heartbeat_failures`` itself, then re-raises as ``OSError``,
-    which the transient arm classifies, so the arm calls this ledger with
-    the increment already landed and the caller decides whether this tick
-    counts (see the ``count`` decision at the call sites).
+    which the transient arm classifies. The transient call site guards its
+    own increment on the ``_in_tx_failed`` flag - when the in-tx hook
+    already counted this tick, the arm skips the second increment so the
+    tick counts exactly once - and then funnels into this ledger either
+    way, so the miss record, the early warning, and the isolate decision
+    run for every failed tick.
 
     Returns True when the threshold tripped and isolate_self ran; the
     caller exits the loop.

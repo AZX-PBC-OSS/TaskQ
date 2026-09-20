@@ -34,6 +34,7 @@ from taskq.worker._bootstrap import (  # pyright: ignore[reportPrivateUsage]  # 
 from taskq.worker._consumer import consume_one_job
 from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.deps import WorkerDeps
+from taskq.worker.shutdown import ShutdownPhase
 from tests.conftest import EmptyPayload, FakeBackend, as_backend, default_actor_config
 
 _NOW = datetime(2025, 1, 1, tzinfo=UTC)
@@ -133,6 +134,76 @@ async def test_a_sibling_crash_never_clobbers_an_operator_stamp() -> None:
 
     assert entry.cancel_origin is CancelOrigin.OPERATOR
     assert entry.stamps == []  # type: ignore[union-attr]  # Why: the SimpleNamespace entry carries the stamp recorder next to the origin.
+
+
+async def test_a_specd_deps_double_that_forgot_the_registry_fails_loud() -> None:
+    """A production-shaped deps double without ``active_jobs`` fails loud.
+
+    ``active_jobs`` is a default_factory dataclass field, so it is not in
+    ``dir(WorkerDeps)``: a ``MagicMock(spec=WorkerDeps)`` that forgot to
+    configure it raises ``AttributeError`` on the read, and stamping over
+    that hole (the pre-fix ``getattr(..., None)`` no-op) would pass in
+    silence - the exact regression that turns the next real crash into a
+    phantom cancel with zero signal. The stamp raises ``TypeError``
+    instead, so a mis-shaped double is a red test, not a green one with a
+    latent bug.
+    """
+    deps = MagicMock(spec=WorkerDeps)
+    deps.settings = _settings()
+    shutdown_event = asyncio.Event()
+    raised: BaseExceptionGroup[BaseException] | None = None
+
+    try:
+        async with asyncio.TaskGroup() as tg:
+            spawn = _make_sibling_spawner(tg, shutdown_event, deps)
+
+            async def crashing() -> None:
+                raise RuntimeError("leader sweep hit a dead PG")
+
+            spawn(crashing())
+    except BaseExceptionGroup as eg:
+        raised = eg
+
+    assert raised is not None, (
+        "a spec'd deps double without the real registry must fail loud, not silently skip the stamp"
+    )
+    assert all(isinstance(exc, TypeError) for exc in raised.exceptions), (
+        f"expected the stamp's loud TypeError, got {raised.exceptions!r}"
+    )
+
+
+async def test_a_stub_without_a_registry_surface_stays_a_no_op() -> None:
+    """A hand-built stub that omits ``active_jobs`` entirely stays a no-op.
+
+    The simpler stubs (the watchdog suites' SimpleNamespace ``_spawner_deps``
+    shape) carry no registry surface: the stamp must skip them silently, and
+    the crash signal that follows must not depend on the stamp - the group
+    still collects the sibling's own crash, and ``shutdown_event`` is set.
+    """
+    deps = SimpleNamespace(
+        shutdown_phase=ShutdownPhase.NONE,
+        producer_stop_event=asyncio.Event(),
+    )
+    shutdown_event = asyncio.Event()
+    raised: BaseExceptionGroup[BaseException] | None = None
+
+    try:
+        async with asyncio.TaskGroup() as tg:
+            spawn = _make_sibling_spawner(tg, shutdown_event, deps)  # type: ignore[arg-type]  # Why: deliberately registry-less stub, the shape _spawner_deps builds; the spawner's annotation is for production deps.
+
+            async def crashing() -> None:
+                raise RuntimeError("leader sweep hit a dead PG")
+
+            spawn(crashing())
+    except BaseExceptionGroup as eg:
+        raised = eg
+
+    assert raised is not None
+    assert all(isinstance(exc, RuntimeError) for exc in raised.exceptions), (
+        "a registry-less stub must be a no-op for the stamp: the group "
+        f"should carry only the crash itself, got {raised.exceptions!r}"
+    )
+    assert shutdown_event.is_set()
 
 
 async def test_a_sibling_crash_lands_running_jobs_interrupted_not_cancelled() -> None:

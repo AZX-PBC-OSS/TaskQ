@@ -10,6 +10,7 @@ from uuid import UUID
 
 import asyncpg
 import pytest
+import structlog
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -17,6 +18,7 @@ from taskq._ids import new_base62, new_uuid
 from taskq.backend._sql import parse_rowcount
 from taskq.settings import WorkerSettings
 from taskq.testing.assertions import wait_for
+from taskq.worker._transient import is_transient_pg_error
 from taskq.worker.cancel import CancelController
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.heartbeat import heartbeat_loop, isolate_self
@@ -569,6 +571,112 @@ async def test_unexpected_failure_counter_resets_after_success() -> None:
     assert deps.heartbeat_failures == 0
     shutdown.set()
     await task
+
+
+# ── TRANSIENT_PG_ERRORS membership is the load-bearing classification ──
+#
+# Since the two tick-failure arms share one ledger, membership in
+# TRANSIENT_PG_ERRORS no longer decides WHETHER a failure counts - both
+# arms count. It decides which arm rides, and the arms spend the failure
+# differently: the transient arm warns and retries, the unexpected arm
+# raises the exception-level bug alarm AND spends the isolate budget -
+# any Exception outside the set isolates the worker within
+# max_heartbeat_failures + 1 ticks (~40 s at the defaults, interval 10 s).
+# These pins couple the set to that consequence.
+
+
+async def test_a_transient_member_does_not_count_as_unexpected(
+    structlog_capture: list[structlog.types.EventDict],
+) -> None:
+    """A TRANSIENT_PG_ERRORS member does NOT count toward the unexpected
+    arm: 40001 (SerializationError, a canonical member) rides the
+    transient arm's warn-level ``heartbeat-tick-failure`` and never raises
+    the exception-level ``heartbeat-tick-unexpected-error`` bug alarm.
+
+    Both arms spend the same isolate ledger; membership decides whether a
+    failure is signalised as an environment blip or a bug. The membership
+    fact is asserted against the set itself, so the pin tracks the
+    classification rather than a hardcoded assumption about it.
+    """
+    assert is_transient_pg_error(asyncpg.SerializationError("could not serialize access"))
+    await _patch_tick_duration(lambda v: None)
+
+    isolate_calls: list[tuple[WorkerDeps, UUID, asyncio.Event]] = []
+
+    async def fake_isolate(deps: WorkerDeps, worker_id: UUID, shutdown: asyncio.Event) -> None:
+        isolate_calls.append((deps, worker_id, shutdown))
+        shutdown.set()
+
+    import taskq.worker.heartbeat as hb_mod
+
+    hb_mod.isolate_self = fake_isolate  # type: ignore[method-assign] # Why: restored by _restore_heartbeat_module_globals autouse fixture.
+
+    pool = FakePool(fail_execute_with=asyncpg.SerializationError("could not serialize access"))
+    deps = _make_deps(heartbeat_pool=pool, max_heartbeat_failures=3)
+    shutdown = asyncio.Event()
+    await heartbeat_loop(deps, new_uuid(), shutdown)
+    assert deps.heartbeat_failures == 4
+    assert len(isolate_calls) == 1
+
+    events = [e["event"] for e in structlog_capture]
+    assert "heartbeat-tick-failure" in events
+    assert "heartbeat-tick-unexpected-error" not in events, (
+        "a member of TRANSIENT_PG_ERRORS must ride the transient arm: the "
+        "unexpected arm's exception-level alarm is the bug signal, and "
+        "classifying an environment blip as a bug pages the on-call for "
+        "nothing"
+    )
+
+
+async def test_a_non_transient_error_spends_the_isolate_budget_within_documented_ticks(
+    structlog_capture: list[structlog.types.EventDict],
+) -> None:
+    """A non-transient error (outside TRANSIENT_PG_ERRORS) reaches the
+    isolate threshold within the documented tick count.
+
+    The documented doctrine (docs/guides/workers.md, the shared-ledger
+    passage): a tick failure outside the transient set counts toward the
+    same threshold and isolates when heartbeat_failures >
+    max_heartbeat_failures - at the default 3, the (max+1)-th = 4th
+    consecutive failure, never before. The representative shape is
+    asyncpg.PostgresSyntaxError (42601), deliberately outside the set per
+    _transient.py's doctrine (data errors are bugs, loud then fatal), and
+    the membership fact is asserted against the set itself.
+    """
+    assert not is_transient_pg_error(asyncpg.PostgresSyntaxError("syntax error at or near"))
+    await _patch_tick_duration(lambda v: None)
+
+    isolate_calls: list[tuple[WorkerDeps, UUID, asyncio.Event]] = []
+
+    async def fake_isolate(deps: WorkerDeps, worker_id: UUID, shutdown: asyncio.Event) -> None:
+        isolate_calls.append((deps, worker_id, shutdown))
+        shutdown.set()
+
+    import taskq.worker.heartbeat as hb_mod
+
+    hb_mod.isolate_self = fake_isolate  # type: ignore[method-assign] # Why: restored by _restore_heartbeat_module_globals autouse fixture.
+
+    pool = FakePool(fail_execute_with=asyncpg.PostgresSyntaxError("syntax error at or near"))
+    deps = _make_deps(heartbeat_pool=pool, max_heartbeat_failures=3)
+    worker_id = new_uuid()
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(heartbeat_loop(deps, worker_id, shutdown))
+    await _wait_for_heartbeat_failures(deps, exactly=4)
+    # The loop exits on the isolate decision, exactly as the transient arm
+    # exits: a worker that has isolated does not keep ticking.
+    await asyncio.wait_for(task, timeout=5.0)
+    assert deps.heartbeat_failures == 4
+    assert len(isolate_calls) == 1
+    assert isolate_calls[0][1] == worker_id
+    assert isolate_calls[0][2] is shutdown
+
+    events = [e["event"] for e in structlog_capture]
+    assert "heartbeat-tick-unexpected-error" in events, (
+        "an error outside TRANSIENT_PG_ERRORS must ride the unexpected arm: "
+        "that arm spends the isolate budget, so an out-of-set failure "
+        "isolates the worker within max_heartbeat_failures + 1 ticks "
+        "instead of ticking forever on a green /ready"
+    )
 
 
 # ── Soft warning at half max_heartbeat_failures ───────────────────
