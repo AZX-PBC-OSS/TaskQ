@@ -449,9 +449,15 @@ Coverage caveat: the feed carries Sweep 1 reclaims only.  `isolate_self`
 (worker heartbeat loss) performs the same `running → pending` / `running →
 crashed` transitions but deliberately writes no `job_events` row (a graceful
 self-isolation is not a crash-reclaim), so heartbeat-loss reclaims are outside
-`poll_reclaim_events` / `watch_reclaims` coverage.  They are discoverable only
-by querying `jobs` (`status='crashed'`, `error_class='HeartbeatLost'`),
-`job_attempts`, or the admin views; see the isolate asymmetries under
+`poll_reclaim_events` / `watch_reclaims` coverage.  They are discoverable
+from `job_attempts` (`error_class='HeartbeatLost'`): the isolate path
+writes an attempt row under that class whichever arm a job lands on.  A
+`jobs`-table query (`status='crashed'` with `error_class='HeartbeatLost'`)
+catches the terminal arm only -- a heartbeat-lost job with retry budget
+left re-pends to `status='pending'` and keeps whatever `error_class` the
+row had before -- so `job_attempts` is the complete source.  The admin
+UI's Jobs page (`GET /admin/jobs`) reads the same tables; see the isolate
+asymmetries under
 [Crash-reclaim interaction](#crash-reclaim-interaction).
 
 A `running → pending` reclaim (crash or heartbeat) reschedules through the
@@ -568,25 +574,52 @@ once per event stalls above zero the moment a worker loses heartbeat
 while the feed, and the counter, look healthy:
 
 ```python
-async def track_completions(tq: TaskQ) -> None:
+async def track_completions(tq: TaskQ, job_ids: list[JobId]) -> None:
     cursor = await load_reclaim_cursor()  # your own durable store
-    while True:
+    wake = asyncio.Event()
+
+    async def drain_feed() -> None:
+        nonlocal cursor
+        # watch_reclaims is an infinite generator: it ends only by
+        # cancellation (break out of the async for, or cancel the
+        # task), so this task runs until the tracker finishes.
         async for evt in tq.watch_reclaims(after_id=cursor):
             cursor = evt.event_id
             await save_reclaim_cursor(cursor)  # persist AFTER processing;
             # a crash before this re-delivers the event (at-least-once;
             # dedupe on event_id if your recount isn't idempotent)
-        # Recount, don't decrement: heartbeat-loss reclaims (isolate_self)
-        # never appear on this feed, so per-event counting can never reach
-        # zero when a worker's heartbeat dies mid-fan-out.
-        if await count_unfinished(tq, job_ids) == 0:  # your own query over
-            await fire_completion_callback()  # jobs / the admin views
-            return
+            wake.set()  # a reclaim landed; recount now
+
+    feed = asyncio.create_task(drain_feed())
+    try:
+        while True:
+            # Recount, don't decrement: heartbeat-loss reclaims
+            # (isolate_self) never appear on this feed, so per-event
+            # counting can never reach zero when a worker's heartbeat
+            # dies mid-fan-out.  Query job_attempts
+            # (error_class='HeartbeatLost') or the jobs table.
+            if await count_unfinished(tq, job_ids) == 0:  # your own query
+                await fire_completion_callback()
+                return
+            # The feed is a wake optimisation, not the ledger: normal-
+            # path terminal writes (success, failure, cooperative
+            # cancel) land no job_events row, so a fan-out that never
+            # crashes delivers no event and only this cadence fires
+            # the callback.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(wake.wait(), RECOUNT_INTERVAL)
+            wake.clear()
+    finally:
+        feed.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await feed
 ```
 
 Terminal states reached on the normal path (success, failure,
 cooperative cancel) need no feed at all: the recount sees them as soon
-as each job's own terminal write commits. `watch_reclaims` exists to
+as each job's own terminal write commits, which is why the loop recounts
+on a fixed cadence (`RECOUNT_INTERVAL`) and treats a reclaim event only
+as an early wake.  `watch_reclaims` exists to
 close the crash gap, where *no* application code runs, and to wake the
 tracker the moment a reclaim lands instead of leaving it to a fixed
 polling cadence. The producer must only prune
