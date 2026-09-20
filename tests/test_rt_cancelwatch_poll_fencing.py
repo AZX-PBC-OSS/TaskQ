@@ -82,6 +82,7 @@ def _make_ctx(job_id: JobId, worker_id: UUID) -> JobContext[BaseModel]:
         actor="test_actor",
         queue="default",
         attempt=1,
+        claim_epoch=0,
         worker_id=worker_id,
         payload=_StubPayload(),
         jobs=SubJobEnqueuer(loop_scope_resolved=None, worker_pool=None, backend=None),
@@ -204,7 +205,7 @@ async def test_stale_cancel_request_on_terminal_row_is_inert(
             # The owner task completed between polls: the real terminal
             # write lands while the cancel request sits unobserved.
             assert await _mark_succeeded_on_conn(
-                conn, render(schema), job_id, worker_id, attempt=1
+                conn, render(schema), job_id, worker_id, attempt=1, claim_epoch=1
             ), "fixture broken: the owner's terminal write must apply"
             stale_flag = await conn.fetchval(
                 f'SELECT cancel_requested_at FROM "{schema}".jobs WHERE id = $1', job_id
@@ -323,7 +324,7 @@ async def test_escalation_then_terminal_write_no_reissue_storm(
             assert await _escalation_events(conn, schema, job_id) == 1
             # The owner's terminal write lands after the escalation.
             assert await _mark_succeeded_on_conn(
-                conn, render(schema), job_id, worker_id, attempt=1
+                conn, render(schema), job_id, worker_id, attempt=1, claim_epoch=1
             ), "fixture broken: the owner's terminal write must still apply"
 
         # Age past the cleanup grace so every later tick's phase-3 arm fires

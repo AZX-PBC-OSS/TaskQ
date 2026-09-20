@@ -66,7 +66,11 @@ async def _denied_then_interrupted(side: DiffSide) -> None:
     side.record(
         "release",
         await side.backend.mark_interrupted(
-            jid, await side.worker("w2"), attempt=row.attempt, hold=timedelta(0)
+            jid,
+            await side.worker("w2"),
+            attempt=row.attempt,
+            claim_epoch=row.claim_epoch,
+            hold=timedelta(0),
         ),
     )
 

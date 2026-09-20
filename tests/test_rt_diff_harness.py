@@ -622,6 +622,13 @@ class DiffSide:
         row = await self.backend.get(self._jobs_by_token[token])
         return None if row is None else row.attempt
 
+    async def _claim_epoch_of(self, token: str) -> int | None:
+        """The row's current claim epoch - the terminal writes' second fence
+        bind, threaded beside ``attempt`` exactly as the worker threads it
+        (the claim-epoch fence, 01.00.18_02)."""
+        row = await self.backend.get(self._jobs_by_token[token])
+        return None if row is None else row.claim_epoch
+
     async def mark_succeeded(
         self,
         token: str,
@@ -638,6 +645,7 @@ class DiffSide:
             if fallback_result_ttl_s is None
             else timedelta(seconds=fallback_result_ttl_s),
             attempt=await self._attempt_epoch_of(token),
+            claim_epoch=await self._claim_epoch_of(token),
         )
 
     async def mark_failed_or_retry(
@@ -655,6 +663,7 @@ class DiffSide:
             ErrorInfo(error_class=error_class, error_message=error_message, error_traceback=None),
             None if retry_delay_s is None else timedelta(seconds=retry_delay_s),
             attempt=await self._attempt_epoch_of(token),
+            claim_epoch=await self._claim_epoch_of(token),
         )
 
     async def mark_cancelled(self, token: str, worker_token: str) -> bool:
@@ -662,6 +671,7 @@ class DiffSide:
             self._jobs_by_token[token],
             await self.worker(worker_token),
             attempt=await self._attempt_epoch_of(token),
+            claim_epoch=await self._claim_epoch_of(token),
         )
 
     async def mark_snoozed(
@@ -682,6 +692,7 @@ class DiffSide:
             outcome=outcome,
             attempt=await self._attempt_epoch_of(token),
             denial_reason=denial_reason,
+            claim_epoch=await self._claim_epoch_of(token),
         )
 
     async def mark_retry_after(
@@ -698,6 +709,7 @@ class DiffSide:
             timedelta(seconds=delay_s),
             consume_budget=consume_budget,
             attempt=await self._attempt_epoch_of(token),
+            claim_epoch=await self._claim_epoch_of(token),
         )
 
     async def retry_job(self, token: str) -> bool:
@@ -826,6 +838,7 @@ class DiffSide:
             "snooze_count": row.snooze_count,
             "rate_limit_blocked_count": row.rate_limit_blocked_count,
             "interrupt_count": row.interrupt_count,
+            "claim_epoch": row.claim_epoch,
             "retry_base": _seconds(row.retry_base),
             "retry_cap": _seconds(row.retry_cap),
             "retry_backoff": row.retry_backoff,
@@ -1148,6 +1161,7 @@ async def test_job_observable_projects_every_jobrow_field() -> None:
         retry_backoff="linear",
         retry_jitter=0.5,
         interrupt_count=4,
+        claim_epoch=7,
         assignment_routed=True,
     )
     memory._jobs[JobId(planted.id)] = planted  # pyright: ignore[reportPrivateUsage]  # Why: test-only private seeding, the established same-module pattern (DiffSide.plant).
@@ -1169,4 +1183,5 @@ async def test_job_observable_projects_every_jobrow_field() -> None:
     assert obs["retry_backoff"] == "linear"
     assert obs["retry_jitter"] == 0.5
     assert obs["interrupt_count"] == 4
+    assert obs["claim_epoch"] == 7
     assert obs["assignment_routed"] is True

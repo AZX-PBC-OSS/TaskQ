@@ -111,6 +111,7 @@ class _FakeBackend(FakeBackend):
         *,
         result_bytes: object = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         self.mark_succeeded_calls.append(result)
         return True
@@ -127,6 +128,7 @@ class _FakeBackend(FakeBackend):
         *,
         result_bytes: object = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         self.mark_succeeded_with_conn_calls.append(result)
         return True
@@ -141,6 +143,7 @@ class _FakeBackend(FakeBackend):
         progress_state: object = None,
         *,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> JobRow:
         self.mark_failed_or_retry_calls.append(error_info)
         return make_job_row()
@@ -153,6 +156,7 @@ class _FakeBackend(FakeBackend):
         progress_state: object = None,
         *,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         self.mark_cancelled_calls.append(job_id)
         return True
@@ -168,6 +172,7 @@ class _FakeBackend(FakeBackend):
         progress_state: object = None,
         outcome: str = "snoozed",
         attempt: int | None = None,
+        claim_epoch: int | None = None,
         denial_reason: str = "capacity",
     ) -> Literal["scheduled", "failed", "noop"]:
         self.mark_snoozed_calls.append(job_id)
@@ -183,6 +188,7 @@ class _FakeBackend(FakeBackend):
         progress_seq: int = 0,
         progress_state: object = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> Literal["scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"]:
         self.mark_retry_after_calls.append(job_id)
         return "scheduled"

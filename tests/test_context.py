@@ -45,6 +45,7 @@ def _make_context(**overrides: object) -> JobContext[BaseModel]:
         "actor": "test_actor",
         "queue": "default",
         "attempt": 1,
+        "claim_epoch": 0,
         "worker_id": new_uuid(),
         "payload": _Payload(),
         "jobs": _make_enqueuer(),
@@ -93,6 +94,7 @@ def test_jobs_field_is_required() -> None:
             actor="test_actor",
             queue="default",
             attempt=1,
+            claim_epoch=0,
             worker_id=new_uuid(),
             payload=_Payload(),
             log=bind_job_context(

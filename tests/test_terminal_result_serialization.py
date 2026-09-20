@@ -264,7 +264,9 @@ async def test_in_memory_result_bytes_round_trip_stores_decoded_result_and_exact
     payload = {"value": 42, "nested": {"a": [1, 2, 3]}}
     data = _json_dumps(payload)
 
-    ok = await backend.mark_succeeded(job_id, worker_id, result_bytes=data, attempt=1)
+    ok = await backend.mark_succeeded(
+        job_id, worker_id, result_bytes=data, attempt=1, claim_epoch=1
+    )
 
     assert ok is True
     row = await backend.get(job_id)
@@ -327,7 +329,12 @@ async def test_in_memory_progress_state_with_nul_raises_value_error() -> None:
 
     with pytest.raises(ValueError, match="NUL"):
         await backend.mark_succeeded(
-            job_id, worker_id, {"done": True}, progress_state={"detail": "bad\x00value"}, attempt=1
+            job_id,
+            worker_id,
+            {"done": True},
+            progress_state={"detail": "bad\x00value"},
+            attempt=1,
+            claim_epoch=1,
         )
 
     row = await backend.get(job_id)
@@ -356,7 +363,9 @@ async def test_in_memory_result_bytes_exactly_at_cap_is_stored() -> None:
     data = _json_dumps({"blob": "x" * 53})
     assert len(data) == 64
 
-    ok = await backend.mark_succeeded(job_id, worker_id, result_bytes=data, attempt=1)
+    ok = await backend.mark_succeeded(
+        job_id, worker_id, result_bytes=data, attempt=1, claim_epoch=1
+    )
 
     assert ok is True
     row = await backend.get(job_id)
@@ -412,7 +421,9 @@ async def test_in_memory_non_object_valid_json_result_reads_back_like_pg() -> No
     backend = InMemoryBackend(clock=FakeClock(_START))
     job_id, worker_id = await _in_memory_running_job(backend)
 
-    ok = await backend.mark_succeeded(job_id, worker_id, result_bytes=b"[1, 2]", attempt=1)
+    ok = await backend.mark_succeeded(
+        job_id, worker_id, result_bytes=b"[1, 2]", attempt=1, claim_epoch=1
+    )
 
     assert ok is True
     row = await backend.get(job_id)
@@ -501,7 +512,7 @@ async def test_in_memory_dict_form_result_normalizes_to_pg_observable_state(
     backend = InMemoryBackend(clock=FakeClock(_START))
     job_id, worker_id = await _in_memory_running_job(backend)
 
-    ok = await backend.mark_succeeded(job_id, worker_id, dict_result, attempt=1)
+    ok = await backend.mark_succeeded(job_id, worker_id, dict_result, attempt=1, claim_epoch=1)
     assert ok is True
 
     row = await backend.get(job_id)
@@ -530,7 +541,9 @@ class TestResultBytesAgainstPostgres:
 
         payload: dict[str, object] = {"ok": True, "nested": {"a": [1, 2, 3]}}
         data = _json_dumps(payload)
-        ok = await backend.mark_succeeded(job_id, worker_id, result_bytes=data, attempt=1)
+        ok = await backend.mark_succeeded(
+            job_id, worker_id, result_bytes=data, attempt=1, claim_epoch=1
+        )
         assert ok is True
 
         async with deps.worker_pool.acquire() as conn:
@@ -557,11 +570,14 @@ class TestResultBytesAgainstPostgres:
 
         assert (
             await backend.mark_succeeded(
-                bytes_job, bytes_worker, result_bytes=_json_dumps(payload), attempt=1
+                bytes_job, bytes_worker, result_bytes=_json_dumps(payload), attempt=1, claim_epoch=1
             )
             is True
         )
-        assert await backend.mark_succeeded(plain_job, plain_worker, payload, attempt=1) is True
+        assert (
+            await backend.mark_succeeded(plain_job, plain_worker, payload, attempt=1, claim_epoch=1)
+            is True
+        )
 
         async with deps.worker_pool.acquire() as conn:
             rows = await conn.fetch(
@@ -644,7 +660,9 @@ class TestResultBytesAgainstPostgres:
         async with deps.worker_pool.acquire() as conn:
             worker_id, job_id = await setup_running_job(conn, schema)
 
-        ok = await backend.mark_succeeded(job_id, worker_id, result_bytes=b"[1, 2]", attempt=1)
+        ok = await backend.mark_succeeded(
+            job_id, worker_id, result_bytes=b"[1, 2]", attempt=1, claim_epoch=1
+        )
         assert ok is True
 
         row = await backend.get(job_id)
@@ -668,7 +686,7 @@ class TestResultBytesAgainstPostgres:
 
         async with deps.worker_pool.acquire() as conn:
             worker_id, job_id = await setup_running_job(conn, schema)
-        await backend.mark_succeeded(job_id, worker_id, {"done": True}, attempt=1)
+        await backend.mark_succeeded(job_id, worker_id, {"done": True}, attempt=1, claim_epoch=1)
 
         with pytest.raises(ValueError):
             await backend.mark_succeeded(job_id, worker_id, result_bytes=b"not json")
@@ -692,11 +710,15 @@ class TestResultBytesAgainstPostgres:
 
         uuid_value = UUID("12345678-1234-5678-1234-567812345678")
         assert (
-            await backend.mark_succeeded(uuid_job, uuid_worker, {"v": uuid_value}, attempt=1)
+            await backend.mark_succeeded(
+                uuid_job, uuid_worker, {"v": uuid_value}, attempt=1, claim_epoch=1
+            )
             is True
         )
         assert (
-            await backend.mark_succeeded(nan_job, nan_worker, {"v": float("nan")}, attempt=1)
+            await backend.mark_succeeded(
+                nan_job, nan_worker, {"v": float("nan")}, attempt=1, claim_epoch=1
+            )
             is True
         )
 

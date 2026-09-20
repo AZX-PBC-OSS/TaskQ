@@ -350,7 +350,9 @@ async def _dispatch_to_running(
     """Transition a job from pending/scheduled to running via direct SQL.
 
     Simulates what dispatch_batch does: sets status, locked_by_worker,
-    lock_expires_at, started_at, last_heartbeat_at, and increments attempt.
+    lock_expires_at, started_at, last_heartbeat_at, and increments attempt
+    and claim_epoch (the claim advances both; the terminal write then
+    fences on the epoch this simulated claim stamped).
     """
     async with pool.acquire() as conn:
         await conn.execute(
@@ -360,7 +362,8 @@ async def _dispatch_to_running(
             "lock_expires_at = now() + interval '60 seconds', "
             "started_at = now(), "
             "last_heartbeat_at = now(), "
-            "attempt = attempt + 1 "
+            "attempt = attempt + 1, "
+            "claim_epoch = claim_epoch + 1 "
             "WHERE id = $2 AND status IN ('pending', 'scheduled')",
             worker_id,
             job_id,
@@ -424,6 +427,7 @@ async def test_ti1_pg_stream_terminates_on_job_completion(pg_dsn: str) -> None:
             progress_seq=0,
             progress_state=None,
             attempt=1,
+            claim_epoch=1,
         )
 
         events = await asyncio.wait_for(task, timeout=5.0)
@@ -476,6 +480,7 @@ async def test_ti2_pg_all_status_transitions_appear(pg_dsn: str) -> None:
             progress_seq=0,
             progress_state=None,
             attempt=1,
+            claim_epoch=1,
         )
 
         events = await asyncio.wait_for(task, timeout=5.0)
@@ -533,6 +538,7 @@ async def test_ti3_pg_stream_holds_no_dedicated_connection(pg_dsn: str) -> None:
             progress_seq=0,
             progress_state=None,
             attempt=1,
+            claim_epoch=1,
         )
         await asyncio.wait_for(task, timeout=5.0)
         assert events[-1].terminal is True
@@ -582,6 +588,7 @@ async def test_ti4_pg_terminal_write_observed_within_one_second(pg_dsn: str) -> 
             progress_seq=0,
             progress_state=None,
             attempt=1,
+            claim_epoch=1,
         )
         await asyncio.wait_for(task, timeout=5.0)
 
@@ -626,6 +633,7 @@ async def test_ti5_pg_poll_timeout_path_yields_terminal(pg_dsn: str) -> None:
             progress_seq=0,
             progress_state=None,
             attempt=1,
+            claim_epoch=1,
         )
 
         events = await asyncio.wait_for(task, timeout=5.0)
@@ -671,6 +679,7 @@ async def test_ti6_redis_stream_terminates_on_job_completion(pg_dsn: str, redis_
             progress_seq=0,
             progress_state=None,
             attempt=1,
+            claim_epoch=1,
         )
 
         events = await asyncio.wait_for(task, timeout=5.0)
@@ -754,6 +763,7 @@ async def test_ti7_redis_progress_events_monotonic_seq(pg_dsn: str, redis_url: s
                 progress_seq=3,
                 progress_state=None,
                 attempt=1,
+                claim_epoch=1,
             )
 
             events = await asyncio.wait_for(task, timeout=5.0)
@@ -825,6 +835,7 @@ async def test_ti8_redis_malformed_message_skipped(pg_dsn: str, redis_url: str) 
                 progress_seq=0,
                 progress_state=None,
                 attempt=1,
+                claim_epoch=1,
             )
 
             events = await asyncio.wait_for(task, timeout=5.0)

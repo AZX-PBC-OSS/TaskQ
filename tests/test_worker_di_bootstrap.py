@@ -102,6 +102,7 @@ def _backend_methods_stub() -> Backend:
             *,
             result_bytes: object = None,
             attempt: int | None = None,
+            claim_epoch: int | None = None,
         ) -> bool:
             return True
 
@@ -115,6 +116,7 @@ def _backend_methods_stub() -> Backend:
             *,
             result_bytes: object = None,
             attempt: int | None = None,
+            claim_epoch: int | None = None,
         ) -> bool:
             return True
 
@@ -124,6 +126,7 @@ def _backend_methods_stub() -> Backend:
             worker_id: object,
             *,
             attempt: int | None = None,
+            claim_epoch: int | None = None,
         ) -> bool:
             return True
 

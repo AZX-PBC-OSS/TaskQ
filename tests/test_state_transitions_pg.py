@@ -92,7 +92,7 @@ class TestFullLifecycle:
         assert dispatched[0].attempt == 1
 
         result = await backend.mark_snoozed(
-            job_id, worker_id, delay=timedelta(seconds=30), attempt=1
+            job_id, worker_id, delay=timedelta(seconds=30), attempt=1, claim_epoch=1
         )
         assert result == "scheduled"
 
@@ -129,7 +129,13 @@ class TestFullLifecycle:
         # The re-dispatch re-claims the refunded increment: 0 → 1.
         assert dispatched2[0].attempt == 1
 
-        ok = await backend.mark_succeeded(job_id, worker_id, result={"ok": True}, attempt=1)
+        ok = await backend.mark_succeeded(
+            job_id,
+            worker_id,
+            result={"ok": True},
+            attempt=dispatched2[0].attempt,
+            claim_epoch=dispatched2[0].claim_epoch,
+        )
         assert ok is True
 
         async with deps.worker_pool.acquire() as conn:
@@ -192,7 +198,9 @@ class TestConcurrentTransitions:
             name="concurrent-cancel",
         )
         snooze_task = asyncio.create_task(
-            backend.mark_snoozed(job_id, worker_id, delay=timedelta(seconds=30), attempt=1),
+            backend.mark_snoozed(
+                job_id, worker_id, delay=timedelta(seconds=30), attempt=1, claim_epoch=1
+            ),
             name="concurrent-snooze",
         )
 
@@ -269,7 +277,7 @@ class TestStateTransitionEquivalence:
         )
         assert len(dispatched) == 1
         ok = await mem_backend.mark_succeeded(
-            mem_job_id, mem_worker_id, result={"ok": True}, attempt=1
+            mem_job_id, mem_worker_id, result={"ok": True}, attempt=1, claim_epoch=1
         )
         assert ok is True
 
@@ -288,7 +296,7 @@ class TestStateTransitionEquivalence:
         )
         assert len(dispatched) == 1
         ok = await pg_backend.mark_succeeded(
-            pg_job_id, pg_worker_id, result={"ok": True}, attempt=1
+            pg_job_id, pg_worker_id, result={"ok": True}, attempt=1, claim_epoch=1
         )
         assert ok is True
 
@@ -415,7 +423,7 @@ class TestPollingLifecycle:
         assert len(dispatched) == 1
 
         result = await backend.mark_snoozed(
-            job_id, worker_id, delay=timedelta(seconds=30), attempt=1
+            job_id, worker_id, delay=timedelta(seconds=30), attempt=1, claim_epoch=1
         )
         assert result == "scheduled"
 
@@ -439,7 +447,13 @@ class TestPollingLifecycle:
         )
         assert len(dispatched2) == 1
 
-        ok = await backend.mark_succeeded(job_id, worker_id, result={"ok": True}, attempt=1)
+        ok = await backend.mark_succeeded(
+            job_id,
+            worker_id,
+            result={"ok": True},
+            attempt=dispatched2[0].attempt,
+            claim_epoch=dispatched2[0].claim_epoch,
+        )
         assert ok is True
 
         expected_transitions = [

@@ -148,7 +148,7 @@ async def test_mark_succeeded_does_not_store_caller_result_by_reference() -> Non
     assert len(claimed) == 1
 
     result: dict[str, object] = {"value": 1}
-    await backend.mark_succeeded(row.id, worker_id, result, attempt=1)
+    await backend.mark_succeeded(row.id, worker_id, result, attempt=1, claim_epoch=1)
     result["injected"] = True
 
     fresh = await backend.get(row.id)
@@ -167,7 +167,9 @@ async def test_list_result_from_result_bytes_does_not_alias_storage() -> None:
     worker_id = new_uuid()
     claimed = await backend.dispatch_batch(worker_id, ["default"], 10, timedelta(seconds=60))
     assert len(claimed) == 1
-    await backend.mark_succeeded(row.id, worker_id, result_bytes=b"[1, 2]", attempt=1)
+    await backend.mark_succeeded(
+        row.id, worker_id, result_bytes=b"[1, 2]", attempt=1, claim_epoch=1
+    )
 
     first = await backend.get(row.id)
     assert first is not None
@@ -191,7 +193,7 @@ async def test_get_archived_row_does_not_alias_storage() -> None:
     worker_id = new_uuid()
     claimed = await backend.dispatch_batch(worker_id, ["default"], 10, timedelta(seconds=60))
     assert len(claimed) == 1
-    await backend.mark_succeeded(row.id, worker_id, {"value": 1}, attempt=1)
+    await backend.mark_succeeded(row.id, worker_id, {"value": 1}, attempt=1, claim_epoch=1)
 
     clock.advance(timedelta(days=1))
     archive_terminal_jobs(
@@ -216,7 +218,7 @@ async def test_get_events_rows_do_not_alias_storage() -> None:
     worker_id = new_uuid()
     claimed = await backend.dispatch_batch(worker_id, ["default"], 10, timedelta(seconds=60))
     assert len(claimed) == 1
-    await backend.mark_succeeded(row.id, worker_id, {"value": 1}, attempt=1)
+    await backend.mark_succeeded(row.id, worker_id, {"value": 1}, attempt=1, claim_epoch=1)
 
     events = await backend.get_events(row.id)
     assert events, "expected at least one state-change event"
@@ -263,7 +265,7 @@ async def test_get_attempts_rows_do_not_alias_storage() -> None:
     worker_id = new_uuid()
     claimed = await backend.dispatch_batch(worker_id, ["default"], 10, timedelta(seconds=60))
     assert len(claimed) == 1
-    await backend.mark_succeeded(row.id, worker_id, {"value": 1}, attempt=1)
+    await backend.mark_succeeded(row.id, worker_id, {"value": 1}, attempt=1, claim_epoch=1)
 
     attempts = await backend.get_attempts(row.id)
     assert attempts, "expected the success attempt to be recorded"
@@ -320,6 +322,7 @@ async def test_mark_failed_or_retry_returned_row_does_not_alias_storage() -> Non
         ErrorInfo(error_class="TestError", error_message="boom", error_traceback=None),
         None,
         attempt=1,
+        claim_epoch=1,
     )
     returned.payload["injected"] = True
 

@@ -356,6 +356,7 @@ async def test_the_transactional_timeout_arm_parks_on_the_tracked_thread_too() -
         actor=job.actor,
         queue=job.queue,
         attempt=job.attempt,
+        claim_epoch=job.claim_epoch,
         worker_id=_WORKER_ID,
         payload=EmptyPayload(),
         jobs=enqueuer,

@@ -64,6 +64,7 @@ def _make_job_ctx() -> JobContext[_Payload]:
         actor="test_actor",
         queue="default",
         attempt=1,
+        claim_epoch=0,
         worker_id=new_uuid(),
         payload=_Payload(),
         jobs=SubJobEnqueuer(

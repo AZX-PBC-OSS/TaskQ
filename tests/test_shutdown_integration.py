@@ -127,6 +127,10 @@ def _fake_active_job(
         actor="test_actor",
         queue="default",
         attempt=1,
+        # The context's epoch is the claim's own stamp: a claimed row at
+        # attempt 1 carries epoch 1 (the claim advances both), the shape
+        # every shutdown release here reproduces.
+        claim_epoch=1,
         worker_id=new_uuid(),
         payload=PassthroughPayload(),
         jobs=SubJobEnqueuer(

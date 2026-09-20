@@ -115,7 +115,9 @@ async def test_snooze_deterministic_outcome_and_attempt_round_trip(
     # attempt= the row's current epoch - the worker presents job.attempt
     # from its in-hand row (worker/_consumer.py); the fence refuses a
     # caller that cannot prove which attempt it terminates.
-    result = await backend.mark_snoozed(job_id, wid, delay, attempt=row.attempt)
+    result = await backend.mark_snoozed(
+        job_id, wid, delay, attempt=row.attempt, claim_epoch=row.claim_epoch
+    )
 
     new_scheduled_at = _START + delay
     deadline_exceeded = schedule_to_close is not None and new_scheduled_at > schedule_to_close

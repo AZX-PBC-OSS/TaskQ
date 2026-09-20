@@ -807,6 +807,7 @@ class TestReservationCancelCronMetrics:
                 actor="_integration_test_actor",
                 queue="default",
                 attempt=1,
+                claim_epoch=0,
                 worker_id=worker_id,
                 payload=_Payload(),
                 jobs=SubJobEnqueuer(

@@ -81,6 +81,7 @@ def _default_record() -> dict[str, Any]:
         "retry_backoff": "exponential",
         "retry_jitter": 0.2,
         "assignment_routed": False,
+        "claim_epoch": 0,
     }
 
 

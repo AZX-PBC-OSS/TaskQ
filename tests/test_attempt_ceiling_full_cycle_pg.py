@@ -138,6 +138,7 @@ async def test_clamped_transient_job_terminalises_failed_through_the_budget_arm(
         timedelta(seconds=30),
         consume_budget=True,
         attempt=_CEILING,
+        claim_epoch=1,
     )
     assert outcome == "failed:MaxAttemptsExceeded", (
         "a transient row at the ceiling is already past its max_attempts, so "
@@ -222,6 +223,7 @@ async def test_clamped_indefinite_job_survives_two_full_claim_fail_cycles(
             ),
             retry_delay=timedelta(seconds=5),
             attempt=_CEILING,
+            claim_epoch=claimed[job_id].claim_epoch,
         )
         assert retried_row.status == "scheduled", (
             "an indefinite row with no schedule_to_close retries on its "

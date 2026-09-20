@@ -150,6 +150,7 @@ def _make_ctx() -> JobContext[BaseModel]:
         actor="test",
         queue="default",
         attempt=1,
+        claim_epoch=0,
         worker_id=new_uuid(),
         payload=_StubPayload(),
         jobs=SubJobEnqueuer(loop_scope_resolved=None, worker_pool=None, backend=backend),

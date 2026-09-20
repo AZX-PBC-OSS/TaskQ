@@ -103,7 +103,9 @@ async def test_executed_job_leaves_exactly_its_terminal_event(
         worker_id, ["default"], limit=1, lock_lease=timedelta(seconds=deps.settings.lock_lease)
     )
     assert len(rows) == 1
-    ok = await backend.mark_succeeded(job_id, worker_id, result={"ok": True}, attempt=1)
+    ok = await backend.mark_succeeded(
+        job_id, worker_id, result={"ok": True}, attempt=1, claim_epoch=1
+    )
     assert ok is True
 
     async with deps.worker_pool.acquire() as conn:

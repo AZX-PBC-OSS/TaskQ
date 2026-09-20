@@ -94,6 +94,7 @@ async def test_a_denied_job_spends_no_retry_budget(pg_dsn: str, outcome: str) ->
             timedelta(seconds=30),
             outcome=outcome,  # pyright: ignore[reportArgumentType]  # Why: the parametrize ids are exactly the SnoozeOutcome denial literals.
             attempt=claimed[0].attempt,
+            claim_epoch=claimed[0].claim_epoch,
         )
         assert result == "scheduled", (
             f"a {outcome} returned {result!r} instead of rescheduling the job. A job "
@@ -146,6 +147,7 @@ async def test_repeated_denials_never_end_a_job(pg_dsn: str) -> None:
                 timedelta(seconds=30),
                 outcome="rate_limit_denied",
                 attempt=claimed[0].attempt,
+                claim_epoch=claimed[0].claim_epoch,
             )
             assert result == "scheduled", (
                 f"denial round {round_index} returned {result!r}. After "
@@ -202,6 +204,7 @@ async def test_a_denial_writes_no_failed_attempt_history(pg_dsn: str) -> None:
             timedelta(seconds=30),
             outcome="rate_limit_denied",
             attempt=claimed[0].attempt,
+            claim_epoch=claimed[0].claim_epoch,
         )
 
         written = await _attempt_rows(fleet, job_id)
@@ -241,6 +244,7 @@ async def test_capacity_denied_work_is_picked_up_by_a_different_pod(
             timedelta(seconds=30),
             outcome="reservation_denied",
             attempt=claimed[0].attempt,
+            claim_epoch=claimed[0].claim_epoch,
         )
 
         # The pod that was refused capacity is replaced, as a deploy

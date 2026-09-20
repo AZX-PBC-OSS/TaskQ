@@ -89,6 +89,7 @@ def _make_fake_active_job(
             actor="test_actor",
             queue="default",
             attempt=1,
+            claim_epoch=0,
             worker_id=new_uuid(),
             payload=PassthroughPayload(),
             jobs=SubJobEnqueuer(

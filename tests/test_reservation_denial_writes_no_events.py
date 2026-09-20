@@ -114,6 +114,7 @@ async def test_reservation_denial_writes_no_event_or_attempt_rows(
         _DELAY,
         outcome="reservation_denied",
         attempt=1,
+        claim_epoch=1,
     )
     assert outcome == "scheduled"
 
@@ -169,6 +170,7 @@ async def test_retry_after_without_budget_writes_no_event_or_attempt_rows(
         _DELAY,
         consume_budget=False,
         attempt=1,
+        claim_epoch=1,
     )
     assert outcome == "scheduled"
 
@@ -272,6 +274,7 @@ async def test_denial_loop_never_terminalises_and_never_spends_budget(
             # attempt = attempt + 1, so the write carries the dispatched
             # row's current epoch (rows[0].attempt).
             attempt=rows[0].attempt,
+            claim_epoch=rows[0].claim_epoch,
         )
         async with clean_jobs_app.deps.worker_pool.acquire() as conn:  # type: ignore[union-attr]  # Why: as above.
             row = await conn.fetchrow(
@@ -362,6 +365,7 @@ async def test_denial_at_exhausted_budget_reschedules_rather_than_failing(
         _DELAY,
         outcome="reservation_denied",
         attempt=1,
+        claim_epoch=1,
     )
     assert outcome == "scheduled", (
         f"a reservation denial on a budget-exhausted job returned {outcome!r}. "
@@ -499,6 +503,7 @@ async def test_denied_job_runs_to_success_once_capacity_frees(
             timedelta(0),
             outcome="reservation_denied",
             attempt=rows[0].attempt,
+            claim_epoch=rows[0].claim_epoch,
         )
         assert denial_outcome == "scheduled", (
             f"cycle {cycle}: the denial returned {denial_outcome!r}. Denials "
@@ -520,6 +525,7 @@ async def test_denied_job_runs_to_success_once_capacity_frees(
         worker_id,
         {"ok": True},
         attempt=rows[0].attempt,
+        claim_epoch=rows[0].claim_epoch,
     )
     assert succeeded, (
         "the terminal success write matched no row after a denial streak. The "
@@ -613,6 +619,7 @@ async def test_denied_job_past_its_close_deadline_fails_visibly_not_silently(
                 timedelta(0),
                 outcome="reservation_denied",
                 attempt=rows[0].attempt,
+                claim_epoch=rows[0].claim_epoch,
             )
             == "scheduled"
         )

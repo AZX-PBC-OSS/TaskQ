@@ -61,6 +61,7 @@ class _DeadWriteBackend(InMemoryBackend):
         progress_state: dict[str, object] | None = None,
         *,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> JobRow:
         raise OSError("connection reset by peer")
 
@@ -75,6 +76,7 @@ class _DeadWriteBackend(InMemoryBackend):
         *,
         result_bytes: bytes | None = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         raise OSError("connection reset by peer")
 
@@ -183,6 +185,7 @@ class _DeadTxWriteBackend(_DeadWriteBackend):
         *,
         result_bytes: bytes | None = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         raise OSError("connection reset by peer")
 
@@ -678,6 +681,7 @@ async def test_failed_actor_not_found_release_disowns_the_job() -> None:
             *,
             metadata_update: dict[str, object] | None = None,
             attempt: int | None = None,
+            claim_epoch: int | None = None,
         ) -> str:
             shutdown_event.set()
             raise OSError("connection reset by peer")

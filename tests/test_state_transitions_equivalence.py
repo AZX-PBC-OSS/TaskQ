@@ -150,11 +150,13 @@ async def test_mark_failed_or_retry_already_terminal_equivalence(
         pg_worker_id, ["default"], limit=1, lock_lease=_LOCK_LEASE
     )
     assert len(dispatched) == 1
-    await pg_backend.mark_succeeded(pg_row.id, pg_worker_id, result={"ok": True}, attempt=1)
+    await pg_backend.mark_succeeded(
+        pg_row.id, pg_worker_id, result={"ok": True}, attempt=1, claim_epoch=1
+    )
 
     with pytest.raises(WorkerOwnershipMismatch):
         await pg_backend.mark_failed_or_retry(
-            pg_row.id, pg_worker_id, error_info, retry_delay=None, attempt=1
+            pg_row.id, pg_worker_id, error_info, retry_delay=None, attempt=1, claim_epoch=1
         )
 
     mem_worker_id = mem_backend._worker_id  # type: ignore[reportPrivateUsage] # Why: test-only private access
@@ -173,11 +175,13 @@ async def test_mark_failed_or_retry_already_terminal_equivalence(
     )
     assert len(mem_dispatched) == 1
     mem_job_id = mem_dispatched[0].id
-    await mem_backend.mark_succeeded(mem_job_id, mem_worker_id, result={"ok": True}, attempt=1)
+    await mem_backend.mark_succeeded(
+        mem_job_id, mem_worker_id, result={"ok": True}, attempt=1, claim_epoch=1
+    )
 
     with pytest.raises(WorkerOwnershipMismatch):
         await mem_backend.mark_failed_or_retry(
-            mem_job_id, mem_worker_id, error_info, retry_delay=None, attempt=1
+            mem_job_id, mem_worker_id, error_info, retry_delay=None, attempt=1, claim_epoch=1
         )
 
 
@@ -309,7 +313,9 @@ async def _setup_job_pg(
             worker_id, ["default"], limit=1, lock_lease=_LOCK_LEASE
         )
         assert len(dispatched) == 1
-        result = await backend.mark_snoozed(row.id, worker_id, delay=timedelta(hours=1), attempt=1)
+        result = await backend.mark_snoozed(
+            row.id, worker_id, delay=timedelta(hours=1), attempt=1, claim_epoch=1
+        )
         assert result == "scheduled"
         return row.id
 
@@ -385,11 +391,13 @@ async def _perform_transition_pg(
         assert count >= 1
 
     elif (from_status, to_status) == ("running", "succeeded"):
-        ok = await backend.mark_succeeded(job_id, worker_id, result={"ok": True}, attempt=1)
+        ok = await backend.mark_succeeded(
+            job_id, worker_id, result={"ok": True}, attempt=1, claim_epoch=1
+        )
         assert ok is True
 
     elif (from_status, to_status) == ("running", "cancelled"):
-        ok = await backend.mark_cancelled(job_id, worker_id, attempt=1)
+        ok = await backend.mark_cancelled(job_id, worker_id, attempt=1, claim_epoch=1)
         assert ok is True
 
     elif (from_status, to_status) == ("running", "failed"):
@@ -399,7 +407,7 @@ async def _perform_transition_pg(
             error_traceback=None,
         )
         await backend.mark_failed_or_retry(
-            job_id, worker_id, error_info, retry_delay=None, attempt=1
+            job_id, worker_id, error_info, retry_delay=None, attempt=1, claim_epoch=1
         )
 
     elif (from_status, to_status) == ("running", "crashed"):
@@ -419,7 +427,7 @@ async def _perform_transition_pg(
 
     elif (from_status, to_status) == ("running", "scheduled"):
         result = await backend.mark_snoozed(
-            job_id, worker_id, delay=timedelta(seconds=30), attempt=1
+            job_id, worker_id, delay=timedelta(seconds=30), attempt=1, claim_epoch=1
         )
         assert result == "scheduled"
 
@@ -526,7 +534,9 @@ async def _setup_job_memory(
             worker_id, ["default"], limit=1, lock_lease=_LOCK_LEASE
         )
         assert len(dispatched) == 1
-        result = await backend.mark_snoozed(row.id, worker_id, delay=timedelta(hours=1), attempt=1)
+        result = await backend.mark_snoozed(
+            row.id, worker_id, delay=timedelta(hours=1), attempt=1, claim_epoch=1
+        )
         assert result == "scheduled"
         return row.id
 
@@ -598,11 +608,13 @@ async def _perform_transition_memory(
         assert count >= 1
 
     elif (from_status, to_status) == ("running", "succeeded"):
-        ok = await backend.mark_succeeded(job_id, worker_id, result={"ok": True}, attempt=1)
+        ok = await backend.mark_succeeded(
+            job_id, worker_id, result={"ok": True}, attempt=1, claim_epoch=1
+        )
         assert ok is True
 
     elif (from_status, to_status) == ("running", "cancelled"):
-        ok = await backend.mark_cancelled(job_id, worker_id, attempt=1)
+        ok = await backend.mark_cancelled(job_id, worker_id, attempt=1, claim_epoch=1)
         assert ok is True
 
     elif (from_status, to_status) == ("running", "failed"):
@@ -612,7 +624,7 @@ async def _perform_transition_memory(
             error_traceback=None,
         )
         await backend.mark_failed_or_retry(
-            job_id, worker_id, error_info, retry_delay=None, attempt=1
+            job_id, worker_id, error_info, retry_delay=None, attempt=1, claim_epoch=1
         )
 
     elif (from_status, to_status) == ("running", "crashed"):
@@ -633,7 +645,7 @@ async def _perform_transition_memory(
 
     elif (from_status, to_status) == ("running", "scheduled"):
         result = await backend.mark_snoozed(
-            job_id, worker_id, delay=timedelta(seconds=30), attempt=1
+            job_id, worker_id, delay=timedelta(seconds=30), attempt=1, claim_epoch=1
         )
         assert result == "scheduled"
 

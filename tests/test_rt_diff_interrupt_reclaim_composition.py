@@ -117,7 +117,11 @@ async def _interrupt_reclaim_chain(
     # back with the claim's increment standing; the attempt did start
     # executing, so it is spent.
     released = await side.backend.mark_interrupted(
-        args.id, wid, attempt=claimed_row.attempt, hold=timedelta(0)
+        args.id,
+        wid,
+        attempt=claimed_row.attempt,
+        claim_epoch=claimed_row.claim_epoch,
+        hold=timedelta(0),
     )
     assert released == "pending", (
         f"the shutdown release of a cleanly-owned row must land pending; got {released!r}"
@@ -243,7 +247,7 @@ async def test_diff_operator_cancel_between_release_and_reclaim_keeps_the_fence(
         assert row is not None
 
         released = await side.backend.mark_interrupted(
-            args.id, wid, attempt=row.attempt, hold=timedelta(0)
+            args.id, wid, attempt=row.attempt, claim_epoch=row.claim_epoch, hold=timedelta(0)
         )
         side.record("first_release", released)
 
@@ -260,7 +264,7 @@ async def test_diff_operator_cancel_between_release_and_reclaim_keeps_the_fence(
         side.record(
             "second_release",
             await side.backend.mark_interrupted(
-                args.id, wid, attempt=row2.attempt, hold=timedelta(0)
+                args.id, wid, attempt=row2.attempt, claim_epoch=row2.claim_epoch, hold=timedelta(0)
             ),
         )
 
@@ -372,7 +376,11 @@ async def test_interrupt_does_not_advance_the_reclaim_curve_with_jitter_on(
     assert claimed[0].attempt == 1
 
     released = await backend.mark_interrupted(
-        job_id, worker_id, attempt=claimed[0].attempt, hold=timedelta(0)
+        job_id,
+        worker_id,
+        attempt=claimed[0].attempt,
+        claim_epoch=claimed[0].claim_epoch,
+        hold=timedelta(0),
     )
     assert released == "pending"
 

@@ -114,7 +114,11 @@ async def test_scheduled_jobs_are_counted_in_max_pending() -> None:
 
     for row in dispatched:
         result = await backend.mark_snoozed(
-            row.id, worker_id, delay=timedelta(seconds=10), attempt=row.attempt
+            row.id,
+            worker_id,
+            delay=timedelta(seconds=10),
+            attempt=row.attempt,
+            claim_epoch=row.claim_epoch,
         )
         assert result == "scheduled"
 
@@ -221,7 +225,9 @@ async def test_count_after_job_completion_frees_capacity() -> None:
     assert len(dispatched) == 2
 
     for row in dispatched:
-        ok = await backend.mark_succeeded(row.id, worker_id, result=None, attempt=row.attempt)
+        ok = await backend.mark_succeeded(
+            row.id, worker_id, result=None, attempt=row.attempt, claim_epoch=row.claim_epoch
+        )
         assert ok is True
 
     # 2 jobs succeeded (excluded from count); 3 remaining pending → count == 3.
@@ -401,7 +407,11 @@ async def test_max_pending_invariant(scenario: tuple[int, list[str]]) -> None:
             for row in backend._jobs.values():
                 if row.actor == actor and row.status == "running":
                     await backend.mark_succeeded(
-                        row.id, worker_id, result=None, attempt=row.attempt
+                        row.id,
+                        worker_id,
+                        result=None,
+                        attempt=row.attempt,
+                        claim_epoch=row.claim_epoch,
                     )
                     break
 

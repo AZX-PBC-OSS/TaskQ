@@ -627,7 +627,7 @@ class TestMarkCancelledPoolSource:
         async with deps.worker_pool.acquire() as conn:
             worker_id, job_id = await setup_running_job(conn, schema)
 
-        result = await backend.mark_cancelled(job_id, worker_id, attempt=1)
+        result = await backend.mark_cancelled(job_id, worker_id, attempt=1, claim_epoch=1)
         assert result is True
 
         async with deps.worker_pool.acquire() as conn:
@@ -636,7 +636,7 @@ class TestMarkCancelledPoolSource:
         assert row["status"] == "cancelled"
 
         # Idempotent: second call returns False
-        result2 = await backend.mark_cancelled(job_id, worker_id, attempt=1)
+        result2 = await backend.mark_cancelled(job_id, worker_id, attempt=1, claim_epoch=1)
         assert result2 is False
 
 
@@ -669,7 +669,7 @@ class TestCancelOriginAuditability:
         async with deps.worker_pool.acquire() as conn:
             worker_id, job_id = await setup_running_job(conn, schema)
 
-        result = await backend.mark_cancelled(job_id, worker_id, attempt=1)
+        result = await backend.mark_cancelled(job_id, worker_id, attempt=1, claim_epoch=1)
         assert result is True
 
         async with deps.worker_pool.acquire() as conn:
@@ -700,7 +700,7 @@ class TestCancelOriginAuditability:
             abandon_worker, abandon_job = await setup_running_job(conn, schema)
             pending_job = await create_pending_job(conn, schema)
 
-        assert await backend.mark_cancelled(coop_job, coop_worker, attempt=1) is True
+        assert await backend.mark_cancelled(coop_job, coop_worker, attempt=1, claim_epoch=1) is True
         # The abandon path is only reachable once the cooperative window
         # has elapsed and the cancel escalated to forcing.
         assert await backend.write_cancel_request(abandon_job, None) is True
@@ -768,7 +768,7 @@ class TestCancelOriginAuditability:
             worker_id, job_id = await setup_running_job(conn, schema)
 
         assert await backend.write_cancel_request(job_id, "operator stop") is True
-        assert await backend.mark_cancelled(job_id, worker_id, attempt=1) is True
+        assert await backend.mark_cancelled(job_id, worker_id, attempt=1, claim_epoch=1) is True
 
         async with deps.worker_pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -797,7 +797,7 @@ class TestCancelOriginAuditability:
 
         assert await backend.write_cancel_request(job_id, "operator stop") is True
         assert await backend.write_cancel_escalation(job_id, worker_id, 2) is True  # type: ignore[arg-type] # Why: Literal[2] not narrowed from int literal
-        assert await backend.mark_cancelled(job_id, worker_id, attempt=1) is True
+        assert await backend.mark_cancelled(job_id, worker_id, attempt=1, claim_epoch=1) is True
 
         async with deps.worker_pool.acquire() as conn:
             row = await conn.fetchrow(

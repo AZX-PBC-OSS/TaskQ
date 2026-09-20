@@ -160,7 +160,9 @@ async def test_error_message_with_lone_surrogate_must_not_strand(pg_env: _PgEnv)
         ),
     )
 
-    row = await pg_env.backend.mark_failed_or_retry(job_id, worker_id, error, None, attempt=1)
+    row = await pg_env.backend.mark_failed_or_retry(
+        job_id, worker_id, error, None, attempt=1, claim_epoch=1
+    )
     assert row.status == "failed", (
         "contract: an unencodable exception message must fail the job with the defect "
         "visible (escaped/sanitized), never strand it running"
@@ -189,7 +191,9 @@ async def test_error_message_with_nul_sanitized_lands_failed(pg_env: _PgEnv) -> 
         error_traceback=sanitize_nul_str("bad\x00trace"),
     )
 
-    row = await pg_env.backend.mark_failed_or_retry(job_id, worker_id, error, None, attempt=1)
+    row = await pg_env.backend.mark_failed_or_retry(
+        job_id, worker_id, error, None, attempt=1, claim_epoch=1
+    )
     assert row.status == "failed"
 
     async with pg_env.pool.acquire() as conn:
@@ -218,6 +222,7 @@ async def test_nan_result_stores_null_and_succeeds(pg_env: _PgEnv) -> None:
         worker_id,
         result={"ratio": float("nan"), "inf": float("inf"), "ok": True},
         attempt=1,
+        claim_epoch=1,
     )
     assert ok, "contract: a NaN-bearing result is storable (as null), not a failure"
 
@@ -330,6 +335,7 @@ async def test_progress_state_merge_last_writer_wins_on_type_change(pg_env: _PgE
         progress_seq=1,
         progress_state={"step": "one"},
         attempt=1,
+        claim_epoch=1,
     )
     assert ok
 

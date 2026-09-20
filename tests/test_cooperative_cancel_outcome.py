@@ -92,6 +92,7 @@ class _TransactionalBackend(FakeBackend):
         *,
         result_bytes: bytes | None = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         # The consumer serializes the actor's return exactly once and hands
         # the backend ``result_bytes`` (the dict form stays None on that

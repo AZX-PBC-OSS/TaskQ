@@ -225,7 +225,10 @@ class TestClockSkewResilience:
             job.id,
             worker_id,
             snooze.delay,
+            # make_job_row's row carries the claim_epoch default (0), the
+            # epoch this write must present.
             attempt=1,
+            claim_epoch=0,
         )
 
         assert tri == "scheduled", f"mark_snoozed returned {tri!r}, expected 'scheduled'"
@@ -392,10 +395,16 @@ class TestSnoozeBudgetInvariant:
 
         snooze = Snooze(timedelta(seconds=2))
 
+        # Every simulated re-dispatch below advances the claim epoch (the
+        # twin's claim bumps it); the snooze refund hands back only the
+        # attempt increment, never the epoch.
+        claimed_epoch = 0
         for i in range(10):
             # Snooze: running → scheduled, max_attempts unchanged, the
             # claim's increment refunded (1 → 0).
-            tri = await backend.mark_snoozed(job.id, worker_id, snooze.delay, attempt=1)
+            tri = await backend.mark_snoozed(
+                job.id, worker_id, snooze.delay, attempt=1, claim_epoch=claimed_epoch
+            )
             assert tri == "scheduled", f"snooze {i + 1} returned {tri!r}"
 
             row = await backend.get(job.id)
@@ -416,5 +425,7 @@ class TestSnoozeBudgetInvariant:
                 row,
                 status="running",
                 attempt=1,
+                claim_epoch=row.claim_epoch + 1,
                 locked_by_worker=worker_id,
             )
+            claimed_epoch = backend._jobs[job.id].claim_epoch

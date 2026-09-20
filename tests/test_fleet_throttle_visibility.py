@@ -91,6 +91,7 @@ async def _drive_throttled_load(fleet: Fleet) -> None:
                         timedelta(seconds=0),
                         outcome="rate_limit_denied",
                         attempt=job.attempt,
+                        claim_epoch=job.claim_epoch,
                     )
                     continue
                 admitted += 1

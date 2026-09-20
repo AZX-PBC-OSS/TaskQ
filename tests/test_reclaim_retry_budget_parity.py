@@ -131,7 +131,12 @@ async def _run_attempts_to(backend: Backend, job_id: JobId, target_attempt: int)
         if row.attempt >= target_attempt:
             return
         await backend.mark_failed_or_retry(
-            job_id, worker_id, _ERROR, timedelta(0), attempt=row.attempt
+            job_id,
+            worker_id,
+            _ERROR,
+            timedelta(0),
+            attempt=row.attempt,
+            claim_epoch=row.claim_epoch,
         )
         await _make_due(backend, job_id)
 
@@ -263,7 +268,12 @@ async def test_reclaim_leaves_the_attempt_counter_for_dispatch_to_advance(
     )
 
     written = await backend_pair.mark_failed_or_retry(
-        job_id, worker_id, _ERROR, timedelta(0), attempt=next_row.attempt
+        job_id,
+        worker_id,
+        _ERROR,
+        timedelta(0),
+        attempt=next_row.attempt,
+        claim_epoch=next_row.claim_epoch,
     )
     assert written is not None, (
         "the terminal write for the attempt following a reclaim did not land - a "

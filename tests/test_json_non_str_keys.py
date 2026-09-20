@@ -59,6 +59,7 @@ def _make_ctx(job_id: object, buffer: _ProgressBuffer) -> JobContext[BaseModel]:
         actor="a",
         queue="default",
         attempt=1,
+        claim_epoch=0,
         worker_id=new_uuid(),
         payload=None,  # type: ignore[arg-type]
         jobs=None,  # type: ignore[arg-type]
@@ -272,6 +273,7 @@ async def test_in_memory_terminal_progress_merge_stores_pg_jsonb_round_trip_valu
             "n": float("nan"),
         },
         attempt=1,
+        claim_epoch=1,
     )
     assert ok is True
 
@@ -321,6 +323,7 @@ async def test_in_memory_snooze_metadata_update_stores_pg_jsonb_round_trip_value
             "n": float("nan"),
         },
         attempt=1,
+        claim_epoch=1,
     )
     assert ok == "scheduled"
 
@@ -372,6 +375,7 @@ async def test_in_memory_snooze_metadata_update_with_nul_raises_value_error() ->
             timedelta(seconds=5),
             metadata_update={"k": "a\x00b"},
             attempt=1,
+            claim_epoch=1,
         )
 
     row = await backend.get(claimed[0].id)

@@ -245,6 +245,7 @@ async def test_denial_on_non_retryable_at_budget_reschedules_and_spends_no_budge
         _DELAY,
         outcome="reservation_denied",
         attempt=1,
+        claim_epoch=1,
     )
     assert result == "scheduled", (
         "an admission denial must reschedule the job, never terminalise it"
@@ -283,6 +284,10 @@ async def test_repeated_denials_never_exhaust_the_budget() -> None:
     cycles = 5  # far beyond the 1-attempt budget
 
     claimed_attempt = 1
+    # The refund makes attempt and epoch diverge: every cycle's snooze
+    # hands the attempt increment back, but the epoch never refunds (each
+    # new claim bumps it), so the epoch is tracked beside the attempt.
+    claimed_epoch = 1
     for _ in range(cycles):
         result = await backend.mark_snoozed(
             job_id,
@@ -290,6 +295,7 @@ async def test_repeated_denials_never_exhaust_the_budget() -> None:
             _DELAY,
             outcome="rate_limit_denied",
             attempt=claimed_attempt,
+            claim_epoch=claimed_epoch,
         )
         assert result == "scheduled", "no number of denials may terminalise a job"
         clock.advance(_DELAY + timedelta(seconds=1))
@@ -298,6 +304,7 @@ async def test_repeated_denials_never_exhaust_the_budget() -> None:
         dispatched = await backend.dispatch_batch(worker_id, ["default"], 1, timedelta(seconds=60))
         assert [r.id for r in dispatched] == [job_id]
         claimed_attempt = dispatched[0].attempt
+        claimed_epoch = dispatched[0].claim_epoch
 
     row = await backend.get(job_id)
     assert row is not None
@@ -330,6 +337,7 @@ async def test_denial_past_the_close_deadline_fails_through_the_deadline_path() 
         _DELAY,
         outcome="reservation_denied",
         attempt=1,
+        claim_epoch=1,
     )
     assert result == "failed"
 
@@ -350,7 +358,7 @@ async def test_retry_after_consume_true_on_non_retryable_at_budget_fails() -> No
     backend, job_id, worker_id = await _mem_job(max_attempts=1, retry_kind="non_retryable")
 
     result = await backend.mark_retry_after(
-        job_id, worker_id, _DELAY, consume_budget=True, attempt=1
+        job_id, worker_id, _DELAY, consume_budget=True, attempt=1, claim_epoch=1
     )
     assert result == "failed:MaxAttemptsExceeded"
 
@@ -377,6 +385,7 @@ async def test_denial_on_job_with_close_deadline_keeps_rescheduling() -> None:
         _DELAY,
         outcome="reservation_denied",
         attempt=1,
+        claim_epoch=1,
     )
     assert result == "scheduled"
 
@@ -414,6 +423,9 @@ async def test_actor_deferral_is_unbounded_and_never_spends_budget() -> None:
     cycles = 5  # far beyond the 1-attempt budget
     zero_delay = timedelta(0)
 
+    # The epoch tracks the cycles: every re-claim bumps it, the refund
+    # never hands it back (only the attempt increment is refunded).
+    claimed_epoch = 1
     for _ in range(cycles):
         result = await backend.mark_snoozed(
             job_id,
@@ -421,8 +433,10 @@ async def test_actor_deferral_is_unbounded_and_never_spends_budget() -> None:
             zero_delay,
             outcome="snoozed",
             attempt=1,
+            claim_epoch=claimed_epoch,
         )
         assert result == "scheduled"
+        claimed_epoch += 1
         # Advance past the floored deferral and promote, exactly as the
         # leader sweep does; pre-floor this is a no-op on an already-
         # pending job, post-floor it is the promotion that makes the
@@ -447,7 +461,7 @@ async def test_actor_deferral_is_unbounded_and_never_spends_budget() -> None:
 
     # The consume_budget=False arm carries the same contract.
     result = await backend.mark_retry_after(
-        job_id, worker_id, _DELAY, consume_budget=False, attempt=1
+        job_id, worker_id, _DELAY, consume_budget=False, attempt=1, claim_epoch=claimed_epoch
     )
     assert result == "scheduled"
     row = await backend.get(job_id)
@@ -476,7 +490,7 @@ async def test_zero_delay_deferrals_reschedule_at_least_min_deferral_interval_ou
 
     # Snooze: the actor-requested deferral.
     backend, job_id, worker_id = await _mem_job(max_attempts=10, retry_kind="transient")
-    result = await backend.mark_snoozed(job_id, worker_id, timedelta(0), attempt=1)
+    result = await backend.mark_snoozed(job_id, worker_id, timedelta(0), attempt=1, claim_epoch=1)
     assert result == "scheduled"
     row = await backend.get(job_id)
     assert row is not None
@@ -491,6 +505,7 @@ async def test_zero_delay_deferrals_reschedule_at_least_min_deferral_interval_ou
         timedelta(0),
         outcome="reservation_denied",
         attempt=1,
+        claim_epoch=1,
     )
     assert result == "scheduled"
     row = await backend.get(job_id)
@@ -501,7 +516,7 @@ async def test_zero_delay_deferrals_reschedule_at_least_min_deferral_interval_ou
     # RetryAfter(consume_budget=False): the arm's twin.
     backend, job_id, worker_id = await _mem_job(max_attempts=10, retry_kind="transient")
     result = await backend.mark_retry_after(
-        job_id, worker_id, timedelta(0), consume_budget=False, attempt=1
+        job_id, worker_id, timedelta(0), consume_budget=False, attempt=1, claim_epoch=1
     )
     assert result == "scheduled"
     row = await backend.get(job_id)
@@ -518,7 +533,7 @@ async def test_consuming_retry_after_keeps_its_raw_zero_delay() -> None:
     backend, job_id, worker_id = await _mem_job(max_attempts=10, retry_kind="transient")
 
     result = await backend.mark_retry_after(
-        job_id, worker_id, timedelta(0), consume_budget=True, attempt=1
+        job_id, worker_id, timedelta(0), consume_budget=True, attempt=1, claim_epoch=1
     )
     assert result == "scheduled"
 
@@ -560,6 +575,7 @@ async def test_every_admission_denial_is_counted_including_the_last_before_expir
         _DELAY,
         outcome="reservation_denied",
         attempt=1,
+        claim_epoch=1,
     )
     assert result == "scheduled"
     row = await backend.get(job_id)
@@ -579,6 +595,7 @@ async def test_every_admission_denial_is_counted_including_the_last_before_expir
         _DELAY,
         outcome="reservation_denied",
         attempt=dispatched[0].attempt,
+        claim_epoch=dispatched[0].claim_epoch,
     )
     assert result == "failed"
 
@@ -612,6 +629,7 @@ async def test_admission_denial_writes_no_event_or_attempt_rows() -> None:
         _DELAY,
         outcome="rate_limit_denied",
         attempt=1,
+        claim_epoch=1,
     )
     assert result == "scheduled"
 

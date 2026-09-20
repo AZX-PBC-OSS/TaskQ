@@ -77,6 +77,7 @@ class _TxBackend(FakeBackend):
         *,
         result_bytes: bytes | None = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         self.mark_succeeded_with_conn_calls.append((conn, job_id, worker_id, result, result_bytes))
         return await self.mark_succeeded(

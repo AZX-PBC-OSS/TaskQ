@@ -63,7 +63,9 @@ async def test_retry_job_attempt_monotonic_no_duplicate_key_on_re_run(
         )
 
         # Epoch 1: the terminal write lands the attempt row at (job, 1).
-        assert await backend.mark_failed_or_retry(job_id, worker_id, error, None, attempt=1)
+        assert await backend.mark_failed_or_retry(
+            job_id, worker_id, error, None, attempt=1, claim_epoch=1
+        )
         row = await conn.fetchrow(
             f'SELECT status, attempt, max_attempts FROM "{schema}".jobs WHERE id = $1', job_id
         )
@@ -102,7 +104,9 @@ async def test_retry_job_attempt_monotonic_no_duplicate_key_on_re_run(
         # The second terminal write lands at the fresh (job, 2): under the
         # old epoch reset this write raised UniqueViolationError on
         # job_attempts_pkey.
-        assert await backend.mark_failed_or_retry(job_id, worker_id, error, None, attempt=2)
+        assert await backend.mark_failed_or_retry(
+            job_id, worker_id, error, None, attempt=2, claim_epoch=2
+        )
         final = await conn.fetchrow(
             f'SELECT status, attempt FROM "{schema}".jobs WHERE id = $1', job_id
         )

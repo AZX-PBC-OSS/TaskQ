@@ -138,6 +138,7 @@ def _set_running(backend: InMemoryBackend, job_id: JobId, *, attempt: int = 1) -
         row,
         status="running",
         attempt=attempt,
+        claim_epoch=attempt,
         locked_by_worker=_WORKER,
         lock_expires_at=_START - timedelta(seconds=1),
         started_at=_START - timedelta(seconds=30),
@@ -376,7 +377,7 @@ async def test_zero_base_indefinite_failure_retry_cycles_at_zero_period_unfloore
         last_delay = decision.retry_delay
 
         await backend.mark_failed_or_retry(
-            job_id, _WORKER, error_info, decision.retry_delay, attempt=attempt
+            job_id, _WORKER, error_info, decision.retry_delay, attempt=attempt, claim_epoch=attempt
         )
         row = await backend.get(job_id)
         assert row is not None
@@ -439,7 +440,7 @@ async def test_deferral_arms_floor_zero_delay_but_failure_retry_does_not() -> No
     for job_id in (snoozer, failer):
         _set_running(backend, job_id, attempt=1)
 
-    await backend.mark_snoozed(snoozer, _WORKER, timedelta(0), attempt=1)
+    await backend.mark_snoozed(snoozer, _WORKER, timedelta(0), attempt=1, claim_epoch=1)
     snooze_row = await backend.get(snoozer)
     assert snooze_row is not None
     assert snooze_row.scheduled_at - _START == MIN_DEFERRAL_INTERVAL, (
@@ -453,6 +454,7 @@ async def test_deferral_arms_floor_zero_delay_but_failure_retry_does_not() -> No
         ErrorInfo(error_class="RuntimeError", error_message="x", error_traceback=None),
         timedelta(0),
         attempt=1,
+        claim_epoch=1,
     )
     fail_row = await backend.get(failer)
     assert fail_row is not None

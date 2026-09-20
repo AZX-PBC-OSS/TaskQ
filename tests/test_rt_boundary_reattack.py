@@ -165,6 +165,7 @@ class TestDenialReasonCarveOutBoundaries:
             _DELAY,
             outcome="rate_limit_denied",
             attempt=1,
+            claim_epoch=1,
             denial_reason="unavailable",
         )
 
@@ -218,6 +219,7 @@ class TestDenialReasonCarveOutBoundaries:
             _DELAY,
             outcome="rate_limit_denied",
             attempt=2,
+            claim_epoch=2,
             denial_reason="unavailable",
         )
 
@@ -272,6 +274,7 @@ class TestDenialReasonCarveOutBoundaries:
             _DELAY,
             outcome="rate_limit_denied",
             attempt=2,
+            claim_epoch=2,
             denial_reason="capacity",
         )
 
@@ -331,6 +334,7 @@ class TestDenialReasonCarveOutBoundaries:
             _DELAY,
             outcome="rate_limit_denied",
             attempt=running.attempt,
+            claim_epoch=running.claim_epoch,
             denial_reason="unavailable",
         )
         assert outcome == "failed", (
@@ -369,6 +373,7 @@ class TestDenialReasonCarveOutBoundaries:
             _DELAY,
             outcome="reservation_denied",
             attempt=running.attempt,
+            claim_epoch=running.claim_epoch,
             denial_reason="unavailable",
         )
         assert outcome == "scheduled", (
@@ -406,6 +411,7 @@ class TestDenialReasonCarveOutBoundaries:
             _DELAY,
             outcome="reservation_denied",
             attempt=running.attempt,
+            claim_epoch=running.claim_epoch,
             denial_reason="capacity",
         )
         assert outcome == "scheduled", (

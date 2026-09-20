@@ -323,6 +323,7 @@ async def test_consume_shielded_writes_complete_when_task_is_cancelled() -> None
             *,
             result_bytes: bytes | None = None,
             attempt: int | None = None,
+            claim_epoch: int | None = None,
         ) -> bool:
             write_started.set()
             await asyncio.sleep(0.05)

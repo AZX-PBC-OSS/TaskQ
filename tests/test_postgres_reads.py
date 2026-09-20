@@ -327,7 +327,7 @@ class TestGetAttempts:
                 worker_id,
             )
 
-        await backend.mark_succeeded(job_id, worker_id, {"ok": True}, attempt=1)
+        await backend.mark_succeeded(job_id, worker_id, {"ok": True}, attempt=1, claim_epoch=0)
 
         attempts = await backend.get_attempts(job_id)
         assert len(attempts) == 1

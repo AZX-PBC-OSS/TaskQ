@@ -295,6 +295,7 @@ async def test_di_consumer_loop_signals_slot_release_when_it_takes_a_job() -> No
             *,
             metadata_update: dict[str, object] | None = None,
             attempt: int | None = None,
+            claim_epoch: int | None = None,
         ) -> str:
             snoozed.append(job_id)
             shutdown_event.set()  # one job is enough - exit after it
@@ -366,6 +367,7 @@ async def test_consumer_loop_stub_signals_slot_release_when_it_takes_a_job() -> 
             fallback_result_ttl: object = None,
             *,
             attempt: int | None = None,
+            claim_epoch: int | None = None,
         ) -> bool:
             shutdown_event.set()  # exit after one job
             return True

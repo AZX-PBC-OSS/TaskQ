@@ -247,7 +247,9 @@ async def test_full_fleet_geometry_saturates_without_livelock(pg_dsn: str) -> No
                 # the landed attempt-epoch fence no-ops an epoch-less write
                 # - the sibling PG test presents the row's epoch the same
                 # way, mirroring the production caller's attempt=job.attempt.
-                return await backend.mark_succeeded(job_id, worker_id, {"ok": True}, attempt=1)
+                return await backend.mark_succeeded(
+                    job_id, worker_id, {"ok": True}, attempt=1, claim_epoch=0
+                )
 
         async def heartbeat_tick() -> None:
             # The heartbeat.py loop shape: bounded acquire, then the
@@ -301,7 +303,7 @@ async def test_full_fleet_geometry_saturates_without_livelock(pg_dsn: str) -> No
         saturator = _Holder(worker_pool, _WORKER_POOL_SIZE)
         await saturator.hold()
         queued_write = asyncio.create_task(
-            backend.mark_succeeded(job_c, worker_id, {"ok": 1}, attempt=1)
+            backend.mark_succeeded(job_c, worker_id, {"ok": 1}, attempt=1, claim_epoch=0)
         )
         await asyncio.sleep(_OBSERVE_S)
         assert not queued_write.done(), (

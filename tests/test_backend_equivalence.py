@@ -694,7 +694,7 @@ async def test_snooze_cycle_refunds_attempt_round_trip(
     assert row.attempt == 1
 
     result = await backend_pair.mark_snoozed(
-        job_id, wid, timedelta(seconds=30), attempt=row.attempt
+        job_id, wid, timedelta(seconds=30), attempt=row.attempt, claim_epoch=row.claim_epoch
     )
     assert result == "scheduled"
 
@@ -745,7 +745,11 @@ async def test_snooze_past_deadline_transitions_to_failed(
     epoch_row = await backend_pair.get(job_id)
     assert epoch_row is not None
     result = await backend_pair.mark_snoozed(
-        job_id, wid, timedelta(seconds=30), attempt=epoch_row.attempt
+        job_id,
+        wid,
+        timedelta(seconds=30),
+        attempt=epoch_row.attempt,
+        claim_epoch=epoch_row.claim_epoch,
     )
     assert result == "failed"
 
@@ -788,7 +792,12 @@ async def test_retry_after_consume_true_increments_attempt(
     assert row.attempt == 1
 
     result = await backend_pair.mark_retry_after(
-        job_id, wid, timedelta(seconds=10), consume_budget=True, attempt=row.attempt
+        job_id,
+        wid,
+        timedelta(seconds=10),
+        consume_budget=True,
+        attempt=row.attempt,
+        claim_epoch=row.claim_epoch,
     )
     assert result == "scheduled"
 
@@ -818,7 +827,12 @@ async def test_retry_after_consume_false_refunds_attempt(
     assert row.attempt == 1
 
     result = await backend_pair.mark_retry_after(
-        job_id, wid, timedelta(seconds=10), consume_budget=False, attempt=row.attempt
+        job_id,
+        wid,
+        timedelta(seconds=10),
+        consume_budget=False,
+        attempt=row.attempt,
+        claim_epoch=row.claim_epoch,
     )
     assert result == "scheduled"
 
@@ -850,7 +864,12 @@ async def test_retry_after_exhausts_budget_transitions_to_failed(
     epoch_row = await backend_pair.get(job_id)
     assert epoch_row is not None
     result = await backend_pair.mark_retry_after(
-        job_id, wid, timedelta(seconds=10), consume_budget=True, attempt=epoch_row.attempt
+        job_id,
+        wid,
+        timedelta(seconds=10),
+        consume_budget=True,
+        attempt=epoch_row.attempt,
+        claim_epoch=epoch_row.claim_epoch,
     )
     assert result == "failed:MaxAttemptsExceeded"
 
@@ -886,7 +905,12 @@ async def test_retry_after_indefinite_tier_ignores_max_attempts(
     epoch_row = await backend_pair.get(job_id)
     assert epoch_row is not None
     result = await backend_pair.mark_retry_after(
-        job_id, wid, timedelta(seconds=10), consume_budget=True, attempt=epoch_row.attempt
+        job_id,
+        wid,
+        timedelta(seconds=10),
+        consume_budget=True,
+        attempt=epoch_row.attempt,
+        claim_epoch=epoch_row.claim_epoch,
     )
     assert result == "scheduled"
 
@@ -927,6 +951,7 @@ async def test_reservation_unavailable_produces_metadata_annotated_snooze(
         metadata_update={"awaiting": "reservation:gpu_pool"},
         outcome="reservation_denied",
         attempt=epoch_row.attempt,
+        claim_epoch=epoch_row.claim_epoch,
     )
     assert result == "scheduled"
 
@@ -979,6 +1004,7 @@ async def test_admission_denial_at_exhausted_budget_still_reschedules(
         timedelta(seconds=30),
         outcome="rate_limit_denied",
         attempt=epoch_row.attempt,
+        claim_epoch=epoch_row.claim_epoch,
     )
     assert result == "scheduled", (
         "an admission denial terminally failed a job that never got a slot"
@@ -1021,6 +1047,7 @@ async def test_admission_denial_past_schedule_to_close_fails_on_the_deadline(
         timedelta(seconds=30),
         outcome="rate_limit_denied",
         attempt=epoch_row.attempt,
+        claim_epoch=epoch_row.claim_epoch,
     )
     assert result == "failed"
 
@@ -1040,14 +1067,22 @@ async def test_mark_snoozed_idempotent_returns_noop(backend_pair: Backend) -> No
     epoch_row = await backend_pair.get(job_id)
     assert epoch_row is not None
     result1 = await backend_pair.mark_snoozed(
-        job_id, wid, timedelta(seconds=30), attempt=epoch_row.attempt
+        job_id,
+        wid,
+        timedelta(seconds=30),
+        attempt=epoch_row.attempt,
+        claim_epoch=epoch_row.claim_epoch,
     )
     assert result1 == "scheduled"
 
     # The second call presents the SAME (now stale) epoch the worker would
     # hold - the status fence turns it into "noop".
     result2 = await backend_pair.mark_snoozed(
-        job_id, wid, timedelta(seconds=30), attempt=epoch_row.attempt
+        job_id,
+        wid,
+        timedelta(seconds=30),
+        attempt=epoch_row.attempt,
+        claim_epoch=epoch_row.claim_epoch,
     )
     assert result2 == "noop"
 
@@ -1064,13 +1099,23 @@ async def test_mark_retry_after_idempotent_returns_noop(
     epoch_row = await backend_pair.get(job_id)
     assert epoch_row is not None
     result1 = await backend_pair.mark_retry_after(
-        job_id, wid, timedelta(seconds=10), consume_budget=True, attempt=epoch_row.attempt
+        job_id,
+        wid,
+        timedelta(seconds=10),
+        consume_budget=True,
+        attempt=epoch_row.attempt,
+        claim_epoch=epoch_row.claim_epoch,
     )
     assert result1 == "scheduled"
 
     # The second call presents the SAME (now stale) epoch - "noop".
     result2 = await backend_pair.mark_retry_after(
-        job_id, wid, timedelta(seconds=10), consume_budget=True, attempt=epoch_row.attempt
+        job_id,
+        wid,
+        timedelta(seconds=10),
+        consume_budget=True,
+        attempt=epoch_row.attempt,
+        claim_epoch=epoch_row.claim_epoch,
     )
     assert result2 == "noop"
 
@@ -1105,7 +1150,7 @@ async def test_mark_interrupted_releases_pending_at_zero_hold(
     assert row.attempt == 1
 
     outcome = await backend_pair.mark_interrupted(
-        job_id, wid, attempt=row.attempt, hold=timedelta(0)
+        job_id, wid, attempt=row.attempt, claim_epoch=row.claim_epoch, hold=timedelta(0)
     )
     assert outcome == "pending"
 
@@ -1146,7 +1191,7 @@ async def test_mark_interrupted_holds_the_release_until_the_process_is_gone(
     assert row is not None
 
     outcome = await backend_pair.mark_interrupted(
-        job_id, wid, attempt=row.attempt, hold=timedelta(seconds=30)
+        job_id, wid, attempt=row.attempt, claim_epoch=row.claim_epoch, hold=timedelta(seconds=30)
     )
     assert outcome == "scheduled"
 
@@ -1198,7 +1243,7 @@ async def test_mark_interrupted_operator_cancel_in_flight_wins(
     assert row is not None
 
     outcome = await backend_pair.mark_interrupted(
-        job_id, wid, attempt=row.attempt, hold=timedelta(0)
+        job_id, wid, attempt=row.attempt, claim_epoch=row.claim_epoch, hold=timedelta(0)
     )
     assert outcome == "noop", (
         "the interrupt write must decline a row under an operator cancel - "
@@ -1233,7 +1278,7 @@ async def test_mark_interrupted_past_the_jobs_deadline_fails_on_it(
     assert row is not None
 
     outcome = await backend_pair.mark_interrupted(
-        job_id, wid, attempt=row.attempt, hold=timedelta(seconds=30)
+        job_id, wid, attempt=row.attempt, claim_epoch=row.claim_epoch, hold=timedelta(seconds=30)
     )
     assert outcome == "failed:DeadlineExceeded"
 
@@ -1271,13 +1316,13 @@ async def test_mark_interrupted_fenced_out_by_a_stale_epoch_or_wrong_worker(
 
     # Stale epoch (the row already moved past it).
     outcome = await backend_pair.mark_interrupted(
-        job_id, wid, attempt=row.attempt - 1, hold=timedelta(0)
+        job_id, wid, attempt=row.attempt, claim_epoch=row.claim_epoch - 1, hold=timedelta(0)
     )
     assert outcome == "noop"
 
     # Wrong worker.
     outcome = await backend_pair.mark_interrupted(
-        job_id, new_uuid(), attempt=row.attempt, hold=timedelta(0)
+        job_id, new_uuid(), attempt=row.attempt, claim_epoch=row.claim_epoch, hold=timedelta(0)
     )
     assert outcome == "noop"
 
@@ -1288,7 +1333,7 @@ async def test_mark_interrupted_fenced_out_by_a_stale_epoch_or_wrong_worker(
 
     # And the landed release is itself not replayable at the same epoch.
     outcome = await backend_pair.mark_interrupted(
-        job_id, wid, attempt=row.attempt, hold=timedelta(0)
+        job_id, wid, attempt=row.attempt, claim_epoch=row.claim_epoch, hold=timedelta(0)
     )
     assert outcome == "pending"
     replayed = await backend_pair.mark_interrupted(job_id, wid, attempt=1, hold=timedelta(0))
@@ -1399,7 +1444,9 @@ async def test_mark_succeeded_transitions_row_and_emits_attempt(
 
     epoch_row = await backend_pair.get(job_id)
     assert epoch_row is not None
-    result = await backend_pair.mark_succeeded(job_id, wid, {"ok": True}, attempt=epoch_row.attempt)
+    result = await backend_pair.mark_succeeded(
+        job_id, wid, {"ok": True}, attempt=epoch_row.attempt, claim_epoch=epoch_row.claim_epoch
+    )
     assert result is True
 
     row = await backend_pair.get(job_id)
@@ -1414,7 +1461,7 @@ async def test_mark_succeeded_transitions_row_and_emits_attempt(
     # second call is idempotent - returns False, no second attempt row
     # (the stale epoch presentation is the worker's own no-op shape)
     result2 = await backend_pair.mark_succeeded(
-        job_id, wid, {"ok": True}, attempt=epoch_row.attempt
+        job_id, wid, {"ok": True}, attempt=epoch_row.attempt, claim_epoch=epoch_row.claim_epoch
     )
     assert result2 is False
     attempts2 = await backend_pair.get_attempts(job_id)
@@ -1439,7 +1486,12 @@ async def test_mark_failed_or_retry_terminal_branch(
     epoch_row = await backend_pair.get(job_id)
     assert epoch_row is not None
     row = await backend_pair.mark_failed_or_retry(
-        job_id, wid, error_info, retry_delay=None, attempt=epoch_row.attempt
+        job_id,
+        wid,
+        error_info,
+        retry_delay=None,
+        attempt=epoch_row.attempt,
+        claim_epoch=epoch_row.claim_epoch,
     )
     assert row.status == "failed"
     # locked=True: mark_failed_or_retry does not clear lock fields (PG SQL omits them)
@@ -1473,7 +1525,9 @@ async def test_mark_cancelled_transitions_row_and_emits_attempt(
 
     epoch_row = await backend_pair.get(job_id)
     assert epoch_row is not None
-    result = await backend_pair.mark_cancelled(job_id, wid, attempt=epoch_row.attempt)
+    result = await backend_pair.mark_cancelled(
+        job_id, wid, attempt=epoch_row.attempt, claim_epoch=epoch_row.claim_epoch
+    )
     assert result is True
 
     row = await backend_pair.get(job_id)
@@ -1487,7 +1541,9 @@ async def test_mark_cancelled_transitions_row_and_emits_attempt(
 
     # second call is idempotent - returns False, no second attempt row
     # (the stale epoch presentation is the worker's own no-op shape)
-    result2 = await backend_pair.mark_cancelled(job_id, wid, attempt=epoch_row.attempt)
+    result2 = await backend_pair.mark_cancelled(
+        job_id, wid, attempt=epoch_row.attempt, claim_epoch=epoch_row.claim_epoch
+    )
     assert result2 is False
     attempts2 = await backend_pair.get_attempts(job_id)
     assert len(attempts2) == 1
@@ -1511,7 +1567,9 @@ async def test_result_size_bytes_set_on_mark_succeeded(backend_pair: Backend) ->
     job_id, wid = await _enqueue_dispatch_any(backend_pair)
     epoch_row = await backend_pair.get(job_id)
     assert epoch_row is not None
-    ok = await backend_pair.mark_succeeded(job_id, wid, result_payload, attempt=epoch_row.attempt)
+    ok = await backend_pair.mark_succeeded(
+        job_id, wid, result_payload, attempt=epoch_row.attempt, claim_epoch=epoch_row.claim_epoch
+    )
     assert ok is True
 
     row = await backend_pair.get(job_id)
@@ -1528,7 +1586,9 @@ async def test_result_size_bytes_none_when_result_is_none(backend_pair: Backend)
     job_id, wid = await _enqueue_dispatch_any(backend_pair)
     epoch_row = await backend_pair.get(job_id)
     assert epoch_row is not None
-    await backend_pair.mark_succeeded(job_id, wid, None, attempt=epoch_row.attempt)
+    await backend_pair.mark_succeeded(
+        job_id, wid, None, attempt=epoch_row.attempt, claim_epoch=epoch_row.claim_epoch
+    )
 
     row = await backend_pair.get(job_id)
     assert row is not None
@@ -1559,7 +1619,12 @@ async def test_mark_failed_or_retry_ownership_mismatch_raises(backend_pair: Back
     assert epoch_row is not None
     with pytest.raises(WorkerOwnershipMismatch) as exc_info:
         await backend_pair.mark_failed_or_retry(
-            job_id, wrong_wid, error_info, retry_delay=None, attempt=epoch_row.attempt
+            job_id,
+            wrong_wid,
+            error_info,
+            retry_delay=None,
+            attempt=epoch_row.attempt,
+            claim_epoch=epoch_row.claim_epoch,
         )
     exc = exc_info.value
     assert exc.job_id == job_id
@@ -1574,7 +1639,9 @@ async def test_mark_succeeded_wrong_worker_returns_false(backend_pair: Backend) 
 
     epoch_row = await backend_pair.get(job_id)
     assert epoch_row is not None
-    result = await backend_pair.mark_succeeded(job_id, wrong_wid, None, attempt=epoch_row.attempt)
+    result = await backend_pair.mark_succeeded(
+        job_id, wrong_wid, None, attempt=epoch_row.attempt, claim_epoch=epoch_row.claim_epoch
+    )
     # InMemoryBackend returns False for wrong worker (not an error path)
     assert result is False
 
@@ -1746,7 +1813,11 @@ async def test_mark_snoozed_delay_exactly_equal_remaining_budget_fails(
     epoch_row = await backend_pair.get(job_id)
     assert epoch_row is not None
     result = await backend_pair.mark_snoozed(
-        job_id, wid, timedelta(seconds=0), attempt=epoch_row.attempt
+        job_id,
+        wid,
+        timedelta(seconds=0),
+        attempt=epoch_row.attempt,
+        claim_epoch=epoch_row.claim_epoch,
     )
     # == boundary: effective new_scheduled_at == schedule_to_close → guard
     # is >, so NOT rejected
@@ -1767,7 +1838,11 @@ async def test_mark_snoozed_delay_exceeds_deadline_fails(
     epoch_row = await backend_pair.get(job_id)
     assert epoch_row is not None
     result = await backend_pair.mark_snoozed(
-        job_id, wid, timedelta(seconds=30), attempt=epoch_row.attempt
+        job_id,
+        wid,
+        timedelta(seconds=30),
+        attempt=epoch_row.attempt,
+        claim_epoch=epoch_row.claim_epoch,
     )
     assert result == "failed"
 
@@ -1784,7 +1859,9 @@ async def test_write_cancel_request_on_succeeded_job_returns_false(
     job_id, wid = await _enqueue_dispatch_any(backend_pair)
     epoch_row = await backend_pair.get(job_id)
     assert epoch_row is not None
-    await backend_pair.mark_succeeded(job_id, wid, None, attempt=epoch_row.attempt)
+    await backend_pair.mark_succeeded(
+        job_id, wid, None, attempt=epoch_row.attempt, claim_epoch=epoch_row.claim_epoch
+    )
 
     result = await backend_pair.write_cancel_request(job_id, reason=None)
     assert result is False
@@ -1803,7 +1880,12 @@ async def test_write_cancel_request_on_failed_job_returns_false(
     epoch_row = await backend_pair.get(job_id)
     assert epoch_row is not None
     await backend_pair.mark_failed_or_retry(
-        job_id, wid, error_info, retry_delay=None, attempt=epoch_row.attempt
+        job_id,
+        wid,
+        error_info,
+        retry_delay=None,
+        attempt=epoch_row.attempt,
+        claim_epoch=epoch_row.claim_epoch,
     )
 
     result = await backend_pair.write_cancel_request(job_id, reason=None)
@@ -2102,7 +2184,7 @@ async def test_indefinite_tier_fail_retry_succeed(backend_pair: Backend) -> None
     # scheduled_at from it (single arbiter).
     retry_delay = _compute_backoff(policy, 1)
     row_after = await backend_pair.mark_failed_or_retry(
-        job_id, wid, error_info, retry_delay, attempt=row.attempt
+        job_id, wid, error_info, retry_delay, attempt=row.attempt, claim_epoch=row.claim_epoch
     )
     assert row_after.status == "scheduled"
     assert row_after.attempt == 1
@@ -2122,7 +2204,13 @@ async def test_indefinite_tier_fail_retry_succeed(backend_pair: Backend) -> None
     assert dispatched[0].attempt == 2
     assert dispatched[0].status == "running"
 
-    await backend_pair.mark_succeeded(job_id, wid, {"ok": True}, attempt=dispatched[0].attempt)
+    await backend_pair.mark_succeeded(
+        job_id,
+        wid,
+        {"ok": True},
+        attempt=dispatched[0].attempt,
+        claim_epoch=dispatched[0].claim_epoch,
+    )
     row = await backend_pair.get(job_id)
     assert row is not None
     assert row.status == "succeeded"
