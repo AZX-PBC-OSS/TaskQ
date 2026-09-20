@@ -399,6 +399,23 @@ SELECT * FROM upd""",
         # TERMINAL arms deliberately keep the cancel columns, they are the
         # audit trail of why the job ended, and mark_abandoned's
         # `cancel_phase = 2` guard reads them.
+        #
+        # THE CANCEL FENCE (the sibling deferral arms' conjunct, the
+        # mark_interrupted release arm's semantics): both of this
+        # statement's arms carry `cancel_phase = 0`, because BOTH reset or
+        # overwrite state a cancel in flight owns. The retried arm resets
+        # the cancel columns; the deadline_failed arm stamps
+        # error_class='DeadlineExceeded', the failure marker whose hooks
+        # must not fire on a cancel in flight (the three deferral
+        # templates route this exact shape to a deadline_cancelled arm
+        # instead; a retry has no row of its own to write, so the fence
+        # routes the row to a no-op). A phase-carrying row matches NO arm
+        # here: the write no-ops, the caller's WorkerOwnershipMismatch
+        # reads back as the handler's no-op, and the row stays 'running'
+        # carrying its phase for the cancel ladder to terminalise, the
+        # same routing every fenced-out deferral takes. On a clean row
+        # both conjuncts are trivially true and the retry semantics are
+        # unchanged.
         mark_retry=f"""\
 WITH params AS (
     SELECT $1::uuid AS job_id,
@@ -438,6 +455,15 @@ retried AS (
                               ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
       {JOB_FENCE_SQL}
+      -- The cancel fence (the sibling deferral arms' conjunct): an
+      -- operator cancel in flight WINS over the failure retry. A row
+      -- carrying a cancel phase must never match this arm; the
+      -- cancel_phase = 0 / cancel_requested_at = NULL resets below would
+      -- launder the operator's request mid-flight and the job would run
+      -- again. The fenced-out row stays 'running' carrying its phase,
+      -- the caller reads back WorkerOwnershipMismatch (the handler's
+      -- no-op), and the worker's cancel ladder terminalises it.
+      AND j.cancel_phase = 0
       AND (j.schedule_to_close IS NULL
            OR clock_timestamp() + (SELECT effective_delay FROM params) <= j.schedule_to_close)
     RETURNING j.*, 'retried'::text AS outcome_branch, clock_timestamp() AS now_ts
@@ -458,6 +484,13 @@ deadline_failed AS (
                               ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
       {JOB_FENCE_SQL}
+      -- The cancel fence: the sibling templates route a phase-carrying
+      -- row past its deadline to a deadline_cancelled arm; a retry has
+      -- no cancelled row of its own to write, so the fence refuses the
+      -- DeadlineExceeded stamp instead (its hooks must not fire on a
+      -- cancel in flight) and leaves the row to the cancel ladder, the
+      -- same no-op routing the retried arm's fence takes.
+      AND j.cancel_phase = 0
       AND j.schedule_to_close IS NOT NULL
       AND clock_timestamp() + (SELECT effective_delay FROM params) > j.schedule_to_close
       AND NOT EXISTS (SELECT 1 FROM retried)

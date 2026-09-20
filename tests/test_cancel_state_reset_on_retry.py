@@ -13,20 +13,22 @@ cancelled.
 The merged contract splits the consumer's terminal writes by whether a
 cancel is in flight:
 
-- ``mark_failed_or_retry``'s retry arm still writes the next attempt and
-  clears both columns (pinned below on both backends), and the
-  crash-reclaim sweep and ``isolate_self`` do the same on theirs.
-- The three deferral arms refuse a row carrying a cancel phase entirely
-  (``noop``; the operator's cancel wins over the snooze) - the refuse
-  leaves the audit columns intact for the cancel ladder to finish, and
-  the clean slate comes from the interrupt release, not the deferral.
-  These pins cover the FORCED escalation state; the COOPERATIVE twins
+- Every re-pend arm resets both columns ONLY behind the
+  ``cancel_phase = 0`` fence: the crash-reclaim sweep, ``isolate_self``,
+  and every deferral template's arms refuse a phase-carrying row
+  outright, and so does ``mark_failed_or_retry``'s retry arm (pinned
+  below on both backends: the write no-ops through the same
+  ``WorkerOwnershipMismatch`` a wrong-worker retry raises, and the row
+  stays 'running' carrying its phase for the cancel ladder to
+  terminalise).  The clean slate on the next attempt comes from the
+  fence: only a row whose cancel columns were already clean is ever
+  re-pended.
+- These pins cover the FORCED escalation state; the COOPERATIVE twins
   live in tests/test_cancel_fence_arms.py.
 """
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import cast
 from uuid import UUID
 
 import pytest
@@ -35,8 +37,7 @@ from taskq._ids import new_job_id, new_uuid
 from taskq.backend import Backend, EnqueueArgs
 from taskq.backend._protocol import CancelPhase, ErrorInfo, JobId
 from taskq.backend.postgres import PostgresBackend
-from taskq.constants import MIN_DEFERRAL_INTERVAL
-from taskq.testing.clock import FakeClock
+from taskq.exceptions import WorkerOwnershipMismatch
 from taskq.testing.in_memory import InMemoryBackend
 
 pytestmark = pytest.mark.integration
@@ -118,56 +119,25 @@ async def _force_cancel_escalated(backend: Backend, job_id: JobId) -> None:
         )
 
 
-async def _make_deferred_row_dispatchable(backend: Backend, job_id: JobId) -> None:
-    """A zero-delay non-consuming deferral is floored one interval out as
-    ``scheduled`` (the deferral floor keeps it from monopolizing dispatch
-    order), so make it due and promote it - exactly the wake + promotion
-    pair the leader performs - before the next dispatch claims it."""
-    if isinstance(backend, InMemoryBackend):
-        cast("FakeClock", backend._clock).advance(  # pyright: ignore[reportPrivateUsage]  # Why: the in-memory fixture backends are FakeClock-backed; the Clock protocol does not carry advance().
-            MIN_DEFERRAL_INTERVAL
-        )
-        await backend.scheduled_to_pending()
-        return
-    assert isinstance(backend, PostgresBackend)
-    schema: str = backend._schema_name  # pyright: ignore[reportPrivateUsage]  # Why: PG-path helper mirrors _worker_of above.
-    pool = backend._worker_pool  # pyright: ignore[reportPrivateUsage]  # Why: same.
-    async with pool.acquire() as conn:  # pyright: ignore[reportUnknownVariableType]  # Why: asyncpg stubs, as above.
-        await conn.execute(
-            f'UPDATE "{schema}".jobs '  # noqa: S608  # Why: schema is fixture-derived and _IDENT_RE-validated; the id is $-bound.
-            "SET scheduled_at = clock_timestamp() - interval '1 second' "
-            "WHERE id = $1",
-            job_id,
-        )
-    await backend.scheduled_to_pending()
-
-
-async def _assert_clean_slate_on_next_attempt(backend: Backend, job_id: JobId) -> None:
-    """The retried row, and the attempt dispatched from it, carry no cancel state."""
-    row = await backend.get(job_id)
-    assert row is not None
-    assert row.status in ("pending", "scheduled"), row.status
-    assert row.cancel_phase == CancelPhase.NONE
-    assert row.cancel_requested_at is None
-
-    if row.status == "scheduled":
-        await _make_deferred_row_dispatchable(backend, job_id)
-    worker_id = await _dispatch(backend, job_id, await _worker_of(backend))
-    flags = await backend.poll_cancel_flags(worker_id)
-    assert [f for f in flags if f.job_id == job_id] == [], (
-        "redispatched attempt was born with a stale cancel flag"
-    )
-
-
-async def test_mark_failed_or_retry_clears_cancel_state(backend_pair: Backend) -> None:
+async def test_mark_failed_or_retry_refuses_a_row_carrying_a_cancel_phase(
+    backend_pair: Backend,
+) -> None:
+    """The failure-retry arm carries the same cancel fence its sibling
+    deferral arms do: a phase-carrying row is never re-pended (the reset
+    would launder the operator's request and the job would run again)."""
     job_id, worker_id = await _enqueue_and_dispatch(backend_pair)
     await _force_cancel_escalated(backend_pair, job_id)
 
-    await backend_pair.mark_failed_or_retry(
-        job_id, worker_id, _ERROR, timedelta(0), attempt=1, claim_epoch=1
-    )
+    with pytest.raises(WorkerOwnershipMismatch):
+        await backend_pair.mark_failed_or_retry(
+            job_id, worker_id, _ERROR, timedelta(0), attempt=1, claim_epoch=1
+        )
 
-    await _assert_clean_slate_on_next_attempt(backend_pair, job_id)
+    row = await backend_pair.get(job_id)
+    assert row is not None
+    assert row.status == "running"
+    assert row.cancel_phase == CancelPhase.FORCED
+    assert row.cancel_requested_at is not None
 
 
 async def test_mark_snoozed_refuses_a_row_carrying_a_cancel_phase(
