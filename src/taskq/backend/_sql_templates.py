@@ -483,7 +483,7 @@ deadline_att AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
-           '{ERROR_CLASS_DEADLINE_EXCEEDED}', {DEADLINE_RETRY_EXCEEDED_MESSAGE}, NULL,
+           '{ERROR_CLASS_DEADLINE_EXCEEDED}', '{DEADLINE_RETRY_EXCEEDED_MESSAGE}', NULL,
            -- Terminal arm: duration reads the arm's finished_at, not now_ts.
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
@@ -875,7 +875,7 @@ deadline_att AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
-           '{ERROR_CLASS_DEADLINE_EXCEEDED}', {DEADLINE_EXCEEDED_MESSAGE}, NULL,
+           '{ERROR_CLASS_DEADLINE_EXCEEDED}', '{DEADLINE_EXCEEDED_MESSAGE}', NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
@@ -1125,7 +1125,7 @@ deadline_att AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
-           '{ERROR_CLASS_DEADLINE_EXCEEDED}', {DEADLINE_EXCEEDED_MESSAGE}, NULL,
+           '{ERROR_CLASS_DEADLINE_EXCEEDED}', '{DEADLINE_EXCEEDED_MESSAGE}', NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
@@ -1299,7 +1299,7 @@ deadline_att AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
-           '{ERROR_CLASS_DEADLINE_EXCEEDED}', {DEADLINE_EXCEEDED_MESSAGE}, NULL,
+           '{ERROR_CLASS_DEADLINE_EXCEEDED}', '{DEADLINE_EXCEEDED_MESSAGE}', NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
@@ -1459,7 +1459,7 @@ deadline_att AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
-           '{ERROR_CLASS_DEADLINE_EXCEEDED}', {DEADLINE_EXCEEDED_MESSAGE}, NULL,
+           '{ERROR_CLASS_DEADLINE_EXCEEDED}', '{DEADLINE_EXCEEDED_MESSAGE}', NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
