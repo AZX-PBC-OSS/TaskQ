@@ -646,6 +646,23 @@ async def abort_batch(
     commits, a race the single-statement form never had (its
     cancellations were invisible until the one transaction committed).
 
+    The flip itself is bounded: it runs through the same
+    :func:`_bounded_batches_row_wait` wrapper the counter writes use (a
+    savepoint-scoped ``lock_timeout``, the counter budget). The row is
+    contended from the same two sides (other members' terminal-write
+    tails, a streaming append's membership lock) and the flip runs on the
+    same terminal-write path (the threshold hook), so an unbounded park
+    here would hold a worker slot behind exactly the holder the counter
+    writes skip. When the budget expires the abort is DELAYED, not
+    failed: the call returns 0 having written nothing, because draining
+    members behind a still-``'active'`` row would expose every committed
+    page's cancellations to a concurrent completion arbiter, the race the
+    flip-first order exists to close. The batch stays ``'active'`` for
+    the next threshold-triggered abort or the stale-batch sweep to
+    re-arbitrate, and the caller's transaction (the hook path) survives
+    the raw 55P03 the bounded wait raised under it, the same savepoint
+    discipline the counter skips document.
+
     *batch_size* pages the drain (the bulk-cancel path's page size,
     :data:`taskq.constants.DEFAULT_EVENT_WRITER_BATCH_SIZE`).
     """
@@ -655,9 +672,29 @@ async def abort_batch(
 
     # The batches-row flip first: see the docstring. One small
     # transaction (a real one on an owned connection, a savepoint inside
-    # a caller's), the same wrapper the pages below use.
-    async with conn.transaction():
-        await conn.execute(sql.abort_batch_row, batch_id)
+    # a caller's), the same wrapper the pages below use and the same
+    # bounded batches-row wait the counter writes get: the bare execute
+    # this replaced parked unbounded behind a streaming append's
+    # membership lock on the terminal-write path.
+    try:
+        await _bounded_batches_row_wait(conn, lambda: conn.execute(sql.abort_batch_row, batch_id))
+    except LockNotAvailableError:
+        # The flip is DELAYED: the row stays 'active', the savepoint
+        # rollback already restored the caller's scope to usable, and
+        # the abort must not proceed without the flip (the docstring's
+        # flip-first rationale), so the call writes nothing and returns
+        # 0. The next threshold-triggered abort or the stale-batch sweep
+        # re-arbitrates. Debug, not warning: the same optimistic-CAS
+        # miss class the delayed completion and the counter skips log at,
+        # an expected outcome under concurrency that reconciliation
+        # covers; the event keeps the delay traceable to its cause.
+        logger.debug(
+            "batch-abort-row-lock-timeout",
+            kind="batch",
+            batch_id=str(batch_id),
+            write="abort_row",
+        )
+        return 0
 
     async def _one_page(cursor: UUID) -> asyncpg.Record | None:
         """One committed (or savepoint-scoped) windowed cancel page."""
