@@ -22,6 +22,10 @@ from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.web.admin.ops import _fetch_redis_rl_state
+from taskq.worker.cron_loop import (  # pyright: ignore[reportPrivateUsage]
+    _DEFAULT_RETRY_BASE,
+    _DEFAULT_RETRY_CAP,
+)
 
 from . import StubBackend, StubConnection, StubPipelinedRedis, StubRecord, _stub_job_row
 
@@ -403,7 +407,18 @@ def test_schedule_run_now_succeeds_and_enqueues(monkeypatch: pytest.MonkeyPatch)
     schedule_row = StubRecord(
         actor="cleanup", payload_factory=None, enabled=True, metadata={"static_payload": {"x": 1}}
     )
-    actor_config_row = StubRecord(queue="default", max_attempts=3, retry_kind="transient")
+    # The row the run-now SELECT returns: the four curve columns are NULL
+    # on rows predating migration 01.00.18, and the handler must resolve
+    # them to the declared defaults instead of failing or forwarding NULLs.
+    actor_config_row = StubRecord(
+        queue="default",
+        max_attempts=3,
+        retry_kind="transient",
+        retry_base=None,
+        retry_cap=None,
+        retry_backoff=None,
+        retry_jitter=None,
+    )
     conn = _ScriptedConnection(fetchrow_results=[schedule_row, actor_config_row])
     backend = StubBackend(job_row=_stub_job_row(new_uuid()))
     client = _make_app(_ScriptedPool(conn), backend=backend)
@@ -415,6 +430,14 @@ def test_schedule_run_now_succeeds_and_enqueues(monkeypatch: pytest.MonkeyPatch)
     assert len(backend.enqueue_calls) == 1
     assert backend.enqueue_calls[0].actor == "cleanup"
     assert backend.enqueue_calls[0].payload == {"x": 1}
+    # A pre-migration row's NULL curve resolves to the declared defaults,
+    # the same curve the cron fire path applies: the two server-side fire
+    # paths cannot disagree on a row that never stored an override.
+    enqueued = backend.enqueue_calls[0]
+    assert enqueued.retry_base == _DEFAULT_RETRY_BASE
+    assert enqueued.retry_cap == _DEFAULT_RETRY_CAP
+    assert enqueued.retry_backoff == "exponential"
+    assert enqueued.retry_jitter == 0.2
 
 
 # ── Rate-limit reset ─────────────────────────────────────────────────────

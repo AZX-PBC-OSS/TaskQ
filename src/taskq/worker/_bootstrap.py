@@ -1702,6 +1702,10 @@ async def _main(
                     if ref.result_ttl is not None
                     else None,
                     metadata=dict(ref.metadata),
+                    retry_base=ref.retry.base,
+                    retry_cap=ref.retry.cap,
+                    retry_backoff=ref.retry.backoff,
+                    retry_jitter=ref.retry.jitter,
                 )
                 for ref in actor_registry.values()
             ]

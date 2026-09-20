@@ -33,7 +33,11 @@ async def _ensure_schema(conn: asyncpg.Connection, schema: str) -> None:
             queue          text NOT NULL,
             result_ttl     float,
             metadata       jsonb NOT NULL DEFAULT '{{}}'::jsonb,
-            updated_at     timestamptz NOT NULL DEFAULT now()
+            updated_at     timestamptz NOT NULL DEFAULT now(),
+            retry_base     interval,
+            retry_cap      interval,
+            retry_backoff  text,
+            retry_jitter   float8
         )
     """)
 

@@ -1,6 +1,7 @@
 """Worker bootstrap utilities: config sync, startup sequencing, and pre-flight checks."""
 
 from collections.abc import Sequence
+from datetime import timedelta
 
 import asyncpg
 import structlog
@@ -39,11 +40,17 @@ SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata
 # raised (or the caller passed ``force=True``) for metadata drift before
 # this statement runs.
 _UPSERT_ACTOR_CONFIG_SQL = """
-INSERT INTO "{schema}".actor_config (actor, max_concurrent, max_pending, queue, result_ttl, metadata)
-SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata::jsonb
+INSERT INTO "{schema}".actor_config (
+    actor, max_concurrent, max_pending, queue, result_ttl, metadata,
+    retry_base, retry_cap, retry_backoff, retry_jitter
+)
+SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata::jsonb,
+       retry_base, retry_cap, retry_backoff, retry_jitter
   FROM unnest(
-      $1::text[], $2::int[], $3::int[], $4::text[], $5::float[], $6::text[]
-  ) AS t(actor, max_concurrent, max_pending, queue, result_ttl, metadata)
+      $1::text[], $2::int[], $3::int[], $4::text[], $5::float[], $6::text[],
+      $7::interval[], $8::interval[], $9::text[], $10::float8[]
+  ) AS t(actor, max_concurrent, max_pending, queue, result_ttl, metadata,
+         retry_base, retry_cap, retry_backoff, retry_jitter)
 ON CONFLICT (actor) DO UPDATE SET
     metadata       = EXCLUDED.metadata,
     updated_at     = clock_timestamp()
@@ -258,6 +265,14 @@ async def sync_actor_config(
         queue_array: list[str] = [cfg.queue for cfg in actor_configs]
         result_ttl_array: list[float | None] = [cfg.result_ttl for cfg in actor_configs]
         metadata_array: list[str] = [dumps_jsonb_str(cfg.metadata) for cfg in actor_configs]
+        # The declared retry curve: seeded on first create (the same
+        # semantics as max_attempts/retry_kind), so cron fires and the
+        # admin run-now re-pend on the curve the actor declared instead
+        # of the EnqueueArgs defaults.
+        base_array: list[timedelta | None] = [cfg.retry_base for cfg in actor_configs]
+        cap_array: list[timedelta | None] = [cfg.retry_cap for cfg in actor_configs]
+        backoff_array: list[str | None] = [cfg.retry_backoff for cfg in actor_configs]
+        jitter_array: list[float | None] = [cfg.retry_jitter for cfg in actor_configs]
 
         await conn.execute(
             _UPSERT_ACTOR_CONFIG_SQL.format(schema=schema),
@@ -267,6 +282,10 @@ async def sync_actor_config(
             queue_array,
             result_ttl_array,
             metadata_array,
+            base_array,
+            cap_array,
+            backoff_array,
+            jitter_array,
         )
 
     logger.info(
