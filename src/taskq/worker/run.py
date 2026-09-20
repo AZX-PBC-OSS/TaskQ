@@ -61,7 +61,11 @@ from taskq.ratelimit.refs import KeyedReservationRef
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.settings import WorkerSettings
 from taskq.worker._bootstrap import worker_main, worker_main_async
-from taskq.worker._transient import TRANSIENT_PG_ERRORS, is_transient_pg_error
+from taskq.worker._transient import (
+    TRANSIENT_PG_ERRORS,
+    UnexpectedLoopErrorGuard,
+    is_transient_pg_error,
+)
 from taskq.worker.cancel import make_cancel_controller
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.dispatch import SlotPoolAcquireError, dispatch_one_job
@@ -280,6 +284,17 @@ async def producer_loop(
     # below: a producer that never claimed cannot hold a locked row, so
     # its exit owes the fleet no write (the common idle-shutdown shape).
     made_a_claim = False
+    # The unexpected-error backstop, the same one every leader
+    # maintenance loop carries (see taskq.worker._transient): a
+    # NON-transient dispatch failure (a revoked grant, a code bug, a
+    # data error) is logged loudly each round but must not retry
+    # forever into a zombie that keeps ticking, keeps its liveness
+    # registration fresh and stays ready while claiming nothing. After
+    # ``max_consecutive`` consecutive unexpected rounds the ORIGINAL
+    # error propagates and tears the worker down deliberately;
+    # transient failures never feed it, and only a fully successful
+    # round resets the streak, exactly the leader loops' semantics.
+    guard = UnexpectedLoopErrorGuard("worker.producer")
     # Monotonic deadline before which no claim round may start, armed by
     # a short round (see _CLAIM_COOLDOWN_SECONDS), so the triggers that
     # land while it runs (wakes, freed slots) coalesce into one round.
@@ -376,9 +391,20 @@ async def producer_loop(
                     )
                 else:
                     _producer_log.exception("dispatch-batch-error", worker_id=str(worker_id))
+                    # Outside the transient set: feed the backstop. At the
+                    # consecutive-failure cap this re-raises the original
+                    # error, ending the zombie-tick state the loop would
+                    # otherwise never leave (see the guard construction
+                    # above and taskq.worker._transient).
+                    guard.unexpected(exc)
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.sleep(poll_interval)
                 continue
+
+            # The round completed without error: reset the backstop's
+            # streak. An empty round counts, a claimed round counts, and
+            # neither a transient nor an unexpected failure reaches here.
+            guard.ok()
 
             if len(jobs) < available:
                 # A short round: the backlog is drained or a peer won it.
