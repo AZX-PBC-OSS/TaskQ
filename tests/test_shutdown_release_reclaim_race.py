@@ -9,7 +9,7 @@ on rows with ``status='running'``. If a departing worker's lock lease has
 already expired by the time the RELEASING phase reaches a row -- a slow
 shutdown racing a leader's reclaim tick -- both writers could believe they
 are the one entitled to release the row: the reclaim sweep would spend it as
-a crash (``_ATTEMPT_REFUND_SQL`` is NOT used on the crash-reclaim retry arm;
+a crash (``ATTEMPT_REFUND_SQL`` is NOT used on the crash-reclaim retry arm;
 the attempt is left as claimed) while ``mark_interrupted`` would leave the
 attempt as claimed too (the interrupt arm carries no refund since: the
 attempt started executing), and if both landed the job could be written

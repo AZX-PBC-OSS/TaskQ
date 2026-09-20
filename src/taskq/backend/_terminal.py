@@ -102,7 +102,7 @@ rejected rather than shipped behind a setting.
 """
 
 from datetime import timedelta
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Final, Literal, assert_never
 from uuid import UUID
 
 import structlog
@@ -125,6 +125,8 @@ from taskq.backend._protocol import (
     JobId,
     JobRow,
     SnoozeOutcome,
+    SqlOutcomeBranch,
+    parse_outcome_branch,
     validate_denial_reason,
     validate_snooze_outcome,
 )
@@ -557,7 +559,7 @@ async def _mark_retry(
     attempt: int | None = None,
     acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> JobRow:
-    branch: str
+    branch: SqlOutcomeBranch
     async with pool.acquire(timeout=acquire_timeout) as conn:
         # Error text escaped at the bind for the same reason as
         # _mark_failed; the retry_delay is floored at
@@ -580,32 +582,43 @@ async def _mark_retry(
             actual = await _select_owner(conn, sql, job_id)
             raise WorkerOwnershipMismatch(job_id, worker_id, actual)
 
-        branch = rec["outcome_branch"]
+        branch = parse_outcome_branch(rec["outcome_branch"])
         row = _job_row_from_record(rec)
         # The attempt row (duration_ms computed from the winning arm's
         # own timestamps) and the state_change event are written by the
         # fused statement's per-arm CTEs, see _sql_templates.mark_retry.
 
-    if branch == "retried":
-        log_state_change(
-            logger,
-            from_state="running",
-            to_state="scheduled",
-            job_id=str(job_id),
-            worker_id=str(worker_id),
-            attempt=row.attempt,
-        )
-        return row
-    log_state_change(
-        logger,
-        from_state="running",
-        to_state="failed",
-        job_id=str(job_id),
-        worker_id=str(worker_id),
-        attempt=row.attempt,
-        reason="schedule_to_close",
-    )
-    return row
+    match branch:
+        case "retried":
+            log_state_change(
+                logger,
+                from_state="running",
+                to_state="scheduled",
+                job_id=str(job_id),
+                worker_id=str(worker_id),
+                attempt=row.attempt,
+            )
+            return row
+        case "deadline_failed":
+            log_state_change(
+                logger,
+                from_state="running",
+                to_state="failed",
+                job_id=str(job_id),
+                worker_id=str(worker_id),
+                attempt=row.attempt,
+                reason="schedule_to_close",
+            )
+            return row
+        case "snoozed" | "cancelled" | "failed" | "max_attempts_failed" | "released":
+            # mark_retry's statement RETURNs exactly the two branches
+            # handled above (its arms are the retried CTE and the
+            # deadline_failed CTE); any other parsed branch is template
+            # drift and must fail loudly rather than masquerade as one of
+            # the two contracts this caller reports.
+            raise AssertionError(f"mark_retry cannot emit outcome branch: {branch}")
+        case _:
+            assert_never(branch)
 
 
 # ── mark_cancelled ─────────────────────────────────────────────────────
@@ -767,12 +780,12 @@ async def _mark_snoozed(
     # identical error), before the pool is even touched, so an illegal
     # outcome raises loudly whatever the job's state instead of firing
     # no arm and stranding the row 'running'. denial_reason keeps the
-    # same boundary check even though the statement no longer branches
-    # on it, a caller naming a reason the protocol does not define is a
-    # coding error the API must refuse rather than silently accept.
+    # same boundary check even though no arm branches on it, a caller
+    # naming a reason the protocol does not define is a coding error the
+    # API must refuse rather than silently accept.
     validate_snooze_outcome(outcome)
     validate_denial_reason(denial_reason)
-    branch: str
+    branch: SqlOutcomeBranch
     async with pool.acquire(timeout=acquire_timeout) as conn:
         rec = await conn.fetchrow(
             sql.mark_snoozed,
@@ -784,11 +797,12 @@ async def _mark_snoozed(
             _progress_jsonb_escaped(progress_state),
             outcome,
             attempt,
+            denial_reason,
         )
         if rec is None:
             return "noop"
 
-        branch = rec["outcome_branch"]
+        branch = parse_outcome_branch(rec["outcome_branch"])
         # A non-terminal snooze/denial writes no attempt/event rows and no
         # timestamps of its own, it increments the outcome-keyed counter
         # on the row (see _sql_templates.mark_snoozed).  The deadline
@@ -798,44 +812,54 @@ async def _mark_snoozed(
         # state_change event exactly like every other terminal
         # transition.
 
-    if branch == "snoozed":
-        log_state_change(
-            logger,
-            from_state="running",
-            to_state="scheduled",
-            job_id=str(job_id),
-            worker_id=str(worker_id),
-            attempt=rec["attempt"],
-        )
-        return "scheduled"
-    if branch == "cancelled":
-        # The deadline arm's cancel-first exit (the mark_cancelled
-        # semantics the statement's deadline_cancelled arm carries): the
-        # schedule_to_close lapsed at deferral time on a row carrying a
-        # cancel phase, and the statement terminalised 'cancelled' per
-        # operator intent, not 'failed'. The row is already terminal, so
-        # there is nothing left for the worker's cancel ladder to do and
-        # no DeadlineExceeded failure to report: read back "noop", the
-        # same contract a fenced-out deferral returns (the deferral did
-        # not land; the operator's cancel decided the row).
-        log_state_change(
-            logger,
-            from_state="running",
-            to_state="cancelled",
-            job_id=str(job_id),
-            worker_id=str(worker_id),
-            attempt=rec["attempt"],
-        )
-        return "noop"
-    log_state_change(
-        logger,
-        from_state="running",
-        to_state="failed",
-        job_id=str(job_id),
-        worker_id=str(worker_id),
-        attempt=rec["attempt"],
-    )
-    return "failed"
+    match branch:
+        case "snoozed":
+            log_state_change(
+                logger,
+                from_state="running",
+                to_state="scheduled",
+                job_id=str(job_id),
+                worker_id=str(worker_id),
+                attempt=rec["attempt"],
+            )
+            return "scheduled"
+        case "cancelled":
+            # The deadline arm's cancel-first exit (the mark_cancelled
+            # semantics the statement's deadline_cancelled arm carries): the
+            # schedule_to_close lapsed at deferral time on a row carrying a
+            # cancel phase, and the statement terminalised 'cancelled' per
+            # operator intent, not 'failed'. The row is already terminal, so
+            # there is nothing left for the worker's cancel ladder to do and
+            # no DeadlineExceeded failure to report: read back "noop", the
+            # same contract a fenced-out deferral returns (the deferral did
+            # not land; the operator's cancel decided the row).
+            log_state_change(
+                logger,
+                from_state="running",
+                to_state="cancelled",
+                job_id=str(job_id),
+                worker_id=str(worker_id),
+                attempt=rec["attempt"],
+            )
+            return "noop"
+        case "failed":
+            log_state_change(
+                logger,
+                from_state="running",
+                to_state="failed",
+                job_id=str(job_id),
+                worker_id=str(worker_id),
+                attempt=rec["attempt"],
+            )
+            return "failed"
+        case "retried" | "deadline_failed" | "max_attempts_failed" | "released":
+            # mark_snoozed's statement RETURNs exactly the three branches
+            # handled above; any other parsed branch is template drift
+            # and must fail loudly rather than fall through to the
+            # "failed" contract a stale arm spelling used to get.
+            raise AssertionError(f"mark_snoozed cannot emit outcome branch: {branch}")
+        case _:
+            assert_never(branch)
 
 
 # ── mark_retry_after ───────────────────────────────────────────────────
@@ -854,7 +878,7 @@ async def _mark_retry_after(
     attempt: int | None = None,
     acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> Literal["scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"]:
-    branch: str
+    branch: SqlOutcomeBranch
     async with pool.acquire(timeout=acquire_timeout) as conn:
         sql_stmt = (
             sql.mark_retry_after_consume_true
@@ -873,7 +897,7 @@ async def _mark_retry_after(
         if rec is None:
             return "noop"
 
-        branch = rec["outcome_branch"]
+        branch = parse_outcome_branch(rec["outcome_branch"])
         # Why row_attempt, not attempt: the caller's ``attempt`` hint (the
         # SQL bind above) is a different value from the row's own attempt
         # the logs must report, a same-named local would obscure the
@@ -885,51 +909,69 @@ async def _mark_retry_after(
         # and the snoozed arms' now_ts-based duration included), see
         # _sql_templates.mark_retry_after_consume_*.
 
-    if branch == "snoozed":
-        log_state_change(
-            logger,
-            from_state="running",
-            to_state="scheduled",
-            job_id=str(job_id),
-            worker_id=str(worker_id),
-            attempt=row_attempt,
-            cause="retry_after",
-        )
-        return "scheduled"
-    if branch == "cancelled":
-        # The deadline arm's cancel-first exit (the mark_cancelled
-        # semantics the statement's deadline_cancelled arm carries): the
-        # schedule_to_close lapsed at deferral time on a row carrying a
-        # cancel phase, and the statement terminalised 'cancelled' per
-        # operator intent, ahead of both the budget and deadline
-        # failure arms. The row is already terminal, so there is nothing
-        # left for the worker's cancel ladder to do and no
-        # DeadlineExceeded/MaxAttemptsExceeded failure to report: read
-        # back "noop", the same contract a fenced-out deferral returns
-        # (the deferral did not land; the operator's cancel decided the
-        # row).
-        log_state_change(
-            logger,
-            from_state="running",
-            to_state="cancelled",
-            job_id=str(job_id),
-            worker_id=str(worker_id),
-            attempt=row_attempt,
-            cause="retry_after",
-        )
-        return "noop"
-    log_state_change(
-        logger,
-        from_state="running",
-        to_state="failed",
-        job_id=str(job_id),
-        worker_id=str(worker_id),
-        attempt=row_attempt,
-        cause="retry_after",
-    )
-    if branch == "max_attempts_failed":
-        return "failed:MaxAttemptsExceeded"
-    return "failed:DeadlineExceeded"
+    match branch:
+        case "snoozed":
+            log_state_change(
+                logger,
+                from_state="running",
+                to_state="scheduled",
+                job_id=str(job_id),
+                worker_id=str(worker_id),
+                attempt=row_attempt,
+                cause="retry_after",
+            )
+            return "scheduled"
+        case "cancelled":
+            # The deadline arm's cancel-first exit (the mark_cancelled
+            # semantics the statement's deadline_cancelled arm carries): the
+            # schedule_to_close lapsed at deferral time on a row carrying a
+            # cancel phase, and the statement terminalised 'cancelled' per
+            # operator intent, ahead of both the budget and deadline
+            # failure arms. The row is already terminal, so there is nothing
+            # left for the worker's cancel ladder to do and no
+            # DeadlineExceeded/MaxAttemptsExceeded failure to report: read
+            # back "noop", the same contract a fenced-out deferral returns
+            # (the deferral did not land; the operator's cancel decided the
+            # row).
+            log_state_change(
+                logger,
+                from_state="running",
+                to_state="cancelled",
+                job_id=str(job_id),
+                worker_id=str(worker_id),
+                attempt=row_attempt,
+                cause="retry_after",
+            )
+            return "noop"
+        case "max_attempts_failed" | "deadline_failed":
+            log_state_change(
+                logger,
+                from_state="running",
+                to_state="failed",
+                job_id=str(job_id),
+                worker_id=str(worker_id),
+                attempt=row_attempt,
+                cause="retry_after",
+            )
+            # The two terminal arms report the class that decided the row:
+            # a budget exhaustion is a different operator conversation from
+            # a lapsed schedule_to_close, so the fall-through that used to
+            # report DeadlineExceeded for every unrecognized branch is a
+            # per-arm return now.
+            return (
+                "failed:MaxAttemptsExceeded"
+                if branch == "max_attempts_failed"
+                else "failed:DeadlineExceeded"
+            )
+        case "retried" | "failed" | "released":
+            # Neither consume_budget variant's statement RETURNs these
+            # branches (mark_retry_after has no retried CTE, no
+            # budget-free failed arm and no release arm); any other
+            # parsed branch is template drift and must fail loudly
+            # rather than read back as a deadline failure.
+            raise AssertionError(f"mark_retry_after cannot emit outcome branch: {branch}")
+        case _:
+            assert_never(branch)
 
 
 # ── mark_interrupted ───────────────────────────────────────────────────
@@ -957,7 +999,7 @@ async def _mark_interrupted(
     A hold that would outlive
     ``schedule_to_close`` fails the row on the deadline instead.
     """
-    branch: str
+    branch: SqlOutcomeBranch
     async with pool.acquire(timeout=acquire_timeout) as conn:
         rec = await conn.fetchrow(
             sql.mark_interrupted,
@@ -975,35 +1017,44 @@ async def _mark_interrupted(
             record_job_interrupted_noop(None)
             return "noop"
 
-        branch = rec["outcome_branch"]
+        branch = parse_outcome_branch(rec["outcome_branch"])
 
-    if branch == "released":
-        row_status: str = rec["status"]
-        record_job_interrupted(rec["actor"], held=row_status == "scheduled")
-        log_state_change(
-            logger,
-            from_state="running",
-            to_state=row_status,
-            job_id=str(job_id),
-            worker_id=str(worker_id),
-            attempt=rec["attempt"],
-            reason="interrupted",
-        )
-        return "pending" if row_status == "pending" else "scheduled"
+    match branch:
+        case "released":
+            row_status: str = rec["status"]
+            record_job_interrupted(rec["actor"], held=row_status == "scheduled")
+            log_state_change(
+                logger,
+                from_state="running",
+                to_state=row_status,
+                job_id=str(job_id),
+                worker_id=str(worker_id),
+                attempt=rec["attempt"],
+                reason="interrupted",
+            )
+            return "pending" if row_status == "pending" else "scheduled"
 
-    # deadline_failed arm: the hold would have outlived the job's own
-    # schedule_to_close, so the job fails on the deadline like every
-    # deferral arm's deadline exit.
-    log_state_change(
-        logger,
-        from_state="running",
-        to_state="failed",
-        job_id=str(job_id),
-        worker_id=str(worker_id),
-        attempt=rec["attempt"],
-        reason="schedule_to_close",
-    )
-    return "failed:DeadlineExceeded"
+        case "deadline_failed":
+            # The hold would have outlived the job's own
+            # schedule_to_close, so the job fails on the deadline like every
+            # deferral arm's deadline exit.
+            log_state_change(
+                logger,
+                from_state="running",
+                to_state="failed",
+                job_id=str(job_id),
+                worker_id=str(worker_id),
+                attempt=rec["attempt"],
+                reason="schedule_to_close",
+            )
+            return "failed:DeadlineExceeded"
+        case "retried" | "snoozed" | "cancelled" | "failed" | "max_attempts_failed":
+            # mark_interrupted's statement RETURNs exactly the two branches
+            # handled above; any other parsed branch is template drift and
+            # must fail loudly rather than read back as a deadline failure.
+            raise AssertionError(f"mark_interrupted cannot emit outcome branch: {branch}")
+        case _:
+            assert_never(branch)
 
 
 # ── write_attempt ──────────────────────────────────────────────────────

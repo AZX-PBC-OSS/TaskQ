@@ -90,8 +90,10 @@ __all__ = [
     "ScheduleRecord",
     "ScheduleUpdateArgs",
     "SnoozeOutcome",
+    "SqlOutcomeBranch",
     "parse_batch_status",
     "parse_cancel_phase",
+    "parse_outcome_branch",
     "parse_retry_kind",
     "validate_denial_reason",
     "validate_snooze_outcome",
@@ -370,6 +372,29 @@ type BatchStatus = Literal["active", "complete", "aborted"]
 """Lifecycle status of a batch row in the ``batches`` table."""
 
 
+type SqlOutcomeBranch = Literal[
+    "retried",
+    "deadline_failed",
+    "snoozed",
+    "cancelled",
+    "failed",
+    "max_attempts_failed",
+    "released",
+]
+"""Closed set of ``outcome_branch`` values the fused terminal statements'
+RETURNING arms emit (``backend/_sql_templates.py``).
+
+Why a closed ``Literal`` and not the bare ``str`` the rows used to be read
+as: the value decides which observability and return contract a terminal
+write reports, and the multi-arm statements emit only a SUBSET of the set
+(``mark_retry`` never emits ``"snoozed"``; ``mark_interrupted`` never emits
+``"max_attempts_failed"``), so a typo'd arm literal or a renamed branch used
+to degrade silently into a fall-through arm's semantics. Parsing at the
+read site plus pyright's exhaustiveness checking over the union in the
+consumers makes a future or renamed arm a compile error instead.
+"""
+
+
 class JobSortField(Enum):
     """Sort ordering for :meth:`Backend.list_jobs` via :attr:`JobFilter.order_by`.
 
@@ -525,6 +550,26 @@ def parse_retry_kind(value: str) -> RetryKind:
     # The membership check above is the runtime guarantee; cast expresses
     # the narrowing to pyright without a bare ignore.
     return cast(RetryKind, value)
+
+
+_OUTCOME_BRANCHES: Final[frozenset[str]] = frozenset(get_args(SqlOutcomeBranch.__value__))
+
+
+def parse_outcome_branch(value: str) -> SqlOutcomeBranch:
+    """Convert an untrusted ``str`` (a fused terminal statement's
+    ``outcome_branch`` RETURNING column) into :data:`SqlOutcomeBranch`.
+
+    The :func:`parse_retry_kind` pattern; why the union is closed at all
+    is the :data:`SqlOutcomeBranch` type docstring's story, not restated
+    here. Raises :class:`ValueError` if the value is not one of the seven
+    allowed branches; that signals schema drift between the SQL
+    templates and Python.
+    """
+    if value not in _OUTCOME_BRANCHES:
+        raise ValueError(f"unknown outcome_branch from backend row: {value!r}")
+    # The membership check above is the runtime guarantee; cast expresses
+    # the narrowing to pyright without a bare ignore.
+    return cast(SqlOutcomeBranch, value)
 
 
 def parse_cancel_phase(value: int) -> CancelPhase:
@@ -2000,12 +2045,21 @@ class Backend(Protocol):
         are how sustained contention stays visible.
 
         *denial_reason* names the cause of a denial-class outcome
-        (:data:`DenialReason`) for the caller's own observability ,
-        ``"capacity"`` (the default) is a saturation denial, the store
-        answering "full"; ``"unavailable"`` is the store failing to
-        answer.  Both take the identical non-consuming path; the value is
-        validated at the boundary so an undefined reason is refused
-        rather than silently accepted.
+        (:data:`DenialReason`), ``"capacity"`` (the default) is a
+        saturation denial, the store answering "full"; ``"unavailable"`` is
+        the store failing to answer.  Both take the identical non-consuming
+        path; the value is validated at the boundary so an undefined reason
+        is refused rather than silently accepted.  It is persisted on
+        exactly one surface: the ``state_change`` event detail of the
+        mark_snoozed deadline arm, and only when that TERMINAL arm fires
+        on a denial-keyed outcome (``reservation_denied`` /
+        ``rate_limit_denied`` whose ``schedule_to_close`` has lapsed),
+        where it names which starvation (saturation vs store outage)
+        killed the job.  The discriminator is terminality, not
+        denial-ness: every non-terminal deferral, denial or not, writes
+        no event row, so grepping events for ``denial_reason`` finds
+        nothing on a live denial; the row's outcome counters are the
+        live-denial signal.
         """
         ...
 

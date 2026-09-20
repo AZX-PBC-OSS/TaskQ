@@ -77,6 +77,7 @@ from taskq.backend._protocol import (
     AttemptOutcome,
     BatchRow,
     CancelPhase,
+    DenialReason,
     EnqueueArgs,
     ErrorInfo,
     JobId,
@@ -671,6 +672,7 @@ class DiffSide:
         *,
         outcome: SnoozeOutcome = "snoozed",
         metadata_update: dict[str, object] | None = None,
+        denial_reason: DenialReason = "capacity",
     ) -> str:
         return await self.backend.mark_snoozed(
             self._jobs_by_token[token],
@@ -679,6 +681,7 @@ class DiffSide:
             metadata_update=metadata_update,
             outcome=outcome,
             attempt=await self._attempt_epoch_of(token),
+            denial_reason=denial_reason,
         )
 
     async def mark_retry_after(

@@ -46,9 +46,7 @@ from taskq.backend._protocol import Backend, CancelPhase, JobId
 from taskq.backend._sql import (
     parse_rowcount,  # pyright: ignore[reportPrivateUsage]  # Why: parse_rowcount is the canonical command-tag parser; used identically in worker/cancel.py.
 )
-from taskq.backend._sql_templates import (
-    _ATTEMPT_REFUND_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the one shared attempt-refund fragment, the drain's hand-back is the same non-consuming release shape as the template arms that interpolate it.
-)
+from taskq.backend._sql_fragments import ATTEMPT_REFUND_SQL
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining.
 )
@@ -135,7 +133,7 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
        DRAINING pass; the producer's exit pass is the one write that cannot
        be overtaken by this worker's next claim, because there is none).
        Both refund the claim's attempt increment through the shared
-       ``_ATTEMPT_REFUND_SQL`` fragment, a claim that never reached an
+       ``ATTEMPT_REFUND_SQL`` fragment, a claim that never reached an
        actor bought nothing, so it spends nothing (the same idiom the
        snooze arms carry; the refund is floored at 0
        and a second pass matches no rows, so the two passes together are
@@ -172,7 +170,7 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
     # The attempt refund: the claim stamped attempt + 1 for an execution
     # this hand-back says never happened, so the increment goes back ,
     # the same non-consuming-release idiom the snooze/unavailable and
-    # interruption arms carry through _ATTEMPT_REFUND_SQL. Without it
+    # interruption arms carry through ATTEMPT_REFUND_SQL. Without it
     # every rolling deploy spends
     # one retry of every claimed-but-unstarted job's budget. The alias
     # ``j`` is what the shared fragment qualifies on.
@@ -182,7 +180,7 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
         # by the actor's current assignment from here on (the routing
         # contract in taskq/backend/_dispatch_sql.py) -- the same
         # re-pend class as _SWEEP_1_SQL and the isolate template.
-        f"lock_expires_at=NULL, assignment_routed=true, attempt = {_ATTEMPT_REFUND_SQL} "
+        f"lock_expires_at=NULL, assignment_routed=true, attempt = {ATTEMPT_REFUND_SQL} "
         f"WHERE locked_by_worker=$1 AND status='running' AND j.cancel_phase = 0"
     )
     # The cancel fence (``cancel_phase = 0``): a row carrying an operator

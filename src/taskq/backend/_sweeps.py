@@ -112,6 +112,7 @@ import structlog
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.backend._records import compute_duration_ms, jsonb_param, parse_rowcount
 from taskq.backend._sql import INSERT_EVENTS_DETAIL_BATCH_SQL, WAKE_NOTIFY_SQL
+from taskq.backend._sql_fragments import DEADLINE_EXCEEDED_MESSAGE
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_EVENT_RETENTION_BATCH_SIZE,
@@ -732,6 +733,11 @@ _SWEEP_1_SQL = (
     .replace("{worker_crashed_class}", ERROR_CLASS_WORKER_CRASHED)
 )
 
+# The failure message is substituted by name from the shared constant (the
+# _SWEEP_1_BODY fragment mechanism): the row's text is the one message the
+# terminal arms, the attempt insert below, and the in-memory twin all read,
+# never a restated copy. The rendered statement stays byte-identical to the
+# pre-fragment literal.
 _SWEEP_2_SQL = """\
 -- Bounded batch + MATERIALIZED, same rationale as _SWEEP_1_SQL's comment
 -- block: LIMIT caps one call's lock-hold and write set; MATERIALIZED
@@ -761,13 +767,13 @@ UPDATE "{schema}".jobs j
 SET status = 'failed'::"{schema}".job_status,
     finished_at = clock_timestamp(),
     error_class = '{deadline_exceeded_class}',
-    error_message = 'schedule_to_close reached before next dispatch'
+    error_message = '{deadline_message}'
 FROM snap
 WHERE j.id = snap.id
 RETURNING j.id, snap.prev_status, j.attempt, j.started_at, j.actor,
           clock_timestamp() AS now_ts""".replace(
     "{deadline_exceeded_class}", ERROR_CLASS_DEADLINE_EXCEEDED
-)
+).replace("{deadline_message}", DEADLINE_EXCEEDED_MESSAGE)
 
 _SWEEP_3_SQL = """\
 -- Bounded batch + MATERIALIZED, same rationale as _SWEEP_1_SQL's comment
@@ -1067,6 +1073,9 @@ ON CONFLICT (job_id, attempt) DO NOTHING""".replace(
     "{worker_crashed_class}", ERROR_CLASS_WORKER_CRASHED
 )
 
+# The attempt insert's message is the same shared constant substituted by
+# name; the rendered statement stays byte-identical to the pre-fragment
+# literal.
 _SWEEP_2_ATTEMPTS_BATCH_SQL = """\
 INSERT INTO "{schema}".job_attempts
 (job_id, attempt, started_at, finished_at, outcome, error_class, error_message,
@@ -1074,7 +1083,7 @@ INSERT INTO "{schema}".job_attempts
 SELECT a.job_id, a.attempt,
        COALESCE(a.started_at, clock_timestamp() + (a.ord - 1) * interval '1 microsecond'),
        clock_timestamp() + (a.ord - 1) * interval '1 microsecond',
-       'failed', '{deadline_exceeded_class}', 'schedule_to_close reached before next dispatch',
+       'failed', '{deadline_exceeded_class}', '{deadline_message}',
        NULL, a.duration_ms, NULL, '{{}}'::jsonb
 FROM unnest($1::uuid[], $2::smallint[], $3::timestamptz[], $4::int[])
     WITH ORDINALITY AS a(job_id, attempt, started_at, duration_ms, ord)
@@ -1089,7 +1098,7 @@ FROM unnest($1::uuid[], $2::smallint[], $3::timestamptz[], $4::int[])
 -- rolling back every sibling swept in the same statement.
 ON CONFLICT (job_id, attempt) DO NOTHING""".replace(
     "{deadline_exceeded_class}", ERROR_CLASS_DEADLINE_EXCEEDED
-)
+).replace("{deadline_message}", DEADLINE_EXCEEDED_MESSAGE)
 
 
 class _ReclaimedRow(NamedTuple):

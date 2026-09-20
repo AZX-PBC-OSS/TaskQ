@@ -36,6 +36,16 @@ from taskq.backend._protocol import (
     validate_denial_reason,
     validate_snooze_outcome,
 )
+
+# Why: the twin's deadline arms must stamp the exact failure text the SQL
+# arms stamp (the differential corpus pins the two sides equal), so the
+# message is read from the shared constant the templates interpolate, never
+# restated here. The constants live in the driver-free _sql_fragments module
+# (no backend imports): this file is part of the driver-free testing surface.
+from taskq.backend._sql_fragments import (
+    DEADLINE_EXCEEDED_MESSAGE,
+    DEADLINE_RETRY_EXCEEDED_MESSAGE,
+)
 from taskq.constants import (
     CANCEL_ORIGIN_ABANDONED,
     CANCEL_ORIGIN_COOPERATIVE,
@@ -117,6 +127,22 @@ def _round_trip_progress_state(state: dict[str, object]) -> dict[str, object]:
             raise exc from None
 
 
+def _fenced(row: JobRow, worker_id: UUID, attempt: int | None) -> bool:
+    """True when *row* fails the terminal-write fence: the SQL arms'
+    ``status = 'running' AND locked_by_worker = ... AND attempt = ...``
+    conjuncts (the ``JOB_FENCE_SQL`` fragment in backend/_sql_fragments.py,
+    the bound spelling's ``JOB_FENCE_BOUND_SQL`` single-row form).
+
+    One helper, not a hand-restated predicate per method: the fence is the
+    invariant every terminal write leans on, a conjunct edited in one twin
+    method but not its siblings would let a stale handler's write land
+    exactly where the SQL fence refuses it. ``attempt is None`` (a caller
+    that cannot present the epoch) never matches, mirroring PG's NULL bind
+    never satisfying the equality.
+    """
+    return row.status != "running" or row.locked_by_worker != worker_id or row.attempt != attempt
+
+
 async def _mark_succeeded(
     self: "InMemoryBackend",
     job_id: JobId,
@@ -182,17 +208,10 @@ async def _mark_succeeded(
         )
 
     row = self._jobs.get(job_id)
-    if row is None:
-        return False
-    # The attempt-epoch conjunct, mirroring the PG fence's
-    # ``AND attempt = $8`` one epoch deeper than the worker fence: a
-    # stale handler's write (the row re-dispatched at a later attempt on
-    # the SAME worker) no-ops exactly like a different worker's late
-    # write, and ``attempt=None``, a caller that cannot present the
-    # epoch, never matches (PG binds NULL, which never satisfies the
-    # equality), so a write that cannot prove which attempt it
-    # terminates must not terminate any attempt.
-    if row.status != "running" or row.locked_by_worker != worker_id or row.attempt != attempt:
+    # The fence folds the missing row into the same check (_fenced's
+    # docstring carries the conjuncts' contract, the attempt-epoch
+    # mirror included).
+    if row is None or _fenced(row, worker_id, attempt):
         return False
     now = self._clock.now()
     # Mirror the PG COALESCE: stored (operator-owned) result_ttl applied at
@@ -338,7 +357,7 @@ async def _mark_failed_or_retry(
                 lock_expires_at=None,
                 last_heartbeat_at=None,
                 error_class="DeadlineExceeded",
-                error_message="schedule_to_close reached before next retry dispatch",
+                error_message=DEADLINE_RETRY_EXCEEDED_MESSAGE,
                 progress_seq=progress_seq,
                 progress_state=merged_progress,
             )
@@ -350,7 +369,7 @@ async def _mark_failed_or_retry(
                 now=now,
                 outcome="failed",
                 error_class="DeadlineExceeded",
-                error_message="schedule_to_close reached before next retry dispatch",
+                error_message=DEADLINE_RETRY_EXCEEDED_MESSAGE,
                 error_traceback=None,
                 worker_id=worker_id,
             )
@@ -479,8 +498,9 @@ async def _mark_cancelled(
     row = self._jobs.get(job_id)
     if row is None:
         return False
-    # Attempt-epoch conjunct, see _mark_succeeded's guard comment.
-    if row.status != "running" or row.locked_by_worker != worker_id or row.attempt != attempt:
+    # Attempt-epoch fence, one predicate shared with the sibling writes
+    # (_fenced's docstring).
+    if _fenced(row, worker_id, attempt):
         return False
 
     now = self._clock.now()
@@ -746,15 +766,9 @@ async def _mark_snoozed(
     validate_snooze_outcome(outcome)
     validate_denial_reason(denial_reason)
     row = self._jobs.get(job_id)
-    # Attempt-epoch conjunct, see _mark_succeeded's guard comment; a
-    # fenced-out epoch returns "noop" through the same machinery as the
-    # worker fence.
-    if (
-        row is None
-        or row.status != "running"
-        or row.locked_by_worker != worker_id
-        or row.attempt != attempt
-    ):
+    # The fence folds the missing row into the same check; a fenced-out
+    # epoch returns "noop" through the same machinery as the worker fence.
+    if row is None or _fenced(row, worker_id, attempt):
         return "noop"
 
     now = self._clock.now()
@@ -837,7 +851,7 @@ async def _mark_snoozed(
             status="failed",
             finished_at=now,
             error_class="DeadlineExceeded",
-            error_message="schedule_to_close reached before next dispatch",
+            error_message=DEADLINE_EXCEEDED_MESSAGE,
             error_traceback=None,
             locked_by_worker=None,
             lock_expires_at=None,
@@ -861,7 +875,7 @@ async def _mark_snoozed(
             now=now,
             outcome="failed",
             error_class="DeadlineExceeded",
-            error_message="schedule_to_close reached before next dispatch",
+            error_message=DEADLINE_EXCEEDED_MESSAGE,
             error_traceback=None,
             worker_id=worker_id,
         )
@@ -872,6 +886,16 @@ async def _mark_snoozed(
             now=now,
             error_class="DeadlineExceeded",
             worker_id=worker_id,
+            # The terminal event names which starvation ended a
+            # perpetually-denied job, the twin of the SQL deadline arm's
+            # conditional denial_reason detail (absent for a plain
+            # snooze past the deadline, exactly as the SQL arm's
+            # conditional build omits the key PG-side).
+            **(
+                {"denial_reason": denial_reason}
+                if outcome in ("reservation_denied", "rate_limit_denied")
+                else {}
+            ),
         )
         logger.debug(
             "state-change",
@@ -969,13 +993,9 @@ async def _mark_retry_after(
     attempt: int | None = None,
 ) -> Literal["scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"]:
     row = self._jobs.get(job_id)
-    # Attempt-epoch conjunct, see _mark_succeeded's guard comment.
-    if (
-        row is None
-        or row.status != "running"
-        or row.locked_by_worker != worker_id
-        or row.attempt != attempt
-    ):
+    # Attempt-epoch fence, one predicate shared with the sibling writes
+    # (_fenced's docstring); a fenced-out epoch returns "noop".
+    if row is None or _fenced(row, worker_id, attempt):
         return "noop"
 
     now = self._clock.now()
@@ -1056,7 +1076,7 @@ async def _mark_retry_after(
             status="failed",
             finished_at=now,
             error_class="DeadlineExceeded",
-            error_message="schedule_to_close reached before next dispatch",
+            error_message=DEADLINE_EXCEEDED_MESSAGE,
             error_traceback=None,
             locked_by_worker=None,
             lock_expires_at=None,
@@ -1071,7 +1091,7 @@ async def _mark_retry_after(
             now=now,
             outcome="failed",
             error_class="DeadlineExceeded",
-            error_message="schedule_to_close reached before next dispatch",
+            error_message=DEADLINE_EXCEEDED_MESSAGE,
             error_traceback=None,
             worker_id=worker_id,
         )
@@ -1244,18 +1264,12 @@ async def _mark_interrupted(
     progress_state: dict[str, object] | None = None,
 ) -> Literal["pending", "scheduled", "failed:DeadlineExceeded", "noop"]:
     row = self._jobs.get(job_id)
-    # The fence mirrors the SQL arm conjunct-for-conjunct: running, owned
-    # by this worker, at the presented attempt epoch, and outside any
-    # operator cancel (cancel_phase = 0: an operator cancel in flight wins
-    # and reads back as "noop", since a row with a cancel timestamp set is
-    # cancelled, never re-available).
-    if (
-        row is None
-        or row.status != "running"
-        or row.locked_by_worker != worker_id
-        or row.attempt != attempt
-        or row.cancel_phase != CancelPhase.NONE
-    ):
+    # The fence mirrors the SQL arm conjunct-for-conjunct: the shared
+    # status/owner/attempt-epoch predicate (_fenced), then this arm's
+    # extra cancel conjunct (cancel_phase = 0: an operator cancel in
+    # flight wins and reads back as "noop", since a row with a cancel
+    # timestamp set is cancelled, never re-available).
+    if row is None or _fenced(row, worker_id, attempt) or row.cancel_phase != CancelPhase.NONE:
         return "noop"
 
     now = self._clock.now()
@@ -1278,7 +1292,7 @@ async def _mark_interrupted(
             status="failed",
             finished_at=now,
             error_class="DeadlineExceeded",
-            error_message="schedule_to_close reached before next dispatch",
+            error_message=DEADLINE_EXCEEDED_MESSAGE,
             error_traceback=None,
             locked_by_worker=None,
             lock_expires_at=None,
@@ -1293,7 +1307,7 @@ async def _mark_interrupted(
             now=now,
             outcome="failed",
             error_class="DeadlineExceeded",
-            error_message="schedule_to_close reached before next dispatch",
+            error_message=DEADLINE_EXCEEDED_MESSAGE,
             error_traceback=None,
             worker_id=worker_id,
         )

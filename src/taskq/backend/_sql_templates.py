@@ -23,6 +23,14 @@ from taskq.backend._sql import (
     POLL_CANCEL_FLAGS_SQL,
     WAKE_NOTIFY_SQL,
 )
+from taskq.backend._sql_fragments import (
+    ATTEMPT_REFUND_SQL,
+    DEADLINE_EXCEEDED_MESSAGE,
+    DEADLINE_RETRY_EXCEEDED_MESSAGE,
+    JOB_FENCE_BOUND_SQL,
+    JOB_FENCE_SQL,
+    MIN_DEFERRAL_INTERVAL_SQL,
+)
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     CANCEL_ORIGIN_ABANDONED,
@@ -31,7 +39,6 @@ from taskq.constants import (
     CANCEL_ORIGIN_PENDING,
     ERROR_CLASS_DEADLINE_EXCEEDED,
     ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED,
-    MIN_DEFERRAL_INTERVAL,
 )
 
 __all__ = ["SqlTemplates", "render"]
@@ -121,45 +128,10 @@ COPY_ENQUEUE_COLUMNS: Final[tuple[str, ...]] = tuple(
 # runnable is the fixup's own, issued once and only when it made any.
 COPY_ENQUEUE_STATUS: Final[str] = "scheduled"
 
-# The non-consuming deferral floor, pre-rendered for the two arms that
-# carry it (mark_snoozed's snoozed arm and mark_retry_after's
-# consume_budget=False snoozed arm). Derived from the constant so the
-# SQL and the in-memory twin read one value and cannot drift.
-_MIN_DEFERRAL_INTERVAL_SQL: Final[str] = (
-    f"interval '{MIN_DEFERRAL_INTERVAL.total_seconds()} seconds'"
-)
-
-# The non-consuming release's attempt refund, ONE fragment shared by every
-# release arm that hands back an attempt the actor did not finish on its
-# own terms AND did not start: mark_snoozed's 'snoozed'/'unavailable' arm,
-# mark_retry_after_consume_false's snoozed arm, and the shutdown drain's
-# hand-back (worker/shutdown.py imports this constant). Dispatch stamps
-# ``attempt = j.attempt + 1`` at claim (backend/_dispatch_sql.py); a
-# release that executed nothing returns the increment, floored at 0. The
-# refund revisits an attempt number, which is collision-safe: a
-# non-terminal release writes no job_attempts row, so the PK (job_id,
-# attempt) is never revisited by a writer (see the mark_snoozed comment
-# block below for the full argument).
-#
-# mark_interrupted's release arm is deliberately NOT a consumer: its
-# attempt DID start executing, so refunding the increment re-creates the
-# exact attempt epoch the interrupted (zombie) handler still holds; the
-# zombie's later terminal write then passes the attempt fence and lands
-# on the re-dispatched attempt, and the live execution's own terminal
-# write no-ops. An interruption charges the attempt it ran.
-# The reference is alias-qualified (``j.``): every consumer of the
-# fragment aliases its target table ``j``.
-#
-# None of these release arms wakes the fleet. A row they land as
-# 'pending' is re-pended by UPDATE, which the INSERT-only wake trigger
-# never sees, and no arm issues a pg_notify of its own: the producer's
-# poll floor (WorkerSettings.notify_poll_interval with NOTIFY on,
-# poll_interval without) is the wake source for a released row, the same
-# trade the sweeps' UPDATE re-pends would make were they not batched
-# behind their own single notify. A release is the worker giving a row
-# back (a snooze, a retry-after, a shutdown interrupt), never new work,
-# so a claim within the poll floor is the intended latency.
-_ATTEMPT_REFUND_SQL: Final[str] = "GREATEST(j.attempt - 1, 0)"
+# The fragments below (deadline messages, terminal-write fence, attempt
+# refund, deferral floor) are single-sourced in taskq/backend/_sql_fragments.py,
+# the driver-free module the in-memory twins read; this bundle interpolates
+# them by name so the rendered statements and the twins cannot drift.
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,7 +289,7 @@ WITH upd AS (
         ),
         progress_seq = $5,
         progress_state = CASE WHEN $6::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $6::jsonb ELSE progress_state END
-    WHERE id = $1 AND status = 'running' AND locked_by_worker = $2 AND attempt = $8
+    WHERE {JOB_FENCE_BOUND_SQL.format(attempt_bind=8)}
     RETURNING *
 ), holder AS (
     SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
@@ -356,7 +328,7 @@ WITH upd AS (
         error_traceback = $5,
         progress_seq = $6,
         progress_state = CASE WHEN $7::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $7::jsonb ELSE progress_state END
-    WHERE id = $1 AND status = 'running' AND locked_by_worker = $2 AND attempt = $8
+    WHERE {JOB_FENCE_BOUND_SQL.format(attempt_bind=8)}
     RETURNING *
 ), holder AS (
     SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
@@ -425,7 +397,7 @@ WITH params AS (
            -- rate. effective_delay is the arm's SINGLE delay, status,
            -- scheduled_at and every deadline comparison read it, so the
            -- retried and deadline arms partition exactly.
-           GREATEST($3::interval, {_MIN_DEFERRAL_INTERVAL_SQL}) AS effective_delay,
+           GREATEST($3::interval, {MIN_DEFERRAL_INTERVAL_SQL}) AS effective_delay,
            $9::int AS attempt
 ),
 retried AS (
@@ -451,9 +423,7 @@ retried AS (
                               THEN COALESCE(j.progress_state, '{{}}'::jsonb) || $8::jsonb
                               ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
-      AND j.status = 'running'
-      AND j.locked_by_worker = (SELECT worker_id FROM params)
-      AND j.attempt = (SELECT attempt FROM params)
+      {JOB_FENCE_SQL}
       AND (j.schedule_to_close IS NULL
            OR clock_timestamp() + (SELECT effective_delay FROM params) <= j.schedule_to_close)
     RETURNING j.*, 'retried'::text AS outcome_branch, clock_timestamp() AS now_ts
@@ -463,7 +433,7 @@ deadline_failed AS (
     SET status = 'failed',
         finished_at = clock_timestamp(),
         error_class = '{ERROR_CLASS_DEADLINE_EXCEEDED}',
-        error_message = 'schedule_to_close reached before next retry dispatch',
+        error_message = '{DEADLINE_RETRY_EXCEEDED_MESSAGE}',
         error_traceback = NULL,
         locked_by_worker = NULL,
         lock_expires_at = NULL,
@@ -473,9 +443,7 @@ deadline_failed AS (
                               THEN COALESCE(j.progress_state, '{{}}'::jsonb) || $8::jsonb
                               ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
-      AND j.status = 'running'
-      AND j.locked_by_worker = (SELECT worker_id FROM params)
-      AND j.attempt = (SELECT attempt FROM params)
+      {JOB_FENCE_SQL}
       AND j.schedule_to_close IS NOT NULL
       AND clock_timestamp() + (SELECT effective_delay FROM params) > j.schedule_to_close
       AND NOT EXISTS (SELECT 1 FROM retried)
@@ -515,7 +483,7 @@ deadline_att AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
-           '{ERROR_CLASS_DEADLINE_EXCEEDED}', 'schedule_to_close reached before next retry dispatch', NULL,
+           '{ERROR_CLASS_DEADLINE_EXCEEDED}', '{DEADLINE_RETRY_EXCEEDED_MESSAGE}', NULL,
            -- Terminal arm: duration reads the arm's finished_at, not now_ts.
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
@@ -559,7 +527,7 @@ WITH upd AS (
                            ELSE '{CANCEL_ORIGIN_COOPERATIVE}' END,
         progress_seq = $3,
         progress_state = CASE WHEN $4::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $4::jsonb ELSE progress_state END
-    WHERE id = $1 AND status = 'running' AND locked_by_worker = $2 AND attempt = $5
+    WHERE {JOB_FENCE_BOUND_SQL.format(attempt_bind=5)}
     RETURNING *
 ), holder AS (
     SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
@@ -686,12 +654,13 @@ SELECT * FROM upd""",
         #                     schedule_to_close, or there is none;
         #   deadline_failed, the reschedule point passes
         #                     schedule_to_close.
-        # denial_reason never reaches this statement: 'capacity' (the
+        # denial_reason never branches this statement: 'capacity' (the
         # store answered "full") and 'unavailable' (the store could not
         # answer) are both admission backpressure about a job whose actor
-        # never ran, and take the identical non-consuming shape. The
-        # reason is validated at the Python boundary for the caller's own
-        # observability, not branched on here.
+        # never ran, and take the identical non-consuming shape. It rides
+        # the $9 bind only so the deadline arm's terminal event can name
+        # WHICH starvation ended a perpetually-denied job (the params CTE
+        # comment); a non-denial deferral's event detail is unchanged.
         #
         # The refund revisits attempt numbers, which is collision-safe:
         # a non-terminal snooze/denial writes NO job_attempts/job_events
@@ -739,11 +708,19 @@ WITH params AS (
            -- status, scheduled_at and every deadline comparison read it,
            -- so the snoozed and deadline arms partition exactly (a row can
            -- never match neither).
-            GREATEST($3::interval, {_MIN_DEFERRAL_INTERVAL_SQL}) AS effective_delay,
+            GREATEST($3::interval, {MIN_DEFERRAL_INTERVAL_SQL}) AS effective_delay,
             $4::jsonb AS metadata_update,
             $5::int AS progress_seq,
             $6::jsonb AS progress_state,
-            $8::int AS attempt
+            $8::int AS attempt,
+            -- The denial class the caller reported for THIS deferral (the
+            -- bounded DenialReason set). No arm branches on it, a denial
+            -- takes the identical non-consuming path whatever the reason;
+            -- the deadline arm's event below reads it so the terminal
+            -- record of a starved-out job names WHICH starvation it was
+            -- (saturation vs a store outage), the observability the row
+            -- counters alone cannot carry.
+            $9::text AS denial_reason
 ),
 snoozed AS (
     UPDATE "{s}".jobs j
@@ -765,18 +742,16 @@ snoozed AS (
         -- may be charged to the budget the operator sized for real
         -- runs. Charging denials would make how many real retries a job
         -- gets depend on how saturated the bucket was while it waited.
-        -- The refund expression is the shared _ATTEMPT_REFUND_SQL
+        -- The refund expression is the shared ATTEMPT_REFUND_SQL
         -- fragment (module header).
-        attempt = {_ATTEMPT_REFUND_SQL},
+        attempt = {ATTEMPT_REFUND_SQL},
         snooze_count = CASE WHEN $7::text = 'snoozed' THEN j.snooze_count + 1 ELSE j.snooze_count END,
         rate_limit_blocked_count = CASE WHEN $7::text IN ('reservation_denied', 'rate_limit_denied') THEN j.rate_limit_blocked_count + 1 ELSE j.rate_limit_blocked_count END,
         metadata = j.metadata || COALESCE((SELECT metadata_update FROM params), '{{}}'::jsonb),
         progress_seq = (SELECT progress_seq FROM params),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
-      AND j.status = 'running'
-      AND j.locked_by_worker = (SELECT worker_id FROM params)
-      AND j.attempt = (SELECT attempt FROM params)
+      {JOB_FENCE_SQL}
       -- The cancel fence (the mark_interrupted release arm's conjunct):
       -- an operator cancel in flight WINS over the deferral. A row
       -- carrying a cancel phase must never match this arm; the
@@ -825,9 +800,7 @@ deadline_cancelled AS (
         progress_seq = (SELECT progress_seq FROM params),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
-      AND j.status = 'running'
-      AND j.locked_by_worker = (SELECT worker_id FROM params)
-      AND j.attempt = (SELECT attempt FROM params)
+      {JOB_FENCE_SQL}
       AND j.cancel_phase != 0
       AND j.schedule_to_close IS NOT NULL
       AND clock_timestamp() + (SELECT effective_delay FROM params) > j.schedule_to_close
@@ -839,7 +812,7 @@ deadline_failed AS (
     SET status = 'failed',
         finished_at = clock_timestamp(),
         error_class = '{ERROR_CLASS_DEADLINE_EXCEEDED}',
-        error_message = 'schedule_to_close reached before next dispatch',
+        error_message = '{DEADLINE_EXCEEDED_MESSAGE}',
         error_traceback = NULL,
         locked_by_worker = NULL,
         lock_expires_at = NULL,
@@ -855,9 +828,7 @@ deadline_failed AS (
         progress_seq = (SELECT progress_seq FROM params),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
-      AND j.status = 'running'
-      AND j.locked_by_worker = (SELECT worker_id FROM params)
-      AND j.attempt = (SELECT attempt FROM params)
+      {JOB_FENCE_SQL}
       -- The cancelled arm above owns every phase-carrying row (the
       -- cancel-first ordering); this arm is the clean row's exit. Both
       -- conjuncts are no-ops given the arm order, kept as
@@ -904,7 +875,7 @@ deadline_att AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
-           '{ERROR_CLASS_DEADLINE_EXCEEDED}', 'schedule_to_close reached before next dispatch', NULL,
+           '{ERROR_CLASS_DEADLINE_EXCEEDED}', '{DEADLINE_EXCEEDED_MESSAGE}', NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
@@ -917,9 +888,22 @@ deadline_evt AS (
     INSERT INTO "{s}".job_events
     (job_id, occurred_at, kind, detail)
     SELECT d.id, clock_timestamp(), 'state_change',
+           -- The conditional key is built explicitly, no
+           -- jsonb_strip_nulls wrap: a wrap would silently drop any
+           -- future legitimately-NULL key this object gains. The
+           -- non-denial exit concatenates the empty object, so its
+           -- detail shape is unchanged (no denial_reason key); a
+           -- denial-keyed row's terminal event names the denial class
+           -- the caller reported ($9), so an operator reading the event
+           -- sees which starvation killed the job without joining the
+           -- counter columns.
            jsonb_build_object('from_state', 'running', 'to_state', 'failed',
                               'error_class', '{ERROR_CLASS_DEADLINE_EXCEEDED}',
                               'worker_id', $2::text)
+           || CASE WHEN $7::text IN ('reservation_denied', 'rate_limit_denied')
+                   THEN jsonb_build_object('denial_reason',
+                                           (SELECT denial_reason FROM params))
+                   ELSE '{{}}'::jsonb END
     FROM deadline_failed d
 )
 SELECT * FROM snoozed
@@ -951,9 +935,7 @@ WITH params AS (
         progress_seq = (SELECT progress_seq FROM params),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
-      AND j.status = 'running'
-      AND j.locked_by_worker = (SELECT worker_id FROM params)
-      AND j.attempt = (SELECT attempt FROM params)
+      {JOB_FENCE_SQL}
       -- The cancel fence (the mark_interrupted release arm's conjunct):
       -- an operator cancel in flight WINS over the deferral. A row
       -- carrying a cancel phase must never match this arm; the
@@ -999,9 +981,7 @@ deadline_cancelled AS (
         progress_seq = (SELECT progress_seq FROM params),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
-      AND j.status = 'running'
-      AND j.locked_by_worker = (SELECT worker_id FROM params)
-      AND j.attempt = (SELECT attempt FROM params)
+      {JOB_FENCE_SQL}
       AND j.cancel_phase != 0
       AND j.schedule_to_close IS NOT NULL
       AND clock_timestamp() + (SELECT delay FROM params) > j.schedule_to_close
@@ -1021,9 +1001,7 @@ max_attempts_failed AS (
         progress_seq = (SELECT progress_seq FROM params),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
-      AND j.status = 'running'
-      AND j.locked_by_worker = (SELECT worker_id FROM params)
-      AND j.attempt = (SELECT attempt FROM params)
+      {JOB_FENCE_SQL}
       -- Every non-indefinite kind exhausts here: a non_retryable job at
       -- budget under RetryAfter(consume_budget=True) has no other exit ,
       -- a 'transient'-only predicate left it matching no arm at all and
@@ -1046,7 +1024,7 @@ deadline_failed AS (
     SET status = 'failed',
         finished_at = clock_timestamp(),
         error_class = '{ERROR_CLASS_DEADLINE_EXCEEDED}',
-        error_message = 'schedule_to_close reached before next dispatch',
+        error_message = '{DEADLINE_EXCEEDED_MESSAGE}',
         error_traceback = NULL,
         locked_by_worker = NULL,
         lock_expires_at = NULL,
@@ -1054,9 +1032,7 @@ deadline_failed AS (
         progress_seq = (SELECT progress_seq FROM params),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
-      AND j.status = 'running'
-      AND j.locked_by_worker = (SELECT worker_id FROM params)
-      AND j.attempt = (SELECT attempt FROM params)
+      {JOB_FENCE_SQL}
       AND j.schedule_to_close IS NOT NULL
       AND clock_timestamp() + (SELECT delay FROM params) > j.schedule_to_close
       -- The cancelled arm owns every phase-carrying row (the
@@ -1149,7 +1125,7 @@ deadline_att AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
-           '{ERROR_CLASS_DEADLINE_EXCEEDED}', 'schedule_to_close reached before next dispatch', NULL,
+           '{ERROR_CLASS_DEADLINE_EXCEEDED}', '{DEADLINE_EXCEEDED_MESSAGE}', NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
@@ -1189,7 +1165,7 @@ WITH params AS (
            -- its params comment for the why): this arm is non-consuming
            -- by construction, and it must never park the job at the
            -- head of the dispatch order either.
-            GREATEST($3::interval, {_MIN_DEFERRAL_INTERVAL_SQL}) AS effective_delay,
+            GREATEST($3::interval, {MIN_DEFERRAL_INTERVAL_SQL}) AS effective_delay,
             $4::int AS progress_seq,
             $5::jsonb AS progress_state,
             $6::int AS attempt
@@ -1208,14 +1184,12 @@ snoozed AS (
         -- routes by the actor's current assignment from here on (the
         -- routing contract in taskq/backend/_dispatch_sql.py).
         assignment_routed = true,
-        attempt = {_ATTEMPT_REFUND_SQL},
+        attempt = {ATTEMPT_REFUND_SQL},
         snooze_count = j.snooze_count + 1,
         progress_seq = (SELECT progress_seq FROM params),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
-      AND j.status = 'running'
-      AND j.locked_by_worker = (SELECT worker_id FROM params)
-      AND j.attempt = (SELECT attempt FROM params)
+      {JOB_FENCE_SQL}
       -- The cancel fence (the mark_interrupted release arm's conjunct):
       -- an operator cancel in flight WINS over the deferral. A row
       -- carrying a cancel phase must never match this arm; the
@@ -1258,9 +1232,7 @@ deadline_cancelled AS (
         progress_seq = (SELECT progress_seq FROM params),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
-      AND j.status = 'running'
-      AND j.locked_by_worker = (SELECT worker_id FROM params)
-      AND j.attempt = (SELECT attempt FROM params)
+      {JOB_FENCE_SQL}
       AND j.cancel_phase != 0
       AND j.schedule_to_close IS NOT NULL
       AND clock_timestamp() + (SELECT effective_delay FROM params) > j.schedule_to_close
@@ -1272,7 +1244,7 @@ deadline_failed AS (
     SET status = 'failed',
         finished_at = clock_timestamp(),
         error_class = '{ERROR_CLASS_DEADLINE_EXCEEDED}',
-        error_message = 'schedule_to_close reached before next dispatch',
+        error_message = '{DEADLINE_EXCEEDED_MESSAGE}',
         error_traceback = NULL,
         locked_by_worker = NULL,
         lock_expires_at = NULL,
@@ -1280,9 +1252,7 @@ deadline_failed AS (
         progress_seq = (SELECT progress_seq FROM params),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
-      AND j.status = 'running'
-      AND j.locked_by_worker = (SELECT worker_id FROM params)
-      AND j.attempt = (SELECT attempt FROM params)
+      {JOB_FENCE_SQL}
       AND j.schedule_to_close IS NOT NULL
       AND clock_timestamp() + (SELECT effective_delay FROM params) > j.schedule_to_close
       -- The cancelled arm above owns every phase-carrying row (the
@@ -1329,7 +1299,7 @@ deadline_att AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
-           '{ERROR_CLASS_DEADLINE_EXCEEDED}', 'schedule_to_close reached before next dispatch', NULL,
+           '{ERROR_CLASS_DEADLINE_EXCEEDED}', '{DEADLINE_EXCEEDED_MESSAGE}', NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
@@ -1357,7 +1327,7 @@ UNION ALL SELECT * FROM deadline_cancelled
         # charges the attempt it ran; refunding it would re-create the
         # exact epoch the interrupted handler still holds, and its later
         # terminal write would land on the re-dispatched attempt; see the
-        # _ATTEMPT_REFUND_SQL module header), no job_attempts row is
+        # ATTEMPT_REFUND_SQL module header), no job_attempts row is
         # written (an interruption is not an execution outcome; the same
         # reasoning as the snooze/denial arms above), one job_events
         # state_change with reason 'interrupted' records the transition,
@@ -1411,7 +1381,7 @@ WITH params AS (
            -- slot-monopolisation hazard); a zero hold stays zero so the
            -- release lands pending immediately.
            CASE WHEN $4::interval > interval '0'
-                THEN GREATEST($4::interval, {_MIN_DEFERRAL_INTERVAL_SQL})
+                THEN GREATEST($4::interval, {MIN_DEFERRAL_INTERVAL_SQL})
                 ELSE interval '0' END AS effective_hold,
            $5::int AS progress_seq,
            $6::jsonb AS progress_state
@@ -1433,7 +1403,7 @@ released AS (
         -- re-pend class as the snooze/refund arms and the sweep.
         assignment_routed = true,
         -- Deliberately NO attempt refund (the snooze arms'
-        -- _ATTEMPT_REFUND_SQL): the attempt started executing, so its
+        -- ATTEMPT_REFUND_SQL): the attempt started executing, so its
         -- increment stands; a refund would re-create the epoch the
         -- interrupted handler still holds and let its zombie terminal
  -- write land on the re-dispatched attempt.
@@ -1443,9 +1413,7 @@ released AS (
                               THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params)
                               ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
-      AND j.status = 'running'
-      AND j.locked_by_worker = (SELECT worker_id FROM params)
-      AND j.attempt = (SELECT attempt FROM params)
+      {JOB_FENCE_SQL}
       AND j.cancel_phase = 0
       AND (j.schedule_to_close IS NULL
            OR clock_timestamp() + (SELECT effective_hold FROM params) <= j.schedule_to_close)
@@ -1456,7 +1424,7 @@ deadline_failed AS (
     SET status = 'failed',
         finished_at = clock_timestamp(),
         error_class = '{ERROR_CLASS_DEADLINE_EXCEEDED}',
-        error_message = 'schedule_to_close reached before next dispatch',
+        error_message = '{DEADLINE_EXCEEDED_MESSAGE}',
         error_traceback = NULL,
         locked_by_worker = NULL,
         lock_expires_at = NULL,
@@ -1466,9 +1434,7 @@ deadline_failed AS (
                               THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params)
                               ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
-      AND j.status = 'running'
-      AND j.locked_by_worker = (SELECT worker_id FROM params)
-      AND j.attempt = (SELECT attempt FROM params)
+      {JOB_FENCE_SQL}
       AND j.cancel_phase = 0
       AND j.schedule_to_close IS NOT NULL
       AND clock_timestamp() + (SELECT effective_hold FROM params) > j.schedule_to_close
@@ -1493,7 +1459,7 @@ deadline_att AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
-           '{ERROR_CLASS_DEADLINE_EXCEEDED}', 'schedule_to_close reached before next dispatch', NULL,
+           '{ERROR_CLASS_DEADLINE_EXCEEDED}', '{DEADLINE_EXCEEDED_MESSAGE}', NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
