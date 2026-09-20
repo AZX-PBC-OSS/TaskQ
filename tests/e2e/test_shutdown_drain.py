@@ -148,6 +148,22 @@ async def drain_worker(
 # ── Test ──────────────────────────────────────────────────────────────────
 
 
+def _dump_worker_logs(label: str, worker: E2EWorker) -> None:
+    """Print a stopped-or-running worker container's logs into captured stdout.
+
+    A failure inside the replacement-worker block propagates through the
+    ``running_worker`` context, whose finally stops the container before
+    pytest reports; dumping here is the only way the failure carries its
+    own worker-side evidence.
+    """
+    with contextlib.suppress(Exception):
+        stdout, stderr = worker.container.get_logs()
+        print(f"--- {label} worker stdout (tail) ---")
+        print(stdout.decode(encoding="utf-8", errors="replace")[-8000:])
+        print(f"--- {label} worker stderr (tail) ---")
+        print(stderr.decode(encoding="utf-8", errors="replace")[-2000:])
+
+
 async def test_sigterm_drains_inflight_job(
     request: pytest.FixtureRequest,
     e2e_client: TaskQ,
@@ -259,46 +275,80 @@ async def test_sigterm_drains_inflight_job(
         alias=f"worker-repl-{e2e_schema.schema_name}",
         env=e2e_schema.worker_env,
         label="replacement e2e worker",
-    ):
-        run_id_2 = new_uuid().hex
-        handle2 = await e2e_client.enqueue(
-            send_welcome_email,
-            WelcomeEmailPayload(
-                run_id=run_id_2,
-                user_id="u-repl",
-                email="u-repl@example.com",
-            ),
-        )
-        await handle2.wait(timeout=30)
+    ) as replacement:
+        try:
+            run_id_2 = new_uuid().hex
+            handle2 = await e2e_client.enqueue(
+                send_welcome_email,
+                WelcomeEmailPayload(
+                    run_id=run_id_2,
+                    user_id="u-repl",
+                    email="u-repl@example.com",
+                ),
+            )
+            await handle2.wait(timeout=30)
 
-        effects = await fetch_effects(e2e_pg_pool, e2e_schema.schema_name, run_id_2, kind="send")
-        assert len(effects) == 1, (
-            f"replacement worker should have processed 1 job, got {len(effects)} 'send' effects"
-        )
+            effects = await fetch_effects(
+                e2e_pg_pool, e2e_schema.schema_name, run_id_2, kind="send"
+            )
+            assert len(effects) == 1, (
+                f"replacement worker should have processed 1 job, got {len(effects)} 'send' effects"
+            )
 
-        # The interrupted job: the replacement claims the released row and
-        # runs it to completion - the deploy re-ran the work exactly once,
-        # on its original attempt budget.
-        await wait_for_effects(
-            e2e_pg_pool,
-            e2e_schema.schema_name,
-            run_id,
-            kind="finished",
-            min_count=1,
-            timeout=30.0,
-        )
-        rows = await fetch_job_rows(e2e_pg_pool, e2e_schema.schema_name, [handle.job_id])
-        assert rows[0]["status"] == "succeeded", (
-            "the job interrupted by the SIGTERM must complete on the "
-            f"replacement worker, not be lost to it; got {rows[0]['status']}"
-        )
-        assert rows[0]["attempt"] == 2, (
-            "the interrupted claim spent the attempt at release, so the "
-            "replacement worker's completion is the job's second spent "
-            "attempt: a deploy costs one attempt of budget, the price of "
-            f"not re-running against a live handler; attempt reads "
-            f"{rows[0]['attempt']}"
-        )
+            # The interrupted job: the replacement claims the released row and
+            # runs it to completion - the deploy re-ran the work exactly once,
+            # on its original attempt budget.
+            await wait_for_effects(
+                e2e_pg_pool,
+                e2e_schema.schema_name,
+                run_id,
+                kind="finished",
+                min_count=1,
+                timeout=30.0,
+            )
+
+            # Poll to the terminal row, do not read it once. The 'finished'
+            # effect is the actor body's own last INSERT; the consumer's
+            # mark_succeeded commits a moment later (measured 5 ms behind in
+            # a reproduced failure), so a single read between the two writes
+            # sees 'running' and fails a healthy run. The terminal state is
+            # what this test waits on; poll it with the same deadline
+            # discipline as every other cross-process transition here.
+            async def _replacement_completed() -> bool:
+                rows = await fetch_job_rows(e2e_pg_pool, e2e_schema.schema_name, [handle.job_id])
+                return bool(rows) and rows[0]["status"] == "succeeded"
+
+            await poll_until(
+                _replacement_completed,
+                timeout=30.0,
+                description=(
+                    f"job {handle.job_id} to reach 'succeeded' on the "
+                    f"replacement worker (the consumer's mark_succeeded "
+                    f"lands just after the actor's own 'finished' effect "
+                    f"INSERT)"
+                ),
+            )
+            rows = await fetch_job_rows(e2e_pg_pool, e2e_schema.schema_name, [handle.job_id])
+            assert rows[0]["status"] == "succeeded", (
+                "the job interrupted by the SIGTERM must complete on the "
+                f"replacement worker, not be lost to it; got {rows[0]['status']}"
+            )
+            assert rows[0]["attempt"] == 2, (
+                "the interrupted claim spent the attempt at release, so the "
+                "replacement worker's completion is the job's second spent "
+                "attempt: a deploy costs one attempt of budget, the price of "
+                f"not re-running against a live handler; attempt reads "
+                f"{rows[0]['attempt']}"
+            )
+        except BaseException:
+            # The containers are stopped by their fixtures' finally blocks as
+            # this exception propagates; dump their logs first so the failure
+            # carries its own worker-side evidence (a lost finished effect is
+            # invisible in the jobs/effects rows alone: the worker's own
+            # shutdown, heartbeat, and dispatch lines are the diagnosis).
+            _dump_worker_logs("replacement", replacement)
+            _dump_worker_logs("primary", e2e_worker)
+            raise
 
 
 # ── Graceful drain completes short job ────────────────────────────────────

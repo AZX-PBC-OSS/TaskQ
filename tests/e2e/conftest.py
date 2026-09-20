@@ -501,9 +501,23 @@ async def e2e_schema(
         "TASKQ_MIGRATE_ON_START": "false",
         "TASKQ_ENVIRONMENT": "dev",
         "TASKQ_HEARTBEAT_INTERVAL": "0.5",
-        # The tiny command timeout keeps the cascade floor satisfied
-        # for this lease: 4 * (0.5 + 2 * 0.1) = 2.8 <= 8.0.
-        "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
+        # The command budget rides at 0.5, the largest value that keeps
+        # the cascade floor satisfied for this lease: 4 * (0.5 + 2 * 0.5)
+        # = 6.0 <= 8.0 (the settings validator enforces lease >=
+        # (max_heartbeat_failures + 1) * (heartbeat_interval + 2 *
+        # heartbeat_command_timeout)). An earlier 0.1 budget made every
+        # failed-beat cascade cheap: in the 2026-09-20 CI full-tier
+        # reproduction of the drain-test flake, a replacement worker
+        # booted into a loaded runner, exceeded the 0.1 s budget on 4
+        # consecutive ticks (~2 s of scheduling lag across the tick's
+        # BEGIN-to-COMMIT round trips), and self-isolated: isolate_self
+        # cancelled its in-flight job mid-sleep, the row at attempt ==
+        # max_attempts terminalised through the isolate template's
+        # MaxAttemptsExceeded arm, and no worker was left to re-run it,
+        # so the finished effect never landed. 0.5 gives the tick's
+        # five-statement sequence 5x the scheduling headroom before a
+        # beat even counts as failed.
+        "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.5",
         # 8 s, widened from 3.0 for the same reason test_pg_restart_chaos
         # widened its own module-local lease to 10 s: the lease IS the
         # loop-stall budget for in-flight jobs. Every 0.5 s heartbeat tick
