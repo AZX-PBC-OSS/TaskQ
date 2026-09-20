@@ -1537,6 +1537,7 @@ class _FakeConnForPrune(FakeConn):
         super().__init__(fetchval_result=fetchval_result)
         self._batch_rows = batch_rows or []
         self._batch_index = 0
+        self._pending_write: list[_FakeRecord] | None = None
         self._actor_config_rows = actor_config_rows
         self.fetch_calls: list[tuple[str, tuple[object, ...]]] = []
         # 7565d3f anchors prune cutoffs and the expiry reference instant to
@@ -1559,13 +1560,45 @@ class _FakeConnForPrune(FakeConn):
         # probe itself rather than consuming a scripted batch.
         if "current_setting" in sql:
             return [_FakeRecord({"current_setting": "0"})]
-        if "actor_config" in sql and self._actor_config_rows is not None:
-            return self._actor_config_rows
+        if "actor_config" in sql:
+            if self._actor_config_rows is not None:
+                return self._actor_config_rows
+            # Unscripted config rows: the old positional contract, where
+            # the actor-config fetch consumes the next scripted batch.
+            return self._next_scripted_batch()
+        # The archive write locks the batch by id and returns the grouped
+        # delete counts; the fake answers it from the batch the preceding
+        # candidate fetch selected.
+        if "WITH locked AS MATERIALIZED" in sql:
+            pending = self._pending_write
+            self._pending_write = None
+            return pending if pending is not None else []
+        # The expiry sweep is one statement per batch: the scripted batch
+        # is the statement's own result.
+        if "WITH expired AS MATERIALIZED" in sql:
+            return self._next_scripted_batch()
+        return await self._fetch_candidates(sql, *args)
+
+    def _next_scripted_batch(self) -> list[_FakeRecord]:
         if self._batch_index < len(self._batch_rows):
             rows = self._batch_rows[self._batch_index]
             self._batch_index += 1
             return rows
         return []
+
+    def _candidate_ids(self, write_rows: list[_FakeRecord]) -> list[_FakeRecord]:
+        return [_FakeRecord({"id": new_uuid()}) for _ in write_rows]
+
+    async def _fetch_candidates(self, sql: str, *args: object) -> list[_FakeRecord]:
+        """The candidate window: the next scripted batch, one candidate id
+        per scripted write row. An empty scripted batch selects nothing
+        and ends the drain, the same contract an empty page has on the
+        real backend."""
+        rows = self._next_scripted_batch()
+        self._pending_write = rows
+        if not rows:
+            return []
+        return self._candidate_ids(rows)
 
 
 async def test_prune_terminal_jobs_returns_prune_result() -> None:
@@ -1911,12 +1944,13 @@ class _HookedPruneBatchConn(_FakeConnForPrune):
         self._on_batch = on_batch
         self.batches = 0
 
-    async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
-        if "candidate_ids" in sql:
-            self.batches += 1
-            self._on_batch()
-            return list(self._row)
-        return await super().fetch(sql, *args)
+    async def _fetch_candidates(self, sql: str, *args: object) -> list[_FakeRecord]:
+        """A backlog no drain can exhaust: every candidate fetch selects a
+        full batch and the write returns it."""
+        self.batches += 1
+        self._on_batch()
+        self._pending_write = list(self._row)
+        return self._candidate_ids(self._row)
 
 
 class _HookedExpiryBatchConn(_FakeConnForPrune):
@@ -2037,7 +2071,7 @@ async def test_prune_timeout_latches_sizer_and_degrades_next_attempt() -> None:
 
     class _TimeoutConn(_FakeConnForPrune):
         async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
-            if "candidate_ids" in sql:
+            if _is_prune_candidate_sql(sql):
                 raise asyncpg.QueryCanceledError("canceling statement due to statement timeout")
             return await super().fetch(sql, *args)
 
@@ -2067,7 +2101,7 @@ async def test_prune_timeout_latches_sizer_and_degrades_next_attempt() -> None:
         statement_timeout_ms=4321,
         sizer=sizer,
     )
-    batch_fetches = [(sql, args) for sql, args in conn2.fetch_calls if "candidate_ids" in sql]
+    batch_fetches = [(sql, args) for sql, args in conn2.fetch_calls if _is_prune_candidate_sql(sql)]
     assert batch_fetches, "fixture broken: no prune batch ran"
     assert batch_fetches[0][1][2] == 2_500, (
         f"the latched reduced tier must be the window LIMIT; got args {batch_fetches[0][1]!r}"
@@ -2099,9 +2133,17 @@ class _AlwaysFailsPruneConn(_FakeConnForPrune):
     """Every prune batch statement raises - the failed-attempt shape."""
 
     async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
-        if "candidate_ids" in sql:
+        if _is_prune_candidate_sql(sql):
             raise RuntimeError("connection lost")
         return await super().fetch(sql, *args)
+
+
+def _is_prune_candidate_sql(sql: str) -> bool:
+    """The archive batch's candidate window: a bare SELECT bounded by the
+    finished_at order. The other statements the sweep fetches are CTE
+    forms (the lock-bearing write, the expiry sweep) or machinery probes
+    (current_setting, actor_config), so the shape is the signature."""
+    return "ORDER BY finished_at" in sql and "WITH" not in sql
 
 
 def _lock_attempts(conn: FakeConn) -> int:
@@ -2189,7 +2231,7 @@ async def test_prune_loop_success_stops_retry_for_the_day(monkeypatch: Any) -> N
             self._prune_batches = 0
 
         async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
-            if "candidate_ids" in sql:
+            if _is_prune_candidate_sql(sql):
                 self._prune_batches += 1
                 if self._prune_batches == 1:
                     raise RuntimeError("connection lost")
@@ -2435,7 +2477,7 @@ async def test_prune_loop_releases_lock_on_error(monkeypatch: Any) -> None:  # t
 
     class _ErrorConn(_FakeConnForPrune):
         async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
-            if "candidate_ids" in sql:
+            if _is_prune_candidate_sql(sql):
                 error_seen.set()
                 raise RuntimeError("connection lost")
             # Machinery probes (the batch timeout's current_setting read)
@@ -2618,7 +2660,7 @@ async def test_prune_loop_skips_when_lock_not_acquired(monkeypatch: Any) -> None
     with contextlib.suppress(asyncio.CancelledError):
         await task
 
-    fetch_calls = [sql for sql, _ in leader_conn.fetch_calls if "candidate_ids" in sql]
+    fetch_calls = [sql for sql, _ in leader_conn.fetch_calls if _is_prune_candidate_sql(sql)]
     assert not fetch_calls, "prune should not run when lock not acquired"
     unlock_calls = [sql for sql, _ in leader_conn.execute_calls if "pg_advisory_unlock" in sql]
     assert not unlock_calls, "no unlock needed when lock was never acquired"
@@ -2758,7 +2800,7 @@ async def test_prune_loop_survives_unlock_failure(monkeypatch: Any) -> None:  # 
             return await super().execute(sql, *args)
 
         async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
-            if "candidate_ids" in sql:
+            if _is_prune_candidate_sql(sql):
                 prune_ran.set()
             # Machinery probes answer through the base double (see the
             # _ErrorConn note above).
