@@ -1468,6 +1468,21 @@ forever into a zombie that ticks but does no work. Only a fully successful
 work iteration resets the streak; an idle or transiently-failing iteration
 must not buy the fault more time.
 
+The heartbeat loop is the deliberate exception to the guard: its unexpected
+failures count toward the same `max_heartbeat_failures` isolate threshold as
+its transient failures (one ledger, one reset-on-success rule, the halfway
+early warning and the miss counter shared). Two reasons. The guard's exit is
+deliberately fatal, the loop dies by exception and recovery falls to the
+lease-expiry sweeps, while the heartbeat's own doctrine is stronger:
+`isolate_self` proactively transitions the running rows (`pending` /
+`crashed` / `cancelled`, with `HeartbeatLost` attempt rows) on a fresh direct
+connection before signalling shutdown, and the loop that keeps every lease
+alive is the one component that must never die by exception. And the lease
+arithmetic is sized against this one threshold: the renewal gate's floor is
+`(max_heartbeat_failures + 1)` failed beats, so a second, independent budget
+for the unexpected arm would desynchronise the isolate decision from the
+floor the `lock_lease` invariant enforces.
+
 ### Watchdog settings
 
 | Setting | Default | Description |
