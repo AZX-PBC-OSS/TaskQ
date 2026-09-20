@@ -412,16 +412,17 @@ SELECT returns the old row, and you get a handle with `was_existing=True` for a 
 finished weeks ago.
 
 **`unique_for` does filter on status** — it matches only `unique_states` (default
-`("pending", "scheduled", "running")`) inside the window — but the preflight runs only when
-**both** `unique_for` and `identity_key` are present. Supply one without the other and dedup is
-silently off, with a once-per-actor warning on `JobsClient.enqueue` and **no warning at all** from
-`SubJobEnqueuer.enqueue`.
+`("pending", "scheduled", "running", "succeeded")`) inside the window — but the preflight runs only
+when **both** `unique_for` and `identity_key` are present. Supply one without the other and dedup
+is silently off: both `JobsClient.enqueue` and `SubJobEnqueuer.enqueue` log a once-per-actor
+`actor_config_unique_for_ignored` warning and enqueue a fresh job — a warning, not a silence, but
+one most callers never grep for.
 
 That gives each role in a job chain a different correct answer:
 
 | Role | Wants | Why |
 |---|---|---|
-| **A recurring root** (cron fire, trigger) | `unique_for` + `identity_key`; **no** `idempotency_key` | Needs "not while one is live", which is status-scoped. A stable key here dedups onto the first-ever run forever; a fresh key dedups nothing. |
+| **A recurring root** (cron fire, trigger) | `unique_for` + `identity_key`; **no** `idempotency_key` | Status-scoped dedup: suppresses a second chain while one is live **and** while a completed run is still inside the `unique_for` window — the default `unique_states` include `succeeded`, so a root also blocks on its own `succeeded` row within the window. Size the window to the cadence you want, or narrow `unique_states` if a finished run should not block the next fire. A stable `idempotency_key` here dedups onto the first-ever run forever; a fresh key dedups nothing. |
 | **A self-continuation successor** (the same actor enqueuing its next step) | `idempotency_key` **containing the advancing value** (cursor, page, step); **no** `unique_for` | The key must differ from its predecessor's or it collapses onto that `succeeded` row and the chain stops. `unique_for` would dedup it against its own still-`running` parent. |
 | **A per-item child** (one job per row) | `idempotency_key` from the run id plus the item id | Makes a parent retry a no-op per already-enqueued item. |
 

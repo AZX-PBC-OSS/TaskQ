@@ -453,11 +453,12 @@ including the cursor and idempotency rules a self-enqueuing chain requires, is
 
 Because a chain can then outlive its own cadence, decide overlap deliberately. A cron fire does
 **not** check whether the previous fire is still running, and there is no cron-level overlap
-setting; the suppression options — and the trap that `singleton=True` turns each overlap into a
-fire failure that auto-disables the schedule after
-`TASKQ_CRON_AUTO_DISABLE_THRESHOLD` (default 3) — are set out in
+setting. The suppression options are set out in
 [ops.md — Cron and scheduled workloads](ops.md#cron-and-scheduled-workloads) and
-[sweeps.md — Single-flight the chain](sweeps.md#single-flight-the-chain).
+[sweeps.md — Single-flight the chain](sweeps.md#single-flight-the-chain); note the two behaviours
+differ — a `singleton=True` collision is a strike-free suppression (the schedule advances to the
+next slot and re-evaluates), while *real* consecutive fire failures disable the schedule after
+`TASKQ_CRON_AUTO_DISABLE_THRESHOLD` (default 3).
 
 Some passes genuinely must be cron-paced: one whose next query returns the same rows until its
 children finish cannot chain, because a successor would re-read an unmoved head and starve the

@@ -973,64 +973,52 @@ call site the retrigger returns `was_existing=True`.
 
 ---
 
-## 19. `job_events` and `job_attempts` grow without bound
+## 19. A job is denied admission over and over
 
 ### Symptom
 
-The `taskq` schema becomes the largest thing in the database and keeps growing, while
-job throughput is unremarkable. `job_events` runs to millions of rows. `jobs_archive`
-is empty or tiny, so it looks like `prune` has never reclaimed anything.
-
-A production deployment measured 2,074,421 `reservation_denied` attempts against
-168,963 successes — a **12.3:1 ratio** — for 2.5 GB across `job_events` (1,602 MB) and
-`job_attempts` (911 MB): **32% of a 7.85 GB database was denial bookkeeping.**
+A job (or a whole queue) shows a high denial rate: `rate_limit_blocked_count` climbs on the job
+rows, `taskq.reservation.denials` rises in OTel, and jobs spend far longer `scheduled` between
+claims than their work takes. Throughput is unremarkable while dispatch is busy re-claiming the
+same jobs.
 
 ### Cause
 
-A job denied a `ConcurrencyReservation` slot writes **four durable rows per denial
-cycle** — one `job_attempts` row with `outcome='reservation_denied'` plus three
-`job_events` transitions (`running→scheduled`, `scheduled→pending`, `pending→running`)
-— and then tries again. Measured at ~1,193 bytes per denial.
+A job denied a `ConcurrencyReservation` or rate-limit slot is **snoozed, not failed**: the
+non-terminal arm of `mark_snoozed` refunds the attempt increment (a denial is admission control,
+not an execution, so it consumes no retry budget) and reschedules the job at least
+`MIN_DEFERRAL_INTERVAL` out. Crucially, that arm **writes no `job_attempts` or `job_events`
+rows at all** — the durable record of "how many times was this job refused admission" is the
+`rate_limit_blocked_count` column on the job row itself (and `snooze_count` for voluntary
+deferrals), so sustained saturation costs one counter bump per cycle instead of a table's worth of
+history. (Earlier releases wrote four rows per denial cycle; one job denied 1,014 times
+accumulated 6.5M `job_events` rows before the counters replaced the per-denial trail —
+`01.00.08_01_pre_denial_counters.sql`.)
 
-Two properties make that unbounded rather than self-limiting:
-
-1. **A denial does not consume retry budget.** `mark_snoozed`'s `SET` list contains no
-   `attempt` assignment, and `attempt` is incremented only by the dispatch lease — so
-   both sides of `attempt < max_attempts` advance together and the gap is invariant. The
-   failure gate is unreachable via denials. The only terminal exit is `deadline_failed`,
-   which requires `schedule_to_close`: **a job without `schedule_to_close` can be denied
-   forever.** One production job reached `attempt=1015/1018` over 6h12m before
-   succeeding.
-2. **`prune` cannot reach the rows.** `prune_terminal_jobs` keys on
-   `status = ANY(TERMINAL_STATUSES) AND finished_at < cutoff`. A denial-looping job is
-   never terminal and has `finished_at` reset to `NULL` on every denial, so the FK
-   cascade that removes `job_events` never fires. `job_events` also has no archive table
-   and appears in no expiry CTE — note the asymmetry, since `job_attempts` *is*
-   preserved into `job_attempts_archive`.
-
-There is no setting that suppresses the event trail: the three inserts are
-unconditional and run inside `asyncio.shield`.
+Denial bookkeeping is therefore bounded by row count. What is *not* bounded is time: the
+non-terminal arm's only terminal exit is its deadline arm, which requires `schedule_to_close` —
+**a job without `schedule_to_close` can be denied forever**, cycling between `scheduled` and
+`running` at one counter bump per cycle until capacity frees or the schedule deadline lapses.
 
 ### Diagnosis
 
+The counters are on the job row, so churn is one query:
+
 ```sql
--- Denial-to-success ratio, and which actors are paying it.
-SELECT j.queue, a.outcome, count(*) AS attempts, count(DISTINCT j.actor) AS actors
-FROM taskq.job_attempts a JOIN taskq.jobs j ON j.id = a.job_id
-WHERE a.outcome IN ('reservation_denied', 'succeeded')
-GROUP BY 1, 2 ORDER BY 3 DESC;
+-- Which actors are being denied, and how hard.
+SELECT actor, queue, status, max_attempts,
+       rate_limit_blocked_count, snooze_count, attempt
+FROM taskq.jobs
+WHERE rate_limit_blocked_count > 0 OR snooze_count > 0
+ORDER BY rate_limit_blocked_count DESC;
 
--- Attempts per job: ~1.0 is healthy, >2 means churn.
-SELECT j.actor, count(*) AS attempts, count(DISTINCT j.id) AS jobs,
-       round(count(*)::numeric / nullif(count(DISTINCT j.id), 0), 3) AS per_job
-FROM taskq.job_attempts a JOIN taskq.jobs j ON j.id = a.job_id
-GROUP BY 1 HAVING count(*) > 1000 ORDER BY per_job DESC;
-
--- Is any of it prunable? Rows hanging off a non-terminal job never are.
-SELECT j.status, count(e.*) AS events, pg_size_pretty(sum(pg_column_size(e.*))) AS sz
-FROM taskq.job_events e JOIN taskq.jobs j ON j.id = e.job_id
-GROUP BY 1 ORDER BY 2 DESC;
+-- Fleet-wide denial pressure over time (the OTel counter):
+-- taskq.reservation.denials by source ('reservation' | 'rate_limit').
 ```
+
+`rate_limit_blocked_count` large with `attempt` small is the signature of a denial loop: the job
+keeps being refused admission and never spends budget, so `attempt` stays flat while the counter
+climbs.
 
 ### Fix
 
@@ -1038,7 +1026,7 @@ The churn is **oversubscription**, not load. Excess admission pressure is
 `Σ(per-actor max_concurrent) ÷ queue ceiling`; denial rate scales with it. One
 production tier ran 389 actor slots against a ceiling of 20 (**19.4×**) and minted
 ~1.06M denials/day. Splitting the socket-bound actors onto their own tier took the same
-fleet to **1.60×** and **6,341 denials/day** — a 167× reduction, 1.27 GB/day to ~8 MB/day.
+fleet to **1.60×** and **6,341 denials/day** — a 167× reduction.
 
 - **Separate tiers by what a job OCCUPIES**, not by how expensive it feels. An LLM call
   holds a socket, not a core; putting it on a CPU tier sized for OCR is what creates the
@@ -1049,9 +1037,6 @@ fleet to **1.60×** and **6,341 denials/day** — a 167× reduction, 1.27 GB/day
   bound that matters — not the size of the ceiling.
 - **Set `schedule_to_close`** on anything that claims a reservation, so a denial loop has
   a terminal exit at all.
-- **Do not expect retention to reclaim a live loop.** Retention
-  (`TASKQ_PRUNE_RETENTION_SUCCEEDED`, default 30d) only helps once the owning jobs reach
-  a terminal status; rows under a still-looping job have no reachable cleanup path.
 
 ---
 

@@ -36,7 +36,7 @@ scales, and can be proven to have covered its population.
 
 ## The cron period becomes the throughput
 
-Here is the sweep almost everyone writes first. It selects a fixed page, fans out, notices it did
+A common first version selects a fixed page, fans out, notices it did
 not reach the end, logs that fact, and returns.
 
 ```python
@@ -54,7 +54,7 @@ actor returns after one page and the next page waits for the next cron tick. The
 *reads* like a slice size — how much to do at once — and *behaves* like a rate limiter: a hard
 ceiling of `page_size` items per cron period, permanently.
 
-The arithmetic is unforgiving, because the ceiling is a product of two numbers chosen for
+The ceiling is a product of two numbers chosen for
 unrelated reasons:
 
 | Page size | Cron period | Ceiling | Time to drain 10,000 |
@@ -78,10 +78,11 @@ whether it ever reached the end of its population. "Green with `capped: true` ev
 every pass. There is no self-correction in a fixed-page sweep: falling behind is a stable state,
 not a transient one.
 
-!!! danger "`capped: true` in a log is a bug report, not telemetry"
-    A sweep that logs its own truncation and returns has diagnosed itself and then done nothing
-    about it. If a page can be full, the pass is not finished, and the actor's job is to continue
-    — not to record that it stopped. Treat any "capped", "truncated", or "more rows remain" log
+!!! danger "A `capped: true` log line on a sweep means the pass did not finish"
+    A sweep that stops at the page boundary and returns has detected its own
+    truncation and left the remaining rows to the next tick. If a page can be
+    full, the pass is not finished, and the actor's job is to continue.
+    Treat any "capped", "truncated", or "more rows remain" log
     line in a sweep as an unfinished implementation.
 
 ---
@@ -295,17 +296,17 @@ Conversely, the `unique_for` preflight *does* filter on status, but it only runs
 if args.unique_for is not None and args.identity_key is not None:
 ```
 
-Miss either half and the dedup is a silent no-op (with a once-per-actor warning on
-`JobsClient.enqueue`, and no warning at all from `SubJobEnqueuer.enqueue`). When it does run, it
-matches only jobs in `unique_states` — default `("pending", "scheduled", "running")` — inside the
-`unique_for` window, so a completed predecessor does not block a new run.
+Miss either half and the dedup is a silent no-op — both `JobsClient.enqueue` and
+`SubJobEnqueuer.enqueue` log a once-per-actor `actor_config_unique_for_ignored` warning and enqueue
+a fresh job. When it does run, it matches only jobs in `unique_states` — default
+`("pending", "scheduled", "running", "succeeded")` — created inside the `unique_for` window.
 
 The three roles in a sweep therefore want three different answers, and they are not
 interchangeable:
 
 | Role | `idempotency_key` | `unique_for` + `identity_key` | Why |
 |---|---|---|---|
-| **Root** (cron trigger) | no | **yes** | Status-scoped, live-only: suppresses a second chain while one is in flight, and stops suppressing once it finishes. A key here would be either useless (fresh per tick) or fatal (stable, so the second-ever tick dedups onto tick one forever). |
+| **Root** (cron trigger) | no | **yes** | Status-scoped: suppresses a second chain while one is live. The default `unique_states` include `succeeded`, so the root also blocks on its own `succeeded` row within the window — size `unique_for` to the cadence you want (or narrow `unique_states`) so a finished run does not suppress the next fire for longer than intended. A key here would be either useless (fresh per tick) or fatal (stable, so the second-ever tick dedups onto tick one forever). |
 | **Successor** (self-enqueue) | **yes — containing the cursor** | **no** | The cursor makes each link's key distinct, so a link cannot collide with its own predecessor, and a re-run of one link is still idempotent. `unique_for` here would make the successor dedup against its own still-`running` parent — the chain would end at link one. |
 | **Leaf** (per item) | **yes — item id + run id** | no | A root retry re-enqueues the whole page; the key makes that a no-op per already-enqueued item. |
 
@@ -394,9 +395,9 @@ A chain that advances is self-terminating; a chain whose cursor is *not* advanci
 job generator. The link ceiling in the example above exists for that case, and its role is worth
 being precise about:
 
-> A link ceiling is a **wall**, not the terminator. The short page is the terminator. Hitting the
-> ceiling means the cursor is not advancing, which is a bug — so the ceiling should **fail
-> loudly**, not return quietly.
+A link ceiling is a backstop, not the terminator — the short page is the terminator. Hitting the
+ceiling means the cursor is not advancing, which is a bug — so the ceiling should **fail
+loudly**, not return quietly.
 
 Returning success at the ceiling converts an infinite loop into silent partial coverage, which is
 strictly worse: you have lost both the work and the signal. Raise, so the job lands `failed` and
@@ -457,7 +458,7 @@ on is a guard whose lifetime is the root's lifetime, because a thin root outlive
 | Approach | Verdict |
 |---|---|
 | `unique_for` + `identity_key` on the root | Correct for suppressing a duplicate *root*. Does **not** cover the descendants: the root succeeds in seconds and the window frees while the chain runs. |
-| `singleton=True` on the root | Same blind spot, plus a sharper edge: three consecutive collisions **auto-disable the schedule permanently** (`cron_auto_disable_threshold=3`). See [ops.md — Cron and scheduled workloads](ops.md#cron-and-scheduled-workloads). |
+| `singleton=True` on the root | Same blind spot, and the collision itself is benign: a fire landing while the blocker holds is **suppressed, not failed** — no `consecutive_failures` strike, no auto-disable; the schedule advances to the next cron slot and re-evaluates ([ops.md — Cron and scheduled workloads](ops.md#cron-and-scheduled-workloads)). |
 | `unique_for` on the *successor* | **Wrong and chain-fatal.** A successor would dedup against its own `running` parent and the chain would end at link one. |
 | An app-level run guard | **The robust option.** A row per sweep run with a status; the root refuses to start when a run is `active`, and a link marks it finished on the short page. |
 
@@ -528,20 +529,23 @@ For the "no" case, make the pacing deliberate rather than accidental:
 One more failure worth recognising, because it inverts the usual relationship between a job's
 status and reality: **100% of jobs reporting success while every run is failing.**
 
-When a worker dies mid-job, its **lock lease** expires (`TASKQ_LOCK_LEASE`, 60 s by default) and
-the leader's expired-lock sweep reclaims the row. Note the trigger is the lock lease, not
-`heartbeat_timeout` — that per-job column is stored but not currently enforced by any sweep. What
-the reclaim does depends on the retry budget:
+When a worker dies mid-job, its **lock lease** expires (`TASKQ_LOCK_LEASE`, 60 s by default) or the
+job goes silent past its own `heartbeat_timeout` while the lease is still valid — the reclaim
+sweep's two eligibility arms, and the shorter of the two deadlines governs. What the reclaim does
+depends on the retry budget:
 
 ```sql
 SET status = CASE
-        WHEN j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable'
-            THEN 'pending'        -- redispatched, budget intact
         WHEN j.cancel_phase != 0
-            THEN 'cancelled'
-        ELSE 'crashed'            -- budget exhausted, terminal
+            THEN 'cancelled'          -- the operator's request, honoured
+        WHEN j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable'
+            THEN 'pending'            -- redispatched, budget intact
+        ELSE 'crashed'                -- budget exhausted, terminal
     END
 ```
+
+(the re-pend branch also stamps `scheduled_at = clock_timestamp() + delay`, so a reclaimed job
+returns on its retry curve, not immediately)
 
 TaskQ's own terminal writes are fenced against the dead worker returning later — every one of them
 carries `WHERE id = $1 AND status = 'running' AND locked_by_worker = $2`, so a reclaimed job
