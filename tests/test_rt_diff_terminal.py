@@ -264,12 +264,29 @@ async def _snoozed_arms(side: DiffSide) -> None:
     await side.enqueue("snooze-late", scheduled_in=-1.0, stc_in=5.0)
     await side.dispatch("w1", ["default"], limit=1)
     side.record("snoozed_deadline", await side.mark_snoozed("snooze-late", "w1", 10.0))
+    # Denial-keyed deadline exit: the same deadline arm on a job whose last
+    # deferral was an admission denial. The terminal state_change event
+    # names WHICH starvation ended the job; a plain snooze's deadline event
+    # carries no denial_reason key at all.
+    await side.enqueue("denied-late", scheduled_in=-1.0, stc_in=5.0)
+    await side.dispatch("w1", ["default"], limit=1)
+    side.record(
+        "denied_deadline",
+        await side.mark_snoozed(
+            "denied-late",
+            "w1",
+            10.0,
+            outcome="reservation_denied",
+            denial_reason="unavailable",
+        ),
+    )
 
 
 async def test_diff_mark_snoozed_arms(pg_dsn: str) -> None:
     """The snooze decision table: the attempt refund, the outcome-keyed
-    counters, and the deadline arm - plus the metadata merge and the
-    deferral floor."""
+    counters, and the deadline arm - plain and denial-keyed, the latter
+    naming its starvation in the terminal event's detail - plus the
+    metadata merge and the deferral floor."""
     mem, pg = await run_differential(_snoozed_arms, pg_dsn=pg_dsn)
     assert_mirror(
         "mark_snoozed's arms: 'snoozed' refunds the claim's attempt and "
@@ -286,6 +303,7 @@ async def test_diff_mark_snoozed_arms(pg_dsn: str) -> None:
         "denied_in_budget": "scheduled",
         "denied_at_budget": "scheduled",
         "snoozed_deadline": "failed",
+        "denied_deadline": "failed",
     }
     assert pg["jobs"]["snooze"]["attempt"] == 0
     assert pg["jobs"]["snooze"]["snooze_count"] == 1
@@ -298,6 +316,19 @@ async def test_diff_mark_snoozed_arms(pg_dsn: str) -> None:
     # saturated bucket can never claim.
     assert pg["jobs"]["denied-dead"]["status"] == "scheduled"
     assert pg["jobs"]["denied-dead"]["error_class"] is None
+    # The deadline arm counts the denial that ran the job out of road, and
+    # the terminal state_change event names WHICH starvation ended it; the
+    # plain snooze's deadline event stays shape-unchanged, no denial_reason
+    # key at all (jsonb_strip_nulls drops the absent reason).
+    assert pg["jobs"]["denied-late"]["rate_limit_blocked_count"] == 1
+    denied_deadline_event = next(
+        e for e in pg["jobs"]["denied-late"]["events"] if e["kind"] == "state_change"
+    )
+    assert denied_deadline_event["detail"]["denial_reason"] == "unavailable"
+    plain_deadline_event = next(
+        e for e in pg["jobs"]["snooze-late"]["events"] if e["kind"] == "state_change"
+    )
+    assert "denial_reason" not in plain_deadline_event["detail"]
     assert pg["jobs"]["denied-dead"]["attempt"] == 0
     assert pg["jobs"]["denied-dead"]["rate_limit_blocked_count"] == 1
     assert pg["jobs"]["denied-dead"]["attempts"] == []
