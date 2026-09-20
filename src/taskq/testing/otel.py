@@ -144,6 +144,11 @@ def setup_meter(
     )
     monkeypatch.setattr(
         otel_mod,
+        "_pool_acquire_duration",
+        new_meter.create_histogram("taskq.dispatch.pool_acquire_duration", unit="s"),
+    )
+    monkeypatch.setattr(
+        otel_mod,
         "_consumed_messages",
         new_meter.create_counter("messaging.client.consumed.messages", unit="1"),
     )

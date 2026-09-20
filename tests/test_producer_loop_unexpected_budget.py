@@ -37,7 +37,7 @@ from taskq.worker._transient import DEFAULT_MAX_CONSECUTIVE_UNEXPECTED
 from taskq.worker.run import producer_loop
 
 _LOOP_LABEL = "worker.producer"
-_UNEXPECTED_COUNTER = "taskq.worker.leader_loop_unexpected_errors_total"
+_UNEXPECTED_COUNTER = "taskq.worker.loop_unexpected_errors_total"
 
 
 class _NoopPool:

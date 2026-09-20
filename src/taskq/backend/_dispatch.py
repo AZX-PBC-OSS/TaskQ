@@ -11,6 +11,8 @@ caches is defined one screen above it, and the queue-ops seam
 reference, worker → backend is the correct layer direction.
 """
 
+import asyncio
+import sys
 import time
 import weakref
 from collections.abc import Callable
@@ -31,7 +33,12 @@ from taskq.backend._sql_templates import SqlTemplates
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
 )
-from taskq.obs import get_logger, record_dispatch_duration, record_dispatch_failure
+from taskq.obs import (
+    get_logger,
+    record_dispatch_duration,
+    record_dispatch_failure,
+    record_pool_acquire_duration,
+)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -227,20 +234,20 @@ async def _dispatch_batch(
     # needs.
     # The pool acquire is the round's FIRST stage, and its wait (the part
     # that can raise) happens on the context manager's __aenter__, so it is
-    # acquired explicitly and released in the finally below: a round that
-    # dies waiting for a dispatcher connection (pool exhaustion, acquire
-    # timeout on a saturated PG) is a spent round exactly like one that
-    # dies at the resolve, the probe, or the claim, and records the same
-    # duration-plus-failure telemetry those sibling stages record. Outside
-    # this record the stage is metric-silent, and a pod whose every round
-    # fails at the acquire reads, in the metric stream, exactly like one
-    # polling an idle queue.
+    # acquired explicitly and released in the finally below. The wait is a
+    # different quantity from the SQL latency the sibling stages feed
+    # taskq.dispatch.duration with, so it gets its own histogram; the
+    # failure counter is round-scoped and records here as it does for the
+    # resolve, the probe, and the claim.
     acquire_started = time.monotonic()
     pool_ctx = dispatcher_pool.acquire(timeout=acquire_timeout)
     try:
         conn = await pool_ctx.__aenter__()
+    except asyncio.CancelledError:
+        record_pool_acquire_duration(queue_attr, time.monotonic() - acquire_started)
+        raise
     except Exception:
-        record_dispatch_duration(queue_attr, time.monotonic() - acquire_started)
+        record_pool_acquire_duration(queue_attr, time.monotonic() - acquire_started)
         record_dispatch_failure(queue_attr)
         raise
     try:
@@ -346,11 +353,11 @@ async def _dispatch_batch(
             conn.terminate()
             raise
     finally:
-        # The release the async-with used to run: the body's exit, normal
-        # or exceptional, always releases the checked-out connection. The
-        # release itself raises only on a pool being closed, same as the
-        # async-with it replaced.
-        await pool_ctx.__aexit__(None, None, None)
+        # Release the checked-out connection on every body exit, normal or
+        # exceptional. The in-flight exception info is forwarded so
+        # __aexit__ sees exactly what the async-with form would have
+        # passed it.
+        await pool_ctx.__aexit__(*sys.exc_info())
     return [_job_row_from_record(rec) for rec in records]
 
 
