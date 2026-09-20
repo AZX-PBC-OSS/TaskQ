@@ -429,6 +429,10 @@ ignore = [
 # `timeout` parameter is part of the mocked API surface, not a missing timeout
 # context-manager pattern.
 "tests/test_heartbeat_isolate.py" = ["ASYNC109"]
+# Attack suite: acquire mirrors asyncpg.Pool's `timeout` kwarg; B023: the
+# raced coroutines consume the loop's fixtures within their own iteration
+# (the TaskGroup is fully joined before the loop advances).
+"tests/test_attack_heartbeat_ledger.py" = ["ASYNC109", "B023"]
 # ASYNC109: the pool doubles' timeout parameters mirror asyncpg.Pool.acquire
 # (the driver raises TimeoutError once the budget lapses); the tests pin the
 # forward contract.
