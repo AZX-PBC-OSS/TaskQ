@@ -30,16 +30,25 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import pytest
 import pytest_asyncio
 
 from taskq._ids import new_uuid
+from taskq.backend.clock import SystemClock
+from taskq.backend.postgres import PostgresBackend
+from taskq.testing.settings import make_integration_settings
+from taskq.worker.cancel import make_cancel_controller
+from taskq.worker.deps import WorkerDeps, open_worker_deps
+from taskq.worker.heartbeat import heartbeat_loop
 
 from ._assertions import (
     fetch_effects,
     fetch_job_rows,
+    fresh_worker_ids,
     poll_until,
     wait_for_effects,
 )
@@ -60,6 +69,8 @@ from .conftest import (
 
 if TYPE_CHECKING:
     import asyncpg
+    import asyncpg.pool
+    import asyncpg.transaction
     from testcontainers.core.network import Network
 
     from taskq import TaskQ
@@ -210,6 +221,11 @@ async def test_sigterm_drains_inflight_job(
         timeout=30.0,
     )
 
+    # Snapshot the primary worker's registration before the SIGTERM: the
+    # clean shutdown unregisters it (deletes its workers row), and Phase 2
+    # asserts that cleanup landed.
+    pre_kill_worker_ids = await fresh_worker_ids(e2e_pg_pool, e2e_schema.schema_name)
+
     # Send SIGTERM via the Docker API (``container.kill``) rather than
     # ``exec_run(["kill", "-TERM", "1"])`` - the Docker daemon delivers
     # the signal directly to PID 1, which is more reliable than spawning
@@ -250,21 +266,12 @@ async def test_sigterm_drains_inflight_job(
     )
 
     # ── Phase 2: replacement worker, verify system functional ─────────
-    # Wait for the terminated worker's heartbeat to go stale (>10s old)
-    # before starting the replacement, so the readiness gate cannot be
-    # satisfied by the dead worker's last heartbeat.
-    async def _no_fresh_heartbeats() -> bool:
-        count = await e2e_pg_pool.fetchval(
-            f'SELECT count(*) FROM "{e2e_schema.schema_name}".workers '
-            "WHERE last_seen_at > now() - interval '10 seconds'"
-        )
-        return count == 0
-
-    await poll_until(
-        _no_fresh_heartbeats,
-        timeout=20.0,
-        description="old worker heartbeat gone stale",
-    )
+    # No staleness gate before the replacement: a SIGTERM'd worker shuts
+    # down cleanly by design and unregisters (deletes its own workers
+    # row), so a wait for its heartbeat to go stale or vanish passes
+    # immediately and would verify nothing. The registration cleanup the
+    # shutdown actually guarantees is asserted after the drain completes,
+    # alongside the terminal-state assertions below.
 
     async with running_worker(
         request,
@@ -328,17 +335,32 @@ async def test_sigterm_drains_inflight_job(
                     f"INSERT)"
                 ),
             )
+            # poll_until already guarantees 'succeeded'; re-fetch only to
+            # pin the attempt accounting the terminal poll cannot see.
             rows = await fetch_job_rows(e2e_pg_pool, e2e_schema.schema_name, [handle.job_id])
-            assert rows[0]["status"] == "succeeded", (
-                "the job interrupted by the SIGTERM must complete on the "
-                f"replacement worker, not be lost to it; got {rows[0]['status']}"
-            )
             assert rows[0]["attempt"] == 2, (
                 "the interrupted claim spent the attempt at release, so the "
                 "replacement worker's completion is the job's second spent "
                 "attempt: a deploy costs one attempt of budget, the price of "
                 f"not re-running against a live handler; attempt reads "
                 f"{rows[0]['attempt']}"
+            )
+
+            # The dead worker's registration is gone, not stale: the clean
+            # shutdown unregistered it, so no fresh workers row outlives
+            # the drain. (Polled, not read once: the unregister commit can
+            # land just behind the job's terminal write.)
+            async def _killed_worker_unregistered() -> bool:
+                registered = await fresh_worker_ids(e2e_pg_pool, e2e_schema.schema_name)
+                return not registered & pre_kill_worker_ids
+
+            await poll_until(
+                _killed_worker_unregistered,
+                timeout=20.0,
+                description=(
+                    "the SIGTERM'd worker's registration to be deleted "
+                    "(the shutdown orchestration unregisters cleanly)"
+                ),
             )
         except BaseException:
             # The containers are stopped by their fixtures' finally blocks as
@@ -488,3 +510,177 @@ async def test_second_sigterm_escalates(
         f"escalated shutdown took {elapsed:.2f}s - expected faster than "
         f"the full 2.0s grace window (escalation may not have fired)"
     )
+
+
+# ── Heartbeat tick round-trip pin ─────────────────────────────────────────
+
+
+class _CountingTransaction:
+    """Delegates to a real asyncpg transaction, recording BEGIN/COMMIT/ROLLBACK."""
+
+    def __init__(self, tx: asyncpg.transaction.Transaction, commands: list[str]) -> None:
+        self._tx = tx
+        self._commands = commands
+
+    async def start(self) -> None:
+        await self._tx.start()
+        self._commands.append("BEGIN")
+
+    async def commit(self) -> None:
+        await self._tx.commit()
+        self._commands.append("COMMIT")
+
+    async def rollback(self) -> None:
+        await self._tx.rollback()
+        self._commands.append("ROLLBACK")
+
+
+class _CountingConn:
+    """Delegates to a real connection, recording every awaited command."""
+
+    def __init__(self, conn: asyncpg.Connection, commands: list[str]) -> None:
+        self._conn = conn
+        self._commands = commands
+
+    async def execute(self, sql: str, *args: object) -> str:
+        result = await self._conn.execute(sql, *args)
+        self._commands.append(sql)
+        return result
+
+    async def fetch(self, sql: str, *args: object) -> list[asyncpg.Record]:
+        result = await self._conn.fetch(sql, *args)
+        self._commands.append(sql)
+        return result
+
+    def transaction(self) -> _CountingTransaction:
+        return _CountingTransaction(self._conn.transaction(), self._commands)
+
+    async def close(self) -> None:
+        await self._conn.close()
+
+    def terminate(self) -> None:
+        self._conn.terminate()
+
+    def is_closed(self) -> bool:
+        return self._conn.is_closed()
+
+
+class _CountingAcquire:
+    """Async context manager mirroring ``Pool.acquire``, handing out a counting conn."""
+
+    def __init__(self, ctx: asyncpg.pool.PoolAcquireContext, commands: list[str]) -> None:
+        self._ctx = ctx
+        self._commands = commands
+
+    async def __aenter__(self) -> _CountingConn:
+        return _CountingConn(await self._ctx.__aenter__(), self._commands)
+
+    async def __aexit__(self, *exc: object) -> object:
+        return await self._ctx.__aexit__(*exc)  # type: ignore[arg-type]  # Why: asyncpg's __aexit__ has precise exc-typed parameters; the forwarding wrapper only ever receives what the protocol allows.
+
+
+class _CountingHeartbeatPool:
+    """Wraps the real heartbeat pool, recording every command its ticks issue.
+
+    Delegation is complete: the tick's code path (acquire → transaction →
+    execute/fetch → commit, or the bounded close on failure) runs against
+    the live PG unmodified - only the recording is added.
+    """
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+        self.commands: list[str] = []
+
+    def acquire(self, timeout: float) -> _CountingAcquire:
+        return _CountingAcquire(self._pool.acquire(timeout=timeout), self.commands)
+
+
+# The steady-state tick against this fleet: BEGIN, the liveness write, the
+# gated lease renewal, the reservation write, the cancel-hook poll, COMMIT.
+_TICK_COMMAND_COUNT = 6
+
+
+async def test_heartbeat_tick_round_trip_budget(
+    e2e_schema: E2ESchema,
+    e2e_pg_pool: asyncpg.Pool,
+) -> None:
+    """One production heartbeat tick against the live PG issues exactly six
+    commands - the compensating pin for the 0.5 s budget widening.
+
+    At the old 0.1 s command budget, a tick that grew a round trip (or a
+    beat of scheduling lag) failed loudly - the worker self-isolated and
+    the tier went red. At 0.5 s nothing fails, so the tick's round-trip
+    count is pinned here instead: one extra tick statement - the exact
+    regression the budget widening silenced - must fail this test and be
+    either folded into an existing statement or re-budgeted deliberately.
+    A wall-clock pin is not usable in this tier: container/CI jitter spans
+    tens of milliseconds (the flake this PR fixes is exactly that), so a
+    latency bound tight enough to catch one added round trip would flake;
+    the count is deterministic and environment-independent.
+    """
+    settings = make_integration_settings(
+        e2e_schema.host_dsn,
+        SCHEMA_NAME=e2e_schema.schema_name,
+        # Mirror the e2e fleet's timing knobs exactly (conftest.py
+        # worker_env): the pin guards the budget those knobs set.
+        HEARTBEAT_INTERVAL="0.5",
+        HEARTBEAT_COMMAND_TIMEOUT="0.5",
+        LOCK_LEASE="8.0",
+        CANCELLATION_GRACE_PERIOD="1.0",
+        CLEANUP_GRACE_PERIOD="1.0",
+        TERMINATION_GRACE_PERIOD="15.0",
+    )
+    worker_id = new_uuid()
+
+    stack = AsyncExitStack()
+    try:
+        deps: WorkerDeps = await stack.enter_async_context(open_worker_deps(settings))
+        counting = _CountingHeartbeatPool(deps.heartbeat_pool)
+        deps.heartbeat_pool = counting  # type: ignore[assignment]  # Why: the counting wrapper is a drop-in for asyncpg.Pool in the heartbeat path (same discipline as the unit tier's FakePool), and only the heartbeat touches it here.
+
+        controller = make_cancel_controller(
+            deps,
+            worker_id,
+            PostgresBackend(
+                deps,
+                clock=SystemClock(),
+                cancellation_grace_period=timedelta(seconds=settings.cancellation_grace_period),
+                cleanup_grace_period=timedelta(seconds=settings.cleanup_grace_period),
+            ),
+        )
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(
+            heartbeat_loop(deps, worker_id, shutdown, cancel_controller=controller)
+        )
+
+        async def _first_tick_committed() -> bool:
+            return "COMMIT" in counting.commands
+
+        await poll_until(
+            _first_tick_committed,
+            timeout=30.0,
+            description="the in-process heartbeat's first tick to commit against the live PG",
+        )
+        shutdown.set()
+        await task
+
+        commands = counting.commands
+        assert len(commands) == _TICK_COMMAND_COUNT, (
+            f"one heartbeat tick issued {len(commands)} commands, expected "
+            f"{_TICK_COMMAND_COUNT} (BEGIN, the liveness write, the gated "
+            f"lease renewal, the reservation write, the cancel-hook poll, "
+            f"COMMIT); the tick's round-trip sequence grew - under this "
+            f"fleet's 0.5 s command budget nothing else would fail, so "
+            f"either fold the round trip into an existing statement, or "
+            f"re-derive the budget and this pin together. "
+            f"Commands observed: {[sql[:80] for sql in commands]}"
+        )
+    finally:
+        # The tick registered an in-process workers row; the e2e tier's
+        # shared schema keeps workers rows across tests, so remove ours.
+        with contextlib.suppress(Exception):
+            await e2e_pg_pool.execute(
+                f'DELETE FROM "{e2e_schema.schema_name}".workers WHERE id = $1',
+                worker_id,
+            )
+        await stack.aclose()
