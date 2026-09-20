@@ -14,6 +14,7 @@ Covers:
 
 import asyncio
 from datetime import timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -40,6 +41,21 @@ from taskq.testing.fixtures import ActorRunnerCallable
 from taskq.testing.health import unique_health_sock_path
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.worker.run import _main
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_root_dockerignore_keeps_examples_and_excludes_local_env_files() -> None:
+    """The root-context example image needs source, never local credentials."""
+    patterns = {
+        line.strip()
+        for line in (_REPO_ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+
+    assert "examples" not in patterns
+    assert ".env" in patterns
+    assert ".env.*" in patterns
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
