@@ -285,81 +285,103 @@ _JOB_ATTEMPTS_COLUMNS: tuple[str, ...] = (
 _JOB_ATTEMPTS_COLUMNS_CSV = ", ".join(_JOB_ATTEMPTS_COLUMNS)
 _JOB_ATTEMPTS_COLUMNS_QUALIFIED_CSV = ", ".join(f"ja.{c}" for c in _JOB_ATTEMPTS_COLUMNS)
 
-# Two clocks, one statement. The SELECTION bound is statement_timestamp()
-# (STABLE, the database's wall clock at this statement's start): a
-# VOLATILE clock_timestamp() comparison cannot be a btree index
-# condition, so the candidate scan degrades to a post-scan Filter that
-# walks jobs_finished_at_idx's whole terminal population per batch ,
-# measured on a 70k-terminal-row corpus (PG 18, EXPLAIN ANALYZE,
+# Two clocks, one candidate window. The SELECTION bound is
+# statement_timestamp() (STABLE, the database's wall clock at this
+# statement's start): a VOLATILE clock_timestamp() comparison cannot be a
+# btree index condition, so the candidate scan degrades to a post-scan
+# Filter that walks jobs_finished_at_idx's whole terminal population per
+# batch, measured on a 70k-terminal-row corpus (PG 18, EXPLAIN ANALYZE,
 # BUFFERS): 1,757 buffers / ~11 ms per drained-state call vs 2 buffers /
 # ~0.05 ms when the stable bound is an Index Cond that terminates at the
 # range boundary (pinned, including the server-prepared form a
 # long-lived connection runs past five same-statement executions, by
 # tests/test_index_audit.py). The WRITE side, the archived_at/expire_at
-# stamps below, stays clock_timestamp(): the same clock that wrote
-# finished_at, so a skewed worker host cannot silently extend or shorten
-# retention, and the stamps cannot disagree with the clock domain of the
-# rows they annotate; statement_timestamp() differs from those stamps
-# only by this statement's own execution time (microseconds against a
-# days-scale retention cutoff).
+# stamps in _ARCHIVE_CTE_SQL below, stays clock_timestamp(): the same
+# clock that wrote finished_at, so a skewed worker host cannot silently
+# extend or shorten retention, and the stamps cannot disagree with the
+# clock domain of the rows they annotate; statement_timestamp() differs
+# from those stamps only by the write statement's own execution time
+# (microseconds against a days-scale retention cutoff).
 #
-# MATERIALIZED on candidate_ids (and on the sibling windows below) is
-# essential with the same rationale every windowed sweep in
-# backend/_sweeps.py documents: the planner may inline a LIMIT-ed CTE
-# into the data-modifying statement that joins it and move more rows
-# than the LIMIT (the LIMIT then bounds only the CTE's inlined
-# appearances, not the archived-and-deleted result), so the keyword
-# fences the window and pins that one batch is bounded by its LIMIT.
-_ARCHIVE_CTE_SQL = (
-    "WITH candidate_ids AS MATERIALIZED ("
-    '  SELECT id FROM "{schema}".jobs'
-    '  WHERE status = $1::"{schema}".job_status'
-    "    AND finished_at < statement_timestamp() - $2::interval"
-    "  ORDER BY finished_at"
-    "  LIMIT $3"
-    "), moved AS ("
-    f'  INSERT INTO "{{schema}}".jobs_archive ({_JOBS_COLUMNS_CSV}, archived_at, expire_at)'
-    f"  SELECT {_JOBS_COLUMNS_QUALIFIED_CSV}, clock_timestamp(), clock_timestamp() + $4"
-    '  FROM "{schema}".jobs j'
-    "  JOIN candidate_ids c ON j.id = c.id"
-    # The race fence is the status re-check, here and on the delete arm:
-    # a row whose version changed between this statement's snapshot and
-    # the arm's lock-time re-read does not match its original terminal
-    # status, so a retry that committed in the window keeps the row out
-    # of the archive and out of the delete.
-    '  AND j.status = $1::"{schema}".job_status'
-    "  RETURNING id, actor, status"
-    "), moved_attempts AS ("
-    f'  INSERT INTO "{{schema}}".job_attempts_archive ({_JOB_ATTEMPTS_COLUMNS_CSV})'
-    f"  SELECT {_JOB_ATTEMPTS_COLUMNS_QUALIFIED_CSV}"
-    '  FROM "{schema}".job_attempts ja'
-    "  JOIN moved m ON ja.job_id = m.id"
-    "), deleted AS ("
-    '  DELETE FROM "{schema}".jobs'
-    "  WHERE id IN (SELECT id FROM moved)"
-    # The lock-time re-check (EvalPlanQual re-evaluates this qual against
-    # the row's latest version): a row a retry made live is left live.
-    '  AND status = $1::"{schema}".job_status'
-    "  RETURNING id, actor, status"
-    ") SELECT actor, status, count(*) AS cnt"
-    "  FROM deleted GROUP BY actor, status"
+# Why the candidate window is its OWN statement, and why it carries no
+# row locks: measured on the same corpus, any lock-bearing arm inside
+# the same statement (a FOR UPDATE on this window, or a lock-by-id CTE
+# joined beside it) pushes the statement's custom-plan cost estimate
+# past the generic plan's (the lock prices heap fetches, and the arm's
+# own join prices a whole-table scan against the batch's probe count).
+# Past five executions the plancache then flips the statement to the
+# GENERIC plan, and the generic form cannot prove the partial index's
+# predicate for bound parameters: the candidate scan degrades into a
+# bitmap-plus-sort population walk (measured: the prepared pin fails
+# with LockRows atop the window). As its own statement the window's
+# custom plan is the index-only LIMIT-terminated scan at a fraction of
+# its generic form's estimate, so the plancache keeps the custom plan
+# and the window stays bounded in every plan form (pinned, prepared
+# form included, by tests/test_index_audit.py). The race fence this
+# window deliberately does not carry lives on the write statement
+# below, which locks the small batch by primary key.
+_ARCHIVE_CANDIDATE_SQL = (
+    'SELECT id FROM "{schema}".jobs'
+    ' WHERE status = $1::"{schema}".job_status'
+    "   AND finished_at < statement_timestamp() - $2::interval"
+    " ORDER BY finished_at"
+    " LIMIT $3"
 )
 
-# Same windowing contract as _ARCHIVE_CTE_SQL above, including the
-# MATERIALIZED fence on the LIMIT-ed candidate window.
-_ARCHIVE_CTE_ACTOR_SQL = (
-    "WITH candidate_ids AS MATERIALIZED ("
-    '  SELECT id FROM "{schema}".jobs'
-    '  WHERE status = $1::"{schema}".job_status'
-    "    AND finished_at < statement_timestamp() - $2::interval"
-    "    AND actor = $5"
-    "  ORDER BY finished_at"
-    "  LIMIT $3"
+# The per-actor-retention candidate window: the same selection shape
+# plus an actor equality (the actor filter rides along as a Filter, like
+# status; the plan pins cover this form too).
+_ARCHIVE_CANDIDATE_ACTOR_SQL = (
+    'SELECT id FROM "{schema}".jobs'
+    ' WHERE status = $1::"{schema}".job_status'
+    "   AND finished_at < statement_timestamp() - $2::interval"
+    "   AND actor = $4"
+    " ORDER BY finished_at"
+    " LIMIT $3"
+)
+
+# The archive write: one statement per batch, fed the candidate ids the
+# candidate window (above) selected in the same transaction. The
+# MATERIALIZED fence keeps the lock arm from being inlined into the
+# data-modifying statements that join it, the same contract every
+# windowed sweep in backend/_sweeps.py pins: without it the planner may
+# fold the lock scan into the INSERT/DELETE joins and lock rows beyond
+# the batch the candidate window selected.
+#
+# `locked` is THE lock-time re-read, and the ghost fence: the write
+# statement takes the batch's row locks here, by primary key over the
+# id array (a pkey probe per candidate, bounded in every plan form,
+# custom and generic), and the scan's status qual re-evaluates at lock
+# time (EvalPlanQual), against the row version the lock sees, not the
+# statement snapshot. A retry_job that committed between the candidate
+# window's snapshot and this lock makes the row live; the re-check
+# fails and the row drops out here, before anything is archived. A
+# retry still in flight is skipped (SKIP LOCKED) and keeps its own
+# commit. Without this arm, `moved`'s status re-check reads the
+# statement snapshot alone: a row archived while a retry left it live
+# is a ghost, and when the retried job re-terminalizes and re-enters
+# the prune window, `moved` hits jobs_archive's primary key: a
+# non-transient error that aborts every batch containing that row, the
+# wedge that stops the drain at the head of the window forever.
+#
+# The candidate ids bind as an array ($3::uuid[]), so the lock rides
+# the primary key: the plan stays index-bounded whatever the plancache
+# picks (pinned, prepared form included, by tests/test_index_audit.py).
+_ARCHIVE_CTE_SQL = (
+    "WITH locked AS MATERIALIZED ("
+    "  SELECT j.id"
+    '  FROM "{schema}".jobs j'
+    "  WHERE j.id = ANY($3::uuid[])"
+    '  AND j.status = $1::"{schema}".job_status'
+    "  FOR UPDATE SKIP LOCKED"
     "), moved AS ("
     f'  INSERT INTO "{{schema}}".jobs_archive ({_JOBS_COLUMNS_CSV}, archived_at, expire_at)'
-    f"  SELECT {_JOBS_COLUMNS_QUALIFIED_CSV}, clock_timestamp(), clock_timestamp() + $4"
+    f"  SELECT {_JOBS_COLUMNS_QUALIFIED_CSV}, clock_timestamp(), clock_timestamp() + $2"
     '  FROM "{schema}".jobs j'
-    "  JOIN candidate_ids c ON j.id = c.id"
+    "  JOIN locked l ON j.id = l.id"
+    # Only a row this transaction locked and verified terminal a moment
+    # ago is archived; the re-check is retained as belt and braces (the
+    # locks just taken guarantee the version cannot have moved).
     '  AND j.status = $1::"{schema}".job_status'
     "  RETURNING id, actor, status"
     "), moved_attempts AS ("
@@ -370,6 +392,11 @@ _ARCHIVE_CTE_ACTOR_SQL = (
     "), deleted AS ("
     '  DELETE FROM "{schema}".jobs'
     "  WHERE id IN (SELECT id FROM moved)"
+    # The lock-time re-check's second line of defense: the row version
+    # this statement deletes must still be the terminal one it archived.
+    # Rows were locked and verified in `locked`, so a version change
+    # between the arms cannot occur; the guard stays so the delete never
+    # removes a row its own statement did not verify.
     '  AND status = $1::"{schema}".job_status'
     "  RETURNING id, actor, status"
     ") SELECT actor, status, count(*) AS cnt"
@@ -462,6 +489,59 @@ async def _run_prune_batch(
     return rows
 
 
+async def _run_prune_archive_batch(
+    conn: ConnLike,
+    *,
+    candidate_sql: str,
+    write_sql: str,
+    status: str,
+    retention: timedelta,
+    size: int,
+    archive_interval: timedelta,
+    actor: str | None,
+    statement_timeout_ms: int,
+    sizer: SweepBatchSizer | None,
+) -> Sequence[asyncpg.Record]:
+    """Run one archive batch: the candidate window, then the lock-bearing
+    write, inside one transaction.
+
+    The two statements exist for the plancache (see the comment above
+    ``_ARCHIVE_CANDIDATE_SQL``: a lock-bearing arm priced into the same
+    statement flips it to the generic plan past five executions, and the
+    generic form walks the terminal population), but they keep the
+    single-batch guarantees: the candidate window is a bounded
+    LIMIT-terminated read, the write statement locks and re-checks the
+    batch's rows at lock time, and both run in the transaction this
+    helper opens, so the batch commits or not as a unit under the same
+    server-side ``statement_timeout`` machinery
+    :func:`_run_prune_batch` applies. Returns the write statement's
+    deleted groups (empty when the window found nothing eligible, and
+    empty when every candidate dropped out at lock time: a row a
+    concurrent retry made live, or a batch another transaction is
+    already moving).
+    """
+    async with conn.transaction():
+        prev_timeout = await _apply_batch_statement_timeout(conn, statement_timeout_ms)
+        try:
+            candidate_args: tuple[object, ...] = (status, retention, size)
+            if actor is not None:
+                candidate_args += (actor,)
+            candidates = await conn.fetch(candidate_sql, *candidate_args)
+            rows: Sequence[asyncpg.Record] = ()
+            if candidates:
+                ids = [row["id"] for row in candidates]
+                rows = await conn.fetch(write_sql, status, archive_interval, ids)
+        except DEADLINE_ERRORS:
+            if sizer is not None:
+                sizer.on_timeout()
+            raise
+        # Success path only, same derivation as _run_prune_batch above.
+        await _restore_statement_timeout(conn, prev_timeout)
+    if sizer is not None:
+        sizer.on_success()
+    return rows
+
+
 async def prune_terminal_jobs(
     conn: ConnLike,
     *,
@@ -477,10 +557,11 @@ async def prune_terminal_jobs(
     """Archive-and-delete terminal jobs past their retention, one bounded,
     self-committing batch at a time.
 
-    Each batch is one ``_ARCHIVE_CTE_SQL`` statement (jobs →
-    jobs_archive, job_attempts → job_attempts_archive, jobs DELETE,
-    inside one statement), committed before the next batch runs. The
-    batch runs under a server-side ``statement_timeout`` (the
+    Each batch is one transaction of two statements (the bounded
+    candidate window, then the lock-bearing ``_ARCHIVE_CTE_SQL`` write:
+    jobs → jobs_archive, job_attempts → job_attempts_archive, jobs
+    DELETE), committed before the next batch runs. The batch runs under
+    a server-side ``statement_timeout`` (the
     :data:`~taskq.constants.DEFAULT_PRUNE_STATEMENT_TIMEOUT_MS`
     derivation), and when *sizer* is given its latched tier, not
     *batch_size*, sizes every window, so a database that keeps aborting
@@ -521,20 +602,23 @@ async def prune_terminal_jobs(
     for status in TERMINAL_STATUSES:
         retention = retention_per_status.get(status, DEFAULT_PRUNE_RETENTION)
         cutoffs[status] = db_now - retention
-        sql = _ARCHIVE_CTE_SQL.format(schema=schema)
+        candidate_sql = _ARCHIVE_CANDIDATE_SQL.format(schema=schema)
+        write_sql = _ARCHIVE_CTE_SQL.format(schema=schema)
 
         while True:
             if drain_gate is not None and not drain_gate():
                 break
             size = _effective_prune_batch_size(batch_size, sizer)
             _record_prune_batch_size("prune", size, sizer)
-            rows = await _run_prune_batch(
+            rows = await _run_prune_archive_batch(
                 conn,
-                sql,
-                status,
-                retention,
-                size,
-                archive_interval,
+                candidate_sql=candidate_sql,
+                write_sql=write_sql,
+                status=status,
+                retention=retention,
+                size=size,
+                archive_interval=archive_interval,
+                actor=None,
                 statement_timeout_ms=statement_timeout_ms,
                 sizer=sizer,
             )
@@ -557,7 +641,8 @@ async def prune_terminal_jobs(
 
     if actor_overrides:
         for actor_name, actor_retention in actor_overrides.items():
-            sql = _ARCHIVE_CTE_ACTOR_SQL.format(schema=schema)
+            candidate_sql = _ARCHIVE_CANDIDATE_ACTOR_SQL.format(schema=schema)
+            write_sql = _ARCHIVE_CTE_SQL.format(schema=schema)
             for status in TERMINAL_STATUSES:
                 if actor_retention >= retention_per_status.get(status, DEFAULT_PRUNE_RETENTION):
                     continue
@@ -566,14 +651,15 @@ async def prune_terminal_jobs(
                         break
                     size = _effective_prune_batch_size(batch_size, sizer)
                     _record_prune_batch_size("prune", size, sizer)
-                    rows = await _run_prune_batch(
+                    rows = await _run_prune_archive_batch(
                         conn,
-                        sql,
-                        status,
-                        actor_retention,
-                        size,
-                        archive_interval,
-                        actor_name,
+                        candidate_sql=candidate_sql,
+                        write_sql=write_sql,
+                        status=status,
+                        retention=actor_retention,
+                        size=size,
+                        archive_interval=archive_interval,
+                        actor=actor_name,
                         statement_timeout_ms=statement_timeout_ms,
                         sizer=sizer,
                     )

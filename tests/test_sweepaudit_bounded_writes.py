@@ -58,7 +58,6 @@ from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Wh
     _SWEEP_IDLE_KEYED_SLOTS_SQL,
 )
 from taskq.worker._leader_shared import (  # pyright: ignore[reportPrivateUsage]  # Why: same.
-    _ARCHIVE_CTE_ACTOR_SQL,
     _ARCHIVE_CTE_SQL,
     _EXPIRY_CTE_SQL,
 )
@@ -79,6 +78,14 @@ _LIMIT_CLAUSE_RE = re.compile(r"\bLIMIT\b", re.IGNORECASE)
 # check fails until the entry is removed. Registering a new entry requires
 # writing the justification - that sentence is the review.
 _EXEMPT: dict[str, tuple[str, str]] = {
+    # ── Batch-bounded writes whose LIMIT lives in a sibling statement ──
+    "_ARCHIVE_CTE_SQL": (
+        "ANY($3::uuid[])",
+        "archive write; its write set is the candidate ids bound as an "
+        "array, selected by the LIMIT-ed _ARCHIVE_CANDIDATE_SQL window in "
+        "the same transaction (the split keeps the plancache off the "
+        "generic plan; see _ARCHIVE_CANDIDATE_SQL's comment)",
+    ),
     # ── Keyed single-row writes: the predicate names one primary key ──
     "_INCREMENT_BATCH_FAILURES_SQL": (
         "WHERE id = $1",
@@ -334,7 +341,6 @@ def test_exemption_registry_has_no_stale_entries() -> None:
 # constant, not a copy, because a copy drifts from the SQL that runs).
 _WINDOWED_WRITE_STATEMENTS: dict[str, str] = {
     "_ARCHIVE_CTE_SQL": _ARCHIVE_CTE_SQL,
-    "_ARCHIVE_CTE_ACTOR_SQL": _ARCHIVE_CTE_ACTOR_SQL,
     "_EXPIRY_CTE_SQL": _EXPIRY_CTE_SQL,
     "_SWEEP_4_SQL": _SWEEP_4_SQL,
     "_SWEEP_IDLE_KEYED_BUCKETS_SQL": _SWEEP_IDLE_KEYED_BUCKETS_SQL,

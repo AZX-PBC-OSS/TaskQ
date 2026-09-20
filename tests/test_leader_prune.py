@@ -1158,12 +1158,21 @@ async def test_prune_never_deletes_a_row_a_concurrent_retry_retried(
     caller already told the operator the retry landed), and the delete
     arm's lock-time re-check only tested id membership, so it removed the
     live row: the job never runs again and no shipped path recovers it.
-    The candidates now carry row locks (a retry waits for the prune, then
-    reports the row missing) and both the archive and delete arms
-    re-check the terminal status at lock time (a retry that commits first
-    drops out of the window entirely). Either order is clean; the
-    invariant asserted here is: whenever the retry's UPDATE reports a
-    row, the live row still exists.
+    The candidates stay a lock-free selection window (a FOR UPDATE on
+    that scan forced the planner off the bounded index-only shape);
+    the race fence is the lock-bearing `locked` arm between the window
+    and the archive INSERT: it takes the batch's row locks with the
+    terminal-status qual re-evaluated at lock time (EvalPlanQual), so a
+    retry that commits first drops out of the pipeline before anything
+    is archived, and a retry still in flight is skipped and keeps its
+    own commit. The archive and delete arms re-check the terminal
+    status too. Either order is clean; the invariants asserted here
+    are: whenever the retry's UPDATE reports a row, the live row still
+    exists AND the archive holds no row for it (the ghost the earlier
+    pin missed: the row archived while the retry left it live, which
+    would wedge every later prune batch on the archive's primary key
+    when the retried job re-terminalized); whenever the prune wins, the
+    archive holds exactly one row for the id.
 
     The retry runs as the raw rendered statement ``retry_job`` issues,
     against its own connection: the race under test is between the two
@@ -1198,18 +1207,136 @@ async def test_prune_never_deletes_a_row_a_concurrent_retry_retried(
             f"SELECT status FROM {schema}.jobs WHERE id = $1",  # noqa: S608
             jid,
         )
+        ghost = await pg_conn.fetchrow(
+            f"SELECT id FROM {schema}.jobs_archive WHERE id = $1",  # noqa: S608
+            jid,
+        )
         if retried is not None:
             # The retry's UPDATE landed: the row MUST still be live and
-            # claimable. This is the assertion the old statement failed.
+            # claimable, and the archive MUST NOT hold a row for it. This
+            # is the assertion the old statement failed, plus the ghost
+            # fence: a row archived while the retry left it live wedges
+            # every later prune batch on the archive's primary key once
+            # the retried job re-terminalizes and re-enters the window.
             assert live is not None, (
                 "the retry's update reported a row but the live row is "
                 "gone: the prune deleted concurrently retried work"
             )
             assert live["status"] == "pending"
+            assert ghost is None, (
+                "the live retried row is also archived: a ghost row that "
+                "would wedge the prune on the archive primary key"
+            )
         else:
             # The prune won the race: the row is archived and gone (the
-            # retry's write found no row).
+            # retry's write found no row), archived exactly once.
+            assert live is None
+            assert ghost is not None, (
+                "the prune reports the row deleted but the archive holds "
+                "no row for it: the archive and delete arms diverged"
+            )
+            assert prune_result.total_deleted >= 0
+
+    await retry_conn.close()
+
+
+@pytest.mark.integration
+async def test_prune_rearchives_a_retried_job_without_primary_key_violation(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """A retried job that re-terminalizes and re-enters the prune window
+    archives cleanly, no primary key violation.
+
+    The failure this pin exists for: a prune that archives a row while
+    leaving it live (the ghost) wedges the whole prune family forever.
+    The ghost sits in jobs_archive with the live row still present;
+    when the retried job runs to terminal again and ages past retention,
+    every later archive batch tries to INSERT a second row with the same
+    id, the archive's primary key rejects it, the error is not
+    transient, and the batch containing that row aborts on every
+    attempt: the drain never passes the head of the window again.
+
+    Sequence, run for real: seed a succeeded job past retention, race
+    the prune against a retry_job (the only window a ghost can form
+    in), and then follow whichever outcome the trial reached: when the
+    retry won, re-terminalize the live row past retention (the state a
+    re-run job reaches) and prune again; when the prune won, the row is
+    already archived. Every continuation must archive cleanly: no
+    error, exactly one archive row for the id, no live row left.
+
+    On the ghosting shape the re-prune raises the archive primary key
+    violation the moment a trial that ghosted re-terminalizes its row.
+    """
+    from taskq.backend._sql_templates import render
+
+    await _apply(pg_conn, settings)
+    schema = settings.schema_name
+    old = datetime.now(UTC) - timedelta(days=31)
+    retry_sql = render(schema).retry_job
+
+    retry_conn = await asyncpg.connect(str(settings.pg_dsn))
+
+    trials = 20
+    for _trial in range(trials):
+        jid = await _seed_terminal_job(pg_conn, status="succeeded", finished_at=old, schema=schema)
+        prune_result, retried = await asyncio.gather(
+            prune_terminal_jobs(
+                pg_conn,
+                retention_per_status={"succeeded": timedelta(days=30)},
+                archive_retention=timedelta(days=365),
+                schema=schema,
+            ),
+            retry_conn.fetchrow(retry_sql, jid),
+        )
+
+        live = await pg_conn.fetchrow(
+            f"SELECT status FROM {schema}.jobs WHERE id = $1",  # noqa: S608
+            jid,
+        )
+        if retried is not None:
+            # The retry's UPDATE landed: the row must still be live, and
+            # (the ghost fence) the archive must hold nothing for it.
+            assert live is not None, (
+                "the retry's update reported a row but the live row is "
+                "gone: the prune deleted concurrently retried work"
+            )
+            # Re-terminalize past retention (the state the re-run job
+            # reaches) and re-enter the prune window. On the ghosting
+            # shape this raises: the archive INSERT hits the
+            # jobs_archive primary key on the id archived while the row
+            # stayed live.
+            await pg_conn.execute(
+                f"UPDATE {schema}.jobs SET status = $1::{schema}.job_status, "  # noqa: S608
+                f"finished_at = $2 WHERE id = $3",
+                "succeeded",
+                old,
+                jid,
+            )
+            second = await prune_terminal_jobs(
+                pg_conn,
+                retention_per_status={"succeeded": timedelta(days=30)},
+                archive_retention=timedelta(days=365),
+                schema=schema,
+            )
+            assert second.total_deleted == 1
+        else:
+            # The prune won the race: the row is gone from the live
+            # table and its archive row is this pass's own.
             assert live is None
             assert prune_result.total_deleted >= 0
+
+        archive_count = await pg_conn.fetchval(
+            f"SELECT count(*) FROM {schema}.jobs_archive WHERE id = $1",  # noqa: S608
+            jid,
+        )
+        assert archive_count == 1, (
+            "the archive must hold exactly one row for the id after the "
+            f"full cycle (got {archive_count})"
+        )
+        final_live = await pg_conn.fetchrow(
+            f"SELECT 1 FROM {schema}.jobs WHERE id = $1",  # noqa: S608
+            jid,
+        )
+        assert final_live is None
 
     await retry_conn.close()
