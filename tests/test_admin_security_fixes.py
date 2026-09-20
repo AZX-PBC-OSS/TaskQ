@@ -175,6 +175,12 @@ def test_schedule_run_now_rejects_rapid_retrigger(
             "queue": "default",
             "max_attempts": 3,
             "retry_kind": "transient",
+            # The run-now SELECT's seven-column contract; NULL curve
+            # columns resolve to the declared defaults.
+            "retry_base": None,
+            "retry_cap": None,
+            "retry_backoff": None,
+            "retry_jitter": None,
         },
     )
     pool = _StubPool(conn)
