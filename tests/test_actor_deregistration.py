@@ -684,12 +684,10 @@ async def test_concurrent_force_deregister_one_succeeds_one_raises(
     concurrent deregistrations are each the other's re-run. The caller
     whose committed batch actually cancelled the job can lose the
     actor_config DELETE race and raise, leaving the winning caller's
-    own count at 0. The contract the concurrency actually pins is
-    "cancelled exactly once, by one of the two callers": the winner's
-    count is 0 or 1 (a double-cancel would report 2, the EPQ re-check
-    under the row lock forbids it), the loser's batch-level count is
-    lost with its exception, and the job row's final state below is
-    what proves the exactly-once invariant.
+    own count at 0. The counter alone cannot pin exactly-once either: a
+    double-cancel split across the two callers reports 1 to each (the
+    loser's count dies with its exception), so the job's event audit
+    trail below is what proves the exactly-once invariant.
     """
     schema = module_pg_schema.schema_name
     await sync_actor_config(
@@ -730,8 +728,11 @@ async def test_concurrent_force_deregister_one_succeeds_one_raises(
 # The winner's jobs_cancelled is attribution, not the fleet count:
         # the force path cancels in committed batches, so the losing
         # caller's committed batch may have cancelled the job before it
-        # lost the actor_config DELETE race. 0 or 1 is the invariant; the
-        # audit-trail pin below is the exactly-once guard.
+# lost the actor_config DELETE race. 0 or 1 is the invariant, and
+        # the counter cannot pin exactly-once by itself: a double-cancel
+        # split across the two callers reports 1 to each (the loser's
+        # count is lost with its exception), which is why the audit-trail
+        # assertion below is the exactly-once pin.
         assert successes[0].jobs_cancelled in (0, 1)
         # schedules_disabled stays exactly 1: the disable rides the same
         # final transaction as the DELETE, so a final transaction that
@@ -745,6 +746,28 @@ async def test_concurrent_force_deregister_one_succeeds_one_raises(
         )
         assert await _job_status(clean_pg_conn, schema, job_id) == "cancelled"
         assert await _schedule_state(clean_pg_conn, schema, sched_id) == "disabled"
+
+        # Exactly-once cancellation, pinned on the audit trail rather than
+        # the attribution counter: the job's event history must carry
+        # exactly ONE deregister-cancel state_change. The final row status
+        # above cannot distinguish a single cancel from a double (a second
+        # cancel rewrites finished_at and leaves the same status, and its
+        # count dies with the caller's ActorNotFoundError), so this is the
+        # assertion that bites: dropping the drain's EPQ re-check lets the
+        # second caller's drain re-cancel a row whose snapshot predates the
+        # first caller's commit, and exactly this assertion fails.
+        import json
+
+        cancel_events = await clean_pg_conn.fetch(
+            f"SELECT detail::text AS detail "  # noqa: S608  # Why: schema validated by _IDENT_RE; job_id is a test UUID.
+            f'  FROM "{schema}".job_events '
+            f" WHERE job_id = $1 AND kind = 'state_change'",
+            job_id,
+        )
+        details = [json.loads(e["detail"]) for e in cancel_events]
+        assert [(d["to_state"], d["reason"]) for d in details] == [
+            ("cancelled", "actor_deregistered")
+        ], f"expected exactly one deregister-cancel event, got {details}"
     finally:
         await conn2.close()
 
