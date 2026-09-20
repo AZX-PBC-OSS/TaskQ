@@ -501,11 +501,12 @@ async def e2e_schema(
         "TASKQ_MIGRATE_ON_START": "false",
         "TASKQ_ENVIRONMENT": "dev",
         "TASKQ_HEARTBEAT_INTERVAL": "0.5",
-        # The command budget rides at 0.5, the largest value that keeps
+        # The command budget rides at 0.5, a chosen value that keeps
         # the cascade floor satisfied for this lease: 4 * (0.5 + 2 * 0.5)
         # = 6.0 <= 8.0 (the settings validator enforces lease >=
         # (max_heartbeat_failures + 1) * (heartbeat_interval + 2 *
-        # heartbeat_command_timeout)). An earlier 0.1 budget made every
+        # heartbeat_command_timeout); the floor would admit a budget up
+        # to 0.75, 0.5 is simply where this fleet parks it). An earlier 0.1 budget made every
         # failed-beat cascade cheap: in the 2026-09-20 CI full-tier
         # reproduction of the drain-test flake, a replacement worker
         # booted into a loaded runner, exceeded the 0.1 s budget on 4
