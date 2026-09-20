@@ -1895,7 +1895,7 @@ to be causally related.
 | `taskq.worker.watchdog_trips_total` | Counter | Watchdog trips leading to force-exit, by detector |
 | `taskq.worker.loop_tick_age_seconds` | Observable Gauge | Seconds since each interval-driven loop last ticked |
 | `taskq.worker.shutdown_duration_seconds` | Histogram | Wall-clock seconds from first shutdown signal to clean exit |
-| `taskq.worker.leader_loop_unexpected_errors_total` | Counter | Unexpected (non-transient) errors tolerated by leader loop backstop |
+| `taskq.worker.leader_loop_unexpected_errors_total` | Counter | Unexpected (non-transient) errors tolerated by a long-lived loop's backstop (the leader maintenance loops and the worker producer loop), by loop label |
 
 The table above is illustrative, not exhaustive: the codebase defines 25+ instruments. For the complete list, see `src/taskq/obs/_otel.py` and the worker observability modules in `src/taskq/worker/` (`notify.py`, `cancel.py`, `leader.py`, `_leader_shared.py`, `heartbeat.py`, `_watchdog.py`, `_transient.py`, `shutdown.py`).
 
