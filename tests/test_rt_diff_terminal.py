@@ -319,7 +319,7 @@ async def test_diff_mark_snoozed_arms(pg_dsn: str) -> None:
     # The deadline arm counts the denial that ran the job out of road, and
     # the terminal state_change event names WHICH starvation ended it; the
     # plain snooze's deadline event stays shape-unchanged, no denial_reason
-    # key at all (jsonb_strip_nulls drops the absent reason).
+    # key at all (the deadline arm's conditional build omits it).
     assert pg["jobs"]["denied-late"]["rate_limit_blocked_count"] == 1
     denied_deadline_event = next(
         e for e in pg["jobs"]["denied-late"]["events"] if e["kind"] == "state_change"

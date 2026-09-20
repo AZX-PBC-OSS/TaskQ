@@ -6,6 +6,7 @@ job_attempts, job_events,
 WorkerOwnershipMismatch, and PayloadValidationError write surface.
 """
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -241,6 +242,50 @@ class TestTerminalWritesUpdateRow:
         # seed's pending→running event is the only state_change.
         assert len(attempts) == 0
         assert_has_event(events, "state_change")
+
+    async def test_mark_snoozed_drifted_branch_raises_after_terminalising(
+        self,
+        clean_jobs_app: JobsApp,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A drifted RETURNING arm literal fails loudly on an already-terminal
+        row; the post-write raise is the intended contract, not a defect.
+
+        The drift: mark_snoozed's deadline arm renamed out of step with its
+        Python reader, its ``outcome_branch`` literal emits ``released``
+        where the reader handles ``failed``. Before the typed branches this
+        masqueraded as the fall-through ``failed`` contract; now the caller
+        raises once the fused statement has already run, so the pinned
+        behavior is a raised error over a row that is nonetheless
+        terminalised ``failed`` in PG, never a silent fall-through nor a
+        stranded ``running`` row.
+        """
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            worker_id, job_id = await setup_running_job(
+                conn, schema, schedule_to_close=datetime.now(UTC) - timedelta(seconds=1)
+            )
+
+        sql = backend._sql
+        drifted = sql.mark_snoozed.replace(
+            "'failed'::text AS outcome_branch", "'released'::text AS outcome_branch"
+        )
+        assert drifted != sql.mark_snoozed  # the drift actually applied
+        monkeypatch.setattr(backend, "_sql", replace(sql, mark_snoozed=drifted))
+
+        with pytest.raises(AssertionError, match="mark_snoozed cannot emit outcome branch"):
+            await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=30), attempt=1)
+
+        async with deps.worker_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT status, finished_at FROM "{schema}".jobs WHERE id = $1', job_id
+            )
+        # The raise is post-write: the drifted deadline arm committed before
+        # the parsed branch reached the caller's match.
+        assert_job_terminal(row, "failed")
 
 
 # ── CHECK constraints fire ─────────────────────────────────────
@@ -1561,9 +1606,9 @@ class TestMarkSucceededResultExpiryFallback:
                 1,
                 # $9 is the denial reason the caller reported. The statement
                 # binds it on every path (the deadline arm's terminal event
-                # reads it, jsonb_strip_nulls drops it for a non-denial
-                # exit), so a direct caller binds the same default the
-                # backend's mark_snoozed binds for a plain actor snooze.
+                # reads it, the conditional detail build omits the key for a
+                # non-denial exit), so a direct caller binds the same default
+                # the backend's mark_snoozed binds for a plain actor snooze.
                 "capacity",
             )
             assert rec is not None

@@ -20,15 +20,19 @@ from typing import Final
 from taskq.constants import MIN_DEFERRAL_INTERVAL
 
 __all__ = [
+    "ATTEMPT_REFUND_SQL",
     "DEADLINE_EXCEEDED_MESSAGE",
     "DEADLINE_RETRY_EXCEEDED_MESSAGE",
+    "JOB_FENCE_BOUND_SQL",
+    "JOB_FENCE_SQL",
+    "MIN_DEFERRAL_INTERVAL_SQL",
 ]
 
 # The non-consuming deferral floor, pre-rendered for the two arms that
 # carry it (mark_snoozed's snoozed arm and mark_retry_after's
 # consume_budget=False snoozed arm). Derived from the constant so the
 # SQL and the in-memory twin read one value and cannot drift.
-_MIN_DEFERRAL_INTERVAL_SQL: Final[str] = (
+MIN_DEFERRAL_INTERVAL_SQL: Final[str] = (
     f"interval '{MIN_DEFERRAL_INTERVAL.total_seconds()} seconds'"
 )
 
@@ -62,7 +66,7 @@ _MIN_DEFERRAL_INTERVAL_SQL: Final[str] = (
 # behind their own single notify. A release is the worker giving a row
 # back (a snooze, a retry-after, a shutdown interrupt), never new work,
 # so a claim within the poll floor is the intended latency.
-_ATTEMPT_REFUND_SQL: Final[str] = "GREATEST(j.attempt - 1, 0)"
+ATTEMPT_REFUND_SQL: Final[str] = "GREATEST(j.attempt - 1, 0)"
 
 # The deadline-failure message and its mark_retry variant, ONE constant per
 # spelling (the _ATTEMPT_MESSAGES pattern): every schedule_to_close terminal
@@ -94,7 +98,7 @@ DEADLINE_RETRY_EXCEEDED_MESSAGE: Final[str] = "schedule_to_close reached before 
 # in-memory twin mirrors the predicate through its own _fenced helper
 # (testing/_terminal.py), the same one-predicate discipline on the Python
 # side.
-_JOB_FENCE_SQL: Final[str] = (
+JOB_FENCE_SQL: Final[str] = (
     "AND j.status = 'running'\n"
     "      AND j.locked_by_worker = (SELECT worker_id FROM params)\n"
     "      AND j.attempt = (SELECT attempt FROM params)"
@@ -103,6 +107,6 @@ _JOB_FENCE_SQL: Final[str] = (
 # The bound spelling's attempt-epoch placeholder, substituted at the three
 # single-row call sites ($8 in mark_succeeded / mark_failed, $5 in
 # mark_cancelled): one fence text, per-statement bind positions.
-_JOB_FENCE_BOUND_SQL: Final[str] = (
+JOB_FENCE_BOUND_SQL: Final[str] = (
     "id = $1 AND status = 'running' AND locked_by_worker = $2 AND attempt = ${attempt_bind}"
 )

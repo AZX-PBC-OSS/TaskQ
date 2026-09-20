@@ -559,14 +559,11 @@ def parse_outcome_branch(value: str) -> SqlOutcomeBranch:
     """Convert an untrusted ``str`` (a fused terminal statement's
     ``outcome_branch`` RETURNING column) into :data:`SqlOutcomeBranch`.
 
-    The :func:`parse_retry_kind` pattern: pyright cannot narrow ``str``
-    to a ``Literal`` union by membership test alone, and the terminal
-    readers must never branch on an untyped value, a typo'd or renamed
-    RETURNING arm literal would otherwise degrade silently into a
-    fall-through arm's semantics (``_mark_snoozed`` reported ``"failed"``
-    for any unrecognized branch). Raises :class:`ValueError` if the value
-    is not one of the seven allowed branches; that signals schema drift
-    between the SQL templates and Python.
+    The :func:`parse_retry_kind` pattern; why the union is closed at all
+    is the :data:`SqlOutcomeBranch` type docstring's story, not restated
+    here. Raises :class:`ValueError` if the value is not one of the seven
+    allowed branches; that signals schema drift between the SQL
+    templates and Python.
     """
     if value not in _OUTCOME_BRANCHES:
         raise ValueError(f"unknown outcome_branch from backend row: {value!r}")
@@ -2052,13 +2049,17 @@ class Backend(Protocol):
         saturation denial, the store answering "full"; ``"unavailable"`` is
         the store failing to answer.  Both take the identical non-consuming
         path; the value is validated at the boundary so an undefined reason
-        is refused rather than silently accepted.  It is persisted, not
-        discarded: the mark_snoozed deadline arm's ``state_change`` event
-        carries it in the detail of the terminal exit that ends a
-        perpetually-denied job, so an operator reading the event sees
-        which starvation (saturation vs store outage) killed the job.  A
-        non-denial deferral writes no event row and the reason reaches no
-        other surface.
+        is refused rather than silently accepted.  It is persisted on
+        exactly one surface: the ``state_change`` event detail of the
+        mark_snoozed deadline arm, and only when that TERMINAL arm fires
+        on a denial-keyed outcome (``reservation_denied`` /
+        ``rate_limit_denied`` whose ``schedule_to_close`` has lapsed),
+        where it names which starvation (saturation vs store outage)
+        killed the job.  The discriminator is terminality, not
+        denial-ness: every non-terminal deferral, denial or not, writes
+        no event row, so grepping events for ``denial_reason`` finds
+        nothing on a live denial; the row's outcome counters are the
+        live-denial signal.
         """
         ...
 
