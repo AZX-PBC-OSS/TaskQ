@@ -906,9 +906,20 @@ structurally instead: the cancel branch never re-pends (it terminalises), so
 no arm of the sweep can produce a re-pended row carrying cancel columns, and
 the retry branch resets columns that are already clean. `isolate_self`
 (worker heartbeat loss) mirrors this ordering branch for branch; its one
-deliberate asymmetry is that it applies the cancel branch immediately, with no
-grace headroom, because the isolating worker is by definition going away now
-and no lock-holder remains to complete the cooperative protocol.
+deliberate asymmetry in the SET clause is that it applies the cancel branch
+immediately, with no grace headroom, because the isolating worker is by
+definition going away now and no lock-holder remains to complete the
+cooperative protocol.
+
+`isolate_self` also writes the same reclaim event the sweep's caller writes
+(kind `state_change`, detail `reason='lock_expired'`), so
+`poll_reclaim_events` and `watch_reclaims` carry heartbeat-loss reclaims
+exactly like leader-sweep reclaims; its rows' `cause` key reads
+`isolate_self`, where the sweep's name the deadline that fired
+(`lock_expired` / `heartbeat_timeout`). A worker recovering its own jobs
+after a heartbeat blackout is a recovery transition a feed consumer must
+see, otherwise a job the row and the attempt history both call finished
+stays outstanding on every fan-out that keys on the feed.
 
 ### `CancelController` Protocol
 

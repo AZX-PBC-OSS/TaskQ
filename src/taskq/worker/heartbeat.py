@@ -35,6 +35,7 @@ from taskq.backend._protocol import CancelPhase, JobId
 from taskq.backend._records import jsonb_param
 from taskq.backend._sql import (
     INSERT_ATTEMPT_SQL,
+    INSERT_EVENTS_DETAIL_BATCH_SQL,
     build_heartbeat_sql,
     parse_rowcount,
 )
@@ -559,10 +560,23 @@ _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
 # cancellation isn't pre-empted), while isolate applies the 'cancelled'
 # arm immediately, deliberate asymmetry, since isolate means THIS worker
 # is going away now and there is no lock-holder left to complete the
-# cooperative protocol.  Isolate writes no job_events row (a graceful
-# shutdown is not a crash-reclaim), so the visibility-delay
-# co-monotonicity motivation for clock_timestamp() does not apply, it is
-# kept anyway so the two templates stay structurally identical.
+# cooperative protocol.
+#
+# Isolate WRITES the reclaim event row. Every reclaim rides the
+# crash-reclaim outbox channel (kind='state_change', detail
+# reason='lock_expired', the slice poll_reclaim_events tails and the
+# event-retention carve-out keeps): without it, an isolate-reclaimed job
+# is invisible to poll_reclaim_events and watch_reclaims, and a consumer
+# fanning out on the feed counts the job outstanding forever while the
+# row, the attempt history and the admin views all agree it is long
+# gone. The event's cause key names the origin ('isolate_self', where
+# the sweep's rows name 'lock_expired' / 'heartbeat_timeout', the
+# deadline that fired), so a feed consumer can tell a worker's own
+# heartbeat-loss walk-away from a leader-declared crash reclaim. The
+# visibility-delay co-monotonicity motivation for clock_timestamp()
+# (id and occurred_at stamped by the same INSERT) now applies to this
+# path too, and is satisfied by the same batched event writer the sweep
+# uses, microsecond ladder included.
 #
 # The re-pend arm wakes nobody: an UPDATE never fires the INSERT-only
 # wake trigger and this worker is on its way out, so the fleet claims
@@ -767,6 +781,13 @@ async def isolate_self(
                 crashed = 0
                 cancelled = 0
                 lost_race = 0
+                # The reclaim events, batched into ONE insert at the end
+                # of the transaction (the sweep's own event writer shape:
+                # the microsecond ladder on the row ordinal keeps
+                # occurred_at co-monotonic with the bigserial id the
+                # watermark protocol reads).
+                event_job_ids: list[JobId] = []
+                event_details: list[object] = []
                 async with conn.transaction():
                     rows = await conn.fetch(  # pyright: ignore[reportUnknownVariableType]  # Why: conn type suppressed above due to asyncpg-stubs limitation on connect().
                         select_running_jobs_sql,
@@ -813,12 +834,31 @@ async def isolate_self(
                         # cancel-in-flight row terminalises 'cancelled'
                         # whatever its budget, then the re-pend arm, then
                         # crashed.
+                        new_status: str
                         if row["cancel_phase"] != 0:
                             cancelled += 1
+                            new_status = "cancelled"
                         elif is_pending:
                             pending += 1
+                            new_status = "pending"
                         else:
                             crashed += 1
+                            new_status = "crashed"
+                        # The reclaim rides the crash-reclaim outbox
+                        # channel exactly like the sweep's rows (see the
+                        # module comment): reason='lock_expired' is the
+                        # channel key poll_reclaim_events tails, cause
+                        # names the isolate origin, worker_id is the
+                        # last-known holder, the sweep's detail shape.
+                        detail: dict[str, object] = {
+                            "from_state": "running",
+                            "to_state": new_status,
+                            "reason": "lock_expired",
+                            "cause": "isolate_self",
+                            "worker_id": str(worker_id),
+                        }
+                        event_job_ids.append(JobId(row["id"]))
+                        event_details.append(jsonb_param(detail))
                         await conn.execute(
                             insert_attempt_sql,
                             row["id"],
@@ -831,6 +871,13 @@ async def isolate_self(
                             None,
                             worker_id,
                             "{}",  # metadata, matches the sweep paths' literal
+                        )
+                    if event_job_ids:
+                        await conn.execute(
+                            INSERT_EVENTS_DETAIL_BATCH_SQL.format(schema=schema),
+                            event_job_ids,
+                            event_details,
+                            "state_change",
                         )
                 return pending, crashed, cancelled, lost_race
 
