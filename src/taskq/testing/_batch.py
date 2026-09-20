@@ -25,7 +25,7 @@ from taskq.backend._protocol import (
 )
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import DEFAULT_CHUNK_SIZE, ERROR_CLASS_BATCH_ABORTED
-from taskq.testing._enqueue import _check_batch_jsonb
+from taskq.testing._enqueue import _check_batch_jsonb, _rollback_inserted_rows
 from taskq.testing._reads import _batch_row_read_copy
 
 if TYPE_CHECKING:
@@ -257,7 +257,7 @@ async def _enqueue_batch_atomic(
 ) -> list[JobRow]:
     batch_id_str = str(batch_id)
     rows: list[JobRow] = []
-    inserted_ids: list[JobId] = []
+    inserted: list[tuple[JobId, tuple[str, str] | None]] = []
     item_count = 0
     batch_created = False
 
@@ -293,22 +293,23 @@ async def _enqueue_batch_atomic(
             ]
             _check_batch_jsonb(chunk, index_base=chunk_base)
             for args in chunk:
-                # The compensating rollback may only withdraw rows THIS
-                # call inserted. A dedup hit returns the holder row, a row
-                # stored before this call (or by an earlier item of it),
-                # and PG's transaction rollback leaves a committed holder
-                # row intact: only the transaction's own inserts are
-                # withdrawn with the failure. The discriminator: an item
-                # stored a row iff its id was absent before its enqueue
-                # and present after (an insert is the only success that
-                # stores args.id; a dedup hit stores nothing and returns
-                # the holder's id), so a holder id never rides
-                # inserted_ids and the rollback never pops it.
+                # The compensating rollback (``_rollback_inserted_rows``,
+                # shared with the batch arm) may only withdraw rows THIS
+                # call inserted. The discriminator is the insert contract
+                # documented on ``_enqueue_with_conn``: an item stored a
+                # row iff its id was absent before its enqueue and present
+                # after, so a dedup hit (which returns a holder row and
+                # stores nothing) never rides the rollback.
+                pair = (
+                    (args.idempotency_scope, args.idempotency_key)
+                    if args.idempotency_key is not None
+                    else None
+                )
                 pre_existing = args.id in backend._jobs
                 row = await backend.enqueue_with_conn(None, args)
                 rows.append(row)
                 if not pre_existing and args.id in backend._jobs:
-                    inserted_ids.append(row.id)
+                    inserted.append((row.id, pair))
 
         # Insert finalizer BEFORE creating the batch row so the returned
         # row's id can be used for finalizer_job_id (M4: idempotency
@@ -321,15 +322,20 @@ async def _enqueue_batch_atomic(
             # the finalizer's payload surfaced as the bare ValueError
             # while PG raised the annotated PayloadValidationError.
             _check_batch_jsonb([finalizer_args], index_base=item_count)
-            # Same carve-out as the chunk loop above: a dedup hit on the
-            # finalizer's pair (M4: the collision may return a different
-            # id than finalizer_args.id) returns a pre-existing holder
-            # row the rollback must never pop.
+            # Same insert-contract discriminator as the chunk loop above:
+            # a dedup hit on the finalizer's pair (M4: the collision may
+            # return a different id than finalizer_args.id) returns a
+            # pre-existing holder row the rollback must never pop.
+            pair = (
+                (finalizer_args.idempotency_scope, finalizer_args.idempotency_key)
+                if finalizer_args.idempotency_key is not None
+                else None
+            )
             pre_existing = finalizer_args.id in backend._jobs
             row = await backend.enqueue_with_conn(None, finalizer_args)
             rows.append(row)
             if not pre_existing and finalizer_args.id in backend._jobs:
-                inserted_ids.append(row.id)
+                inserted.append((row.id, pair))
             finalizer_row = row
 
         if batch_row is not None:
@@ -351,8 +357,7 @@ async def _enqueue_batch_atomic(
             )
             batch_created = True
     except BaseException:
-        for jid in inserted_ids:
-            backend._jobs.pop(jid, None)
+        _rollback_inserted_rows(backend, inserted)
         if batch_created:
             backend._batches.pop(batch_id, None)
         raise

@@ -740,7 +740,7 @@ def _refuse_cross_actor_idempotency_hit(
     args: EnqueueArgs,
     *,
     existing_actor: str,
-    existing_job_id: UUID | None,
+    existing_job_id: UUID,
 ) -> None:
     """Raise when an idempotency hit resolved to another actor's job.
 
@@ -769,7 +769,7 @@ def _refuse_cross_actor_idempotency_hit(
             "idempotency-key-actor-mismatch",
             actor=args.actor,
             existing_actor=existing_actor,
-            existing_job_id=str(existing_job_id) if existing_job_id is not None else None,
+            existing_job_id=str(existing_job_id),
             idempotency_key=str(args.idempotency_key),
             idempotency_scope=args.idempotency_scope,
         )
