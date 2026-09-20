@@ -361,6 +361,110 @@ async def reconnect_notify_conn(
             _t.add_done_callback(_drain_tasks.discard)
 
 
+async def _recover_notify_conn(
+    deps: WorkerDeps,
+    backend: PostgresBackend,
+    shutdown: asyncio.Event,
+    channels: list[tuple[str, Callable[[asyncpg.Connection, int, str, str], None]]],
+    conn: asyncpg.Connection,
+    exc: BaseException,
+) -> asyncpg.Connection | None:
+    """Shared recovery path once the notify conn is judged dead.
+
+    Runs for BOTH triggers of the same failure class: the health-check
+    probe failing mid-run, AND a connection error landing inside the
+    initial LISTEN setup (a pg_terminate_backend / failover racing
+    worker boot - tc5 kills with no grace, so the kill can land between
+    or during the setup round trips). Tears down the dead conn
+    (best-effort UNLISTEN, bounded close) and runs the bounded-backoff
+    reconnect loop.
+
+    Returns the reconnected conn, or None when the listener must
+    disable itself (caller-owned notify_conn with no factory) -
+    poll-based dispatch remains as the fallback in that case, and the
+    caller returns cleanly instead of crashing the worker.
+    """
+    _connected_lookup[backend] = False
+    logger.warning(
+        "notify-conn-error",
+        kind="notify_conn_error",
+        error=repr(exc),
+        channels=[ch for ch, _ in channels],
+    )
+    for channel, on_notify in channels:
+        # Why bounded + TimeoutError suppressed: the UNLISTEN is a
+        # best-effort network round trip on a conn already judged
+        # dead, unbounded, a wedged conn parks the health check's
+        # reconnect path forever. notify_listener_setup_timeout is
+        # the loop family's existing execute bound; a timeout is
+        # another suppressed failure, not a crash.
+        with contextlib.suppress(asyncpg.InterfaceError, TimeoutError):
+            await asyncio.wait_for(
+                conn.remove_listener(channel, on_notify),  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow callback type; runtime accepts sync callbacks
+                timeout=float(deps.settings.notify_listener_setup_timeout),
+            )
+    if deps.owns_notify_conn:
+        # Ownership contract (connections.py): TaskQ never closes
+        # caller-owned resources - the caller owns its lifecycle even
+        # on the error path. The remove_listener calls above are kept
+        # unconditionally: harmless on a caller's conn, needed before
+        # a rebuild.
+        # Why bounded: close can raise on a half-dead socket and must
+        # be swallowed to enter the reconnect loop - and a dead PG
+        # can block close() indefinitely, which would stall the
+        # health-check loop before reconnect even starts. The
+        # helper bounds the wait, terminates on timeout, and never
+        # raises, subsuming the old suppress(Exception).
+        await close_conn_bounded(conn, "notify", CLOSE_TIMEOUT_SECS, mid_run=True)
+
+    delay = float(deps.settings.notify_reconnect_backoff_initial)
+    attempt = 0
+    while not shutdown.is_set():
+        try:
+            await reconnect_notify_conn(deps, backend, channels)
+            return deps.notify_conn
+        except Exception as recovery_exc:  # Why: the retry loop must survive ANY factory/reconnect failure - a credential provider raises non-asyncpg errors (azure ClientAuthenticationError, hvac VaultError, botocore ClientError) and a rejected fresh token raises asyncpg.InvalidPasswordError, which is a PostgresError, NOT a PostgresConnectionError. Catching only asyncpg connection errors here would crash the worker during exactly the IdP outage this loop exists to survive. asyncio.CancelledError is BaseException (3.8+), so shutdown cancellation still propagates.
+            if isinstance(recovery_exc, RuntimeError) and deps.notify_conn_factory is None:
+                # Caller-owned notify_conn dropped and there is no
+                # factory to rebuild through - retrying could never
+                # succeed. Disable the listener; poll-based dispatch
+                # remains as the fallback.
+                logger.warning(
+                    "notify-listener-disabled",
+                    kind="notify_listener_disabled",
+                    reason="caller-owned notify_conn dropped and no "
+                    "notify_conn_factory to rebuild through; falling "
+                    "back to poll-based dispatch",
+                    channels=[ch for ch, _ in channels],
+                )
+                return None
+            attempt += 1
+            # Multiplicative jitter (±25%) applied AFTER the
+            # exponential doubling (the pristine base doubles below,
+            # unpolluted by previous jitter) and BEFORE the sleep, so
+            # the logged delay is the delay actually slept. Applied
+            # on every retry including the first: without it a fleet
+            # that lost PG in the same instant (failover) retries in
+            # lockstep waves, identical delays re-synchronize every
+            # attempt, most visibly at the 30s cap where 100 workers
+            # reconnect as one, exactly the storm the deadlock
+            # backoff's jitter (taskq.backend._cancel_bulk) prevents
+            # for batch retries.
+            slept = delay * random.uniform(0.75, 1.25)  # noqa: S311  # Why: uniform is for reconnect-timing jitter, not cryptography; same non-crypto use as _cancel_bulk's deadlock backoff.
+            logger.warning(
+                "notify-reconnect-attempt",
+                kind="notify_reconnect_attempt",
+                attempt=attempt,
+                delay=slept,
+                error=repr(recovery_exc),
+                error_type=type(recovery_exc).__name__,
+                channels=[ch for ch, _ in channels],
+            )
+            await asyncio.sleep(slept)
+            delay = min(delay * 2, 30.0)
+    return None
+
+
 async def _health_check_loop(
     deps: WorkerDeps,
     backend: PostgresBackend,
@@ -412,87 +516,9 @@ async def _health_check_loop(
             asyncpg.AdminShutdownError,  # Why: graceful PG shutdown raises AdminShutdownError, not PostgresConnectionError; without this the listener crashes the worker.
             OSError,
         ) as exc:
-            _connected_lookup[backend] = False
-            logger.warning(
-                "notify-conn-error",
-                kind="notify_conn_error",
-                error=repr(exc),
-                channels=[ch for ch, _ in channels],
-            )
-            for channel, on_notify in channels:
-                # Why bounded + TimeoutError suppressed: the UNLISTEN is a
-                # best-effort network round trip on a conn already judged
-                # dead, unbounded, a wedged conn parks the health check's
-                # reconnect path forever. notify_listener_setup_timeout is
-                # the loop family's existing execute bound; a timeout is
-                # another suppressed failure, not a crash.
-                with contextlib.suppress(asyncpg.InterfaceError, TimeoutError):
-                    await asyncio.wait_for(
-                        conn.remove_listener(channel, on_notify),  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow callback type; runtime accepts sync callbacks
-                        timeout=float(deps.settings.notify_listener_setup_timeout),
-                    )
-            if deps.owns_notify_conn:
-                # Ownership contract (connections.py): TaskQ never closes
-                # caller-owned resources - the caller owns its lifecycle even
-                # on the error path. The remove_listener calls above are kept
-                # unconditionally: harmless on a caller's conn, needed before
-                # a rebuild.
-                # Why bounded: close can raise on a half-dead socket and must
-                # be swallowed to enter the reconnect loop - and a dead PG
-                # can block close() indefinitely, which would stall the
-                # health-check loop before reconnect even starts. The
-                # helper bounds the wait, terminates on timeout, and never
-                # raises, subsuming the old suppress(Exception).
-                await close_conn_bounded(conn, "notify", CLOSE_TIMEOUT_SECS, mid_run=True)
-
-            delay = float(deps.settings.notify_reconnect_backoff_initial)
-            attempt = 0
-            while not shutdown.is_set():
-                try:
-                    await reconnect_notify_conn(deps, backend, channels)
-                    conn = deps.notify_conn
-                    if conn is None:
-                        break
-                    break
-                except Exception as exc:  # Why: the retry loop must survive ANY factory/reconnect failure - a credential provider raises non-asyncpg errors (azure ClientAuthenticationError, hvac VaultError, botocore ClientError) and a rejected fresh token raises asyncpg.InvalidPasswordError, which is a PostgresError, NOT a PostgresConnectionError. Catching only asyncpg connection errors here would crash the worker during exactly the IdP outage this loop exists to survive. asyncio.CancelledError is BaseException (3.8+), so shutdown cancellation still propagates.
-                    if isinstance(exc, RuntimeError) and deps.notify_conn_factory is None:
-                        # Caller-owned notify_conn dropped and there is no
-                        # factory to rebuild through - retrying could never
-                        # succeed. Disable the listener; poll-based dispatch
-                        # remains as the fallback.
-                        logger.warning(
-                            "notify-listener-disabled",
-                            kind="notify_listener_disabled",
-                            reason="caller-owned notify_conn dropped and no "
-                            "notify_conn_factory to rebuild through; falling "
-                            "back to poll-based dispatch",
-                            channels=[ch for ch, _ in channels],
-                        )
-                        return
-                    attempt += 1
-                    # Multiplicative jitter (±25%) applied AFTER the
-                    # exponential doubling (the pristine base doubles below,
-                    # unpolluted by previous jitter) and BEFORE the sleep, so
-                    # the logged delay is the delay actually slept. Applied
-                    # on every retry including the first: without it a fleet
-                    # that lost PG in the same instant (failover) retries in
-                    # lockstep waves, identical delays re-synchronize every
-                    # attempt, most visibly at the 30s cap where 100 workers
-                    # reconnect as one, exactly the storm the deadlock
-                    # backoff's jitter (taskq.backend._cancel_bulk) prevents
-                    # for batch retries.
-                    slept = delay * random.uniform(0.75, 1.25)  # noqa: S311  # Why: uniform is for reconnect-timing jitter, not cryptography; same non-crypto use as _cancel_bulk's deadlock backoff.
-                    logger.warning(
-                        "notify-reconnect-attempt",
-                        kind="notify_reconnect_attempt",
-                        attempt=attempt,
-                        delay=slept,
-                        error=repr(exc),
-                        error_type=type(exc).__name__,
-                        channels=[ch for ch, _ in channels],
-                    )
-                    await asyncio.sleep(slept)
-                    delay = min(delay * 2, 30.0)
+            recovered = await _recover_notify_conn(deps, backend, shutdown, channels, conn, exc)
+            if recovered is None:
+                return
 
 
 async def notify_listener_loop(
@@ -543,6 +569,38 @@ async def notify_listener_loop(
                 if conn is not None:
                     await close_conn_bounded(conn, "notify", CLOSE_TIMEOUT_SECS, mid_run=True)
             raise
+        except (
+            asyncpg.PostgresConnectionError,
+            asyncpg.InterfaceError,
+            asyncpg.InternalClientError,
+            asyncpg.AdminShutdownError,
+            OSError,
+        ) as exc:
+            # The chaos window this clause exists for: a connection loss
+            # (pg_terminate_backend, failover, container restart) landing
+            # inside the initial LISTEN setup - tc5 kills with NO grace
+            # after starting this task, so the kill can land before,
+            # between, or during the setup round trips. The round trips
+            # are the SAME unguarded awaits the mid-run health check
+            # protects: a loss here raised ConnectionDoesNotExistError /
+            # InterfaceError straight out of this task, which in
+            # production is a sibling crash in the bootstrap TaskGroup
+            # (_guarded counts it, sets shutdown_event, tears the worker
+            # down) - the exact opposite of this module's contract
+            # ("survives connection loss without crashing the worker").
+            # Route into the SAME recovery path the health check uses:
+            # bounded backoff reconnect, then fall through to the normal
+            # TaskGroup; the synthetic wake in reconnect_notify_conn
+            # unblocks any subscriber waiting on jobs enqueued meanwhile.
+            conn = deps.notify_conn
+            if conn is None:  # pragma: no cover - add_listener dereferenced it above
+                raise
+            recovered = await _recover_notify_conn(deps, backend, shutdown, channels, conn, exc)
+            if recovered is None:
+                # Caller-owned notify_conn with no factory - same contract
+                # as the health check's listener-disabled return:
+                # poll-based dispatch remains as the fallback.
+                return
         _connected_lookup[backend] = True
 
         async with asyncio.TaskGroup() as tg:
