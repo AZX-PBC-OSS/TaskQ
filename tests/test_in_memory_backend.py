@@ -1767,6 +1767,68 @@ class TestArchiveTerminalJobs:
             assert await backend.get(jid) is not None
             assert await backend.get_archived(jid) is None
 
+    async def test_archived_row_carries_the_claimed_epoch(self) -> None:
+        """A job the fleet claimed twice (dispatch, deferral release,
+        redispatch) and then archived carries the epoch its last claim
+        stamped: the twin's archive moves the row whole, mirroring the
+        PG CTE's explicit column list, so the archived identity is the
+        live row's at the moment of archival, never a reset 0."""
+        from taskq.testing._runner import advance_clock_to
+        from taskq.testing.clock import FakeClock
+
+        clock = FakeClock(_START)
+        backend = InMemoryBackend(
+            clock=clock, cancellation_grace_period=_GRACE, cleanup_grace_period=_GRACE
+        )
+        backend.register_actor_config(actor="test_actor")
+
+        row = await backend.enqueue(_enqueue_args())
+        first = await backend.dispatch_batch(
+            backend._worker_id,  # type: ignore[reportPrivateUsage]
+            ["default"],
+            limit=1,
+            lock_lease=timedelta(seconds=60),
+        )
+        assert first[0].claim_epoch == 1
+        await backend.mark_snoozed(
+            row.id,
+            backend._worker_id,  # type: ignore[reportPrivateUsage]
+            timedelta(seconds=30),
+            attempt=first[0].attempt,
+            claim_epoch=first[0].claim_epoch,
+        )
+        advance_clock_to(backend, clock.now() + timedelta(minutes=1))
+        assert await backend.scheduled_to_pending() == 1
+        second = await backend.dispatch_batch(
+            backend._worker_id,  # type: ignore[reportPrivateUsage]
+            ["default"],
+            limit=1,
+            lock_lease=timedelta(seconds=60),
+        )
+        assert second[0].id == row.id
+        assert second[0].claim_epoch == 2
+
+        assert (
+            await backend.mark_succeeded(
+                row.id,
+                backend._worker_id,  # type: ignore[reportPrivateUsage]
+                None,
+                attempt=second[0].attempt,
+                claim_epoch=second[0].claim_epoch,
+            )
+            is True
+        )
+        advance_clock_to(backend, clock.now() + timedelta(minutes=1))
+
+        result = backend.archive_terminal_jobs(
+            retention=timedelta(0), archive_retention=timedelta(days=365)
+        )
+        assert result.archived == 1
+
+        archived = await backend.get_archived(row.id)
+        assert archived is not None
+        assert archived.row.claim_epoch == second[0].claim_epoch == 2
+
     async def test_per_status_retention(self) -> None:
         """per-status retention - succeeded/cancelled archived at 35d,
         failed retained at 35d when failure retention=90d. Uses the `statuses`

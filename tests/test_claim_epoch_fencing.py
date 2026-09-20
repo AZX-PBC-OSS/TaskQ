@@ -44,6 +44,7 @@ from taskq.exceptions import WorkerOwnershipMismatch
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.pg import create_worker
+from taskq.worker._leader_shared import prune_terminal_jobs
 
 if TYPE_CHECKING:
     import asyncpg
@@ -524,3 +525,51 @@ async def test_every_fenced_arm_refuses_the_stale_epoch_and_lands_the_live_one(
         assert observed_live == live_outcome, (
             f"{arm}: the live claim's write must land (got {observed_live!r})"
         )
+
+
+# ── Part C: the archive carries the true epoch ───────────────────────────
+
+
+async def test_archived_row_keeps_the_live_row_claim_epoch(jobs_app: JobsApp) -> None:
+    """A twice-claimed job that goes terminal and then through the real
+    archive CTE lands in jobs_archive with the epoch its last claim
+    stamped, the value the live row read at archival.
+
+    The archive INSERT names its columns through COPY_FROM_COLUMNS; the
+    claim_epoch entry there is what keeps the archived identity true. A
+    row archived without it would read the default 0 forever, an epoch
+    no claim can ever have stamped, and the column's contract (bumped by
+    exactly 1 per claim) would be false for every archived row.
+    """
+    deps = jobs_app.deps
+    backend = jobs_app.backend
+    schema = deps.settings.schema_name
+    job_id, worker_id, _stale, live = await _seed_and_claim(backend)
+
+    row = await backend.get(job_id)
+    assert row is not None
+    assert row.claim_epoch == live[1]
+
+    assert (
+        await backend.mark_succeeded(
+            job_id, worker_id, {"done": True}, attempt=live[0], claim_epoch=live[1]
+        )
+        is True
+    )
+
+    async with deps.worker_pool.acquire() as conn:
+        result = await prune_terminal_jobs(
+            conn,
+            retention_per_status={"succeeded": timedelta(0)},
+            archive_retention=timedelta(days=365),
+            batch_size=100,
+            schema=schema,
+        )
+    assert result.archived == 1
+
+    async with deps.worker_pool.acquire() as conn:
+        archived = await conn.fetchrow(
+            f'SELECT claim_epoch FROM "{schema}".jobs_archive WHERE id = $1', job_id
+        )
+    assert archived is not None
+    assert archived["claim_epoch"] == live[1] == 2

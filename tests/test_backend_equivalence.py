@@ -1331,15 +1331,19 @@ async def test_mark_interrupted_fenced_out_by_a_stale_epoch_or_wrong_worker(
     assert row.status == "running" and row.locked_by_worker == wid
     assert row.attempt == 1 and row.interrupt_count == 0
 
-    # And the landed release is itself not replayable at the same epoch.
+    # And the landed release is itself not replayable at the same epoch:
+    # the same fence values that landed "pending" match nothing once the
+    # row has left running.
     outcome = await backend_pair.mark_interrupted(
         job_id, wid, attempt=row.attempt, claim_epoch=row.claim_epoch, hold=timedelta(0)
     )
     assert outcome == "pending"
-    replayed = await backend_pair.mark_interrupted(job_id, wid, attempt=1, hold=timedelta(0))
+    replayed = await backend_pair.mark_interrupted(
+        job_id, wid, attempt=row.attempt, claim_epoch=row.claim_epoch, hold=timedelta(0)
+    )
     assert replayed == "noop", (
-        "the released epoch no longer matches the row (status moved, and the "
-        "re-claim advances past it); a release cannot be replayed"
+        "a landed release cannot land twice at the same fence: the row "
+        "left running, so the equality fence no longer matches"
     )
     row = await backend_pair.get(job_id)
     assert row is not None and row.interrupt_count == 1
