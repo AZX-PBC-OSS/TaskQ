@@ -19,13 +19,14 @@ moment the call fails:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 from uuid import UUID
 
 import pytest
 import structlog.testing
 
-from taskq._ids import new_job_id
+from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import EnqueueArgs, JobId
 from taskq.exceptions import BatchMaxPendingExceededError
 
@@ -256,6 +257,62 @@ async def test_diff_enqueue_batch_mid_batch_singleton_collision_aborts_whole_cal
     assert pg["records"]["batch"] == "SingletonCollisionError"
     assert pg["records"]["stored_from_batch"] == []
     assert pg["status_counts"] == {}
+
+
+# ── Atomic arm: a dedup hit survives a mid-stream failure ───────────────
+
+
+async def _atomic_dedup_hit_then_stream_failure(side: DiffSide) -> None:
+    """One atomic batch whose FIRST chunk is a dedup hit on a stored
+    keyed row and whose SECOND chunk fails mid-stream (chunk_size=1 puts
+    the failure strictly after the hit).
+
+    PG's arm runs every chunk in one transaction: the failure rolls the
+    TRANSACTION back, withdrawing only rows the transaction itself
+    inserted, so the committed holder row a dedup hit returned stays
+    stored. A compensating rollback that pops every returned row id
+    withdraws the holder too.
+    """
+    holder = await side.enqueue("holder", idempotency_key="shared-key")
+    hit = _keyed_batch_item(side, "hit", "test_actor", "shared-key")
+    bid = new_uuid()
+
+    def gen() -> Iterator[EnqueueArgs]:
+        yield hit
+        raise ValueError("generator exploded")
+
+    try:
+        rows = await side.backend.enqueue_batch_atomic(
+            gen(),
+            batch_id=bid,
+            queue="default",
+            batch_row=None,
+            finalizer_args=None,
+            chunk_size=1,
+        )
+        side.record("batch", "admitted-all")
+        side.record("returned", [side.token_of(r.id) for r in rows])
+    except Exception as exc:  # Why: the differential records the typed outcome; the exception type IS the observable.
+        side.record("batch", type(exc).__name__)
+    side.record("holder_survives", await side.backend.get(holder.id) is not None)
+
+
+async def test_diff_enqueue_batch_atomic_dedup_hit_survives_mid_stream_failure(
+    pg_dsn: str,
+) -> None:
+    """A failure after a dedup hit must leave the pre-existing holder row
+    stored on both backends: the transaction (or its compensating
+    rollback) withdraws only what the call itself inserted."""
+    mem, pg = await run_differential(_atomic_dedup_hit_then_stream_failure, pg_dsn=pg_dsn)
+    assert_mirror(
+        "a failure after a dedup hit inside enqueue_batch_atomic leaves the "
+        "pre-existing holder row stored and resolvable, on either backend",
+        mem,
+        pg,
+    )
+    assert pg["records"]["batch"] == "ValueError"
+    assert pg["records"]["holder_survives"] is True
+    assert pg["status_counts"] == {"pending": 1}
 
 
 # ── Cap refusal: the error contract and the emitted log contract ────────
