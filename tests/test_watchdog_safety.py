@@ -1797,8 +1797,8 @@ def test_unexpected_loop_error_guard_lifecycle(
         guard.unexpected(ValueError("surprise one"))
         guard.unexpected(RuntimeError("surprise two"))
         assert [e.get("event") for e in captured] == [
-            "leader-loop-unexpected-error",
-            "leader-loop-unexpected-error",
+            "loop-unexpected-error",
+            "loop-unexpected-error",
         ]
         assert captured[0]["consecutive"] == 1
         assert captured[1]["consecutive"] == 2
@@ -1867,7 +1867,7 @@ async def test_scheduled_wake_backstop_tolerates_then_goes_fatal(
             f"fatal, not retried: {task.exception()!r}"
         )
         assert calls == 3, f"exactly max_consecutive attempts before death: {calls}"
-        loud = [e for e in captured if e.get("event") == "leader-loop-unexpected-error"]
+        loud = [e for e in captured if e.get("event") == "loop-unexpected-error"]
         assert len(loud) == 3, f"every tolerated surprise is on the record: {captured}"
     finally:
         shutdown.set()

@@ -593,6 +593,31 @@ def record_dispatch_duration(queue: str, elapsed: float) -> None:
     _dispatch_duration.record(elapsed, {"queue": _bounded_queue(queue)})
 
 
+_pool_acquire_duration = get_meter().create_histogram(
+    "taskq.dispatch.pool_acquire_duration",
+    description=(
+        "Dispatch round pool-acquire wait (no SQL), labeled by queue "
+        "(capped -- see _bounded_queue). Kept apart from "
+        "taskq.dispatch.duration, whose contract is SQL execution "
+        "latency only: a pool-exhausted pod's multi-second zero-query "
+        "waits would otherwise inflate the query-latency percentiles of "
+        "pods running healthy SQL."
+    ),
+    unit="s",
+)
+
+
+def record_pool_acquire_duration(queue: str, elapsed: float) -> None:
+    """Record the dispatch round's pool-acquire wait on the histogram.
+
+    Called outside the ``dispatch`` span body for sampling independence.
+    Respects ``_otel_enabled``, no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _pool_acquire_duration.record(elapsed, {"queue": _bounded_queue(queue)})
+
+
 _dispatch_failures = get_meter().create_counter(
     "taskq.dispatch.failures",
     description=(

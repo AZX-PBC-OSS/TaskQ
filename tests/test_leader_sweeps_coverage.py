@@ -332,7 +332,7 @@ async def test_sweep_loop_backstop_tolerates_then_goes_fatal(
     finally:
         shutdown.set()
 
-    unexpected = [e for e in captured if e.get("event") == "leader-loop-unexpected-error"]
+    unexpected = [e for e in captured if e.get("event") == "loop-unexpected-error"]
     assert [e.get("consecutive") for e in unexpected] == [1, 2, 3]
     # The guard tolerated (cap - 1) failing iterations before re-raising:
     # pre-fix the loop died on the first, with calls == 1 and no logs.
@@ -418,14 +418,12 @@ async def test_sweep_loop_mixed_fault_iteration_does_not_reset_streak() -> None:
         # Bounded poll on the captured entries (a capture_logs list is
         # append-only state - no event exists to wait on).
         await wait_for_condition(
-            lambda: (
-                sum(1 for e in captured if e.get("event") == "leader-loop-unexpected-error") >= 3
-            ),
+            lambda: sum(1 for e in captured if e.get("event") == "loop-unexpected-error") >= 3,
             description="the scripted sweep script must log three unexpected-error events",
         )
         await _stop_loop(task, shutdown, delay=0.0)
 
-    unexpected = [e for e in captured if e.get("event") == "leader-loop-unexpected-error"]
+    unexpected = [e for e in captured if e.get("event") == "loop-unexpected-error"]
     assert [e.get("consecutive") for e in unexpected] == [1, 2, 1], (
         "the mixed (partially successful, transiently failing) iteration must not "
         f"reset the streak: got {[e.get('consecutive') for e in unexpected]}"
