@@ -498,8 +498,10 @@ async def test_archive_move_preserves_every_mirrored_column(
 async def test_archive_move_preserves_scope_via_actor_override_path(
     pg_conn: asyncpg.Connection, settings: TaskQSettings
 ) -> None:
-    """The per-actor archive CTE (_ARCHIVE_CTE_ACTOR_SQL) has the same
-    explicit-column contract; exercise it with a non-default scope."""
+    """The per-actor candidate window (_ARCHIVE_CANDIDATE_ACTOR_SQL) and
+    the shared write statement (_ARCHIVE_CTE_SQL) it feeds have the same
+    explicit-column contract; exercise the actor override path end to end
+    with a non-default scope."""
     await _apply(pg_conn, settings)
     schema = settings.schema_name
     jid = await _seed_fully_distinctive_terminal_job(
