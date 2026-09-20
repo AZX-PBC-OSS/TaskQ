@@ -167,7 +167,7 @@ async def test_cancel_where_active_filter() -> None:
     backend._jobs[row3.id] = replace(backend._jobs[row3.id], status="succeeded", finished_at=_NOW)
 
     result = await backend.cancel_where(
-        JobFilter(active=True),
+        JobFilter(unfinished=True),
         reason="drain",
     )
 

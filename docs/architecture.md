@@ -290,13 +290,15 @@ PG backend renders a single status as `status = $n` and a sequence as
 `status = ANY($n)` with bound parameters.  An empty sequence
 (`status=[]`) matches no jobs, not all jobs; unknown status values are
 rejected with `ValueError` at `JobFilter` construction so both backends
-fail identically.  `status` and `active` are mutually exclusive:
+fail identically.  `status` and `unfinished` are mutually exclusive:
 specifying both raises `ValueError`.
 
-The `active` meta-filter selects statuses by terminality. `active=True`
-selects all non-terminal statuses (pending, scheduled, running: 'not yet
-finished') and `active=False` the terminal ones; the non-terminal set is
-derived from `ACTIVE_STATUSES` in `statemachine.py`.
+The `unfinished` meta-filter (renamed from `active`; the old name stays
+accepted as a deprecated alias) selects statuses by terminality.
+`unfinished=True` selects all non-terminal statuses (pending, scheduled,
+running: 'not yet finished') and `unfinished=False` the terminal ones;
+the non-terminal set is derived from `ACTIVE_STATUSES` in
+`statemachine.py`.
 
 `BACKEND_PROTOCOL_VERSION` is a `ClassVar[int]` (currently `3`). Both backends
 assert this constant matches at import time, preventing silent protocol drift.
@@ -416,7 +418,7 @@ can hold the row lock from the dispatch CTE's `FOR UPDATE SKIP LOCKED`.
 
 `statemachine.py` also exports `ACTIVE_STATUSES`: the complement of
 `TERMINAL_STATUSES` over the full `JobStatus` set (pending, scheduled, running),
-derived from `VALID_TRANSITIONS` keys.  `JobFilter(active=True)` uses this set
+derived from `VALID_TRANSITIONS` keys.  `JobFilter(unfinished=True)` uses this set
 so that adding a new non-terminal state to the state machine automatically
 extends the active filter without a second edit.
 

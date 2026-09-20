@@ -180,8 +180,8 @@ async def _list_jobs(self: "InMemoryBackend", filters: JobFilter) -> list[JobRow
         else:
             status_set = frozenset(filters.status)
             candidates = [r for r in candidates if r.status in status_set]
-    elif filters.active is not None:
-        status_set = ACTIVE_STATUSES if filters.active else TERMINAL_STATUSES
+    elif filters.unfinished is not None:
+        status_set = ACTIVE_STATUSES if filters.unfinished else TERMINAL_STATUSES
         candidates = [r for r in candidates if r.status in status_set]
     if filters.actor is not None:
         candidates = [r for r in candidates if r.actor == filters.actor]

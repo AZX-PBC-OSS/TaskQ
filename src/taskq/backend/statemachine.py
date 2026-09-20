@@ -48,7 +48,7 @@ may still transition to other states or be cancelled.
 
 Derived from ``VALID_TRANSITIONS`` keys so that adding a new non-terminal
 state to the state machine automatically includes it here without a
-second edit.  Used by ``JobFilter(active=True)``.
+second edit.  Used by ``JobFilter(unfinished=True)``.
 """
 
 

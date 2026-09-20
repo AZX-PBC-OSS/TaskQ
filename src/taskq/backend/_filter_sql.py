@@ -43,7 +43,7 @@ def build_filter_conditions(filter: JobFilter) -> FilterSQL:
     so the filter semantics are identical for query and mutation.
 
     Only predicate fields (queue, status, actor, identity_key, batch_id,
-    tags, active, created_before) are translated to conditions. The
+    tags, unfinished, created_before) are translated to conditions. The
     ``cursor``, ``limit``, and ``order_by`` fields are NOT handled here,
     callers apply them separately:
 
@@ -77,8 +77,8 @@ def build_filter_conditions(filter: JobFilter) -> FilterSQL:
         else:
             conditions.append(_next_any_param("status"))
             params.append(list(filter.status))
-    elif filter.active is not None:
-        statuses = list(ACTIVE_STATUSES) if filter.active else list(TERMINAL_STATUSES)
+    elif filter.unfinished is not None:
+        statuses = list(ACTIVE_STATUSES) if filter.unfinished else list(TERMINAL_STATUSES)
         conditions.append(_next_any_param("status"))
         params.append(statuses)
 

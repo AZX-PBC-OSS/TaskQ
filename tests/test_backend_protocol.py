@@ -716,7 +716,10 @@ class TestJobFilterRoundTrip:
         assert f.cursor is None
 
     def test_field_count(self) -> None:
-        expected = 11
+        # 11 predicate/paging fields + the deprecated `active` alias
+        # field (compare=False, repr=False), kept so the pre-rename
+        # constructor kwarg still works.
+        expected = 12
         assert len(fields(JobFilter)) == expected
 
     def test_frozen(self) -> None:

@@ -2199,7 +2199,7 @@ async def test_eq_active_true_filter(
     non-terminal job ids (pending, scheduled, running).
     """
     ids = all_statuses_seeded
-    rows = await backend_pair.list_jobs(JobFilter(actor="actor_a", active=True, limit=100))
+    rows = await backend_pair.list_jobs(JobFilter(actor="actor_a", unfinished=True, limit=100))
     returned_ids = {r.id for r in rows}
     assert returned_ids == {ids[s] for s in ACTIVE_STATUSES}
 
@@ -2220,11 +2220,13 @@ async def test_eq_full_state_coverage_status_and_active(
             f"single-status filter for {status!r} returned wrong ids"
         )
 
-    active_rows = await backend_pair.list_jobs(JobFilter(actor="actor_a", active=True, limit=100))
+    active_rows = await backend_pair.list_jobs(
+        JobFilter(actor="actor_a", unfinished=True, limit=100)
+    )
     assert {r.id for r in active_rows} == {ids[s] for s in ACTIVE_STATUSES}
 
     terminal_rows = await backend_pair.list_jobs(
-        JobFilter(actor="actor_a", active=False, limit=100)
+        JobFilter(actor="actor_a", unfinished=False, limit=100)
     )
     assert {r.id for r in terminal_rows} == {ids[s] for s in TERMINAL_STATUSES}
 
@@ -2579,7 +2581,7 @@ async def test_eq_active_true_cursor_pagination(backend_pair: Backend) -> None:
     cursor: str | None = None
     for _ in range(10):
         page = await backend_pair.list_jobs(
-            JobFilter(actor="actor_a", active=True, limit=2, cursor=cursor)
+            JobFilter(actor="actor_a", unfinished=True, limit=2, cursor=cursor)
         )
         if not page:
             break
@@ -2630,7 +2632,7 @@ async def test_eq_active_true_with_created_at_desc(backend_pair: Backend) -> Non
         await _force_job_state(backend_pair, jid, created_at=created_at, status=status_map[jid])
 
     rows = await backend_pair.list_jobs(
-        JobFilter(actor="actor_a", active=True, order_by=JobSortField.CREATED_AT_DESC, limit=10)
+        JobFilter(actor="actor_a", unfinished=True, order_by=JobSortField.CREATED_AT_DESC, limit=10)
     )
     assert [r.id for r in rows] == [newest_active, middle_active, oldest_active]
 

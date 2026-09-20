@@ -190,7 +190,7 @@ async def test_job_filter_status_and_active(
         timeout=30.0,
         description="job visible via JobFilter(status=[pending, running])",
     )
-    assert handle.job_id in await _ids(JobFilter(active=True))
+    assert handle.job_id in await _ids(JobFilter(unfinished=True))
     assert await _ids(JobFilter(status=[])) == set()
 
     cancel_result = await handle.cancel()
@@ -206,4 +206,4 @@ async def test_job_filter_status_and_active(
         timeout=30.0,
         description="job visible via JobFilter(status=[cancelled]) after cancel",
     )
-    assert handle.job_id not in await _ids(JobFilter(active=True))
+    assert handle.job_id not in await _ids(JobFilter(unfinished=True))

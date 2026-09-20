@@ -132,7 +132,7 @@ async def test_client_cancel_where_with_active_filter() -> None:
     await backend.enqueue(make_enqueue_args(scheduled_at=_NOW))
 
     result = await client.cancel_where(
-        JobFilter(active=True),
+        JobFilter(unfinished=True),
         reason="drain active",
     )
 
