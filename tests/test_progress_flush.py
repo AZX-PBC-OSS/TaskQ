@@ -1188,6 +1188,11 @@ async def test_immediate_flush_skips_a_tick_flush_in_flight() -> None:
     without flushing, the buffer keeps its unflushed delta, and the
     terminal write's absolute SET carries it: the row's seq is monotone
     across the interleaving and lands on the correct final value.
+
+    The terminal write also CONSUMES the next seq (the state-change
+    total order): its event's seq is exactly one past the retired head,
+    16 after the tick retired the row at 15, never the head the last
+    progress event already carried.
     """
     row_seq = 10
     seq_history = [row_seq]
@@ -1266,8 +1271,11 @@ async def test_immediate_flush_skips_a_tick_flush_in_flight() -> None:
     assert buf.pending_seq_delta == 0
     assert buf.flush_in_flight is False
 
-    # The terminal write reads base + pending from the buffer and SETs it
-    # absolutely; the row's seq must never regress across the interleaving.
+    # The terminal write reads base + pending from the buffer, CONSUMES one
+    # past that head (the terminal event's own seq), and SETs the consumed
+    # value absolutely; the row's seq must never regress across the
+    # interleaving, and the terminal event must strictly follow the last
+    # progress event on the stream.
     terminal_seq, _terminal_state = _seq_and_state_after_flush_attempt(buf)
     seq_history.append(terminal_seq)
 
@@ -1275,4 +1283,4 @@ async def test_immediate_flush_skips_a_tick_flush_in_flight() -> None:
         f"progress_seq regressed across the interleaving: {seq_history}"
     )
     assert row_seq == 15
-    assert terminal_seq == 15
+    assert terminal_seq == 16

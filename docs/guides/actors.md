@@ -948,9 +948,11 @@ only the latest value for each field is written to Postgres. Redis publishes are
 most one publish per job is in flight at a time and the final publish always lands, so SSE
 consumers see the latest state, not literally every call.
 
-**Sequence numbers.** Each call increments a strictly monotone `seq` counter. SSE consumers use
-`seq` to detect duplicate or out-of-order delivery and to resume after reconnecting via
-`Last-Event-ID`.
+**Sequence numbers.** Each call increments a strictly monotone `seq` counter. State-change
+events on the same stream (the dispatch `running` transition, retries, snoozes, and terminal
+exits) consume the next value too, so `seq` is a total order over the job's whole event stream.
+SSE consumers use `seq` to detect duplicate or out-of-order delivery and to resume after
+reconnecting via `Last-Event-ID`.
 
 **`ProgressTooLarge`.** Raises `taskq.exceptions.ProgressTooLarge` if the serialised `data`
 payload exceeds `WorkerSettings.progress_data_max_bytes`. Keep `data` small; use `detail` for

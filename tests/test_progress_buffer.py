@@ -11,6 +11,7 @@ import pytest
 
 from taskq.exceptions import ProgressTooLarge
 from taskq.progress._buffer import (
+    _consume_state_change_seq,
     _ProgressBuffer,
     _seq_and_state_after_flush_attempt,
     _terminal_seq_and_state,
@@ -330,24 +331,28 @@ async def test_ctx_progress_seq_isolated_per_job_id() -> None:
 
 async def test_seq_and_state_after_flush_attempt_returns_base_seq_when_clean() -> None:
     """When the buffer is clean (flush succeeded), _seq_and_state_after_flush_attempt
-    returns base_seq and pending_state (same as _progress_after_flush)."""
+    reads the retired head from base_seq and CONSUMES one past it: the terminal
+    event's seq must strictly follow the last event the buffer carried, so a
+    seq-cursor consumer never dedupes the terminal event into the progress
+    event before it."""
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=5, pending_seq_delta=0, dirty=False)
     buf.pending_state = {"step": 3}
 
     seq, state = _seq_and_state_after_flush_attempt(buf)
-    assert seq == 5
+    assert seq == 6  # retired head 5, terminal consumes 6
     assert state == {"step": 3}
 
 
 async def test_seq_and_state_after_flush_attempt_falls_back_when_dirty() -> None:
     """When the buffer is still dirty (flush failed silently), _seq_and_state_after_flush_attempt
-    falls back to _snapshot_progress, returning base_seq + pending_seq_delta so the pending
-    delta is NOT lost in the terminal write."""
+    keeps base_seq + pending_seq_delta as the head so the pending
+    delta is NOT lost in the terminal write, and consumes one past it for
+    the terminal event's own seq."""
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=5, pending_seq_delta=3, dirty=True)
     buf.pending_state = {"step": 8}
 
     seq, state = _seq_and_state_after_flush_attempt(buf)
-    assert seq == 8  # 5 + 3
+    assert seq == 9  # head 5 + 3, terminal consumes 9
     assert state == {"step": 8}
 
 
@@ -359,41 +364,44 @@ async def test_seq_and_state_after_flush_attempt_returns_zero_when_none() -> Non
 
 
 async def test_seq_and_state_after_flush_attempt_dirty_zero_delta() -> None:
-    """When the buffer is dirty but pending_seq_delta is 0, the fallback still
-    returns base_seq (not losing state), which is correct for the edge case
-    where only pending_state was updated without a delta increment."""
+    """When the buffer is dirty but pending_seq_delta is 0, the write still
+    reads the head from base_seq (not losing state), which is correct for the
+    edge case where only pending_state was updated without a delta increment,
+    and consumes one past it for the terminal event's seq."""
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=10, pending_seq_delta=0, dirty=True)
     buf.pending_state = {"percent": 50.0}
 
     seq, state = _seq_and_state_after_flush_attempt(buf)
-    assert seq == 10
+    assert seq == 11  # head 10, terminal consumes 11
     assert state == {"percent": 50.0}
 
 
-# ── _terminal_seq_and_state: returns base_seq when buffer is clean ────────
+# ── _terminal_seq_and_state: consumes one past the head ───────────────────
 
 
 async def test_terminal_seq_and_state_clean_buffer_returns_base_seq() -> None:
     """When the buffer is clean (post-flush, base_seq=5, pending_seq_delta=0),
-    _terminal_seq_and_state returns (5, state) - NOT (0, {}).
+    _terminal_seq_and_state returns (6, state) - NOT (0, {}).
     This is the exact window where _snapshot_progress would incorrectly
-    return 0, clobbering the previously-flushed sequence."""
+    return 0, clobbering the previously-flushed sequence; the retired head
+    is 5 and the state-change write consumes 6."""
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=5, pending_seq_delta=0, dirty=False)
     buf.pending_state = {"step": 3}
 
     seq, state = _terminal_seq_and_state(buf)
-    assert seq == 5
+    assert seq == 6
     assert state == {"step": 3}
 
 
 async def test_terminal_seq_and_state_dirty_buffer_returns_sum() -> None:
-    """When the buffer is dirty (pre-flush), _terminal_seq_and_state returns
-    base_seq + pending_seq_delta, matching _snapshot_progress behaviour."""
+    """When the buffer is dirty (pre-flush), _terminal_seq_and_state reads
+    the head at base_seq + pending_seq_delta (the pending delta must not be
+    lost) and consumes one past it for the state-change event's seq."""
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=5, pending_seq_delta=3, dirty=True)
     buf.pending_state = {"step": 8}
 
     seq, state = _terminal_seq_and_state(buf)
-    assert seq == 8
+    assert seq == 9
     assert state == {"step": 8}
 
 
@@ -406,10 +414,31 @@ async def test_terminal_seq_and_state_none_buffer_returns_zero() -> None:
 
 async def test_terminal_seq_and_state_clean_zero_delta() -> None:
     """When base_seq > 0 and pending_seq_delta == 0 and buffer is clean,
-    _terminal_seq_and_state returns base_seq (the authoritative flushed value)."""
+    _terminal_seq_and_state consumes one past base_seq (the authoritative
+    flushed value): the state-change event strictly follows the flushed
+    progress event instead of repeating its seq."""
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=10, pending_seq_delta=0, dirty=False)
     buf.pending_state = {"step": 10}
 
     seq, state = _terminal_seq_and_state(buf)
-    assert seq == 10
+    assert seq == 11
     assert state == {"step": 10}
+
+
+async def test_consume_state_change_seq_stacks_on_the_head() -> None:
+    """A running transition's consumption (see _consume_state_change_seq)
+    sits on a CLEAN buffer as pending_seq_delta=1: the running event carries
+    base + 1, and the terminal write stacks one past it, never repeating
+    the running event's seq."""
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=5, pending_seq_delta=0, dirty=False)
+    running_seq = _consume_state_change_seq(buf)
+    assert running_seq == 6  # head 5, the running event consumes 6
+    assert buf.dirty is False  # a consumption alone never dirties the buffer
+    assert buf.pending_seq_delta == 1
+    seq, _state = _terminal_seq_and_state(buf)
+    assert seq == 7  # the terminal consumes one past the running event
+    assert buf.pending_seq_delta == 1  # the projection consumes; it never mutates
+
+
+async def test_consume_state_change_seq_none_buffer_consumes_nothing() -> None:
+    assert _consume_state_change_seq(None) == 0

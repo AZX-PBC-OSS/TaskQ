@@ -465,7 +465,9 @@ async def test_ti6_redis_disconnect_mid_stream_pg_complete(
     so client.publish (which that path never calls) cannot inject the
     failure.
 
-    Oracle: progress_seq == 5 in PG, job status = 'succeeded'.
+    Oracle: progress_seq == 7 in PG (5 progress calls plus the running
+    transition's and the terminal write's consumed seqs), job status =
+    'succeeded'.
     """
     setup_meter(monkeypatch)
     monkeypatch.setattr(
@@ -499,8 +501,10 @@ async def test_ti6_redis_disconnect_mid_stream_pg_complete(
         row = await _query_progress_row(deps.worker_pool, deps.settings.schema_name, job_id)
 
         assert row["status"] == "succeeded", f"expected succeeded, got {row['status']}"
-        # All 5 ctx.progress() calls must have landed in PG (pre-terminal flush)
-        assert row["progress_seq"] == 5, f"expected progress_seq==5, got {row['progress_seq']}"
+        # All 5 ctx.progress() calls must have landed in PG (pre-terminal
+        # flush), plus the running transition's and the terminal write's
+        # consumed seqs (the seq is a total order over the whole stream).
+        assert row["progress_seq"] == 7, f"expected progress_seq==7, got {row['progress_seq']}"
     finally:
         await stack.aclose()
 

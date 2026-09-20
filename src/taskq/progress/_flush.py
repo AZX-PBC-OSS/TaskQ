@@ -254,8 +254,10 @@ async def _flush_buffer_immediate(
     SET regresses the row's ``progress_seq``). Skipping is correct by
     construction, not a loss: the buffer keeps its unflushed delta, the
     terminal write reads ``base_seq + pending_seq_delta`` from it (see
-    :func:`taskq.progress._buffer._seq_and_state_after_flush_attempt`),
-    so the write's absolute SET carries the full unflushed delta, and a
+    :func:`taskq.progress._buffer._seq_and_state_after_flush_attempt`)
+    and consumes one past it, so the
+    write's absolute SET carries the full unflushed delta plus the
+    terminal event's own consumed seq, and a
     tick flush that fails merely leaves the buffer dirty for the next
     tick.
     """

@@ -326,7 +326,13 @@ async def _publish_state_change_event(
     parameters are used only on the cancel path where the buffer has already
     been popped before the publish.
 
-    State-change events do NOT increment progress_seq.
+    State-change events CONSUME the next seq value: the seq is a strict
+    total order over the job's whole event stream, so the event carries
+    one past the buffer's head (the caller's terminal/requeue write
+    computes and durably SETs the same value), strictly greater than
+    every earlier event on the stream. A seq-cursor consumer deduping
+    by seq alone therefore treats it as a new event, never a duplicate
+    of the progress event before it.
     """
     if redis_client is None:
         return

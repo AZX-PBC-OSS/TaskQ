@@ -817,6 +817,22 @@ fallback moved behind `TASKQ_SAML_ALLOW_COOKIELESS_FALLBACK`, **default
 These change what your code *does* without changing what it *accepts*. Nothing
 raises, so nothing points you at the call site; audit for them explicitly.
 
+* **State-change events now consume the progress `seq` (it is the event
+  stream's total order).** A state-change event (the dispatch `running`
+  transition, retries, snoozes, and every terminal or interrupted exit) used
+  to carry the last progress event's `seq` unchanged; it now carries one
+  past it, and the durable `jobs.progress_seq` ends at the terminal event's
+  consumed value. Consumers deduping or resuming by `seq` alone were the
+  reason: a guard keyed on `seq` treated every state-change event as a
+  duplicate of the progress event sharing its number and dropped it, so a
+  terminal event could never arrive and an SSE stream never closed. Existing
+  consumers that dedupe progress events see extra, correctly-ordered values
+  and need no change; consumers that special-cased the old repeats (or
+  snapshotted from Postgres on every reconnect because seq-cursor delivery
+  of state was unreliable) can drop the special cases. There is no migration:
+  the counter keeps its column, type, and monotonicity, only the state-change
+  increments are new.
+
 * **The wake payload names the inserted row's queue, and queue-scoped
   subscribers filter on it.** The insert trigger's NOTIFY carried an empty
   payload and woke every worker's producer; it now names the row's queue
