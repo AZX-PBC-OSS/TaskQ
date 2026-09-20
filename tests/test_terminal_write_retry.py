@@ -67,7 +67,7 @@ class _BlippingBackend(InMemoryBackend):
             progress_seq,
             progress_state,
             attempt=attempt,
-            claim_epoch=attempt,
+            claim_epoch=claim_epoch,
         )
 
     async def mark_succeeded(
@@ -93,7 +93,7 @@ class _BlippingBackend(InMemoryBackend):
             fallback_result_ttl,
             result_bytes=result_bytes,
             attempt=attempt,
-            claim_epoch=attempt,
+            claim_epoch=claim_epoch,
         )
 
 
@@ -400,7 +400,12 @@ class _BlippingCancelBackend(_BlippingBackend):
     ) -> bool:
         self._maybe_blip()
         return await super().mark_cancelled(
-            job_id, worker_id, progress_seq, progress_state, attempt=attempt, claim_epoch=attempt
+            job_id,
+            worker_id,
+            progress_seq,
+            progress_state,
+            attempt=attempt,
+            claim_epoch=claim_epoch,
         )
 
 

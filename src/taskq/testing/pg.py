@@ -253,11 +253,18 @@ async def create_running_job(
         expires_at,
         cancel_phase,
         cancel_requested_at,
-        # A running row owned by a worker exists because a claim stamped
-        # it, so the seeded epoch mirrors the attempt the claim wrote
-        # (the claim advances both); the terminal-write fences under
-        # test then see the shape production hands them.
         schedule_to_close,
+        # The epoch seed models the refund-free history this helper
+        # represents: a row that reached attempt N through N claims, each
+        # of which stamped attempt and claim_epoch together, so the row's
+        # epoch is N and the fences under test are satisfiable by
+        # presenting the row's own values. attempt and claim_epoch are
+        # distinct counters that DO diverge in production (the attempt
+        # saturates at the smallint ceiling and non-terminal releases
+        # refund it; the epoch only ever increments, so the row's epoch is
+        # always >= its attempt); the equality fences treat a diverged row
+        # identically, and a test that needs a diverged shape seeds the
+        # two columns separately.
         attempt,
     )
     if with_events:
