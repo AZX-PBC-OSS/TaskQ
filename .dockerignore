@@ -15,7 +15,6 @@ docs
 tests
 benchmarks
 validation
-examples
 scripts
 node_modules
 perf-evidence-*.md

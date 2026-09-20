@@ -29,8 +29,8 @@ requires_node = pytest.mark.skipif(
 )
 
 # A minimal browser: the badge and progress section are the two elements the
-# module touches; fetch answers /sse/mode with the scripted verdict and every
-# other URL (the poll) with an empty body; timers are virtual.
+# module touches; fetch answers /sse/mode with the scripted verdict and the
+# poll with scenario-specific snapshots; timers are virtual.
 _HARNESS = r"""
 const fs = require("fs");
 const src = fs.readFileSync(process.argv[process.argv.length - 2], "utf8");
@@ -51,6 +51,8 @@ const badge = {
             ? "polling-degraded"
             : scenario === "polling-empty-progress"
                 ? "polling"
+                : scenario === "polling-progress"
+                    ? "polling"
                 : "realtime"
     },
     textContent: "",
@@ -89,19 +91,55 @@ global.EventSource = class {
     emit(name, data, lastEventId) {
         this.handlers[name]({ data: JSON.stringify(data), lastEventId });
     }
+    emitError() { this.handlers.error({}); }
 };
 
 global.setInterval = (fn, ms) => { const id = nextTimer++; timers.push({ id, fn, ms, due: now + ms }); return id; };
 global.clearInterval = (id) => { timers = timers.filter((t) => t.id !== id); };
 
+let pollCount = 0;
+const routes = [
+    {
+        condition: ({ url }) => url.endsWith("/sse/mode"),
+        handler: () => ({ realtime: wantRealtime }),
+    },
+    {
+        condition: ({ scenario }) => scenario === "polling-empty-progress",
+        handler: () => ({
+            status: "succeeded",
+            progress_state: {},
+            progress_seq: 0,
+        }),
+    },
+    {
+        condition: ({ scenario }) => scenario === "polling-progress",
+        handler: () => {
+            pollCount += 1;
+            return pollCount === 1
+                ? { status: "running", progress_state: {}, progress_seq: 0 }
+                : { status: "succeeded", progress_state: { percent: 50 }, progress_seq: 1 };
+        },
+    },
+    {
+        condition: ({ scenario }) => scenario === "sse-to-polling",
+        handler: () => {
+            pollCount += 1;
+            return pollCount === 1
+                ? { status: "running", progress_state: { percent: 50 }, progress_seq: 1 }
+                : { status: "succeeded", progress_state: { percent: 100 }, progress_seq: 2 };
+        },
+    },
+];
+
+function resolveBody(context) {
+    const route = routes.find(({ condition }) => condition(context));
+    return route?.handler(context) ?? {};
+}
+
 global.fetch = (url) => ({
     then(f1) {
         log.push("fetch:" + url.split("?")[0]);
-        const body = url.endsWith("/sse/mode")
-            ? { realtime: wantRealtime }
-            : scenario === "polling-empty-progress"
-                ? { status: "succeeded", progress_state: {}, progress_seq: 0 }
-                : {};
+        const body = resolveBody({ url, scenario });
         return { then(f2) { f2(f1({ json: () => body })); return { catch() {} }; } };
     },
 });
@@ -118,7 +156,12 @@ function advance(ms) {
 
 new Function(src)();
 if (scenario === "realtime-empty-progress") {
-    global.lastEventSource.emit("terminal", {}, "0");
+    global.lastEventSource.emit("terminal", { terminal: true }, "0");
+} else if (scenario === "realtime-progress") {
+    global.lastEventSource.emit("progress", { percent: 50 }, "1");
+} else if (scenario === "sse-to-polling") {
+    global.lastEventSource.emit("progress", { percent: 50 }, "1");
+    global.lastEventSource.emitError();
 }
 advance(30000);
 log.push("mode:" + badge.attrs["data-mode"]);
@@ -184,8 +227,31 @@ def test_polling_does_not_render_the_empty_initial_progress_state() -> None:
 
 
 @requires_node
+def test_polling_renders_a_later_progress_update_once() -> None:
+    """Polling ignores sequence zero but preserves the first real update."""
+    log = _drive("polling-progress")
+    assert log.count("append-progress") == 1
+
+
+@requires_node
 def test_realtime_does_not_render_the_empty_initial_progress_state() -> None:
     """An SSE snapshot at sequence zero is not a progress timeline entry."""
     log = _drive("realtime-empty-progress")
     assert "sse-open:/taskq/jobs/api/job/j1/progress/stream" in log
     assert "append-progress" not in log
+    assert "sse-close" in log
+    assert "fetch:/taskq/jobs/api/job/j1/state" not in log
+
+
+@requires_node
+def test_realtime_renders_a_later_progress_update_once() -> None:
+    """SSE ignores sequence zero without suppressing real progress events."""
+    log = _drive("realtime-progress")
+    assert log.count("append-progress") == 1
+
+
+@requires_node
+def test_sse_to_polling_deduplicates_the_last_realtime_progress_event() -> None:
+    """Polling resumes at the next sequence after an SSE failure."""
+    log = _drive("sse-to-polling")
+    assert log.count("append-progress") == 2
