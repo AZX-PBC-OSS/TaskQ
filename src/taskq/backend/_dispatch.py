@@ -225,7 +225,25 @@ async def _dispatch_batch(
     # transaction here only tripled the cost of every claim; the claim is
     # one statement, so autocommit already gives it all the atomicity it
     # needs.
-    async with dispatcher_pool.acquire(timeout=acquire_timeout) as conn:
+    # The pool acquire is the round's FIRST stage, and its wait (the part
+    # that can raise) happens on the context manager's __aenter__, so it is
+    # acquired explicitly and released in the finally below: a round that
+    # dies waiting for a dispatcher connection (pool exhaustion, acquire
+    # timeout on a saturated PG) is a spent round exactly like one that
+    # dies at the resolve, the probe, or the claim, and records the same
+    # duration-plus-failure telemetry those sibling stages record. Outside
+    # this record the stage is metric-silent, and a pod whose every round
+    # fails at the acquire reads, in the metric stream, exactly like one
+    # polling an idle queue.
+    acquire_started = time.monotonic()
+    pool_ctx = dispatcher_pool.acquire(timeout=acquire_timeout)
+    try:
+        conn = await pool_ctx.__aenter__()
+    except Exception:
+        record_dispatch_duration(queue_attr, time.monotonic() - acquire_started)
+        record_dispatch_failure(queue_attr)
+        raise
+    try:
         try:
             queue_modes = (
                 queue_mode_cache.resolved_modes(queues) if queue_mode_cache is not None else None
@@ -327,6 +345,12 @@ async def _dispatch_batch(
             # classification is unchanged.
             conn.terminate()
             raise
+    finally:
+        # The release the async-with used to run: the body's exit, normal
+        # or exceptional, always releases the checked-out connection. The
+        # release itself raises only on a pool being closed, same as the
+        # async-with it replaced.
+        await pool_ctx.__aexit__(None, None, None)
     return [_job_row_from_record(rec) for rec in records]
 
 

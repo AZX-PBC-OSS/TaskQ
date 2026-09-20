@@ -22,7 +22,13 @@ from taskq._ids import new_uuid
 from taskq.backend._dispatch import _dispatch_batch
 from taskq.backend._dispatch_sql import DISPATCH_STRICT_FIFO_SQL, dispatch_batch
 from taskq.backend._sql_templates import render
-from taskq.testing.otel import collect_metrics, counter_value, setup_meter, setup_tracer
+from taskq.testing.otel import (
+    collect_metrics,
+    counter_data_points,
+    counter_value,
+    setup_meter,
+    setup_tracer,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -227,6 +233,67 @@ async def test_claimable_probe_failure_still_emits_telemetry(
         "failure counter -- indistinguishable from an idle queue"
     )
     assert counter_value(reader, failure_metric_names[0]) >= 1
+
+
+# ── the pool-acquire raise site (the round's first stage) ────────────────
+
+
+class _ExpiringAcquirePool:
+    """A pool whose acquire wait always times out.
+
+    ``acquire()`` models asyncpg.Pool.acquire: it returns the async
+    context manager, and the WAIT (the part that can raise) happens on
+    ``__aenter__``. An exhausted dispatcher pool on a saturated PG
+    raises TimeoutError here, the round's very first stage, before the
+    resolve, the probe, and the claim can even run.
+    """
+
+    class _Ctx:
+        async def __aenter__(self) -> object:
+            raise TimeoutError("simulated dispatcher pool acquire timeout")
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    def acquire(self, *, timeout: float | None = None) -> "_ExpiringAcquirePool._Ctx":
+        return self._Ctx()
+
+
+async def test_pool_acquire_failure_emits_failure_counter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A round that dies waiting for a dispatcher connection must record
+    the failure counter and a duration sample, the same record every
+    sibling stage of the same round (resolve, probe, claim) makes. The
+    acquire stage sits OUTSIDE the recording tries of those stages, so
+    before the fix a pod whose every round died on pool exhaustion or
+    acquire timeout was, in the metric stream, indistinguishable from
+    one polling an idle queue: silent on both taskq.dispatch.failures
+    and taskq.dispatch.duration, retries forever, /ready green."""
+    setup_tracer(monkeypatch)
+    reader = setup_meter(monkeypatch)
+
+    with pytest.raises(TimeoutError):
+        await _dispatch_batch(
+            _ExpiringAcquirePool(),  # type: ignore[arg-type] # Why: duck-typed pool; only acquire() is used.
+            render("taskq"),
+            2,
+            5.0,
+            "taskq",
+            new_uuid(),
+            ["default"],
+            10,
+            timedelta(seconds=30),
+            queue_mode_cache=None,
+        )
+
+    assert counter_value(reader, "taskq.dispatch.failures") >= 1, (
+        "a dispatch round that failed at the pool acquire emitted no "
+        "failure counter -- indistinguishable from an idle queue"
+    )
+    assert counter_data_points(reader, "taskq.dispatch.failures")[0].attributes, (
+        "the acquire-stage failure point must carry the stage labels"
+    )
 
 
 # ── red-team: does the failure counter name the failure class? ──────────
