@@ -580,7 +580,7 @@ async def track_completions(tq: TaskQ) -> None:
         # never appear on this feed, so per-event counting can never reach
         # zero when a worker's heartbeat dies mid-fan-out.
         if await count_unfinished(tq, job_ids) == 0:  # your own query over
-            await fire_completion_callback()          # jobs / the admin views
+            await fire_completion_callback()  # jobs / the admin views
             return
 ```
 
