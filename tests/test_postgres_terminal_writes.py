@@ -1559,6 +1559,12 @@ class TestMarkSucceededResultExpiryFallback:
                 # The trailing 1 is the attempt-epoch fence bind ($8) -
                 # the seeded row is at attempt 1.
                 1,
+                # $9 is the denial reason the caller reported. The statement
+                # binds it on every path (the deadline arm's terminal event
+                # reads it, jsonb_strip_nulls drops it for a non-denial
+                # exit), so a direct caller binds the same default the
+                # backend's mark_snoozed binds for a plain actor snooze.
+                "capacity",
             )
             assert rec is not None
             assert rec["outcome_branch"] == "snoozed"
