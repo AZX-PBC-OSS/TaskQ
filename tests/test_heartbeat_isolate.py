@@ -1,6 +1,7 @@
 """Unit tests for isolate_self - pure-Python, no PG required."""
 
 import asyncio
+from typing import cast
 
 import pytest
 
@@ -103,6 +104,77 @@ def _make_deps(
 
 
 # ── Test: isolate_self opens a fresh asyncpg.connect ─────────────────────
+
+
+async def test_isolate_self_writes_reclaim_event_rows() -> None:
+    """Every job isolate_self transitions rides the crash-reclaim outbox
+    channel: ONE batched job_events insert (the sweep's event writer
+    shape) whose rows carry reason='lock_expired' (the channel key
+    poll_reclaim_events tails) and cause='isolate_self' (which origin
+    fired), with the arm's to_state. Without it, an isolate-reclaimed
+    job is invisible to poll_reclaim_events and watch_reclaims while
+    the row and the attempt history both say it is long gone."""
+
+    job_rows: list[dict[str, object]] = [
+        {
+            "id": new_uuid(),
+            "attempt": 1,
+            "started_at": "2025-01-01T00:00:00Z",
+            "max_attempts": 3,
+            "retry_kind": "transient",
+            "cancel_phase": 0,
+        },
+        {
+            "id": new_uuid(),
+            "attempt": 2,
+            "started_at": "2025-01-01T00:00:01Z",
+            "max_attempts": 2,
+            "retry_kind": "non_retryable",
+            "cancel_phase": 0,
+        },
+    ]
+
+    conn = FakeConn(fetch_rows=job_rows)
+
+    async def fake_connect(
+        dsn: str, *, timeout: float, command_timeout: float | None = None
+    ) -> FakeConn:
+        return conn
+
+    import json
+
+    import asyncpg as apg
+
+    orig_connect = apg.connect
+    apg.connect = fake_connect  # type: ignore[method-assign] # Why: patching asyncpg.connect for unit test; restored in finally.
+    try:
+        deps = _make_deps()
+        shutdown = asyncio.Event()
+        await isolate_self(deps, new_uuid(), shutdown)
+
+        assert shutdown.is_set()
+        event_calls = [(sql, args) for sql, args in conn.execute_calls if "job_events" in sql]
+        assert len(event_calls) == 1, (
+            f"isolate_self must batch its reclaim events into one insert, got {len(event_calls)}"
+        )
+        _sql, args = event_calls[0]
+        job_ids, details, kind = args[0], args[1], args[2]
+        assert kind == "state_change"
+        assert list(job_ids) == [row["id"] for row in job_rows]  # type: ignore[arg-type] # Why: FakeConn records untyped tuples; the insert's $1 is the uuid[] binding.
+        detail_json = cast("tuple[object, ...]", details)
+        parsed = [json.loads(str(d)) for d in detail_json]
+        # Arm classification mirrors the UPDATE's CASE order: the
+        # transient job with budget re-pends, the non_retryable one
+        # crashes.
+        assert parsed[0]["to_state"] == "pending"
+        assert parsed[1]["to_state"] == "crashed"
+        for detail in parsed:
+            assert detail["from_state"] == "running"
+            assert detail["reason"] == "lock_expired"
+            assert detail["cause"] == "isolate_self"
+            assert detail["worker_id"]
+    finally:
+        apg.connect = orig_connect  # type: ignore[method-assign] # Why: patching asyncpg.connect for unit test; restored in finally.
 
 
 async def test_isolate_self_opens_fresh_connect() -> None:

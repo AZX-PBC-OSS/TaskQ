@@ -1306,7 +1306,13 @@ class TaskQ:
         ``detail['reason']='lock_expired'``, ordered by the monotonic
         ``event_id`` cursor ascending.  ``to_state`` is ``'pending'`` for
         a retried reclaim, ``'crashed'`` or ``'cancelled'`` (cancel was
-        in-flight when the worker died) for a terminal one.
+        in-flight when the worker died) for a terminal one.  ``cause``
+        names which deadline fired, ``'lock_expired'`` (the worker's
+        global lease) or ``'heartbeat_timeout'`` (the per-job promise)
+        for a leader-sweep reclaim, ``'isolate_self'`` for a reclaim a
+        worker performed on its own jobs when its heartbeat connection
+        died (``isolate_self``), the same channel so a consumer fanning
+        out on this feed sees heartbeat-loss self-recovery too.
 
         Cursor and duplicate semantics
         ------------------------------
