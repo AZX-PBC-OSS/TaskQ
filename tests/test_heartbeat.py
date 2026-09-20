@@ -469,6 +469,108 @@ async def test_no_isolation_at_exactly_max_failures() -> None:
     await task
 
 
+# ── Unexpected (non-transient) failures count toward the same threshold ──
+
+
+async def test_unexpected_failure_counts_toward_isolate() -> None:
+    """A persistent non-transient tick error isolates the worker.
+
+    The REVOKE-class shape: every statement the tick issues fails with a
+    permanent refusal (InsufficientPrivilegeError, SQLSTATE 42501),
+    deliberately outside TRANSIENT_PG_ERRORS. Pre-fix the unexpected arm
+    only logged, the counter never moved, and the loop ticked forever on
+    an expired lock with the gauge pinned at 0 and /ready green. Now the
+    arm counts toward the same max_heartbeat_failures threshold as the
+    transient arm: the counter climbs one per tick and isolate_self fires
+    on the (max+1)-th consecutive failure, never before.
+    """
+    await _patch_tick_duration(lambda v: None)
+
+    isolate_calls: list[tuple[WorkerDeps, UUID, asyncio.Event]] = []
+
+    async def fake_isolate(deps: WorkerDeps, worker_id: UUID, shutdown: asyncio.Event) -> None:
+        isolate_calls.append((deps, worker_id, shutdown))
+        shutdown.set()
+
+    import taskq.worker.heartbeat as hb_mod
+
+    hb_mod.isolate_self = fake_isolate  # type: ignore[method-assign] # Why: restored by _restore_heartbeat_module_globals autouse fixture.
+
+    pool = FakePool(
+        fail_execute_with=asyncpg.InsufficientPrivilegeError("permission denied for table jobs")
+    )
+    deps = _make_deps(heartbeat_pool=pool, max_heartbeat_failures=3)
+    worker_id = new_uuid()
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(heartbeat_loop(deps, worker_id, shutdown))
+    await _wait_for_heartbeat_failures(deps, exactly=4)
+    # The loop exits after the isolate decision, exactly as the transient
+    # arm exits: a worker that has isolated does not keep ticking.
+    await asyncio.wait_for(task, timeout=5.0)
+    assert deps.heartbeat_failures == 4
+    assert len(isolate_calls) == 1
+    assert isolate_calls[0][1] == worker_id
+    assert isolate_calls[0][2] is shutdown
+
+
+async def test_transient_failure_control_unchanged() -> None:
+    """Control for the unexpected-arm pin: the transient 40001 arm counts
+    toward the isolate threshold and isolates exactly as it did before the
+    unexpected arm learned to count."""
+    await _patch_tick_duration(lambda v: None)
+
+    isolate_calls: list[tuple[WorkerDeps, UUID, asyncio.Event]] = []
+
+    async def fake_isolate(deps: WorkerDeps, worker_id: UUID, shutdown: asyncio.Event) -> None:
+        isolate_calls.append((deps, worker_id, shutdown))
+        shutdown.set()
+
+    import taskq.worker.heartbeat as hb_mod
+
+    hb_mod.isolate_self = fake_isolate  # type: ignore[method-assign] # Why: restored by _restore_heartbeat_module_globals autouse fixture.
+
+    pool = FakePool(fail_execute_with=asyncpg.SerializationError("could not serialize access"))
+    deps = _make_deps(heartbeat_pool=pool, max_heartbeat_failures=3)
+    worker_id = new_uuid()
+    shutdown = asyncio.Event()
+    await heartbeat_loop(deps, worker_id, shutdown)
+    assert deps.heartbeat_failures == 4
+    assert len(isolate_calls) == 1
+    assert isolate_calls[0][1] == worker_id
+    assert isolate_calls[0][2] is shutdown
+
+
+async def test_unexpected_failure_counter_resets_after_success() -> None:
+    """A successful tick resets the count after unexpected failures too.
+
+    The unexpected arm must carry the transient arm's full ledger
+    semantics, not just the increment: an isolated surprise (one bad
+    statement shape, a transient driver hiccup outside the set) must be
+    forgiven by the next good tick, the same reset-on-success contract
+    UnexpectedLoopErrorGuard enforces for the leader loops.
+    """
+    await _patch_tick_duration(lambda v: None)
+    pool = FakePool(
+        fail_execute_with=asyncpg.InsufficientPrivilegeError("permission denied for table jobs")
+    )
+    deps = _make_deps(heartbeat_pool=pool)
+    shutdown = asyncio.Event()
+    worker_id = new_uuid()
+    task = asyncio.create_task(heartbeat_loop(deps, worker_id, shutdown))
+    await _wait_for_heartbeat_failures(deps, at_least=2)
+    assert deps.heartbeat_failures >= 2
+
+    healthy = FakePool()
+    deps.heartbeat_pool = healthy  # type: ignore[arg-type]
+    # The swap is synchronous, so the hook is installed before the loop's
+    # next tick can run; the wait fires on that first successful tick -
+    # the exact point the counter resets to 0.
+    await _wait_for_heartbeat_failures(deps, exactly=0)
+    assert deps.heartbeat_failures == 0
+    shutdown.set()
+    await task
+
+
 # ── Soft warning at half max_heartbeat_failures ───────────────────
 
 
