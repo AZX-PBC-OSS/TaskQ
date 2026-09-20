@@ -112,6 +112,7 @@ async def _deps_cm(settings: WorkerSettings) -> AsyncGenerator[WorkerDeps]:
 @pytest.mark.asyncio
 async def test_isolate_heartbeat_loss_is_off_feed_and_discoverable_in_tables(
     pg_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The isolate re-pend/crash arms leave no reclaim-feed event, write
     HeartbeatLost attempt rows on every arm, and the admin jobs page reads
@@ -212,11 +213,16 @@ async def test_isolate_heartbeat_loss_is_off_feed_and_discoverable_in_tables(
 
             # The admin surface: the exact GET path the doc names, reading the
             # same tables through the real pool the router queries with.
-            import os
-
-            os.environ["TASKQ_ENVIRONMENT"] = "dev"
-            os.environ["TASKQ_SCHEMA_NAME"] = schema
-            os.environ["TASKQ_PG_DSN"] = pg_dsn
+            # The env vars arm the TaskQSettings.load() cascade inside
+            # create_router (dev-environment fail-closed check + DSN); they
+            # go through monkeypatch so nothing outlives this test in
+            # os.environ -- a raw os.environ write here leaked the
+            # atk_iso_* schema name into later in-process settings loads
+            # (e.g. the taskq migrate CLI tests), which only fired when a
+            # random ordering ran this pin before them.
+            monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+            monkeypatch.setenv("TASKQ_SCHEMA_NAME", schema)
+            monkeypatch.setenv("TASKQ_PG_DSN", pg_dsn)
             from fastapi import FastAPI
             from fastapi.testclient import TestClient
 
