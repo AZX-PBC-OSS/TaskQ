@@ -54,6 +54,7 @@ __all__ = [
     "WORKER_CHANNEL_FMT",
     "base_name_collides_with_reserved_prefix",
     "check_max_attempts_domain",
+    "check_payload_float_constraints",
     "check_priority_domain",
     "events_channel",
     "progress_channel",
@@ -564,6 +565,63 @@ def check_priority_domain(value: int, *, what: str = "priority") -> None:
         raise ValueError(
             f"{what} must fit smallint range ({SMALLINT_MIN}..{SMALLINT_MAX}), got {value}"
         )
+
+
+# Beyond 2**53 an IEEE-754 double cannot represent every integer: the
+# neighbors alias, so a bound like 10**25 stored in a float column accepts
+# 10**25 - 1 (measured). Any integral constraint past this magnitude on a
+# float-typed payload field promises exactness the type cannot deliver.
+FLOAT_EXACT_INTEGER_LIMIT = 2**53
+
+
+def check_payload_float_constraints(model: type, *, what: str) -> None:
+    """Refuse a payload model whose float fields carry integral constraints
+    beyond the f64 exact-integer range.
+
+    tors's constrained-bigint gate (the schema refuses rather than
+    validating lossily) applied to the ``@actor`` boundary: a
+    ``Field(ge=10**25)``-style float field silently aliases its neighbors
+    (``model_validate`` accepts ``10**25 - 1`` and ``model_dump`` ships
+    the aliased float to jsonb), so the constraint the author wrote is
+    not the constraint the queue enforces. Decoration time is where the
+    model is in hand and the fix is one edit away; at enqueue time the
+    failure would surface as silently wrong data.
+
+    Only float-typed fields with numeric comparison constraints are
+    examined: ints are exact in json, and unconstrained floats promise no
+    integer exactness.
+    """
+    import pydantic
+
+    if not issubclass(model, pydantic.BaseModel):
+        return
+    for field_name, info in model.model_fields.items():
+        annotation = info.annotation
+        if annotation is None or not isinstance(annotation, type):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: FieldInfo.annotation is declared type[Any] but carries non-type annotations at runtime (generic aliases, literals); this guard is the gate's first filter.
+            continue
+        is_float = annotation is float or issubclass(annotation, float)
+        if not is_float:
+            continue
+        for meta in info.metadata:
+            for bound in (
+                getattr(meta, "ge", None),
+                getattr(meta, "gt", None),
+                getattr(meta, "le", None),
+                getattr(meta, "lt", None),
+                getattr(meta, "multiple_of", None),
+            ):
+                if (
+                    isinstance(bound, int)
+                    and not isinstance(bound, bool)
+                    and abs(bound) >= FLOAT_EXACT_INTEGER_LIMIT
+                ):
+                    raise ValueError(
+                        f"{what}: payload field {field_name!r} is float-typed with "
+                        f"an integral constraint {bound} at or beyond 2**53, where "
+                        "f64 neighbors alias: the queue would enforce a bound the "
+                        "type cannot represent exactly. Use an int field (exact in "
+                        "json) or a constraint within the exact range."
+                    )
 
 
 def check_max_attempts_domain(value: int, *, what: str = "max_attempts") -> None:

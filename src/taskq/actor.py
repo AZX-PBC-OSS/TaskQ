@@ -56,7 +56,7 @@ from taskq.backend._protocol import (
     JobStatus,
     _validate_queue_name,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical queue-name validator; the enqueue path (client._args) runs the same one, so the charset cannot drift between the two chokepoints.
 )
-from taskq.constants import check_priority_domain
+from taskq.constants import check_payload_float_constraints, check_priority_domain
 from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.ratelimit.sliding_window import SlidingWindow
@@ -253,6 +253,11 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
         self.wants_ctx = wants_ctx
         self.dependencies = dependencies
         self.payload_type = payload_type
+        # Fail closed on payload models whose float fields carry integral
+        # constraints beyond the f64 exact-integer range (the neighbors
+        # alias; the queue would enforce a bound the type cannot
+        # represent). Decoration time is where the fix is one edit away.
+        check_payload_float_constraints(payload_type, what=f"actor handler {name!r} payload model")
         self.result_adapter = result_adapter
         self.retry = retry
         self.result_ttl = result_ttl
