@@ -933,7 +933,7 @@ async def test_cancel_clean_buffer_consumes_one_past_base_seq() -> None:
     base_seq (5), NOT 0, and the state-change write CONSUMES the next seq
     (6): the cancel event must strictly follow the progress event at 5, so a
     seq-cursor consumer never dedupes it away. _terminal_seq_and_state
-    ensures both; _snapshot_progress would have returned 0."""
+    ensures both the head read and the consumption."""
     from taskq._ids import new_job_id, new_uuid
     from taskq.backend._protocol import EnqueueArgs
     from taskq.progress._buffer import _terminal_seq_and_state

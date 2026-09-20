@@ -829,7 +829,17 @@ raises, so nothing points you at the call site; audit for them explicitly.
   consumers that dedupe progress events see extra, correctly-ordered values
   and need no change; consumers that special-cased the old repeats (or
   snapshotted from Postgres on every reconnect because seq-cursor delivery
-  of state was unreliable) can drop the special cases. There is no migration:
+  of state was unreliable) can drop the special cases. Scope the guarantee
+  to events whose durable write landed: across worker death it does not
+  hold, because the reclaim sweep does not touch `progress_seq`, so the
+  reclaimed job's next attempt re-publishes `running` at a seq the wire
+  already carried (a terminal publish whose `mark_*` write failed repeats
+  its seq on retry the same way), and a consumer can see the same seq twice
+  with different payloads; the Postgres snapshot stays authoritative across
+  the gap. During a rolling deploy, workers still on the previous release
+  emit state-change events that repeat the head instead of consuming a new
+  seq until they are upgraded; both windows produce duplicates a seq-cursor
+  guard already drops. There is no migration:
   the counter keeps its column, type, and monotonicity, only the state-change
   increments are new.
 

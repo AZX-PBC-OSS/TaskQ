@@ -382,9 +382,9 @@ async def test_seq_and_state_after_flush_attempt_dirty_zero_delta() -> None:
 async def test_terminal_seq_and_state_clean_buffer_returns_base_seq() -> None:
     """When the buffer is clean (post-flush, base_seq=5, pending_seq_delta=0),
     _terminal_seq_and_state returns (6, state) - NOT (0, {}).
-    This is the exact window where _snapshot_progress would incorrectly
-    return 0, clobbering the previously-flushed sequence; the retired head
-    is 5 and the state-change write consumes 6."""
+    The head stays at 5 (the retired flush value) and the state-change
+    write consumes 6, clobbering nothing: the write's absolute SET must
+    never fall back to 0 for a clean buffer."""
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=5, pending_seq_delta=0, dirty=False)
     buf.pending_state = {"step": 3}
 

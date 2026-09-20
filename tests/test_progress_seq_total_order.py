@@ -418,11 +418,16 @@ async def _drive_sse(
     last_event_id: int | None,
     messages: list[Any],
 ) -> list[Any]:
+    # Both imports below need the fastapi extra (taskq.web.progress imports
+    # fastapi; sse-starlette ships inside the same extra). Skip before
+    # either import runs, so an env with one but not both skips instead of
+    # erroring.
+    pytest.importorskip("fastapi")
+    pytest.importorskip("sse_starlette")
     from sse_starlette.event import ServerSentEvent
 
     from taskq.web.progress import _event_generator, _resolve_last_event_id
 
-    pytest.importorskip("sse_starlette")
     request = MagicMock()
     request.headers.get.return_value = str(last_event_id) if last_event_id is not None else None
     resolved = _resolve_last_event_id(request, None)

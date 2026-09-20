@@ -63,8 +63,24 @@ the next `seq` value rather than repeating the last progress event's. A consumer
 resuming by `seq` alone (the `Last-Event-ID` discipline below) therefore sees every event
 exactly once, and the terminal event always arrives strictly after the last progress event it
 supersedes. The durable `jobs.progress_seq` carries the same total order: it ends at the
-terminal event's consumed seq, so a reconnecting consumer resuming from the Postgres snapshot
-never rewinds.
+terminal event's consumed seq. The snapshot guarantee is scoped to events whose durable write
+has landed: a reconnecting consumer resuming from the Postgres snapshot never rewinds past any
+event whose write reached `jobs.progress_seq`. One window to know about: the `running`
+transition consumes its seq in memory (and publishes it to Redis) but is deliberately not
+durable on its own, so a job whose actor never calls `ctx.progress()` holds `progress_seq == 0`
+until its terminal write, and a client that saw `running` and reconnects before the next flush
+or the terminal finds the snapshot unchanged. The live stream is unaffected; only the
+Postgres snapshot lags until the next durable write.
+
+**The total order holds within a worker's lifetime, not across worker death.** The reclaim
+sweep does not touch `jobs.progress_seq`, so if a worker dies mid-job the reclaimed job's next
+attempt re-publishes `running` at a seq the wire has already carried (a terminal publish whose
+`mark_*` write failed does the same when the job retries). Across worker death a seq-cursor
+consumer can therefore see the same seq twice with different payloads; deduping by `seq` is
+safe for events whose durable write landed, and the Postgres snapshot remains authoritative
+across the gap. During a rolling deploy, workers still on the previous release emit
+state-change events that repeat the head instead of consuming a new seq until they are
+upgraded; a seq-cursor guard drops those as duplicates, which is the old, safe behaviour.
 
 Redis publishes are coalesced: at most one publish per job is in flight at a time; a call racing
 a running publish is latched onto the buffer and the running task re-publishes the latch when its
@@ -336,7 +352,12 @@ between polls.
 - **`seq` is a total order; state-change events consume it.** Every state-change event (the
   dispatch `running` transition, retries, snoozes, and every terminal or interrupted exit)
   advances the same counter a progress event does, so deduping by `seq` alone is correct for
-  the whole stream. Consumers written against the older progress-only contract, where a
+  events whose durable write landed. Two windows put duplicate seqs back on the wire: a worker
+  dying mid-job re-publishes `running` (or a terminal) at a seq already carried, and a rolling
+  deploy's not-yet-upgraded workers emit the old repeated-head state-change events until they
+  are upgraded. Both produce duplicates a seq-cursor guard already drops; the Postgres
+  snapshot stays authoritative across the gap. Consumers written against the older
+  progress-only contract, where a
   state-change event repeated the last progress event's `seq` and a seq-cursor guard dropped
   it, need no change beyond removing any special-case handling that assumed the repeats: the
   extra, correctly-ordered seq values they now see are ordinary events.

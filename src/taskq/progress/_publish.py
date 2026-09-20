@@ -323,8 +323,13 @@ async def _publish_state_change_event(
     Parameters are explicit (no WorkerDeps struct) for consistency with the
     rest of the progress module. ``actor`` is passed from ``job.actor`` at
     each call site. The ``_override_seq`` and ``_override_pending_state``
-    parameters are used only on the cancel path where the buffer has already
-    been popped before the publish.
+    parameters carry the seq and state the caller's terminal/requeue write
+    already computed, so every terminal publish site passes them and the
+    wire event carries exactly the consumed seq the ``mark_*`` write SETs
+    durably; the cancel/interrupted sites need them for the same reason
+    the other terminal sites do (the buffer has already been popped or the
+    state captured before the publish runs). The running transition passes
+    neither and reads the buffer's head directly.
 
     State-change events CONSUME the next seq value: the seq is a strict
     total order over the job's whole event stream, so the event carries

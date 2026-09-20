@@ -29,7 +29,6 @@ from taskq.progress._buffer import (
     _progress_after_flush,
     _ProgressBuffer,
     _seq_and_state_after_flush_attempt,
-    _snapshot_progress,
 )
 from taskq.progress._flush import (
     _FLUSH_BATCH_ROWS,  # pyright: ignore[reportPrivateUsage]  # Why: the pin asserts the batch bound itself - the doctrine constant is the contract under test.
@@ -1098,43 +1097,6 @@ async def test_flush_loop_pool_acquire_failure_keeps_buffers_dirty_with_pool_kin
     assert good_buf.dirty is True
     assert good_buf.pending_seq_delta == 1
     assert set(buffers) == {bad_id, good_id}, "no buffer may be dropped on a pool failure"
-
-
-# ── _snapshot_progress regression tests ───────────────────────────────────────
-
-
-async def test_snapshot_progress_returns_zero_empty_for_none_buffer() -> None:
-    seq, state = _snapshot_progress(None)
-    assert seq == 0
-    assert state == {}
-
-
-async def test_snapshot_progress_returns_zero_empty_for_clean_buffer() -> None:
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=5)
-    seq, state = _snapshot_progress(buf)
-    assert seq == 0
-    assert state == {}
-
-
-async def test_snapshot_progress_returns_accumulated_for_dirty_buffer() -> None:
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=3)
-    buf.pending_seq_delta = 2
-    buf.pending_state["step"] = 7
-    buf.pending_state["percent"] = 42.0
-    buf.dirty = True
-    seq, state = _snapshot_progress(buf)
-    assert seq == 5
-    assert state == {"step": 7, "percent": 42.0}
-
-
-async def test_snapshot_progress_returns_copy_of_pending_state() -> None:
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
-    buf.pending_seq_delta = 1
-    buf.pending_state["step"] = 1
-    buf.dirty = True
-    _, state = _snapshot_progress(buf)
-    state["extra"] = True
-    assert "extra" not in buf.pending_state
 
 
 # ── _progress_after_flush tests ──────────────────────────────────────────

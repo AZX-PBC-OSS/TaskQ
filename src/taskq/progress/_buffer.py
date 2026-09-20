@@ -10,7 +10,6 @@ __all__ = [
     "_consume_state_change_seq",
     "_progress_after_flush",
     "_seq_and_state_after_flush_attempt",
-    "_snapshot_progress",
     "_terminal_seq_and_state",
 ]
 
@@ -108,29 +107,6 @@ class _ProgressBuffer:
     pending_publish: _PendingPublish | None = None
 
 
-def _snapshot_progress(
-    buffer: _ProgressBuffer | None,
-) -> tuple[int, dict[str, object]]:
-    """Return (seq, state) from a progress buffer WITHOUT consuming a seq.
-
-    This is the un-consumed head projection (``base_seq +
-    pending_seq_delta``): the seq the buffer's own progress events
-    reached, not the value a state-change event carries. A terminal or
-    state-change write must use the consuming helpers
-    (:func:`_terminal_seq_and_state`,
-    :func:`_seq_and_state_after_flush_attempt`); seq-cursor consumers
-    would drop a state-change event carrying the head as a duplicate of
-    the progress event before it.
-
-    If the buffer is None or clean, returns (0, {}), the caller's default.
-    If dirty, returns the full accumulated seq (base_seq + pending_seq_delta)
-    and a copy of pending_state so the terminal write carries all progress.
-    """
-    if buffer is None or not buffer.dirty:
-        return 0, {}
-    return buffer.base_seq + buffer.pending_seq_delta, dict(buffer.pending_state)
-
-
 def _progress_after_flush(
     buffer: _ProgressBuffer | None,
 ) -> tuple[int, dict[str, object]]:
@@ -183,9 +159,8 @@ def _terminal_seq_and_state(
     every event before it on the stream, and the write's absolute
     ``SET progress_seq = $N`` lands that consumed value durably, so the
     next attempt's buffer seeds from it and the total order survives
-    redispatch. Unlike :func:`_snapshot_progress`, which returns ``(0,
-    {})`` when the buffer is clean, this helper always computes one
-    past the head regardless of flush state.  All ``mark_*`` SQL uses
+    redispatch. The helper always computes one past the head regardless
+    of flush state.  All ``mark_*`` SQL uses
     direct assignment (``SET progress_seq = $N``), so returning 0 for a
     clean buffer with ``base_seq > 0`` would clobber the
     previously-flushed value.
