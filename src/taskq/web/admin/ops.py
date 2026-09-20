@@ -47,9 +47,6 @@ from taskq.web.admin._factory import (
     get_templates,
     validate_csrf,
 )
-from taskq.worker.cron_loop import (
-    _fire_default_curve,  # pyright: ignore[reportPrivateUsage]  # Why: the fire paths' shared curve helper; private to cron_loop by convention, consumed by its sibling fire path here.
-)
 
 logger = structlog.get_logger("taskq.web.admin.ops")
 
@@ -442,7 +439,15 @@ def register(router: APIRouter) -> None:
                     status_code=303,
                 )
 
-            defaults = _fire_default_curve()  # pyright: ignore[reportPrivateUsage]  # Why: the fire paths' shared curve helper; private to cron_loop by convention, consumed by its sibling fire path here.
+            # Imported in the handler body: the admin package stays
+            # importable without the worker (the boundary
+            # test_no_worker_import pins), and the fire paths' shared
+            # curve helper is cron_loop's by convention.
+            from taskq.worker.cron_loop import (
+                _fire_default_curve,  # pyright: ignore[reportPrivateUsage]
+            )
+
+            defaults = _fire_default_curve()
             args = EnqueueArgs(
                 id=JobId(new_uuid()),
                 actor=actor,

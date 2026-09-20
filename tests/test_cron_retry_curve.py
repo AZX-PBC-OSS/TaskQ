@@ -16,8 +16,6 @@ from dataclasses import fields as dc_fields
 from datetime import timedelta
 from typing import Any
 
-from pydantic import BaseModel
-
 from taskq.backend._protocol import EnqueueArgs
 from taskq.retry import RetryPolicy
 from taskq.worker.cron_loop import _ActorConfig, _fire_default_curve, _RetryCurve
@@ -30,10 +28,6 @@ _DECLARED = RetryPolicy(
     backoff="fixed",
     jitter=0.0,
 )
-
-
-class _CleanPayload(BaseModel):
-    pass
 
 
 def _actor_config(retry: RetryPolicy | None) -> _ActorConfig:

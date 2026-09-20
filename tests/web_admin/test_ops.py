@@ -970,8 +970,18 @@ def test_schedule_run_now_enqueues_job(monkeypatch: pytest.MonkeyPatch) -> None:
                     "metadata": {"static_payload": {"x": 1}},
                 }
             ),
+            # NULL curve columns: the row predates migration 01.00.18,
+            # and the handler resolves them to the declared defaults.
             "actor_config WHERE actor": StubRecord(
-                {"queue": "default", "max_attempts": 3, "retry_kind": "transient"}
+                {
+                    "queue": "default",
+                    "max_attempts": 3,
+                    "retry_kind": "transient",
+                    "retry_base": None,
+                    "retry_cap": None,
+                    "retry_backoff": None,
+                    "retry_jitter": None,
+                }
             ),
         },
     )
