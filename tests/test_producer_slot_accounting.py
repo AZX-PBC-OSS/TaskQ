@@ -383,3 +383,91 @@ async def test_a_saturated_producer_drains_promptly_as_slots_free() -> None:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+
+
+# ── The take-to-register window: the documented over-admission bound ────
+
+
+async def test_a_consumer_in_the_take_register_window_over_admits_at_most_one_row() -> None:
+    """run.py's producer comment documents the transient window between a
+    consumer's get() and the job's active_jobs register: the taken row is
+    out of the queue and not yet counted active, so the sizing
+    arithmetic reads one slot too many for one scheduler step. The bound
+    is ONE extra row per consumer caught in the window, never
+    queue-emptiness sizing: with three slots genuinely busy and the
+    fourth consumer sitting in the window, the claim is exactly 1 row,
+    the follow-up rounds claim nothing while the window stays open (the
+    over-admission does not compound across fallback polls), and closing
+    the window settles the worker at zero further claims."""
+    active = _Active(3)  # three consumers registered, genuinely busy
+    backend = _RecordingBackend(jobs=4)
+    # The queue is empty because the fourth slot's row was TAKEN: the
+    # window is open, its consumer has not registered the row yet.
+    local_queue: asyncio.Queue[JobRow] = asyncio.Queue(maxsize=4)
+    slot_freed = asyncio.Event()
+    task = await _run_producer(
+        _deps(active, maxsize=4, poll_interval=0.05), backend, local_queue, slot_freed
+    )
+    try:
+        await wait_for_condition(
+            lambda: len(backend.rounds) >= 1,
+            description="claim while one consumer sits in the take-register window",
+            timeout=2.0,
+        )
+        assert backend.rounds[0][1] == 1, (
+            f"first round asked for {backend.rounds[0][1]} rows with three "
+            "slots busy and one row taken but unregistered - the claim must "
+            "over-admit by exactly the window's one row, never queue-emptiness "
+            "sizing (4)"
+        )
+        # The claimed row parks in the queue (qsize 1), the window stays
+        # open: the fallback polls must not compound the over-admission.
+        await asyncio.sleep(0.35)
+        assert [limit for _, limit in backend.rounds] == [1]
+        # The window closes: the taken row registers, all four slots are
+        # genuinely occupied, nothing more to claim.
+        active.n = 4
+        await asyncio.sleep(0.2)
+        assert [limit for _, limit in backend.rounds] == [1]
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+async def test_over_admission_scales_with_the_window_never_with_the_slots() -> None:
+    """The bound is per consumer IN the window, and there it stops: two
+    consumers caught between get() and register make the claim exactly 2,
+    never the full slot count. The window can hold at most one row per
+    consumer, so the over-admission is capped by the consumer count
+    however the queue and the registry disagree."""
+    active = _Active(2)  # two consumers registered, two rows taken unregistered
+    backend = _RecordingBackend(jobs=0)
+    local_queue: asyncio.Queue[JobRow] = asyncio.Queue(maxsize=4)
+    slot_freed = asyncio.Event()
+    task = await _run_producer(
+        _deps(active, maxsize=4, poll_interval=0.05), backend, local_queue, slot_freed
+    )
+    try:
+        await wait_for_condition(
+            lambda: len(backend.rounds) >= 1,
+            description="claim with two consumers in the window",
+            timeout=2.0,
+        )
+        assert backend.rounds[0][1] == 2, (
+            f"first round asked for {backend.rounds[0][1]} rows with two "
+            "slots busy and two rows taken but unregistered - the "
+            "over-admission must be the window's two rows, capped by the "
+            "consumer count, never 4"
+        )
+        # Settle the window: both taken rows register, the worker is
+        # genuinely full, the claims stop.
+        active.n = 4
+        await asyncio.sleep(0.2)
+        assert all(limit <= 2 for _, limit in backend.rounds), (
+            f"round limits {[limit for _, limit in backend.rounds]} exceeded the window bound"
+        )
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task

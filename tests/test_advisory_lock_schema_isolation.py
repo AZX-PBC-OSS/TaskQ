@@ -186,3 +186,149 @@ def test_no_unqualified_lock_name_literals_remain() -> None:
                 f"{rel} reintroduces the unqualified lock literal {pin}; "
                 "advisory locks must be schema-qualified via schema_lock_name"
             )
+
+
+# ── Key-space isolation: purpose locks vs keyed (limiter) locks ─────────
+#
+# The advisory key space mixes two conventions (migrate.py's
+# migration_lock_name docstring documents both):
+#
+# * PURPOSE locks, one per schema per purpose, schema LAST:
+#   ``taskq:{purpose}:{schema}`` (maintenance_leader, prune,
+#   archive_expiry, cron, migrate);
+# * KEYED locks, one per resource within a schema, schema FIRST:
+#   ``taskq:{schema}:sw:{name}`` (the PG sliding-window limiter's
+#   advisory lock, mirroring the bucket's Redis key), its ``sw_gcra`` and
+#   ``rl:tb`` siblings, and the enqueue unique-for key.
+#
+# Both feed ``hashtextextended`` in the SAME per-database lock namespace,
+# so a string collision between the families would make one schema's
+# rate-limiter bucket serialize against another schema's maintenance
+# sweep. It cannot happen: a purpose lock has exactly three ``:``-split
+# segments and a valid schema name never contains ``:`` (the identifier
+# regex), while every keyed lock carries at least one literal segment
+# (``sw``, ``rl``, ``unique_for``) beyond ``taskq:``. Hash collisions
+# between DISTINCT strings are a different, documented-benign class (a
+# little needless serialization, never correctness), so the predicate
+# below is string identity over the exact keys production builds.
+
+
+_PURPOSES: tuple[str, ...] = (
+    "maintenance_leader",
+    "prune",
+    "archive_expiry",
+    "cron",
+    "migrate",
+)
+
+_KEYED_KEY_FORMATS: tuple[str, ...] = (
+    # The PG limiter's advisory key (ratelimit/_sliding_window_pg.py).
+    "taskq:{schema}:sw:{name}",
+    "taskq:{schema}:sw_gcra:{name}",
+    "taskq:{schema}:rl:tb:{name}",
+    # The enqueue unique-for key (backend/_enqueue.py), keyed-family too.
+    "taskq:unique_for:{schema}:{actor}:{identity}",
+)
+
+_BUCKET_NAMES: tuple[str, ...] = (
+    "default",
+    "a",
+    "",  # the degenerate bucket name still adds a trailing segment
+    "vendor:per_min",  # a name may carry colons; more segments, never fewer
+    "{braced}",  # the Redis forms brace the bucket name
+    "b" * 63,  # edge length
+)
+
+_SCHEMA_CORPUS: tuple[str, ...] = (
+    "a",  # minimum shape
+    "taskq",
+    # A schema named after a purpose or a key literal: the sharpest edge
+    # the segment-count argument has to survive.
+    "prune",
+    "cron",
+    "migrate",
+    "maintenance_leader",
+    "archive_expiry",
+    "sw",
+    "sw_gcra",
+    "rl",
+    "tb",
+    "unique_for",
+    "tq_abc123",  # the fixture-style typical name
+    "a" + "0" * 62,  # PG_MAX_IDENTIFIER_BYTES: 63 chars
+)
+
+_LIMITER_SOURCE = "src/taskq/ratelimit/_sliding_window_pg.py"
+
+
+def _purpose_lock_keys(schema: str) -> set[str]:
+    """The purpose locks production builds for one schema."""
+    return {schema_lock_name(purpose, schema) for purpose in _PURPOSES}
+
+
+def _keyed_lock_keys(schema: str) -> set[str]:
+    """The keyed locks production builds for one schema, every format."""
+    return {
+        fmt.format(schema=schema, name=name, actor="actor_x", identity="id_y")
+        for fmt in _KEYED_KEY_FORMATS
+        for name in _BUCKET_NAMES
+    }
+
+
+def test_corpus_is_valid_distinct_schema_names() -> None:
+    """The predicate must run over VALID schema names, including the edge
+    lengths, or the invariant is pinned against a corpus production can
+    never pass in. Also asserts the corpus's own distinctness."""
+    from taskq.constants import (
+        _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical identifier grammar is the predicate's validity bound.
+    )
+
+    assert len(set(_SCHEMA_CORPUS)) == len(_SCHEMA_CORPUS)
+    for schema in _SCHEMA_CORPUS:
+        assert _IDENT_RE.match(schema), f"corpus member {schema!r} must be a valid schema"
+    assert len(_SCHEMA_CORPUS[0]) == 1 and len(_SCHEMA_CORPUS[-1]) == 63, (
+        "the corpus must span the identifier lengths, 1 to 63 bytes"
+    )
+
+
+def test_purpose_locks_and_keyed_locks_never_collide_for_any_schema() -> None:
+    """THE invariant: for every valid schema name, no purpose lock (any
+    purpose, any schema) equals any keyed lock (any format, any bucket
+    name, any schema) - the two families share one hashtextextended
+    namespace and one collision would serialize a rate limiter against a
+    maintenance sweep."""
+    for purpose_schema in _SCHEMA_CORPUS:
+        for keyed_schema in _SCHEMA_CORPUS:
+            overlap = _purpose_lock_keys(purpose_schema) & _keyed_lock_keys(keyed_schema)
+            assert not overlap, (
+                f"advisory key-space collision: purpose locks for schema "
+                f"{purpose_schema!r} equal keyed locks for schema "
+                f"{keyed_schema!r}: {sorted(overlap)}"
+            )
+
+
+def test_purpose_locks_stay_distinct_across_the_whole_corpus() -> None:
+    """The cross-schema guarantee this file pins with two fixture schemas,
+    extended over every valid schema length: two DISTINCT schemas never
+    share a purpose lock. This is the property a schema name containing
+    ``:`` would break - which is exactly why the identifier grammar
+    forbids it."""
+    for purpose in _PURPOSES:
+        keys = [schema_lock_name(purpose, schema) for schema in _SCHEMA_CORPUS]
+        assert len(set(keys)) == len(keys), (
+            f"two corpus schemas share the {purpose!r} lock; the "
+            "identifier grammar must keep the qualifying segment colon-free"
+        )
+
+
+def test_the_keyed_lock_format_stays_pinned_at_its_source() -> None:
+    """Source pin: the PG limiter's advisory key format. If the format
+    moves, this fails and the collision predicate above must be re-run
+    against the new spelling rather than silently stale."""
+    repo_root = Path(__file__).resolve().parents[1]
+    text = (repo_root / _LIMITER_SOURCE).read_text(encoding="utf-8")
+    assert 'lock_key = f"taskq:{schema}:sw:{self._name}"' in text, (
+        f"{_LIMITER_SOURCE} changed the PG limiter's advisory key format; "
+        "re-run the purpose-vs-keyed collision predicate against the new "
+        "format before updating this pin"
+    )
