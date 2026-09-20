@@ -22,12 +22,10 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from pydantic import BaseModel
-
 from taskq._ids import new_uuid
-from taskq.backend.clock import Clock
 from taskq.context import CancelOrigin
 from taskq.settings import WorkerSettings
+from taskq.testing.assertions import wait_for_condition
 from taskq.testing.clock import FakeClock
 from taskq.testing.jobs import make_job_row
 from taskq.worker._bootstrap import (  # pyright: ignore[reportPrivateUsage]  # Why: the crash site under test is the spawner's own guard; the test pins its stamping contract directly.
@@ -184,8 +182,11 @@ async def test_a_sibling_crash_lands_running_jobs_interrupted_not_cancelled() ->
             spawn(crashing())
             # The crash fires only once the job is registered and running:
             # the exact mid-flight shape the bug terminalised.
-            while registry.get(job.id) is None:
-                await asyncio.sleep(0.01)
+            await wait_for_condition(
+                lambda: registry.get(job.id) is not None,
+                description="the consumer's registration of the job",
+                timeout=5.0,
+            )
             crash_go.set()
     except BaseExceptionGroup:
         pass
