@@ -161,6 +161,19 @@ _MIN_DEFERRAL_INTERVAL_SQL: Final[str] = (
 # so a claim within the poll floor is the intended latency.
 _ATTEMPT_REFUND_SQL: Final[str] = "GREATEST(j.attempt - 1, 0)"
 
+# The deadline-failure message and its mark_retry variant, ONE constant per
+# spelling (the _ATTEMPT_MESSAGES pattern): every schedule_to_close terminal
+# exit stamps the message on the row, the job_attempts row, and the
+# state_change event, and the same texts are pinned verbatim by the
+# differential corpus, so the templates and the in-memory twins read the two
+# constants instead of hand-restating the strings. The variant exists because
+# mark_retry's deadline arm names the deadline that actually fires: the
+# schedule_to_close check there includes the retry delay itself, so the next
+# dispatch the deadline cuts off is the NEXT RETRY dispatch, not the next
+# ordinary one. NO value may change: the pins assert exact texts.
+DEADLINE_EXCEEDED_MESSAGE: Final[str] = "schedule_to_close reached before next dispatch"
+DEADLINE_RETRY_EXCEEDED_MESSAGE: Final[str] = "schedule_to_close reached before next retry dispatch"
+
 
 @dataclass(frozen=True, slots=True)
 class SqlTemplates:
@@ -463,7 +476,7 @@ deadline_failed AS (
     SET status = 'failed',
         finished_at = clock_timestamp(),
         error_class = '{ERROR_CLASS_DEADLINE_EXCEEDED}',
-        error_message = 'schedule_to_close reached before next retry dispatch',
+        error_message = '{DEADLINE_RETRY_EXCEEDED_MESSAGE}',
         error_traceback = NULL,
         locked_by_worker = NULL,
         lock_expires_at = NULL,
@@ -515,7 +528,7 @@ deadline_att AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
-           '{ERROR_CLASS_DEADLINE_EXCEEDED}', 'schedule_to_close reached before next retry dispatch', NULL,
+           '{ERROR_CLASS_DEADLINE_EXCEEDED}', {DEADLINE_RETRY_EXCEEDED_MESSAGE}, NULL,
            -- Terminal arm: duration reads the arm's finished_at, not now_ts.
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
@@ -839,7 +852,7 @@ deadline_failed AS (
     SET status = 'failed',
         finished_at = clock_timestamp(),
         error_class = '{ERROR_CLASS_DEADLINE_EXCEEDED}',
-        error_message = 'schedule_to_close reached before next dispatch',
+        error_message = '{DEADLINE_EXCEEDED_MESSAGE}',
         error_traceback = NULL,
         locked_by_worker = NULL,
         lock_expires_at = NULL,
@@ -904,7 +917,7 @@ deadline_att AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
-           '{ERROR_CLASS_DEADLINE_EXCEEDED}', 'schedule_to_close reached before next dispatch', NULL,
+           '{ERROR_CLASS_DEADLINE_EXCEEDED}', {DEADLINE_EXCEEDED_MESSAGE}, NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
@@ -1046,7 +1059,7 @@ deadline_failed AS (
     SET status = 'failed',
         finished_at = clock_timestamp(),
         error_class = '{ERROR_CLASS_DEADLINE_EXCEEDED}',
-        error_message = 'schedule_to_close reached before next dispatch',
+        error_message = '{DEADLINE_EXCEEDED_MESSAGE}',
         error_traceback = NULL,
         locked_by_worker = NULL,
         lock_expires_at = NULL,
@@ -1149,7 +1162,7 @@ deadline_att AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
-           '{ERROR_CLASS_DEADLINE_EXCEEDED}', 'schedule_to_close reached before next dispatch', NULL,
+           '{ERROR_CLASS_DEADLINE_EXCEEDED}', {DEADLINE_EXCEEDED_MESSAGE}, NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
@@ -1272,7 +1285,7 @@ deadline_failed AS (
     SET status = 'failed',
         finished_at = clock_timestamp(),
         error_class = '{ERROR_CLASS_DEADLINE_EXCEEDED}',
-        error_message = 'schedule_to_close reached before next dispatch',
+        error_message = '{DEADLINE_EXCEEDED_MESSAGE}',
         error_traceback = NULL,
         locked_by_worker = NULL,
         lock_expires_at = NULL,
@@ -1329,7 +1342,7 @@ deadline_att AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
-           '{ERROR_CLASS_DEADLINE_EXCEEDED}', 'schedule_to_close reached before next dispatch', NULL,
+           '{ERROR_CLASS_DEADLINE_EXCEEDED}', {DEADLINE_EXCEEDED_MESSAGE}, NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d
@@ -1456,7 +1469,7 @@ deadline_failed AS (
     SET status = 'failed',
         finished_at = clock_timestamp(),
         error_class = '{ERROR_CLASS_DEADLINE_EXCEEDED}',
-        error_message = 'schedule_to_close reached before next dispatch',
+        error_message = '{DEADLINE_EXCEEDED_MESSAGE}',
         error_traceback = NULL,
         locked_by_worker = NULL,
         lock_expires_at = NULL,
@@ -1493,7 +1506,7 @@ deadline_att AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
-           '{ERROR_CLASS_DEADLINE_EXCEEDED}', 'schedule_to_close reached before next dispatch', NULL,
+           '{ERROR_CLASS_DEADLINE_EXCEEDED}', {DEADLINE_EXCEEDED_MESSAGE}, NULL,
            trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb
     FROM deadline_failed d

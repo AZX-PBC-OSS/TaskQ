@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from taskq.backend._protocol import AttemptRow, CancelPhase, JobId, JobRow
+from taskq.backend._sql_templates import DEADLINE_EXCEEDED_MESSAGE
 from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the twins must enforce the identical contract the Postgres sweeps enforce: one validator, one message map, one disposition map and total lookup, one seam, no drift.
     _ATTEMPT_MESSAGES,
     _reclaim_disposition,
@@ -127,7 +128,9 @@ async def _deadline_sweep(
             status="failed",
             finished_at=now,
             error_class=ERROR_CLASS_DEADLINE_EXCEEDED,
-            error_message="schedule_to_close reached before next dispatch",
+            # The shared message constant, not a restated copy: the
+            # differential corpus pins this text equal to the SQL arm's.
+            error_message=DEADLINE_EXCEEDED_MESSAGE,
         )
         if (job_id, row.attempt) not in written_keys:
             written_keys.add((job_id, row.attempt))
@@ -139,7 +142,7 @@ async def _deadline_sweep(
                     finished_at=now,
                     outcome="failed",
                     error_class=ERROR_CLASS_DEADLINE_EXCEEDED,
-                    error_message="schedule_to_close reached before next dispatch",
+                    error_message=DEADLINE_EXCEEDED_MESSAGE,
                     error_traceback=None,
                     duration_ms=None,
                     worker_id=None,

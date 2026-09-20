@@ -36,6 +36,15 @@ from taskq.backend._protocol import (
     validate_denial_reason,
     validate_snooze_outcome,
 )
+
+# Why: the twin's deadline arms must stamp the exact failure text the SQL
+# arms stamp (the differential corpus pins the two sides equal), so the
+# message is read from the shared constant the templates interpolate, never
+# restated here.
+from taskq.backend._sql_templates import (
+    DEADLINE_EXCEEDED_MESSAGE,
+    DEADLINE_RETRY_EXCEEDED_MESSAGE,
+)
 from taskq.constants import (
     CANCEL_ORIGIN_ABANDONED,
     CANCEL_ORIGIN_COOPERATIVE,
@@ -338,7 +347,7 @@ async def _mark_failed_or_retry(
                 lock_expires_at=None,
                 last_heartbeat_at=None,
                 error_class="DeadlineExceeded",
-                error_message="schedule_to_close reached before next retry dispatch",
+                error_message=DEADLINE_RETRY_EXCEEDED_MESSAGE,
                 progress_seq=progress_seq,
                 progress_state=merged_progress,
             )
@@ -350,7 +359,7 @@ async def _mark_failed_or_retry(
                 now=now,
                 outcome="failed",
                 error_class="DeadlineExceeded",
-                error_message="schedule_to_close reached before next retry dispatch",
+                error_message=DEADLINE_RETRY_EXCEEDED_MESSAGE,
                 error_traceback=None,
                 worker_id=worker_id,
             )
@@ -837,7 +846,7 @@ async def _mark_snoozed(
             status="failed",
             finished_at=now,
             error_class="DeadlineExceeded",
-            error_message="schedule_to_close reached before next dispatch",
+            error_message=DEADLINE_EXCEEDED_MESSAGE,
             error_traceback=None,
             locked_by_worker=None,
             lock_expires_at=None,
@@ -861,7 +870,7 @@ async def _mark_snoozed(
             now=now,
             outcome="failed",
             error_class="DeadlineExceeded",
-            error_message="schedule_to_close reached before next dispatch",
+            error_message=DEADLINE_EXCEEDED_MESSAGE,
             error_traceback=None,
             worker_id=worker_id,
         )
@@ -1056,7 +1065,7 @@ async def _mark_retry_after(
             status="failed",
             finished_at=now,
             error_class="DeadlineExceeded",
-            error_message="schedule_to_close reached before next dispatch",
+            error_message=DEADLINE_EXCEEDED_MESSAGE,
             error_traceback=None,
             locked_by_worker=None,
             lock_expires_at=None,
@@ -1071,7 +1080,7 @@ async def _mark_retry_after(
             now=now,
             outcome="failed",
             error_class="DeadlineExceeded",
-            error_message="schedule_to_close reached before next dispatch",
+            error_message=DEADLINE_EXCEEDED_MESSAGE,
             error_traceback=None,
             worker_id=worker_id,
         )
@@ -1278,7 +1287,7 @@ async def _mark_interrupted(
             status="failed",
             finished_at=now,
             error_class="DeadlineExceeded",
-            error_message="schedule_to_close reached before next dispatch",
+            error_message=DEADLINE_EXCEEDED_MESSAGE,
             error_traceback=None,
             locked_by_worker=None,
             lock_expires_at=None,
@@ -1293,7 +1302,7 @@ async def _mark_interrupted(
             now=now,
             outcome="failed",
             error_class="DeadlineExceeded",
-            error_message="schedule_to_close reached before next dispatch",
+            error_message=DEADLINE_EXCEEDED_MESSAGE,
             error_traceback=None,
             worker_id=worker_id,
         )
