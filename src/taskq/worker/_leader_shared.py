@@ -299,9 +299,15 @@ _JOB_ATTEMPTS_COLUMNS_QUALIFIED_CSV = ", ".join(f"ja.{c}" for c in _JOB_ATTEMPTS
 # stamps in _ARCHIVE_CTE_SQL below, stays clock_timestamp(): the same
 # clock that wrote finished_at, so a skewed worker host cannot silently
 # extend or shorten retention, and the stamps cannot disagree with the
-# clock domain of the rows they annotate; statement_timestamp() differs
-# from those stamps only by the write statement's own execution time
-# (microseconds against a days-scale retention cutoff).
+# clock domain of the rows they annotate. With the window and the write
+# split into two statements, the selection bound is the CANDIDATE
+# statement's statement_timestamp() (its statement start, before the
+# batch's rows are known), and the write statement re-verifies the age
+# against its own statement_timestamp() at lock time: a row dropped
+# between the two instants only ever tightens the cutoff by the two
+# statements' own execution time (microseconds against a days-scale
+# retention cutoff); a stamp written is never older than the cutoff
+# the candidate window used.
 #
 # Why the candidate window is its OWN statement, and why it carries no
 # row locks: measured on the same corpus, any lock-bearing arm inside
@@ -320,24 +326,26 @@ _JOB_ATTEMPTS_COLUMNS_QUALIFIED_CSV = ", ".join(f"ja.{c}" for c in _JOB_ATTEMPTS
 # form included, by tests/test_index_audit.py). The race fence this
 # window deliberately does not carry lives on the write statement
 # below, which locks the small batch by primary key.
-_ARCHIVE_CANDIDATE_SQL = (
+# The candidate windows' shared predicate: one terminal status past its
+# retention, the age bound carried by the candidate statement's
+# statement_timestamp() (the clock contract above). Both windows below
+# compose this fragment verbatim, so the selection predicate cannot
+# drift between the fleet-wide and per-actor forms; the plan pins bind
+# the composed statements (tests/test_index_audit.py), so a composition
+# that changed the executed text fails on arrival.
+_ARCHIVE_CANDIDATE_PREDICATE_SQL = (
     'SELECT id FROM "{schema}".jobs'
     ' WHERE status = $1::"{schema}".job_status'
     "   AND finished_at < statement_timestamp() - $2::interval"
-    " ORDER BY finished_at"
-    " LIMIT $3"
 )
+
+_ARCHIVE_CANDIDATE_SQL = _ARCHIVE_CANDIDATE_PREDICATE_SQL + " ORDER BY finished_at" + " LIMIT $3"
 
 # The per-actor-retention candidate window: the same selection shape
 # plus an actor equality (the actor filter rides along as a Filter, like
 # status; the plan pins cover this form too).
 _ARCHIVE_CANDIDATE_ACTOR_SQL = (
-    'SELECT id FROM "{schema}".jobs'
-    ' WHERE status = $1::"{schema}".job_status'
-    "   AND finished_at < statement_timestamp() - $2::interval"
-    "   AND actor = $4"
-    " ORDER BY finished_at"
-    " LIMIT $3"
+    _ARCHIVE_CANDIDATE_PREDICATE_SQL + "   AND actor = $4" + " ORDER BY finished_at" + " LIMIT $3"
 )
 
 # The archive write: one statement per batch, fed the candidate ids the
@@ -351,18 +359,36 @@ _ARCHIVE_CANDIDATE_ACTOR_SQL = (
 # `locked` is THE lock-time re-read, and the ghost fence: the write
 # statement takes the batch's row locks here, by primary key over the
 # id array (a pkey probe per candidate, bounded in every plan form,
-# custom and generic), and the scan's status qual re-evaluates at lock
-# time (EvalPlanQual), against the row version the lock sees, not the
-# statement snapshot. A retry_job that committed between the candidate
-# window's snapshot and this lock makes the row live; the re-check
-# fails and the row drops out here, before anything is archived. A
-# retry still in flight is skipped (SKIP LOCKED) and keeps its own
-# commit. Without this arm, `moved`'s status re-check reads the
-# statement snapshot alone: a row archived while a retry left it live
-# is a ghost, and when the retried job re-terminalizes and re-enters
-# the prune window, `moved` hits jobs_archive's primary key: a
-# non-transient error that aborts every batch containing that row, the
-# wedge that stops the drain at the head of the window forever.
+# custom and generic), and the scan's quals re-evaluate at lock time
+# (EvalPlanQual), against the row version the lock sees, not the
+# statement snapshot. Both candidate predicates are re-verified: the
+# terminal status, AND the retention age. The age re-check is what a
+# full retry-then-re-run cycle between the two statements needs: a
+# retried job that re-terminalizes in that gap is terminal again (the
+# status check alone would pass) but zero seconds old, and archiving
+# it would remove a just-finished job from the live tables without
+# serving its retention; the age qual fails on the fresh finished_at
+# and the row drops out here, to re-enter a later window when it has
+# actually aged. The age Filter rides the pkey-probed batch (at most
+# LIMIT ids), so it cannot reintroduce the population walk the
+# candidate statement exists to prevent (pinned by
+# tests/test_index_audit.py). A retry_job that committed between the
+# candidate window's snapshot and this lock makes the row live; the
+# status re-check fails and the row drops out here, before anything is
+# archived. A retry still in flight is skipped (SKIP LOCKED) and keeps
+# its own commit. Without this arm, `moved`'s status re-check reads
+# the statement snapshot alone: a row archived while a retry left it
+# live is a ghost, and when the retried job re-terminalizes and
+# re-enters the prune window, `moved` hits jobs_archive's primary key:
+# a non-transient error that aborts every batch containing that row,
+# the wedge that stops the drain at the head of the window forever.
+#
+# The moved/deleted arms re-read the rows `locked` already holds; their
+# join shape is the planner's choice (a hash join over a Seq Scan is
+# legitimately priced when the batch is a large fraction of the table)
+# and is not a bound: the write set is exactly `locked`'s rows whatever
+# the join shape, and `locked` itself is pkey-probed in every plan form
+# (pinned by tests/test_index_audit.py).
 #
 # The candidate ids bind as an array ($3::uuid[]), so the lock rides
 # the primary key: the plan stays index-bounded whatever the plancache
@@ -373,6 +399,7 @@ _ARCHIVE_CTE_SQL = (
     '  FROM "{schema}".jobs j'
     "  WHERE j.id = ANY($3::uuid[])"
     '  AND j.status = $1::"{schema}".job_status'
+    "  AND j.finished_at < statement_timestamp() - $4::interval"
     "  FOR UPDATE SKIP LOCKED"
     "), moved AS ("
     f'  INSERT INTO "{{schema}}".jobs_archive ({_JOBS_COLUMNS_CSV}, archived_at, expire_at)'
@@ -510,9 +537,11 @@ async def _run_prune_archive_batch(
     statement flips it to the generic plan past five executions, and the
     generic form walks the terminal population), but they keep the
     single-batch guarantees: the candidate window is a bounded
-    LIMIT-terminated read, the write statement locks and re-checks the
-    batch's rows at lock time, and both run in the transaction this
-    helper opens, so the batch commits or not as a unit under the same
+    LIMIT-terminated read, the write statement locks the batch by
+    primary key and re-checks both candidate predicates (terminal
+    status and retention age) at lock time, and both run in the
+    transaction this helper opens, so the batch commits or not as a
+    unit under the same
     server-side ``statement_timeout`` machinery
     :func:`_run_prune_batch` applies. Returns the write statement's
     deleted groups (empty when the window found nothing eligible, and
@@ -530,7 +559,7 @@ async def _run_prune_archive_batch(
             rows: Sequence[asyncpg.Record] = ()
             if candidates:
                 ids = [row["id"] for row in candidates]
-                rows = await conn.fetch(write_sql, status, archive_interval, ids)
+                rows = await conn.fetch(write_sql, status, archive_interval, ids, retention)
         except DEADLINE_ERRORS:
             if sizer is not None:
                 sizer.on_timeout()
@@ -573,7 +602,8 @@ async def prune_terminal_jobs(
     shutdown and ticks detector-2 liveness between batches.
 
     The archive predicate's clock is the database's own
-    (``statement_timestamp()`` in the CTE), and the reported cutoffs are
+    (``statement_timestamp()`` in the candidate statement, re-verified
+    at lock time by the write statement's), and the reported cutoffs are
     anchored to a database-side ``clock_timestamp()`` read, see the
     "Anchored to the database clock" comment in the body below.
     """

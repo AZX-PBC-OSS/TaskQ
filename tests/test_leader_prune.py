@@ -1342,3 +1342,121 @@ async def test_prune_rearchives_a_retried_job_without_primary_key_violation(
         assert final_live is None
 
     await retry_conn.close()
+
+
+class _RaceBetweenStatementsConn:
+    """ConnLike proxy that commits a retry and a re-terminalization on a
+    second connection in the gap between the batch's candidate window and
+    its write statement (the duck-type surface is fetch/execute/
+    transaction/fetchval, the same one the sweep helpers proxy)."""
+
+    def __init__(
+        self,
+        inner: asyncpg.Connection,
+        race_conn: asyncpg.Connection,
+        race_statements: list[tuple[str, tuple[object, ...]]],
+        trigger: str,
+    ) -> None:
+        self._inner = inner
+        self._race_conn = race_conn
+        self._race_statements = race_statements
+        self._trigger = trigger
+        self.raced = False
+
+    def transaction(self) -> object:
+        return self._inner.transaction()
+
+    async def fetchval(self, sql: str, *args: object) -> object:
+        return await self._inner.fetchval(sql, *args)
+
+    async def fetch(self, sql: str, *args: object) -> list[asyncpg.Record]:
+        rows = await self._inner.fetch(sql, *args)
+        if not self.raced and rows and self._trigger in sql:
+            self.raced = True
+            for stmt, args_ in self._race_statements:
+                await self._race_conn.fetchrow(stmt, *args_)
+        return rows
+
+    async def execute(self, sql: str, *args: object) -> str:
+        return await self._inner.execute(sql, *args)
+
+
+@pytest.mark.integration
+async def test_prune_write_statement_rechecks_retention_age_at_lock_time(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """A job that re-terminalizes between the candidate window and the
+    write statement drops out at lock time; it is not archived at zero
+    age.
+
+    The interleaving the two race pins above cannot produce: their
+    re-terminalize stamps the row back into the past, but a real re-run
+    stamps ``finished_at = clock_timestamp()`` (mark_succeeded /
+    mark_failed). When the retry AND the re-run both commit in the gap
+    between the prune's two statements, the row is terminal again (the
+    status re-check passes) but zero seconds old. The lock-time
+    re-check must verify every candidate predicate, not just the
+    status: the row drops out here, stays live, and re-enters a later
+    window when it has actually aged past retention. A prune that
+    archived it would silently delete a just-finished job from the
+    live tables the moment it failed (its retention not served), and
+    every metric would report the archive as routine.
+    """
+    from taskq.backend._sql_templates import render
+
+    await _apply(pg_conn, settings)
+    schema = settings.schema_name
+    old = datetime.now(UTC) - timedelta(days=31)
+    jid = await _seed_terminal_job(pg_conn, status="succeeded", finished_at=old, schema=schema)
+    retry_sql = render(schema).retry_job
+
+    race_conn = await asyncpg.connect(str(settings.pg_dsn))
+    reterminalize_sql = (
+        f"UPDATE {schema}.jobs SET status = $1::{schema}.job_status, "  # noqa: S608
+        "finished_at = clock_timestamp() WHERE id = $2"
+    )
+    proxy = _RaceBetweenStatementsConn(
+        pg_conn,
+        race_conn,
+        [
+            # The full retry-then-re-run cycle, both committed before the
+            # write statement takes the batch's row locks: the state the
+            # row is in when a worker re-fails it while the prune's batch
+            # is between its two statements.
+            (retry_sql, (jid,)),
+            (reterminalize_sql, ("succeeded", jid)),
+        ],
+        # The candidate window's signature: the only bounded selection
+        # the batch runs. Firing after it lands the race exactly where
+        # the two statements meet.
+        "ORDER BY finished_at",
+    )
+
+    try:
+        result = await prune_terminal_jobs(
+            proxy,
+            retention_per_status={"succeeded": timedelta(days=30)},
+            archive_retention=timedelta(days=365),
+            schema=schema,
+        )
+    finally:
+        await race_conn.close()
+
+    assert proxy.raced, "the candidate window must have selected the row for the race to exist"
+    assert result.total_deleted == 0, (
+        "the re-terminalized row was archived at zero age: the write "
+        "statement's lock-time re-check verified the status but not the "
+        "retention age"
+    )
+    assert result.archived == 0
+    live = await pg_conn.fetchrow(
+        f"SELECT status, finished_at FROM {schema}.jobs WHERE id = $1",  # noqa: S608
+        jid,
+    )
+    assert live is not None, "the just-re-failed job was removed from the live tables"
+    assert live["status"] == "succeeded"
+    ghost = await pg_conn.fetchval(
+        f"SELECT count(*) FROM {schema}.jobs_archive WHERE id = $1",  # noqa: S608
+        jid,
+    )
+    assert ghost == 0

@@ -1346,13 +1346,25 @@ async def test_archive_write_statement_moves_by_bound_ids_drained_and_backlog(
     prune_audit_schema: Any, pg_dsn: str
 ) -> None:
     """The archive write statement (lock arm, archive INSERT, attempts
-    INSERT, DELETE) is driven by the candidate ids bound as an array:
-    every jobs access predicates on the bound ids, and no time bound
-    re-enters the statement. A time bound here would re-derive
-    eligibility with a post-scan Filter over the jobs population (the
-    selection bound's walk the candidate statement exists to prevent),
-    and a jobs access not driven by the ids would move rows the
-    candidate window never selected."""
+    INSERT, DELETE) locks by the candidate ids bound as an array, and
+    the lock-time re-check (terminal status and retention age) rides
+    that lock in every plan form.
+
+    The correctness-bearing property is the LOCK arm's shape: the
+    EvalPlanQual fence lives in that arm's scan quals, so a plan that
+    stopped seeking the bound ids there would lock rows the candidate
+    window never selected (and lose the fence). It must be pkey-driven
+    (id = ANY, no population walk inside the CTE locked section) and
+    must still carry the finished_at age re-check - a job re-terminalized
+    between the candidate window and this statement (status terminal
+    again, finished_at zero seconds old) drops out at the lock instead
+    of being archived before its retention was served.
+
+    The moved/deleted arms' read shape is deliberately not pinned: their
+    write set is fenced by `locked` regardless of join shape, and the
+    planner legitimately prices a hash join over a Seq Scan when the
+    batch is a large fraction of the table (the default batch is 10,000
+    of this corpus's 70,000 rows)."""
     schema = prune_audit_schema
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -1365,14 +1377,21 @@ async def test_archive_write_statement_moves_by_bound_ids_drained_and_backlog(
                 status,
                 _ARCHIVE_RETENTION,
                 ids,
+                _RETENTION,
             )
-            assert "= ANY" in plan, (
-                "the write statement's jobs access must be driven by the "
-                f"bound candidate id array:\n{plan}"
+            locked_section = plan.split("CTE moved", 1)[0]
+            assert "= ANY" in locked_section, (
+                "the lock arm's jobs access must be driven by the bound "
+                f"candidate id array:\n{plan}"
             )
-            assert "finished_at" not in plan, (
-                "a time bound re-entered the write statement - eligibility "
-                f"re-derivation walks the jobs population:\n{plan}"
+            assert not re.search(r"Seq Scan on jobs\b", locked_section), (
+                "the lock arm walked the jobs population - the candidate "
+                f"ids did not drive the lock:\n{plan}"
+            )
+            assert "finished_at <" in locked_section, (
+                "the lock-time retention-age re-check left the write "
+                "statement - the EvalPlanQual fence against a "
+                f"re-terminalized candidate is gone:\n{plan}"
             )
     finally:
         await conn.close()
@@ -1419,11 +1438,14 @@ async def test_archive_write_statement_prepared_form_moves_by_bound_ids(
 ) -> None:
     """PREPARE x6 for the write statement, then EXPLAIN the next
     execution: whichever plan form the plancache picks (its generic form
-    cannot prove the partial candidate index either), the jobs access
-    must still be driven by the bound id array, and no time bound may
-    re-enter. The lock arm's EvalPlanQual re-check rides that access;
-    a population walk driven by anything else would lock rows the
-    candidate window never selected."""
+    cannot prove the partial candidate index either), the LOCK arm must
+    still be driven by the bound id array and must still carry the
+    lock-time re-check (terminal status and retention age). Measured
+    with the age qual present: the prepared form keeps the jobs_pkey
+    Bitmap Index Scan under LockRows with both re-checks as its Filter -
+    the EvalPlanQual fence a re-terminalized candidate hits. The
+    moved/deleted arms' read shape is not pinned (their write set is
+    fenced by `locked` regardless; see the custom-form pin above)."""
     schema = prune_audit_schema
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -1433,22 +1455,29 @@ async def test_archive_write_statement_prepared_form_moves_by_bound_ids(
         warm = (
             f"EXECUTE taskq_pin_write('{_BACKLOG_STATUS}', "
             f"interval '{_ARCHIVE_RETENTION.days} days', "
-            f"ARRAY[{id_literals}]::uuid[])"
+            f"ARRAY[{id_literals}]::uuid[], "
+            f"interval '{_RETENTION.days} days')"
         )
         plan = await _explain_prepared(
             conn,
-            f'PREPARE taskq_pin_write ("{schema}".job_status, interval, uuid[]) '
-            f"AS {_ARCHIVE_CTE_SQL.format(schema=schema)}",
+            f'PREPARE taskq_pin_write ("{schema}".job_status, interval, uuid[], '
+            f"interval) AS {_ARCHIVE_CTE_SQL.format(schema=schema)}",
             warm,
             warm,
         )
-        assert "= ANY" in plan, (
-            "the prepared write statement's jobs access must be driven by "
-            f"the bound candidate id array:\n{plan}"
+        locked_section = plan.split("CTE moved", 1)[0]
+        assert "= ANY" in locked_section, (
+            "the prepared lock arm's jobs access must be driven by the "
+            f"bound candidate id array:\n{plan}"
         )
-        assert "finished_at" not in plan, (
-            "a time bound re-entered the prepared write statement - "
-            f"eligibility re-derivation walks the jobs population:\n{plan}"
+        assert not re.search(r"Seq Scan on jobs\b", locked_section), (
+            "the prepared lock arm walked the jobs population - the "
+            f"candidate ids did not drive the lock:\n{plan}"
+        )
+        assert "finished_at <" in locked_section, (
+            "the lock-time retention-age re-check left the prepared write "
+            f"statement - the EvalPlanQual fence is gone in the plan form "
+            f"a long-lived connection settles into:\n{plan}"
         )
     finally:
         await conn.close()
