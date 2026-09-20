@@ -166,12 +166,12 @@ async def test_job_filter_status_and_active(
     e2e_worker: E2EWorker,
     run_id: str,
 ) -> None:
-    """``JobFilter`` multi-status + ``active`` meta-filter against a live fleet.
+    """``JobFilter`` multi-status + ``unfinished`` meta-filter against a live fleet.
 
     In flight the job is visible under ``status=["pending", "running"]`` and
-    ``active=True``; after a forced cancel it leaves ``active`` and appears
-    under ``status=["cancelled"]``. ``status=[]`` matches nothing (documented
-    semantics - an empty sequence is not 'no filter'). The 30 s
+    ``unfinished=True``; after a forced cancel it leaves ``unfinished`` and
+    appears under ``status=["cancelled"]``. ``status=[]`` matches nothing
+    (documented semantics - an empty sequence is not 'no filter'). The 30 s
     ``long_running_job`` actor keeps the in-flight arm deterministic; the
     cancel ends the test without waiting out the actor.
     """
@@ -190,7 +190,7 @@ async def test_job_filter_status_and_active(
         timeout=30.0,
         description="job visible via JobFilter(status=[pending, running])",
     )
-    assert handle.job_id in await _ids(JobFilter(active=True))
+    assert handle.job_id in await _ids(JobFilter(unfinished=True))
     assert await _ids(JobFilter(status=[])) == set()
 
     cancel_result = await handle.cancel()
@@ -206,4 +206,4 @@ async def test_job_filter_status_and_active(
         timeout=30.0,
         description="job visible via JobFilter(status=[cancelled]) after cancel",
     )
-    assert handle.job_id not in await _ids(JobFilter(active=True))
+    assert handle.job_id not in await _ids(JobFilter(unfinished=True))

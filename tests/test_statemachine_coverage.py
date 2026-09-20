@@ -68,7 +68,7 @@ def test_active_statuses_equals_complement_derivation() -> None:
 def test_active_derivation_extends_for_hypothetical_non_terminal_state() -> None:
     """Prove the auto-extension property: adding a new non-terminal state
     to the transition table flows into the derived active set with no
-    second edit (``JobFilter(active=True)`` picks it up automatically)."""
+    second edit (``JobFilter(unfinished=True)`` picks it up automatically)."""
     extended: dict[JobStatus, frozenset[JobStatus]] = {
         **VALID_TRANSITIONS,
         "throttled": frozenset({"pending"}),  # type: ignore[dict-item]  # Why: hypothetical state, deliberately not a JobStatus

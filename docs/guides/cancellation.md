@@ -36,7 +36,7 @@ result = await handle.cancel(reason="deadline exceeded")
 from taskq import JobFilter
 
 result = await client.cancel_where(
-    JobFilter(tags=("tenant-acme",), active=True),
+    JobFilter(tags=("tenant-acme",), unfinished=True),
     reason="tenant offboarded",
 )
 ```

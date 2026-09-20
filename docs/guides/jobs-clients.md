@@ -1227,7 +1227,7 @@ progress, and a re-run continues where it stopped; already-cancelled rows are sk
 
 ```python
 result = await client.cancel_where(
-    JobFilter(tags=("tenant-acme",), active=True),
+    JobFilter(tags=("tenant-acme",), unfinished=True),
     reason="tenant offboarded",
 )
 print(
@@ -1274,8 +1274,8 @@ Frozen dataclass. All fields are optional.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `queue` | `str \| None` | `None` | Filter by queue name. |
-| `status` | `JobStatus \| Sequence[JobStatus] \| None` | `None` | Filter by current status: a single status (`"pending"`) or a sequence (`["pending", "running"]`). An empty sequence matches no jobs; unknown values raise `ValueError`. Mutually exclusive with `active`. |
-| `active` | `bool \| None` | `None` | Meta-filter by terminality: `True` selects non-terminal statuses (pending, scheduled, running), `False` selects terminal ones. This is broader than just currently-executing jobs: it includes all work not yet finished. Mutually exclusive with `status`. |
+| `status` | `JobStatus \| Sequence[JobStatus] \| None` | `None` | Filter by current status: a single status (`"pending"`) or a sequence (`["pending", "running"]`). An empty sequence matches no jobs; unknown values raise `ValueError`. Mutually exclusive with `unfinished`. |
+| `unfinished` | `bool \| None` | `None` | Meta-filter by terminality: `True` selects non-terminal statuses (pending, scheduled, running), `False` selects terminal ones. This is broader than just currently-executing jobs: it includes all work not yet finished. Mutually exclusive with `status`. (Renamed from `active`; the old name stays accepted as a deprecated alias.) |
 | `actor` | `str \| None` | `None` | Filter by actor name. |
 | `identity_key` | `IdentityKey \| None` | `None` | Filter by identity key. |
 | `batch_id` | `UUID \| None` | `None` | Filter by batch ID. |
@@ -1286,7 +1286,7 @@ Frozen dataclass. All fields are optional.
 
 ```python
 # "Everything still in flight": pending + scheduled + running:
-page = await client.list(JobFilter(queue="payments", active=True, limit=50))
+page = await client.list(JobFilter(queue="payments", unfinished=True, limit=50))
 
 # A specific set of statuses:
 page = await client.list(JobFilter(status=["pending", "running"], limit=50))

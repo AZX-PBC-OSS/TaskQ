@@ -39,13 +39,13 @@ class TestBuildFilterConditions:
         assert "metadata" in result.conditions[0]
 
     def test_active_true_filter(self) -> None:
-        result = build_filter_conditions(JobFilter(active=True))
+        result = build_filter_conditions(JobFilter(unfinished=True))
         assert len(result.conditions) == 1
         assert "status" in result.conditions[0]
         assert set(result.params[0]) == set(ACTIVE_STATUSES)  # type: ignore[arg-type]
 
     def test_active_false_filter(self) -> None:
-        result = build_filter_conditions(JobFilter(active=False))
+        result = build_filter_conditions(JobFilter(unfinished=False))
         assert len(result.conditions) == 1
         assert "status" in result.conditions[0]
         assert set(result.params[0]) == set(TERMINAL_STATUSES)  # type: ignore[arg-type]

@@ -119,6 +119,8 @@ from taskq.constants import (
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
     DEFAULT_KEYED_ROW_RECLAIM_BATCH_SIZE,
     DEFAULT_MAX_RETRY_BACKOFF,
+    ERROR_CLASS_DEADLINE_EXCEEDED,
+    ERROR_CLASS_WORKER_CRASHED,
     MIN_DEFERRAL_INTERVAL,
     RECLAIM_OUTBOX_RETENTION_MULTIPLIER,
     wake_channel,
@@ -688,7 +690,7 @@ SET status = CASE
     -- plus the event's cause carry the explanation.
     error_class = CASE
         WHEN NOT ({has_budget}) AND j.cancel_phase = 0
-            THEN 'WorkerCrashed'
+            THEN '{worker_crashed_class}'
         ELSE j.error_class
     END,
     error_message = CASE
@@ -727,6 +729,7 @@ _SWEEP_1_SQL = (
     .replace("{max_backoff_seconds}", "$4")
     .replace("{lock_expired_message}", _ATTEMPT_MESSAGES["lock_expired"])
     .replace("{heartbeat_timeout_message}", _ATTEMPT_MESSAGES["heartbeat_timeout"])
+    .replace("{worker_crashed_class}", ERROR_CLASS_WORKER_CRASHED)
 )
 
 _SWEEP_2_SQL = """\
@@ -757,12 +760,14 @@ WITH snap AS MATERIALIZED (
 UPDATE "{schema}".jobs j
 SET status = 'failed'::"{schema}".job_status,
     finished_at = clock_timestamp(),
-    error_class = 'DeadlineExceeded',
+    error_class = '{deadline_exceeded_class}',
     error_message = 'schedule_to_close reached before next dispatch'
 FROM snap
 WHERE j.id = snap.id
 RETURNING j.id, snap.prev_status, j.attempt, j.started_at, j.actor,
-          clock_timestamp() AS now_ts"""
+          clock_timestamp() AS now_ts""".replace(
+    "{deadline_exceeded_class}", ERROR_CLASS_DEADLINE_EXCEEDED
+)
 
 _SWEEP_3_SQL = """\
 -- Bounded batch + MATERIALIZED, same rationale as _SWEEP_1_SQL's comment
@@ -1047,7 +1052,7 @@ SELECT a.job_id, a.attempt,
        -- NULL started_at (direct-SQL-reachable only; dispatch always stamps it) falls back to the per-row clock, the in-memory twin's COALESCE-to-now contract.
        COALESCE(a.started_at, clock_timestamp() + (a.ord - 1) * interval '1 microsecond'),
        clock_timestamp() + (a.ord - 1) * interval '1 microsecond',
-       'crashed', 'WorkerCrashed',
+       'crashed', '{worker_crashed_class}',
        a.error_message, NULL,
        a.duration_ms, holder.id, '{{}}'::jsonb
 FROM unnest($1::uuid[], $2::smallint[], $3::timestamptz[], $4::uuid[], $5::int[], $6::text[])
@@ -1058,7 +1063,9 @@ LEFT JOIN holder ON holder.id = a.worker_id
 -- ceiling; a spent attempt left behind by a re-pend), and the truthful
 -- first record yields to nothing, the synthetic crash row must skip
 -- rather than roll back every sibling swept in the same statement.
-ON CONFLICT (job_id, attempt) DO NOTHING"""
+ON CONFLICT (job_id, attempt) DO NOTHING""".replace(
+    "{worker_crashed_class}", ERROR_CLASS_WORKER_CRASHED
+)
 
 _SWEEP_2_ATTEMPTS_BATCH_SQL = """\
 INSERT INTO "{schema}".job_attempts
@@ -1067,7 +1074,7 @@ INSERT INTO "{schema}".job_attempts
 SELECT a.job_id, a.attempt,
        COALESCE(a.started_at, clock_timestamp() + (a.ord - 1) * interval '1 microsecond'),
        clock_timestamp() + (a.ord - 1) * interval '1 microsecond',
-       'failed', 'DeadlineExceeded', 'schedule_to_close reached before next dispatch',
+       'failed', '{deadline_exceeded_class}', 'schedule_to_close reached before next dispatch',
        NULL, a.duration_ms, NULL, '{{}}'::jsonb
 FROM unnest($1::uuid[], $2::smallint[], $3::timestamptz[], $4::int[])
     WITH ORDINALITY AS a(job_id, attempt, started_at, duration_ms, ord)
@@ -1080,7 +1087,9 @@ FROM unnest($1::uuid[], $2::smallint[], $3::timestamptz[], $4::int[])
 -- actor actually did; the deadline lapsing afterwards is not a second
 -- execution, so the synthetic row yields to it rather than colliding and
 -- rolling back every sibling swept in the same statement.
-ON CONFLICT (job_id, attempt) DO NOTHING"""
+ON CONFLICT (job_id, attempt) DO NOTHING""".replace(
+    "{deadline_exceeded_class}", ERROR_CLASS_DEADLINE_EXCEEDED
+)
 
 
 class _ReclaimedRow(NamedTuple):
@@ -1578,7 +1587,7 @@ async def sweep_deadline_exceeded(
                 detail: dict[str, object] = {
                     "from_state": prev_status,
                     "to_state": "failed",
-                    "error_class": "DeadlineExceeded",
+                    "error_class": ERROR_CLASS_DEADLINE_EXCEEDED,
                 }
 
                 job_ids.append(job_id)
@@ -1603,7 +1612,7 @@ async def sweep_deadline_exceeded(
             from_state=row.from_state,
             to_state="failed",
             job_id=str(row.job_id),
-            error_class="DeadlineExceeded",
+            error_class=ERROR_CLASS_DEADLINE_EXCEEDED,
         )
     # Aggregated per actor AFTER the transaction: the metric emission is
     # per-row work, and per-row work on the DB-hold path is what the

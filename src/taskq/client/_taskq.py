@@ -1084,7 +1084,7 @@ class TaskQ:
     async def list(self, filter: JobFilter) -> JobPage:
         """List jobs matching *filter*, returning a :class:`JobPage`.
 
-        Delegates to :meth:`JobsClient.list`, note ``filter.active``
+        Delegates to :meth:`JobsClient.list`, note ``filter.unfinished``
         selects by terminality ('not yet finished'), not by execution
         status ('currently executing').  See :class:`JobFilter`.
         """

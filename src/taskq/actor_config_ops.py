@@ -73,6 +73,7 @@ from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
+    ERROR_CLASS_ACTOR_DEREGISTERED,
 )
 from taskq.exceptions import (
     ActorHasActiveJobsError,
@@ -699,7 +700,7 @@ cancelled AS (
     UPDATE "{schema}".jobs AS j
        SET status = 'cancelled',
            finished_at = clock_timestamp(),
-           error_class = 'ActorDeregistered',
+           error_class = '{actor_deregistered_class}',
            error_message = 'Job cancelled by actor deregistration (force=True)'
       FROM matching AS prev
      WHERE j.id = prev.id
@@ -711,7 +712,7 @@ SELECT
     (SELECT count(*)::int FROM cancelled) AS cancelled_directly,
     (SELECT array_agg(id ORDER BY id) FROM cancelled) AS cancelled_ids,
     (SELECT array_agg(prev_status ORDER BY id) FROM cancelled) AS cancelled_prev_statuses
-""".strip()
+""".strip().replace("{actor_deregistered_class}", ERROR_CLASS_ACTOR_DEREGISTERED)
 
 _DEREGISTER_DISABLE_SCHEDULES_SQL = """
 UPDATE "{schema}".cron_schedules

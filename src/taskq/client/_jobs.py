@@ -1565,9 +1565,9 @@ class JobsClient:
         sequence of statuses (e.g. ``JobFilter(status=["pending",
         "running"])``).
 
-        ``filter.active`` is a meta-filter: ``active=True`` selects
+        ``filter.unfinished`` is a meta-filter: ``unfinished=True`` selects
         *non-terminal* statuses (pending, scheduled, running, 'not yet
-        finished', not 'currently executing') and ``active=False`` selects
+        finished', not 'currently executing') and ``unfinished=False`` selects
         terminal ones.  See :class:`JobFilter` for full semantics.
 
         ``next_cursor`` is returned for every ordering, encoded from the

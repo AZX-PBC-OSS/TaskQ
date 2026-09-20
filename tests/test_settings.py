@@ -15,11 +15,13 @@ from dotenvmodel.types import RedisDsn, SecretStr
 from hypothesis import given
 from hypothesis import strategies as st
 
+from taskq._close import worst_case_teardown_tail
 from taskq.connections import (
     DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
     DEFAULT_STATEMENT_CACHE_SIZE,
     statement_cache_kwargs,
 )
+from taskq.constants import TERMINAL_WRITE_BUDGET_SECS
 from taskq.settings import OIDCSettings, SAMLSettings, TaskQSettings, WorkerSettings
 
 _DSN = "postgresql://taskq:taskq@localhost:5432/taskq"
@@ -2170,3 +2172,148 @@ def test_metrics_port_is_unset_by_default_and_opt_in() -> None:
     assert _load(TASKQ_METRICS_PORT="9464").metrics_port == 9464
     with pytest.raises(ConstraintViolationError):
         _load(TASKQ_METRICS_PORT="0")
+
+
+# ── Bootstrap remedy arithmetic (release park / disown / shutdown) ────
+
+
+def _half_steps(lo: float, hi: float) -> "st.SearchStrategy[float]":
+    """Floats on a half-second grid in [lo, hi].
+
+    Half-second steps are dyadic rationals with small mantissas, so every
+    sum and difference the boundary identities below compare is exact in
+    binary floating point and the pins are not float-flaky.
+    """
+    return st.integers(min_value=int(lo * 2), max_value=int(hi * 2)).map(lambda v: v * 0.5)
+
+
+_REMEDY_DRAW = {
+    "termination": _half_steps(60, 7200),
+    "cancellation": _half_steps(1, 10),
+    "cleanup": _half_steps(1, 10),
+    "heartbeat": _half_steps(1, 20),
+    "lease_slack": _half_steps(1, 800),
+}
+
+
+def _remedy_settings(
+    termination: float, cancellation: float, cleanup: float, lock_lease: float, heartbeat: float
+) -> WorkerSettings:
+    """Load a valid WorkerSettings for the remedy-arithmetic draws.
+
+    The heartbeat/grace/lag overrides keep every other post_load invariant
+    quiet (graces inside the termination grace, lag budget inside the
+    lease), the same quieting shape test_lock_lease_invariant_universality
+    uses; the lock_lease cascade floor is left to the caller, which needs
+    control of it to place the lease against the remedy boundary.
+    """
+    return _load(
+        TASKQ_TERMINATION_GRACE_PERIOD=str(termination),
+        TASKQ_CANCELLATION_GRACE_PERIOD=str(cancellation),
+        TASKQ_CLEANUP_GRACE_PERIOD=str(cleanup),
+        TASKQ_LOCK_LEASE=str(lock_lease),
+        TASKQ_HEARTBEAT_INTERVAL=str(heartbeat),
+        TASKQ_WATCHDOG_LOOP_LAG_BUDGET=str(lock_lease * 0.7),
+        TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET=str(lock_lease * 0.35),
+    )
+
+
+@given(**_REMEDY_DRAW)
+def test_release_park_remedy_arithmetic_boundaries_agree(
+    termination: float, cancellation: float, cleanup: float, heartbeat: float, lease_slack: float
+) -> None:
+    """The release-park remedy arithmetic's three written forms cannot drift.
+
+    The startup warning fires on ``release_park_lease_cap <
+    release_park_budget_bound`` (the condition in
+    ``_emit_startup_warnings``); the property's docstring writes the same
+    boundary as ``lock_lease < termination - cancellation - cleanup +
+    heartbeat``; and the warning's remedy tells the operator to raise
+    TASKQ_LOCK_LEASE to ``release_park_budget_bound + heartbeat_interval +
+    TERMINAL_WRITE_BUDGET_SECS``. Three surfaces, one boundary: the pin
+    holds them to the same number, and holds the remedy's number to the
+    exact point where the cap stops binding.
+    """
+    cascade_floor = 4 * heartbeat + 16  # the shipped defaults' cascade bound
+    lock_lease = cascade_floor + lease_slack
+    s = _remedy_settings(termination, cancellation, cleanup, lock_lease, heartbeat)
+    assert (s.max_heartbeat_failures + 1) * (
+        s.heartbeat_interval + 2 * s.heartbeat_command_timeout
+    ) == 4 * heartbeat + 16  # the draw's floor assumption, pinned
+
+    # The docstring inequality's right-hand side, in the association order
+    # the properties themselves use.
+    boundary = termination - cancellation - cleanup + heartbeat
+
+    # 1. The warning's inequality and the docstring's inequality agree.
+    cap_binds = s.release_park_lease_cap < s.release_park_budget_bound
+    assert cap_binds == (s.lock_lease < boundary)
+
+    # 2. Conservation: the remedy's raise-to number IS the boundary.
+    remedy_raise_to = (
+        s.release_park_budget_bound + s.heartbeat_interval + TERMINAL_WRITE_BUDGET_SECS
+    )
+    assert remedy_raise_to == boundary
+
+    # 3. The remedy works, and the boundary is exact: a lease at the
+    # remedy's number never caps the park, one half a step below it always
+    # does (when such a lease can still load at all; the cascade floor may
+    # sit below the boundary, in which case every loadable lease is above
+    # the boundary and the park is never capped).
+    if boundary >= cascade_floor:
+        at_remedy = _remedy_settings(termination, cancellation, cleanup, boundary, heartbeat)
+        assert at_remedy.release_park_lease_cap >= at_remedy.release_park_budget_bound
+    if boundary - 0.5 >= cascade_floor:
+        below = _remedy_settings(termination, cancellation, cleanup, boundary - 0.5, heartbeat)
+        assert below.release_park_lease_cap < below.release_park_budget_bound
+    else:
+        assert not cap_binds  # no loadable lease can fall below the boundary
+
+
+@given(**_REMEDY_DRAW)
+def test_disown_floor_conserves_the_exit_tail(
+    termination: float, cancellation: float, cleanup: float, heartbeat: float, lease_slack: float
+) -> None:
+    """The disown floor is the park boundary plus the release exit tail.
+
+    ``release_disown_lease_floor`` and the park boundary share the
+    termination/cancellation/cleanup/heartbeat terms; the floor adds
+    ``release_exit_tail_seconds`` and nothing else. The tail is positive,
+    so the floor strictly dominates the park boundary: a lease that just
+    covers the park's early-reclaim bound can still fall short of the
+    disown path's exit bound, which is why the two are separate warnings.
+    """
+    lock_lease = 4 * heartbeat + 16 + lease_slack
+    s = _remedy_settings(termination, cancellation, cleanup, lock_lease, heartbeat)
+
+    park_boundary = termination - cancellation - cleanup + heartbeat
+    assert s.release_exit_tail_seconds > 0
+    assert s.release_disown_lease_floor == park_boundary + s.release_exit_tail_seconds
+    assert s.release_disown_lease_floor > park_boundary
+
+
+@given(**_REMEDY_DRAW)
+def test_shutdown_budget_flag_tracks_the_model(
+    termination: float, cancellation: float, cleanup: float, heartbeat: float, lease_slack: float
+) -> None:
+    """The budget-sufficiency flag means exactly 'the model fits the grace'.
+
+    ``worst_case_shutdown_seconds`` conserves the additive model (graces
+    plus the bounded-close tail, the tail taken from its owner in
+    taskq._close, never restated), and ``shutdown_budget_is_sufficient``
+    is the flag the startup warning consumes, so a re-derivation of either
+    cannot drift from the other. Monotonicity pins the model's direction:
+    a larger cancellation grace never shrinks the modelled worst case and
+    never raises the park's budget bound.
+    """
+    lock_lease = 4 * heartbeat + 16 + lease_slack
+    s = _remedy_settings(termination, cancellation, cleanup, lock_lease, heartbeat)
+
+    assert s.worst_case_shutdown_seconds == (cancellation + cleanup + worst_case_teardown_tail())
+    assert s.shutdown_budget_is_sufficient == (
+        s.worst_case_shutdown_seconds <= s.termination_grace_period
+    )
+
+    tighter = _remedy_settings(termination, cancellation + 0.5, cleanup, lock_lease, heartbeat)
+    assert tighter.worst_case_shutdown_seconds > s.worst_case_shutdown_seconds
+    assert tighter.release_park_budget_bound < s.release_park_budget_bound

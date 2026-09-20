@@ -288,8 +288,9 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
     "taskq.backend._sweeps:_SWEEP_1_BODY": (
         ("taskq.backend._sweeps:_SWEEP_1_SQL",),
         "-- Leader-only reclaim sweep",
-        "an intermediate carrying {has_budget}/{reclaim_delay} holes; "
-        "_SWEEP_1_SQL is the rendered statement production sends",
+        "an intermediate carrying the {has_budget}/{reclaim_delay} and "
+        "{worker_crashed_class} holes; _SWEEP_1_SQL is the rendered statement "
+        "production sends",
     ),
     "taskq.backend._sweeps:_SWEEP_IDLE_KEYED_BUCKETS_BODY": (
         ("taskq.backend._sweeps:_SWEEP_IDLE_KEYED_BUCKETS_SQL",),

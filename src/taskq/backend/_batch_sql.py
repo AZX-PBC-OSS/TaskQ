@@ -61,6 +61,7 @@ from taskq.constants import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
+    ERROR_CLASS_BATCH_ABORTED,
 )
 from taskq.obs import get_logger
 
@@ -224,7 +225,7 @@ aborted AS (
     UPDATE "{schema}".jobs AS j
     SET status = 'cancelled',
         finished_at = clock_timestamp(),
-        error_class = 'BatchAbortedError',
+        error_class = '{batch_aborted_class}',
         error_message = 'Batch aborted due to consecutive failures',
         cancel_requested_at = clock_timestamp(),
         cancel_phase = 2
@@ -235,7 +236,9 @@ aborted AS (
 SELECT
     (SELECT count(*)::int FROM matching) AS matched_count,
     (SELECT last_id FROM batch_ids) AS last_id,
-    (SELECT count(*)::int FROM aborted) AS aborted_count"""
+    (SELECT count(*)::int FROM aborted) AS aborted_count""".replace(
+    "{batch_aborted_class}", ERROR_CLASS_BATCH_ABORTED
+)
 
 _ABORT_BATCH_ROW_SQL = """\
 UPDATE "{schema}".batches

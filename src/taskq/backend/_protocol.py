@@ -12,6 +12,7 @@ creating a circular dependency through the re-export boundary in
 
 import asyncio
 import re
+import warnings
 from collections.abc import Collection, Container, Iterable, Sequence
 from contextlib import AbstractAsyncContextManager as AsyncContextManager
 from dataclasses import dataclass, field
@@ -1030,9 +1031,9 @@ class JobFilter:
     skipped). Use :meth:`has_predicates` to check whether the filter has
     at least one predicate before passing it to ``cancel_where``.
 
-    Heads-up: ``active=True`` means 'not yet finished', a superset of
+    Heads-up: ``unfinished=True`` means 'not yet finished', a superset of
     non-terminal statuses (``pending`` + ``scheduled`` + ``running``),
-    not just 'currently executing'. Read the ``active`` section below
+    not just 'currently executing'. Read the ``unfinished`` section below
     before relying on the name.
 
     ``cursor`` is an opaque keyset-pagination token encoding the sort
@@ -1062,29 +1063,37 @@ class JobFilter:
     sequence as ``status = ANY($n)``; the in-memory backend performs a
     membership check in both cases.
 
-    ``active`` is a meta-filter that selects statuses by terminality ,
+    ``unfinished`` is a meta-filter that selects statuses by terminality,
     use it to filter by whether a job is still running or has reached
-    a terminal state. Here, 'not yet finished' means a superset that
-    includes both work currently executing and work not yet started:
+    a terminal state. The name states the predicate it applies:
+    'not yet finished' includes both work currently executing and work
+    not yet started:
 
-    - ``active=True`` → non-terminal statuses (pending, scheduled, running)
-    - ``active=False`` → terminal statuses (succeeded, failed, cancelled,
-      crashed, abandoned)
-    - ``active=None`` (default) → no status-terminality filter
+    - ``unfinished=True`` → non-terminal statuses (pending, scheduled,
+      running)
+    - ``unfinished=False`` → terminal statuses (succeeded, failed,
+      cancelled, crashed, abandoned)
+    - ``unfinished=None`` (default) → no status-terminality filter
 
     The non-terminal set is derived from
     :data:`~taskq.backend.statemachine.ACTIVE_STATUSES`, which is itself
     derived from the state machine, adding a new non-terminal state
     updates this filter automatically.
 
-    ``status`` and ``active`` are mutually exclusive; specifying both
+    ``status`` and ``unfinished`` are mutually exclusive; specifying both
     raises :class:`ValueError` in :meth:`__post_init__`.
+
+    Deprecated alias: ``unfinished`` was named ``active``, and that name
+    stays accepted as a constructor kwarg (positional or keyword), it
+    raises :class:`DeprecationWarning` and feeds the same predicate.
+    The rename exists because 'active' read as 'currently executing' to
+    every new reader, while the predicate is 'not yet finished'.
 
     Usage examples::
 
         JobsClient.list(JobFilter(status="pending"))
         JobsClient.list(JobFilter(status=["pending", "running"]))
-        JobsClient.list(JobFilter(active=True))
+        JobsClient.list(JobFilter(unfinished=True))
     """
 
     queue: str | None = None
@@ -1098,9 +1107,19 @@ class JobFilter:
     cursor: str | None = None
     tags: tuple[str, ...] | None = None
     order_by: JobSortField | None = None
-    # True selects every non-terminal status (still running or pending);
-    # False selects only terminal statuses. See the class docstring.
-    active: bool | None = None
+    # Deprecated constructor alias for `unfinished`, kept as a field
+    # (not a property) because a frozen dataclass cannot alias an
+    # __init__ parameter. It holds the PRE-RENAME positional slot (10,
+    # before created_before) so a positional call written before the
+    # rename still binds its 10th argument to the terminality filter
+    # and its 11th to created_before. Excluded from eq and repr: the
+    # two spellings must compare equal, and the alias must not surface
+    # in repr. __post_init__ promotes it onto `unfinished` and then
+    # clears it (constructor input only): the dataclasses.replace
+    # copies the client's list probe and the bulk-cancel sanitizer
+    # make carry the canonical `unfinished` value, so a filter warns
+    # exactly once, at construction.
+    active: bool | None = field(default=None, compare=False, repr=False)
     # Matches jobs enqueued strictly before this instant (``created_at <
     # created_before``). An aware datetime: the column is timestamptz, so
     # a naive value would silently change meaning with the server's zone.
@@ -1108,8 +1127,42 @@ class JobFilter:
     # both backends apply it (build_filter_conditions / _list_jobs), so
     # the bulk-cancel CLI's --older-than previews exactly what it writes.
     created_before: datetime | None = None
+    # True selects every non-terminal status (still running or pending);
+    # False selects only terminal statuses. See the class docstring.
+    # Deliberately the LAST field, after created_before, rather than
+    # slotted into `active`'s old position: inserting it mid-list would
+    # shift every later positional argument one slot left, so a
+    # pre-rename positional call would hand a datetime to the alias and
+    # fail on the alias/unfinished disagreement check. Appended, the
+    # old positional layout survives untouched.
+    unfinished: bool | None = None
 
     def __post_init__(self) -> None:
+        # Deprecated-alias promotion, before every other check so the
+        # alias participates in them identically. One-directional
+        # (active → unfinished, never back): after promotion the alias
+        # is cleared, so a filter built with `unfinished` keeps active
+        # None and one built with `active` ends up indistinguishable
+        # from one built with `unfinished`. Either way the
+        # dataclasses.replace copies the client and the bulk-cancel
+        # path make re-enter __post_init__ with active None and stay
+        # warning-free: one DeprecationWarning per filter, at
+        # construction, no matter how many internal copies follow.
+        if self.active is not None:
+            if self.unfinished is not None and self.active != self.unfinished:
+                raise ValueError(
+                    "unfinished and active disagree; pass only unfinished "
+                    "(active is a deprecated alias for it)"
+                )
+            warnings.warn(
+                "JobFilter.active is a deprecated alias for JobFilter.unfinished; "
+                "pass unfinished=True for non-terminal statuses, unfinished=False "
+                "for terminal ones",
+                DeprecationWarning,
+                stacklevel=3,  # Why: three frames to the caller, warn → __post_init__ → the dataclass-generated __init__ → user code
+            )
+            object.__setattr__(self, "unfinished", self.active)
+            object.__setattr__(self, "active", None)
         # A negative limit diverges across backends: PG raises
         # "LIMIT must not be negative" while the in-memory slice would
         # silently drop rows.  Reject it here so both fail identically.
@@ -1123,10 +1176,10 @@ class JobFilter:
                     f"unknown job status value(s): {list(dict.fromkeys(unknown))!r}; "
                     f"valid statuses are {sorted(JOB_STATUS_VALUES)}"
                 )
-        if self.status is not None and self.active is not None:
+        if self.status is not None and self.unfinished is not None:
             raise ValueError(
-                "status and active are mutually exclusive; "
-                "use status for specific status(es) or active for the "
+                "status and unfinished are mutually exclusive; "
+                "use status for specific status(es) or unfinished for the "
                 "terminal/non-terminal meta-filter"
             )
         # A NUL in a text predicate binds as text on PG (queue/actor/
@@ -1163,7 +1216,7 @@ class JobFilter:
             or self.identity_key is not None
             or self.batch_id is not None
             or (self.tags is not None and len(self.tags) > 0)
-            or self.active is not None
+            or self.unfinished is not None
             or self.created_before is not None
         )
 
@@ -2169,9 +2222,9 @@ class Backend(Protocol):
         rows in keyset-pagination order.
 
         ``filters.status`` accepts a single :data:`JobStatus` or a
-        sequence of statuses; ``filters.active`` is a meta-filter for
+        sequence of statuses; ``filters.unfinished`` is a meta-filter for
         non-terminal (``True``) or terminal (``False``) statuses ,
-        'active' here means 'not yet finished' (pending, scheduled, or
+        'unfinished' here means 'not yet finished' (pending, scheduled, or
         running).  See :class:`JobFilter` for details.
         """
         ...

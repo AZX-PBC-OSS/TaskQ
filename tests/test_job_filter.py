@@ -1,10 +1,13 @@
-"""Unit tests for JobFilter - ordering, multi-status, and active meta-filter.
+"""Unit tests for JobFilter - ordering, multi-status, and the unfinished
+meta-filter.
 
 Covers the order_by option, multi-status sequence support, and the
-``active`` meta-filter added to JobFilter. Uses the InMemoryBackend so
-behaviour is exercised end-to-end without a Postgres dependency.
+``unfinished`` meta-filter (renamed from ``active``; the deprecated alias
+is exercised too). Uses the InMemoryBackend so behaviour is exercised
+end-to-end without a Postgres dependency.
 """
 
+import warnings
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -182,11 +185,11 @@ async def test_job_filter_status_tuple_returns_union() -> None:
     assert ids == {pending.id, running.id}
 
 
-# ── active meta-filter ───────────────────────────────────────────────
+# ── unfinished meta-filter ────────────────────────────────────────────
 
 
-async def test_job_filter_active_true_returns_non_terminal() -> None:
-    """active=True returns exactly pending, scheduled, running - and
+async def test_job_filter_unfinished_true_returns_non_terminal() -> None:
+    """unfinished=True returns exactly pending, scheduled, running - and
     excludes all 5 terminal statuses."""
     backend = _backend()
     jobs: dict[str, JobRow] = {}
@@ -204,14 +207,14 @@ async def test_job_filter_active_true_returns_non_terminal() -> None:
         jobs[s] = j
         backend._jobs[j.id] = j
 
-    rows = await backend.list_jobs(JobFilter(actor="test_actor", active=True, limit=100))
+    rows = await backend.list_jobs(JobFilter(actor="test_actor", unfinished=True, limit=100))
     returned_statuses = {r.status for r in rows}
     assert returned_statuses == {"pending", "scheduled", "running"}
     assert returned_statuses == ACTIVE_STATUSES
 
 
-async def test_job_filter_active_false_returns_terminal() -> None:
-    """active=False returns exactly the terminal statuses."""
+async def test_job_filter_unfinished_false_returns_terminal() -> None:
+    """unfinished=False returns exactly the terminal statuses."""
     backend = _backend()
     for s in (
         "pending",
@@ -226,17 +229,106 @@ async def test_job_filter_active_false_returns_terminal() -> None:
         j = _job(status=s, priority=0)
         backend._jobs[j.id] = j
 
-    rows = await backend.list_jobs(JobFilter(actor="test_actor", active=False, limit=100))
+    rows = await backend.list_jobs(JobFilter(actor="test_actor", unfinished=False, limit=100))
     returned_statuses = {r.status for r in rows}
     assert returned_statuses == TERMINAL_STATUSES
 
 
-def test_job_filter_status_and_active_raises() -> None:
-    """Specifying both status and active raises ValueError."""
+def test_job_filter_status_and_unfinished_raises() -> None:
+    """Specifying both status and unfinished raises ValueError."""
     with pytest.raises(ValueError, match="mutually exclusive"):
-        JobFilter(status="pending", active=True)
+        JobFilter(status="pending", unfinished=True)
     with pytest.raises(ValueError, match="mutually exclusive"):
-        JobFilter(status=["pending", "running"], active=False)
+        JobFilter(status=["pending", "running"], unfinished=False)
+
+
+# ── Deprecated `active` alias ──────────────────────────────────────────
+
+
+def test_job_filter_active_alias_promotes_to_unfinished_and_warns() -> None:
+    """The deprecated ``active`` kwarg still selects the same predicate:
+    it warns, and the resulting filter equals the ``unfinished`` spelling."""
+    with pytest.warns(DeprecationWarning, match="deprecated alias"):
+        from_alias = JobFilter(active=True)
+    assert from_alias == JobFilter(unfinished=True)
+    assert from_alias.unfinished is True
+    assert from_alias.has_predicates()
+
+
+def test_job_filter_active_alias_false_pins_terminal_predicate() -> None:
+    """``active=False`` promotes to ``unfinished=False``, the terminal
+    half of the predicate, not a different one."""
+    with pytest.warns(DeprecationWarning, match="deprecated alias"):
+        from_alias = JobFilter(active=False)
+    assert from_alias == JobFilter(unfinished=False)
+    assert from_alias.unfinished is False
+
+
+def test_job_filter_active_alias_conflict_with_unfinished_raises() -> None:
+    """Passing the alias and the new name with different values is a
+    misconfiguration, not a silently-won race between the two fields."""
+    with pytest.raises(ValueError, match="disagree"):
+        JobFilter(unfinished=True, active=False)  # type: ignore[arg-type]  # Why: exercising the deprecated alias deliberately
+
+
+def test_job_filter_pre_rename_positional_layout_still_binds() -> None:
+    """An 11-argument positional call written before the rename still
+    binds its 10th argument to the terminality filter and its 11th to
+    created_before: ``unfinished`` was appended after ``created_before``,
+    not slotted into ``active``'s old position. Without this, a positional
+    call would hand a datetime to the alias and fail on the alias/
+    ``unfinished`` disagreement check.
+    """
+    created_before = datetime(2025, 6, 1, tzinfo=UTC)
+    with pytest.warns(DeprecationWarning, match="deprecated alias"):
+        positional = JobFilter(  # type: ignore[misc]  # Why: exercising the pre-rename positional call shape deliberately
+            "q", None, "a", None, None, 50, "c", ("t",), None, True, created_before
+        )
+    assert positional.unfinished is True
+    assert positional.created_before == created_before
+    assert positional == JobFilter(
+        queue="q",
+        actor="a",
+        limit=50,
+        cursor="c",
+        tags=("t",),
+        unfinished=True,
+        created_before=created_before,
+    )
+
+
+def test_job_filter_active_alias_warns_once_across_replace_copies() -> None:
+    """A filter built with the deprecated alias warns exactly once, at
+    construction: the promotion clears the alias, so the
+    ``dataclasses.replace`` copies the client's list probe and the
+    bulk-cancel sanitizer make do not re-trip the warning.
+    """
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        from_alias = JobFilter(active=True)
+        for _ in range(3):
+            replace(from_alias, limit=1)
+    assert from_alias.unfinished is True
+    deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+    assert len(deprecations) == 1
+
+
+async def test_cancel_where_with_active_alias_warns_once() -> None:
+    """Realistic flow through the bulk-cancel sanitizer: the filter copy
+    the sanitizer makes with ``dataclasses.replace`` must not re-trip the
+    alias warning, so a cancel_where on an alias-built filter warns once,
+    not once per internal copy.
+    """
+    backend = _backend()
+    job = _job(status="pending")
+    backend._jobs[job.id] = job
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = await backend.cancel_where(JobFilter(active=True), reason="done")
+    assert result.cancelled_directly == 1
+    deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+    assert len(deprecations) == 1
 
 
 # ── Unknown status validation ──────────────────────────────────────────
@@ -305,9 +397,10 @@ async def test_list_jobs_zero_limit_returns_no_rows() -> None:
     assert rows == []
 
 
-def test_job_filter_active_defaults_to_none() -> None:
-    """active defaults to None (no terminality filter)."""
+def test_job_filter_unfinished_defaults_to_none() -> None:
+    """unfinished defaults to None (no terminality filter)."""
     f = JobFilter()
+    assert f.unfinished is None
     assert f.active is None
 
 
@@ -364,41 +457,41 @@ async def test_list_jobs_multi_status_cursor_pagination() -> None:
     assert len(all_returned) == len(set(all_returned))
 
 
-# ── active meta-filter + cursor pagination ────────────────────────────
+# ── unfinished meta-filter + cursor pagination ────────────────────────
 
 
-async def test_list_jobs_active_true_cursor_pagination() -> None:
-    """Cursor pagination with active=True produces a complete,
+async def test_list_jobs_unfinished_true_cursor_pagination() -> None:
+    """Cursor pagination with unfinished=True produces a complete,
     non-overlapping, correctly-ordered traversal across multiple pages
     that includes exactly the non-terminal jobs and excludes all
     terminal jobs.
 
     Creates 5 non-terminal jobs (mix of pending, scheduled, running)
     with distinct priorities and 3 terminal jobs (succeeded, failed,
-    cancelled), then pages through with active=True and limit=2 using
+    cancelled), then pages through with unfinished=True and limit=2 using
     cursors. Asserts every non-terminal row appears exactly once in
     priority-DESC order and no terminal row leaks through.
     """
     backend = _backend()
     priorities = [10, 8, 5, 3, 1]
-    active_statuses = ["pending", "scheduled", "running", "pending", "scheduled"]
-    active_jobs: list[JobRow] = []
-    for pri, st in zip(priorities, active_statuses, strict=True):
+    unfinished_statuses = ["pending", "scheduled", "running", "pending", "scheduled"]
+    unfinished_jobs: list[JobRow] = []
+    for pri, st in zip(priorities, unfinished_statuses, strict=True):
         j = _job(status=st, priority=pri)
-        active_jobs.append(j)
+        unfinished_jobs.append(j)
         backend._jobs[j.id] = j
 
-    # Terminal jobs that must never appear in active=True results.
+    # Terminal jobs that must never appear in unfinished=True results.
     for st in ("succeeded", "failed", "cancelled"):
         j = _job(status=st, priority=99)
         backend._jobs[j.id] = j
 
     expected_ids = [
-        j.id for j in sorted(active_jobs, key=lambda r: (-r.priority, r.scheduled_at, r.id))
+        j.id for j in sorted(unfinished_jobs, key=lambda r: (-r.priority, r.scheduled_at, r.id))
     ]
 
     # Page 1
-    page1 = await backend.list_jobs(JobFilter(actor="test_actor", active=True, limit=2))
+    page1 = await backend.list_jobs(JobFilter(actor="test_actor", unfinished=True, limit=2))
     assert len(page1) == 2
     assert [r.id for r in page1] == expected_ids[:2]
 
@@ -406,7 +499,7 @@ async def test_list_jobs_active_true_cursor_pagination() -> None:
 
     # Page 2
     page2 = await backend.list_jobs(
-        JobFilter(actor="test_actor", active=True, limit=2, cursor=cursor)
+        JobFilter(actor="test_actor", unfinished=True, limit=2, cursor=cursor)
     )
     assert len(page2) == 2
     assert [r.id for r in page2] == expected_ids[2:4]
@@ -415,7 +508,7 @@ async def test_list_jobs_active_true_cursor_pagination() -> None:
 
     # Page 3 - only 1 job left
     page3 = await backend.list_jobs(
-        JobFilter(actor="test_actor", active=True, limit=2, cursor=cursor)
+        JobFilter(actor="test_actor", unfinished=True, limit=2, cursor=cursor)
     )
     assert len(page3) == 1
     assert [r.id for r in page3] == expected_ids[4:]
@@ -427,33 +520,39 @@ async def test_list_jobs_active_true_cursor_pagination() -> None:
     assert len(all_returned) == 5
 
 
-# ── active meta-filter + non-default order_by ─────────────────────────
+# ── unfinished meta-filter + non-default order_by ─────────────────────
 
 
-async def test_list_jobs_active_true_with_created_at_desc() -> None:
-    """active=True combined with order_by=CREATED_AT_DESC returns only
+async def test_list_jobs_unfinished_true_with_created_at_desc() -> None:
+    """unfinished=True combined with order_by=CREATED_AT_DESC returns only
     non-terminal jobs sorted by created_at descending.
 
     This combination is legal per JobFilter.__post_init__, which only
-    rejects cursor + non-default order_by, not active + non-default
+    rejects cursor + non-default order_by, not unfinished + non-default
     order_by.
     """
     backend = _backend()
-    oldest_active = _job(status="pending", created_at=_T0)
-    middle_active = _job(status="running", created_at=_T0 + timedelta(minutes=10))
-    newest_active = _job(status="scheduled", created_at=_T0 + timedelta(minutes=20))
+    oldest_unfinished = _job(status="pending", created_at=_T0)
+    middle_unfinished = _job(status="running", created_at=_T0 + timedelta(minutes=10))
+    newest_unfinished = _job(status="scheduled", created_at=_T0 + timedelta(minutes=20))
 
     # Terminal jobs with created_at values that interleave - they must
     # be excluded entirely, not just sorted to the bottom.
     old_terminal = _job(status="succeeded", created_at=_T0 + timedelta(minutes=5))
     new_terminal = _job(status="failed", created_at=_T0 + timedelta(minutes=15))
 
-    for j in (oldest_active, middle_active, newest_active, old_terminal, new_terminal):
+    for j in (oldest_unfinished, middle_unfinished, newest_unfinished, old_terminal, new_terminal):
         backend._jobs[j.id] = j
 
     rows = await backend.list_jobs(
-        JobFilter(actor="test_actor", active=True, order_by=JobSortField.CREATED_AT_DESC, limit=10)
+        JobFilter(
+            actor="test_actor", unfinished=True, order_by=JobSortField.CREATED_AT_DESC, limit=10
+        )
     )
 
-    assert [r.id for r in rows] == [newest_active.id, middle_active.id, oldest_active.id]
+    assert [r.id for r in rows] == [
+        newest_unfinished.id,
+        middle_unfinished.id,
+        oldest_unfinished.id,
+    ]
     assert all(r.status in ACTIVE_STATUSES for r in rows)
