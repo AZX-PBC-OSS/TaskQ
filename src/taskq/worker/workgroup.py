@@ -51,11 +51,11 @@ import signal
 import sys
 import time
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeGuard, cast
 from uuid import UUID
 
 import asyncpg
@@ -237,8 +237,8 @@ class WorkgroupConfig:
 
     actors: str
     supervisor: SupervisorConfig = field(default_factory=SupervisorConfig)
-    workers: list[WorkerSpec] = field(default_factory=lambda: cast(list[WorkerSpec], []))  # type: ignore[arg-type]  # Why: dataclass field default_factory with cast; pyright cannot verify the cast result type matches the dataclass field type.
-    defaults: dict[str, Any] = field(default_factory=dict)  # type: ignore[arg-type]  # Why: dataclass field default_factory returns dict[str, Any]; pyright reports Any as incompatible with the field's generic type.
+    workers: list[WorkerSpec] = field(default_factory=list[WorkerSpec])
+    defaults: dict[str, Any] = field(default_factory=dict[str, Any])
 
     @classmethod
     def from_toml(cls, path: Path) -> WorkgroupConfig:
@@ -265,7 +265,7 @@ class WorkgroupConfig:
             health_pg_schema=sup_raw.get("health_pg_schema"),
         )
 
-        raw_workers: list[dict[str, Any]] = raw.get("workers", [])  # type: ignore[assignment]  # Why: tomllib returns Any; validated below.
+        raw_workers: list[dict[str, Any]] = raw.get("workers", [])
         if not raw_workers:
             raise ValueError("workgroup config must define at least one [[workers]] entry")
 
@@ -323,9 +323,21 @@ class WorkgroupConfig:
 def _require_list_str(cfg: dict[str, Any], key: str, fallback: list[str]) -> list[str]:
     """Extract a list[str] from config or fallback; validate types."""
     val: Any = cfg.get(key, fallback)
-    if not isinstance(val, list) or not all(isinstance(v, str) for v in val):  # type: ignore[arg-type]  # Why: tomllib returns Any; list check above ensures val is iterable.
+    if not _is_str_list(val):
         raise ValueError(f"{key!r} must be a list of strings, got {val!r}")
-    return val  # type: ignore[return-value]  # Why: val is narrowed to list[str] by the isinstance checks above, but pyright cannot propagate the element-type narrowing through all().
+    return val
+
+
+def _is_str_list(val: object) -> TypeGuard[list[str]]:
+    """Narrow a TOML-decoded value to ``list[str]``: a real ``list`` whose
+    every element is a ``str``."""
+    if not isinstance(val, list):
+        return False
+    # Why: a bare-list isinstance on `object` narrows only to list[Unknown],
+    # which pyright strict still reports at the iteration; the element check
+    # below is what actually establishes list[str].
+    items = cast("list[object]", val)
+    return all(isinstance(v, str) for v in items)
 
 
 def _optional_str(cfg: dict[str, Any], key: str, fallback: str | None) -> str | None:
@@ -343,7 +355,7 @@ def load_workgroup_config(path: Path) -> WorkgroupConfig:
     return cfg
 
 
-def _resolve_actor_registry(ref: str) -> Mapping[str, Any]:
+def _resolve_actor_registry(ref: str) -> Mapping[str, object]:
     """Import ``module:attr`` and return the actor registry it names.
 
     Resolved once here, by the supervisor, because the alternative is
@@ -387,7 +399,7 @@ def _resolve_actor_registry(ref: str) -> Mapping[str, Any]:
             f"actors reference {ref!r} must name a mapping of actor name to "
             f"actor, got {type(registry).__name__}"
         )
-    return cast(Mapping[str, Any], registry)
+    return cast(Mapping[str, object], registry)
 
 
 def _warn_on_actor_queues_no_child_consumes(
@@ -605,7 +617,7 @@ class _ChildState:
     spec: WorkerSpec
     process: asyncio.subprocess.Process | None = None
     restart_count: int = 0
-    restart_times: list[float] = field(default_factory=lambda: cast(list[float], []))  # type: ignore[arg-type]  # Why: dataclass field default_factory with cast; pyright cannot verify the cast result matches the dataclass field type.
+    restart_times: list[float] = field(default_factory=list[float])
     instance_id: UUID = field(default_factory=new_uuid)
     backoff: float = 0.0
     restart_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -837,7 +849,7 @@ async def _read_line(stream: asyncio.StreamReader) -> tuple[bytes, bool]:
 async def _stream_output(
     stream: asyncio.StreamReader | None,
     name: str,
-    level: str,
+    level: Literal["info", "warning"],
 ) -> None:
     """Forward child process output lines to the supervisor logger.
 
@@ -850,7 +862,7 @@ async def _stream_output(
     """
     if stream is None:
         return
-    log_fn: Any = getattr(logger, level)
+    log_fn: Callable[[str], object] = logger.warning if level == "warning" else logger.info
     while True:
         try:
             line, truncated = await _read_line(stream)
