@@ -2326,7 +2326,13 @@ def _stamp_interrupt_origins(deps: WorkerDeps) -> None:
     teardown delivers the cancellations, and a local phase stamp the row
     does not carry would lie about a ladder no one advanced.
     """
-    for active in deps.active_jobs.all():
+    registry = getattr(deps, "active_jobs", None)
+    if registry is None:
+        # A deps surface without a registry (the hand-built test stubs)
+        # has nothing to stamp. The crash signal that follows is the
+        # spawner's primary contract and must never depend on the stamp.
+        return
+    for active in registry.all():
         if active.cancel_origin is CancelOrigin.NONE:
             active.cancel_origin = CancelOrigin.SHUTDOWN
             active.ctx._set_cancel_origin(CancelOrigin.SHUTDOWN)  # pyright: ignore[reportPrivateUsage]  # Why: the crash path is the other designated shutdown-side writer of the context's origin stamp, same contract as the orchestrator's CANCELLING phase and isolate_self.

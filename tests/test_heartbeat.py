@@ -803,17 +803,26 @@ async def test_pool_acquire_timeout_increments_counter() -> None:
     assert deps.heartbeat_failures == 1
 
 
-# ── Generic Exception does NOT increment failure counter ──────────
+# ── Generic Exception counts toward the shared failure counter ─────
 
 
-async def test_unexpected_exception_does_not_increment() -> None:
+async def test_unexpected_exception_is_counted_and_tolerated() -> None:
     """A generic Exception (e.g. RuntimeError) is logged at exception
-    level but does NOT increment heartbeat_failures."""
+    level AND counts toward the same isolate threshold as the transient
+    arm.
+
+    Both arms share one ledger: a persistent non-transient fault fails
+    every tick exactly as a dead PG does, so it must move the counter the
+    gauge and /ready read; a ledger that only logged would tick forever
+    on a worker that looks perfectly healthy. One isolated surprise is
+    still tolerated: the loop keeps ticking, the reset comes from the
+    next good tick.
+    """
     record_calls: list[float] = []
     await _patch_tick_duration(record_calls.append)
     pool = FakePool(fail_acquire_with=RuntimeError("unexpected"))
     deps, _shutdown = await _run_tick(pool=pool)
-    assert deps.heartbeat_failures == 0
+    assert deps.heartbeat_failures == 1
     assert len(record_calls) == 1
 
 
@@ -1855,9 +1864,11 @@ async def test_an_ordinary_statement_failure_rolls_back_within_the_budget() -> N
     pool = _SharedConnPool(conn)
     deps, _tick = await _run_budget_tick(pool, heartbeat_command_timeout=budget)
 
-    # asyncpg.PostgresSyntaxError is NOT transient: the unexpected-error
-    # handler logs it without counting a heartbeat failure.
-    assert deps.heartbeat_failures == 0
+    # asyncpg.PostgresSyntaxError is NOT transient: it takes the
+    # unexpected-error arm, which counts toward the SAME isolate threshold
+    # as the transient arm (one ledger; the docstring above carries the
+    # reasoning).
+    assert deps.heartbeat_failures == 1
     assert not conn.closed, "an ordinary failure must roll back and pool the conn"
     assert len(conn.execute_calls) == 2
 
