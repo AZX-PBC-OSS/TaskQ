@@ -1,6 +1,7 @@
 """Actor configuration carrier dataclass for worker-startup config sync."""
 
 from dataclasses import dataclass, field
+from datetime import timedelta
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,3 +18,12 @@ class ActorConfig:
     max_pending: int | None = None
     result_ttl: float | None = None
     metadata: dict[str, object] = field(default_factory=dict[str, object])
+    # The declared retry curve, seeded on the row's first create so the
+    # server-side enqueue paths (cron fires, admin run-now) re-pend on the
+    # curve the actor declared. None never reaches here (the ref's retry
+    # is a full RetryPolicy); the COLUMNS are nullable for the rows that
+    # predate the migration.
+    retry_base: timedelta | None = None
+    retry_cap: timedelta | None = None
+    retry_backoff: str | None = None
+    retry_jitter: float | None = None

@@ -80,6 +80,35 @@ class ActorFirePolicy:
     max_pending: int | None = None
 
 
+# The enqueue defaults for the NULL curve columns (rows predating
+# migration 01.00.18). Pinned to EnqueueArgs's own defaults by
+# test_cron_retry_curve.py, so a default change there fails that pin
+# instead of drifting the server-side fire paths silently.
+_DEFAULT_RETRY_BASE = timedelta(seconds=5)
+_DEFAULT_RETRY_CAP = timedelta(hours=1)
+_DEFAULT_RETRY_BACKOFF = "exponential"
+_DEFAULT_RETRY_JITTER = 0.2
+
+
+@dataclass(frozen=True, slots=True)
+class _RetryCurve:
+    base: timedelta
+    cap: timedelta
+    backoff: Literal["exponential", "linear", "fixed"]
+    jitter: float
+
+
+def _fire_default_curve() -> _RetryCurve:
+    """The curve the server-side fire paths apply when the stored
+    actor_config row predates migration 01.00.18 (NULL columns)."""
+    return _RetryCurve(
+        base=_DEFAULT_RETRY_BASE,
+        cap=_DEFAULT_RETRY_CAP,
+        backoff=_DEFAULT_RETRY_BACKOFF,
+        jitter=_DEFAULT_RETRY_JITTER,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _ActorConfig:
     """The actor_config columns the tick reads for one actor.  ``max_pending``
@@ -92,6 +121,12 @@ class _ActorConfig:
     max_attempts: int
     retry_kind: str
     max_pending: int | None
+    # The actor's declared retry curve (migration 01.00.18): NULL on rows
+    # that predate it, meaning the enqueue default stands.
+    retry_base: timedelta | None = None
+    retry_cap: timedelta | None = None
+    retry_backoff: str | None = None
+    retry_jitter: float | None = None
 
 
 _TICK_WRITE_RESERVE_FRACTION: Final = 0.1
@@ -1204,7 +1239,8 @@ async def tick_cron(
     # raised before batching.
     actors: list[str] = sorted({str(row["actor"]) for row in rows})
     ac_rows: list[asyncpg.Record] = await conn.fetch(
-        f"SELECT actor, queue, max_attempts, retry_kind, max_pending "
+        f"SELECT actor, queue, max_attempts, retry_kind, max_pending, "
+        f"retry_base, retry_cap, retry_backoff, retry_jitter "
         f'FROM "{schema}".actor_config '
         f"WHERE actor = ANY($1::text[])",
         actors,
@@ -1215,6 +1251,10 @@ async def tick_cron(
             max_attempts=ac_row["max_attempts"],
             retry_kind=ac_row["retry_kind"],
             max_pending=ac_row["max_pending"],
+            retry_base=ac_row["retry_base"],
+            retry_cap=ac_row["retry_cap"],
+            retry_backoff=ac_row["retry_backoff"],
+            retry_jitter=ac_row["retry_jitter"],
         )
         for ac_row in ac_rows
     }
@@ -1772,6 +1812,7 @@ async def _plan_fire(
         )
     payload = await resolve_payload(row, timeout_s=payload_budget)
 
+    defaults = _fire_default_curve()
     enqueue_args = [
         EnqueueArgs(
             id=new_job_id(),
@@ -1780,6 +1821,17 @@ async def _plan_fire(
             payload=payload,
             max_attempts=ac.max_attempts,
             retry_kind=parse_retry_kind(ac.retry_kind),
+            # The actor's declared curve, seeded from the @actor literal
+            # (migration 01.00.18); NULL rows keep the enqueue defaults
+            # (see _fire_default_curve).
+            retry_base=ac.retry_base or defaults.base,
+            retry_cap=ac.retry_cap or defaults.cap,
+            retry_backoff=(
+                ac.retry_backoff
+                if ac.retry_backoff in ("exponential", "linear", "fixed")
+                else defaults.backoff
+            ),
+            retry_jitter=(ac.retry_jitter if ac.retry_jitter is not None else defaults.jitter),
             # None = immediate: the enqueue SQL stamps the server clock
             # (COALESCE($n, now())) and decides status in the same
             # statement. Passing a Python-clock stamp here would shift

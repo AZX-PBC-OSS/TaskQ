@@ -186,8 +186,17 @@ def _make_actor_config_row(
     max_attempts: int = 3,
     retry_kind: str = "transient",
     max_pending: int | None = None,
+    retry_base: timedelta | None = None,
+    retry_cap: timedelta | None = None,
+    retry_backoff: str | None = None,
+    retry_jitter: float | None = None,
 ) -> _FakeCronRecord:
-    """One row of the batched ``actor_config`` ``ANY($1)`` SELECT result."""
+    """One row of the batched ``actor_config`` ``ANY($1)`` SELECT result.
+
+    The curve scalars default to NULL: a row predating migration
+    01.00.18, so the tick resolves them to the enqueue defaults.  A real
+    asyncpg Record carries every column the SELECT names, curve columns
+    included, so the fake must too even when it stores NULL."""
     return _FakeCronRecord(
         {
             "actor": actor,
@@ -195,6 +204,10 @@ def _make_actor_config_row(
             "max_attempts": max_attempts,
             "retry_kind": retry_kind,
             "max_pending": max_pending,
+            "retry_base": retry_base,
+            "retry_cap": retry_cap,
+            "retry_backoff": retry_backoff,
+            "retry_jitter": retry_jitter,
         }
     )
 

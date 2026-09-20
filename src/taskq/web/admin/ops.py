@@ -47,6 +47,9 @@ from taskq.web.admin._factory import (
     get_templates,
     validate_csrf,
 )
+from taskq.worker.cron_loop import (
+    _fire_default_curve,  # pyright: ignore[reportPrivateUsage]  # Why: the fire paths' shared curve helper; private to cron_loop by convention, consumed by its sibling fire path here.
+)
 
 logger = structlog.get_logger("taskq.web.admin.ops")
 
@@ -79,7 +82,8 @@ _SCHEDULE_FETCH_FOR_RUN_SQL = (
 )
 
 _ACTOR_CONFIG_SQL = (
-    'SELECT queue, max_attempts, retry_kind FROM "{schema}".actor_config WHERE actor = $1'
+    "SELECT queue, max_attempts, retry_kind, retry_base, retry_cap, "
+    'retry_backoff, retry_jitter FROM "{schema}".actor_config WHERE actor = $1'
 )
 
 _RATE_LIMITS_SQL = (
@@ -438,6 +442,7 @@ def register(router: APIRouter) -> None:
                     status_code=303,
                 )
 
+            defaults = _fire_default_curve()  # pyright: ignore[reportPrivateUsage]  # Why: the fire paths' shared curve helper; private to cron_loop by convention, consumed by its sibling fire path here.
             args = EnqueueArgs(
                 id=JobId(new_uuid()),
                 actor=actor,
@@ -445,6 +450,21 @@ def register(router: APIRouter) -> None:
                 payload=payload,
                 max_attempts=ac_row["max_attempts"],
                 retry_kind=parse_retry_kind(ac_row["retry_kind"]),
+                # The actor's declared retry curve (migration 01.00.18):
+                # NULL rows keep the enqueue defaults, matching the cron
+                # fire path's resolution.
+                retry_base=ac_row["retry_base"] or defaults.base,
+                retry_cap=ac_row["retry_cap"] or defaults.cap,
+                retry_backoff=(
+                    ac_row["retry_backoff"]
+                    if ac_row["retry_backoff"] in ("exponential", "linear", "fixed")
+                    else defaults.backoff
+                ),
+                retry_jitter=(
+                    ac_row["retry_jitter"]
+                    if ac_row["retry_jitter"] is not None
+                    else defaults.jitter
+                ),
                 scheduled_at=None,  # Why: "run now" is immediate, the server stamps and decides, immune to app↔DB clock skew.
             )
 
