@@ -1047,24 +1047,23 @@ class TestWriteCancelEscalationEvents:
 
 
 class TestCancelSlateResetOnRetry:
-    """Branch B (transient retry) resets the cancel slate: a retry reuses
-    the SAME job row, so an escalated cancel that survived the retry write
-    would hand the next attempt an already-FORCED phase - the cancel
-    controller's fast-advance would then skip cooperative cancel entirely
-    and the attempt could never be cancelled again. Both cancel columns
-    (phase + requested-at) must come back clean, asserted on the returned
-    row and the persisted row (c06ba0e).
+    """Branch B (transient retry) refuses a row carrying an in-flight
+    cancel: the retry write fences on ``cancel_phase = 0``, so a
+    phase-carrying row matches no arm and the write raises
+    WorkerOwnershipMismatch instead of rescheduling. The row stays
+    running and the cancel ladder terminalises it on schedule, which
+    supersedes the older reset-on-retry contract (c06ba0e): resetting the
+    slate let a retryable failure erase an acknowledged operator cancel
+    and re-run the actor; refusing the write cannot.
 
-    These previously asserted the opposite - that the phase survived the
-    retry - the exact behaviour that made a job permanently uncancellable.
-    Clearing matches the crash-reclaim sweep (_SWEEP_1_SQL) and
-    isolate_self, which have always reset both columns on their retry arm
-    for the same reason: "the next dispatch doesn't immediately re-cancel
-    the retried job". A caller whose cancel lost the race can still cancel
-    the pending/scheduled row, which the cancel path handles directly.
+    The reset behaviour itself still exists, on the arms that legitimately
+    re-pend a row whose cancel was never in flight: the crash-reclaim
+    sweep (_SWEEP_1_SQL), isolate_self, and the release arms all clear
+    both columns under their own fences ("the next dispatch doesn't
+    immediately re-cancel the retried job").
     """
 
-    async def test_cancel_phase1_reset_on_retry(self) -> None:
+    async def test_cancel_phase1_refuses_retry(self) -> None:
         backend = _make_backend()
         job_id, wid = await _enqueue_and_dispatch(backend, max_attempts=3)
         _set_cancel_state(backend, job_id, CancelPhase.COOPERATIVE)
@@ -1074,21 +1073,23 @@ class TestCancelSlateResetOnRetry:
             error_message="transient",
             error_traceback=None,
         )
-        result = await backend.mark_failed_or_retry(
-            job_id,
-            wid,
-            error_info,
-            retry_delay=timedelta(seconds=10),
-            attempt=1,
-            claim_epoch=1,
-        )
-        assert result.status == "scheduled"
-        assert result.cancel_phase == CancelPhase.NONE
-        assert result.cancel_requested_at is None
-        assert result.locked_by_worker is None
-        assert result.lock_expires_at is None
+        with pytest.raises(WorkerOwnershipMismatch):
+            await backend.mark_failed_or_retry(
+                job_id,
+                wid,
+                error_info,
+                retry_delay=timedelta(seconds=10),
+                attempt=1,
+                claim_epoch=1,
+            )
 
-    async def test_cancel_phase2_reset_on_retry(self) -> None:
+        persisted = await backend.get(job_id)
+        assert persisted is not None
+        assert persisted.status == "running"
+        assert persisted.cancel_phase == CancelPhase.COOPERATIVE
+        assert persisted.cancel_requested_at is not None
+
+    async def test_cancel_phase2_refuses_retry(self) -> None:
         backend = _make_backend()
         job_id, wid = await _enqueue_and_dispatch(backend, max_attempts=3)
         _set_cancel_state(backend, job_id, CancelPhase.FORCED)
@@ -1098,22 +1099,21 @@ class TestCancelSlateResetOnRetry:
             error_message="transient",
             error_traceback=None,
         )
-        result = await backend.mark_failed_or_retry(
-            job_id,
-            wid,
-            error_info,
-            retry_delay=timedelta(seconds=10),
-            attempt=1,
-            claim_epoch=1,
-        )
-        assert result.status == "scheduled"
-        assert result.cancel_phase == CancelPhase.NONE
-        assert result.cancel_requested_at is None
+        with pytest.raises(WorkerOwnershipMismatch):
+            await backend.mark_failed_or_retry(
+                job_id,
+                wid,
+                error_info,
+                retry_delay=timedelta(seconds=10),
+                attempt=1,
+                claim_epoch=1,
+            )
 
         persisted = await backend.get(job_id)
         assert persisted is not None
-        assert persisted.cancel_phase == CancelPhase.NONE
-        assert persisted.cancel_requested_at is None
+        assert persisted.status == "running"
+        assert persisted.cancel_phase == CancelPhase.FORCED
+        assert persisted.cancel_requested_at is not None
 
 
 # ── progress_seq / progress_state plumb-through ───────────────────────
