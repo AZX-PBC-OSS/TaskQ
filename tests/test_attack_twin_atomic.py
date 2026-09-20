@@ -1,22 +1,25 @@
 """ATTACK tests: the twin's batch rollback contract under adversarial
 interleaving (branch fix/twin-batch-atomic).
 
-The contract under attack (stated on ``_enqueue_batch`` /
-``_enqueue_with_conn`` / ``_rollback_inserted_rows``):
+The contract under attack (stated on ``enqueue_batch`` /
+``enqueue_with_conn`` / the rollback), asserted through PUBLIC surfaces
+only - ``get``, ``list_jobs``, and what enqueue/batch calls return and
+raise; never a peek at the twin's storage dicts:
 
-* A whole-call refusal is ATOMIC: no admitted item's row survives.
+* A whole-call refusal is ATOMIC: no admitted item's row survives; a
+  mid-batch observation sees only a prefix of the call's items.
 * The compensating rollback withdraws exactly the rows THIS call
   inserted - never a dedup hit's holder row, never an intruder task's
   concurrently committed row.
-* The idempotency index ends consistent with ``_jobs``: no dangling
-  pair→id entry (which would discount the cap preflight and
-  over-admit).
+* The dedup state ends consistent with the live rows: a re-enqueue of
+  any exercised pair resolves to the pair's one live holder (a
+  dangling entry would resolve to a phantom or store a second row).
 
-Interleaving is created by hooking the backend's ``enqueue_with_conn``
-seam (the only await boundary the batch loop crosses) to yield to the
-event loop and run scripted intruder actions at chosen item boundaries -
-the deterministic form of the scheduler lottery a concurrent hammer
-would otherwise leave to chance.
+Interleaving is created by hooking the module enqueue seam (the only
+await boundary the batch loop crosses) to yield to the event loop and
+run scripted intruder actions at chosen item boundaries - the
+deterministic form of the scheduler lottery a concurrent hammer would
+otherwise leave to chance.
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ from typing import Any
 import pytest
 
 from taskq._ids import new_job_id, new_uuid
-from taskq.backend._protocol import EnqueueArgs, JobId
+from taskq.backend._protocol import EnqueueArgs, JobFilter, JobId
 from taskq.exceptions import (
     BatchIdExistsError,
     BatchMaxPendingExceededError,
@@ -66,37 +69,48 @@ def _args(
     )
 
 
-def assert_index_consistent(backend: InMemoryBackend, context: str) -> None:
-    """The checked invariant: the idempotency index and ``_jobs`` agree.
+async def none_stored(backend: InMemoryBackend, ids: list[JobId]) -> bool:
+    """True when NO id in ``ids`` resolves through the public read."""
+    return all([await backend.get(jid) is None for jid in ids])
 
-    * Every index entry points at a live row whose (scope, key) is the
-      entry's pair (no dangling pair→id).
-    * Every live keyed row's pair is indexed back at that row (no
-      shadowed pair, no pair held by two rows).
+
+async def stored_ids(backend: InMemoryBackend) -> set[JobId]:
+    """The ids every public read resolves, the observable stored set."""
+    rows = await backend.list_jobs(JobFilter(limit=10_000))
+    return {row.id for row in rows}
+
+
+async def assert_dedup_contract(backend: InMemoryBackend, context: str) -> None:
+    """The behavioral dedup invariant, checked through public calls.
+
+    Every live keyed row is the UNIQUE dedup target of its pair: a
+    same-actor re-enqueue of the pair returns THAT row's id, the
+    returned handle still resolves, and the probe stores nothing new.
+    A dangling index entry (the pre-fix defect) makes the probe resolve
+    to a phantom or write a second row for the pair - both caught here.
     """
-    jobs = backend._jobs  # pyright: ignore[reportPrivateUsage]  # Why: the attack reads the twin's storage directly; that IS the observable.
-    idx = backend._idempotency_index  # pyright: ignore[reportPrivateUsage]
-    for pair, jid in idx.items():
-        row = jobs.get(jid)
-        assert row is not None, (
-            f"{context}: index entry {pair} dangles at {jid} (row withdrawn, entry left behind)"
-        )
-        assert (row.idempotency_scope, row.idempotency_key) == pair, (
-            f"{context}: index entry {pair} points at {jid} whose pair is "
-            f"({row.idempotency_scope}, {row.idempotency_key})"
-        )
-    seen: dict[tuple[str, str], JobId] = {}
-    for row in jobs.values():
+    before = await stored_ids(backend)
+    seen: set[tuple[str, str]] = set()
+    for row in await backend.list_jobs(JobFilter(limit=10_000)):
         if row.idempotency_key is None:
             continue
         pair = (row.idempotency_scope, row.idempotency_key)
         assert pair not in seen, (
-            f"{context}: two live rows hold pair {pair}: {seen[pair]} and {row.id}"
+            f"{context}: two live rows hold pair {pair} - dedup admitted a second write"
         )
-        seen[pair] = row.id
-        assert idx.get(pair) == row.id, (
-            f"{context}: live row {row.id} holds pair {pair} but the index points at {idx.get(pair)}"
+        seen.add(pair)
+        probe = await backend.enqueue(
+            _args(actor=row.actor, key=row.idempotency_key, scope=row.idempotency_scope)
         )
+        assert probe.id == row.id, (
+            f"{context}: re-enqueue of pair {pair} returned {probe.id}, not the "
+            f"live holder {row.id} - the dedup state diverged from the live rows"
+        )
+        assert await backend.get(probe.id) is not None, (
+            f"{context}: the pair's dedup target no longer resolves"
+        )
+    after = await stored_ids(backend)
+    assert after == before, f"{context}: the dedup probes stored rows ({after - before})"
 
 
 @contextlib.contextmanager
@@ -105,11 +119,11 @@ def _install_hook(
     *,
     script: Callable[[int, EnqueueArgs], Awaitable[None] | None] | None = None,
     observations: list[set[JobId]] | None = None,
-    tag_of: Callable[[EnqueueArgs], str | None] | None = None,
+    watch_ids: list[JobId] | None = None,
 ) -> Generator[dict[str, int], None, None]:
     """Yield to the event loop at every insert seam; run the scripted
-    intruder action before chosen inserts; optionally snapshot the ids
-    present between items.
+    intruder action before chosen inserts; optionally snapshot which of
+    ``watch_ids`` are stored between items (via public ``get``).
 
     Hooks the MODULE-LEVEL ``_enqueue`` (both batch arms funnel through
     it on every commit shape), not the instance method: the pushed
@@ -125,16 +139,8 @@ def _install_hook(
     async def hooked(self: InMemoryBackend, args: EnqueueArgs) -> Any:
         state["n"] += 1
         await asyncio.sleep(0)
-        if observations is not None and tag_of is not None:
-            tag = tag_of(args)
-            if tag is not None:
-                observations.append(
-                    {
-                        jid
-                        for jid, row in backend._jobs.items()  # pyright: ignore[reportPrivateUsage]
-                        if row.metadata.get("tag") == tag
-                    }
-                )
+        if observations is not None and watch_ids is not None:
+            observations.append({jid for jid in watch_ids if await backend.get(jid) is not None})
         if script is not None:
             action = script(state["n"], args)
             if action is not None:
@@ -155,7 +161,7 @@ async def test_rollback_withdraws_exactly_own_rows_intruder_survives() -> None:
     """A same-actor intruder pre-stores the batch's pair mid-loop and a
     second intruder takes a later item's job id, poisoning it. The
     rollback must withdraw exactly the batch's own inserted rows, leave
-    both intruder rows stored, and end index-consistent."""
+    both intruder rows stored, and end dedup-consistent."""
     backend = InMemoryBackend(clock=FakeClock(_START))
     k0, k1, k2, k3 = new_job_id(), new_job_id(), new_job_id(), new_job_id()
     intruder_pair_row = None
@@ -188,35 +194,34 @@ async def test_rollback_withdraws_exactly_own_rows_intruder_survives() -> None:
         with pytest.raises(UniqueViolationError):
             await backend.enqueue_batch(items)
 
-    jobs = backend._jobs  # pyright: ignore[reportPrivateUsage]
     # Exactly the call's own rows are withdrawn (k1 was a dedup hit: it
     # never stored, so there is nothing of it to withdraw). The
     # intruder's row that took k3's id survives - it is a committed row
     # of another call.
-    assert all(jid not in jobs for jid in (k0, k1, k2)), (
+    assert await none_stored(backend, [k0, k1, k2]), (
         "the rollback withdrew a row the call did not insert, or left one of its own behind"
     )
-    assert k3 in jobs
-    assert intruder_pair_row is not None and intruder_pair_row.id in jobs
-    assert intruder_id_row is not None and jobs[k3].id == intruder_id_row.id
-    # The index ends consistent with _jobs.
-    idx = backend._idempotency_index  # pyright: ignore[reportPrivateUsage]
-    assert idx.get(("", "P")) == intruder_pair_row.id
-    assert ("", "Q") not in idx
-    assert_index_consistent(backend, "after poisoned-batch rollback")
+    assert await backend.get(k3) is not None
+    assert intruder_pair_row is not None and await backend.get(intruder_pair_row.id) is not None
+    assert intruder_id_row is not None
+    # The pair P resolves to the intruder's committed row, not a phantom.
+    probe = await backend.enqueue(_args(key="P"))
+    assert probe.id == intruder_pair_row.id
+    # The rolled-back pair Q is gone: a fresh enqueue of it writes a NEW
+    # resolvable row (and dedup never aliases onto the withdrawn call).
+    probe_q = await backend.enqueue(_args(key="Q"))
+    assert await backend.get(probe_q.id) is not None
+    await assert_dedup_contract(backend, "after poisoned-batch rollback")
 
 
 async def test_mid_batch_state_is_always_a_prefix_of_the_call() -> None:
-    """Poll _jobs at every insert seam while the batch is in flight: the
-    observable rows of the in-flight call are always a prefix of its
-    items (never a gap or a suffix), and the post-refusal state is
-    all-or-nothing."""
+    """Poll the stored set at every insert seam while the batch is in
+    flight: the observable rows of the in-flight call are always a
+    prefix of its items (never a gap or a suffix), and the post-refusal
+    state is all-or-nothing."""
     backend = InMemoryBackend(clock=FakeClock(_START))
     ids = [new_job_id() for _ in range(4)]
     observed: list[set[JobId]] = []
-
-    def tag_of(args: EnqueueArgs) -> str | None:
-        return "batch" if args.metadata.get("tag") == "batch" else None
 
     k3 = ids[3]
 
@@ -226,7 +231,7 @@ async def test_mid_batch_state_is_always_a_prefix_of_the_call() -> None:
     def script(n: int, args: EnqueueArgs) -> Awaitable[None] | None:
         return intruder_take_id() if n == 4 else None
 
-    with _install_hook(backend, script=script, observations=observed, tag_of=tag_of):
+    with _install_hook(backend, script=script, observations=observed, watch_ids=ids):
         items = [_args(jid=jid, tag="batch") for jid in ids]
         from asyncpg.exceptions import UniqueViolationError
 
@@ -241,11 +246,10 @@ async def test_mid_batch_state_is_always_a_prefix_of_the_call() -> None:
         )
         expected.append(ids[len(expected)])
     assert len(observed) == 4, f"expected one observation per item, got {len(observed)}"
-    jobs = backend._jobs  # pyright: ignore[reportPrivateUsage]
     # Post-refusal: none of the call's own rows remain; the intruder's
     # row (it took ids[3]) survives.
-    assert all(jid not in jobs for jid in ids[:3])
-    assert ids[3] in jobs
+    assert await none_stored(backend, ids[:3])
+    assert await backend.get(ids[3]) is not None
 
 
 # ── Attack 2: a cross-actor intruder landing mid-loop ────────────────────
@@ -283,24 +287,27 @@ async def test_cross_actor_intruder_mid_loop_refusal_is_atomic() -> None:
     assert err.actor == "a"
     assert err.existing_actor == "other"
     assert err.existing_job_id == intruder_row.id
-    jobs = backend._jobs  # pyright: ignore[reportPrivateUsage]
-    assert k0 not in jobs, "the clean prefix leaked: the refusal was not atomic"
-    assert k1 not in jobs
-    assert intruder_row.id in jobs
-    assert_index_consistent(backend, "after cross-actor mid-loop refusal")
+    assert await backend.get(k0) is None, "the clean prefix leaked: the refusal was not atomic"
+    assert await backend.get(k1) is None
+    assert await backend.get(intruder_row.id) is not None
+    await assert_dedup_contract(backend, "after cross-actor mid-loop refusal")
 
 
 # ── Attack 3: the dangling-index scenario the fix claims to close ────────
 
 
 async def test_keyed_rollback_does_not_over_admit_the_cap() -> None:
-    """The dangling-index payoff: after a keyed batch rolls back, its
-    pair must NOT discount the cap preflight. With the pair dangling, a
-    capped batch mixing the rolled-back pair with a fresh pair is
-    discounted by the phantom, refuses nobody, and stores one row per
-    item anyway - silently admitting the actor past its cap."""
+    """The cap preflight discounts an already-stored (or in-batch
+    repeated) pair from the cap count, because the pair dedups instead
+    of writing. That discount is only sound while the rollback pops the
+    rolled-back pair's index entry: a discount that survives its row
+    (a dangling entry) makes a later capped batch mixing the rolled-back
+    pair with a fresh pair under-count its admission, refuse nobody, and
+    store one row per item anyway - silently admitting the actor past
+    its cap. The discount and the pop must stand or fall together; this
+    pin fails if either is broken alone."""
     backend = InMemoryBackend(clock=FakeClock(_START))
-    k0, poison = new_job_id(), new_job_id()
+    k0, poison, b2a, b2b = new_job_id(), new_job_id(), new_job_id(), new_job_id()
 
     async def intruder_take_id() -> None:
         # A different actor: the poison row must not count toward
@@ -317,31 +324,30 @@ async def test_keyed_rollback_does_not_over_admit_the_cap() -> None:
             await backend.enqueue_batch(
                 [_args(jid=k0, key="P", tag="b1"), _args(jid=poison, tag="b1")]
             )
-        assert_index_consistent(backend, "after keyed rollback")
+        await assert_dedup_contract(backend, "after keyed rollback")
 
-    # Cap 1 for actor a. The rolled-back pair P must not discount the
-    # preflight: two fresh-admission items over the cap are refused as a
-    # group and nothing is stored.
-    with pytest.raises(BatchMaxPendingExceededError):
-        await backend.enqueue_batch(
-            [
-                _args(key="P", tag="b2", max_pending=1),
-                _args(key="Q", tag="b2", max_pending=1),
-            ]
-        )
-    jobs = backend._jobs  # pyright: ignore[reportPrivateUsage]
-    assert not [jid for jid, row in jobs.items() if row.metadata.get("tag") == "b2"], (
+        # Cap 1 for actor a. The rolled-back pair P must not discount the
+        # preflight: two fresh-admission items over the cap are refused
+        # as a group and nothing is stored.
+        with pytest.raises(BatchMaxPendingExceededError):
+            await backend.enqueue_batch(
+                [
+                    _args(jid=b2a, key="P", tag="b2", max_pending=1),
+                    _args(jid=b2b, key="Q", tag="b2", max_pending=1),
+                ]
+            )
+    assert await backend.get(b2a) is None and await backend.get(b2b) is None, (
         "the refused batch stored rows anyway: the dangling index "
         "discounted the cap preflight into over-admission"
     )
-    assert_index_consistent(backend, "after capped retry")
+    await assert_dedup_contract(backend, "after capped retry")
 
 
 # ── Attack 4: the atomic arm's rollback (batch row + finalizer) ─────────
 
 
 async def test_atomic_arm_rollback_covers_finalizer_and_batch_row() -> None:
-    """A pre-existing batch id fails ``_create_batch`` AFTER every item
+    """A pre-existing batch id fails the batch-row write AFTER every item
     and the finalizer inserted: the rollback withdraws all of them (the
     finalizer's in-batch dedup alias included) and leaves the pre-existing
     batch row untouched."""
@@ -356,7 +362,7 @@ async def test_atomic_arm_rollback_covers_finalizer_and_batch_row() -> None:
         finalizer_job_id=None,
         originating_actor=None,
     )
-    # The batch_row the caller carries (its metadata feeds _create_batch).
+    # The batch_row the caller carries (its metadata feeds the batch write).
     batch_row = await backend.get_batch(bid)
 
     item_ids = [new_job_id() for _ in range(3)]
@@ -373,14 +379,11 @@ async def test_atomic_arm_rollback_covers_finalizer_and_batch_row() -> None:
             finalizer_args=finalizer,
         )
 
-    jobs = backend._jobs  # pyright: ignore[reportPrivateUsage]
-    assert not [
-        jid
-        for jid, row in jobs.items()
-        if row.metadata.get("tag") in ("atomic", "atomic-finalizer")
-    ], "the atomic arm left rows behind after the batch-row refusal"
-    assert finalizer_id not in jobs
-    assert_index_consistent(backend, "after atomic-arm batch-row refusal")
+    assert await none_stored(backend, [*item_ids, finalizer_id]), (
+        "the atomic arm left rows behind after the batch-row refusal"
+    )
+    assert await backend.get_batch(bid) is not None
+    await assert_dedup_contract(backend, "after atomic-arm batch-row refusal")
 
 
 # ── Attack 5: the concurrent hammer ─────────────────────────────────────
@@ -388,23 +391,24 @@ async def test_atomic_arm_rollback_covers_finalizer_and_batch_row() -> None:
 
 async def test_concurrent_hammer_overlapping_keyed_batches() -> None:
     """Many tasks enqueueing overlapping keyed batches and keyed singles
-    while batches are in flight. Every batch is either fully stored or
-    fully withdrawn, the index ends consistent with _jobs, and every
-    cross-actor refusal withdraws the refusing call's own rows."""
+    while batches are in flight. Every refused batch withdraws ALL of its
+    own inserted rows, every completed call's returned ids stay
+    resolvable, and the dedup state ends consistent with the live rows."""
     backend = InMemoryBackend(clock=FakeClock(_START))
 
     n_tasks = 12
     keys = [f"key{i}" for i in range(4)]
-    # Per-task outcome bookkeeping: (batch refused?, the ids the task's
-    # calls returned). The hammer's contract: a REFUSED batch leaves zero
-    # of its own inserted rows, the index ends consistent, and every id
-    # any call RETURNED resolves to a live row - a completed call must
-    # never hand back an id its own rollback later withdraws.
-    outcomes: dict[int, tuple[bool, list[JobId]]] = {}
+    # Per-task outcome bookkeeping: (batch refused?, the batch's own item
+    # ids, the ids the task's calls RETURNED).
+    outcomes: dict[int, tuple[bool, list[JobId], list[JobId]]] = {}
 
     async def one_task(t: int) -> None:
         actor = "even" if t % 2 == 0 else "odd"
-        batch = [_args(actor=actor, key=keys[(t + i) % len(keys)], tag=f"t{t}") for i in range(5)]
+        item_ids = [new_job_id() for _ in range(5)]
+        batch = [
+            _args(jid=jid, actor=actor, key=keys[(t + i) % len(keys)], tag=f"t{t}")
+            for i, jid in enumerate(item_ids)
+        ]
         returned: list[JobId] = []
         single = await backend.enqueue(_args(actor=actor, key=keys[t % len(keys)], tag=f"s{t}"))
         returned.append(single.id)
@@ -414,28 +418,25 @@ async def test_concurrent_hammer_overlapping_keyed_batches() -> None:
             returned.extend(row.id for row in rows)
         except IdempotencyKeyActorMismatchError:
             refused = True  # whole-call refusal: its own rows must all be gone
-        outcomes[t] = (refused, returned)
+        outcomes[t] = (refused, item_ids, returned)
 
     with _install_hook(backend):  # yield at every insert seam: maximum interleaving
         await asyncio.gather(*(one_task(t) for t in range(n_tasks)))
 
-    assert_index_consistent(backend, "after hammer")
-    jobs = backend._jobs  # pyright: ignore[reportPrivateUsage]
-    for t, (refused, returned) in outcomes.items():
-        batch_tag_rows = sum(1 for row in jobs.values() if row.metadata.get("tag") == f"t{t}")
+    await assert_dedup_contract(backend, "after hammer")
+    for t, (refused, item_ids, returned) in outcomes.items():
         if refused:
-            assert batch_tag_rows == 0, (
-                f"task {t}'s batch was refused as a whole call yet {batch_tag_rows} "
-                "of its own inserted rows survived: the refusal was not atomic"
+            stored_own = [jid for jid in item_ids if await backend.get(jid) is not None]
+            assert not stored_own, (
+                f"task {t}'s batch was refused as a whole call yet its own rows "
+                f"{stored_own} survived: the refusal was not atomic"
             )
-        else:
-            assert batch_tag_rows <= 5
         # A COMPLETED call's returned ids must stay resolvable: a dedup
         # hit that aliases a row another task's rollback withdraws is a
         # dangling handle no PG caller can observe (PG's unique-index
         # wait means the aliasing call cannot complete before the holder
         # commits or aborts).
-        dangling = [jid for jid in returned if jid not in jobs]
+        dangling = [jid for jid in returned if await backend.get(jid) is None]
         assert not dangling, (
             f"task {t} completed with returned ids that no longer resolve: {dangling}"
         )
@@ -448,26 +449,24 @@ async def test_batch_fast_cap_refusal_keeps_admitted_rows_and_index() -> None:
     """The fast tier's typed cap refusal raises AFTER the admitted rows
     are stored (PG parity: the COPY commits, then the refusal). The
     admitted rows survive, refused actors' items are absent, and the
-    index stays consistent."""
+    dedup state stays consistent."""
     backend = InMemoryBackend(clock=FakeClock(_START))
+    r1, r2, adm = new_job_id(), new_job_id(), new_job_id()
 
     with _install_hook(backend), pytest.raises(BatchMaxPendingExceededError) as exc_info:
         await backend.enqueue_batch_fast(
             [
-                _args(actor="a", key="p1", tag="refused", max_pending=1),
-                _args(actor="a", key="p2", tag="refused", max_pending=1),
-                _args(actor="b", key="p3", tag="admitted", max_pending=100),
+                _args(jid=r1, actor="a", key="p1", tag="refused", max_pending=1),
+                _args(jid=r2, actor="a", key="p2", tag="refused", max_pending=1),
+                _args(jid=adm, actor="b", key="p3", tag="admitted", max_pending=100),
             ]
         )
     err = exc_info.value
     assert err.refused_indices == {"a": [0, 1]}
     assert err.admitted_count == 1
-    jobs = backend._jobs  # pyright: ignore[reportPrivateUsage]
-    refused = [jid for jid, row in jobs.items() if row.metadata.get("tag") == "refused"]
-    assert refused == [], "the refused actor's items were stored"
-    admitted = [jid for jid, row in jobs.items() if row.metadata.get("tag") == "admitted"]
-    assert len(admitted) == 1
-    assert_index_consistent(backend, "after fast-tier cap refusal")
+    assert await none_stored(backend, [r1, r2]), "the refused actor's items were stored"
+    assert await backend.get(adm) is not None
+    await assert_dedup_contract(backend, "after fast-tier cap refusal")
 
 
 # ── Attack 7: the dedup-alias-onto-a-doomed-row window ───────────────────
@@ -479,9 +478,9 @@ async def test_dedup_alias_onto_in_flight_batch_row_dangles_after_rollback() -> 
     Task A's batch stores a keyed row, yields; task B's same-actor item
     dedups onto it and COMPLETES (returning A's row id); A's batch then
     hits a cross-actor-held key and rolls back - withdrawing the row B
-    already holds a handle to. The index ends consistent and the refusal
-    is atomic, but B's completed call returned an id that no longer
-    resolves.
+    already holds a handle to. The refusal stays atomic and the dedup
+    state consistent, but B's completed call returned an id that no
+    longer resolves.
 
     On PG this interleaving cannot complete that way: B's INSERT blocks
     on the uncommitted unique-index entry A's transaction created, A's
@@ -495,6 +494,7 @@ async def test_dedup_alias_onto_in_flight_batch_row_dangles_after_rollback() -> 
     """
     backend = InMemoryBackend(clock=FakeClock(_START))
     alias_returned: list[JobId] = []
+    a0, a1 = new_job_id(), new_job_id()
 
     async def task_a() -> None:
         # item0: fresh key P (first writer). item1: cross-actor-held
@@ -502,8 +502,8 @@ async def test_dedup_alias_onto_in_flight_batch_row_dangles_after_rollback() -> 
         with pytest.raises(IdempotencyKeyActorMismatchError):
             await backend.enqueue_batch(
                 [
-                    _args(actor="a", key="P", tag="a0"),
-                    _args(actor="a", key="Q", tag="a1"),
+                    _args(jid=a0, actor="a", key="P", tag="a0"),
+                    _args(jid=a1, actor="a", key="Q", tag="a1"),
                 ]
             )
 
@@ -534,17 +534,14 @@ async def test_dedup_alias_onto_in_flight_batch_row_dangles_after_rollback() -> 
 
     await runner()
 
-    # The refusal was atomic and the index consistent - the pinned
+    # The refusal was atomic and the dedup state consistent - the pinned
     # contract held.
-    assert_index_consistent(backend, "after alias-then-rollback")
-    jobs = backend._jobs  # pyright: ignore[reportPrivateUsage]
-    assert not [
-        jid for jid, row in jobs.items() if str(row.metadata.get("tag", "")).startswith("a")
-    ], "the refusing batch's own rows survived"
-    holder = next(row for row in jobs.values() if row.metadata.get("tag") == "holder")
-    assert holder.id in jobs, "the mid-loop intruder's committed row did not survive"
+    await assert_dedup_contract(backend, "after alias-then-rollback")
+    assert await none_stored(backend, [a0, a1]), "the refusing batch's own rows survived"
+    holder_rows = await backend.list_jobs(JobFilter(actor="other", limit=10_000))
+    assert len(holder_rows) == 1, "the mid-loop intruder's committed row did not survive"
     # The demonstration: task B completed holding A's doomed row id.
     assert alias_returned, "task B never ran: schedule broken"
-    assert alias_returned[0] not in jobs, (
+    assert await backend.get(alias_returned[0]) is None, (
         "schedule did not produce the alias window; adjust the yield points"
     )
