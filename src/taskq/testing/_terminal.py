@@ -327,7 +327,12 @@ async def _mark_failed_or_retry(
         new_scheduled = now + effective_delay
         # Mirror the PG mark_retry deadline CTE: the backend's own clock is
         # the single arbiter, a retry that would land past
-        # schedule_to_close fails with DeadlineExceeded instead.
+        # schedule_to_close fails with DeadlineExceeded instead. No cancel
+        # fence here, by contrast with the retry arm below: this branch
+        # never writes the cancel columns (the terminal doctrine keeps them
+        # as the audit trail), so it cannot launder an in-flight operator
+        # request; whatever phase the row carries survives the terminal
+        # write.
         if row.schedule_to_close is not None and new_scheduled > row.schedule_to_close:
             merged_progress = _merge_progress(row.progress_state, progress_state)
             updated = replace(
@@ -370,6 +375,23 @@ async def _mark_failed_or_retry(
                 job_id=str(job_id),
             )
             return _read_copy(updated)
+
+        # The cancel fence (the SQL retried arm's `AND j.cancel_phase = 0`
+        # conjunct, the mark_interrupted release arm's semantics): an
+        # operator cancel in flight WINS over the infrastructure retry. The
+        # replace below resets cancel_phase / cancel_requested_at, so a row
+        # carrying a cancel phase must never reach it; the resets would
+        # launder the operator's request mid-flight (the acknowledged cancel
+        # is wiped, the phase-2 escalation disarms, and the actor runs
+        # again). The fence raises the same WorkerOwnershipMismatch the
+        # ownership fences raise, exactly what PG's rowcount-0 path does
+        # when the fenced retried arm matches no row (safe_mark_failed_or_retry
+        # converts either to the None the handlers treat as a no-op); the
+        # row stays 'running' carrying its phase and the cancel ladder
+        # terminalises it. On a clean row the check is trivially false and
+        # the retry semantics are unchanged.
+        if row.cancel_phase != CancelPhase.NONE:
+            raise WorkerOwnershipMismatch(job_id, worker_id, row.locked_by_worker)
 
         retry_status: Literal["scheduled", "pending"] = (
             "scheduled" if effective_delay > timedelta(0) else "pending"
@@ -423,6 +445,9 @@ async def _mark_failed_or_retry(
         )
         return _read_copy(updated)
 
+    # The terminal-failure arm (retry_delay=None, PG's mark_failed): no
+    # cancel fence and no cancel reset, a terminal write KEEPS the cancel
+    # columns as the audit trail of why the job ended.
     now = self._clock.now()
     merged_progress = _merge_progress(row.progress_state, progress_state)
     updated = replace(

@@ -2,8 +2,9 @@
 
 Covers job_attempts written inside terminal methods (not by
 external callers), job_events writes, cancel_phase
-preservation on mark_cancelled, cancel-slate reset on
-transient retry, mark_abandoned cancel_phase=2
+preservation on mark_cancelled, the retry arm's cancel
+fence (an operator cancel in flight is never reset by
+a retry), mark_abandoned cancel_phase=2
 guard, write_cancel_request / write_cancel_escalation
 event rows, and WorkerOwnershipMismatch from mark_failed_or_retry.
 """
@@ -1004,31 +1005,95 @@ class TestWriteCancelEscalationEvents:
         assert row.cancel_phase == 0  # unchanged
 
 
-# ── Branch B: cancel slate reset on transient retry ────────────────────
+# ── Branch B: the retry arm's cancel fence ─────────────────────────────
 
 
-class TestCancelSlateResetOnRetry:
-    """Branch B (transient retry) resets the cancel slate: a retry reuses
-    the SAME job row, so an escalated cancel that survived the retry write
-    would hand the next attempt an already-FORCED phase - the cancel
-    controller's fast-advance would then skip cooperative cancel entirely
-    and the attempt could never be cancelled again. Both cancel columns
-    (phase + requested-at) must come back clean, asserted on the returned
-    row and the persisted row (c06ba0e).
+class TestRetryArmRefusesInFlightCancel:
+    """Branch B (transient retry) fences on the cancel columns: the retry
+    reuses the SAME job row, so its cancel_phase/cancel_requested_at reset
+    would launder an operator cancel in flight - the acknowledged cancel is
+    wiped, the phase-2 escalation (guarded on cancel_phase = 1) disarms,
+    and the actor runs again. The arm carries the same ``cancel_phase = 0``
+    fence the deferral arms and the interrupt release carry: a row carrying
+    a cancel phase is refused through the same WorkerOwnershipMismatch path
+    the ownership fences raise (PG's rowcount-0 twin), the row stays
+    'running' with the audit columns intact, and the cancel ladder
+    terminalises it. A clean retry lands with a clean slate trivially: the
+    fence guarantees the reset never raced an operator.
 
-    These previously asserted the opposite - that the phase survived the
-    retry - the exact behaviour that made a job permanently uncancellable.
-    Clearing matches the crash-reclaim sweep (_SWEEP_1_SQL) and
-    isolate_self, which have always reset both columns on their retry arm
-    for the same reason: "the next dispatch doesn't immediately re-cancel
-    the retried job". A caller whose cancel lost the race can still cancel
-    the pending/scheduled row, which the cancel path handles directly.
+    These previously asserted the opposite - that the retry arm clears a
+    phase-carrying row's columns - which was itself the second fix for the
+    first regression (a retried attempt born at FORCED could never be
+    cancelled); the fence supersedes that fix by refusing the row entirely.
     """
 
-    async def test_cancel_phase1_reset_on_retry(self) -> None:
+    async def test_cancel_phase1_refused_on_retry(self) -> None:
         backend = _make_backend()
         job_id, wid = await _enqueue_and_dispatch(backend, max_attempts=3)
         _set_cancel_state(backend, job_id, CancelPhase.COOPERATIVE)
+
+        error_info = ErrorInfo(
+            error_class="ValueError",
+            error_message="transient",
+            error_traceback=None,
+        )
+        with pytest.raises(WorkerOwnershipMismatch):
+            await backend.mark_failed_or_retry(
+                job_id,
+                wid,
+                error_info,
+                retry_delay=timedelta(seconds=10),
+                attempt=1,
+            )
+
+        persisted = await backend.get(job_id)
+        assert persisted is not None
+        assert persisted.status == "running", (
+            "the retry write rescheduled a phase-carrying row: the "
+            "operator's acknowledged cancel was wiped and the actor would "
+            "run again"
+        )
+        assert persisted.cancel_phase == CancelPhase.COOPERATIVE
+        assert persisted.cancel_requested_at is not None
+
+    async def test_cancel_phase2_refused_on_retry(self) -> None:
+        backend = _make_backend()
+        job_id, wid = await _enqueue_and_dispatch(backend, max_attempts=3)
+        _set_cancel_state(backend, job_id, CancelPhase.FORCED)
+
+        error_info = ErrorInfo(
+            error_class="ValueError",
+            error_message="transient",
+            error_traceback=None,
+        )
+        with pytest.raises(WorkerOwnershipMismatch):
+            await backend.mark_failed_or_retry(
+                job_id,
+                wid,
+                error_info,
+                retry_delay=timedelta(seconds=10),
+                attempt=1,
+            )
+
+        persisted = await backend.get(job_id)
+        assert persisted is not None
+        assert persisted.status == "running"
+        assert persisted.cancel_phase == CancelPhase.FORCED
+        assert persisted.cancel_requested_at is not None
+
+        # The escalation controller still sees the in-flight cancel.
+        flags = await backend.poll_cancel_flags(wid)
+        assert [f.job_id for f in flags if f.job_id == job_id] != [], (
+            "the cancel ladder lost sight of the in-flight cancel: the "
+            "retry write disarmed the phase-2 escalation"
+        )
+
+    async def test_clean_transient_retry_still_lands(self) -> None:
+        """The control: a retryable failure with no cancel in flight
+        retries normally, the reset landing on the clean slate the fence
+        guarantees."""
+        backend = _make_backend()
+        job_id, wid = await _enqueue_and_dispatch(backend, max_attempts=3)
 
         error_info = ErrorInfo(
             error_class="ValueError",
@@ -1047,32 +1112,6 @@ class TestCancelSlateResetOnRetry:
         assert result.cancel_requested_at is None
         assert result.locked_by_worker is None
         assert result.lock_expires_at is None
-
-    async def test_cancel_phase2_reset_on_retry(self) -> None:
-        backend = _make_backend()
-        job_id, wid = await _enqueue_and_dispatch(backend, max_attempts=3)
-        _set_cancel_state(backend, job_id, CancelPhase.FORCED)
-
-        error_info = ErrorInfo(
-            error_class="ValueError",
-            error_message="transient",
-            error_traceback=None,
-        )
-        result = await backend.mark_failed_or_retry(
-            job_id,
-            wid,
-            error_info,
-            retry_delay=timedelta(seconds=10),
-            attempt=1,
-        )
-        assert result.status == "scheduled"
-        assert result.cancel_phase == CancelPhase.NONE
-        assert result.cancel_requested_at is None
-
-        persisted = await backend.get(job_id)
-        assert persisted is not None
-        assert persisted.cancel_phase == CancelPhase.NONE
-        assert persisted.cancel_requested_at is None
 
 
 # ── progress_seq / progress_state plumb-through ───────────────────────

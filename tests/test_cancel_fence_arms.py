@@ -1,4 +1,5 @@
-"""Fence pins for the consumer deferral arms and the interrupt release arm.
+"""Fence pins for the consumer deferral arms, the failure-retry arm, and
+the interrupt release arm.
 
 Issue: ``mark_snoozed`` and ``mark_retry_after_{true,false}`` reset
 ``cancel_phase``/``cancel_requested_at`` with no ``cancel_phase = 0`` fence, so a
@@ -6,6 +7,12 @@ snooze/retry landing mid-cancel launders an in-flight operator cancel (the
 engine of the bulk-cancel double-report: the same id shows up in both the
 ``cancel_requested`` and ``cancelled_directly`` lists). The arms must refuse a
 phase-carrying row the way ``mark_interrupted`` does.
+
+Issue: ``mark_failed_or_retry``'s retry arm resets the same columns with the
+same missing fence, so a retryable actor failure landing during the
+cooperative cancel grace wipes the operator's acknowledged cancel, disarms
+the phase-2 escalation, and the actor runs again. The arm must refuse a
+phase-carrying row like its siblings.
 
 Issue: ``mark_interrupted``'s release arm refunds the claim's attempt
 increment, re-creating the exact attempt epoch the interrupted (zombie) handler
@@ -29,9 +36,10 @@ import pytest
 
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend import Backend, EnqueueArgs
-from taskq.backend._protocol import CancelPhase, JobFilter, JobId
+from taskq.backend._protocol import CancelPhase, ErrorInfo, JobFilter, JobId
 from taskq.backend.postgres import PostgresBackend
 from taskq.constants import CANCEL_ORIGIN_COOPERATIVE, CANCEL_ORIGIN_FORCED
+from taskq.exceptions import WorkerOwnershipMismatch
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 
@@ -242,6 +250,85 @@ def _match_all_filter() -> JobFilter:
     # cancel_where ignores limit/cursor/order_by; an empty filter matches
     # every job in the backend.
     return JobFilter()
+
+
+# ── Issue: the failure-retry arm must not launder an in-flight cancel ──
+
+
+class TestFailureRetryArmCarriesTheCancelFence:
+    """``mark_failed_or_retry``'s retry arm resets both cancel columns, so
+    a retryable failure landing during the cooperative grace used to wipe
+    the operator's acknowledged cancel, disarm the phase-2 escalation, and
+    reschedule the job behind the operator's back. The arm carries the
+    same ``cancel_phase = 0`` fence the deferral arms and the interrupt
+    release carry: a phase-carrying row is refused and stays 'running' for
+    the cancel ladder to terminalise.
+
+    The refusal surfaces as WorkerOwnershipMismatch rather than the
+    deferral arms' ``noop`` return, each method mirroring its own PG
+    contract (mark_retry's rowcount-0 raises; the deferral statements
+    return an empty outcome). The backend-level differential pins for both
+    backends live in tests/test_cancel_state_reset_on_retry.py.
+    """
+
+    async def test_mark_retry_refuses_in_flight_cancel(self) -> None:
+        backend = _make_backend()
+        job_id, wid = await _enqueue_and_dispatch(backend)
+        _set_in_flight_cancel(backend, job_id)
+
+        error_info = ErrorInfo(
+            error_class="ValueError",
+            error_message="transient",
+            error_traceback=None,
+        )
+        with pytest.raises(WorkerOwnershipMismatch):
+            await backend.mark_failed_or_retry(
+                job_id,
+                wid,
+                error_info,
+                retry_delay=timedelta(seconds=10),
+                attempt=1,
+            )
+
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.status == "running", (
+            "a failure retry landing mid-cancel must not reschedule the "
+            "row: the retry arm lacks the cancel_phase = 0 fence and "
+            "launders the operator's in-flight cancel"
+        )
+        assert row.cancel_phase == CancelPhase.COOPERATIVE
+        assert row.cancel_requested_at == _START
+
+        # The escalation controller still sees the in-flight cancel.
+        flags = await backend.poll_cancel_flags(wid)
+        assert [f.job_id for f in flags if f.job_id == job_id] != [], (
+            "the cancel ladder lost sight of the in-flight cancel: the "
+            "retry write disarmed the phase-2 escalation"
+        )
+
+    async def test_mark_retry_still_retries_clean_rows(self) -> None:
+        """The fence narrows nothing for the clean case: a phase-0 row with
+        a retryable failure retries as before."""
+        backend = _make_backend()
+        job_id, wid = await _enqueue_and_dispatch(backend)
+
+        error_info = ErrorInfo(
+            error_class="ValueError",
+            error_message="transient",
+            error_traceback=None,
+        )
+        result = await backend.mark_failed_or_retry(
+            job_id,
+            wid,
+            error_info,
+            retry_delay=timedelta(seconds=10),
+            attempt=1,
+        )
+
+        assert result.status == "scheduled"
+        assert result.cancel_phase == CancelPhase.NONE
+        assert result.cancel_requested_at is None
 
 
 # ── Issue: the interrupt arm's attempt refund re-creates the epoch ──

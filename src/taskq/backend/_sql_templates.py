@@ -408,8 +408,22 @@ SELECT * FROM upd""",
         # would otherwise be inherited by the next attempt: the cancel
         # controller's PG-observation fast-advance sees db_phase=FORCED,
         # jumps the local phase straight to FORCED without ever calling
-        # task.cancel(), and the attempt becomes uncancellable.  The
-        # TERMINAL arms deliberately keep the cancel columns, they are the
+        # task.cancel(), and the attempt becomes uncancellable.
+        #
+        # A reset may only ever land on a row whose cancel columns were
+        # already clean, so every column-clearing arm fences on
+        # `cancel_phase = 0` first, the same conjunct the deferral arms and
+        # mark_interrupted's release arm carry: an operator cancel in flight
+        # WINS over the infrastructure retry. Without the fence, a retryable
+        # actor failure landing during the cooperative grace wiped the
+        # operator's acknowledged cancel, disarmed the phase-2 escalation
+        # (guarded on cancel_phase = 1), and the actor ran again. The fenced
+        # row stays 'running' carrying its phase, the caller's write no-ops
+        # through the ordinary rowcount-0 machinery, and the cancel ladder
+        # terminalises the job on schedule. On a clean row the conjunct is
+        # trivially true and the retry semantics are unchanged.
+        #
+        # The TERMINAL arms deliberately keep the cancel columns, they are the
         # audit trail of why the job ended, and mark_abandoned's
         # `cancel_phase = 2` guard reads them.
         mark_retry=f"""\
@@ -452,11 +466,30 @@ retried AS (
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
       AND j.attempt = (SELECT attempt FROM params)
+      -- The cancel fence (the mark_interrupted release arm's conjunct):
+      -- an operator cancel in flight WINS over the infrastructure retry.
+      -- This arm resets cancel_phase / cancel_requested_at above, so a row
+      -- carrying a cancel phase must never match it; the resets would
+      -- launder the operator's request mid-flight (the acknowledged cancel
+      -- is wiped, the phase-2 escalation disarms, and the actor runs
+      -- again). The fenced-out row stays 'running' carrying its phase, the
+      -- write no-ops, and the worker's cancel ladder terminalises the job
+      -- on schedule; the failure attempt is not retried by this path,
+      -- which is the operator's cancel winning over the infrastructure
+      -- retry. On a clean row the conjunct is trivially true and the
+      -- retry semantics are unchanged.
+      AND j.cancel_phase = 0
       AND (j.schedule_to_close IS NULL
            OR clock_timestamp() + (SELECT effective_delay FROM params) <= j.schedule_to_close)
     RETURNING j.*, 'retried'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),
 deadline_failed AS (
+    -- No cancel fence here, by contrast with the retried arm: this arm
+    -- never writes the cancel columns (the terminal-arm doctrine keeps
+    -- them as the audit trail of why the job ended), so it cannot launder
+    -- an in-flight operator request; whatever phase the row carries
+    -- survives the terminal write for mark_abandoned's guard and the
+    -- event readers.
     UPDATE "{s}".jobs j
     SET status = 'failed',
         finished_at = clock_timestamp(),
