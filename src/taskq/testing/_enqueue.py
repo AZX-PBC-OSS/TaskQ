@@ -150,7 +150,9 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         if existing_id is not None:
             existing_row = self._jobs.get(existing_id)
             if existing_row is not None:
-                _refuse_cross_actor_idempotency_hit(args, existing_row)
+                _refuse_cross_actor_idempotency_hit(
+                    args, existing_actor=existing_row.actor, existing_job_id=existing_row.id
+                )
                 _log_enqueue_dedup(existing_row, dedup_reason="idempotency_key")
                 return _read_copy(existing_row)
 
@@ -273,6 +275,45 @@ async def _enqueue_batch(
     connection: object = None,
     enforce_max_pending: bool = True,
 ) -> list[JobRow]:
+    """The bulk tier's mirror, atomic for every whole-call refusal.
+
+    Postgres' ``enqueue_batch`` is one ``unnest`` INSERT in one
+    transaction, so its observable failure contract is all-or-nothing,
+    and this mirror refuses every whole-call defect BEFORE its first
+    insert: the jsonb NUL guard, the job-id collision
+    (``_check_batch_job_ids``), the singleton collision
+    (``_check_batch_singletons``), and the cross-actor idempotency
+    mismatch (``_check_batch_idempotency_actors``, stored holders and
+    in-batch ones alike) each abort the call with nothing stored, where
+    PG's statement abort or transaction rollback admits nothing either.
+
+    The idempotency contract pinned here, matching PG's observable
+    behavior item for item:
+
+    - Uniqueness is the ``(idempotency_scope, idempotency_key)`` pair,
+      schema-wide. A pair already stored, or held by an EARLIER item of
+      the same call, is a dedup hit for the later item.
+    - A same-actor dedup hit returns the holder row in the item's
+      position: one row per item, order preserved, repeats alias the
+      holder's id (PG's ``ON CONFLICT DO NOTHING`` plus post-abort
+      fetch). The holder for an in-batch pair is the first earlier item
+      holding it, never the stored row's id when the pair was new.
+    - A cross-actor dedup hit raises
+      :class:`~taskq.exceptions.IdempotencyKeyActorMismatchError` naming
+      incoming and holder actors, and the refusal is ATOMIC: no item
+      from the call is stored, including the clean items before the
+      offending one. ``existing_job_id`` names the holder row's id (for
+      an in-batch holder, the earlier item's id, which PG's post-abort
+      fetch also reports even though its row is withdrawn with the
+      refusal).
+    - Attribution order is call order: the first item in *args_list*
+      whose holder is another actor's job is the mismatch raised.
+
+    Cap admission partitions per actor (see ``_batch_cap_refusals``):
+    over-cap actors' items are refused as a group, the rest are stored,
+    and :class:`~taskq.exceptions.BatchMaxPendingExceededError` raises
+    AFTER the admitted rows are stored.
+    """
     if not args_list:
         raise ValueError("args_list must not be empty")
     # PG-tier parity for jsonb serialization failures: the PG build loop
@@ -401,26 +442,51 @@ def _check_batch_idempotency_actors(
     self: "InMemoryBackend", admitted_args: list[EnqueueArgs]
 ) -> None:
     """Reject the whole batch BEFORE any insert when an admitted item's
-    idempotency hit would resolve to a stored job of another actor.
+    idempotency (scope, key) pair resolves to another actor's job,
+    whether that job is already stored or is an earlier item of this
+    same batch.
 
-    The PG bulk tier raises the mismatch inside the transaction that owns
-    the INSERT and rolls the whole batch back, admitting nothing; the
-    per-item loop below would discover it at the offending item's index
-    and leave the good prefix stored. Same shared rule and typed error as
-    the single path (``_refuse_cross_actor_idempotency_hit``), so the two
-    backends name the same actors for the same batch.
+    The PG bulk tier is one INSERT in one transaction: the conflicting
+    item's pair is skipped by the ``ON CONFLICT`` arbiter, the result
+    assembly resolves it to the holder row (a stored row, or the earlier
+    item's just-inserted row), and the cross-actor refusal propagates out
+    of that transaction, withdrawing the whole INSERT and admitting
+    nothing. The per-item loop below would discover an in-batch collision
+    at the offending item's index and leave the good prefix stored,
+    certifying code that on Postgres leaves phantom rows behind (and,
+    for a cross-actor pair, ships a batch production refuses outright).
+
+    The walk is ONE pass over the batch in call order, the order PG's
+    result assembly attributes mismatches in: each keyed item resolves to
+    its holder (the stored row for its pair, else the first earlier item
+    holding the pair) and a holder of another actor raises the shared
+    typed mismatch, naming the same actors and holder id the PG tier's
+    post-abort fetch reports. Same-actor repeats pass and dedupe in the
+    insert loop below, returning the earlier row, exactly PG's
+    ``ON CONFLICT`` dedup (in-batch and stored hits alike).
     """
     from taskq.backend._enqueue import _refuse_cross_actor_idempotency_hit
 
+    in_batch_holders: dict[tuple[str, str], tuple[str, UUID]] = {}
     for args in admitted_args:
         if args.idempotency_key is None:
             continue
-        existing_id = self._idempotency_index.get((args.idempotency_scope, args.idempotency_key))
-        if existing_id is None:
-            continue
-        existing_row = self._jobs.get(existing_id)
+        pair = (args.idempotency_scope, args.idempotency_key)
+        existing_id = self._idempotency_index.get(pair)
+        existing_row = self._jobs.get(existing_id) if existing_id is not None else None
         if existing_row is not None:
-            _refuse_cross_actor_idempotency_hit(args, existing_row)
+            # Stored holder: the pair was written before this call, so
+            # every repeat of the pair in the batch resolves to this row.
+            _refuse_cross_actor_idempotency_hit(
+                args, existing_actor=existing_row.actor, existing_job_id=existing_row.id
+            )
+        elif pair in in_batch_holders:
+            holder_actor, holder_job_id = in_batch_holders[pair]
+            _refuse_cross_actor_idempotency_hit(
+                args, existing_actor=holder_actor, existing_job_id=holder_job_id
+            )
+        else:
+            in_batch_holders[pair] = (args.actor, args.id)
 
 
 def _check_batch_singletons(self: "InMemoryBackend", admitted_args: list[EnqueueArgs]) -> None:

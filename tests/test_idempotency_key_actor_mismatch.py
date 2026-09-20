@@ -75,6 +75,34 @@ async def test_cross_actor_hit_in_a_batch_refuses_the_whole_batch(
     assert all(r.id != fresh.id for r in rows), "the refused batch must leave no rows behind"
 
 
+async def test_cross_actor_pair_inside_one_batch_refuses_atomically(
+    backend_pair: Backend,
+) -> None:
+    """Two items of ONE enqueue_batch call sharing a pair across actors.
+
+    The bulk tier is one INSERT in one transaction: the second item's pair
+    conflicts inside the statement, the dedup resolution resolves it to the
+    first item's just-inserted row, and the cross-actor refusal withdraws
+    the whole INSERT - the first item's row goes with it, nothing from the
+    batch is stored on either backend."""
+    key = f"k-{new_uuid()}"
+    first = _args("actor_a", key)
+
+    with pytest.raises(IdempotencyKeyActorMismatchError) as excinfo:
+        await backend_pair.enqueue_batch([first, _args("actor_b", key)])
+
+    err = excinfo.value
+    assert (err.actor, err.existing_actor) == ("actor_b", "actor_a")
+    assert err.idempotency_key == key
+    # The bulk tier's dedup resolution fetched the first item's just-inserted
+    # row before the refusal withdrew it, so the mismatch names that row's id
+    # even though no row from the batch survives the call.
+    assert err.existing_job_id == first.id
+    for actor_name in ("actor_a", "actor_b"):
+        rows = await backend_pair.list_jobs(JobFilter(actor=actor_name, limit=100))
+        assert rows == [], "the refused batch must leave no rows behind"
+
+
 async def test_same_actor_hit_in_a_batch_still_dedupes(backend_pair: Backend) -> None:
     key = f"k-{new_uuid()}"
     first = await backend_pair.enqueue(_args("actor_a", key))

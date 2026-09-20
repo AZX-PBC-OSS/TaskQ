@@ -11,6 +11,9 @@ Covers:
 
 from datetime import UTC, datetime
 
+import pytest
+
+from taskq.exceptions import IdempotencyKeyActorMismatchError
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.jobs import make_enqueue_args
@@ -171,6 +174,63 @@ class TestEnqueueBatchScopeParity:
 
         assert len(rows) == 2
         assert rows[0].id == rows[1].id
+
+
+class TestInBatchCrossActorDuplicateRefusedAtomically:
+    """Two items of ONE enqueue_batch call sharing an
+    (idempotency_scope, idempotency_key) pair across actors.
+
+    Postgres' bulk tier is one INSERT in one transaction: the second item's
+    pair conflicts inside the statement, the dedup resolution finds the
+    first item's job, and the cross-actor refusal withdraws the whole
+    INSERT. Nothing from the batch is stored. The mirror's preflight must
+    refuse with the identical typed error BEFORE its first insert, never
+    store the good prefix and raise at the offending item's index.
+    """
+
+    async def test_cross_actor_in_batch_duplicate_refuses_whole_batch(self) -> None:
+        backend = _make_backend()
+
+        item_a = make_enqueue_args(actor="actor-a", idempotency_key="k1", scheduled_at=_START)
+        item_b = make_enqueue_args(actor="actor-b", idempotency_key="k1", scheduled_at=_START)
+
+        with pytest.raises(IdempotencyKeyActorMismatchError):
+            await backend.enqueue_batch([item_a, item_b])
+
+        assert await backend.get(item_a.id) is None, "the refused batch must leave no rows behind"
+        assert await backend.get(item_b.id) is None
+
+    async def test_cross_actor_in_batch_duplicate_names_both_actors_in_call_order(self) -> None:
+        backend = _make_backend()
+
+        item_a = make_enqueue_args(actor="actor-a", idempotency_key="k1", scheduled_at=_START)
+        item_b = make_enqueue_args(actor="actor-b", idempotency_key="k1", scheduled_at=_START)
+
+        with pytest.raises(IdempotencyKeyActorMismatchError) as excinfo:
+            await backend.enqueue_batch([item_a, item_b])
+
+        err = excinfo.value
+        assert err.actor == "actor-b"
+        assert err.existing_actor == "actor-a"
+        assert err.idempotency_key == "k1"
+
+    async def test_cross_actor_in_batch_duplicate_after_distinct_items_refuses_whole_batch(
+        self,
+    ) -> None:
+        """A clean item before the colliding pair is withdrawn with the
+        refusal too: the refusal is whole-call, not a prefix trim."""
+        backend = _make_backend()
+
+        clean = make_enqueue_args(idempotency_key="clean", scheduled_at=_START)
+        item_a = make_enqueue_args(actor="actor-a", idempotency_key="k1", scheduled_at=_START)
+        item_b = make_enqueue_args(actor="actor-b", idempotency_key="k1", scheduled_at=_START)
+
+        with pytest.raises(IdempotencyKeyActorMismatchError):
+            await backend.enqueue_batch([clean, item_a, item_b])
+
+        assert await backend.get(clean.id) is None
+        assert await backend.get(item_a.id) is None
+        assert await backend.get(item_b.id) is None
 
 
 # ── Same key AND same scope → dedupes ──────────────────────────
