@@ -289,7 +289,7 @@ WITH upd AS (
         ),
         progress_seq = $5,
         progress_state = CASE WHEN $6::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $6::jsonb ELSE progress_state END
-    WHERE {_JOB_FENCE_BOUND_SQL}
+    WHERE {_JOB_FENCE_BOUND_SQL.format(attempt_bind=8)}
     RETURNING *
 ), holder AS (
     SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
@@ -328,7 +328,7 @@ WITH upd AS (
         error_traceback = $5,
         progress_seq = $6,
         progress_state = CASE WHEN $7::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $7::jsonb ELSE progress_state END
-    WHERE {_JOB_FENCE_BOUND_SQL}
+    WHERE {_JOB_FENCE_BOUND_SQL.format(attempt_bind=8)}
     RETURNING *
 ), holder AS (
     SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
@@ -527,7 +527,7 @@ WITH upd AS (
                            ELSE '{CANCEL_ORIGIN_COOPERATIVE}' END,
         progress_seq = $3,
         progress_state = CASE WHEN $4::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $4::jsonb ELSE progress_state END
-    WHERE id = $1 AND status = 'running' AND locked_by_worker = $2 AND attempt = $5
+    WHERE {_JOB_FENCE_BOUND_SQL.format(attempt_bind=5)}
     RETURNING *
 ), holder AS (
     SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE

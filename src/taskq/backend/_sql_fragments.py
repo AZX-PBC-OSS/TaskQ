@@ -85,16 +85,24 @@ DEADLINE_RETRY_EXCEEDED_MESSAGE: Final[str] = "schedule_to_close reached before 
 # handler's write land (see the attempt-epoch fencing note in
 # backend/_sql_templates.py's render()). The aliased spelling is the multi-arm
 # arbiters' (they resolve ids through the params CTE); the bound spelling is
-# the single-row mark_succeeded / mark_failed UPDATEs, which bind $2/$8
-# directly. Substituted by name into the templates so the rendered statements
-# stay byte-identical to the hand-maintained conjuncts; the in-memory twin
-# mirrors the predicate through its own _fenced helper (testing/_terminal.py),
-# the same one-predicate discipline on the Python side.
+# the single-row mark_succeeded / mark_failed / mark_cancelled UPDATEs, which
+# bind the worker id and the attempt epoch directly at per-statement
+# positions, so the bound fragment is a function of the attempt bind's
+# placeholder number ($8 in mark_succeeded / mark_failed, $5 in
+# mark_cancelled). Substituted by name into the templates so the rendered
+# statements stay byte-identical to the hand-maintained conjuncts; the
+# in-memory twin mirrors the predicate through its own _fenced helper
+# (testing/_terminal.py), the same one-predicate discipline on the Python
+# side.
 _JOB_FENCE_SQL: Final[str] = (
     "AND j.status = 'running'\n"
     "      AND j.locked_by_worker = (SELECT worker_id FROM params)\n"
     "      AND j.attempt = (SELECT attempt FROM params)"
 )
+
+# The bound spelling's attempt-epoch placeholder, substituted at the three
+# single-row call sites ($8 in mark_succeeded / mark_failed, $5 in
+# mark_cancelled): one fence text, per-statement bind positions.
 _JOB_FENCE_BOUND_SQL: Final[str] = (
-    "id = $1 AND status = 'running' AND locked_by_worker = $2 AND attempt = $8"
+    "id = $1 AND status = 'running' AND locked_by_worker = $2 AND attempt = ${attempt_bind}"
 )

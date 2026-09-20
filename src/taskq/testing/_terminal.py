@@ -131,7 +131,7 @@ def _fenced(row: JobRow, worker_id: UUID, attempt: int | None) -> bool:
     """True when *row* fails the terminal-write fence: the SQL arms'
     ``status = 'running' AND locked_by_worker = ... AND attempt = ...``
     conjuncts (the ``_JOB_FENCE_SQL`` fragment in backend/_sql_fragments.py,
-    the bound spelling's ``$2``/``$8`` mark_succeeded/mark_failed form).
+    the bound spelling's ``_JOB_FENCE_BOUND_SQL`` single-row form).
 
     One helper, not a hand-restated predicate per method: the fence is the
     invariant every terminal write leans on, a conjunct edited in one twin
