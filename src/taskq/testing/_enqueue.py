@@ -15,6 +15,7 @@ from taskq._json import dumps_jsonb_str, loads
 from taskq.backend._protocol import (
     CancelPhase,
     EnqueueArgs,
+    JobId,
     JobRow,
     batch_cap_groups,
     duplicate_pair_actor_mismatch,
@@ -150,7 +151,9 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         if existing_id is not None:
             existing_row = self._jobs.get(existing_id)
             if existing_row is not None:
-                _refuse_cross_actor_idempotency_hit(args, existing_row)
+                _refuse_cross_actor_idempotency_hit(
+                    args, existing_actor=existing_row.actor, existing_job_id=existing_row.id
+                )
                 _log_enqueue_dedup(existing_row, dedup_reason="idempotency_key")
                 return _read_copy(existing_row)
 
@@ -263,6 +266,20 @@ async def _enqueue_with_conn(
     conn: object,
     args: EnqueueArgs,
 ) -> JobRow:
+    """The per-item enqueue seam both batch arms drive (``_enqueue_batch``
+    per admitted item, ``_enqueue_batch_atomic`` per chunk item), the
+    contract their compensating rollbacks lean on:
+
+    An item stored a row **iff** its id was absent from ``_jobs`` before
+    the call and present after it. An insert is the only success that
+    stores ``args.id``; a dedup hit stores NOTHING and returns the holder
+    row (whose id may differ from ``args.id``); ids are never rewritten
+    and a returned holder id is never aliased onto another row. A rollback
+    that pops exactly the (id, pair) entries recorded under this contract
+    therefore withdraws exactly the rows its call inserted - a holder
+    row a dedup hit returned is never popped, an in-batch holder row
+    always is.
+    """
     return await _enqueue(self, args)
 
 
@@ -273,6 +290,51 @@ async def _enqueue_batch(
     connection: object = None,
     enforce_max_pending: bool = True,
 ) -> list[JobRow]:
+    """The bulk tier's mirror, atomic for every whole-call refusal.
+
+    Postgres' ``enqueue_batch`` is one ``unnest`` INSERT in one
+    transaction, so its observable failure contract is all-or-nothing,
+    and this mirror refuses every whole-call defect BEFORE its first
+    insert: the jsonb NUL guard, the job-id collision
+    (``_check_batch_job_ids``), the singleton collision
+    (``_check_batch_singletons``), and the cross-actor idempotency
+    mismatch (``_check_batch_idempotency_actors``, stored holders and
+    in-batch ones alike) each abort the call with nothing stored, where
+    PG's statement abort or transaction rollback admits nothing either.
+    A defect the preflight cannot see - a concurrent task storing a
+    conflicting pair, singleton, or job id between the preflight and an
+    item's insert - re-raises the same typed refusal from the insert
+    loop, and the compensating rollback (``_rollback_inserted_rows``)
+    withdraws the prefix, so the refusal stays whole-call either way.
+
+    The idempotency contract pinned here, matching PG's observable
+    behavior item for item (the canonical statement; the tier helpers
+    below reference it):
+
+    - Uniqueness is the ``(idempotency_scope, idempotency_key)`` pair,
+      schema-wide. A pair already stored, or held by an EARLIER item of
+      the same call, is a dedup hit for the later item.
+    - A same-actor dedup hit returns the holder row in the item's
+      position: one row per item, order preserved, repeats alias the
+      holder's id (PG's ``ON CONFLICT DO NOTHING`` plus post-abort
+      fetch). The holder for an in-batch pair is the first earlier item
+      holding it, never the stored row's id when the pair was new.
+    - A cross-actor dedup hit raises
+      :class:`~taskq.exceptions.IdempotencyKeyActorMismatchError` naming
+      incoming and holder actors, and the refusal is ATOMIC: no item
+      from the call is stored, including the clean items before the
+      offending one. ``existing_job_id`` names the holder row's id (for
+      an in-batch holder, the earlier item's id, which PG's post-abort
+      fetch also reports even though its row is withdrawn with the
+      refusal).
+    - Attribution order is call order: the first item in *args_list*
+      whose holder is another actor's job is the mismatch raised.
+
+    Cap admission partitions per actor (see ``_batch_cap_refusals``):
+    over-cap actors' items are refused as a group, the rest are stored,
+    and :class:`~taskq.exceptions.BatchMaxPendingExceededError` raises
+    AFTER the admitted rows are stored.
+    """
     if not args_list:
         raise ValueError("args_list must not be empty")
     # PG-tier parity for jsonb serialization failures: the PG build loop
@@ -328,6 +390,11 @@ async def _enqueue_batch(
     )
 
     rows: list[JobRow] = []
+    # Rows THIS call inserted, (job id, (scope, key) or None) per item,
+    # recorded by the insert discriminator documented on
+    # _enqueue_with_conn. The compensating rollback below withdraws
+    # exactly these.
+    inserted: list[tuple[JobId, tuple[str, str] | None]] = []
     # The per-call dedup WARNING budget, mirroring the PG bulk
     # tier's result-assembly scope: this loop is where the mirror logs
     # its batch dedup hits (inside _enqueue, via the shared helper), so a
@@ -356,8 +423,28 @@ async def _enqueue_batch(
             # uniqueness at write time rather than preflight checks. This
             # restores parity with current production behavior, it does
             # not adjudicate it.
-            row = await _enqueue(self, replace(args, max_pending=None, unique_for=None))
+            pair = (
+                (args.idempotency_scope, args.idempotency_key)
+                if args.idempotency_key is not None
+                else None
+            )
+            pre_existing = args.id in self._jobs
+            row = await self.enqueue_with_conn(
+                None, replace(args, max_pending=None, unique_for=None)
+            )
             rows.append(row)
+            if not pre_existing and args.id in self._jobs:
+                inserted.append((row.id, pair))
+    except BaseException:
+        # The preflight above cannot see writers that land after it: a
+        # concurrent task storing a conflicting pair (or singleton, or job
+        # id) between the preflight and this item's insert re-raises the
+        # same typed refusal from _enqueue HERE, at the offending index.
+        # PG's single transaction withdraws its own inserts with the
+        # failure, so the refusal stays whole-call: roll the prefix back
+        # the same way the preflight refusal admits nothing.
+        _rollback_inserted_rows(self, inserted)
+        raise
     finally:
         _dedup_warn_budget.reset(dedup_budget_token)
         _log_enqueue_dedup_warn_summary(dedup_budget, dedup_reason="idempotency_key")
@@ -368,6 +455,31 @@ async def _enqueue_batch(
             admitted_count=len(rows),
         )
     return rows
+
+
+def _rollback_inserted_rows(
+    self: "InMemoryBackend",
+    inserted: list[tuple[JobId, tuple[str, str] | None]],
+) -> None:
+    """Withdraw exactly the rows a failed batch call inserted - the
+    compensating rollback both batch arms share.
+
+    Takes the (job id, (scope, key) or None) records the insert
+    discriminator documented on ``_enqueue_with_conn`` produced: the job
+    row is popped, and the idempotency index entry with it. The index pop
+    is guarded on the entry still pointing at the withdrawn row - a
+    concurrent enqueue re-writing the pair points the index at ITS row,
+    a committed insert PG's rollback never touches, so the entry stays.
+
+    Without the index pop a rolled-back keyed insert leaves pair→id
+    dangling, and the next batch's cap preflight (``_batch_cap_refusals``)
+    discounts an item against a row that does not exist, over-admitting
+    past the cap.
+    """
+    for job_id, pair in inserted:
+        self._jobs.pop(job_id, None)
+        if pair is not None and self._idempotency_index.get(pair) == job_id:
+            self._idempotency_index.pop(pair, None)
 
 
 def _check_batch_job_ids(self: "InMemoryBackend", admitted_args: list[EnqueueArgs]) -> None:
@@ -401,26 +513,42 @@ def _check_batch_idempotency_actors(
     self: "InMemoryBackend", admitted_args: list[EnqueueArgs]
 ) -> None:
     """Reject the whole batch BEFORE any insert when an admitted item's
-    idempotency hit would resolve to a stored job of another actor.
+    idempotency (scope, key) pair resolves to another actor's job,
+    whether that job is already stored or is an earlier item of this
+    same batch.
 
-    The PG bulk tier raises the mismatch inside the transaction that owns
-    the INSERT and rolls the whole batch back, admitting nothing; the
-    per-item loop below would discover it at the offending item's index
-    and leave the good prefix stored. Same shared rule and typed error as
-    the single path (``_refuse_cross_actor_idempotency_hit``), so the two
-    backends name the same actors for the same batch.
+    The idempotency contract itself (dedup hits, whole-call refusal,
+    holder attribution) is stated once on ``_enqueue_batch``; this
+    preflight is its before-the-first-insert arm. The walk is ONE pass
+    over the batch in call order, the order PG's result assembly
+    attributes mismatches in: each keyed item resolves to its holder
+    (the stored row for its pair, else the first earlier item holding
+    the pair) and a holder of another actor raises the shared typed
+    mismatch. Same-actor repeats pass and dedupe in the insert loop,
+    returning the earlier row, exactly PG's ``ON CONFLICT`` dedup.
     """
     from taskq.backend._enqueue import _refuse_cross_actor_idempotency_hit
 
+    in_batch_holders: dict[tuple[str, str], tuple[str, UUID]] = {}
     for args in admitted_args:
         if args.idempotency_key is None:
             continue
-        existing_id = self._idempotency_index.get((args.idempotency_scope, args.idempotency_key))
-        if existing_id is None:
-            continue
-        existing_row = self._jobs.get(existing_id)
+        pair = (args.idempotency_scope, args.idempotency_key)
+        existing_id = self._idempotency_index.get(pair)
+        existing_row = self._jobs.get(existing_id) if existing_id is not None else None
         if existing_row is not None:
-            _refuse_cross_actor_idempotency_hit(args, existing_row)
+            # Stored holder: the pair was written before this call, so
+            # every repeat of the pair in the batch resolves to this row.
+            _refuse_cross_actor_idempotency_hit(
+                args, existing_actor=existing_row.actor, existing_job_id=existing_row.id
+            )
+        elif pair in in_batch_holders:
+            holder_actor, holder_job_id = in_batch_holders[pair]
+            _refuse_cross_actor_idempotency_hit(
+                args, existing_actor=holder_actor, existing_job_id=holder_job_id
+            )
+        else:
+            in_batch_holders[pair] = (args.actor, args.id)
 
 
 def _check_batch_singletons(self: "InMemoryBackend", admitted_args: list[EnqueueArgs]) -> None:

@@ -736,7 +736,12 @@ async def _acquire_unique_for_lock(
         )
 
 
-def _refuse_cross_actor_idempotency_hit(args: EnqueueArgs, existing: JobRow) -> None:
+def _refuse_cross_actor_idempotency_hit(
+    args: EnqueueArgs,
+    *,
+    existing_actor: str,
+    existing_job_id: UUID,
+) -> None:
     """Raise when an idempotency hit resolved to another actor's job.
 
     Uniqueness is ``(idempotency_scope, idempotency_key)``, schema-wide,
@@ -750,20 +755,28 @@ def _refuse_cross_actor_idempotency_hit(args: EnqueueArgs, existing: JobRow) -> 
     the same way on the batch-fast COPY tier (whose abort is total, so the
     error is raised in place of the duplicate error, not instead of a
     returned handle).
+
+    The holder is identified by ``existing_actor`` and
+    ``existing_job_id`` rather than a ``JobRow``: the single and batch
+    tiers resolve the holder row, but the twin's batch preflight refuses
+    an in-batch collision BEFORE any insert, where the holder is the
+    earlier item's not-yet-written args (its id is what the PG tier's
+    post-abort fetch reports, so the typed error carries the same id on
+    both backends).
     """
-    if existing.actor != args.actor:
+    if existing_actor != args.actor:
         logger.warning(
             "idempotency-key-actor-mismatch",
             actor=args.actor,
-            existing_actor=existing.actor,
-            existing_job_id=str(existing.id),
+            existing_actor=existing_actor,
+            existing_job_id=str(existing_job_id),
             idempotency_key=str(args.idempotency_key),
             idempotency_scope=args.idempotency_scope,
         )
         raise IdempotencyKeyActorMismatchError(
             actor=args.actor,
-            existing_actor=existing.actor,
-            existing_job_id=existing.id,
+            existing_actor=existing_actor,
+            existing_job_id=existing_job_id,
             idempotency_key=str(args.idempotency_key),
             idempotency_scope=args.idempotency_scope,
         )
@@ -1226,7 +1239,7 @@ async def _enqueue_on_conn(
 
     row = _job_row_from_record(rec)
     if not is_new:
-        _refuse_cross_actor_idempotency_hit(args, row)
+        _refuse_cross_actor_idempotency_hit(args, existing_actor=row.actor, existing_job_id=row.id)
 
     # No app-side pg_notify: the jobs INSERT trigger (tr_notify_job_insert)
     # is the sole wake source for every insert path, gated on the row
@@ -1693,7 +1706,9 @@ async def _enqueue_batch(
                     ):
                         rec = existing_by_idem[(args.idempotency_scope, str(args.idempotency_key))]
                         row = _job_row_from_record(rec)  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
-                        _refuse_cross_actor_idempotency_hit(args, row)
+                        _refuse_cross_actor_idempotency_hit(
+                            args, existing_actor=row.actor, existing_job_id=row.id
+                        )
                         _log_enqueue_dedup(row, dedup_reason="idempotency_key")
                         result.append(row)
                     else:
