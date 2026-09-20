@@ -543,7 +543,15 @@ async def _run_prune_archive_batch(
     transaction this helper opens, so the batch commits or not as a
     unit under the same
     server-side ``statement_timeout`` machinery
-    :func:`_run_prune_batch` applies. Returns the write statement's
+    :func:`_run_prune_batch` applies.
+
+    Wall-clock bound: the transaction spans TWO statements, each under
+    its own ``statement_timeout``, so one batch can take up to
+    2x ``statement_timeout_ms`` (plus the timeout-probe round trips) -
+    callers sizing outer deadlines against a prune loop must budget the
+    2x bound, not one statement's.
+
+    Returns the write statement's
     deleted groups (empty when the window found nothing eligible, and
     empty when every candidate dropped out at lock time: a row a
     concurrent retry made live, or a batch another transaction is

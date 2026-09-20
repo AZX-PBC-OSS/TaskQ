@@ -40,14 +40,19 @@ Scope, stated directly:
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import inspect
 import pkgutil
 import re
+import uuid
+from collections.abc import AsyncGenerator
+from datetime import timedelta
 
 import pytest
 
 import taskq
+from taskq._ids import new_uuid
 from taskq.backend._batch_sql import (  # pyright: ignore[reportPrivateUsage]  # Why: pinning the exact production statement is the point; redefining it here would let the pin drift from the SQL that runs.
     _ABORT_BATCH_JOBS_SQL,
     _PRUNE_OLD_BATCHES_SQL,
@@ -58,8 +63,10 @@ from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Wh
     _SWEEP_IDLE_KEYED_SLOTS_SQL,
 )
 from taskq.worker._leader_shared import (  # pyright: ignore[reportPrivateUsage]  # Why: same.
+    _ARCHIVE_CANDIDATE_SQL,
     _ARCHIVE_CTE_SQL,
     _EXPIRY_CTE_SQL,
+    _run_prune_archive_batch,
 )
 
 _WRITE_RE = re.compile(r"\b(UPDATE|DELETE)\b")
@@ -373,4 +380,88 @@ def test_windowed_write_ctes_carry_the_materialized_fence() -> None:
         "LIMIT-ed candidate windows without the MATERIALIZED fence - the "
         "planner may inline them into the data-modifying statement and move "
         "more rows than the LIMIT:\n  " + "\n  ".join(unfenced)
+    )
+
+
+# ── The caller-discipline exemption's mechanical guard ───────────────
+
+
+class _ArchiveBatchConn:
+    """Records what :func:`_run_prune_archive_batch` fetches; answers the
+    candidate window with a scripted id set and the write statement with a
+    scripted result (the duck-type surface is fetch/execute/transaction,
+    the same one the batch timeout machinery proxies)."""
+
+    def __init__(self, candidate_ids: list[uuid.UUID]) -> None:
+        self._candidate_ids = candidate_ids
+        self.write_id_bindings: list[object] = []
+
+    @contextlib.asynccontextmanager
+    async def transaction(self) -> AsyncGenerator[None]:
+        yield
+
+    async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
+        if "current_setting" in sql:
+            return [{"current_setting": "0"}]
+        if "WITH locked AS MATERIALIZED" in sql:
+            # The write statement binds (status, archive_interval, ids,
+            # retention); record the bound ids.
+            self.write_id_bindings.append(args[2])
+            return []
+        # The candidate window: its result is the scripted id set.
+        return [{"id": i} for i in self._candidate_ids]
+
+    async def execute(self, sql: str, *args: object) -> str:
+        return "SELECT 1"
+
+
+@pytest.mark.fastapi
+async def test_archive_write_binds_the_candidate_windows_returned_ids() -> None:
+    """_ARCHIVE_CTE_SQL's exemption above is caller discipline: the write
+    statement is bounded only if its caller binds exactly the candidate
+    window's returned ids as the statement's array. This pin makes that
+    discipline mechanical on the caller the exemption names: the write's
+    bound ids must be the candidate window's returned id set, in its
+    order, and the write must not run at all when the window returned
+    nothing."""
+    ids = [new_uuid() for _ in range(3)]
+    conn = _ArchiveBatchConn(ids)
+    rows = await _run_prune_archive_batch(
+        conn,
+        candidate_sql=_ARCHIVE_CANDIDATE_SQL.format(schema="taskq"),
+        write_sql=_ARCHIVE_CTE_SQL.format(schema="taskq"),
+        status="succeeded",
+        retention=timedelta(days=30),
+        size=10,
+        archive_interval=timedelta(days=365),
+        actor=None,
+        statement_timeout_ms=1_000,
+        sizer=None,
+    )
+    assert rows == []
+    assert conn.write_id_bindings == [ids], (
+        "the archive write must bind exactly the candidate window's "
+        f"returned ids; bound {conn.write_id_bindings!r}, "
+        f"the window returned {ids!r}"
+    )
+
+    # The bound is the window's result, not a constant: an empty window
+    # runs no write statement at all.
+    empty = _ArchiveBatchConn([])
+    rows = await _run_prune_archive_batch(
+        empty,
+        candidate_sql=_ARCHIVE_CANDIDATE_SQL.format(schema="taskq"),
+        write_sql=_ARCHIVE_CTE_SQL.format(schema="taskq"),
+        status="succeeded",
+        retention=timedelta(days=30),
+        size=10,
+        archive_interval=timedelta(days=365),
+        actor=None,
+        statement_timeout_ms=1_000,
+        sizer=None,
+    )
+    assert not rows
+    assert empty.write_id_bindings == [], (
+        "the archive write ran against an empty candidate window - the "
+        "write set is no longer fenced by the window's result"
     )

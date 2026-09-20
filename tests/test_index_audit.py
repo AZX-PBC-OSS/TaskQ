@@ -1647,6 +1647,34 @@ def test_prune_archive_two_clock_split_is_pinned() -> None:
     )
 
 
+def test_archive_candidate_window_carries_no_row_lock() -> None:
+    """The candidate window stays lock-free, pinned at its source: a
+    lock-bearing arm priced into THIS statement (a FOR UPDATE on the
+    window, or a lock-by-id CTE joined beside it) pushes the statement's
+    custom-plan cost estimate past the generic plan's - the lock prices
+    heap fetches - and past five same-statement executions the plancache
+    flips to the generic form, which cannot prove
+    jobs_finished_at_idx's partial predicate for bound parameters, so
+    the candidate scan degrades into a bitmap-plus-sort population walk
+    (measured on the 70k-terminal-row corpus; see
+    _ARCHIVE_CANDIDATE_SQL's comment). The race fence is the write
+    statement's `locked` arm instead, which locks the small batch by
+    primary key. The plan pins above catch the executed shape with a
+    live server; this contract pin catches the constant's shape on
+    arrival, no PG needed."""
+    for name, candidate_sql in (
+        ("_ARCHIVE_CANDIDATE_SQL", _ARCHIVE_CANDIDATE_SQL),
+        ("_ARCHIVE_CANDIDATE_ACTOR_SQL", _ARCHIVE_CANDIDATE_ACTOR_SQL),
+    ):
+        assert "FOR UPDATE" not in candidate_sql, (
+            f"{name} grew a row lock: the lock-bearing arm flips the "
+            "plancache to the generic plan past five same-statement "
+            "executions and the candidate scan degrades into a population "
+            "walk; the race fence belongs on the write statement's `locked` "
+            "arm, which locks the batch by primary key"
+        )
+
+
 # ── 4. move-queue backlog drain plan pin ─────────────────────────────
 
 

@@ -1538,6 +1538,7 @@ class _FakeConnForPrune(FakeConn):
         self._batch_rows = batch_rows or []
         self._batch_index = 0
         self._pending_write: list[_FakeRecord] | None = None
+        self._pending_ids: list[UUID] | None = None
         self._actor_config_rows = actor_config_rows
         self.fetch_calls: list[tuple[str, tuple[object, ...]]] = []
         # 7565d3f anchors prune cutoffs and the expiry reference instant to
@@ -1568,10 +1569,21 @@ class _FakeConnForPrune(FakeConn):
             return self._next_scripted_batch()
         # The archive write locks the batch by id and returns the grouped
         # delete counts; the fake answers it from the batch the preceding
-        # candidate fetch selected.
+        # candidate fetch selected, asserting the bound ids are exactly
+        # the ids that fetch returned - the caller discipline that keeps
+        # the write set bounded by the LIMIT-ed window (the same contract
+        # test_sweepaudit_bounded_writes.py pins structurally).
         if "WITH locked AS MATERIALIZED" in sql:
             pending = self._pending_write
             self._pending_write = None
+            pending_ids = self._pending_ids
+            self._pending_ids = None
+            if pending is not None:
+                assert pending_ids is not None and list(args[2]) == pending_ids, (
+                    f"the archive write must bind exactly the candidate "
+                    f"window's returned ids; bound {args[2]!r}, "
+                    f"the window returned {pending_ids!r}"
+                )
             return pending if pending is not None else []
         # The expiry sweep is one statement per batch: the scripted batch
         # is the statement's own result.
@@ -1587,7 +1599,12 @@ class _FakeConnForPrune(FakeConn):
         return []
 
     def _candidate_ids(self, write_rows: list[_FakeRecord]) -> list[_FakeRecord]:
-        return [_FakeRecord({"id": new_uuid()}) for _ in write_rows]
+        # One candidate id per scripted write row, stashed so the write
+        # fetch can prove the production caller bound exactly these ids
+        # (the candidate window's returned set, unmodified).
+        ids = [new_uuid() for _ in write_rows]
+        self._pending_ids = ids
+        return [_FakeRecord({"id": i}) for i in ids]
 
     async def _fetch_candidates(self, sql: str, *args: object) -> list[_FakeRecord]:
         """The candidate window: the next scripted batch, one candidate id
