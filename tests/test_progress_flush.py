@@ -25,7 +25,12 @@ from taskq._json import dumps, dumps_jsonb_str, embed_encoded
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.context import JobContext
 from taskq.obs import bind_job_context
-from taskq.progress._buffer import _progress_after_flush, _ProgressBuffer, _snapshot_progress
+from taskq.progress._buffer import (
+    _progress_after_flush,
+    _ProgressBuffer,
+    _seq_and_state_after_flush_attempt,
+    _snapshot_progress,
+)
 from taskq.progress._flush import (
     _FLUSH_BATCH_ROWS,  # pyright: ignore[reportPrivateUsage]  # Why: the pin asserts the batch bound itself - the doctrine constant is the contract under test.
     _FLUSH_MAX_BATCHES_PER_TICK,  # pyright: ignore[reportPrivateUsage]  # Why: the pin asserts the tick cap itself - the doctrine constant is the contract under test.
@@ -1162,3 +1167,109 @@ async def test_progress_after_flush_returns_copy_of_pending_state() -> None:
     _, state = _progress_after_flush(buf)
     state["extra"] = True
     assert "extra" not in buf.pending_state
+
+
+# ── The immediate flush and the tick flush never double-apply one delta ──
+
+
+async def test_immediate_flush_skips_a_tick_flush_in_flight() -> None:
+    """A pre-terminal flush arriving while the tick's batched statement
+    holds an unretired snapshot of the same buffer must not issue a second
+    statement.
+
+    Both surfaces apply the same ``progress_seq = row + delta`` merge:
+    with base 10 and delta 5, the tick lands the row at 15, a racing
+    immediate statement lands it at 20, and the terminal write then SETs
+    the retired base 15 absolutely, a regression of the monotone-seq
+    invariant. With the per-buffer gate the immediate path returns
+    without flushing, the buffer keeps its unflushed delta, and the
+    terminal write's absolute SET carries it: the row's seq is monotone
+    across the interleaving and lands on the correct final value.
+    """
+    row_seq = 10
+    seq_history = [row_seq]
+    statement_gate = asyncio.Event()
+
+    async def _merge_fetch(*args: object) -> list[dict[str, object]]:
+        # The tick statement's merge shape: progress_seq = row + delta,
+        # one RETURNING row per bound job id. Suspended mid-flight until
+        # the gate opens, so the consumer's immediate flush genuinely
+        # overlaps it.
+        nonlocal row_seq
+        await statement_gate.wait()
+        job_ids = args[1]
+        deltas = args[2]
+        assert isinstance(job_ids, list) and isinstance(deltas, list)
+        for _merged_id, delta in zip(job_ids, deltas, strict=True):
+            row_seq += delta
+        seq_history.append(row_seq)
+        typed_ids = cast("list[UUID]", job_ids)  # pyright: ignore[reportUnknownVariableType]  # Why: the fake conn's *args are object; the pin only ever binds UUID lists.
+        return [{"id": job_id, "progress_seq": row_seq} for job_id in typed_ids]
+
+    async def _merge_fetchrow(*args: object) -> dict[str, object] | None:
+        # The immediate statement's single-row merge shape; it must never
+        # run while the tick's statement is in flight.
+        nonlocal row_seq
+        deltas = args[2]
+        assert isinstance(deltas, list)
+        row_seq += deltas[0]
+        seq_history.append(row_seq)
+        return {"id": _JOB_ID, "progress_seq": row_seq}
+
+    conn = AsyncMock()
+    conn.fetch.side_effect = _merge_fetch
+    conn.fetchrow.side_effect = _merge_fetchrow
+    pool = MagicMock()
+    pool.get_size.return_value = _POOL_SIZE
+
+    @asynccontextmanager
+    async def _acquire() -> AsyncGenerator[AsyncMock, None]:
+        yield conn
+
+    pool.acquire = _acquire
+
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=10)
+    buf.pending_seq_delta = 5
+    buf.pending_state["step"] = 1
+    buf.dirty = True
+    buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf}
+
+    tick = asyncio.create_task(
+        _flush_dirty_set(pool, "taskq_test", _WORKER_ID, buffers, [(_JOB_ID, buf)])
+    )
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if buf.flush_in_flight:
+            break
+    assert buf.flush_in_flight is True, "the tick must latch the gate before its statement"
+
+    # The consumer's pre-terminal flush overlaps the tick's in-flight
+    # statement: it must skip, not double-apply.
+    await _flush_buffer_immediate(pool, "taskq_test", _JOB_ID, _WORKER_ID, buffers)
+    assert conn.fetchrow.await_count == 0, (
+        "a second statement here applies the tick's unretired delta twice"
+    )
+    assert conn.fetch.await_count == 1
+    # The skipped flush leaves the buffer's delta intact for the terminal SET.
+    assert buf.dirty is True
+    assert buf.base_seq == 10
+    assert buf.pending_seq_delta == 5
+
+    statement_gate.set()
+    await tick
+
+    # The tick's retire adopted the authoritative seq and reopened the gate.
+    assert buf.base_seq == 15
+    assert buf.pending_seq_delta == 0
+    assert buf.flush_in_flight is False
+
+    # The terminal write reads base + pending from the buffer and SETs it
+    # absolutely; the row's seq must never regress across the interleaving.
+    terminal_seq, _terminal_state = _seq_and_state_after_flush_attempt(buf)
+    seq_history.append(terminal_seq)
+
+    assert seq_history == sorted(seq_history), (
+        f"progress_seq regressed across the interleaving: {seq_history}"
+    )
+    assert row_seq == 15
+    assert terminal_seq == 15

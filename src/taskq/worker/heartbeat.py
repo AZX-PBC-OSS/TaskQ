@@ -31,7 +31,7 @@ import structlog
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq._dsn import dsn_host
 from taskq._shield import shield_with_retrieval
-from taskq.backend._protocol import CancelPhase
+from taskq.backend._protocol import CancelPhase, JobId
 from taskq.backend._records import jsonb_param
 from taskq.backend._sql import (
     INSERT_ATTEMPT_SQL,
@@ -689,17 +689,21 @@ async def isolate_self(
     # arithmetic explainable (selected rows = pending + crashed +
     # cancelled + lost_race).
     jobs_lost_race_count = 0
-    # The re-pend's exclusion set: empty (vacuously matches every row)
-    # when this process holds no actors, the ids captured at cancel time
-    # otherwise.
-    excluded_ids: list[UUID] = []
-    # Actors still executing in THIS process: their rows must never enter
-    # the re-pend below. The reclaim delay (however large the operator
-    # sized the backoff) does not outlive a long actor: a peer claims the
-    # re-pended row the moment its scheduled_at arrives and runs it
-    # concurrently with the local body, a double run. Instead the local
-    # actors take the same route the shutdown orchestrator's CANCELLING
-    # phase gives them: the SHUTDOWN origin stamp plus the cancel event
+    # The re-pend's exclusion set: held_ids() covers BOTH maps, the
+    # registered consumers (executing now) AND the claim intents (taken
+    # off local_queue, not yet registered). The intents are the easy one
+    # to miss: a consumer parked in the take-to-register window has
+    # already claimed its row (running, locked, this worker) but owns no
+    # registry entry, so a snapshot of ``all()`` alone misses it and the
+    # re-pend would hand the row back to the fleet while the local body
+    # is about to execute it, a peer claims the re-pended row the moment
+    # its scheduled_at arrives and runs it concurrently with the local
+    # body, a double run, and the local terminal write then loses the
+    # attempt-epoch fence (silently discarded).
+    excluded_ids: list[JobId] = deps.active_jobs.held_ids()
+    # Actors still executing in THIS process: their rows are excluded
+    # above, and they take the same route the shutdown orchestrator's
+    # CANCELLING phase gives them: the SHUTDOWN origin stamp plus the cancel event
     # routes each consumer's unwinding through its mark_interrupted arm,
     # which earns the exit-proving hold and releases the row with the
     # spent attempt standing. Where PG is truly unreachable and the
@@ -722,8 +726,8 @@ async def isolate_self(
         # bounded by the terminal-write retry budget; the join here is the
         # outer bound (the grace periods the actor's own unwinding may
         # take, plus close slack). Entries that outlive it keep their rows
-        # excluded from the re-pend, lock-lease expiry is the backstop.
-        excluded_ids = [active.job_id for active in active_entries]
+        # excluded from the re-pend (they are in held_ids(), captured
+        # before any await), lock-lease expiry is the backstop.
         join_bound = (
             deps.settings.cancellation_grace_period
             + deps.settings.cleanup_grace_period

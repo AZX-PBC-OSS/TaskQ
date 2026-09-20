@@ -245,11 +245,36 @@ async def _flush_buffer_immediate(
     No-op when the buffer does not exist or is not dirty.
     On success, ``buffer.base_seq`` holds the authoritative final seq and
     ``buffer.pending_seq_delta == 0``.
+
+    The per-buffer gate (``_ProgressBuffer.flush_in_flight``): when the
+    tick's batched flush already holds an unretired snapshot of this
+    buffer, issuing the single-row statement here would apply the same
+    delta a second time (the tick's later retire then drives
+    ``pending_seq_delta`` negative, and the caller's absolute terminal
+    SET regresses the row's ``progress_seq``). Skipping is correct by
+    construction, not a loss: the buffer keeps its unflushed delta, the
+    terminal write reads ``base_seq + pending_seq_delta`` from it (see
+    :func:`taskq.progress._buffer._seq_and_state_after_flush_attempt`),
+    so the write's absolute SET carries the full unflushed delta, and a
+    tick flush that fails merely leaves the buffer dirty for the next
+    tick.
     """
     buffer = progress_buffers.get(job_id)
     if buffer is None or not buffer.dirty:
         return
-    await _flush_buffer(worker_pool, schema, job_id, worker_id, buffer, progress_buffers)
+    # Check and set with no await between: on the single event loop both
+    # flush surfaces run on, that atomicity is the whole gate (the same
+    # latch shape the publish path's ``publish_in_flight`` uses).
+    if buffer.flush_in_flight:
+        return
+    buffer.flush_in_flight = True
+    try:
+        await _flush_buffer(worker_pool, schema, job_id, worker_id, buffer, progress_buffers)
+    finally:
+        # Reopened on every exit, statement failure included: a gate left
+        # shut would make every later immediate flush skip this buffer
+        # for the rest of its lifetime.
+        buffer.flush_in_flight = False
 
 
 async def _flush_dirty_set(
@@ -283,6 +308,13 @@ async def _flush_dirty_set(
     protocol below keys on which job ids came back, so a fenced-out
     row's buffer is dropped exactly as the per-buffer no-op path
     dropped it.
+
+    Per-buffer flush serialization (the ``flush_in_flight`` gate): this
+    tick latches each batched buffer's gate before its first await and
+    reopens it in the retire step (and in a finally on the error paths),
+    while the immediate path skips a latched buffer instead of issuing a
+    second statement, so the same unretired delta can never be applied
+    twice and the terminal write's absolute SET never regresses the row.
     """
     sql = _flush_update_sql(schema)
 
@@ -292,6 +324,13 @@ async def _flush_dirty_set(
     # call survives on top of the new base (snapshot-and-subtract).
     snapshots: list[tuple[UUID, _ProgressBuffer, int, dict[str, object], str]] = []
     for job_id, buffer in dirty:
+        # The gate in the other direction: a buffer an immediate
+        # (pre-terminal) flush currently owns keeps its delta out of this
+        # tick's statement. That flush retires (or leaves dirty on
+        # failure) and reopens the gate; snapshotting the delta here
+        # would apply it twice, once per surface.
+        if buffer.flush_in_flight:
+            continue
         snapshot_delta = buffer.pending_seq_delta
         snapshot_state = dict(buffer.pending_state)
         try:
@@ -321,74 +360,100 @@ async def _flush_dirty_set(
         snapshots[i : i + _FLUSH_BATCH_ROWS] for i in range(0, len(snapshots), _FLUSH_BATCH_ROWS)
     ][:_FLUSH_MAX_BATCHES_PER_TICK]
 
+    # Latch every batched buffer's gate before the first await: the
+    # snapshot phase above and this loop are one synchronous block, so no
+    # immediate flush can start between seeing a buffer and latching it
+    # (check-and-set with no await between, the same discipline the
+    # immediate path applies). Buffers beyond the tick cap stay
+    # unlatched: the tick holds no snapshot of them, and they drain on
+    # the next tick.
+    for batch in batches:
+        for _snapshot in batch:
+            _snapshot[1].flush_in_flight = True
+
     for batch in batches:
         batch_job_ids = [snapshot[0] for snapshot in batch]
 
         try:
-            async with pool.acquire() as conn:
-                try:
-                    rows = await conn.fetch(
-                        sql,
-                        batch_job_ids,
-                        [snapshot[2] for snapshot in batch],
-                        [snapshot[4] for snapshot in batch],
-                        [snapshot[1].attempt for snapshot in batch],
-                        worker_id,
+            try:
+                async with pool.acquire() as conn:
+                    try:
+                        rows = await conn.fetch(
+                            sql,
+                            batch_job_ids,
+                            [snapshot[2] for snapshot in batch],
+                            [snapshot[4] for snapshot in batch],
+                            [snapshot[1].attempt for snapshot in batch],
+                            worker_id,
+                        )
+                    except Exception as exc:
+                        if isinstance(exc, asyncio.CancelledError):
+                            raise
+                        # This batch's statement failed: only its jobs lose
+                        # their flush this tick, their buffers stay dirty,
+                        # deltas intact, and the tick goes on to the later
+                        # batches (per-batch isolation: no single unit may
+                        # stall the tick). Per-job lines keep the
+                        # getter-failure handler's per-job labeling shape;
+                        # the stage names the batch as the unit that failed,
+                        # distinct from the single-row statement's per_job
+                        # stage.
+                        for job_id in batch_job_ids:
+                            _log.error(
+                                "progress-flush-error",
+                                job_id=str(job_id),
+                                error=str(exc),
+                                kind="progress_flush_error",
+                            )
+                            record_progress_flush_failure(
+                                stage="batch",
+                                error_type=type(exc).__name__,
+                            )
+                        continue
+            except Exception as exc:
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                # A pool acquire failure/exhaustion loses this batch's jobs
+                # this tick, exactly like the loop-level pool_getter failure
+                # , hence the pool event/kind and stage, never the statement
+                # ones. Later batches still get their own checkout.
+                for job_id in batch_job_ids:
+                    _log.error(
+                        "progress-flush-pool-error",
+                        job_id=str(job_id),
+                        error=str(exc),
+                        kind="progress_flush_pool_error",
                     )
-                except Exception as exc:
-                    if isinstance(exc, asyncio.CancelledError):
-                        raise
-                    # This batch's statement failed: only its jobs lose
-                    # their flush this tick, their buffers stay dirty,
-                    # deltas intact, and the tick goes on to the later
-                    # batches (per-batch isolation: no single unit may
-                    # stall the tick). Per-job lines keep the
-                    # getter-failure handler's per-job labeling shape;
-                    # the stage names the batch as the unit that failed,
-                    # distinct from the single-row statement's per_job
-                    # stage.
-                    for job_id in batch_job_ids:
-                        _log.error(
-                            "progress-flush-error",
-                            job_id=str(job_id),
-                            error=str(exc),
-                            kind="progress_flush_error",
-                        )
-                        record_progress_flush_failure(
-                            stage="batch",
-                            error_type=type(exc).__name__,
-                        )
-                    continue
-        except Exception as exc:
-            if isinstance(exc, asyncio.CancelledError):
-                raise
-            # A pool acquire failure/exhaustion loses this batch's jobs
-            # this tick, exactly like the loop-level pool_getter failure
-            # , hence the pool event/kind and stage, never the statement
-            # ones. Later batches still get their own checkout.
-            for job_id in batch_job_ids:
-                _log.error(
-                    "progress-flush-pool-error",
-                    job_id=str(job_id),
-                    error=str(exc),
-                    kind="progress_flush_pool_error",
-                )
-                record_progress_flush_failure(
-                    stage="pool",
-                    error_type=type(exc).__name__,
-                )
-            continue
-
-        returned_seqs: dict[UUID, int] = {row["id"]: row["progress_seq"] for row in rows}
-        for job_id, buffer, snapshot_delta, snapshot_state, _state_doc in batch:
-            returned_seq = returned_seqs.get(job_id)
-            if returned_seq is None:
-                _log.debug("progress-flush-no-row", job_id=str(job_id))
-                # The per-row idempotency gate fenced this row out
-                # (reclaimed, terminal, or a later attempt epoch owns it).
-                _drop_fenced_out_buffer(progress_buffers, job_id, buffer)
+                    record_progress_flush_failure(
+                        stage="pool",
+                        error_type=type(exc).__name__,
+                    )
                 continue
-            _retire_flushed_snapshot(buffer, returned_seq, snapshot_delta, snapshot_state)
+
+            returned_seqs: dict[UUID, int] = {row["id"]: row["progress_seq"] for row in rows}
+            for job_id, buffer, snapshot_delta, snapshot_state, _state_doc in batch:
+                # The gate opens the moment this tick's statement no longer
+                # holds a snapshot of the buffer, retired here or dropped
+                # as fenced out, so an immediate flush racing the tail of
+                # this tick never sees a stale latch.
+                buffer.flush_in_flight = False
+                returned_seq = returned_seqs.get(job_id)
+                if returned_seq is None:
+                    _log.debug("progress-flush-no-row", job_id=str(job_id))
+                    # The per-row idempotency gate fenced this row out
+                    # (reclaimed, terminal, or a later attempt epoch owns it).
+                    _drop_fenced_out_buffer(progress_buffers, job_id, buffer)
+                    continue
+                _retire_flushed_snapshot(buffer, returned_seq, snapshot_delta, snapshot_state)
+        finally:
+            # Every path that never reached the retire loop (statement
+            # failure, pool failure, task cancellation mid-batch) reopens
+            # the batch's gates here: a latch left shut would make the
+            # tick's own snapshot phase skip the buffer on every future
+            # tick and starve it of flushes. Retired buffers were already
+            # reopened above; this is the safety net for the rest.
+            for _snapshot in batch:
+                _snapshot[1].flush_in_flight = False
 
 
 async def progress_flush_loop(

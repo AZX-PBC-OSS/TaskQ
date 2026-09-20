@@ -515,3 +515,74 @@ async def test_isolate_self_cancels_live_actors_and_excludes_their_rows() -> Non
         "the re-pend selection must exclude the row the local actor owns"
     )
     assert shutdown.is_set()
+
+
+# ── Test: isolate excludes claim-intent rows (the take-to-register window) ──
+
+
+async def test_isolate_self_excludes_claim_intent_rows() -> None:
+    """A consumer parked in the take-to-register window must be excluded too.
+
+    The registry's claim intents (marked at queue take, resolved at
+    register) carry no _ActiveJob entry, so a snapshot of ``all()`` alone
+    misses them: the isolate re-pended a row this process had already
+    claimed (running, locked, this worker), a peer claimed the re-pended
+    row and ran it concurrently with the local body, a double run, and
+    the local terminal write then lost the attempt-epoch fence. The
+    exclusion array must come from held_ids(), which covers both maps.
+    """
+
+    job_id = new_uuid()
+    deps = _make_deps()
+    # ONLY a claim intent, no registered entry: the exact window shape.
+    deps.active_jobs.mark_claimed(job_id)
+
+    row: dict[str, object] = {
+        "id": job_id,
+        "attempt": 1,
+        "started_at": "2025-01-01T00:00:00Z",
+        "max_attempts": 3,
+        "retry_kind": "transient",
+        "cancel_phase": 0,
+    }
+
+    class _ExclusionAwareConn(FakeConn):
+        async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
+            self.fetch_calls = getattr(self, "fetch_calls", [])
+            self.fetch_calls.append((sql, args))
+            # Mirror the statement's exclusion predicate: rows whose id
+            # sits in the second bound parameter (the uuid[] exclusion
+            # array) never come back, so a missed exclusion shows up
+            # here as a re-pended row rather than only as a bad bind.
+            excluded = set(args[1]) if len(args) > 1 else set()
+            return [candidate for candidate in self._fetch_rows if candidate["id"] not in excluded]
+
+    conn = _ExclusionAwareConn(fetch_rows=[row])
+
+    async def fake_connect(
+        dsn: str, *, timeout: float, command_timeout: float | None = None
+    ) -> _ExclusionAwareConn:
+        return conn
+
+    import asyncpg as apg
+
+    orig_connect = apg.connect
+    apg.connect = fake_connect  # type: ignore[method-assign] # Why: patching asyncpg.connect for unit test; restored in finally.
+    try:
+        shutdown = asyncio.Event()
+        await asyncio.wait_for(isolate_self(deps, new_uuid(), shutdown), timeout=10.0)
+    finally:
+        apg.connect = orig_connect  # type: ignore[method-assign]
+
+    # The exclusion array (the fetch's second bound parameter) carries
+    # the intent's id even though the registry holds no entry for it.
+    assert len(conn.fetch_calls) == 1
+    _sql, fetch_args = conn.fetch_calls[0]
+    assert len(fetch_args) == 2
+    assert job_id in fetch_args[1], (
+        "the re-pend selection must exclude the claimed-but-unregistered row"
+    )
+    # The row was NOT re-pended: no disposition UPDATE, no crashed
+    # attempt INSERT, the local body's epoch keeps the row.
+    assert conn.execute_calls == [], "the claim intent's row must never enter the isolate's re-pend"
+    assert shutdown.is_set()

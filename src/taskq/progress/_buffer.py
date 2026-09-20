@@ -74,6 +74,18 @@ class _ProgressBuffer:
     encoded_data: _EncodedProgressData | None = None
     dirty: bool = False
     last_flush_at: float = 0.0
+    # The flush gate (``_flush_buffer_immediate`` vs the tick's
+    # ``_flush_dirty_set``): at most one flush of this buffer's unretired
+    # delta may be in flight at a time. Both surfaces apply the same
+    # ``progress_seq = row + delta`` merge, so a second statement issued
+    # while one holds an unretired snapshot double-applies the delta (and
+    # the second retire then drives ``pending_seq_delta`` negative, so the
+    # terminal write's absolute SET regresses the row). The immediate
+    # path skips instead of waiting: the buffer keeps its unflushed delta
+    # and the terminal write's absolute SET carries it. Mutable like the
+    # rest of the accumulator; both surfaces run on the worker's event
+    # loop, so the flag never needs a lock.
+    flush_in_flight: bool = False
     # The Redis publish gate (``JobContext.progress``): at most one publish
     # task per job is in flight at a time; a progress call that lands while
     # one is running only latches its event on ``pending_publish`` for the
