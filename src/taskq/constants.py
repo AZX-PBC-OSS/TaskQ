@@ -18,6 +18,7 @@ __all__ = [
     "CANCEL_ORIGIN_COOPERATIVE",
     "CANCEL_ORIGIN_FORCED",
     "CANCEL_ORIGIN_PENDING",
+    "CANCEL_ORIGIN_UNREQUESTED",
     "DEFAULT_CHUNK_SIZE",
     "DEFAULT_EVENT_RETENTION_BATCH_SIZE",
     "DEFAULT_EVENT_RETENTION_PERIOD",
@@ -230,6 +231,25 @@ jobs it cancels."""
 ERROR_CLASS_BATCH_ABORTED: Final[str] = "BatchAbortedError"
 """``error_class`` batch abort stamps on the not-yet-running jobs it
 cancels."""
+
+CANCEL_ORIGIN_UNREQUESTED: Final[str] = "CancelledWithoutRequest"
+"""``error_class`` a terminal cancel of a row that carries no cancel request.
+
+``mark_cancelled`` is reachable at ``cancel_phase = 0`` with
+``cancel_requested_at IS NULL``: the consumer's ``CancelledError`` handler
+routes there for any cancellation no controller stamped, a sibling task
+crash inside a TaskGroup, an actor raising its own ``CancelledError``, a
+child-task cancellation leaking through an await. The pre-fix CASE keyed
+on the phase alone and stamped such rows ``CancelledCooperatively``, a
+marker whose meaning is that an operator asked and the actor yielded. This
+origin is the truthful stamp for the same terminal state: the worker's
+runtime decided the cancellation on its own, and the distinguishing
+evidence on the row is exactly the absent request
+(``cancel_requested_at IS NULL``, ``cancel_phase = 0``). The row still
+terminalises, the attempt still stands, and the marker joins the other
+origins on the row, the attempt, and the event detail through
+``upd.error_class``, so the three audit surfaces cannot disagree.
+"""
 
 MIN_DEFERRAL_INTERVAL: Final[timedelta] = timedelta(seconds=1)
 """Minimum effective delay a NON-consuming deferral reschedules out.
