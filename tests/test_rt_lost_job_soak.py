@@ -198,9 +198,11 @@ async def _status_counts(conn: asyncpg.Connection, schema: str) -> dict[str, int
     return {r["status"]: r["n"] for r in rows}
 
 
-async def _settle_snapshot(conn: asyncpg.Connection, schema: str) -> dict[str, Any]:
+async def _settle_snapshot(
+    conn: asyncpg.Connection, schema: str, tag: str = _TAG
+) -> dict[str, Any]:
     """One observation of the observable settle state (public surfaces:
-    the jobs table and the attempt ledger)."""
+    the jobs table and the attempt ledger), scoped to *tag*."""
     jobs = await conn.fetchrow(
         f"""
         SELECT
@@ -222,13 +224,13 @@ async def _settle_snapshot(conn: asyncpg.Connection, schema: str) -> dict[str, A
             ), '-infinity'::timestamptz) AS non_terminal_max_scheduled
         FROM "{schema}".jobs WHERE tags @> ARRAY[$1::text]
         """,
-        _TAG,
+        tag,
     )
     attempts = await conn.fetchval(
         f'SELECT count(*)::int FROM "{schema}".job_attempts a '
         f'WHERE EXISTS (SELECT 1 FROM "{schema}".jobs j WHERE j.id = a.job_id '
         "AND j.tags @> ARRAY[$1::text])",
-        _TAG,
+        tag,
     )
     assert jobs is not None
     return {
@@ -244,7 +246,7 @@ async def _settle_snapshot(conn: asyncpg.Connection, schema: str) -> dict[str, A
 
 
 async def _settle_quiescent(
-    conn: asyncpg.Connection, schema: str, job_count: int
+    conn: asyncpg.Connection, schema: str, job_count: int, tag: str = _TAG
 ) -> dict[str, Any]:
     """Wait until the soak has SETTLED, then hand back the last snapshot.
 
@@ -270,7 +272,7 @@ async def _settle_quiescent(
     cap = max(_SETTLE_CAP_FLOOR_SECS, _SETTLE_CAP_SECS_PER_JOB * job_count)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + cap
-    prior = await _bounded(_settle_snapshot(conn, schema), "settle baseline")
+    prior = await _bounded(_settle_snapshot(conn, schema, tag), "settle baseline")
     quiet_polls = 0
     while True:
         if prior["non_terminal"] == 0:
@@ -300,7 +302,7 @@ async def _settle_quiescent(
                 "is NOT a lost-job verdict"
             )
         await _bounded(asyncio.sleep(_SETTLE_POLL_SECS), "settle poll")
-        snapshot = await _bounded(_settle_snapshot(conn, schema), "settle snapshot")
+        snapshot = await _bounded(_settle_snapshot(conn, schema, tag), "settle snapshot")
         progressed = (
             snapshot["terminal"] != prior["terminal"]
             or snapshot["attempts"] != prior["attempts"]
@@ -565,6 +567,16 @@ async def test_settle_quiescence_has_teeth(
     assumed.
     """
     schema = module_pg_schema.schema_name
+    # The teeth jobs carry their OWN tag and are deleted on exit: they are
+    # inserted by raw SQL - NO events, NO enqueue trail - so a leftover
+    # control row would count as a zero-state job in every later trial's
+    # trail check. The module schema is shared (per xdist worker) and test
+    # order is randomized (pytest-randomly), so teeth can run BEFORE the
+    # trials; the old fixed _TAG leaked the control job into the trials'
+    # zero-state count - "1 jobs carry no events" red on CI (PRs 395/396)
+    # exactly when this test preceded a trial in the shuffled order and
+    # shared its worker's schema.
+    teeth_tag = f"{_TAG}-teeth"
     conn = await asyncpg.connect(pg_dsn)
     try:
         # Green control first: an all-terminal population settles
@@ -578,9 +590,9 @@ async def test_settle_quiescence_has_teeth(
             "clock_timestamp(), clock_timestamp(), ARRAY[$3::text])",
             done_id,
             _QUEUE,
-            _TAG,
+            teeth_tag,
         )
-        counts = await _settle_quiescent(conn, schema, 1)
+        counts = await _settle_quiescent(conn, schema, 1, teeth_tag)
         assert counts["non_terminal"] == 0
 
         # Inject the loss: claim the job, then cancel the claim row out
@@ -594,7 +606,7 @@ async def test_settle_quiescence_has_teeth(
             "clock_timestamp(), ARRAY[$3::text])",
             lost_id,
             _QUEUE,
-            _TAG,
+            teeth_tag,
         )
         await conn.execute(
             f'INSERT INTO "{schema}".job_attempts '
@@ -608,6 +620,7 @@ async def test_settle_quiescence_has_teeth(
         # attempts added - quiescence is reached and the stranded job
         # must be named, not awaited past a deadline.
         with pytest.raises(AssertionError, match="QUIESCENT WITH STRAGGLERS"):
-            await _settle_quiescent(conn, schema, 2)
+            await _settle_quiescent(conn, schema, 2, teeth_tag)
     finally:
+        await conn.execute(f'DELETE FROM "{schema}".jobs WHERE tags @> ARRAY[$1::text]', teeth_tag)
         await conn.close()
