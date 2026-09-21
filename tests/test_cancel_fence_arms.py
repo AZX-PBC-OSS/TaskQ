@@ -102,7 +102,9 @@ class TestDeferralArmsCarryTheCancelFence:
         job_id, wid = await _enqueue_and_dispatch(backend)
         _set_in_flight_cancel(backend, job_id)
 
-        result = await backend.mark_snoozed(job_id, wid, timedelta(seconds=30), attempt=1)
+        result = await backend.mark_snoozed(
+            job_id, wid, timedelta(seconds=30), attempt=1, claim_epoch=1
+        )
 
         assert result == "noop", (
             "a snooze landing mid-cancel must not reschedule the row: the "
@@ -121,7 +123,7 @@ class TestDeferralArmsCarryTheCancelFence:
         _set_in_flight_cancel(backend, job_id)
 
         result = await backend.mark_retry_after(
-            job_id, wid, timedelta(seconds=10), consume_budget=True, attempt=1
+            job_id, wid, timedelta(seconds=10), consume_budget=True, attempt=1, claim_epoch=1
         )
 
         assert result == "noop", (
@@ -140,7 +142,7 @@ class TestDeferralArmsCarryTheCancelFence:
         _set_in_flight_cancel(backend, job_id)
 
         result = await backend.mark_retry_after(
-            job_id, wid, timedelta(seconds=10), consume_budget=False, attempt=1
+            job_id, wid, timedelta(seconds=10), consume_budget=False, attempt=1, claim_epoch=1
         )
 
         assert result == "noop", (
@@ -159,7 +161,9 @@ class TestDeferralArmsCarryTheCancelFence:
         backend = _make_backend()
         job_id, wid = await _enqueue_and_dispatch(backend)
 
-        result = await backend.mark_snoozed(job_id, wid, timedelta(seconds=30), attempt=1)
+        result = await backend.mark_snoozed(
+            job_id, wid, timedelta(seconds=30), attempt=1, claim_epoch=1
+        )
         assert result == "scheduled"
         row = await backend.get(job_id)
         assert row is not None
@@ -194,7 +198,9 @@ class TestBulkCancelDoubleReport:
 
         # The consumer snoozes mid-drain. Before the fix this wipes the
         # operator's cancel columns and re-pends the row behind the cursor.
-        snoozed = await backend.mark_snoozed(job_id, wid, timedelta(seconds=30), attempt=1)
+        snoozed = await backend.mark_snoozed(
+            job_id, wid, timedelta(seconds=30), attempt=1, claim_epoch=1
+        )
 
         # Round 2: the drain re-walks from the cursor.
         second = await backend.cancel_where(_match_all_filter(), reason="bulk-drain")
@@ -260,7 +266,9 @@ class TestInterruptArmAttemptEpoch:
 
         # Shutdown interrupts the running attempt (zero hold: the row lands
         # 'pending' immediately; the process is going away).
-        released = await backend.mark_interrupted(job_id, wid, attempt=1, hold=timedelta(0))
+        released = await backend.mark_interrupted(
+            job_id, wid, attempt=1, claim_epoch=1, hold=timedelta(0)
+        )
         assert released == "pending"
         row = await backend.get(job_id)
         assert row is not None
@@ -283,7 +291,9 @@ class TestInterruptArmAttemptEpoch:
         )
 
         # The zombie's terminal write at the old epoch must be fenced out.
-        zombie_landed = await backend.mark_succeeded(job_id, wid, {"zombie": True}, attempt=1)
+        zombie_landed = await backend.mark_succeeded(
+            job_id, wid, {"zombie": True}, attempt=1, claim_epoch=1
+        )
         assert zombie_landed is False, (
             "the interrupted handler's terminal write landed on the "
             "re-dispatched attempt: the interrupt refund re-created the "
@@ -295,7 +305,10 @@ class TestInterruptArmAttemptEpoch:
         assert row.status == "running"
 
         # The live execution's own terminal write lands.
-        assert await backend.mark_succeeded(job_id, wid, {"live": True}, attempt=2) is True
+        assert (
+            await backend.mark_succeeded(job_id, wid, {"live": True}, attempt=2, claim_epoch=2)
+            is True
+        )
         row = await backend.get(job_id)
         assert row is not None
         assert row.status == "succeeded"
@@ -393,13 +406,13 @@ async def _pair_set_in_flight_cancel(backend: Backend, job_id: JobId, phase: Can
 
 _ARM_CALLS = {
     "snoozed": lambda backend, job_id, wid: backend.mark_snoozed(
-        job_id, wid, timedelta(seconds=30), attempt=1
+        job_id, wid, timedelta(seconds=30), attempt=1, claim_epoch=1
     ),
     "retry_after_consume_true": lambda backend, job_id, wid: backend.mark_retry_after(
-        job_id, wid, timedelta(seconds=10), consume_budget=True, attempt=1
+        job_id, wid, timedelta(seconds=10), consume_budget=True, attempt=1, claim_epoch=1
     ),
     "retry_after_consume_false": lambda backend, job_id, wid: backend.mark_retry_after(
-        job_id, wid, timedelta(seconds=10), consume_budget=False, attempt=1
+        job_id, wid, timedelta(seconds=10), consume_budget=False, attempt=1, claim_epoch=1
     ),
 }
 

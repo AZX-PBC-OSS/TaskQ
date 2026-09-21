@@ -103,7 +103,8 @@ async def _relock_for_next_dispatch(
         "    lock_expires_at = clock_timestamp() + interval '60 seconds', "
         "    started_at = clock_timestamp(), "
         "    last_heartbeat_at = clock_timestamp(), "
-        "    attempt = attempt + 1 "
+        "    attempt = attempt + 1, "
+        "    claim_epoch = claim_epoch + 1 "
         "WHERE id = $1",
         job_id,
         worker_id,
@@ -111,13 +112,27 @@ async def _relock_for_next_dispatch(
 
 
 async def _current_attempt(conn: asyncpg.Connection, schema: str, job_id: UUID) -> int:
-    """The row's current attempt epoch - the denial-cycle writes' fence bind."""
+    """The row's current attempt number - the denial-cycle writes' fence bind."""
     attempt: int | None = await conn.fetchval(
         f'SELECT attempt FROM "{schema}".jobs WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier, validated against _IDENT_RE upstream; job_id is $-bound.
         job_id,
     )
     assert attempt is not None
     return attempt
+
+
+async def _current_claim_epoch(conn: asyncpg.Connection, schema: str, job_id: UUID) -> int:
+    """The row's current claim epoch - the denial-cycle writes' second fence bind.
+
+    The relock below bumps it beside the attempt (a real claim advances
+    both), so the epoch is read fresh each cycle too.
+    """
+    epoch: int | None = await conn.fetchval(
+        f'SELECT claim_epoch FROM "{schema}".jobs WHERE id = $1',  # noqa: S608
+        job_id,
+    )
+    assert epoch is not None
+    return epoch
 
 
 async def _count(conn: asyncpg.Connection, schema: str, table: str, job_id: UUID) -> int:
@@ -155,6 +170,7 @@ async def _drive_denial_loop(
             # dispatch's attempt increment, so the write carries the row's
             # CURRENT epoch, read fresh each cycle.
             attempt=await _current_attempt(conn, schema, job_id),
+            claim_epoch=await _current_claim_epoch(conn, schema, job_id),
         )
         assert outcome == "scheduled", f"denial cycle did not snooze: {outcome!r}"
         await _relock_for_next_dispatch(conn, schema, job_id, worker_id)
@@ -420,6 +436,7 @@ async def test_denial_rows_are_reclaimable_by_retention(
                     # The attempt-epoch fence: the row's CURRENT epoch,
                     # read fresh each cycle (the relock below increments it).
                     attempt=await _current_attempt(conn, schema, job_id),
+                    claim_epoch=await _current_claim_epoch(conn, schema, job_id),
                 )
                 if outcome != "scheduled":
                     terminal_outcome = outcome

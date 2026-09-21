@@ -163,7 +163,9 @@ async def test_mark_failed_or_retry_clears_cancel_state(backend_pair: Backend) -
     job_id, worker_id = await _enqueue_and_dispatch(backend_pair)
     await _force_cancel_escalated(backend_pair, job_id)
 
-    await backend_pair.mark_failed_or_retry(job_id, worker_id, _ERROR, timedelta(0), attempt=1)
+    await backend_pair.mark_failed_or_retry(
+        job_id, worker_id, _ERROR, timedelta(0), attempt=1, claim_epoch=1
+    )
 
     await _assert_clean_slate_on_next_attempt(backend_pair, job_id)
 
@@ -174,7 +176,9 @@ async def test_mark_snoozed_refuses_a_row_carrying_a_cancel_phase(
     job_id, worker_id = await _enqueue_and_dispatch(backend_pair)
     await _force_cancel_escalated(backend_pair, job_id)
 
-    outcome = await backend_pair.mark_snoozed(job_id, worker_id, timedelta(0), attempt=1)
+    outcome = await backend_pair.mark_snoozed(
+        job_id, worker_id, timedelta(0), attempt=1, claim_epoch=1
+    )
     assert outcome == "noop"
 
     row = await backend_pair.get(job_id)
@@ -192,7 +196,7 @@ async def test_mark_retry_after_refuses_a_row_carrying_a_cancel_phase(
     await _force_cancel_escalated(backend_pair, job_id)
 
     outcome = await backend_pair.mark_retry_after(
-        job_id, worker_id, timedelta(0), consume_budget=consume_budget, attempt=1
+        job_id, worker_id, timedelta(0), consume_budget=consume_budget, attempt=1, claim_epoch=1
     )
     assert outcome == "noop"
 
@@ -208,7 +212,9 @@ async def test_terminal_failure_preserves_cancel_state(backend_pair: Backend) ->
     job_id, worker_id = await _enqueue_and_dispatch(backend_pair)
     await _force_cancel_escalated(backend_pair, job_id)
 
-    await backend_pair.mark_failed_or_retry(job_id, worker_id, _ERROR, None, attempt=1)
+    await backend_pair.mark_failed_or_retry(
+        job_id, worker_id, _ERROR, None, attempt=1, claim_epoch=1
+    )
 
     row = await backend_pair.get(job_id)
     assert row is not None

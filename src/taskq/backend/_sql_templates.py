@@ -86,6 +86,7 @@ COPY_FROM_COLUMNS: Final[tuple[str, ...]] = (
     "snooze_count",
     "rate_limit_blocked_count",
     "interrupt_count",
+    "claim_epoch",
     "retry_base_seconds",
     "retry_cap_seconds",
     "retry_backoff",
@@ -98,8 +99,9 @@ COPY_FROM_COLUMNS: Final[tuple[str, ...]] = (
 # (enqueue_batch_fast_fixup) from the server clock, never the caller's
 # Python clock, or carries a DDL default the COPY lets apply
 # (created_at/scheduled_at now(), NULL schedule_to_close /
-# result_expires_at, and the zero-defaulted denial counters, which an
-# enqueued job has no reason to pre-set).  ``status`` is NOT omitted: the
+# result_expires_at, the zero-defaulted denial counters, and
+# claim_epoch, which only the dispatch claim ever assigns, an enqueued
+# row is born at epoch 0).  ``status`` is NOT omitted: the
 # COPY writes COPY_ENQUEUE_STATUS explicitly so the INSERT trigger never
 # fires for a row whose runnability the fixup has not yet decided (see
 # enqueue_batch_fast_fixup).  COPY_FROM_COLUMNS stays intact: it is
@@ -113,6 +115,7 @@ _COPY_ENQUEUE_OMITTED: Final[frozenset[str]] = frozenset(
         "snooze_count",
         "rate_limit_blocked_count",
         "interrupt_count",
+        "claim_epoch",
     }
 )
 COPY_ENQUEUE_COLUMNS: Final[tuple[str, ...]] = tuple(
@@ -261,6 +264,16 @@ def render(schema: str) -> SqlTemplates:
         # through the same machinery as the worker fence (rowcount 0 →
         # False / WorkerOwnershipMismatch / "noop", no publish).
         #
+        # CLAIM-EPOCH FENCING: every fenced template carries one conjunct
+        # deeper still, ``claim_epoch = $m``, the writer's own claim view
+        # (JobRow.claim_epoch, threaded beside attempt from every call
+        # site). Attempt saturates at the smallint ceiling (the claim's
+        # LEAST clamp, _dispatch_sql.py); the epoch does not, so a stale
+        # handler and the live one can never share a fence. NULL never
+        # satisfies the equality, the same cannot-prove-it doctrine the
+        # attempt conjunct applies. See 01.00.18_02_pre_claim_epoch.sql
+        # for the invariant.
+        #
         # duration_ms is computed IN the statement from the same
         # database-written timestamp pair Python used to receive and
         # multiply back, but server-side, with exact numeric arithmetic
@@ -289,7 +302,7 @@ WITH upd AS (
         ),
         progress_seq = $5,
         progress_state = CASE WHEN $6::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $6::jsonb ELSE progress_state END
-    WHERE {JOB_FENCE_BOUND_SQL.format(attempt_bind=8)}
+    WHERE {JOB_FENCE_BOUND_SQL.format(attempt_bind=8, epoch_bind=9)}
     RETURNING *
 ), holder AS (
     SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
@@ -328,7 +341,7 @@ WITH upd AS (
         error_traceback = $5,
         progress_seq = $6,
         progress_state = CASE WHEN $7::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $7::jsonb ELSE progress_state END
-    WHERE {JOB_FENCE_BOUND_SQL.format(attempt_bind=8)}
+    WHERE {JOB_FENCE_BOUND_SQL.format(attempt_bind=8, epoch_bind=9)}
     RETURNING *
 ), holder AS (
     SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
@@ -398,7 +411,8 @@ WITH params AS (
            -- scheduled_at and every deadline comparison read it, so the
            -- retried and deadline arms partition exactly.
            GREATEST($3::interval, {MIN_DEFERRAL_INTERVAL_SQL}) AS effective_delay,
-           $9::int AS attempt
+           $9::int AS attempt,
+           $10::bigint AS claim_epoch
 ),
 retried AS (
     UPDATE "{s}".jobs j
@@ -527,7 +541,7 @@ WITH upd AS (
                            ELSE '{CANCEL_ORIGIN_COOPERATIVE}' END,
         progress_seq = $3,
         progress_state = CASE WHEN $4::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $4::jsonb ELSE progress_state END
-    WHERE {JOB_FENCE_BOUND_SQL.format(attempt_bind=5)}
+    WHERE {JOB_FENCE_BOUND_SQL.format(attempt_bind=5, epoch_bind=6)}
     RETURNING *
 ), holder AS (
     SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
@@ -720,7 +734,8 @@ WITH params AS (
             -- record of a starved-out job names WHICH starvation it was
             -- (saturation vs a store outage), the observability the row
             -- counters alone cannot carry.
-            $9::text AS denial_reason
+            $9::text AS denial_reason,
+            $10::bigint AS claim_epoch
 ),
 snoozed AS (
     UPDATE "{s}".jobs j
@@ -916,7 +931,8 @@ WITH params AS (
            $3::interval AS delay,
            $4::int AS progress_seq,
            $5::jsonb AS progress_state,
-           $6::int AS attempt
+           $6::int AS attempt,
+           $7::bigint AS claim_epoch
 ),
         snoozed AS (
     UPDATE "{s}".jobs j
@@ -1168,7 +1184,8 @@ WITH params AS (
             GREATEST($3::interval, {MIN_DEFERRAL_INTERVAL_SQL}) AS effective_delay,
             $4::int AS progress_seq,
             $5::jsonb AS progress_state,
-            $6::int AS attempt
+            $6::int AS attempt,
+            $7::bigint AS claim_epoch
 ),
 snoozed AS (
     UPDATE "{s}".jobs j
@@ -1384,7 +1401,8 @@ WITH params AS (
                 THEN GREATEST($4::interval, {MIN_DEFERRAL_INTERVAL_SQL})
                 ELSE interval '0' END AS effective_hold,
            $5::int AS progress_seq,
-           $6::jsonb AS progress_state
+           $6::jsonb AS progress_state,
+           $7::bigint AS claim_epoch
 ),
 released AS (
     UPDATE "{s}".jobs j

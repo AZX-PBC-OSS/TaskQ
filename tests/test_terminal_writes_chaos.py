@@ -125,8 +125,8 @@ class TestConcurrentTerminalWrites:
         # Race the two callers
         if method == "mark_succeeded":
             results = await asyncio.gather(
-                backend.mark_succeeded(job_id, worker_a, {"ok": True}, attempt=1),
-                backend.mark_succeeded(job_id, worker_b, {"ok": True}, attempt=1),
+                backend.mark_succeeded(job_id, worker_a, {"ok": True}, attempt=1, claim_epoch=1),
+                backend.mark_succeeded(job_id, worker_b, {"ok": True}, attempt=1, claim_epoch=1),
                 return_exceptions=True,
             )
             assert results == [True, False]
@@ -134,10 +134,10 @@ class TestConcurrentTerminalWrites:
         elif method == "mark_failed_or_retry":
             results = await asyncio.gather(
                 backend.mark_failed_or_retry(
-                    job_id, worker_a, error_info, retry_delay=None, attempt=1
+                    job_id, worker_a, error_info, retry_delay=None, attempt=1, claim_epoch=1
                 ),
                 backend.mark_failed_or_retry(
-                    job_id, worker_b, error_info, retry_delay=None, attempt=1
+                    job_id, worker_b, error_info, retry_delay=None, attempt=1, claim_epoch=1
                 ),
                 return_exceptions=True,
             )
@@ -148,8 +148,8 @@ class TestConcurrentTerminalWrites:
 
         elif method == "mark_cancelled":
             results = await asyncio.gather(
-                backend.mark_cancelled(job_id, worker_a, attempt=1),
-                backend.mark_cancelled(job_id, worker_b, attempt=1),
+                backend.mark_cancelled(job_id, worker_a, attempt=1, claim_epoch=1),
+                backend.mark_cancelled(job_id, worker_b, attempt=1, claim_epoch=1),
                 return_exceptions=True,
             )
             assert results == [True, False]
@@ -167,8 +167,12 @@ class TestConcurrentTerminalWrites:
 
         elif method == "mark_snoozed":
             results = await asyncio.gather(
-                backend.mark_snoozed(job_id, worker_a, timedelta(seconds=30), attempt=1),
-                backend.mark_snoozed(job_id, worker_b, timedelta(seconds=30), attempt=1),
+                backend.mark_snoozed(
+                    job_id, worker_a, timedelta(seconds=30), attempt=1, claim_epoch=1
+                ),
+                backend.mark_snoozed(
+                    job_id, worker_b, timedelta(seconds=30), attempt=1, claim_epoch=1
+                ),
                 return_exceptions=True,
             )
             assert results == ["scheduled", "noop"]
@@ -176,10 +180,20 @@ class TestConcurrentTerminalWrites:
         elif method == "mark_retry_after":
             results = await asyncio.gather(
                 backend.mark_retry_after(
-                    job_id, worker_a, timedelta(seconds=30), consume_budget=True, attempt=1
+                    job_id,
+                    worker_a,
+                    timedelta(seconds=30),
+                    consume_budget=True,
+                    attempt=1,
+                    claim_epoch=1,
                 ),
                 backend.mark_retry_after(
-                    job_id, worker_b, timedelta(seconds=30), consume_budget=True, attempt=1
+                    job_id,
+                    worker_b,
+                    timedelta(seconds=30),
+                    consume_budget=True,
+                    attempt=1,
+                    claim_epoch=1,
                 ),
                 return_exceptions=True,
             )
@@ -345,7 +359,7 @@ class TestTransactionRollbackOnMidFlightFailure:
 
             victim_task = asyncio.create_task(
                 backend.mark_failed_or_retry(
-                    job_id, worker_id, error_info, retry_delay=None, attempt=1
+                    job_id, worker_id, error_info, retry_delay=None, attempt=1, claim_epoch=1
                 )
             )
 

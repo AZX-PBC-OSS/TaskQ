@@ -1056,6 +1056,7 @@ async def run_until_drained(backend: "InMemoryBackend", *, cancel_polling: bool 
                     error_info=error_info,
                     retry_delay=None,
                     attempt=job.attempt,
+                    claim_epoch=job.claim_epoch,
                 )
                 # Production's generic-exception escape routes this failure
                 # through _handle_generic_exception and applies the batch

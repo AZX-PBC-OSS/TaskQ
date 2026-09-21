@@ -668,6 +668,7 @@ async def test_claim_and_denial_write_no_event_rows() -> None:
         timedelta(seconds=10),
         outcome="reservation_denied",
         attempt=dispatched[0].attempt,
+        claim_epoch=dispatched[0].claim_epoch,
     )
 
     assert outcome == "scheduled"
@@ -1039,6 +1040,7 @@ class TestRunningRowLeaseInvariant:
             row,
             status="running",
             attempt=1,
+            claim_epoch=1,
             started_at=_START,
             locked_by_worker=new_uuid(),
             lock_expires_at=None,

@@ -2229,6 +2229,7 @@ class _OwnershipMismatchBackend(_FakeBackend):
         progress_state: dict[str, object] | None = None,
         *,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> JobRow:
         raise WorkerOwnershipMismatch(job_id=job_id, expected=worker_id, actual=new_uuid())
 

@@ -283,7 +283,7 @@ One shape carries no marker, deliberately: a worker can crash after a cancel was
 
 Cancellation does not consume retry budget. Once a job transitions to `cancelled` or `abandoned`, it is immediately terminal and will not be retried, regardless of `max_attempts` or `retry_kind`.
 
-An interruption by shutdown spends the interrupted attempt: the claim's increment is **not** refunded (the attempt started executing, so it counts against `max_attempts`; `interrupt_count` on the row counts the release). A job interrupted on every deploy therefore walks toward `max_attempts` one attempt per deploy; give such jobs `schedule_to_close` (the release never parks a row past it) or checkpoint via progress state. This keeps the attempt epoch monotonic, which is what fences a delayed (zombie) handler's terminal write out of a re-dispatched attempt.
+An interruption by shutdown spends the interrupted attempt: the claim's increment is **not** refunded (the attempt started executing, so it counts against `max_attempts`; `interrupt_count` on the row counts the release). A job interrupted on every deploy therefore walks toward `max_attempts` one attempt per deploy; give such jobs `schedule_to_close` (the release never parks a row past it) or checkpoint via progress state. This keeps the attempt epoch monotonic, which is what fences a delayed (zombie) handler's terminal write out of a re-dispatched attempt; the fence itself is the row's `claim_epoch` beside the attempt number (see `01.00.18_02_pre_claim_epoch.sql` for the invariant).
 
 This is distinct from a `TimeoutError` or unhandled exception, both of which go through the normal retry decision logic (`decide_after_failure`) and may reschedule the job if budget remains.
 

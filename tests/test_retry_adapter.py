@@ -133,6 +133,7 @@ class _MismatchBackend:
         progress_state: dict[str, object] | None = None,
         *,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> JobRow:
         raise self._exc
 

@@ -97,6 +97,7 @@ def _job_record(*, job_id: UUID | None = None, actor: str = "test_actor") -> _Re
             "retry_backoff": "exponential",
             "retry_jitter": 0.2,
             "assignment_routed": False,
+            "claim_epoch": 0,
         }
     )
 

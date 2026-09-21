@@ -577,6 +577,8 @@ A crash is indistinguishable from the worker simply vanishing, so the fleet lear
 
 A graceful shutdown is different in mechanism but not in cost: the worker announces it is leaving, in-flight actors observe the cancel event, and any job still running when the grace periods expire is *released* back to the fleet. The interrupted attempt is spent, not refunded: it did start executing, and refunding it would let the re-run share the attempt epoch with the process that is still shutting down. The re-run claims the next attempt number, and `interrupt_count` on the job row carries the aggregate. A deploy therefore trades one attempt of budget for the guarantee that no attempt epoch is ever shared between a dying process and its replacement.
 
+The guarantee has a second leg: the row's `claim_epoch`, a non-saturating internal claim identity bumped by exactly 1 per claim, which every terminal write fences on beside the attempt number, so two executions can never hold the same fence, even once the displayed `attempt` counter parks at the smallint ceiling. See `01.00.18_02_pre_claim_epoch.sql` for the invariant.
+
 The operator controls for how quickly a crash is *detected* are the heartbeat knobs: `heartbeat_interval` (how often a worker proves it is alive), `lock_lease` (how long a claim survives without one: the startup-validated invariant `lock_lease >= 4 × heartbeat_interval` keeps a slow-but-live worker from being reclaimed), and the per-actor `heartbeat_timeout`. Tightening them reclaims crashed work sooner at the cost of reclaiming slow-but-alive workers. See [workers.md](workers.md) for the settings and [ops.md](ops.md) for the `crashed` and `abandoned` state definitions.
 
 ---

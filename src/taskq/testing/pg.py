@@ -233,12 +233,12 @@ async def create_running_job(
     await conn.execute(
         f"""INSERT INTO "{schema}".jobs (
             id, actor, queue, payload, max_attempts, retry_kind,
-            status, priority, attempt, scheduled_at,
+            status, priority, attempt, claim_epoch, scheduled_at,
             locked_by_worker, lock_expires_at, started_at, last_heartbeat_at,
             cancel_phase, cancel_requested_at, schedule_to_close
         ) VALUES (
             $1, $2, $3, $4::jsonb, $5, $6,
-            'running', 0, $7, clock_timestamp(),
+            'running', 0, $7, $13, clock_timestamp(),
             $8, $9, clock_timestamp(), clock_timestamp(),
             $10, $11, $12
         )""",  # noqa: S608
@@ -254,6 +254,18 @@ async def create_running_job(
         cancel_phase,
         cancel_requested_at,
         schedule_to_close,
+        # The epoch seed models the refund-free history this helper
+        # represents: a row that reached attempt N through N claims, each
+        # of which stamped attempt and claim_epoch together, so the row's
+        # epoch is N and the fences under test are satisfiable by
+        # presenting the row's own values. attempt and claim_epoch are
+        # distinct counters that DO diverge in production (the attempt
+        # saturates at the smallint ceiling and non-terminal releases
+        # refund it; the epoch only ever increments, so the row's epoch is
+        # always >= its attempt); the equality fences treat a diverged row
+        # identically, and a test that needs a diverged shape seeds the
+        # two columns separately.
+        attempt,
     )
     if with_events:
         detail = dumps_str(

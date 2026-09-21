@@ -969,9 +969,11 @@ async def test_ti8_fanout_outstanding_counter_reaches_zero(
                     now - timedelta(minutes=2),
                 )
 
-        # Mark first N-1 as succeeded
+        # Mark first N-1 as succeeded (the raw seed carries the
+        # claim_epoch default 0: a running row written by direct SQL, no
+        # claim ever stamped it)
         for jid in job_ids[:-1]:
-            await backend.mark_succeeded(JobId(jid), worker_id, None, attempt=1)
+            await backend.mark_succeeded(JobId(jid), worker_id, None, attempt=1, claim_epoch=0)
 
         # Force-expire the lock on the last job (simulates a crashed worker)
         crashed_jid = job_ids[-1]

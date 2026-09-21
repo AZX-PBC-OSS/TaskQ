@@ -59,6 +59,7 @@ async def test_final_denial_before_deadline_is_counted_on_postgres(
         timedelta(seconds=1),
         outcome="reservation_denied",
         attempt=1,
+        claim_epoch=1,
     )
     assert result == "scheduled"
 
@@ -96,6 +97,7 @@ async def test_final_denial_before_deadline_is_counted_on_postgres(
         timedelta(seconds=5),
         outcome="reservation_denied",
         attempt=1,
+        claim_epoch=1,
     )
     assert result == "failed"
 

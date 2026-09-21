@@ -778,6 +778,7 @@ async def consume_one_job(
             actor=job.actor,
             queue=job.queue,
             attempt=job.attempt,
+            claim_epoch=job.claim_epoch,
             snooze_count=job.snooze_count,
             worker_id=worker_id,
             payload=validated_payload,
@@ -965,6 +966,7 @@ async def consume_one_job(
                             job.id,
                             worker_id,
                             attempt=job.attempt,
+                            claim_epoch=job.claim_epoch,
                             hold=release_hold,
                             progress_seq=_cancel_seq,
                             progress_state=_cancel_state_for_write,
@@ -1060,6 +1062,7 @@ async def consume_one_job(
                         progress_seq=_cancel_seq,
                         progress_state=_cancel_state_for_write,
                         attempt=job.attempt,
+                        claim_epoch=job.claim_epoch,
                     ),
                     log=job_log,
                     job=job,
@@ -1328,6 +1331,7 @@ async def _consume_transactional(
                         progress_state=_pstate,
                         fallback_result_ttl=fallback_result_ttl,
                         attempt=job.attempt,
+                        claim_epoch=job.claim_epoch,
                     )
                 except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
                     _log_terminal_write_failed(log, job, None, infra_exc)
@@ -1602,6 +1606,7 @@ async def _consume_autonomous(
                 progress_state=_pstate,
                 fallback_result_ttl=fallback_result_ttl,
                 attempt=job.attempt,
+                claim_epoch=job.claim_epoch,
             ),
             log=log,
             job=job,

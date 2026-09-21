@@ -392,6 +392,7 @@ async def test_retry_backoff_not_voided_by_negative_skew(pg_dsn: str) -> None:
             ErrorInfo(error_class="ValueError", error_message="boom", error_traceback=None),
             timedelta(seconds=30),
             attempt=1,
+            claim_epoch=1,
         )
         assert row.status == "scheduled"
 
@@ -440,6 +441,7 @@ async def test_retry_deadline_arbitrated_server_side(pg_dsn: str) -> None:
             ErrorInfo(error_class="ValueError", error_message="boom", error_traceback=None),
             timedelta(seconds=30),
             attempt=1,
+            claim_epoch=1,
         )
         assert row.status == "failed"
         assert row.error_class == "DeadlineExceeded"
@@ -558,6 +560,7 @@ async def test_retry_survives_worker_clock_skew_deadline_disagreement(pg_dsn: st
                 ErrorInfo(error_class="RuntimeError", error_message="boom", error_traceback=None),
                 decision.retry_delay,
                 attempt=1,
+                claim_epoch=1,
             )
             if job_id is live_job:
                 assert updated.status == "scheduled", (

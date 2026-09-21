@@ -640,11 +640,13 @@ class TestJobRowRoundTrip:
     def test_field_count(self) -> None:
         # field list + tags + the two denial/snooze counters
         # (snooze_count, rate_limit_blocked_count) + the interrupt counter
-        # (interrupt_count) + the four retry-curve scalars read back off
+        # (interrupt_count) + the claim-epoch fence (claim_epoch, the
+        # non-saturating claim identity the terminal writes fence on) +
+        # the four retry-curve scalars read back off
         # the jobs row (retry_base/retry_cap/retry_backoff/retry_jitter -
         # the reclaim sweep's policy source) + the assignment-routed
         # marker (re-pend routing by the actor's stored assignment).
-        expected = 46
+        expected = 47
         assert len(fields(JobRow)) == expected
 
     def test_frozen(self) -> None:

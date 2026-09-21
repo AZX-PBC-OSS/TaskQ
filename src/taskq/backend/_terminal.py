@@ -32,12 +32,13 @@ aborts the write whole, still classifies through
 Invariants preserved verbatim from the three-statement form:
 
 * The UPDATE stays the single arbiter: its fencing WHERE (``status =
-  'running' AND locked_by_worker = $2``, now one epoch deeper with the
-  attempt conjunct ``AND attempt = $k``, the handler's dispatch-time
-  job-row attempt snapshot threaded from every call site: a stale
-  attempt's write after a same-worker reclaim/redispatch no-ops exactly
-  like a different worker's late write, fencing stale attempts so their
-  terminal writes cannot land on rows they no longer own)
+  'running' AND locked_by_worker = $2``, two epochs deeper with the
+  attempt conjunct ``AND attempt = $k`` and the claim-epoch conjunct
+  ``AND claim_epoch = $m``, the handler's own claim view, threaded from
+  every call site, so a stale execution's write after a reclaim and
+  redispatch no-ops exactly like a different worker's late write, at the
+  attempt ceiling included; the invariant lives in
+  ``01.00.18_02_pre_claim_epoch.sql``)
   decides everything, and an empty ``upd`` CTE makes the INSERT CTEs
   insert nothing and the final ``SELECT`` return no row, the exact
   ``rec is None`` / ``WorkerOwnershipMismatch`` / ``False`` contract,
@@ -319,6 +320,7 @@ async def _mark_succeeded_on_conn(
     *,
     result_bytes: bytes | None = None,
     attempt: int | None = None,
+    claim_epoch: int | None = None,
 ) -> bool:
     """Terminal success write: ONE statement (UPDATE + attempt + event).
 
@@ -337,6 +339,15 @@ async def _mark_succeeded_on_conn(
     the epoch, binds NULL, which never satisfies the equality: a write
     that cannot prove which attempt it terminates must not terminate any
     attempt.
+
+    *claim_epoch* is the non-saturating claim-identity fence, the
+    ``claim_epoch`` value of the caller's own claim view (JobRow
+    .claim_epoch). The attempt counter saturates at the smallint ceiling,
+    where a reclaim plus a redispatch leaves the stale handler and the
+    live one holding the SAME (worker, attempt) pair, the stale write
+    would otherwise win; the epoch always advances, so the stale write
+    can only no-op. ``None`` binds NULL, which never satisfies the
+    equality, the same cannot-prove-it doctrine *attempt* applies.
 
     ``result_bytes`` carries the caller's own orjson encoding of *result*
     (the worker consumer serializes exactly once and passes the bytes);
@@ -399,6 +410,7 @@ async def _mark_succeeded_on_conn(
         _progress_jsonb_escaped(progress_state),
         fallback_result_ttl,
         attempt,
+        claim_epoch,
     )
     if rec is None:
         return False
@@ -427,6 +439,7 @@ async def _mark_succeeded(
     *,
     result_bytes: bytes | None = None,
     attempt: int | None = None,
+    claim_epoch: int | None = None,
     acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> bool:
     # No explicit transaction: the fused statement is atomic by itself (a
@@ -450,6 +463,7 @@ async def _mark_succeeded(
             max_result_bytes,
             result_bytes=result_bytes,
             attempt=attempt,
+            claim_epoch=claim_epoch,
         )
 
 
@@ -467,6 +481,7 @@ async def _mark_failed_or_retry(
     progress_state: dict[str, object] | None = None,
     *,
     attempt: int | None = None,
+    claim_epoch: int | None = None,
     acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> JobRow:
     if retry_delay is None:
@@ -479,6 +494,7 @@ async def _mark_failed_or_retry(
             progress_seq,
             progress_state,
             attempt=attempt,
+            claim_epoch=claim_epoch,
             acquire_timeout=acquire_timeout,
         )
     return await _mark_retry(
@@ -491,6 +507,7 @@ async def _mark_failed_or_retry(
         progress_seq,
         progress_state,
         attempt=attempt,
+        claim_epoch=claim_epoch,
         acquire_timeout=acquire_timeout,
     )
 
@@ -505,6 +522,7 @@ async def _mark_failed(
     progress_state: dict[str, object] | None,
     *,
     attempt: int | None = None,
+    claim_epoch: int | None = None,
     acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> JobRow:
     # No explicit transaction, see _mark_succeeded.  The rare
@@ -528,6 +546,7 @@ async def _mark_failed(
             progress_seq,
             _progress_jsonb_escaped(progress_state),
             attempt,
+            claim_epoch,
         )
         if rec is None:
             actual = await _select_owner(conn, sql, job_id)
@@ -557,6 +576,7 @@ async def _mark_retry(
     progress_state: dict[str, object] | None,
     *,
     attempt: int | None = None,
+    claim_epoch: int | None = None,
     acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> JobRow:
     branch: SqlOutcomeBranch
@@ -577,6 +597,7 @@ async def _mark_retry(
             progress_seq,
             _progress_jsonb_escaped(progress_state),
             attempt,
+            claim_epoch,
         )
         if rec is None:
             actual = await _select_owner(conn, sql, job_id)
@@ -633,6 +654,7 @@ async def _mark_cancelled(
     progress_state: dict[str, object] | None = None,
     *,
     attempt: int | None = None,
+    claim_epoch: int | None = None,
     acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> bool:
     async with pool.acquire(timeout=acquire_timeout) as conn:
@@ -643,6 +665,7 @@ async def _mark_cancelled(
             progress_seq,
             _progress_jsonb_escaped(progress_state),
             attempt,
+            claim_epoch,
         )
         if rec is None:
             return False
@@ -771,6 +794,7 @@ async def _mark_snoozed(
     outcome: SnoozeOutcome = "snoozed",
     *,
     attempt: int | None = None,
+    claim_epoch: int | None = None,
     denial_reason: DenialReason = "capacity",
     acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> Literal["scheduled", "failed", "noop"]:
@@ -798,6 +822,7 @@ async def _mark_snoozed(
             outcome,
             attempt,
             denial_reason,
+            claim_epoch,
         )
         if rec is None:
             return "noop"
@@ -876,6 +901,7 @@ async def _mark_retry_after(
     progress_state: dict[str, object] | None = None,
     *,
     attempt: int | None = None,
+    claim_epoch: int | None = None,
     acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> Literal["scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"]:
     branch: SqlOutcomeBranch
@@ -893,6 +919,7 @@ async def _mark_retry_after(
             progress_seq,
             _progress_jsonb_escaped(progress_state),
             attempt,
+            claim_epoch,
         )
         if rec is None:
             return "noop"
@@ -987,6 +1014,7 @@ async def _mark_interrupted(
     hold: timedelta,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
+    claim_epoch: int | None = None,
     acquire_timeout: float = DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S,
 ) -> Literal["pending", "scheduled", "failed:DeadlineExceeded", "noop"]:
     """Release a running attempt this worker cannot finish (process going
@@ -1009,6 +1037,7 @@ async def _mark_interrupted(
             hold,
             progress_seq,
             _progress_jsonb_escaped(progress_state),
+            claim_epoch,
         )
         if rec is None:
             # Fenced out, the row moved (reclaim, a terminal write, or an

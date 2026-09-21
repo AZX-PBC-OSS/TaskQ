@@ -70,6 +70,7 @@ def _backend_methods_stub() -> Backend:
             *,
             result_bytes: object = None,
             attempt: int | None = None,
+            claim_epoch: int | None = None,
         ) -> bool:
             return True
 
@@ -83,6 +84,7 @@ def _backend_methods_stub() -> Backend:
             *,
             result_bytes: object = None,
             attempt: int | None = None,
+            claim_epoch: int | None = None,
         ) -> bool:
             return True
 
@@ -92,6 +94,7 @@ def _backend_methods_stub() -> Backend:
             worker_id: object,
             *,
             attempt: int | None = None,
+            claim_epoch: int | None = None,
         ) -> bool:
             return True
 
@@ -341,6 +344,7 @@ async def test_acceptance_actor_receives_di_kwargs_end_to_end(
         actor="di_actor",
         queue="default",
         attempt=1,
+        claim_epoch=0,
         worker_id=new_uuid(),
         payload=_Payload(),
         jobs=SubJobEnqueuer(

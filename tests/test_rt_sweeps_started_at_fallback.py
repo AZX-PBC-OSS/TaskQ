@@ -192,6 +192,7 @@ async def test_sweep1_null_started_at_contract_is_the_in_memory_twin() -> None:
         row,
         status="running",
         attempt=1,
+        claim_epoch=1,
         started_at=None,
         locked_by_worker=holder,
         lock_expires_at=_START - _EXPIRED_AGO,

@@ -417,6 +417,13 @@ async def _dispatch_batch(
                 # number is absorbed by _write_attempt's keep-the-first-
                 # record guard, exactly PG's ON CONFLICT doctrine.
                 attempt=min(row.attempt + 1, SMALLINT_MAX),
+                # The non-saturating claim-identity fence, the twin of
+                # PG's ``claim_epoch = j.claim_epoch + 1`` in the same
+                # statement: the displayed counter saturates at the
+                # ceiling, the epoch does not, and every terminal/ownership
+                # write that fences on attempt also fences on this column
+                # equalling the epoch of the writer's own claim view.
+                claim_epoch=row.claim_epoch + 1,
             )
             self._jobs[row.id] = updated
             # Mirrors PG's claim (backend/_dispatch.py): no job_events row ,

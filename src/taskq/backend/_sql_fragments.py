@@ -87,26 +87,38 @@ DEADLINE_RETRY_EXCEEDED_MESSAGE: Final[str] = "schedule_to_close reached before 
 # attempt epoch the caller presents, and a fence conjunct edited in one
 # statement but not its siblings is exactly the drift that lets a stale
 # handler's write land (see the attempt-epoch fencing note in
-# backend/_sql_templates.py's render()). The aliased spelling is the multi-arm
-# arbiters' (they resolve ids through the params CTE); the bound spelling is
-# the single-row mark_succeeded / mark_failed / mark_cancelled UPDATEs, which
-# bind the worker id and the attempt epoch directly at per-statement
-# positions, so the bound fragment is a function of the attempt bind's
-# placeholder number ($8 in mark_succeeded / mark_failed, $5 in
-# mark_cancelled). Substituted by name into the templates so the rendered
-# statements stay byte-identical to the hand-maintained conjuncts; the
-# in-memory twin mirrors the predicate through its own _fenced helper
+# backend/_sql_templates.py's render()). Both spellings also carry the
+# claim-epoch conjunct: the row's claim_epoch must equal the epoch the
+# caller was dispatched under, so a write from a claim that dispatch has
+# since superseded (a retry re-claimed the row) no-ops even when the
+# attempt number survives the ceiling wrap. The epoch is a non-saturating
+# bigint stamped only by the dispatch claim, and a NULL bind never matches
+# (SQL equality against NULL is NULL, so a caller that presents no claim
+# view fences itself out rather than matching every row). The aliased
+# spelling is the multi-arm arbiters' (they resolve ids through the params
+# CTE, which binds the caller's claim_epoch beside the attempt); the bound
+# spelling is the single-row mark_succeeded / mark_failed / mark_cancelled
+# UPDATEs, which bind the worker id and the two epochs directly at
+# per-statement positions, so the bound fragment is a function of the
+# attempt bind's placeholder number ($8 in mark_succeeded / mark_failed,
+# $5 in mark_cancelled) and the epoch bind's ($9 and $6, each directly
+# after its attempt). Substituted by name into the templates so the
+# rendered statements stay byte-identical to the hand-maintained conjuncts;
+# the in-memory twin mirrors the predicate through its own _fenced helper
 # (testing/_terminal.py), the same one-predicate discipline on the Python
 # side.
 JOB_FENCE_SQL: Final[str] = (
     "AND j.status = 'running'\n"
     "      AND j.locked_by_worker = (SELECT worker_id FROM params)\n"
-    "      AND j.attempt = (SELECT attempt FROM params)"
+    "      AND j.attempt = (SELECT attempt FROM params)\n"
+    "      AND j.claim_epoch = (SELECT claim_epoch FROM params)"
 )
 
-# The bound spelling's attempt-epoch placeholder, substituted at the three
-# single-row call sites ($8 in mark_succeeded / mark_failed, $5 in
-# mark_cancelled): one fence text, per-statement bind positions.
+# The bound spelling's attempt-epoch and claim-epoch placeholders,
+# substituted at the three single-row call sites ($8/$9 in mark_succeeded /
+# mark_failed, $5/$6 in mark_cancelled): one fence text, per-statement bind
+# positions.
 JOB_FENCE_BOUND_SQL: Final[str] = (
-    "id = $1 AND status = 'running' AND locked_by_worker = $2 AND attempt = ${attempt_bind}"
+    "id = $1 AND status = 'running' AND locked_by_worker = $2 "
+    "AND attempt = ${attempt_bind} AND claim_epoch = ${epoch_bind}"
 )

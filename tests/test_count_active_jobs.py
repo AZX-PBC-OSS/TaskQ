@@ -71,7 +71,9 @@ async def test_count_active_jobs_terminal_excluded() -> None:
     dispatched = await backend.dispatch_batch(
         backend._worker_id, ["default"], limit=1, lock_lease=timedelta(seconds=60)
     )
-    await backend.mark_succeeded(dispatched[0].id, backend._worker_id, None, attempt=1)
+    await backend.mark_succeeded(
+        dispatched[0].id, backend._worker_id, None, attempt=1, claim_epoch=1
+    )
     assert await backend.count_active_jobs(["default"]) == 0
 
 

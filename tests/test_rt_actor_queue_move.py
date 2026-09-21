@@ -197,6 +197,7 @@ class TestRunningJobTail:
             ),
             timedelta(seconds=5),
             attempt=int(claimed["attempt"]),
+            claim_epoch=int(claimed["claim_epoch"]),
         )
         status, queue = await _row_state(conn, schema, job_id)
         assert status == "scheduled"
@@ -266,6 +267,7 @@ class TestRunningJobTail:
             ),
             None,
             attempt=int(claimed["attempt"]),
+            claim_epoch=int(claimed["claim_epoch"]),
         )
         status, queue = await _row_state(conn, schema, job_id)
         assert status == "failed"

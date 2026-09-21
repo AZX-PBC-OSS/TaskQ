@@ -2209,3 +2209,41 @@ and `ConcurrencyReservation.acquire` grew an optional `timeout=` forward to
 `asyncpg.Pool.acquire` for callers with a budget in hand (default `None`
 keeps the previous unbounded-acquire behaviour for callers that wrap their
 own).
+
+### The terminal-write fence survives the attempt ceiling
+
+> **Unreleased.** Correctness fix with one additive pre migration
+> (`01.00.18_02_pre_claim_epoch.sql`; apply it before rolling the code, as
+> with every `pre` file).
+
+At the attempt ceiling the terminal writes could record the wrong outcome.
+The displayed `attempt` counter is stamped by the claim with a saturating
+increment (`LEAST(attempt + 1, 32767)`), so a row parked at the smallint
+ceiling (`retry_kind='indefinite'` climbs there after enough retries) claims
+at 32767 again and again. A reclaim plus a redispatch to the same worker
+then gave the stale execution and the live one the same
+`(status, locked_by_worker, attempt)` fence: the stale execution's
+`mark_succeeded` won, the job recorded the stale result, and the live
+execution's write read `WorkerOwnershipMismatch`. The displayed counter
+keeps its saturating semantics on purpose (the clamped row must still run,
+and its budget arms must still land), so the fix adds a second, non-saturating
+fence column instead of touching it.
+
+Every row now carries `claim_epoch bigint NOT NULL DEFAULT 0`
+(`jobs` and `jobs_archive`; `ADD COLUMN` with a constant default, metadata
+only, no table rewrite). The dispatch claim bumps it by exactly 1 per claim,
+and every terminal/ownership write that already fenced on `attempt` gained
+the conjunct `claim_epoch = <the writer's own claim view>`:
+`mark_succeeded`, `mark_failed`, `mark_cancelled`, `mark_retry`,
+`mark_snoozed`, both `mark_retry_after` variants, and `mark_interrupted`,
+every arm of the multi-arm arbiters included.
+
+The invariant itself lives in the migration file. The operational shape: the
+value the writer presents is the `claim_epoch` of the `JobRow` its own
+dispatch returned (and of the actor context, `ctx.claim_epoch`, which the
+shutdown release reads); a caller that cannot present one (a `None` bind)
+no-ops through the same machinery the attempt fence uses, the same
+cannot-prove-it doctrine both fences apply. The in-memory testing backend
+mirrors the semantics exactly. No operator action is needed beyond applying
+the migration first; the column is never read by user-facing surfaces and
+the displayed `attempt` counter is unchanged.

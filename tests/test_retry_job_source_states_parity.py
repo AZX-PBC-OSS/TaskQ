@@ -110,7 +110,9 @@ async def _run_to_succeeded(backend: Backend, job_id: JobId) -> None:
     """Drive the job to ``succeeded`` through the real claim-and-complete path."""
     worker_id = await _worker_of(backend)
     attempt = await _claim(backend, job_id, worker_id)
-    await backend.mark_succeeded(job_id, worker_id, {"ok": True}, attempt=attempt)
+    await backend.mark_succeeded(
+        job_id, worker_id, {"ok": True}, attempt=attempt, claim_epoch=attempt
+    )
     row = await backend.get(job_id)
     assert row is not None
     assert row.status == "succeeded", (
@@ -243,7 +245,9 @@ async def test_retry_job_still_re_runs_a_failed_job(backend_pair: Backend) -> No
     job_id = await _enqueue(backend_pair, max_attempts=1)
     worker_id = await _worker_of(backend_pair)
     attempt = await _claim(backend_pair, job_id, worker_id)
-    await backend_pair.mark_failed_or_retry(job_id, worker_id, _ERROR, None, attempt=attempt)
+    await backend_pair.mark_failed_or_retry(
+        job_id, worker_id, _ERROR, None, attempt=attempt, claim_epoch=attempt
+    )
 
     before = await backend_pair.get(job_id)
     assert before is not None
@@ -308,7 +312,9 @@ async def test_retry_job_clears_an_elapsed_deadline_and_the_row_dispatches(
     job_id = await _enqueue(backend_pair, max_attempts=1)
     worker_id = await _worker_of(backend_pair)
     attempt = await _claim(backend_pair, job_id, worker_id)
-    await backend_pair.mark_failed_or_retry(job_id, worker_id, _ERROR, None, attempt=attempt)
+    await backend_pair.mark_failed_or_retry(
+        job_id, worker_id, _ERROR, None, attempt=attempt, claim_epoch=attempt
+    )
 
     # The deadline elapses while the job sits failed - an operator
     # investigating an incident routinely takes longer than a tight
@@ -348,7 +354,9 @@ async def test_retry_job_preserves_a_future_deadline(backend_pair: Backend) -> N
     job_id = await _enqueue(backend_pair, max_attempts=1)
     worker_id = await _worker_of(backend_pair)
     attempt = await _claim(backend_pair, job_id, worker_id)
-    await backend_pair.mark_failed_or_retry(job_id, worker_id, _ERROR, None, attempt=attempt)
+    await backend_pair.mark_failed_or_retry(
+        job_id, worker_id, _ERROR, None, attempt=attempt, claim_epoch=attempt
+    )
 
     future = _backend_now(backend_pair) + timedelta(days=1)
     await _force_schedule_to_close(backend_pair, job_id, future)

@@ -150,7 +150,9 @@ async def test_fr5_audit_only_authorised_paths_write_scheduled(
 
     # ── mark_succeeded on a running job → succeeded, not scheduled ──
     job = await _enqueue_running(backend)
-    result = await backend.mark_succeeded(job.id, worker_id, {"ok": True}, attempt=job.attempt)
+    result = await backend.mark_succeeded(
+        job.id, worker_id, {"ok": True}, attempt=job.attempt, claim_epoch=job.claim_epoch
+    )
     assert result is True
     post = _get_job(backend, job.id)
     assert post.status == "succeeded"
@@ -164,14 +166,21 @@ async def test_fr5_audit_only_authorised_paths_write_scheduled(
         error_traceback=None,
     )
     row = await backend.mark_failed_or_retry(
-        job.id, worker_id, error_info, retry_delay=None, attempt=job.attempt
+        job.id,
+        worker_id,
+        error_info,
+        retry_delay=None,
+        attempt=job.attempt,
+        claim_epoch=job.claim_epoch,
     )
     assert row.status == "failed"
     assert row.status != "scheduled"
 
     # ── mark_cancelled on a running job → cancelled, not scheduled ──
     job = await _enqueue_running(backend)
-    result = await backend.mark_cancelled(job.id, worker_id, attempt=job.attempt)
+    result = await backend.mark_cancelled(
+        job.id, worker_id, attempt=job.attempt, claim_epoch=job.claim_epoch
+    )
     assert result is True
     post = _get_job(backend, job.id)
     assert post.status == "cancelled"
@@ -183,7 +192,11 @@ async def test_fr5_audit_only_authorised_paths_write_scheduled(
     # running→scheduled deferral shape as mark_snoozed/mark_retry_after.
     job = await _enqueue_running(backend)
     released = await backend.mark_interrupted(
-        job.id, worker_id, attempt=job.attempt, hold=timedelta(seconds=30)
+        job.id,
+        worker_id,
+        attempt=job.attempt,
+        claim_epoch=job.claim_epoch,
+        hold=timedelta(seconds=30),
     )
     assert released == "scheduled"
     post = _get_job(backend, job.id)
@@ -193,7 +206,11 @@ async def test_fr5_audit_only_authorised_paths_write_scheduled(
     # job's own schedule_to_close fails the row on the deadline instead.
     job = await _enqueue_running(backend, schedule_to_close=_CLOCK_START + timedelta(seconds=5))
     deadline_failed = await backend.mark_interrupted(
-        job.id, worker_id, attempt=job.attempt, hold=timedelta(seconds=60)
+        job.id,
+        worker_id,
+        attempt=job.attempt,
+        claim_epoch=job.claim_epoch,
+        hold=timedelta(seconds=60),
     )
     assert deadline_failed == "failed:DeadlineExceeded"
     post = _get_job(backend, job.id)

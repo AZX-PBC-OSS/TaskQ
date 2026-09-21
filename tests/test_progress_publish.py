@@ -198,7 +198,7 @@ async def test_terminal_flush_before_mark_succeeded_drains_buffer() -> None:
     assert buf.pending_seq_delta == 0
     assert buf.dirty is False
 
-    await backend.mark_succeeded(job_id, worker_id, None, progress_seq=1, attempt=1)
+    await backend.mark_succeeded(job_id, worker_id, None, progress_seq=1, attempt=1, claim_epoch=1)
 
     row = await backend.get(job_id)
     assert row is not None
@@ -819,7 +819,7 @@ async def test_cancel_discards_buffer_no_flush_terminal_state_change() -> None:
     override_seq = cancel_buf.base_seq
     override_state = dict(cancel_buf.pending_state)
 
-    await backend.mark_cancelled(job_id, worker_id, progress_seq=0, attempt=1)
+    await backend.mark_cancelled(job_id, worker_id, progress_seq=0, attempt=1, claim_epoch=1)
 
     row = await backend.get(job_id)
     assert row is not None
@@ -988,7 +988,9 @@ async def test_cancel_clean_buffer_passes_base_seq_not_zero() -> None:
     assert cancel_seq == 5
     assert cancel_state == {"step": 5}
 
-    await backend.mark_cancelled(job_id, worker_id, progress_seq=cancel_seq, attempt=1)
+    await backend.mark_cancelled(
+        job_id, worker_id, progress_seq=cancel_seq, attempt=1, claim_epoch=1
+    )
 
     row = await backend.get(job_id)
     assert row is not None

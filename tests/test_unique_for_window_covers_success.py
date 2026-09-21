@@ -116,7 +116,9 @@ async def test_second_enqueue_inside_the_window_dedups_onto_a_succeeded_job(
 
     worker_id = await _worker_of(backend_pair)
     attempt = await _claim(backend_pair, first.id, worker_id)
-    await backend_pair.mark_succeeded(first.id, worker_id, {"sent": True}, attempt=attempt)
+    await backend_pair.mark_succeeded(
+        first.id, worker_id, {"sent": True}, attempt=attempt, claim_epoch=attempt
+    )
 
     done = await backend_pair.get(first.id)
     assert done is not None
@@ -161,7 +163,9 @@ async def test_a_failed_job_does_not_block_the_identity_for_the_window(
 
     worker_id = await _worker_of(backend_pair)
     attempt = await _claim(backend_pair, first.id, worker_id)
-    await backend_pair.mark_failed_or_retry(first.id, worker_id, _ERROR, None, attempt=attempt)
+    await backend_pair.mark_failed_or_retry(
+        first.id, worker_id, _ERROR, None, attempt=attempt, claim_epoch=attempt
+    )
 
     failed = await backend_pair.get(first.id)
     assert failed is not None

@@ -92,6 +92,7 @@ class _TxFakeBackend(FakeBackend):
         *,
         result_bytes: bytes | None = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         return await self.mark_succeeded(
             job_id,
@@ -379,6 +380,7 @@ class _FencedTxFakeBackend(_TxFakeBackend):
         *,
         result_bytes: bytes | None = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         self.mark_succeeded_calls.append((job_id, worker_id, result, result_bytes))
         return False
@@ -514,6 +516,7 @@ class _FencedAutonomousBackend(FakeBackend):
         *,
         result_bytes: bytes | None = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         self.mark_succeeded_calls.append((job_id, worker_id, result, result_bytes))
         return False
@@ -530,6 +533,7 @@ class _FencedCancelBackend(FakeBackend):
         progress_state: dict[str, object] | None = None,
         *,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         self.mark_cancelled_calls.append(
             {
@@ -788,6 +792,7 @@ class _FencedTxCancelBackend(_TxFakeBackend):
         progress_state: dict[str, object] | None = None,
         *,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         self.mark_cancelled_calls.append(
             {
@@ -958,6 +963,7 @@ class _AttemptFencedBackend(FakeBackend):
         *,
         result_bytes: bytes | None = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         self.mark_succeeded_calls.append((job_id, worker_id, result, result_bytes))
         return attempt == self._live_attempt

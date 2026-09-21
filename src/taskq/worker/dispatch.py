@@ -704,6 +704,7 @@ async def dispatch_one_job(
                         actor=job.actor,
                         queue=job.queue,
                         attempt=job.attempt,
+                        claim_epoch=job.claim_epoch,
                         snooze_count=job.snooze_count,
                         worker_id=worker_id,
                         payload=validated_payload,

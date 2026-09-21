@@ -116,6 +116,11 @@ async def _make_running_row(
         lock_expires_at=now + timedelta(seconds=30),
         started_at=now,
         attempt=1,
+        # A running row owned by a worker exists because a claim stamped
+        # it: carry the epoch that claim wrote (the twin's dispatch bumps
+        # claim_epoch on every claim), so the terminal-write fences under
+        # test see the shape production hands them.
+        claim_epoch=1,
     )
     backend._jobs[job_id] = running_row  # type: ignore[reportPrivateUsage]  # Why: test-only private access to set up running row fixture
     return job_id, running_row
@@ -382,6 +387,7 @@ class TestMarkSucceeded:
             backend._worker_id,  # type: ignore[reportPrivateUsage]  # Why: test-only private access
             result={"ok": True},
             attempt=1,
+            claim_epoch=1,
         )
         assert result is True
 
@@ -397,14 +403,17 @@ class TestMarkSucceeded:
         job_id, _ = await _make_running_row(backend)
         wid = backend._worker_id  # type: ignore[reportPrivateUsage]  # Why: test-only private access
 
-        assert await backend.mark_succeeded(job_id, wid, None, attempt=1) is True
-        assert await backend.mark_succeeded(job_id, wid, None, attempt=1) is False
+        assert await backend.mark_succeeded(job_id, wid, None, attempt=1, claim_epoch=1) is True
+        assert await backend.mark_succeeded(job_id, wid, None, attempt=1, claim_epoch=1) is False
 
     async def test_wrong_worker_returns_false(self) -> None:
         backend = _make_backend()
         job_id, _ = await _make_running_row(backend)
         wrong_worker = new_uuid()
-        assert await backend.mark_succeeded(job_id, wrong_worker, None, attempt=1) is False
+        assert (
+            await backend.mark_succeeded(job_id, wrong_worker, None, attempt=1, claim_epoch=1)
+            is False
+        )
 
     async def test_non_running_returns_false(self) -> None:
         backend = _make_backend()
@@ -433,6 +442,7 @@ class TestMarkFailedOrRetry:
             # derives scheduled_at = now + 10s == next_scheduled.
             next_scheduled - _START,
             attempt=1,
+            claim_epoch=1,
         )
         assert result.status == "scheduled"
         assert result.attempt == 1
@@ -454,6 +464,7 @@ class TestMarkFailedOrRetry:
             error_info,
             retry_delay=None,
             attempt=1,
+            claim_epoch=1,
         )
         assert result.status == "failed"
         assert result.finished_at is not None
@@ -474,6 +485,7 @@ class TestMarkFailedOrRetry:
             error_info,
             retry_delay=None,
             attempt=1,
+            claim_epoch=1,
         )
         assert result.status == "failed"
 
@@ -495,6 +507,7 @@ class TestMarkFailedOrRetry:
                 error_info,
                 None,
                 attempt=1,
+                claim_epoch=1,
             )
 
     async def test_already_terminal_raises_ownership_mismatch(self) -> None:
@@ -502,7 +515,7 @@ class TestMarkFailedOrRetry:
         job_id, _ = await _make_running_row(backend)
         wid = backend._worker_id  # type: ignore[reportPrivateUsage]  # Why: test-only private access
 
-        await backend.mark_succeeded(job_id, wid, None, attempt=1)
+        await backend.mark_succeeded(job_id, wid, None, attempt=1, claim_epoch=1)
 
         error_info = ErrorInfo(
             error_class="ValueError",
@@ -510,7 +523,9 @@ class TestMarkFailedOrRetry:
             error_traceback=None,
         )
         with pytest.raises(WorkerOwnershipMismatch):
-            await backend.mark_failed_or_retry(job_id, wid, error_info, None, attempt=1)
+            await backend.mark_failed_or_retry(
+                job_id, wid, error_info, None, attempt=1, claim_epoch=1
+            )
 
 
 class TestMarkCancelled:
@@ -519,7 +534,7 @@ class TestMarkCancelled:
         job_id, _ = await _make_running_row(backend)
         wid = backend._worker_id  # type: ignore[reportPrivateUsage]  # Why: test-only private access
 
-        assert await backend.mark_cancelled(job_id, wid, attempt=1) is True
+        assert await backend.mark_cancelled(job_id, wid, attempt=1, claim_epoch=1) is True
         row = await backend.get(job_id)
         assert row is not None
         assert row.status == "cancelled"
@@ -529,8 +544,8 @@ class TestMarkCancelled:
         job_id, _ = await _make_running_row(backend)
         wid = backend._worker_id  # type: ignore[reportPrivateUsage]  # Why: test-only private access
 
-        assert await backend.mark_cancelled(job_id, wid, attempt=1) is True
-        assert await backend.mark_cancelled(job_id, wid, attempt=1) is False
+        assert await backend.mark_cancelled(job_id, wid, attempt=1, claim_epoch=1) is True
+        assert await backend.mark_cancelled(job_id, wid, attempt=1, claim_epoch=1) is False
 
     async def test_wrong_worker_returns_false(self) -> None:
         backend = _make_backend()
@@ -627,7 +642,9 @@ class TestMarkSnoozed:
         wid = backend._worker_id  # type: ignore[reportPrivateUsage]  # Why: test-only private access
 
         delay = timedelta(seconds=30)
-        assert await backend.mark_snoozed(job_id, wid, delay, attempt=1) == "scheduled"
+        assert (
+            await backend.mark_snoozed(job_id, wid, delay, attempt=1, claim_epoch=1) == "scheduled"
+        )
         row = await backend.get(job_id)
         assert row is not None
         assert row.status == "scheduled"
@@ -640,8 +657,10 @@ class TestMarkSnoozed:
         wid = backend._worker_id  # type: ignore[reportPrivateUsage]  # Why: test-only private access
 
         delay = timedelta(seconds=30)
-        assert await backend.mark_snoozed(job_id, wid, delay, attempt=1) == "scheduled"
-        assert await backend.mark_snoozed(job_id, wid, delay, attempt=1) == "noop"
+        assert (
+            await backend.mark_snoozed(job_id, wid, delay, attempt=1, claim_epoch=1) == "scheduled"
+        )
+        assert await backend.mark_snoozed(job_id, wid, delay, attempt=1, claim_epoch=1) == "noop"
 
     async def test_metadata_update(self) -> None:
         backend = _make_backend()
@@ -651,7 +670,12 @@ class TestMarkSnoozed:
         delay = timedelta(seconds=30)
         assert (
             await backend.mark_snoozed(
-                job_id, wid, delay, metadata_update={"snooze_reason": "busy"}, attempt=1
+                job_id,
+                wid,
+                delay,
+                metadata_update={"snooze_reason": "busy"},
+                attempt=1,
+                claim_epoch=1,
             )
             == "scheduled"
         )
@@ -663,7 +687,10 @@ class TestMarkSnoozed:
         backend = _make_backend()
         job_id, _ = await _make_running_row(backend)
         delay = timedelta(seconds=30)
-        assert await backend.mark_snoozed(job_id, new_uuid(), delay, attempt=1) == "noop"
+        assert (
+            await backend.mark_snoozed(job_id, new_uuid(), delay, attempt=1, claim_epoch=1)
+            == "noop"
+        )
 
 
 # ── Attempt history ────────────────────────────────────────────────────
@@ -772,7 +799,7 @@ class TestWriteCancelRequest:
         backend = _make_backend()
         job_id, _ = await _make_running_row(backend)
         wid = backend._worker_id  # type: ignore[reportPrivateUsage]  # Why: test-only private access
-        await backend.mark_succeeded(job_id, wid, None, attempt=1)
+        await backend.mark_succeeded(job_id, wid, None, attempt=1, claim_epoch=1)
 
         assert await backend.write_cancel_request(job_id, None) is False
 
@@ -1401,8 +1428,8 @@ class TestBoolReturningTerminalWrites:
         backend = _make_backend()
         job_id, _ = await _make_running_row(backend)
         wid = backend._worker_id  # type: ignore[reportPrivateUsage]  # Why: test-only private access
-        r1 = await backend.mark_succeeded(job_id, wid, None, attempt=1)
-        r2 = await backend.mark_succeeded(job_id, wid, None, attempt=1)
+        r1 = await backend.mark_succeeded(job_id, wid, None, attempt=1, claim_epoch=1)
+        r2 = await backend.mark_succeeded(job_id, wid, None, attempt=1, claim_epoch=1)
         assert r1 is True
         assert r2 is False
 
@@ -1410,8 +1437,8 @@ class TestBoolReturningTerminalWrites:
         backend = _make_backend()
         job_id, _ = await _make_running_row(backend)
         wid = backend._worker_id  # type: ignore[reportPrivateUsage]  # Why: test-only private access
-        r1 = await backend.mark_cancelled(job_id, wid, attempt=1)
-        r2 = await backend.mark_cancelled(job_id, wid, attempt=1)
+        r1 = await backend.mark_cancelled(job_id, wid, attempt=1, claim_epoch=1)
+        r2 = await backend.mark_cancelled(job_id, wid, attempt=1, claim_epoch=1)
         assert r1 is True
         assert r2 is False
 
@@ -1433,8 +1460,8 @@ class TestBoolReturningTerminalWrites:
         job_id, _ = await _make_running_row(backend)
         wid = backend._worker_id  # type: ignore[reportPrivateUsage]  # Why: test-only private access
         delay = timedelta(seconds=30)
-        r1 = await backend.mark_snoozed(job_id, wid, delay, attempt=1)
-        r2 = await backend.mark_snoozed(job_id, wid, delay, attempt=1)
+        r1 = await backend.mark_snoozed(job_id, wid, delay, attempt=1, claim_epoch=1)
+        r2 = await backend.mark_snoozed(job_id, wid, delay, attempt=1, claim_epoch=1)
         assert r1 == "scheduled"
         assert r2 == "noop"
 
@@ -1613,6 +1640,7 @@ class TestMaxPendingEnforcement:
             lock_expires_at=now + timedelta(seconds=30),
             started_at=now,
             attempt=1,
+            claim_epoch=1,
         )
 
         # Second enqueue should succeed because running is not counted
@@ -1653,6 +1681,7 @@ class TestLockExpiryAfterClockAdvance:
             lock_expires_at=now + lock_lease,
             started_at=now,
             attempt=1,
+            claim_epoch=1,
         )
         backend._jobs[job_id] = running_row  # type: ignore[reportPrivateUsage]  # Why: test-only private access
 
@@ -1737,6 +1766,68 @@ class TestArchiveTerminalJobs:
         for jid in recent_ids:
             assert await backend.get(jid) is not None
             assert await backend.get_archived(jid) is None
+
+    async def test_archived_row_carries_the_claimed_epoch(self) -> None:
+        """A job the fleet claimed twice (dispatch, deferral release,
+        redispatch) and then archived carries the epoch its last claim
+        stamped: the twin's archive moves the row whole, mirroring the
+        PG CTE's explicit column list, so the archived identity is the
+        live row's at the moment of archival, never a reset 0."""
+        from taskq.testing._runner import advance_clock_to
+        from taskq.testing.clock import FakeClock
+
+        clock = FakeClock(_START)
+        backend = InMemoryBackend(
+            clock=clock, cancellation_grace_period=_GRACE, cleanup_grace_period=_GRACE
+        )
+        backend.register_actor_config(actor="test_actor")
+
+        row = await backend.enqueue(_enqueue_args())
+        first = await backend.dispatch_batch(
+            backend._worker_id,  # type: ignore[reportPrivateUsage]
+            ["default"],
+            limit=1,
+            lock_lease=timedelta(seconds=60),
+        )
+        assert first[0].claim_epoch == 1
+        await backend.mark_snoozed(
+            row.id,
+            backend._worker_id,  # type: ignore[reportPrivateUsage]
+            timedelta(seconds=30),
+            attempt=first[0].attempt,
+            claim_epoch=first[0].claim_epoch,
+        )
+        advance_clock_to(backend, clock.now() + timedelta(minutes=1))
+        assert await backend.scheduled_to_pending() == 1
+        second = await backend.dispatch_batch(
+            backend._worker_id,  # type: ignore[reportPrivateUsage]
+            ["default"],
+            limit=1,
+            lock_lease=timedelta(seconds=60),
+        )
+        assert second[0].id == row.id
+        assert second[0].claim_epoch == 2
+
+        assert (
+            await backend.mark_succeeded(
+                row.id,
+                backend._worker_id,  # type: ignore[reportPrivateUsage]
+                None,
+                attempt=second[0].attempt,
+                claim_epoch=second[0].claim_epoch,
+            )
+            is True
+        )
+        advance_clock_to(backend, clock.now() + timedelta(minutes=1))
+
+        result = backend.archive_terminal_jobs(
+            retention=timedelta(0), archive_retention=timedelta(days=365)
+        )
+        assert result.archived == 1
+
+        archived = await backend.get_archived(row.id)
+        assert archived is not None
+        assert archived.row.claim_epoch == second[0].claim_epoch == 2
 
     async def test_per_status_retention(self) -> None:
         """per-status retention - succeeded/cancelled archived at 35d,

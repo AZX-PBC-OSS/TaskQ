@@ -512,6 +512,7 @@ class PostgresBackend:
         *,
         result_bytes: bytes | None = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         return await _mark_succeeded_on_conn(
             conn,
@@ -525,6 +526,7 @@ class PostgresBackend:
             self._deps.settings.result_max_bytes,
             result_bytes=result_bytes,
             attempt=attempt,
+            claim_epoch=claim_epoch,
         )
 
     async def mark_succeeded(
@@ -538,6 +540,7 @@ class PostgresBackend:
         *,
         result_bytes: bytes | None = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         return await _mark_succeeded(
             self._worker_pool,
@@ -551,6 +554,7 @@ class PostgresBackend:
             self._deps.settings.result_max_bytes,
             result_bytes=result_bytes,
             attempt=attempt,
+            claim_epoch=claim_epoch,
             acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 
@@ -564,6 +568,7 @@ class PostgresBackend:
         progress_state: dict[str, object] | None = None,
         *,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> JobRow:
         return await _mark_failed_or_retry(
             self._worker_pool,
@@ -575,6 +580,7 @@ class PostgresBackend:
             progress_seq,
             progress_state,
             attempt=attempt,
+            claim_epoch=claim_epoch,
             acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 
@@ -586,6 +592,7 @@ class PostgresBackend:
         progress_state: dict[str, object] | None = None,
         *,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         # Why _worker_pool (supersession of the original heartbeat routing,
         # which had no documented rationale, original v0.1.0 wiring): the
@@ -616,6 +623,7 @@ class PostgresBackend:
             progress_seq,
             progress_state,
             attempt=attempt,
+            claim_epoch=claim_epoch,
             acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 
@@ -660,6 +668,7 @@ class PostgresBackend:
         progress_state: dict[str, object] | None = None,
         outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
+        claim_epoch: int | None = None,
         denial_reason: DenialReason = "capacity",
     ) -> Literal["scheduled", "failed", "noop"]:
         return await _mark_snoozed(
@@ -673,6 +682,7 @@ class PostgresBackend:
             progress_state=progress_state,
             outcome=outcome,
             attempt=attempt,
+            claim_epoch=claim_epoch,
             denial_reason=denial_reason,
             acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
@@ -687,6 +697,7 @@ class PostgresBackend:
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> Literal["scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"]:
         return await _mark_retry_after(
             self._worker_pool,
@@ -698,6 +709,7 @@ class PostgresBackend:
             progress_seq=progress_seq,
             progress_state=progress_state,
             attempt=attempt,
+            claim_epoch=claim_epoch,
             acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 
@@ -710,6 +722,7 @@ class PostgresBackend:
         hold: timedelta,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        claim_epoch: int | None = None,
     ) -> Literal["pending", "scheduled", "failed:DeadlineExceeded", "noop"]:
         return await _mark_interrupted(
             self._worker_pool,
@@ -720,6 +733,7 @@ class PostgresBackend:
             hold=hold,
             progress_seq=progress_seq,
             progress_state=progress_state,
+            claim_epoch=claim_epoch,
             acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 

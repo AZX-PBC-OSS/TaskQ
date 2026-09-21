@@ -144,6 +144,7 @@ def _make_test_ctx(
         actor=actor_name,
         queue="default",
         attempt=1,
+        claim_epoch=0,
         worker_id=_WORKER_ID,
         payload=payload if payload is not None else SimplePayload(x=1),
         jobs=SubJobEnqueuer(

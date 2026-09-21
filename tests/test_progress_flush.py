@@ -169,6 +169,7 @@ async def test_progress_too_large_at_exactly_max_plus_one_byte() -> None:
         actor="test_actor",
         queue="default",
         attempt=1,
+        claim_epoch=0,
         worker_id=backend._worker_id,  # type: ignore[reportPrivateUsage] # Why: fixture helper accesses private field for test setup.
         payload=PassthroughPayload(),
         cancel_event=asyncio.Event(),
@@ -213,6 +214,7 @@ async def test_ctx_progress_out_of_range_percent_not_rejected() -> None:
         actor="test_actor",
         queue="default",
         attempt=1,
+        claim_epoch=0,
         worker_id=backend._worker_id,  # type: ignore[reportPrivateUsage] # Why: fixture helper accesses private field for test setup.
         payload=PassthroughPayload(),
         cancel_event=asyncio.Event(),
@@ -259,6 +261,7 @@ async def test_ctx_progress_unserializable_data_raises_type_error() -> None:
         actor="test_actor",
         queue="default",
         attempt=1,
+        claim_epoch=0,
         worker_id=backend._worker_id,  # type: ignore[reportPrivateUsage] # Why: fixture helper accesses private field for test setup.
         payload=PassthroughPayload(),
         cancel_event=asyncio.Event(),

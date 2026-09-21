@@ -213,6 +213,7 @@ class ActorRunnerCallable(Protocol):
         backend: InMemoryBackend,
         job_id: JobId | UUID | None = ...,
         attempt: int = ...,
+        claim_epoch: int = ...,
         snooze_count: int = ...,
         cancel_event: asyncio.Event | None = ...,
         actor: str = ...,
@@ -311,6 +312,13 @@ def actor_runner() -> ActorRunnerCallable:
         backend: InMemoryBackend,
         job_id: JobId | UUID | None = None,
         attempt: int = 1,
+        # The same one-claim default attempt carries: a fresh dispatch
+        # hands the actor attempt 1 and epoch 1, so the context's epoch
+        # fence is satisfiable against a row the fixture's caller just
+        # dispatched. A caller that overrides either value must keep the
+        # pair consistent with the row it dispatched (fences compare the
+        # epoch for equality; a stale one no-ops the terminal write).
+        claim_epoch: int = 1,
         snooze_count: int = 0,
         cancel_event: asyncio.Event | None = None,
         actor: str = "test_actor",
@@ -338,6 +346,7 @@ def actor_runner() -> ActorRunnerCallable:
             actor=actor,
             queue=queue,
             attempt=attempt,
+            claim_epoch=claim_epoch,
             snooze_count=snooze_count,
             payload=ctx_payload,
             cancel_event=evt,

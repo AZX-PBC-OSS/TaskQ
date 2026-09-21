@@ -106,6 +106,7 @@ class _TxBackend(FakeBackend):
         *,
         result_bytes: bytes | None = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         self.mark_succeeded_with_conn_calls.append((conn, job_id, worker_id, result))
         return await self.mark_succeeded(
@@ -559,6 +560,7 @@ async def test_transactional_generic_exception_discards_buffer() -> None:
         actor=job.actor,
         queue=job.queue,
         attempt=job.attempt,
+        claim_epoch=job.claim_epoch,
         worker_id=_WORKER_ID,
         payload=EmptyPayload(),
         jobs=enqueuer,
@@ -623,6 +625,7 @@ async def test_transactional_completed_then_cancel_re_raises() -> None:
         actor=job.actor,
         queue=job.queue,
         attempt=job.attempt,
+        claim_epoch=job.claim_epoch,
         worker_id=_WORKER_ID,
         payload=EmptyPayload(),
         jobs=enqueuer,

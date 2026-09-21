@@ -1654,11 +1654,16 @@ the placeholder in SQL files and `_IDENT_RE`-validated interpolation in Python.
 ### `jobs` vs `job_attempts` vs `job_events`
 
 - `jobs` is the hot table. Columns hold the current snapshot: `status`,
-  `attempt`, `locked_by_worker`, `error_class`, `result`, etc.
+  `attempt`, `claim_epoch`, `locked_by_worker`, `error_class`, `result`, etc.
 - `job_attempts` records every execution attempt with outcome, duration, and
   error. Pruned via `ON DELETE CASCADE`.
 - `job_events` records every state transition and cancel request as an immutable
   audit log. Also pruned via `ON DELETE CASCADE`.
+
+`attempt` is the displayed, saturating retry counter; `claim_epoch` is its
+non-saturating fencing twin, a `bigint` bumped by exactly 1 per claim and
+fenced on by every terminal/ownership write. See
+`01.00.18_02_pre_claim_epoch.sql` for the invariant.
 
 This separation keeps the `jobs` hot path narrow (fewer columns updated per
 transaction) while providing full per-attempt forensics in `job_attempts` and

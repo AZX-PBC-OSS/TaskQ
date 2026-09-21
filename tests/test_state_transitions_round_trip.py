@@ -246,7 +246,9 @@ async def test_cancel_mid_snooze() -> None:
     assert job.status == "running"
     assert job.attempt == 1
 
-    result = await backend.mark_snoozed(job.id, worker_id, delay=timedelta(seconds=30), attempt=1)
+    result = await backend.mark_snoozed(
+        job.id, worker_id, delay=timedelta(seconds=30), attempt=1, claim_epoch=1
+    )
     assert result == "scheduled"
 
     row = await backend.get(args.id)

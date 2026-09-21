@@ -529,11 +529,15 @@ async def _stub_terminal_write(
     """
     if cancelled:
         landed = await shield_with_retrieval(
-            backend.mark_cancelled(job.id, worker_id, attempt=job.attempt)
+            backend.mark_cancelled(
+                job.id, worker_id, attempt=job.attempt, claim_epoch=job.claim_epoch
+            )
         )
     else:
         landed = await shield_with_retrieval(
-            backend.mark_succeeded(job.id, worker_id, None, attempt=job.attempt)
+            backend.mark_succeeded(
+                job.id, worker_id, None, attempt=job.attempt, claim_epoch=job.claim_epoch
+            )
         )
     if not landed:
         _consumer_log.debug(
@@ -625,6 +629,7 @@ async def consumer_loop_stub(
                 actor=job.actor,
                 queue=job.queue,
                 attempt=job.attempt,
+                claim_epoch=job.claim_epoch,
                 snooze_count=job.snooze_count,
                 worker_id=worker_id,
                 payload=_StubPayload(),
@@ -816,6 +821,7 @@ async def di_consumer_loop(
                     timedelta(seconds=10),
                     metadata_update={"released_reason": "actor-not-found"},
                     attempt=job.attempt,
+                    claim_epoch=job.claim_epoch,
                 )
             except Exception:
                 _consumer_log.exception(

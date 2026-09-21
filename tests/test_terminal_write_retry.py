@@ -56,6 +56,7 @@ class _BlippingBackend(InMemoryBackend):
         progress_state: dict[str, object] | None = None,
         *,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> JobRow:
         self._maybe_blip()
         return await super().mark_failed_or_retry(
@@ -66,6 +67,7 @@ class _BlippingBackend(InMemoryBackend):
             progress_seq,
             progress_state,
             attempt=attempt,
+            claim_epoch=claim_epoch,
         )
 
     async def mark_succeeded(
@@ -79,6 +81,7 @@ class _BlippingBackend(InMemoryBackend):
         *,
         result_bytes: bytes | None = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         self._maybe_blip()
         return await super().mark_succeeded(
@@ -90,6 +93,7 @@ class _BlippingBackend(InMemoryBackend):
             fallback_result_ttl,
             result_bytes=result_bytes,
             attempt=attempt,
+            claim_epoch=claim_epoch,
         )
 
 
@@ -392,10 +396,16 @@ class _BlippingCancelBackend(_BlippingBackend):
         progress_state: dict[str, object] | None = None,
         *,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         self._maybe_blip()
         return await super().mark_cancelled(
-            job_id, worker_id, progress_seq, progress_state, attempt=attempt
+            job_id,
+            worker_id,
+            progress_seq,
+            progress_state,
+            attempt=attempt,
+            claim_epoch=claim_epoch,
         )
 
 

@@ -980,6 +980,16 @@ class JobRow:
     ``taskq/backend/_dispatch_sql.py``.  Trailing default: rows
     materialised before the marker existed read producer-placed.
     """
+    claim_epoch: int = 0
+    """The row's non-saturating claim-epoch fence: bumped by exactly 1 on
+    every successful dispatch claim, left untouched by the reclaim sweeps
+    that clear locks, and fenced on by equality (against the writer's own
+    claim view) by every terminal/ownership write that fences on
+    ``attempt``. Trailing default: rows materialised before the column
+    existed read 0, the one epoch no claim can ever stamp (the first
+    claim of any row stamps 1). The invariant lives in
+    01.00.18_02_pre_claim_epoch.sql.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -1868,6 +1878,7 @@ class Backend(Protocol):
         *,
         result_bytes: bytes | None = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         """Mark a job succeeded, computing ``result_expires_at`` at completion.
 
@@ -1880,6 +1891,15 @@ class Backend(Protocol):
         different worker's late write. ``None``, a caller that cannot
         present the epoch, also no-ops: a terminal write that cannot
         prove which attempt it terminates must not terminate any attempt.
+
+        *claim_epoch* is the non-saturating claim-identity fence, the
+        ``claim_epoch`` value of the handler's own claim view. The
+        displayed attempt counter saturates at the smallint ceiling,
+        where a reclaim plus a redispatch would hand the stale handler
+        and the live one the same (worker, attempt) pair; the claim
+        epoch keeps advancing, so the stale write can only no-op.
+        ``None`` never satisfies the equality, the same
+        cannot-prove-it doctrine *attempt* applies.
 
         The result reaches the backend in exactly one of two forms:
         ``result``, the actor's result dict, which the backend serializes
@@ -1919,6 +1939,7 @@ class Backend(Protocol):
         *,
         result_bytes: bytes | None = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         """Mark a job succeeded using the supplied connection.
 
@@ -1932,8 +1953,8 @@ class Backend(Protocol):
         ``result`` / ``result_bytes`` follow the same two-form contract as
         :meth:`mark_succeeded`, pass exactly one, or neither for a NULL
         result.  ``fallback_result_ttl`` follows the same resolution rule
-        as :meth:`mark_succeeded`.  ``attempt`` follows the same
-        attempt-epoch fence as :meth:`mark_succeeded`.
+        as :meth:`mark_succeeded`.  ``attempt`` and ``claim_epoch`` follow
+        the same fencing as :meth:`mark_succeeded`.
         """
         ...
 
@@ -1947,6 +1968,7 @@ class Backend(Protocol):
         progress_state: dict[str, object] | None = None,
         *,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> JobRow:
         """Mark a running job failed, or schedule a retry *retry_delay* later.
 
@@ -1983,6 +2005,7 @@ class Backend(Protocol):
         progress_state: dict[str, object] | None = None,
         *,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool: ...
 
     async def write_cancel_escalation(
@@ -2010,6 +2033,7 @@ class Backend(Protocol):
         progress_state: dict[str, object] | None = None,
         outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
+        claim_epoch: int | None = None,
         denial_reason: DenialReason = "capacity",
     ) -> Literal["scheduled", "failed", "noop"]:
         """Release a running job back to the queue without consuming retry
@@ -2017,6 +2041,9 @@ class Backend(Protocol):
 
         *attempt* is the attempt-identity epoch, see
         :meth:`mark_succeeded`; a fenced-out write returns ``"noop"``.
+        *claim_epoch* is the claim-identity fence, see
+        :meth:`mark_succeeded`; it applies to all three arms, the two
+        terminal deadline exits included.
 
         A non-terminal snooze/denial writes NO ``job_attempts`` /
         ``job_events`` rows, it is admission control or a voluntary
@@ -2073,6 +2100,7 @@ class Backend(Protocol):
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> Literal["scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"]: ...
 
     async def mark_interrupted(
@@ -2084,6 +2112,7 @@ class Backend(Protocol):
         hold: timedelta,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        claim_epoch: int | None = None,
     ) -> Literal["pending", "scheduled", "failed:DeadlineExceeded", "noop"]:
         """Release a running attempt this worker cannot finish because the
                process is going away.
@@ -2121,7 +2150,9 @@ class Backend(Protocol):
                *attempt* is the attempt-identity epoch, see
                :meth:`mark_succeeded`. Here it is required, not optional: a
                release that cannot prove which attempt it is handing back must
-               not touch the row (``"noop"``).
+               not touch the row (``"noop"``). *claim_epoch* is the
+               claim-identity fence, see :meth:`mark_succeeded`, applied to
+               both arms, the deadline exit included.
         """
         ...
 

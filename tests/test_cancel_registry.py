@@ -49,6 +49,7 @@ def _make_ctx(job_id: UUID) -> JobContext[BaseModel]:
         actor="test",
         queue="default",
         attempt=1,
+        claim_epoch=0,
         worker_id=new_uuid(),
         payload=_FakePayload(),
         jobs=SubJobEnqueuer(

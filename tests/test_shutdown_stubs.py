@@ -43,6 +43,7 @@ class _BackendMethods:
         *,
         result_bytes: object = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         return True
 
@@ -56,6 +57,7 @@ class _BackendMethods:
         *,
         result_bytes: object = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         return True
 
@@ -65,6 +67,7 @@ class _BackendMethods:
         worker_id: object,
         *,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         return True
 

@@ -240,6 +240,7 @@ async def test_ctx_progress_snooze_preserves_seq_and_redispatch_continues() -> N
         progress_seq=progress_seq,
         progress_state=dict(buf.pending_state),
         attempt=1,
+        claim_epoch=1,
     )
     assert result == "scheduled"
 

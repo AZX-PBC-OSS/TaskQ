@@ -301,6 +301,7 @@ async def test_a_snoozed_job_survives_the_pod_that_snoozed_it(pg_dsn: str) -> No
             fleet.pod("pod-1").worker_id,
             timedelta(hours=1),
             attempt=claimed[0].attempt,
+            claim_epoch=claimed[0].claim_epoch,
         )
         assert outcome == "scheduled", (
             f"the snooze returned {outcome!r} rather than scheduling the job; the "
@@ -384,7 +385,10 @@ async def test_concurrent_pods_cannot_both_finish_the_same_job(pg_dsn: str) -> N
         )
 
         stale_write_landed = await fleet.pod("stale").backend.mark_succeeded(
-            job_id, fleet.pod("stale").worker_id, attempt=claimed[0].attempt
+            job_id,
+            fleet.pod("stale").worker_id,
+            attempt=claimed[0].attempt,
+            claim_epoch=claimed[0].claim_epoch,
         )
         assert stale_write_landed is False, (
             "a pod whose claim on this job was already reclaimed reported the job "

@@ -999,7 +999,12 @@ SET status = 'running',
     -- is absorbed by the ON CONFLICT guard every job_attempts insert
     -- carries, so the audit trail keeps the first record of the number
     -- and no terminal path raises.
-    attempt = LEAST(j.attempt + 1, 32767)
+    -- The displayed counter saturates on purpose; the FENCE must not:
+    -- the +1 epoch stamp below is what keeps two executions of one row
+    -- from ever sharing a fence. See 01.00.18_02_pre_claim_epoch.sql
+    -- for the invariant.
+    attempt = LEAST(j.attempt + 1, 32767),
+    claim_epoch = j.claim_epoch + 1
 -- The UPDATE finds its rows through a one-shot id array, not a
 -- FROM-clause join against eligible: a join's strategy is the
 -- planner's choice, and at shallow depths the whole-backlog seq scan

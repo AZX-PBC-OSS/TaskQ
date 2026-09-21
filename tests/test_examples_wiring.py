@@ -120,6 +120,7 @@ async def _run_main_with_mocked_deps(
             *,
             result_bytes: object = None,
             attempt: int | None = None,
+            claim_epoch: int | None = None,
         ) -> bool:
             return True
 
@@ -133,6 +134,7 @@ async def _run_main_with_mocked_deps(
             *,
             result_bytes: object = None,
             attempt: int | None = None,
+            claim_epoch: int | None = None,
         ) -> bool:
             return True
 
@@ -142,6 +144,7 @@ async def _run_main_with_mocked_deps(
             worker_id: object,
             *,
             attempt: int | None = None,
+            claim_epoch: int | None = None,
         ) -> bool:
             return True
 

@@ -574,6 +574,7 @@ class InMemoryBackend:
         *,
         result_bytes: bytes | None = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         return await _mark_succeeded(
             self,
@@ -585,6 +586,7 @@ class InMemoryBackend:
             fallback_result_ttl,
             result_bytes=result_bytes,
             attempt=attempt,
+            claim_epoch=claim_epoch,
         )
 
     async def mark_succeeded_with_conn(
@@ -599,6 +601,7 @@ class InMemoryBackend:
         *,
         result_bytes: bytes | None = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         return await _mark_succeeded_with_conn(
             self,
@@ -611,6 +614,7 @@ class InMemoryBackend:
             fallback_result_ttl,
             result_bytes=result_bytes,
             attempt=attempt,
+            claim_epoch=claim_epoch,
         )
 
     async def mark_failed_or_retry(
@@ -623,6 +627,7 @@ class InMemoryBackend:
         progress_state: dict[str, object] | None = None,
         *,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> JobRow:
         return await _mark_failed_or_retry(
             self,
@@ -633,6 +638,7 @@ class InMemoryBackend:
             progress_seq,
             progress_state,
             attempt=attempt,
+            claim_epoch=claim_epoch,
         )
 
     async def mark_cancelled(
@@ -643,9 +649,16 @@ class InMemoryBackend:
         progress_state: dict[str, object] | None = None,
         *,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> bool:
         return await _mark_cancelled(
-            self, job_id, worker_id, progress_seq, progress_state, attempt=attempt
+            self,
+            job_id,
+            worker_id,
+            progress_seq,
+            progress_state,
+            attempt=attempt,
+            claim_epoch=claim_epoch,
         )
 
     async def write_cancel_escalation(
@@ -675,6 +688,7 @@ class InMemoryBackend:
         progress_state: dict[str, object] | None = None,
         outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
+        claim_epoch: int | None = None,
         denial_reason: DenialReason = "capacity",
     ) -> Literal["scheduled", "failed", "noop"]:
         return await _mark_snoozed(
@@ -687,6 +701,7 @@ class InMemoryBackend:
             progress_state=progress_state,
             outcome=outcome,
             attempt=attempt,
+            claim_epoch=claim_epoch,
             denial_reason=denial_reason,
         )
 
@@ -700,6 +715,7 @@ class InMemoryBackend:
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
         attempt: int | None = None,
+        claim_epoch: int | None = None,
     ) -> Literal["scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"]:
         return await _mark_retry_after(
             self,
@@ -710,6 +726,7 @@ class InMemoryBackend:
             progress_seq=progress_seq,
             progress_state=progress_state,
             attempt=attempt,
+            claim_epoch=claim_epoch,
         )
 
     async def mark_interrupted(
@@ -721,6 +738,7 @@ class InMemoryBackend:
         hold: timedelta,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        claim_epoch: int | None = None,
     ) -> Literal["pending", "scheduled", "failed:DeadlineExceeded", "noop"]:
         return await _mark_interrupted(
             self,
@@ -730,6 +748,7 @@ class InMemoryBackend:
             hold=hold,
             progress_seq=progress_seq,
             progress_state=progress_state,
+            claim_epoch=claim_epoch,
         )
 
     # ── Attempt history ────────────────────────────────────────────────

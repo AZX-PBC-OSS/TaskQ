@@ -265,6 +265,7 @@ async def test_mark_snoozed_at_smallint_ceiling_does_not_overflow(
             _DELAY,
             outcome="reservation_denied",
             attempt=1,
+            claim_epoch=1,
         )
     except asyncpg.DataError as exc:  # pragma: no cover - the defect path
         pytest.fail(
@@ -309,6 +310,7 @@ async def test_mark_retry_after_consume_false_at_ceiling_does_not_overflow(
             _DELAY,
             consume_budget=False,
             attempt=1,
+            claim_epoch=1,
         )
     except asyncpg.DataError as exc:  # pragma: no cover - the defect path
         pytest.fail(
@@ -352,6 +354,7 @@ async def test_snooze_below_ceiling_keeps_ceiling_fixed(
         _DELAY,
         outcome="reservation_denied",
         attempt=1,
+        claim_epoch=1,
     )
     assert outcome == "scheduled"
 
@@ -422,6 +425,7 @@ async def test_in_memory_mark_snoozed_at_ceiling_keeps_ceiling_fixed() -> None:
         _DELAY,
         outcome="reservation_denied",
         attempt=1,
+        claim_epoch=1,
     )
 
     assert outcome == "scheduled"
@@ -444,6 +448,7 @@ async def test_in_memory_mark_retry_after_consume_false_at_ceiling_keeps_ceiling
         _DELAY,
         consume_budget=False,
         attempt=1,
+        claim_epoch=1,
     )
 
     assert outcome == "scheduled"
@@ -467,6 +472,7 @@ async def test_in_memory_snooze_below_ceiling_keeps_ceiling_fixed() -> None:
         _DELAY,
         outcome="reservation_denied",
         attempt=1,
+        claim_epoch=1,
     )
 
     assert outcome == "scheduled"

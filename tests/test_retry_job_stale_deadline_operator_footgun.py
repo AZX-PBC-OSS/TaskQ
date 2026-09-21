@@ -104,7 +104,9 @@ async def test_retry_job_past_deadline_produces_a_dispatchable_row(
             with_events=False,
         )
 
-        assert await backend.mark_failed_or_retry(job_id, worker_id, error, None, attempt=1)
+        assert await backend.mark_failed_or_retry(
+            job_id, worker_id, error, None, attempt=1, claim_epoch=1
+        )
         failed = await conn.fetchrow(
             f'SELECT status, attempt FROM "{schema}".jobs WHERE id = $1', job_id
         )

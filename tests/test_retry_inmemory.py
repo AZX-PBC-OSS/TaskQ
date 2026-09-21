@@ -384,6 +384,7 @@ async def test_indefinite_retry_attempt_unchanged() -> None:
         error_info,
         decision.retry_delay,
         attempt=1,
+        claim_epoch=1,
     )
     assert row.status == "scheduled"
     assert row.attempt == 1
@@ -456,6 +457,7 @@ async def test_indefinite_retry_exceeds_deadline() -> None:
         error_info,
         decision.retry_delay,
         attempt=1,
+        claim_epoch=1,
     )
     assert row.status == "failed"
     assert row.error_class == "DeadlineExceeded"
@@ -899,6 +901,7 @@ class _SnoozeWriteInfraFails(InMemoryBackend):
         progress_state: dict[str, object] | None = None,
         outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
+        claim_epoch: int | None = None,
         denial_reason: DenialReason = "capacity",
     ) -> Literal["scheduled", "failed", "noop"]:
         raise OSError("db socket closed mid-snooze-write")

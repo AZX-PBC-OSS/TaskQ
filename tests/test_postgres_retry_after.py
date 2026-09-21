@@ -56,7 +56,12 @@ async def test_mark_retry_after_consume_budget_true_snoozed(
         )
 
     result = await backend.mark_retry_after(
-        JobId(job_id), worker_id, timedelta(seconds=5), consume_budget=True, attempt=1
+        JobId(job_id),
+        worker_id,
+        timedelta(seconds=5),
+        consume_budget=True,
+        attempt=1,
+        claim_epoch=1,
     )
     assert result == "scheduled"
 
@@ -123,7 +128,12 @@ async def test_mark_retry_after_consume_budget_true_max_attempts_failed(
         )
 
     result = await backend.mark_retry_after(
-        JobId(job_id), worker_id, timedelta(seconds=5), consume_budget=True, attempt=3
+        JobId(job_id),
+        worker_id,
+        timedelta(seconds=5),
+        consume_budget=True,
+        attempt=3,
+        claim_epoch=3,
     )
     assert result == "failed:MaxAttemptsExceeded"
 
@@ -191,7 +201,12 @@ async def test_mark_retry_after_consume_budget_true_deadline_failed(
         )
 
     result = await backend.mark_retry_after(
-        JobId(job_id), worker_id, timedelta(seconds=30), consume_budget=True, attempt=1
+        JobId(job_id),
+        worker_id,
+        timedelta(seconds=30),
+        consume_budget=True,
+        attempt=1,
+        claim_epoch=1,
     )
     assert result == "failed:DeadlineExceeded"
 
@@ -261,7 +276,12 @@ async def test_mark_retry_after_consume_budget_true_noop(
         )
 
     result = await backend.mark_retry_after(
-        JobId(job_id), worker_id, timedelta(seconds=5), consume_budget=True, attempt=1
+        JobId(job_id),
+        worker_id,
+        timedelta(seconds=5),
+        consume_budget=True,
+        attempt=1,
+        claim_epoch=1,
     )
     assert result == "noop"
 
@@ -300,7 +320,12 @@ async def test_mark_retry_after_no_consume_snoozed(
         )
 
     result = await backend.mark_retry_after(
-        JobId(job_id), worker_id, timedelta(seconds=5), consume_budget=False, attempt=1
+        JobId(job_id),
+        worker_id,
+        timedelta(seconds=5),
+        consume_budget=False,
+        attempt=1,
+        claim_epoch=1,
     )
     assert result == "scheduled"
 
@@ -359,7 +384,12 @@ async def test_mark_retry_after_no_consume_deadline_failed(
         )
 
     result = await backend.mark_retry_after(
-        JobId(job_id), worker_id, timedelta(seconds=30), consume_budget=False, attempt=1
+        JobId(job_id),
+        worker_id,
+        timedelta(seconds=30),
+        consume_budget=False,
+        attempt=1,
+        claim_epoch=1,
     )
     assert result == "failed:DeadlineExceeded"
 
@@ -426,10 +456,12 @@ async def test_mark_retry_after_consume_budget_true_attempt_not_incremented(
         # Capture attempt before mark_retry_after
         async with deps.worker_pool.acquire() as conn:
             before = await conn.fetchrow(
-                f'SELECT attempt FROM "{schema}".jobs WHERE id = $1', job_id
+                f'SELECT attempt, claim_epoch FROM "{schema}".jobs WHERE id = $1',
+                job_id,
             )
             assert before is not None
             expected_attempt = before["attempt"]
+            expected_epoch = before["claim_epoch"]
 
         # The attempt-epoch fence: the write carries the row's CURRENT
         # attempt (the re-dispatch below increments it every cycle).
@@ -439,6 +471,7 @@ async def test_mark_retry_after_consume_budget_true_attempt_not_incremented(
             timedelta(seconds=1),
             consume_budget=True,
             attempt=expected_attempt,
+            claim_epoch=expected_epoch,
         )
         assert result == "scheduled"
 
@@ -508,7 +541,9 @@ async def test_mark_snoozed_snoozed_branch(
             schedule_to_close=datetime.now(UTC) + timedelta(hours=1),
         )
 
-    result = await backend.mark_snoozed(JobId(job_id), worker_id, timedelta(seconds=5), attempt=1)
+    result = await backend.mark_snoozed(
+        JobId(job_id), worker_id, timedelta(seconds=5), attempt=1, claim_epoch=1
+    )
     assert result == "scheduled"
 
     async with deps.worker_pool.acquire() as conn:
@@ -563,7 +598,9 @@ async def test_mark_snoozed_deadline_failed_branch(
             schedule_to_close=datetime.now(UTC) - timedelta(seconds=60),
         )
 
-    result = await backend.mark_snoozed(JobId(job_id), worker_id, timedelta(seconds=5), attempt=1)
+    result = await backend.mark_snoozed(
+        JobId(job_id), worker_id, timedelta(seconds=5), attempt=1, claim_epoch=1
+    )
     assert result == "failed"
 
     async with deps.worker_pool.acquire() as conn:
@@ -642,10 +679,10 @@ async def test_mark_snoozed_job_events_and_attempts_both_branches(
 
     # Exercise both branches
     result_s = await backend.mark_snoozed(
-        JobId(snoozed_job_id), worker_s, timedelta(seconds=5), attempt=1
+        JobId(snoozed_job_id), worker_s, timedelta(seconds=5), attempt=1, claim_epoch=1
     )
     result_d = await backend.mark_snoozed(
-        JobId(deadline_job_id), worker_d, timedelta(seconds=5), attempt=1
+        JobId(deadline_job_id), worker_d, timedelta(seconds=5), attempt=1, claim_epoch=1
     )
     assert result_s == "scheduled"
     assert result_d == "failed"
@@ -760,6 +797,7 @@ async def test_admission_denial_never_terminally_fails_an_exhausted_job(
         timedelta(seconds=5),
         outcome=outcome,  # pyright: ignore[reportArgumentType]
         attempt=3,
+        claim_epoch=3,
     )
     assert result == "scheduled", (
         "a denied job has no budget to spend: admission control must reschedule it, not fail it"
@@ -830,6 +868,9 @@ async def test_repeated_admission_denials_reschedule_without_bound(
     # denials occur.
     denials = 5
     claimed_attempt = 2
+    # Each simulated re-claim advances the epoch beside the attempt: a
+    # real dispatch bumps both, and only the attempt is refunded.
+    claimed_epoch = 2
     for cycle in range(denials):
         result = await backend.mark_snoozed(
             JobId(job_id),
@@ -837,17 +878,20 @@ async def test_repeated_admission_denials_reschedule_without_bound(
             timedelta(seconds=1),
             outcome="rate_limit_denied",
             attempt=claimed_attempt,
+            claim_epoch=claimed_epoch,
         )
         assert result == "scheduled", f"denial {cycle + 1} must reschedule, not terminalise"
 
         # Re-claim: a real dispatch increments attempt exactly as the
         # initial claim did, re-admitting the refunded row.
         claimed_attempt += 1
+        claimed_epoch += 1
         async with deps.worker_pool.acquire() as conn:
             await conn.execute(
                 f"""UPDATE "{schema}".jobs
                 SET status = 'running',
                     attempt = $3,
+                    claim_epoch = $4,
                     locked_by_worker = $1,
                     lock_expires_at = now() + interval '60 seconds',
                     started_at = now(),
@@ -856,6 +900,7 @@ async def test_repeated_admission_denials_reschedule_without_bound(
                 worker_id,
                 job_id,
                 claimed_attempt,
+                claimed_epoch,
             )
 
     async with deps.worker_pool.acquire() as conn:
@@ -909,6 +954,9 @@ async def test_admission_denial_writes_no_attempt_or_event_rows(
     # the raw re-claim below plays the dispatcher's own increment, exactly
     # as test_repeated_admission_denials_reschedule_without_bound does.
     claimed_attempt = 1
+    # The epoch rides the re-claims beside the attempt: a real dispatch
+    # bumps both, and only the attempt is refunded.
+    claimed_epoch = 1
     for _ in range(3):
         assert (
             await backend.mark_snoozed(
@@ -917,15 +965,18 @@ async def test_admission_denial_writes_no_attempt_or_event_rows(
                 timedelta(seconds=1),
                 outcome="reservation_denied",
                 attempt=claimed_attempt,
+                claim_epoch=claimed_epoch,
             )
             == "scheduled"
         )
         claimed_attempt += 1
+        claimed_epoch += 1
         async with deps.worker_pool.acquire() as conn:
             await conn.execute(
                 f"""UPDATE "{schema}".jobs
                 SET status = 'running',
                     attempt = $3,
+                    claim_epoch = $4,
                     locked_by_worker = $1,
                     lock_expires_at = now() + interval '60 seconds',
                     started_at = now(),
@@ -934,6 +985,7 @@ async def test_admission_denial_writes_no_attempt_or_event_rows(
                 worker_id,
                 job_id,
                 claimed_attempt,
+                claimed_epoch,
             )
 
     async with deps.worker_pool.acquire() as conn:
@@ -993,6 +1045,7 @@ async def test_admission_denial_past_schedule_to_close_fails_on_the_deadline_pat
         timedelta(seconds=5),
         outcome="rate_limit_denied",
         attempt=3,
+        claim_epoch=3,
     )
     assert result == "failed"
 

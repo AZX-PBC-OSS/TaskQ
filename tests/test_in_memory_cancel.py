@@ -71,6 +71,7 @@ async def _make_running_job(backend: InMemoryBackend) -> tuple[JobId, UUID]:
         lock_expires_at=now + timedelta(seconds=60),
         started_at=now,
         attempt=1,
+        claim_epoch=1,
     )
     backend._jobs[args.id] = running_row
     return args.id, wid
@@ -237,7 +238,7 @@ class TestCancelTrackingCleanup:
         # pending job transitions to cancelled). For a running job,
         # we can mark it cancelled directly.
         wid = backend._worker_id
-        await backend.mark_cancelled(job_id, wid, attempt=1)
+        await backend.mark_cancelled(job_id, wid, attempt=1, claim_epoch=1)
 
         # tick_cancel_polling should clean up the tracking dicts
         await backend.tick_cancel_polling()
@@ -307,7 +308,7 @@ class TestCancelOriginAuditability:
         backend = _make_backend()
         job_id, worker_id = await _make_running_job(backend)
 
-        assert await backend.mark_cancelled(job_id, worker_id, attempt=1) is True
+        assert await backend.mark_cancelled(job_id, worker_id, attempt=1, claim_epoch=1) is True
 
         row = await backend.get(job_id)
         assert row is not None
@@ -338,7 +339,7 @@ class TestCancelOriginAuditability:
         )
         await backend.enqueue(pending_args)
 
-        assert await backend.mark_cancelled(coop_job, coop_worker, attempt=1) is True
+        assert await backend.mark_cancelled(coop_job, coop_worker, attempt=1, claim_epoch=1) is True
         # The abandon path requires the escalated phase the forcing ladder reaches.
         backend._jobs[abandon_job] = _dc_replace(backend._jobs[abandon_job], cancel_phase=2)
         assert await backend.mark_abandoned(abandon_job) is True
@@ -372,7 +373,7 @@ class TestCancelOriginAuditability:
         backend = _make_backend()
         job_id, worker_id = await _make_running_job(backend)
 
-        assert await backend.mark_cancelled(job_id, worker_id, attempt=1) is True
+        assert await backend.mark_cancelled(job_id, worker_id, attempt=1, claim_epoch=1) is True
 
         attempts = await backend.get_attempts(job_id)
         assert len(attempts) == 1
@@ -457,7 +458,7 @@ class TestCancelOriginAuditability:
         job_id, worker_id = await _make_running_job(backend)
 
         assert await backend.write_cancel_request(job_id, "operator stop") is True
-        assert await backend.mark_cancelled(job_id, worker_id, attempt=1) is True
+        assert await backend.mark_cancelled(job_id, worker_id, attempt=1, claim_epoch=1) is True
 
         row = await backend.get(job_id)
         assert row is not None
@@ -478,7 +479,7 @@ class TestCancelOriginAuditability:
 
         assert await backend.write_cancel_request(job_id, "operator stop") is True
         assert await backend.write_cancel_escalation(job_id, worker_id, 2) is True
-        assert await backend.mark_cancelled(job_id, worker_id, attempt=1) is True
+        assert await backend.mark_cancelled(job_id, worker_id, attempt=1, claim_epoch=1) is True
 
         row = await backend.get(job_id)
         assert row is not None

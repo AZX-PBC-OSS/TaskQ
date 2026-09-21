@@ -1539,7 +1539,9 @@ class TestSweepDeadlineExceeded:
 
             # Original failure: writes the (job_id, attempt=1) row in
             # job_attempts.
-            assert await backend.mark_failed_or_retry(job_id, worker_id, error, None, attempt=1)
+            assert await backend.mark_failed_or_retry(
+                job_id, worker_id, error, None, attempt=1, claim_epoch=1
+            )
             row = await conn.fetchrow(
                 f'SELECT status, attempt FROM "{schema}".jobs WHERE id = $1', job_id
             )
@@ -1794,7 +1796,9 @@ class TestSweepDeadlineExceeded:
             )
 
             # The real dispatched run fails, writing job_attempts(job_id, 1).
-            assert await backend.mark_failed_or_retry(job_id, worker_id, error, None, attempt=1)
+            assert await backend.mark_failed_or_retry(
+                job_id, worker_id, error, None, attempt=1, claim_epoch=1
+            )
             attempts_before = await conn.fetch(
                 f'SELECT attempt FROM "{schema}".job_attempts WHERE job_id = $1',
                 job_id,
@@ -1893,7 +1897,7 @@ class TestSweepDeadlineExceeded:
             )
 
             assert await backend.mark_failed_or_retry(
-                job_id, worker_id, error, timedelta(minutes=5), attempt=1
+                job_id, worker_id, error, timedelta(minutes=5), attempt=1, claim_epoch=1
             )
             retried = await conn.fetchrow(
                 f'SELECT status, attempt FROM "{schema}".jobs WHERE id = $1',
@@ -2254,7 +2258,7 @@ class TestConsumerVsLeaderAttemptRowShape:
         assert dispatched_started_at is not None
 
         result = await backend.mark_snoozed(
-            JobId(job_id), worker_id, timedelta(seconds=30), attempt=1
+            JobId(job_id), worker_id, timedelta(seconds=30), attempt=1, claim_epoch=1
         )
         assert result == "failed"
 
