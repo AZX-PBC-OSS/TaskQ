@@ -877,6 +877,29 @@ raises, so nothing points you at the call site; audit for them explicitly.
   and it reports the dropped remainder count. The bound follows
   `TASKQ_EXCEPTION_MESSAGE_MAX_CHARS` when raised.
 
+### Terminal outcome writes raise on drift instead of falling through silently
+
+> **Unreleased.** Backend implementors and test-twin drivers see a new
+> exception in the drift window; application code using the client API
+> through a worker is unchanged.
+
+Terminal writes used to resolve through a final catch-all branch: when a
+job row no longer matched the branch's preconditions (an operator cancel
+landed between the read and the write, a claim epoch moved, a sibling
+attempt terminalised first), the write quietly reported success while
+writing nothing, and the drift was invisible. The outcome branches are now
+typed and exhaustive: a row outside every branch's preconditions raises,
+so the drift surfaces at the write instead of disappearing into a no-op
+success. `denial_reason` also persists on the snoozed-deadline exit, where
+it used to be dropped.
+
+Code driving terminal writes directly (a custom `Backend` implementation,
+or tests driving the `taskq.testing` in-memory twin) must handle the
+raised error. Application code enqueues and awaits through
+`JobsClient`/`JobHandle` and never touches a terminal write; the worker's
+own drift handling is unchanged. The Postgres backend and the in-memory
+twin enforce the same contract, pinned by the terminal-drift guard tests.
+
 ### A crash reclaim honours an in-flight cancel: the row ends `cancelled`, not `pending`
 
 > **Unreleased.**
