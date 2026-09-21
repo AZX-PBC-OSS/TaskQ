@@ -372,43 +372,62 @@ pid absent from it.
 
 
 _termination_hooked: set[int] = set()
-"""Backend pids whose connection carries the termination listener that
-retires this module's per-pid gate state (:func:`_forget_commit_gate_session`).
+"""Connection identities (``id(conn)``) whose connection carries the
+termination listener that retires this module's per-pid gate state
+(:func:`_forget_commit_gate_session`).
 
-One hook per connection, marked here so a tick re-arms rather than stacks
-a second listener on the same connection.  The set is swept by the same
-hook it gates, so it stays proportional to LIVE cron sessions, without
-the hook, a tick that armed an emission and then lost its connection (a
-rollback the server will never answer) would leave the entry behind, and
-every confirmed ``LISTEN`` would outlive its session: under cron
-connection churn both maps grow without bound, and a pid the server
-recycles would inherit a dead session's "confirmed listening" proof.
+Keyed by CONNECTION identity, not by backend pid (issue #292): the hook
+guards one connection's lifetime, and a pid does not identify one -- two
+Postgres servers in one process (testcontainers restart pids per
+container) or a PG restart under a long-lived worker hand different
+connections the same pid, and a pid-keyed suppression left the second
+connection unhooked, so its close retired nothing and its
+confirmed-listening entry outlived it. One hook per connection, marked
+here so a tick re-arms rather than stacks a second listener on the same
+connection. The set is swept by the same hook it gates, so it stays
+proportional to LIVE cron sessions, without the hook, a tick that armed
+an emission and then lost its connection (a rollback the server will
+never answer) would leave the entry behind, and every confirmed
+``LISTEN`` would outlive its session: under cron connection churn both
+maps grow without bound, and a recycled identity would inherit a dead
+session's "confirmed listening" proof.
 """
 
 
-def _forget_commit_gate_session(pid: int) -> None:
-    """Drop every commit-gate entry keyed by *pid*.
+def _forget_commit_gate_session(hook_key: int, pid: int) -> None:
+    """Drop the hook keyed by *hook_key* and every commit-gate entry
+    keyed by *pid*.
 
     Runs as the connection's termination listener: a dead session's armed
     emission can never be answered (its ``NOTIFY`` rolled back with the
     connection) and its confirmed ``LISTEN`` died with it, so neither may
-    stand as state for a later session that reuses the pid.
+    stand as state for a later session that reuses the pid. The armed and
+    confirmed maps stay pid-keyed (a pooled connection is a proxy that
+    cannot be weak-referenced); only the hook suppression is per
+    connection.
     """
     _armed_commit_emits.pop(pid, None)
     _confirmed_listening.discard(pid)
-    _termination_hooked.discard(pid)
+    _termination_hooked.discard(hook_key)
 
 
-def _commit_gate_termination_hook(pid: int) -> Callable[[object], None]:
-    """Build the termination listener retiring *pid*'s gate state.
+def _commit_gate_termination_hook(hook_key: int, pid: int) -> Callable[[object], None]:
+    """Build the termination listener retiring the connection *hook_key*
+    and *pid*'s gate state.
 
     The callback takes ``object`` rather than ``asyncpg.Connection``:
     asyncpg invokes it with the connection (or the pool proxy standing in
     for one), neither of which the hook needs, the pid is captured here.
+
+    Why *hook_key* is captured rather than derived inside the callback:
+    asyncpg passes the connection back, but through types the hook must
+    not touch (a pool proxy's ``id`` is the proxy's, not the underlying
+    connection's), the attach site's ``id(conn)`` is the one identity
+    that provably matches the key the suppression set stored.
     """
 
     def _drop(_conn: object) -> None:
-        _forget_commit_gate_session(pid)
+        _forget_commit_gate_session(hook_key, pid)
 
     return _drop
 
@@ -469,14 +488,19 @@ async def _emit_on_commit(
         if pid not in _confirmed_listening:
             await conn.remove_listener(channel, _dispatch_commit_gate)  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow the callback type; asyncpg accepts a sync callback at runtime.
         await conn.add_listener(channel, _dispatch_commit_gate)  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow the callback type; asyncpg accepts a sync callback at runtime.
-        if pid not in _termination_hooked:
+        hook_key = id(conn)
+        if hook_key not in _termination_hooked:
             # One hook per connection: retire this session's gate state when
             # the connection dies, so the maps track live sessions only and a
-            # recycled pid never inherits a dead session's proof. Placed
-            # after add_listener: a connection that cannot LISTEN (a
-            # transaction-pooling proxy) takes the fallback below unchanged.
-            conn.add_termination_listener(_commit_gate_termination_hook(pid))
-            _termination_hooked.add(pid)
+            # recycled pid never inherits a dead session's proof. Keyed by
+            # connection identity, not pid (issue #292): two connections can
+            # report the same backend pid (different PG servers in one
+            # process, a server restarted under a long-lived worker), and
+            # each must carry its own hook. Placed after add_listener: a
+            # connection that cannot LISTEN (a transaction-pooling proxy)
+            # takes the fallback below unchanged.
+            conn.add_termination_listener(_commit_gate_termination_hook(hook_key, pid))
+            _termination_hooked.add(hook_key)
         # Replaces this session's previous entry: a tick whose transaction
         # rolled back left an emission no notification can ever answer.
         _armed_commit_emits[pid] = (nonce, emit)

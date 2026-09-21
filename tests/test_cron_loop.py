@@ -2605,3 +2605,56 @@ async def test_commit_gate_hooks_termination_once_per_connection(
     await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
 
     assert len(conn.termination_listeners) == 1
+
+
+async def test_commit_gate_hooks_each_connection_sharing_a_pid(
+    _commit_gate_maps: None,
+) -> None:
+    """Two sessions reporting the SAME backend pid each get their own
+    termination hook.
+
+    The hook guards a connection's lifetime, and the pid does not
+    identify one: two Postgres servers in one process hand out the same
+    pid independently (testcontainers restarts pids per container; a PG
+    restart under a long-lived worker does the same to a live session).
+    Keying the suppression by pid alone left the second connection
+    unhooked, so its close retired nothing: its confirmed-listening
+    entry outlived it and a later session on the recycled pid would
+    inherit the dead session's proof.
+    """
+    pid = 2**30 + 500
+    first = _GateSession(pid=pid)
+    second = _GateSession(pid=pid)
+
+    await cron_loop._emit_on_commit(first, lambda: None, schema="taskq")
+    await cron_loop._emit_on_commit(second, lambda: None, schema="taskq")
+    assert len(first.termination_listeners) == 1
+    assert len(second.termination_listeners) == 1, (
+        "the second connection sharing the pid got no termination hook - "
+        "its close can never retire its own gate state (issue #292)"
+    )
+
+    first.deliver_commit_notify()
+    second.deliver_commit_notify()
+    assert pid in cron_loop._confirmed_listening
+
+    first.die()
+    assert cron_loop._confirmed_listening == set(), (
+        "the first close must retire the shared pid's entries"
+    )
+
+    # The second session keeps answering after its twin died: its own
+    # NOTIFY re-confirms the pid (its LISTEN is genuinely live).
+    second.deliver_commit_notify()
+    assert pid in cron_loop._confirmed_listening
+
+    second.die()
+    assert cron_loop._armed_commit_emits == {}, (
+        "the second connection's close leaked its armed emission"
+    )
+    assert cron_loop._confirmed_listening == set(), (
+        "the second connection's close leaked its confirmed-listening "
+        "entry - the hook suppression was keyed by pid, so this "
+        "connection never carried the hook that would retire it"
+    )
+    assert cron_loop._termination_hooked == set()
