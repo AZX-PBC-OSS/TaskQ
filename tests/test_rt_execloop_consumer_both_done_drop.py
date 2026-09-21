@@ -37,24 +37,24 @@ from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.run import consumer_loop_stub, di_consumer_loop
 
 _DI_DROP_MSG = (
-    "CONTRACT: a job TAKEN out of local_queue is never silently dropped — it "
+    "CONTRACT: a job TAKEN out of local_queue is never silently dropped - it "
     "must be either executed (dispatched to a consumer) or explicitly "
     "re-pended/released. VIOLATION: di_consumer_loop races local_queue.get() "
     "against shutdown_event.wait() with FIRST_COMPLETED "
     "(src/taskq/worker/run.py:551-554); when the producer's put and "
     "shutdown_event.set() resolve in the same loop turn both waiters are done "
     "and the `if shut_wait in _done: return` arm (run.py:559-560) discards the "
-    "taken job — it left the queue, no consumer ran it, no terminal write or "
+    "taken job - it left the queue, no consumer ran it, no terminal write or "
     "release was issued; recovery only via lock-lease expiry."
 )
 
 _STUB_DROP_MSG = (
-    "CONTRACT: a job TAKEN out of local_queue is never silently dropped — it "
+    "CONTRACT: a job TAKEN out of local_queue is never silently dropped - it "
     "must be either executed or explicitly re-pended/released. VIOLATION: "
     "consumer_loop_stub has the same both-done seam as di_consumer_loop "
     "(src/taskq/worker/run.py:415-424): when the put and shutdown_event.set() "
     "resolve in the same loop turn, `if shut_wait in _done: return` "
-    "(run.py:423-424) discards the taken job with zero backend calls — it left "
+    "(run.py:423-424) discards the taken job with zero backend calls - it left "
     "the queue, no sentinel ran, no terminal write or release was issued; "
     "recovery only via lock-lease expiry."
 )

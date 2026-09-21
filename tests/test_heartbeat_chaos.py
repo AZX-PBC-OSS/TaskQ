@@ -369,7 +369,7 @@ async def test_tc4_isolate_self_fresh_connect_fails(pg_dsn: str) -> None:
         original_connect = hb_module.asyncpg.connect
 
         async def _failing_connect(*args: object, **kwargs: object) -> object:
-            raise OSError("Connection refused — simulated PG outage")
+            raise OSError("Connection refused - simulated PG outage")
 
         hb_module.asyncpg.connect = _failing_connect  # type: ignore[method-assign] # Why: chaos testing - replacing asyncpg.connect to simulate full PG outage during isolate_self.
         try:

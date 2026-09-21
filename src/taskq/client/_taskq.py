@@ -1342,7 +1342,7 @@ class TaskQ:
         Shutdown and backpressure
         -------------------------
         This is a pull-based async generator: events are fetched only as
-        fast as the consumer iterates, so a slow consumer simply polls
+        fast as the consumer iterates, so a slow consumer polls
         slower, no internal buffer grows.  To stop, break out of the
         ``async for`` (or cancel the consuming task); generator cleanup
         removes the LISTEN registration and closes any owned connection.
@@ -1679,7 +1679,7 @@ async def _watch_reclaims_pg(
     --------------------------------
     asyncpg does NOT raise into a coroutine that isn't awaiting on the
     connection: when the LISTEN connection dies (``pg_terminate_backend``,
-    network drop), notifications simply stop and nothing in the consume
+    network drop), notifications stop and nothing in the consume
     loop ever sees an exception.  Connection death is therefore
     *detected*, not caught: a termination listener wakes the loop
     promptly, and ``conn.is_closed()`` is checked every iteration, so

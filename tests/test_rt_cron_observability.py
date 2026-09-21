@@ -1168,7 +1168,7 @@ class TestReconciliationLeavesUntouchedActorsAlone:
 
     ``reconcile_cron_failures`` receives totals read over the whole
     ``cron_schedules`` table (``_actor_failure_totals``), not just the
-    tick's own batch - so an actor with failing schedules that simply were
+    tick's own batch - so an actor with failing schedules that were
     not due this tick still appears in the totals with the count the
     database holds. Zeroing it would erase an outstanding failure count
     from the exported series while the database still holds it, exactly

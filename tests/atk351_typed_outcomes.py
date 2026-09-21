@@ -6,7 +6,7 @@ Every assertion is OBSERVED BEHAVIOR on a public surface: the ValueError a
 backend boundary raises, the row a caller reads back through
 ``backend.get`` / the event rows the backend persists, and the return
 values the backend methods report. SQL text is read or mutated only to
-ARRANGE the attack — the loud-failure design is exactly the behavior "a
+ARRANGE the attack - the loud-failure design is exactly the behavior "a
 mutated arm label cannot flow through the read boundary silently, and a
 mutated label never changes what the row became".
 
@@ -16,12 +16,12 @@ Surfaces:
    statements emit is a member of the closed ``SqlOutcomeBranch`` set, and
    each statement emits exactly its documented subset (mark_retry never
    'snoozed'; mark_interrupted never 'max_attempts_failed'). Observed
-   through ``parse_outcome_branch`` — the read boundary every backend row
-   passes — accepting the documented set and refusing anything else.
+   through ``parse_outcome_branch`` - the read boundary every backend row
+   passes - accepting the documented set and refusing anything else.
 
 2. Fuzz: an arm label mutated inside a rendered statement must raise
    ValueError at the backend boundary (the disclosed loud-failure design)
-   AND leave the row exactly as the honest arm left it — the mutation
+   AND leave the row exactly as the honest arm left it - the mutation
    touched only the returned label, so the row is never half-written.
 
 3. denial_reason contract: a live (non-terminal) denial writes NO event
@@ -241,8 +241,8 @@ async def test_atk_mutated_arm_label_raises_and_never_rewrites_the_row(
 ) -> None:
     """Drive the honest arm once (records what the caller hears and what
     the row became), then drive the SAME arm on a fresh job with its
-    returned label mutated: the caller hears ValueError — never a silent
-    mislabel — and the row reads back EXACTLY the fate the honest run
+    returned label mutated: the caller hears ValueError - never a silent
+    mislabel - and the row reads back EXACTLY the fate the honest run
     recorded. The mutation changed the label, never the row."""
     schema = module_pg_schema.schema_name
     backend = await _setup_pg(pg_dsn, schema)
@@ -312,7 +312,7 @@ async def test_atk_denial_reason_contract(pg_dsn: str, module_pg_schema: ModuleP
     backend = await _setup_pg(pg_dsn, schema)
     worker_id = new_uuid()
 
-    # Cell 1: a live (non-terminal) denial — no state_change event at all.
+    # Cell 1: a live (non-terminal) denial - no state_change event at all.
     job_id, attempt = await _dispatched_job(backend, schema, worker_id, stc_s=60.0)
     verdict = await backend.mark_snoozed(
         job_id,
@@ -358,7 +358,7 @@ async def test_atk_denial_reason_contract(pg_dsn: str, module_pg_schema: ModuleP
     deadline_event = next(e for e in await backend.get_events(job_id) if e.kind == "state_change")
     assert deadline_event.detail.get("denial_reason") == "capacity"
 
-    # Cell 3: a PLAIN snooze through the same terminal arm — no
+    # Cell 3: a PLAIN snooze through the same terminal arm - no
     # denial_reason key, the detail shape is unchanged.
     job_id, attempt = await _dispatched_job(backend, schema, worker_id, stc_s=5.0)
     verdict = await backend.mark_snoozed(
@@ -436,8 +436,8 @@ async def test_atk_stale_epoch_write_never_applies_to_the_live_attempt(
 ) -> None:
     """The fence's attempt-epoch conjunct is BEHAVIOR, on both spellings: a
     stale attempt's write presented to a row re-dispatched at a later epoch
-    on the SAME worker must no-op — never terminalise, never defer, never
-    strand — and the LIVE attempt's own write must still apply (the fence
+    on the SAME worker must no-op - never terminalise, never defer, never
+    strand - and the LIVE attempt's own write must still apply (the fence
     refused the epoch, not the write)."""
     schema = module_pg_schema.schema_name
     backend = await _setup_pg(pg_dsn, schema)
@@ -502,7 +502,7 @@ _MISFOLDS: dict[str, tuple[str, str]] = {
         JOB_FENCE_BOUND_SQL.replace("locked_by_worker = $2", "locked_by_worker = $9"),
     ),
     # The SHARP one: an ARITY-PRESERVING semantic misfold on the bound
-    # spelling — the epoch conjunct becomes a tautology over every later
+    # spelling - the epoch conjunct becomes a tautology over every later
     # attempt. Only the stale-epoch behavior pin can catch this.
     "bound_attempt_semantic": (
         JOB_FENCE_BOUND_SQL,

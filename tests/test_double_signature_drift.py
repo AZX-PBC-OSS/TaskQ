@@ -80,27 +80,27 @@ _NARROWER_BY_DESIGN: Final[dict[tuple[str, str], str]] = {
     (
         "test_cli_actor_config.py",
         "taskq.cli.asyncpg.connect",
-    ): "Why: as above — third-party breadth the CLI never uses.",
+    ): "Why: as above - third-party breadth the CLI never uses.",
     (
         "test_cli_actor_config_diff_exit_code.py",
         "taskq.cli.asyncpg.connect",
-    ): "Why: as above — third-party breadth the CLI never uses.",
+    ): "Why: as above - third-party breadth the CLI never uses.",
     (
         "test_cli_actor_deregister.py",
         "taskq.cli.asyncpg.connect",
-    ): "Why: as above — third-party breadth the CLI never uses.",
+    ): "Why: as above - third-party breadth the CLI never uses.",
     (
         "test_actor_queue_move.py",
         "taskq.cli.asyncpg.connect",
-    ): "Why: as above — third-party breadth the CLI never uses.",
+    ): "Why: as above - third-party breadth the CLI never uses.",
     (
         "test_queue_ops_validation.py",
         "taskq.cli.asyncpg.connect",
-    ): "Why: as above — third-party breadth the CLI never uses.",
+    ): "Why: as above - third-party breadth the CLI never uses.",
     (
         "test_cli_job.py",
         "taskq.cli.asyncpg.connect",
-    ): "Why: as above — third-party breadth the CLI never uses.",
+    ): "Why: as above - third-party breadth the CLI never uses.",
     (
         "test_cli_worker.py",
         "taskq.cli.importlib.import_module",
@@ -112,11 +112,11 @@ _NARROWER_BY_DESIGN: Final[dict[tuple[str, str], str]] = {
     (
         "test_leader_sweeps_coverage.py",
         "taskq.worker._leader_sweeps.asyncio.sleep",
-    ): "Why: as above — a sleep accelerator only ever handed a delay.",
+    ): "Why: as above - a sleep accelerator only ever handed a delay.",
     (
         "test_shutdown_orchestrator.py",
         "asyncio.sleep",
-    ): "Why: as above — a sleep accelerator only ever handed a delay.",
+    ): "Why: as above - a sleep accelerator only ever handed a delay.",
     (
         "test_otel_contract.py",
         "opentelemetry.trace.get_tracer",
@@ -245,7 +245,7 @@ def _resolve(target: str) -> object | None:
     while module_path:
         try:
             mod = importlib.import_module(module_path)
-        except Exception:  # Why: an unimportable target is simply unresolvable here.
+        except Exception:  # Why: an unimportable target is unresolvable here.
             module_path, _, head = module_path.rpartition(".")
             attr = f"{head}.{attr}" if head else attr
             continue

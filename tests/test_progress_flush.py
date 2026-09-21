@@ -567,7 +567,7 @@ async def test_flush_loop_removes_buffer_when_row_gone() -> None:
 
 async def test_flush_loop_fenced_out_row_dropped_while_sibling_flushes() -> None:
     """A row whose gate does not match (reclaimed, terminal, or owned by a
-    later attempt epoch) is simply absent from the batch's RETURNING: it
+    later attempt epoch) is absent from the batch's RETURNING: it
     does not update, its buffer is dropped, and - because there is no
     per-buffer statement - its fence cannot fail the statement carrying
     the sibling row.

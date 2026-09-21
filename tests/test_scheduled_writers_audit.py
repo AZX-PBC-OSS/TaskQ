@@ -437,7 +437,7 @@ def test_no_unreviewed_mark_method_exists(cls: type) -> None:
     """Completeness tripwire for the runtime audit above.
 
     That audit calls a fixed list of methods; a NEW ``mark_*`` writer would
-    simply not be called, and the contract would quietly gain a fifth path to
+    not be called, and the contract would quietly gain a fifth path to
     ``'scheduled'``. This asserts the API surface itself, so adding a method
     fails here until someone decides whether it writes ``'scheduled'`` and
     extends the runtime audit accordingly.

@@ -918,7 +918,7 @@ dispatch. Registration is idempotent for identical config, which every acquisiti
     `ConcurrencyReservation` object and its last-used timestamp) for keys that have not been
     acquired within `idle_for`. It does **not** touch the underlying Postgres
     `reservation_slots` rows for that name; those are reclaimed independently by the existing
-    lock-expiry sweep. A key that is acquired again after eviction is simply re-registered on
+    lock-expiry sweep. A key that is acquired again after eviction is re-registered on
     next use, so calling `evict_idle_keyed_reservations()` is always safe, including while other
     keys are mid-acquisition.
 

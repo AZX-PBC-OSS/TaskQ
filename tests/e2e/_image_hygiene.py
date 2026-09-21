@@ -143,7 +143,7 @@ def should_sweep_stale_wheel_cache_entry(*, created: datetime, now: datetime) ->
 
     No owner identity exists to consult: the entry's name is its content
     digest, and the same content is legitimately reusable by any live
-    session (a fresh one simply rebuilds and re-places it atomically). Only
+    session (a fresh one rebuilds and re-places it atomically). Only
     the age backstop applies - bounded at the same 24 h the container sweep
     uses, and safe for the same reason: no e2e session outlives it.
     """

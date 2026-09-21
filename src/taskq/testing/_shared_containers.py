@@ -421,7 +421,7 @@ def _remove_stale_networks(client: _DockerClientLike, now: datetime) -> int:
     :func:`should_sweep_stale_network`). Never raises: a network with
     endpoints still attached (a live run's, or one whose leftover containers
     were removed only moments before) refuses removal with a Docker API error
-    and is simply left for a later sweep."""
+    and is left for a later sweep."""
     try:
         networks = client.networks.list()
     except _docker_errors():

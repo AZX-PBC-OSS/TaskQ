@@ -178,7 +178,7 @@ def _render_extra(placeholder: str, owning_module: str, body: str) -> object:
         if not callable(helper):
             raise AssertionError(
                 f"{owning_module}.open_member_where is gone; the open-member "
-                "probe's render path changed — re-review this resolver"
+                "probe's render path changed - re-review this resolver"
             )
         next_param = max((int(n) for n in _POSITIONAL_PARAM_RE.findall(body)), default=0) + 1
         return helper(f"${next_param}")
@@ -190,7 +190,7 @@ def _render_extra(placeholder: str, owning_module: str, body: str) -> object:
         if not isinstance(value, str):
             raise AssertionError(
                 f"{owning_module}._TERMINAL_NOT_IN is no longer a string; "
-                "the terminal-status fragment's shape changed — re-review this resolver"
+                "the terminal-status fragment's shape changed - re-review this resolver"
             )
         return value
     if placeholder == "outbox_multiplier":
@@ -321,7 +321,7 @@ _PREFIX_COMPLETIONS: Final[dict[str, tuple[str, str]]] = {
     "taskq.backend._schedules:_SCHEDULE_UPDATE_SQL": (
         " enabled = $2 WHERE id = $1 RETURNING *",
         "prefix constant; update_schedule completes it with "
-        "'<col> = $n ... WHERE id = $1 RETURNING *' — validated through that "
+        "'<col> = $n ... WHERE id = $1 RETURNING *' - validated through that "
         "completion shape",
     ),
 }
@@ -414,7 +414,7 @@ def _build_inventory(schema: str) -> dict[str, list[str]]:
             continue
         raise AssertionError(
             f"{qualified} carries SQL keywords but is not a self-contained "
-            "statement and is not registered — register it in _COVERED_BY "
+            "statement and is not registered - register it in _COVERED_BY "
             "(with the rendered product that validates it), "
             "_PREFIX_COMPLETIONS (with its call-site completion), or "
             "_NOT_PG_SQL (with the reason PostgreSQL validation does not apply)"

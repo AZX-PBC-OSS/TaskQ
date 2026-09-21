@@ -104,7 +104,7 @@ async def test_a_denied_job_spends_no_retry_budget(pg_dsn: str, outcome: str) ->
         after = await _row(fleet, job_id)
         assert after["attempt"] == before["attempt"], (
             f"a {outcome} moved the job's attempt counter from {before['attempt']} to "
-            f"{after['attempt']}. The job never ran - the fleet was simply busy - yet it "
+            f"{after['attempt']}. The job never ran - the fleet was busy - yet it "
             f"has one fewer of its {_MAX_ATTEMPTS} retries left. A queue under load now "
             "consumes its own backlog: jobs that would succeed the moment capacity frees "
             "are written off instead, and the busier the fleet the more of them."

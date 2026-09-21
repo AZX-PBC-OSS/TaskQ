@@ -90,7 +90,7 @@ class _DeadServerPool:
        ``PoolConnectionHolder.release`` at source level: the reset is awaited
        UNDER the budget; on expiry the connection is TERMINATED and the
        timeout re-raised (asyncpg's timeout handler does exactly this),
-       freeing the holder either way; with no budget it simply parks forever:
+       freeing the holder either way; with no budget it parks forever:
     the unbounded hang shape."""
 
     def __init__(self, *, park_secs: float = _PARK_SECS) -> None:

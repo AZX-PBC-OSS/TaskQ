@@ -148,7 +148,7 @@ def test_doctor_reports_actor_with_no_stored_config_row_as_never_dispatching(
 ) -> None:
     """The dispatch capacity gate joins ``actor_config``, so a registered
     actor with no row is not merely uncapped - it is never selected at
-    all. Nothing fails anywhere; the jobs simply accumulate pending. This
+    all. Nothing fails anywhere; the jobs accumulate pending. This
     is the condition `doctor` most exists to surface, so the report must
     say what actually happens, not just note the row's absence."""
     _patch_db(

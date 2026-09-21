@@ -3,23 +3,23 @@
 Every test here is an executed attack against the PUSHED branch state,
 asserting only what an operator or client observes:
 
-1. Budget semantics — the worker loop's contract: after the documented
+1. Budget semantics - the worker loop's contract: after the documented
    budget of non-transient dispatch failures the loop RAISES the original
    error (tearing the worker down deliberately); transient failures never
    isolate the worker; the operator's alert surface
    (``taskq.worker.loop_unexpected_errors_total``) fires exactly once per
    tolerated occurrence, labelled by loop.
-2. Metric truth — an operator watching the public metrics surface sees a
+2. Metric truth - an operator watching the public metrics surface sees a
    round's pool wait in ``taskq.dispatch.pool_acquire_duration`` and NOT
    in ``taskq.dispatch.duration``; SQL latency only in the latter;
    ``taskq.dispatch.failures`` names the failing stage's error class.
-3. Cancel/shutdown interleaving — a cancelled round is a shutdown, not a
+3. Cancel/shutdown interleaving - a cancelled round is a shutdown, not a
    failure: the wait shows up as a wait, the failure counter stays
    silent, and the pool keeps serving (a leaked checkout would hang the
    follow-up rounds these tests run).
-4. Pool differential — a dispatch round and a plain ``async with`` on the
+4. Pool differential - a dispatch round and a plain ``async with`` on the
    SAME pool must be indistinguishable to their caller: same exception
-   (same object), same success, and the same pool health afterwards —
+   (same object), same success, and the same pool health afterwards -
    proven against a REAL asyncpg.Pool (``max_size=1``, so a single leaked
    checkout hangs the follow-up round and the test times out).
 """
@@ -97,7 +97,7 @@ class _NoopPool:
 class _ScriptedBackend:
     """dispatch_batch pops one script item per round.
 
-    A script item is an exception instance (raised verbatim — the loop
+    A script item is an exception instance (raised verbatim - the loop
     classifies it), ``None`` (a successful, empty round), or a list of
     job-like rows (a claimed round). When the script is exhausted,
     rounds succeed.
@@ -211,7 +211,7 @@ async def _run_producer(
         return result
 
     # Patch through monkeypatch (restored by the fixture even when the
-    # test aborts) — a leaked module-global asyncio.sleep poisons every
+    # test aborts) - a leaked module-global asyncio.sleep poisons every
     # later test in the process. run_mod.asyncio IS the asyncio module.
     monkeypatch.setattr(run_mod.asyncio, "sleep", _round_clock)  # pyright: ignore[reportPrivateImportUsage]  # Why: the shipped budget pins use the same seam (tests/test_producer_loop_unexpected_budget.py).
 
@@ -244,7 +244,7 @@ def _counter_by_loop(reader: InMemoryMetricReader) -> dict[Any, float]:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 1. Budget semantics — the worker raises after the documented budget;
+# 1. Budget semantics - the worker raises after the documented budget;
 #    transient failures never isolate the worker.
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -327,7 +327,7 @@ async def test_interleaved_orders_raise_at_exactly_the_nth_non_transient(
 ) -> None:
     """Interleavings of transient (T) and non-transient (N) failures in
     every order: the worker crashes on the round carrying the Nth
-    non-transient failure — transients neither count nor reset — with the
+    non-transient failure - transients neither count nor reset - with the
     Nth error object as the crash and the alert counter exact."""
     reader = _patch_counter(monkeypatch)
     _patch_budget(monkeypatch, 3)
@@ -389,7 +389,7 @@ async def test_success_round_resets_midstream_and_claimed_rounds_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Mid-stream reset semantics: [N,N,OK,N,N,N] crashes on round 6 (the
-    3rd N after the reset) — and the OK round is a CLAIMED round (jobs
+    3rd N after the reset) - and the OK round is a CLAIMED round (jobs
     flow to the local queue), proving claimed rounds reset the streak
     exactly like empty ones."""
     reader = _patch_counter(monkeypatch)
@@ -481,7 +481,7 @@ class _TrackingPool:
 
 
 class _RealDispatchBackend:
-    """Backend that runs the REAL ``_dispatch_batch`` against a fake pool —
+    """Backend that runs the REAL ``_dispatch_batch`` against a fake pool -
     the producer loop sees exactly the exceptions the real stage machinery
     raises."""
 
@@ -531,7 +531,7 @@ async def test_budget_is_stage_blind_resolve_and_claim_and_probe(
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 2. Metric truth — what an operator watching the metrics surface sees.
+# 2. Metric truth - what an operator watching the metrics surface sees.
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -553,7 +553,7 @@ async def test_successful_rounds_known_wait_lands_on_pool_histogram(
 ) -> None:
     """The pushed doc contract (docs/guides/observability.md):
     ``taskq.dispatch.pool_acquire_duration`` is "Seconds a dispatch round
-    spent waiting for a dispatcher connection (pool wait, no SQL)" — no
+    spent waiting for a dispatcher connection (pool wait, no SQL)" - no
     failure qualification. A pool-exhausted pod's canonical symptom is a
     multi-second wait that EVENTUALLY SUCCEEDS; an operator must see that
     wait on the pool-acquire series, and ``taskq.dispatch.duration`` must
@@ -642,7 +642,7 @@ async def test_failed_acquire_known_wait_full_accounting(
 
 
 async def test_mixed_rounds_delta_accounting(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Two rounds — one failed acquire, one success — must leave exact
+    """Two rounds - one failed acquire, one success - must leave exact
     DELTAS on the public series: failures +1, pool wait +2 (one failed,
     one successful), SQL duration +1 (success only)."""
     reader = setup_meter(monkeypatch)
@@ -702,7 +702,7 @@ async def test_mixed_rounds_delta_accounting(monkeypatch: pytest.MonkeyPatch) ->
 
 async def test_cancelled_acquires_no_double_record(monkeypatch: pytest.MonkeyPatch) -> None:
     """Two cancelled-acquire rounds: one wait sample each on the
-    pool-acquire series, the failure counter silent — never two samples
+    pool-acquire series, the failure counter silent - never two samples
     for one round."""
     reader = setup_meter(monkeypatch)
 
@@ -761,7 +761,7 @@ async def test_renamed_counter_one_series_no_cross_attribution(
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 3. Cancel/shutdown interleaving — a cancelled round is a shutdown, not
+# 3. Cancel/shutdown interleaving - a cancelled round is a shutdown, not
 #    a failure; the pool keeps serving (a leaked checkout hangs the
 #    follow-up round these tests run).
 # ─────────────────────────────────────────────────────────────────────────
@@ -771,7 +771,7 @@ async def test_cancel_mid_acquire_records_wait_not_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Cancelling a round parked inside the pool acquire: the operator
-    sees one wait sample, no failure counter, no SQL-duration sample —
+    sees one wait sample, no failure counter, no SQL-duration sample -
     and the pool still serves the next round."""
     reader = setup_meter(monkeypatch)
     parked = asyncio.Event()
@@ -822,7 +822,7 @@ async def test_cancel_mid_dispatch_pool_keeps_serving(
 ) -> None:
     """Cancelling a round parked in the dispatch SQL: the caller sees the
     cancellation, no failure counter, no SQL-duration sample, no
-    double-record on the pool series — and the pool still serves a
+    double-record on the pool series - and the pool still serves a
     follow-up round (a leaked checkout or wedged release would hang it)."""
     reader = setup_meter(monkeypatch)
     pool = _TrackingPool(_ok_conn)
@@ -886,7 +886,7 @@ async def test_cancel_during_failure_sleep_absorbed_no_metric_lie(
 ) -> None:
     """A cancellation delivered while the loop sleeps off a non-transient
     failure is absorbed by the loop (its documented contract): the counted
-    occurrence survives exactly once — no loss, no double-count — and the
+    occurrence survives exactly once - no loss, no double-count - and the
     worker still exits cleanly on its stop event."""
     reader = _patch_counter(monkeypatch)
     _patch_budget(monkeypatch, 5)
@@ -1026,7 +1026,7 @@ async def test_round_failure_reaches_the_caller_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A body failure mid-round reaches the caller as the SAME exception
-    OBJECT from both forms — no wrapping, no replacement, no swallowing."""
+    OBJECT from both forms - no wrapping, no replacement, no swallowing."""
     setup_meter(monkeypatch)
     err = ValueError("the body's permanent fault")
 
@@ -1228,7 +1228,7 @@ async def test_real_pool_failed_round_releases_and_next_rounds_serve(
 ) -> None:
     """A round that fails mid-claim (the jobs table vanishes) must (a)
     propagate the true server error to the caller, (b) release the pool's
-    only connection — every follow-up round serves — and (c) leave the
+    only connection - every follow-up round serves - and (c) leave the
     pool's size exactly as it was. The identical fault through a plain
     ``async with`` must be indistinguishable to its caller."""
     reader = setup_meter(monkeypatch)
@@ -1239,7 +1239,7 @@ async def test_real_pool_failed_round_releases_and_next_rounds_serve(
     await _rename_jobs_async("jobs", "jobs_shadow")
     with pytest.raises(asyncpg.UndefinedTableError):
         await _run_round(pool)
-    # Differential: the identical fault through a plain `async with` —
+    # Differential: the identical fault through a plain `async with` -
     # the same error class reaches its caller too.
     with pytest.raises(asyncpg.UndefinedTableError):
         async with pool.acquire(timeout=5.0) as c:
@@ -1251,7 +1251,7 @@ async def test_real_pool_failed_round_releases_and_next_rounds_serve(
                 timedelta(seconds=30),
                 2,
             )
-    # The fault is repaired: every follow-up round serves — with
+    # The fault is repaired: every follow-up round serves - with
     # max_size=1, a leaked checkout or wedged release hangs here.
     await _rename_jobs_async("jobs_shadow", "jobs")
     for _ in range(3):
@@ -1270,7 +1270,7 @@ async def test_real_pool_cancelled_round_parked_on_exhausted_pool(
     """A round parked waiting for the pool's only connection, then
     cancelled: the operator sees the wait on the pool-acquire series
     (with its real duration), no failure counter, no SQL-duration sample
-    — and the pool still serves afterwards."""
+    - and the pool still serves afterwards."""
     reader = setup_meter(monkeypatch)
     pool = real_pg_pool
 

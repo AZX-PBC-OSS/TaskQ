@@ -220,7 +220,7 @@ async def test_a_job_that_never_ran_cannot_reach_a_terminal_state(
     """Deploys plus one crashed pod must not terminally kill unexecuted work.
 
     Three rolling deploys leave the job in a pod's buffer each time. A fourth
-    pod claims it and is killed outright, so its lease simply expires and the
+    pod claims it and is killed outright, so its lease expires and the
     reclaim sweep picks the row up. The actor has still never been invoked
     once, and the job's entire configured budget was spent on deployments.
     A terminal state here is silent data loss: work the operator enqueued is

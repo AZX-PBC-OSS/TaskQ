@@ -447,7 +447,7 @@ class TestCancelOriginAuditability:
 
         Trimming bookkeeping rows from the event stream cut noise, not state
         transitions: no cancelled job may end with a timeline that never
-        shows it ending, or the admin timeline view shows a job that simply
+        shows it ending, or the admin timeline view shows a job that
         stops."""
         backend = _make_backend()
         args = EnqueueArgs(

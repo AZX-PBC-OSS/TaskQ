@@ -12,7 +12,7 @@ schema collisions under ``pytest-xdist``:
   a fixed per-worker default reaches consumer suites on shared-database
   models, where it clobbers across modules.
 - Module-level ``_SCHEMA = ...`` / ``SCHEMA = ...`` constants encode the
-  same anti-pattern (or simply go stale) and should instead be sourced
+  same anti-pattern (or go stale) and should instead be sourced
   from the ``module_pg_schema`` / ``clean_pg_conn`` / ``clean_jobs_app``
   fixtures, or a per-test unique name (e.g. ``f"prefix_{new_base62()}"``).
 

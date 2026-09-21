@@ -199,7 +199,7 @@ async def test_retry_collision_does_not_wedge_sibling_rows_in_same_sweep_batch(
             collide_job_id, worker_id, error, None, attempt=1, claim_epoch=1
         )
 
-        # Row B: an ordinary never-dispatched job whose deadline has simply
+        # Row B: an ordinary never-dispatched job whose deadline has
         # passed -- no retry, no prior attempt row, nothing to collide with.
         # It must still resolve to 'failed' in the same sweep call.
         clean_job_id = await create_running_job(

@@ -166,7 +166,7 @@ class SessionManager:
     max_age_seconds: int = 28800
     secure_cookie: bool = True
     cookie_name: str = SESSION_COOKIE_NAME
-    # Why not simply "/": an admin session cookie scoped to the whole origin is
+    # Why not "/": an admin session cookie scoped to the whole origin is
     # handed to every unrelated route of the host application that mounts the
     # admin UI. The backend factories set this to their ``base_path`` so the
     # cookie is only ever sent where it is actually read.

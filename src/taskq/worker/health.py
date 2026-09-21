@@ -783,7 +783,7 @@ class HealthServer:
         # Why the transport gate: ``health_tasks_enabled`` documents this dump as Unix-socket
         # only, and the socket's reachability (filesystem permissions, 0600 when enabled) is
         # what makes exposing code structure and task names acceptable. The TCP listener has
-        # none of that, so the route simply does not exist there.
+        # none of that, so the route does not exist there.
         if transport != "unix" or not deps.settings.health_tasks_enabled:
             # Disabled by default (TASKQ_HEALTH_TASKS_ENABLED): the dump
             # endpoint is privileged, so a disabled state is

@@ -193,7 +193,7 @@ class _CountingConn:
             # RETURNING aggregates -- independent of how the CTE is spelled.
             # ``Record.get`` (not ``[...]``) so a statement that returns
             # neither column -- e.g. a chunked rewrite's own bookkeeping
-            # query -- is simply skipped instead of raising.
+            # query -- is skipped instead of raising.
             for key in ("cancelled_directly", "cancel_requested"):
                 value = row.get(key) if hasattr(row, "get") else None
                 if isinstance(value, int):

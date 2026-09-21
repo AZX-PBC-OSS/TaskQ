@@ -102,7 +102,7 @@ async def test_every_actor_is_dispatched_within_a_bounded_number_of_rounds(
             f"in {mode} mode, {len(starved)} of {_ACTOR_COUNT} actors were never "
             f"dispatched in {_ROUNDS} rounds of {_ROUND_LIMIT} while each held "
             f"{_JOBS_PER_ACTOR} due jobs: {starved}. Their work does not age out, it "
-            "simply never runs, and the queue's overall throughput looks healthy "
+            "never runs, and the queue's overall throughput looks healthy "
             "throughout - the only visible symptom is one tenant's jobs getting older."
         )
 

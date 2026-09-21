@@ -5,8 +5,8 @@ The dispatch CTE splits capped and uncapped actors into two different
 pre-lock cut shapes (``top_ids`` -> ``locked`` for capped, ``sliding_locked``
 for uncapped -- see _dispatch_sql.py's module docstring). Both paths read
 ``actor_claimed_at`` in their ORDER BY, but they are genuinely different
-SQL shapes, so it's worth independently confirming the capped path rotates
-too rather than assuming parity from the uncapped test.
+SQL shapes, so the capped path gets its own rotation check rather than
+assuming parity from the uncapped test.
 
 Temporary, unticketed scratch test.
 """

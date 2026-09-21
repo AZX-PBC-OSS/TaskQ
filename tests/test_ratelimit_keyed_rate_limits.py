@@ -1492,7 +1492,7 @@ async def test_redis_backend_fixed_quota_bucket_is_still_idle_evicted(
 
 
 async def test_evict_idle_keyed_rate_limits_re_registration_after_eviction_is_idempotent() -> None:
-    """A key evicted and then acquired again is simply re-registered - no error,
+    """A key evicted and then acquired again is re-registered - no error,
     and the registry converges back to one entry for that key."""
     reg = RateLimitRegistry()
     ref = _rate_limit_ref(base_name="api-per-tenant", capacity=10, refill_per_second=1.0)

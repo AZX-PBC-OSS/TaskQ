@@ -137,7 +137,7 @@ async def _get_actor_max_pending(
     """Whole-table ``actor_config.max_pending`` snapshot.
 
     Rows appear with an ``int`` limit or ``None`` (cleared override);
-    actors without a row are simply absent. Consumed through the
+    actors without a row are absent. Consumed through the
     client-side TTL cache, never per enqueue.
     """
     async with _bounded_checkout(pool, "get_actor_max_pending") as conn:

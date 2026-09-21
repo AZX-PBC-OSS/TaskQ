@@ -57,7 +57,7 @@ implementations available as extras:
 > **Factory-produced** objects are **TaskQ-owned**. TaskQ closes them on
 > teardown via its `AsyncExitStack`.
 
-Three consequences worth knowing:
+Three consequences:
 
 * A **caller-owned `notify_conn`** that drops leaves TaskQ nothing to
   rebuild through: the NOTIFY listener disables itself (logged as
@@ -412,7 +412,7 @@ What a reload does:
   heartbeat loops are not stopped for a reload.
 
 Each resource reloads independently: if one factory call fails (e.g. a
-transient credential-fetch error), that resource simply keeps its current
+transient credential-fetch error), that resource keeps its current
 pool/connection and everything else still reloads. Check the
 `credentials-reloaded` log line's `failed` field after a SIGHUP: a
 non-empty list means a partial reload; trigger another reload to retry
@@ -880,7 +880,7 @@ DSN or a factory) is closed by `tq.close()`; one you passed as `pool=` never
 is, and `reload_credentials()` refuses to rotate it, because rotating means
 closing.
 
-Note that `reload_credentials()` is not needed for ordinary token refresh:
+`reload_credentials()` is not needed for ordinary token refresh:
 `make_pg_pool_factory` passes `password=` to asyncpg as a callable, so every
 *new physical connection* already authenticates with a freshly fetched
 credential. Reload is how you drop sessions opened under a **revoked**

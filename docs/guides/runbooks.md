@@ -21,7 +21,7 @@ instead of subtracting in your own clock domain.
 
 ## TaskQQueueDepthHigh
 
-**What fired.** `max by (actor, queue) (taskq_jobs_oldest_pending_age_seconds) > 900` for 5 minutes: the oldest PENDING job of some (actor, queue) pair has been eligible for more than 15 minutes, sustained. The gauge is attributed per actor and per queue on purpose, not per queue: in a multi-worker fleet no worker refuses to start because an actor's declared queue has no consumer (no supervisor can know what consumes a queue), so a misrouted actor produces no refusal, no error and no failed job, and its rows simply pile up pending while every probe stays green. Age rather than depth, because a deep queue that drains is healthy throughput.
+**What fired.** `max by (actor, queue) (taskq_jobs_oldest_pending_age_seconds) > 900` for 5 minutes: the oldest PENDING job of some (actor, queue) pair has been eligible for more than 15 minutes, sustained. The gauge is attributed per actor and per queue on purpose, not per queue: in a multi-worker fleet no worker refuses to start because an actor's declared queue has no consumer (no supervisor can know what consumes a queue), so a misrouted actor produces no refusal, no error and no failed job, and its rows pile up pending while every probe stays green. Age rather than depth, because a deep queue that drains is healthy throughput.
 
 **How to confirm.**
 
@@ -551,7 +551,7 @@ Do not raise `TASKQ_CRON_AUTO_DISABLE_THRESHOLD` to keep a broken schedule alive
 
 1. The named actor does not yield to cancellation: it is blocking the event loop (a sync call without `asyncio.to_thread`), swallowing `CancelledError`, or running a native call that cannot be interrupted. Make it cooperative: poll `ctx.cancellation_requested` (or await `ctx.cancel_event`) in long loops, keep blocking work off the loop; see [ops.md: Thread-unsafe native libraries](ops.md#thread-unsafe-native-libraries).
 2. The abandoned row is terminal; the actor's coroutine may still be running in the worker until the process restarts. If it holds resources, restart that worker (`taskq_active_jobs` on its health socket shows the stuck slot).
-3. If the graces are simply too short for a well-behaved actor's cleanup, widen `TASKQ_CANCELLATION_GRACE_PERIOD` / `TASKQ_CLEANUP_GRACE_PERIOD`, but only after (1) is ruled out.
+3. If the graces are too short for a well-behaved actor's cleanup, widen `TASKQ_CANCELLATION_GRACE_PERIOD` / `TASKQ_CLEANUP_GRACE_PERIOD`, but only after (1) is ruled out.
 
 ---
 

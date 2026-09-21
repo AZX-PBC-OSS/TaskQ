@@ -151,7 +151,7 @@ class _CountingConn:
             # from its own RETURNING aggregate -- independent of how the
             # CTE is spelled.  ``Record.get`` (not ``[...]``) so a
             # statement that returns no such column -- e.g. the batch's
-            # statement_timeout capture -- is simply skipped instead of
+            # statement_timeout capture -- is skipped instead of
             # raising.
             value = row.get("cancelled_directly") if hasattr(row, "get") else None
             if isinstance(value, int):

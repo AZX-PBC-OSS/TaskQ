@@ -352,7 +352,7 @@ async def test_a_genuine_execution_failure_still_spends_the_budget(
     it, or ``max_attempts`` stops bounding anything and a permanently
     broken actor retries forever.
 
-    Here no limiter is involved at all: the actor simply fails every time,
+    Here no limiter is involved at all: the actor fails every time,
     and the job must reach a terminal ``failed`` after exactly
     ``max_attempts`` executions, with one attempt row per execution.
     """

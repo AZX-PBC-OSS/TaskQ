@@ -150,7 +150,7 @@ async def test_unclaimed_role_is_winnable_while_another_session_holds_the_courte
     The deadlock this pins: the row is ABSENT (a resigning leader's delete
     landed, or a candidate died between its lock attempt and its election
     write) while the courtesy advisory lock stays held by a session the
-    fleet cannot reap - a partitioned peer, or simply a departed leader
+    fleet cannot reap - a partitioned peer, or a departed leader
     whose connection outlives its row.  If claimability consulted the
     lock, every pod would observe it held and no pod could elect until
     the server's connection reaping fired (stock keepalives: hours).  The

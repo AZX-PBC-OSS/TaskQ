@@ -25,7 +25,7 @@ Contract under test: losing the race on ONE row must not collapse the
 isolation of the OTHERS - the sweep's transition of X stands, exactly one
 attempt row exists for X, and Y is still isolated (re-pended for retry).
 The benign ordering (sweep fully first, then isolate) is pinned green:
-the guards serialise and isolate simply no longer sees the reclaimed row.
+the guards serialise and isolate no longer sees the reclaimed row.
 """
 
 import asyncio

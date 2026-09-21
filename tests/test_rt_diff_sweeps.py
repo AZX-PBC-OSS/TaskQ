@@ -91,10 +91,8 @@ async def test_diff_sweep1_cancel_carveout_margin(pg_dsn: str) -> None:
     intent outranks the retry budget, so the deep reclaim
     terminalises the row 'cancelled' instead of requeueing it pending. A
     cancelled job never re-pends; it terminalises, keeping cancel_phase and
-    cancel_requested_at as the audit trail of the honoured request (the same
-    choice river's rescuer makes for a stuck row stamped
-    metadata.cancel_attempted_at, and pg-boss makes terminal in cancelJobs:
-    only an explicit operator resume revives a cancelled row)."""
+    cancel_requested_at as the audit trail of the honoured request: only an
+    explicit operator resume revives a cancelled row."""
     mem, pg = await run_differential(_s1_cancel_margin_window, pg_dsn=pg_dsn)
     assert_mirror(
         "the reclaim sweep's cancel carve-out admits an in-flight-cancel job "

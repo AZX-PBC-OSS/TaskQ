@@ -54,7 +54,7 @@ tables. See [workers.md](workers.md).
 
 **Queues route work.** Every job sits in a queue; a worker only dispatches from the queues in its
 `TASKQ_QUEUES`. Partition fleets by queue to keep a deep backlog on one workload from starving
-another. See [workers.md: Queue selection](workers.md#queue-selection), and note that a queue
+another. See [workers.md: Queue selection](workers.md#queue-selection), and a queue
 with a deep `strict_fifo` backlog starves *everything behind it*, which is a
 [priority problem](#starvation-priority-and-fairness), not only a partitioning problem.
 

@@ -498,7 +498,7 @@ class TaskQSettings(DotEnvConfig):
         "non-dev environment, failing closed. Set to False to suppress the "
         "error and allow unauthenticated health/metrics endpoints in non-dev "
         "(e.g. when relying on network policy / cluster-internal-only access "
-        "instead of a bearer token - note that many k8s liveness/readiness "
+        "instead of a bearer token. Many k8s liveness/readiness "
         "probes don't send auth headers by default, so enabling the token "
         "may require updating the probe config too).",
     )

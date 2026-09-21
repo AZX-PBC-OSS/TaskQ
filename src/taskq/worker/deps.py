@@ -1212,7 +1212,7 @@ async def reload_credentials(
     (e.g. a transient credential-fetch error) is logged
     (``credential-reload-resource-failed``) and does NOT abort the
     remaining resources or raise out of this function; that resource
-    simply keeps its current (not-yet-expired) pool/connection until the
+    keeps its current (not-yet-expired) pool/connection until the
     next SIGHUP.
 
     Concurrent invocations are serialized on ``deps.reload_lock``: a

@@ -117,7 +117,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     "_SCHEDULE_UPDATE_SQL": (
         "cron_schedules SET",
         "prefix constant; the sole call site completes it with "
-        "'WHERE id = $1 RETURNING *' — keyed single cron_schedules row",
+        "'WHERE id = $1 RETURNING *' - keyed single cron_schedules row",
     ),
     "_SCHEDULE_ENABLE_SQL": (
         "WHERE id = $1",
@@ -227,7 +227,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     "UPDATE_JOBS_LOCK_RENEWAL_SQL_TEMPLATE": (
         "WHERE locked_by_worker = $1 AND status = 'running'",
         "one worker's running jobs (the heartbeat loop's threshold-gated "
-        "lease renewal, #227 — the same worker-scoped set as "
+        "lease renewal - the same worker-scoped set as "
         "UPDATE_JOBS_LOCK_SQL_TEMPLATE with a narrower predicate, so the "
         "bound is at most that statement's)",
     ),

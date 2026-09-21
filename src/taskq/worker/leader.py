@@ -943,7 +943,7 @@ class MaintenanceLeader:
         alike: the leader conn's state is unknown after either failure, so
         it (and every leader-owned conn) is dropped and the lost attempt
         recorded. The caller decides what the error class buys the loop ,
-        a transient failure just retries next tick; an unexpected one is
+        a transient failure retries on the next tick; an unexpected one is
         budgeted by the :class:`UnexpectedLoopErrorGuard` first.
 
         ``won_row`` marks the cycles whose election statement had already

@@ -496,7 +496,7 @@ class TestSlidingWindowLockBoundedWait:
         """Refunding a lock-timeout denial must be a no-op: nothing was
         admitted (fail closed), so the refund's request_id-keyed DELETE
         matches no row and the bucket's state is untouched - the released
-        slot a caller might expect simply never existed."""
+        slot a caller might expect never existed."""
         schema = module_pg_schema.schema_name
         settings = _settings(module_pg_schema)
         name = f"sw_lock_refund_{new_base62()}"

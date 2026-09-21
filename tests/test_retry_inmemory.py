@@ -691,7 +691,7 @@ async def test_admission_denial_never_consumes_budget_or_fails_the_job() -> None
     spent, and the exhausted hook does not fire.
 
     A queue or rate-limit misconfiguration must not be able to kill work
-    that simply never got a slot - a denial's only terminal exit is the
+    that never got a slot - a denial's only terminal exit is the
     job's own schedule-to-close deadline. Contention stays visible
     through the aggregated denial counter on the row, so the denial
     writes no per-denial event or attempt rows.

@@ -308,7 +308,7 @@ protocol member's observable contract such that an implementation written
 against the previous version would *silently* misbehave (return wrong rows,
 ignore inputs) instead of failing loudly.  Purely additive changes that an old
 implementation can ignore without producing incorrect behaviour (a new optional
-method with a default, a new carrier field old code simply never reads) do not
+method with a default, a new carrier field old code never reads) do not
 require a bump.  History: **v3** (unreleased; folds in every protocol
 change since the last shipped release): `list_jobs`; `JobFilter.status`
 widened to accept a sequence and the `active` meta-filter was added (a v2
@@ -1139,8 +1139,7 @@ trigger emits: coalesced with it in a transaction, a second delivery to
 every listener on a caller's bare connection (pinned by
 `tests/test_enqueue_wake_source.py`.) A plain pool enqueue is therefore
 exactly one statement, `INSERT … RETURNING *`, in autocommit
-(`tests/test_round_trip_budgets.py`). pg-boss folds its notify into the
-INSERT gated on the row being due; Oban notifies only for `available` rows.
+(`tests/test_round_trip_budgets.py`).
 
 An empty payload wakes every subscriber unfiltered: it comes from the COPY fixup's bulk wake (a
 batch spanning queues cannot name one queue) or from an older trigger still live in a rolling
@@ -1173,8 +1172,7 @@ rows than requested, or none) the producer waits a small jittered cooldown
 (`_CLAIM_COOLDOWN_SECONDS`, 50 ms) before its next round; wakes and freed
 slots that land meanwhile are folded into that one round. A full round
 re-claims immediately, a wake that lands mid-round always yields one
-follow-up round, and the fallback poll keeps its own cadence. This is
-River's `FetchCooldown` / Oban's `dispatch_cooldown` shape; the cost is up to
+follow-up round, and the fallback poll keeps its own cadence. The cost is up to
 one cooldown of claim latency for a job that arrives right after a short
 round.
 
@@ -1307,20 +1305,16 @@ window can still overlap a later re-claim of its retry. The enforced exit
 boundary (the watchdog gate) protects the interruption release; the timeout
 path's promise is exactly the park plus the deferral, and no more.
 
-#### Deliberate divergence from the queue ancestors
+#### The interruption release contract
 
-No peer ships this contract. Celery requeues a job whose worker died mid-run
-(`worker/request.py`: an unacked message returns on `worker-lost`, by design;
-the at-least-once overlap is accepted), and River rescues stuck rows purely by
-a visibility timeout racing the attempt. TaskQ deliberately diverges: an
-interruption *releases with a hold sized to the releaser's own enforced exit*
-rather than accepting the overlap, at the cost of one exit-window of latency
-for an actor that outlives its budget. The other half of the design (the
-heartbeat continuing through the drain so a slow-but-alive worker's leases are
-not reclaimed out from under it) aligns with dramatiq's worker shutdown
-(`worker.py`: the broker drain waits for in-flight messages) and Celery 5.6+'s
-documented warm-shutdown waiting for active tasks
-(`docs/userguide/workers.rst`).
+TaskQ's interruption release rejects the at-least-once overlap other
+queue libraries accept when they requeue a job whose worker died
+mid-run: an interruption *releases with a hold sized to the releaser's
+own enforced exit*, at the cost of one exit-window of latency for an
+actor that outlives its budget. The heartbeat continues through the
+drain, so a slow-but-alive worker's leases are not reclaimed out from
+under it: the warm-shutdown convention of waiting for in-flight work
+before exit, kept on the worker's own clock.
 
 The `ShutdownWatchdog` (detector 1) runs concurrently outside the TaskGroup
 and enforces `termination_grace_period` as a hard wall (see

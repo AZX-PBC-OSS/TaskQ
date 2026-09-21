@@ -747,7 +747,7 @@ def _operator_settings(**overrides: object) -> WorkerSettings:
     """Fake-pool settings carrying operator-set lock budgets.
 
     ``load_from_dict`` is hermetic (no dotfiles, no process env) and silently
-    ignores unknown keys, so a missing field loads clean and the value simply
+    ignores unknown keys, so a missing field loads clean and the value
     never arrives -- which is the failure these tests catch.
     """
     base: dict[str, object] = {"pg_dsn": "postgresql://u:p@h/d", "schema_name": "taskq_fake"}

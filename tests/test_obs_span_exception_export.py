@@ -44,7 +44,7 @@ from taskq.testing.otel import setup_tracer
 #: keys actually carry.
 CANARY = "tenant-4417-SSN-078051120"
 
-#: The static part of the same message. A fix that simply drops all exception
+#: The static part of the same message. A fix that drops all exception
 #: text would pass a "canary absent" assertion while destroying the signal, so
 #: every case asserts this survives.
 DIAGNOSTIC = "duplicate key value violates unique constraint"

@@ -265,7 +265,7 @@ async def reconnect_notify_conn(
     once ``notify_listener_loop`` observes the shutdown event, which may
     happen mid-reconnect). Any exception from that race is caught and
     logged by :func:`~taskq.worker.deps.reload_credentials`'s caller - it
-    does not crash the worker; the reload is simply reported as failed for
+    does not crash the worker; the reload is reported as failed for
     ``notify_conn`` on an already-terminating worker.
     """
     # Serialized on deps.notify_reconnect_lock: the health-check loop and

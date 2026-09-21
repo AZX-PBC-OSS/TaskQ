@@ -82,7 +82,7 @@ _LOCK_LEASE = 750.0
 # tests with no bound of its own: asyncpg's connect timeout covers only the
 # handshake, and nothing here sets a server-side statement/lock timeout, so
 # a stalled Postgres (a wedged shared test container under xdist) suspends
-# the test forever on an in-flight query with an idle event loop — the
+# the test forever on an in-flight query with an idle event loop - the
 # signature of the one 300s pytest-timeout hang this module produced in CI
 # (loop parked in epoll with no timer pending, task still awaiting). These
 # bounds convert that into a fast asyncpg TimeoutError naming the phase.

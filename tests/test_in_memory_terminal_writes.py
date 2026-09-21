@@ -1484,7 +1484,7 @@ class TestDenialNeverConsumesRetryBudget:
 
     A rate-limit or reservation denial means the job never ran: no actor
     code executed, nothing failed. Charging it a retry attempt lets a
-    queue or rate-limit misconfiguration kill work that simply never got
+    queue or rate-limit misconfiguration kill work that never got
     a slot - a job with a retry budget of three dies after three
     denials, having done nothing wrong. So a denial refunds the claim's
     attempt increment exactly like an actor-requested deferral, and the

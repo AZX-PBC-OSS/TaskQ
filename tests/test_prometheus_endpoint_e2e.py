@@ -49,7 +49,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
-# Boot: exactly the ui-serve call in src/taskq/cli.py — router creation is
+# Boot: exactly the ui-serve call in src/taskq/cli.py - router creation is
 # process start on the shipped serve path (the FastAPI lifespan), which is
 # where the provider auto-wiring happens.
 from taskq.contrib.prometheus import create_metrics_router

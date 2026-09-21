@@ -413,7 +413,7 @@ async def test_stranded_detector_sees_the_assignment_routed_strand(
     An operator hits this after moving an actor onto a queue whose
     consumers were never started. Nothing fails: the jobs are pending and
     due, the queue on their label is served, the gauge is zero, and the
-    retries simply never run.
+    retries never run.
     """
     schema = f"tarq_{new_base62()}".lower()
     conn = await asyncpg.connect(pg_dsn)

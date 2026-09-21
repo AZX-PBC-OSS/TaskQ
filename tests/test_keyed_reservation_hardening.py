@@ -474,7 +474,7 @@ async def test_race_condition_eviction_during_ensure_slots(
 
 async def test_race_condition_no_key_error_when_pg_pool_none() -> None:
     """When pg_pool is None there is no await and hence no race - the
-    reservation is simply registered and returned."""
+    reservation is registered and returned."""
     reg = RateLimitRegistry()
     ref = _keyed_ref(base_name="session-cap")
 

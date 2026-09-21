@@ -58,7 +58,7 @@ def _flush_update_sql(schema: str) -> str:
     fenced PER ROW (running + this worker + this attempt epoch) and
     merges PER ROW (monotone base + delta on ``progress_seq``,
     last-writer-wins ``||`` merge on ``progress_state``); a row whose
-    fence does not match simply does not update and does not RETURN, so
+    fence does not match does not update and does not RETURN, so
     it can neither clobber a row it no longer owns nor fail the
     statement. Parameters, in order (see ``_FLUSH_UNNEST_BINDING_ORDER``):
 
@@ -304,7 +304,7 @@ async def _flush_dirty_set(
     :func:`_flush_update_sql`) with the fencing gate (running + this
     worker + this attempt epoch) and the progress_seq / progress_state
     merge applied per-row over the unnest arrays. Rows whose gate does
-    not match simply do not update and do not RETURN; the retire
+    not match do not update and do not RETURN; the retire
     protocol below keys on which job ids came back, so a fenced-out
     row's buffer is dropped exactly as the per-buffer no-op path
     dropped it.

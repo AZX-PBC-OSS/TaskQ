@@ -6,7 +6,7 @@ writes a terminal state for it. That state carries no retry, so nothing
 re-dispatches the job and nothing re-computes its work.
 
 The job that reaches that last phase has done nothing wrong. It is not stuck,
-not looping, not failing: it is simply taking longer than the two grace periods
+not looping, not failing: it is taking longer than the two grace periods
 allow, which at the shipped defaults is under a minute. Any job legitimately
 longer than that - a large export, a batch of remote calls, a slow migration
 step - is destroyed by every rolling deploy that lands on it, and a fleet

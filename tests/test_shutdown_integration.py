@@ -1030,7 +1030,7 @@ async def test_tn1_signal_handler_must_not_await(
     assert callable(handler), f"handler is not callable: {handler!r}"
 
     # `add_signal_handler` invokes its callback synchronously, in the signal
-    # context: a coroutine function would simply never run. This assertion is
+    # context: a coroutine function would never run. This assertion is
     # the whole check - a companion scan for `"await " not in getsource(...)`
     # used to follow it and could not fail. Python rejects `await` in a
     # non-async def at compile time ("SyntaxError: 'await' outside async
