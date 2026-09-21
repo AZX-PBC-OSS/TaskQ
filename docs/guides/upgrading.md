@@ -511,6 +511,27 @@ probe and the bulk-cancel sanitizer make. Update call sites to
 `unfinished=`; `JobFilter(active=True)` becomes
 `JobFilter(unfinished=True)`.
 
+### Terminal writes raise on drifted outcome branches
+
+> **Unreleased.** Not a breaking change: a drifted row previously fell
+> through the SQL arm silently, and nothing could observe that path
+> without a schema or template drift the library itself introduces. The
+> raise is the loud surface for a library bug, not a state your
+> application code can produce or handle.
+
+`mark_snoozed`, `mark_failed_or_retry` and `mark_abandoned` (and the
+`mark_retry` arms behind them) branch on a typed outcome instead of
+free-form SQL arms, so a terminal write whose row matches no branch —
+a status the statements cannot emit — raises (`AssertionError` naming
+the branch) instead of falling through an unhandled SQL arm and
+returning a row that was never written. Nothing migrates: correct
+deployments never see it, and the in-memory twins share the same typed
+branches so the differential corpus holds. Related, and visible on the
+happy path: the snoozed deadline exit's state-change event persists
+`denial_reason`, so a denial-keyed row's terminal event names the
+denial class the caller reported and an operator can see which
+starvation killed the job without joining the counter columns.
+
 ### `firstof`/`allof` DST strategies become live
 
 > **Unreleased.** Breaking for schedules that already exist and declare
