@@ -240,6 +240,6 @@ async def test_work_claimed_during_shutdown_returns_to_the_fleet(
         "every job the departing pod was holding must come back to the fleet "
         f"when it shuts down; the surviving worker could only claim "
         f"{len(claimed)} of {_BACKLOG} jobs. The rest are still locked to a "
-        "pod that no longer exists, so that work simply stops until a lease "
+        "pod that no longer exists, so that work stops until a lease "
         "expires"
     )

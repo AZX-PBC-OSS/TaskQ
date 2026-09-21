@@ -423,7 +423,7 @@ class _FakePool:
     bound exists for. A parked release under a budget raises ``TimeoutError``
     at the budget and TERMINATES the connection (asyncpg's timeout handler
     does exactly this), freeing the holder either way; with no budget it
-    simply parks: the unbounded shape that wedged the caller's task and
+    parks: the unbounded shape that wedged the caller's task and
     ``pool.close()`` (the hang half, reproduced live against a
     SIGSTOP-frozen backend)."""
 

@@ -176,8 +176,8 @@ _PROBED_IN_THIS_FILE = {
 #: row type fails there until reclassified.
 _NO_STORED_STATE_ESCAPES: dict[str, str] = {
     "abort_batch": "returns a count",
-    "archive_terminal_jobs": "returns PruneResult — freshly built counts",
-    "cancel_where": "returns BulkCancelResult — frozen, counts only",
+    "archive_terminal_jobs": "returns PruneResult - freshly built counts",
+    "cancel_where": "returns BulkCancelResult - frozen, counts only",
     "complete_batch": "returns None; scalar arguments",
     "count_active_jobs": "returns a count",
     "count_batch_non_terminal": "returns a count",
@@ -185,14 +185,14 @@ _NO_STORED_STATE_ESCAPES: dict[str, str] = {
     "create_batch": "returns None; builds its own metadata dict, scalar arguments",
     "deadline_sweep": "returns a count",
     "delete_schedule": "returns None",
-    "expire_archived_jobs": "returns ArchiveExpiryResult — freshly built counts",
+    "expire_archived_jobs": "returns ArchiveExpiryResult - freshly built counts",
     "extend_reservation_leases": "returns a count",
     "get_actor_max_pending": "returns a freshly built dict of scalars",
     "heartbeat_jobs": "returns a count",
     "increment_batch_failures": "returns a tuple of scalars",
     "mark_abandoned": "returns bool",
     "mark_cancelled": "returns bool",
-    "poll_cancel_flags": "returns CancelFlag — frozen, scalar fields only",
+    "poll_cancel_flags": "returns CancelFlag - frozen, scalar fields only",
     "prune_old_batches": "returns a count",
     "reclaim_expired_locks": "returns a count",
     "reset_batch_failures": "returns a count",
@@ -209,17 +209,17 @@ _NO_STORED_STATE_ESCAPES: dict[str, str] = {
 _STORED_CALLER_DATA_NO_READ_SEAM: dict[str, str] = {
     "register_actor_config": (
         "the caller's metadata dict is stored by reference, but nothing reads "
-        "it back (stored for future use) — a read seam added later must copy"
+        "it back (stored for future use) - a read seam added later must copy"
     ),
     "register_actor_configs": "same storage path as register_actor_config",
 }
 
 #: Test wiring whose sharing with the backend is the contract, not a defect.
 _WIRING_SHARED_BY_DESIGN: dict[str, str] = {
-    "subscribe_wake": "returns the subscriber event handle the backend sets — sharing is the mechanism",
+    "subscribe_wake": "returns the subscriber event handle the backend sets - sharing is the mechanism",
     "subscribe_cancel_wake": "same subscriber-event contract as subscribe_wake",
-    "register_cancel_event": "registers the caller's event for the backend to set — sharing is the point",
-    "register_stub": "installs a caller-owned stub double — the stub must be the object the caller holds",
+    "register_cancel_event": "registers the caller's event for the backend to set - sharing is the point",
+    "register_stub": "installs a caller-owned stub double - the stub must be the object the caller holds",
     "slot_table": "test-only handle exposing the internal slot table deliberately",
     "advance_clock_to": "drives the FakeClock; no state returned",
     "run_until_drained": "test driver; no state returned",

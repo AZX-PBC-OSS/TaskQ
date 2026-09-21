@@ -279,7 +279,7 @@ async def test_a_snoozed_job_survives_the_pod_that_snoozed_it(pg_dsn: str) -> No
     pod that snoozes a job and is then replaced by a deploy must leave a
     job that the next pod picks up when it comes due.
 
-    If the deferral lived in the departing process, the job would simply
+    If the deferral lived in the departing process, the job would
     never run again, and nothing would report it: the row would sit at a
     non-terminal status that no pod is watching, indistinguishable from
     a job legitimately waiting for its time.
@@ -447,7 +447,7 @@ async def test_rolling_deploy_interrupts_running_jobs_and_the_fleet_finishes_the
             """Longer than both graces; swallows the forced cancel and parks.
 
             This is not a misbehaving actor - it is the export/report/shape
-            of work that simply cannot finish inside a deploy's grace
+            of work that cannot finish inside a deploy's grace
             window. The zombie's late return after the release must not
             move the released row (the attempt epoch it carries is stale).
             """

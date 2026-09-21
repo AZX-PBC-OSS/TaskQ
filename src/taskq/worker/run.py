@@ -1123,7 +1123,7 @@ def _emit_resolved_capacity_startup_lines(
         if reservation_slots:
             # A materialised reservation's slot count is authoritative and
             # is what actually gates admission, reporting the process cap
-            # here would print a number that is simply wrong whenever the
+            # here would print a number that is wrong whenever the
             # reservation is narrower (or wider) than it.
             layers.insert(0, (min(reservation_slots), "reservation"))
         elif reservation_names:

@@ -504,7 +504,7 @@ interval). The rate-limit Redis Lua scripts derive `now` from
 terminality: `True` selects every non-terminal status (pending, scheduled,
 running), `False` the terminal ones. The field is now `unfinished`, which
 states the predicate it applies. The old name stays accepted as a
-deprecated constructor kwarg — it raises a `DeprecationWarning` once, at
+deprecated constructor kwarg: it raises a `DeprecationWarning` once, at
 construction, and feeds the same predicate. The warning fires once per
 filter even across the `dataclasses.replace` copies the client's list
 probe and the bulk-cancel sanitizer make. Update call sites to
@@ -616,8 +616,8 @@ loop does moves it). The one deliberate exception is the explicit operator
 re-run, [`retry_job`](#operator-re-runs-retry_job-keep-the-attempt-and-raise-the-ceiling),
 which raises the ceiling to `GREATEST(max_attempts, attempt + 1)` (capped
 at the smallint bound) so a re-pended job can always run at least once
-more, the same "raise it only as an explicit admin action" convention
-Oban and River follow. Two behaviours follow from the immutability rule:
+more; the ceiling rises only by explicit admin action. Two behaviours
+follow from the immutability rule:
 
 * **Actor-requested deferrals are unbounded, and never spend budget.**
   A `Snooze`, or a `RetryAfter(consume_budget=False)` honouring a
@@ -992,7 +992,7 @@ To see where code and stored rows disagree, check for
 `actor-config-capacity-override` in your worker logs; it names every field
 whose literal is being ignored. To hand a field back to the code literal, clear
 the override: `--clear-max-pending` and `--clear-result-ttl` write NULL, which
-their enforcement paths read as *use the `@actor(...)` value*. Note that
+their enforcement paths read as *use the `@actor(...)` value*. However,
 `--clear-max-concurrent` does **not** do this: the dispatch SQL reads NULL as
 *unlimited*, because it cannot see the code literal once the row exists.
 
@@ -1515,7 +1515,7 @@ The bundled Prometheus rule `TaskQQueueDepthHigh`
 sustained for 5 minutes. Depth alone is ambiguous: a deep queue that
 drains is healthy throughput, and a queue-summed number cannot tell a
 busy shared queue apart from an actor nobody consumes: a misrouted actor
-produces no refusal and no failed job, its rows simply pile up pending
+produces no refusal and no failed job, its rows pile up pending
 while every probe stays green, and its age series rises without bound
 while its queue-mates stay flat. The per-`(actor, queue)` attribution
 names exactly whose `TASKQ_QUEUES` coverage to check. `taskq_queue_depth`
@@ -1655,7 +1655,7 @@ changes.
 The job state-transition event is now emitted as `state-change`, from every
 backend that logs a transition; one name now covers the Postgres and
 in-memory paths alike. **Nothing fails; your saved searches and alert rules
-simply stop matching.** Update any query, dashboard panel, or alert rule that
+stop matching.** Update any query, dashboard panel, or alert rule that
 selects on `state_change` before upgrading, or you lose visibility silently.
 
 Three other event names were kebab-cased in the same pass,
@@ -1684,7 +1684,7 @@ queue = pathlib.Path("/etc/taskq/queue").read_text()  # "default\n"
 queue = pathlib.Path("/etc/taskq/queue").read_text().strip()
 ```
 
-Note that a queue name with a trailing newline was never actually *usable*;
+A queue name with a trailing newline was never actually *usable*;
 jobs enqueued onto it were stranded, since no worker's `queue = ANY($1)` ever
 matched. The new error surfaces a fault that was previously silent.
 

@@ -246,7 +246,7 @@ class JobContext[P: BaseModel]:
         """
         data_json: bytes | None = None
         if (data is not None or detail is not None) and self._worker_settings is not None:
-            # Load-bearing serialization, not redundant with the publish
+            # Essential serialization, not redundant with the publish
             # path's ``model_dump_json``: this is the only
             # ``progress_data_max_bytes`` enforcement in the codebase, and it
             # must raise ``ProgressTooLarge`` synchronously to the actor

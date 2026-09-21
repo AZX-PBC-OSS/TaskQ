@@ -164,7 +164,7 @@ async def test_slot_pool_factory_carries_init_onto_dsn_built_pool() -> None:
     settings = _make_settings(max_concurrency=4, pg_dsn_direct="postgresql://u:p@h:5432/db")
 
     async def init(conn: asyncpg.Connection) -> None:
-        raise AssertionError("never invoked — create_pool is mocked")
+        raise AssertionError("never invoked - create_pool is mocked")
 
     create_pool = AsyncMock(return_value=MagicMock())
 

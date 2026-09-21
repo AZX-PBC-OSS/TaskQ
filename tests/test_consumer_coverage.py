@@ -677,7 +677,7 @@ async def test_batch_id_extracted_from_metadata_runs_actor() -> None:
 
     async def actor(_job: object, ctx: JobContext[BaseModel]) -> dict[str, object]:
         # batch_id is bound to the structlog context, not the JobContext;
-        # we simply verify the actor runs to completion.
+        # we verify the actor runs to completion.
         assert isinstance(ctx, JobContext)
         seen_batch_id.append("ran")
         return {"ok": True}

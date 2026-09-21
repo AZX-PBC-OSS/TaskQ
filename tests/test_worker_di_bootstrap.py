@@ -1366,7 +1366,7 @@ async def test_di_consumer_loop_releases_job_for_unknown_actor() -> None:
 
 async def test_bootstrap_with_watchdog_disabled_does_not_spawn_or_fail() -> None:
     """TASKQ_WATCHDOG_ENABLED=false must boot cleanly: the stale-tick loop
-    is simply not spawned. An early-return loop with no shutdown in
+    is not spawned. An early-return loop with no shutdown in
     progress would trip detector 3 - the master kill-switch is the one
     path that must never fail."""
     result = await _run_main_with_mocked_deps(_settings(TASKQ_WATCHDOG_ENABLED="false"))

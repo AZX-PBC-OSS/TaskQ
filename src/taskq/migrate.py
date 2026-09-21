@@ -1214,7 +1214,7 @@ async def migration_advisory_lock(
 
     Extracted so the CLI and :func:`apply_pending_locked` serialize on the SAME
     lock without duplicating the acquire/reset/release protocol. The CLI cannot
-    simply delegate to ``apply_pending_locked``: it owns the connection so it
+    delegate to ``apply_pending_locked``: it owns the connection so it
     can run ``_report_up_failure`` diagnostics on it after a failure, and
     ``apply_pending_locked`` converts failures to ``SystemExit`` before that
     could run.

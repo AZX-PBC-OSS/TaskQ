@@ -584,7 +584,7 @@ async def test_evict_idle_keyed_reservations_returns_zero_when_nothing_stale(
 
 
 async def test_evict_idle_keyed_reservations_re_registration_after_eviction_is_idempotent() -> None:
-    """A key evicted and then acquired again is simply re-registered - no error,
+    """A key evicted and then acquired again is re-registered - no error,
     and the registry converges back to one entry for that key."""
     reg = RateLimitRegistry()
     ref = _keyed_ref(base_name="session-cap", slots=3, lease=timedelta(minutes=5))

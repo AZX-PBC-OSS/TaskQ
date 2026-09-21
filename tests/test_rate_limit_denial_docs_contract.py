@@ -6,7 +6,7 @@ retry budget and never by itself fails a job terminally: a denied job is
 rescheduled with backoff indefinitely until capacity frees or its
 `schedule_to_close` deadline expires, at which point the normal deadline
 path fails it. This matters because a queue or rate-limit misconfiguration
-must not be able to kill work that simply never got a slot -- a job with a
+must not be able to kill work that never got a slot -- a job with a
 retry budget of 3 should not die because the fleet was busy four times.
 
 Because per-denial `job_events`/`job_attempts` rows are also gone (they were

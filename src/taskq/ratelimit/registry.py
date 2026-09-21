@@ -811,7 +811,7 @@ class RateLimitRegistry:
                     # and each attempt would re-stamp recency so the entry
                     # is never idle-evicted either. ensure_slots is
                     # idempotent (ON CONFLICT DO NOTHING), so the next
-                    # attempt simply re-materializes and retries.
+                    # attempt re-materializes and retries.
                     self._reservations.pop(concrete_name, None)
                     self._keyed_reservation_last_used.pop(concrete_name, None)
                     raise
@@ -895,7 +895,7 @@ class RateLimitRegistry:
 
         Unlike reservations there is no PG slot pre-allocation step, a
         :class:`TokenBucket` is immediately usable after ``register()``
-        (there is no ``ensure_slots`` equivalent). Note that when the
+        (there is no ``ensure_slots`` equivalent). When the
         underlying ``TokenBucket`` uses the Redis backend, per-key Redis
         memory is already self-bounding via the Lua script's ``EXPIRE`` TTL
         on the bucket's hash; :meth:`evict_idle_keyed_rate_limits` only
@@ -1670,7 +1670,7 @@ class RateLimitRegistry:
         persists up to the registry's own entry cap, the existing
         ``registry-keyed-reservation-limit-exceeded`` soft-cap warning.
 
-        A key that is acquired again after eviction is simply
+        A key that is acquired again after eviction is
         re-registered on next use (idempotent, see
         :meth:`_resolve_reservation_name`), and the drain drops its name
         from the pending set without deleting anything (a re-activated
@@ -1772,7 +1772,7 @@ class RateLimitRegistry:
         the reservation-side reclamation (steady state without it: one
         ``rate_limit_buckets`` row per key ever seen, unbounded in the
         caller-controlled key space). A key that is acquired again after
-        eviction is simply re-registered on next use (idempotent, see
+        eviction is re-registered on next use (idempotent, see
         :meth:`_resolve_rate_limit_name`), and the drain drops its name
         from the pending set without deleting anything (a re-activated
         key owns its row again), so eviction is always safe to call,
@@ -1916,7 +1916,7 @@ class RateLimitRegistry:
           drain and a re-materialized key resumes its spent state
           instead of resetting to full capacity (pinned by
           tests/test_keyed_fixed_quota_eviction.py). A vetoed name
-          still leaves the pending set, the row simply stays, and the
+          still leaves the pending set, the row stays, and the
           fleet sweep is the backstop once the quota is no longer
           consumed. A live bucket never reaches the statement at all:
           only evicted keyed names are ever recorded, and the

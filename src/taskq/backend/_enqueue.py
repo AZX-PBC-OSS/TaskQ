@@ -2102,7 +2102,7 @@ async def _enqueue_batch_fast(
                 # a raw driver error. Unlike those paths there is no
                 # retry: COPY has no ON CONFLICT arbiter, so a same-pair
                 # race cannot dedupe on a second attempt -- the retried
-                # COPY would simply violate again (composite or legacy
+                # COPY would violate again (composite or legacy
                 # index, raw). Any unique violation aborts the whole COPY
                 # before a single row is written, so nothing persists from
                 # this attempt either way.

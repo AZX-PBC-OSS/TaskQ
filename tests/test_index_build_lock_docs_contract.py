@@ -14,7 +14,7 @@
 
 This pin executes the migration's actual statement on a live Postgres and
 observes what a reader and a writer can do through the lock hierarchy while
-the build holds its lock — the two behaviours an operator scheduling the
+the build holds its lock - the two behaviours an operator scheduling the
 migration cares about.
 """
 
@@ -199,7 +199,7 @@ async def test_index_build_share_lock_lets_readers_flow_and_writers_queue(
         # is sub-second, so completion-before-the-build is the observable).
         assert "ShareLock" in observed, (
             f"the build never observed holding ShareLock on job_events "
-            f"(observed: {sorted(observed)}) — the doc's lock-mode claim is stale"
+            f"(observed: {sorted(observed)}) - the doc's lock-mode claim is stale"
         )
         assert read_task.done() and not read_task.exception(), "the reader failed during the build"
         cnt = read_task.result()

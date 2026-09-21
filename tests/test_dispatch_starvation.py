@@ -641,7 +641,7 @@ async def test_an_actor_added_to_a_busy_fleet_starts_dispatching() -> None:
     work has to run. If selection is a stable order over all actors' head jobs
     and the limit cuts before the newcomer, its jobs stay pending indefinitely
     with nothing in logs, metrics or job state to show why -- the release looks
-    successful and the feature is simply dead.
+    successful and the feature is dead.
     """
     backend = _make_backend()
     wid = new_uuid()

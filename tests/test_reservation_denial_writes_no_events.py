@@ -13,7 +13,7 @@ Retry-After" - and nothing more. It says the fleet had no slot, which
 is a statement about capacity, not about the job. So it must never
 touch the job's retry budget and must never, by itself, terminally fail
 the job. A queue or rate-limit misconfiguration must not be able to
-kill work that simply never got a slot: the denied job is rescheduled
+kill work that never got a slot: the denied job is rescheduled
 indefinitely with backoff until capacity frees, and the only thing that
 ends it is its own ``schedule_to_close`` deadline expiring through the
 ordinary deadline path.

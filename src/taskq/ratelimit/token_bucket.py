@@ -385,7 +385,7 @@ class TokenBucket:
         from an ordinary idle bucket, and deleting it lets the next
         acquire re-preseed at full capacity, over-admitting against a
         budget that was already spent. Rows written before these keys
-        existed simply carry neither, and the sweep's veto treats a row it
+        existed carry neither, and the sweep's veto treats a row it
         cannot prove safe to delete as one it must keep.
 
         THE CANONICAL KEY SET is exactly ``{tokens, ts, capacity,

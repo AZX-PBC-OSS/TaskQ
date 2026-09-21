@@ -7,7 +7,7 @@ must never consume the job's retry budget and must never by itself terminally
 fail a job.  A denied job is rescheduled for as long as it takes, until
 capacity frees or its own ``schedule_to_close`` deadline expires and ends it
 through the ordinary deadline path.  A queue or rate-limit misconfiguration is
-an operator problem; it must not be able to kill work that simply never got a
+an operator problem; it must not be able to kill work that never got a
 slot.
 
 Three contracts are pinned here, all verified against real Postgres:

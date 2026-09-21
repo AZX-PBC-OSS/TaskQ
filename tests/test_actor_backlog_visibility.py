@@ -5,7 +5,7 @@ No worker refuses to start because an actor's queue has no consumer -
 the governing rule is that a worker able to do work never fails to boot,
 and in a multi-worker or workgroup fleet no single supervisor can know
 what consumes a queue. So a misrouted actor produces no refusal, no
-error, and no failed job: its rows simply pile up pending forever while
+error, and no failed job: its rows pile up pending forever while
 every health probe stays green and every worker reports healthy.
 
 Monitoring is the only place that condition can surface, and it surfaces
@@ -73,7 +73,7 @@ def test_oldest_pending_age_is_attributable_per_actor_and_queue() -> None:
     rate no matter how deep the queue gets. This is distinct from the
     fleet-wide oldest-DUE-age gauge, which measures promotion from
     scheduled to pending and reads 0.0 for work that is already pending
-    and simply never taken.
+    and never taken.
     """
     update = getattr(obs_mod, "update_actor_oldest_pending_age_cache", None)
     assert update is not None, (

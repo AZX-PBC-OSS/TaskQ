@@ -25,7 +25,7 @@ _CAP = timedelta(hours=1)
 _JITTER = 0.2
 _DRAWS = 10_000
 #: The share of a capped cohort allowed to land on exactly the cap. A
-#: continuous draw over ``[cap·(1-j), cap]`` produces essentially none;
+#: continuous draw over ``[cap·(1-j), cap]`` produces almost none;
 #: the clipped formula produced ~50 %.
 _MAX_SHARE_AT_CAP = 0.02
 

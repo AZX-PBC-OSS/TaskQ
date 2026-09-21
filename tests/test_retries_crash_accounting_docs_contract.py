@@ -4,10 +4,10 @@
 "attempt" costs, and it must state the two things an adopter gets wrong
 by default: a crash mid-execution (SIGKILL)
 SPENDS the attempt and a graceful shutdown (SIGTERM) spends it too, and
-the default retry budgets/curves differ by orders of magnitude across
-the vendors. A doc edit that drifts from the shipped behaviour fails
-these pins (the pattern the docs-contract suite established; see
-tests/test_outbox_exemption_docs_contract.py).
+a retry budget ported from another queue library does not carry its
+wall-clock coverage with it. A doc edit that drifts from the shipped
+behaviour fails these pins (the pattern the docs-contract suite
+established; see tests/test_outbox_exemption_docs_contract.py).
 """
 
 from pathlib import Path
@@ -45,22 +45,21 @@ def test_retries_guide_names_crash_and_shutdown_accounting() -> None:
     )
 
 
-def test_retries_guide_carries_the_vendor_porting_table() -> None:
+def test_retries_guide_carries_the_porting_guidance() -> None:
     text = _normalized(_DOCS / "guides" / "retries.md")
-    assert "River" in text and "25" in text, (
-        "retries.md's porting table must state River's default "
-        "max_attempts=25 - an adopter porting the budget by matching the "
-        "number gets ~15 hours of coverage on TaskQ's default curve where "
-        "River's 25 attempts span weeks"
+    assert "Porting a retry budget from another queue library" in text, (
+        "retries.md must carry the porting section: an adopter arriving "
+        "from another queue library lands here first"
     )
-    assert "Oban" in text and "20" in text, (
-        "retries.md's porting table must state Oban's default max_attempts=20"
+    assert "2^(N-1)" in text and "attempt count" in text, (
+        "retries.md's porting section must state TaskQ's curve "
+        "(base-2^(N-1) exponential capped at 1h with jitter) and warn "
+        "that the attempt count does not carry the wall-clock coverage "
+        "with it"
     )
-    assert "attempt^4" in text and "2^(N-1)" in text, (
-        "retries.md's porting table must name both curves - River's "
-        "attempt^4 seconds unjittered vs TaskQ's base-2^(N-1) exponential "
-        "capped at 1h with jitter - so the wall-clock difference is "
-        "visible, not just the attempt-count difference"
+    assert "wall-clock" in text and "time_budget" in text, (
+        "retries.md's porting section must direct the adopter to decide "
+        "the wall-clock window and set base/cap (or a time_budget) for it"
     )
 
 

@@ -343,9 +343,9 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
   abort the same way: a pair held by another actor raises the mismatch error
   (with `existing_job_id=None` when the holder was an earlier item of the
   same batch, whose row never persisted) and only a same-actor pair raises
-  `DuplicateIdempotencyKeyError`. (River folds the job kind into its unique
-  key and Oban's default unique fields include the worker, so neither can
-  return another worker's job; TaskQ's index cannot include the actor
+  `DuplicateIdempotencyKeyError`. (Other queue libraries fold the actor or
+  worker into their unique key, so their index itself rejects a
+  cross-actor hit; TaskQ's index cannot include the actor
   without a migration, so the hit is checked instead.) The same-actor case
   is unchanged: the existing handle comes back with `was_existing=True`.
 - Maximum length: **1024 UTF-8 bytes** (`TASKQ_IDEMPOTENCY_KEY_MAX_BYTES`, raisable to 1300). The bound is the composite unique index `jobs_idempotency_scope_key_uniq`: a Postgres btree v4 entry cannot exceed 2704 bytes, counted encoded, so the cap is in bytes, not characters.
@@ -1480,7 +1480,7 @@ set per-item tags explicitly.
 this specific sub-job. `heartbeat_timeout` has no actor-level declaration and is
 call-site-only: it sets this sub-job's holder-liveness promise, enforced by the
 leader's reclaim sweep (a holder silent past it is crash-reclaimed even while the
-global `TASKQ_LOCK_LEASE` is still valid). Note that `schedule_to_close` bounds total
+global `TASKQ_LOCK_LEASE` is still valid). `schedule_to_close` bounds total
 wall-clock time *including* time snoozed on `wait_for_batch; finalizer-style
 sub-jobs that snooze for long periods should set it generously or not at all.
 

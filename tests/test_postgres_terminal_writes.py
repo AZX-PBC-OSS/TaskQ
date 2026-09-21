@@ -1039,7 +1039,7 @@ class TestMarkSnoozedReservationDenied:
         attempt counter must come back to the pre-claim value so the budget
         is intact for the attempt that eventually gets a slot. A queue or
         rate-limit misconfiguration must not be able to kill work that
-        simply never got capacity; only the schedule-to-close deadline ends
+        never got capacity; only the schedule-to-close deadline ends
         such a job, through the normal deadline path.
 
         The denial stays visible in the aggregated counter on the row, which

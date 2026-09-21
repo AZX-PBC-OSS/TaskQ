@@ -440,7 +440,7 @@ navigation. PKCE also makes a cookie-less OIDC callback structurally unable
 to complete: without the `code_verifier` from the cookie there is no token
 exchange at all, and the nonce binds the ID token to the login that started
 it. OIDC therefore took the stateless-no-fallback tradeoff: a browser that
-loses the state cookie simply cannot log in, and has neither the
+loses the state cookie cannot log in, and has neither the
 cross-replica dependency nor the cookie-less acceptance shape.
 
 The auth dependency re-checks the group allowlist on every request, so changing

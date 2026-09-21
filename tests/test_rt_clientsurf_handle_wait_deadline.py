@@ -92,7 +92,7 @@ class _HungFetchBackend:
         if self._hang_after is not None and self.calls <= self._hang_after:
             return self._row
         await self._gate.wait()
-        raise AssertionError("unreachable — the gate above never releases")
+        raise AssertionError("unreachable - the gate above never releases")
 
 
 class _PromptBackend:

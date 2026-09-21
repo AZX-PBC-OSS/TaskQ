@@ -936,7 +936,7 @@ async def test_reservation_unavailable_produces_metadata_annotated_snooze(
     the retry budget is untouched, and leaves its whole durable record on
     the row: the aggregated denial counter, no attempt row and no event
     row. Both backends must agree - a capacity shortfall that spends
-    budget would let a queue misconfiguration kill work that simply never
+    budget would let a queue misconfiguration kill work that never
     got a slot.
     """
     job_id, wid = await _enqueue_dispatch_any(backend_pair)

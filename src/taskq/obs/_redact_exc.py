@@ -393,7 +393,7 @@ def render_exception(exc: BaseException) -> ExceptionText:
     of their messages needs the same treatment -- hence scrubbing the rendered
     string rather than only the head exception.
 
-    Caveat worth knowing: a traceback also quotes the SOURCE LINE of each
+    Caveat: a traceback also quotes the SOURCE LINE of each
     frame. Those come from TaskQ's own source, not from data, so they carry no
     row values -- but a secret written as a literal in application code would
     appear. Do not put credentials in source.

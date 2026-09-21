@@ -34,12 +34,7 @@ terminalises it.
 
 What this file pins now: the exact interleaving point (A stalled, its
 FORCED entry stale, the carve-out lapsed) ends in a terminalised row
-that survives A's stale tick untouched.  Vendor shape: river's rescuer
-routes a stuck row stamped ``metadata.cancel_attempted_at`` straight to
-'cancelled', never into its retry decision
-(vendor/river/internal/maintenance/job_rescuer.go), and pg-boss's
-cancelJobs terminalises the row with only an explicit operator
-resumeJobs to revive it (vendor/pg-boss/src/plans.ts).
+that survives A's stale tick untouched.
 """
 
 import asyncio

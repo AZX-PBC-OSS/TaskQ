@@ -167,7 +167,7 @@ async def test_invalid_queue_name_writes_no_row(
 
     A ":" name is inert today -- the cap bootstrap matches
     ``WHERE name = ANY($1)`` against the validated ``settings.queues`` --
-    so the row would simply never match anything: a trap for whoever
+    so the row would never match anything: a trap for whoever
     finds it later, not an exploit. It must never be written.
     """
     before = await list_queues(clean_pg_conn, schema=module_pg_schema.schema_name)

@@ -213,7 +213,7 @@ class Fleet:
 
         ``graceful`` runs the production shutdown orchestration - the
         SIGTERM path, with its draining, cancelling and forcing phases -
-        and returns its exit code. Without it the pod's pools simply
+        and returns its exit code. Without it the pod's pools
         close under it with its claims still held, which is what a
         ``SIGKILL``, an OOM kill, or a node loss looks like to the rest
         of the fleet: no hand-back, nothing but an expiring lease.

@@ -337,7 +337,7 @@ async def test_shutdown_watchdog_trip_without_handles_keeps_the_stall_reason(
     """The ordinary incomplete-shutdown trip keeps its original reason.
 
     The dedicated tracked-actor reason must not swallow the stall signal:
-    a shutdown that is simply incomplete (a wedged sibling hanging the
+    a shutdown that is incomplete (a wedged sibling hanging the
     TaskGroup) is still the stall it always was.
     """
     import taskq.worker._watchdog as watchdog_mod

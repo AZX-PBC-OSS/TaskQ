@@ -11,7 +11,7 @@ Operationally that is a bulk cancel an operator can run on a shallow
 backlog and not on a deep one: the later batches take longer the deeper
 they get, trip their own per-batch ``statement_timeout``, and strand the
 tail -- on exactly the backlogs where the command matters most.  Nothing
-errors and no count is wrong; the drain simply stops finishing, which is
+errors and no count is wrong; the drain stops finishing, which is
 why this needs an explicit cost pin rather than a correctness one.
 
 Cost is measured with :func:`taskq.testing.pg.install_row_visit_counter`

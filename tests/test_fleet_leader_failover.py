@@ -134,7 +134,7 @@ async def test_the_role_passes_on_when_the_leader_pod_goes_away(
 
     If it does not, maintenance stops at the next deploy and stays
     stopped - and nothing reports it, because every remaining pod is
-    healthy and simply is not the leader. Expired leases go unreclaimed
+    healthy and is not the leader. Expired leases go unreclaimed
     and cron stops firing, with the first symptom arriving hours later
     as work that never ran.
     """

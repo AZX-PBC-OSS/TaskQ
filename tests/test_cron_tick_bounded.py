@@ -104,7 +104,7 @@ class _CountingConn:
     invariant (a tick's round trips do not grow linearly in the number of due
     schedules) rather than the spelling of any particular fix. A fix that
     moves the per-schedule UPDATE into one ``unnest`` statement, or that
-    batches the enqueues, or that simply adds a ``LIMIT`` and lets the leader
+    batches the enqueues, or that adds a ``LIMIT`` and lets the leader
     drain across ticks, all satisfy it; a loop reintroduced under any other
     spelling -- ``enumerate``, a comprehension of awaits, a helper -- does not,
     and a source-grep for ``for row in rows:`` would not have caught those.

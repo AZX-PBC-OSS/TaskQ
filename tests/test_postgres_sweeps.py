@@ -1271,7 +1271,7 @@ class TestPollReclaimEvents:
             )
 
         # The pruned cursor row neither errors nor replays; the consumer
-        # simply never sees the second (pruned-ahead) event, and resumes
+        # never sees the second (pruned-ahead) event, and resumes
         # cleanly at the first surviving row past its cursor.
         remaining = await backend.poll_reclaim_events(cursor, visibility_delay=timedelta(0))
         assert [e.event_id for e in remaining] == [events[2].event_id]

@@ -112,7 +112,7 @@ ratchet and the watermark violation in one shape. If a known-large recovery is
 coming (planned fleet restart), raise `TASKQ_SWEEP_DRAIN_BATCHES` for the
 duration rather than removing the bound.
 
-### Two supporting choices worth knowing
+### Two supporting choices
 
 - **`SET LOCAL`, with capture and restore.** The batch timeout is applied via
   `set_config('statement_timeout', ..., true)`: `SET LOCAL` semantics with a

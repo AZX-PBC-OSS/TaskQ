@@ -15,7 +15,7 @@ Both must end in the work being either retried or failed visibly -
 never left running for ever, and never quietly discarded.
 
 Recovery also has to be honest about what it costs the job. A reaped
-attempt did happen - the actor ran, it simply did not finish - so it is
+attempt did happen - the actor ran, it did not finish - so it is
 right that it is recorded and right that it counts. That is the exact
 opposite of a hand-back, where nothing ran, and the two must not be
 confused: one is the system telling the truth about a stuck run, the
@@ -172,7 +172,7 @@ async def test_a_reaped_job_is_redispatched_to_a_healthy_pod(pg_dsn: str) -> Non
 
     A job taken back from a stalled worker must be claimable by a
     healthy one and must then complete. Reclaiming without redispatch
-    would simply move the job from stuck-and-running to stuck-and-
+    would move the job from stuck-and-running to stuck-and-
     pending, which is harder to notice, not easier.
     """
     schema = f"fleet_hang_redis_{new_base62()}".lower()
@@ -232,7 +232,7 @@ async def test_a_job_past_its_close_deadline_fails_visibly(pg_dsn: str) -> None:
     job can consume slots for ever.
 
     Hitting it must produce a terminal state an operator can see and
-    alert on. A job that simply stops being retried, with no terminal
+    alert on. A job that stops being retried, with no terminal
     status and no event, is indistinguishable from one still waiting its
     turn.
     """

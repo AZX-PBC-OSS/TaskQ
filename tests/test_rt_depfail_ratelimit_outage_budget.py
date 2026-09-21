@@ -2,7 +2,7 @@
 
 A rate-limited job that is denied admission - because the limiter's store
 cannot answer (Redis unreachable, the PG fallback disabled) OR because the
-bucket is simply saturated - has not executed. Its actor never ran, no
+bucket is saturated - has not executed. Its actor never ran, no
 handler raised, nothing about the job itself went wrong. The denial is the
 system saying "no capacity right now, come back later", exactly as an HTTP
 429 with a ``Retry-After`` header does.

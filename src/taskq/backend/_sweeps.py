@@ -480,23 +480,19 @@ _SWEEP_1_BODY = """\
 --   The job_attempts row records outcome='crashed' on every
 --   branch: that IS what happened to the attempt.
 --
--- THE SHAPE (vendor/river's JobCancel + JobRescuer): operator intent
--- outranking reclaim-driven retry is river's pattern too. JobCancel
--- (vendor/river/riverdriver/riverpgxv5/internal/dbsqlc/
--- river_job.sql:40-77) leaves a running row running, the cooperative
--- protocol belongs to the live holder, and stamps
--- metadata.cancel_attempted_at "so that the rescuer knows not to
--- rescue it, even if it gets stuck in the running state"; the rescuer
--- (vendor/river/internal/maintenance/job_rescuer.go:195-259) checks
--- that stamp and routes a stamped stuck job straight to 'cancelled',
--- never into the retry decision. Two deliberate divergences here:
+-- THE SHAPE: operator intent outranking reclaim-driven retry. The
+-- cooperative protocol belongs to the live holder: the holder stamps a
+-- cancel-attempted marker that tells the rescuer the row is already
+-- being cancelled, and the rescuer routes a stamped stuck job straight
+-- to 'cancelled', never into the retry decision. Two deliberate
+-- divergences here:
 -- the marker rides first-class columns (cancel_phase /
 -- cancel_requested_at, readable as an audit trail and PRESERVED on
 -- the terminal row) rather than a metadata JSONB stamp, and the
 -- terminalisation happens in THIS statement, under the grace ladder
 -- the carve-out above already waited out, rather than in a separate
--- rescuer on its own stuck horizon (river's default is an hour) during
--- which a cancel-addressed row whose holder is dead simply sits
+-- rescuer on its own stuck horizon (an hour at the common default) during
+-- which a cancel-addressed row whose holder is dead sits
 -- running.
 --
 -- locked_by_worker is snapshotted raw (the last-known holder id, even when
@@ -562,7 +558,7 @@ _SWEEP_1_BODY = """\
 -- No keyset cursor either: every row the snap returns is transitioned by
 -- this same statement, so the eligible set shrinks monotonically per
 -- committed batch, there is no "later page" to resume into, the next
--- call simply sees the remainder.  SKIP LOCKED steps over contended rows
+-- call sees the remainder.  SKIP LOCKED steps over contended rows
 -- rather than blocking, so no front-of-order row can starve the rest.
 --
 -- Each arm carries a reason literal out through the RETURNING: the
@@ -923,7 +919,7 @@ _SWEEP_EVENT_TTL_SQL = """\
 -- for an ordinary state_change row, and WHERE drops it: state_change is
 -- the most common event kind, so the naive form silently exempts nearly
 -- the whole table from retention. COALESCE makes a missing reason
--- simply not-'lock_expired', which is the deletable set the sweep owes.
+-- not-'lock_expired', which is the deletable set the sweep owes.
 --
 -- The carve-out predicate must stay VERBATIM-identical to the partial
 -- index's WHERE clause in migration 01.00.07_01: partial-index predicate
@@ -972,7 +968,7 @@ expired_outbox AS MATERIALIZED (
     -- job_events_reclaim_idx partial index (01.00.02_01), so the planner
     -- proves the index predicate and the scan is confined to the outbox
     -- population instead of the whole table. The positive form needs no
-    -- COALESCE anyway: it selects outbox rows, and a NULL reason simply
+    -- COALESCE anyway: it selects outbox rows, and a NULL reason
     -- makes the predicate NULL-false, an ordinary row this arm must not
     -- touch, correctly left to the main window above.
     --

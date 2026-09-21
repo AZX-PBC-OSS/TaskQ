@@ -1052,7 +1052,7 @@ def test_url_encoded_password_value_is_masked_as_written() -> None:
 
 def test_libpq_password_at_end_of_string_with_no_trailing_delimiter_is_masked() -> None:
     """The unquoted libpq value class stops at whitespace or ``&`` -- when the
-    secret is simply the last thing in the string, with no trailing delimiter
+    secret is the last thing in the string, with no trailing delimiter
     at all, the value must still be consumed to the true end of the string
     rather than left dangling because no delimiter was found to stop at."""
     safe = safe_exception_message(Exception("host=db port=5432 user=app password=hunter2"))

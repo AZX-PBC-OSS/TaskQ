@@ -147,7 +147,7 @@ def test_schedules_template_not_installed_notice(
     html = template.render(
         cron_installed=False,
         schedules=[],
-        notice_text="cron scheduling not installed — run taskq migrate up to enable",
+        notice_text="cron scheduling not installed - run taskq migrate up to enable",
     )
     assert "cron scheduling not installed" in html
 
@@ -199,7 +199,7 @@ def test_rate_limits_template_renders_configured_bucket(
             },
         ],
         ratelimit_installed=True,
-        notice_text="rate limiting not installed — run taskq migrate up to enable",
+        notice_text="rate limiting not installed - run taskq migrate up to enable",
         redis_state=None,
         redis_available=False,
         redis_configured=False,
@@ -231,7 +231,7 @@ def test_rate_limits_template_redis_state(
             },
         ],
         ratelimit_installed=True,
-        notice_text="rate limiting not installed — run taskq migrate up to enable",
+        notice_text="rate limiting not installed - run taskq migrate up to enable",
         redis_state={"api:global": {"tokens": "95", "last_refill": "2025-01-01T00:00:01"}},
         redis_available=True,
         redis_configured=True,
@@ -261,7 +261,7 @@ def test_rate_limits_template_redis_unavailable_notice(
             },
         ],
         ratelimit_installed=True,
-        notice_text="rate limiting not installed — run taskq migrate up to enable",
+        notice_text="rate limiting not installed - run taskq migrate up to enable",
         redis_state=None,
         redis_available=False,
         redis_configured=True,
@@ -290,7 +290,7 @@ def test_rate_limits_template_no_redis_notice_when_not_configured(
             },
         ],
         ratelimit_installed=True,
-        notice_text="rate limiting not installed — run taskq migrate up to enable",
+        notice_text="rate limiting not installed - run taskq migrate up to enable",
         redis_state=None,
         redis_available=False,
         redis_configured=False,
@@ -307,7 +307,7 @@ def test_rate_limits_template_empty(monkeypatch: pytest.MonkeyPatch, stub_pool: 
     html = template.render(
         buckets=[],
         ratelimit_installed=True,
-        notice_text="rate limiting not installed — run taskq migrate up to enable",
+        notice_text="rate limiting not installed - run taskq migrate up to enable",
         redis_state=None,
         redis_available=False,
         redis_configured=False,
@@ -326,7 +326,7 @@ def test_rate_limits_template_not_installed_notice(
     html = template.render(
         buckets=[],
         ratelimit_installed=False,
-        notice_text="rate limiting not installed — run taskq migrate up to enable",
+        notice_text="rate limiting not installed - run taskq migrate up to enable",
         redis_state=None,
         redis_available=False,
         redis_configured=False,
@@ -430,7 +430,7 @@ def test_reservations_template_renders_slot_counts(
             },
         ],
         reservations_installed=True,
-        notice_text="reservations not installed — run taskq migrate up to enable",
+        notice_text="reservations not installed - run taskq migrate up to enable",
     )
     assert "premium-api" in html
     assert "5" in html
@@ -484,7 +484,7 @@ def test_reservations_template_empty(monkeypatch: pytest.MonkeyPatch, stub_pool:
     html = template.render(
         reservations=[],
         reservations_installed=True,
-        notice_text="reservations not installed — run taskq migrate up to enable",
+        notice_text="reservations not installed - run taskq migrate up to enable",
     )
     assert "No reservation buckets registered" in html
 
@@ -500,7 +500,7 @@ def test_reservations_template_not_installed_notice(
     html = template.render(
         reservations=[],
         reservations_installed=False,
-        notice_text="reservations not installed — run taskq migrate up to enable",
+        notice_text="reservations not installed - run taskq migrate up to enable",
     )
     assert "reservations not installed" in html
 
@@ -558,7 +558,7 @@ def test_rate_limits_template_autoescapes_bucket_name(
             }
         ],
         ratelimit_installed=True,
-        notice_text="rate limiting not installed — run taskq migrate up to enable",
+        notice_text="rate limiting not installed - run taskq migrate up to enable",
         redis_state=None,
         redis_available=False,
         redis_configured=False,
@@ -588,7 +588,7 @@ def test_reservations_template_autoescapes_bucket_name(
             }
         ],
         reservations_installed=True,
-        notice_text="reservations not installed — run taskq migrate up to enable",
+        notice_text="reservations not installed - run taskq migrate up to enable",
     )
     assert "&lt;script&gt;" in html
     assert '<script>alert("xss")</script>' not in html

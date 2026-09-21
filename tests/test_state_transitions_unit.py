@@ -436,7 +436,7 @@ async def test_denial_at_spent_budget_reschedules_not_fails(
     429 with Retry-After: the job is rescheduled indefinitely with
     backoff until capacity frees, and only its schedule-to-close
     deadline may end it. A queue or rate-limit misconfiguration must not
-    be able to kill work that simply never got a slot, so a job whose
+    be able to kill work that never got a slot, so a job whose
     attempt counter already sits at its ceiling - and which carries no
     close deadline - is still rescheduled rather than failed with
     MaxAttemptsExceeded.
