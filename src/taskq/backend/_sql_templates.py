@@ -1651,21 +1651,34 @@ upd AS (
            OR (p.prev_status = 'running' AND p.cancel_phase = 0))
     RETURNING j.*, p.prev_status AS prev_status
 ),
-pending_evt AS (
-    INSERT INTO "{s}".job_events (job_id, occurred_at, kind, detail)
-    SELECT u.id, clock_timestamp(), 'state_change',
-           jsonb_build_object('from_state', u.prev_status, 'to_state', 'cancelled')
-    FROM upd u
-    WHERE u.prev_status IN ('pending', 'scheduled')
+evt_ts AS (
+    -- ONE clock_timestamp() evaluation for both event rows, so the
+    -- (occurred_at, event_id) read order (get_events) never splits them.
+    SELECT clock_timestamp() AS ts
 ),
-request_evt AS (
+events AS (
     INSERT INTO "{s}".job_events (job_id, occurred_at, kind, detail)
-    SELECT u.id, clock_timestamp(), 'cancel_request',
+    -- ONE insert, not two data-modifying CTEs: the execution order of
+    -- separate WITH DML statements is not specified, and the first board
+    -- to run this fused statement watched real PostgreSQL emit the
+    -- cancel_request row before the state_change row, a mirror divergence
+    -- the two-statement form never produced (its two consecutive Python
+    -- statements wrote state_change first, and the differential corpus
+    -- pins that order). A single insert produces its rows in written
+    -- order, so the bigserial event_id carries the stream order:
+    -- state_change first, then cancel_request, the legacy observables
+    -- exactly.
+    SELECT u.id, ts, 'state_change',
+           jsonb_build_object('from_state', u.prev_status, 'to_state', 'cancelled')
+    FROM upd u CROSS JOIN evt_ts
+    WHERE u.prev_status IN ('pending', 'scheduled')
+    UNION ALL
+    SELECT u.id, ts, 'cancel_request',
            -- jsonb_strip_nulls: a NULL reason omits the key, exactly the
            -- _insert_cancel_request_event shape the two-statement form
            -- wrote.
            jsonb_strip_nulls(jsonb_build_object('reason', $2::text))
-    FROM upd u
+    FROM upd u CROSS JOIN evt_ts
 )
 SELECT u.prev_status, u.locked_by_worker FROM upd u""",
         cancel_escalation=CANCEL_ESCALATION_SQL.format(schema=s),
