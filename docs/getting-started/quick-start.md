@@ -26,7 +26,7 @@ pip install "taskq-py[redis,otel,fastapi]"  # full (add prometheus for scrapes)
 
 | Extra | Installs | When you need it |
 |-------|----------|-----------------|
-| `taskq-py[redis]` | `redis>=7.4` | Real-time progress fanout, Redis-backed rate limiters |
+| `taskq-py[redis]` | `redis>=8.0.1` | Real-time progress fanout, Redis-backed rate limiters |
 | `taskq-py[otel]` | `opentelemetry-sdk`, `opentelemetry-exporter-otlp` | OTel provider setup, in-process test utilities |
 | `taskq-py[fastapi]` | `fastapi`, `jinja2`, `sse-starlette`, `uvicorn` | Admin UI, SSE progress bridge |
 | `taskq-py[prometheus]` | `opentelemetry-exporter-prometheus` | Prometheus metric scrapes |
