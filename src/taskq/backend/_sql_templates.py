@@ -399,6 +399,36 @@ SELECT * FROM upd""",
         # TERMINAL arms deliberately keep the cancel columns, they are the
         # audit trail of why the job ended, and mark_abandoned's
         # `cancel_phase = 2` guard reads them.
+        #
+        # THE CANCEL FENCE (stated once here; the arm comments below only
+        # point back): both arms carry `cancel_phase = 0` because BOTH
+        # reset or overwrite state a cancel in flight owns - the retried
+        # arm resets the cancel columns, the deadline_failed arm stamps
+        # the DeadlineExceeded marker whose hooks must not fire on a
+        # cancel in flight (the three deferral templates route this exact
+        # shape to a deadline_cancelled arm; a retry has no cancelled row
+        # of its own to write). A phase-carrying row therefore matches NO
+        # arm: the write no-ops, the caller's WorkerOwnershipMismatch
+        # reads back as the handler's no-op, and the row stays 'running'
+        # carrying its phase for the cancel ladder to terminalise - the
+        # same routing every fenced-out deferral takes. On a clean row
+        # both conjuncts are trivially true and the retry semantics are
+        # unchanged.
+        #
+        # Two consequences of that no-op routing, stated once:
+        # - Evidence: the fenced-out retryable failure is recorded
+        #   nowhere on the row - no job_attempts insert, no error_class
+        #   stamp - the same gap the sibling deferral fences' noop
+        #   carries. While fenced, the failure evidence lives only in
+        #   the worker's logs; the cancel ladder's terminal write is the
+        #   row's only record of why it ended.
+        # - Liveness: a fenced-out row PAST its schedule_to_close
+        #   survives 'running' past its deadline. Correctness depends on
+        #   the cancel ladder (POLL_CANCEL_FLAGS_SQL selects
+        #   status='running' rows by locked_by_worker) firing while the
+        #   worker renews the lease; if the worker dies first, the
+        #   crash-reclaim sweep's cancel branch terminalises the row
+        #   instead.
         mark_retry=f"""\
 WITH params AS (
     SELECT $1::uuid AS job_id,
@@ -437,7 +467,11 @@ retried AS (
                               THEN COALESCE(j.progress_state, '{{}}'::jsonb) || $8::jsonb
                               ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
-      {JOB_FENCE_SQL}
+{JOB_FENCE_SQL}
+      -- The cancel fence (see the mark_retry header comment above):
+      -- without it the cancel_phase / cancel_requested_at resets below
+      -- launder an operator cancel in flight and the job runs again.
+      AND j.cancel_phase = 0
       AND (j.schedule_to_close IS NULL
            OR clock_timestamp() + (SELECT effective_delay FROM params) <= j.schedule_to_close)
     RETURNING j.*, 'retried'::text AS outcome_branch, clock_timestamp() AS now_ts
@@ -457,7 +491,11 @@ deadline_failed AS (
                               THEN COALESCE(j.progress_state, '{{}}'::jsonb) || $8::jsonb
                               ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
-      {JOB_FENCE_SQL}
+{JOB_FENCE_SQL}
+      -- The cancel fence (see the mark_retry header comment above):
+      -- without it the DeadlineExceeded stamp below fires on a cancel
+      -- in flight.
+      AND j.cancel_phase = 0
       AND j.schedule_to_close IS NOT NULL
       AND clock_timestamp() + (SELECT effective_delay FROM params) > j.schedule_to_close
       AND NOT EXISTS (SELECT 1 FROM retried)
