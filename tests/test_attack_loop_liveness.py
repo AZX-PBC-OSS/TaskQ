@@ -75,7 +75,7 @@ _PG_DSN = os.environ.get(
 # teardown (and setup) remove the schema another worker's pool is using
 # (InvalidSchemaNameError under -n, intermittently). Same convention as
 # test_worker_bootstrap.py's twb_{new_base62()} label.
-_PG_SCHEMA = f"atk378_{new_base62().lower()}"
+_PG_SCHEMA = f"liveness_{new_base62().lower()}"
 
 
 # ─────────────────────────────────────────────────────────────────────────
