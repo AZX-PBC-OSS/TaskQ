@@ -18,6 +18,7 @@ no TestClient loop split).
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from uuid import UUID
@@ -26,6 +27,7 @@ import asyncpg
 import httpx
 import pytest
 
+from taskq.cron import _factory_cache
 from taskq.testing.fixtures import ModulePgSchema
 
 from .test_rt_cron_harness import (
@@ -183,3 +185,69 @@ class TestRunNowProvenance:
         assert provenance == str(schedule_id), (
             f"the run-now job must carry its schedule id as provenance, got {provenance!r}"
         )
+
+
+class TestRunNowRacingDisable:
+    """The enabled pre-check is a pre-check: the write arbiter is the
+    enqueue, which carries no schedule conjunct to filter on."""
+
+    async def test_disable_committing_during_payload_resolution_lets_the_fire_land_once(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Deterministic interleave: the run-now request resolves a payload
+        factory that parks until a disable has committed on a second
+        connection.  Same contract as the tick's in-flight fire (pinned in
+        ``test_rt_cron_disable_fire_race.py``): the fire lands exactly
+        once and the disable survives - run-now writes nothing to the
+        schedule row, so there is even less to resurrect.
+        """
+        schema = module_pg_schema.schema_name
+        schedule_id = await _seed_runnow_schedule(clean_pg_conn, schema, max_pending=None)
+        await clean_pg_conn.execute(
+            f'UPDATE "{schema}".cron_schedules SET payload_factory = $2 WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier; values are $-bound.
+            schedule_id,
+            "tests.test_rt_runnow_fire_parity.wedge_factory",
+        )
+
+        entered = asyncio.Event()
+        gate = asyncio.Event()
+
+        async def wedge_factory() -> dict[str, object]:
+            entered.set()
+            await gate.wait()
+            return {"wedged": True}
+
+        monkeypatch.setitem(
+            _factory_cache, "tests.test_rt_runnow_fire_parity.wedge_factory", wedge_factory
+        )
+
+        async with _admin_client(module_pg_schema) as client:
+            request = asyncio.create_task(_run_now(client, schedule_id))
+            await asyncio.wait_for(entered.wait(), timeout=10)
+
+            operator = await asyncpg.connect(module_pg_schema.pg_dsn)
+            try:
+                await operator.execute(
+                    f'UPDATE "{schema}".cron_schedules SET enabled = false WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier; id is $-bound.
+                    schedule_id,
+                )
+            finally:
+                await operator.close()
+            gate.set()
+            resp = await asyncio.wait_for(request, timeout=10)
+
+        assert resp.status_code == 303
+        assert "error" not in resp.headers.get("location", "")
+        jobs = await clean_pg_conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".jobs WHERE actor = $1',  # noqa: S608  # Why: schema is a test-fixture identifier; actor is $-bound.
+            _ACTOR,
+        )
+        assert jobs == 1, f"the in-flight run-now fire lands exactly once, got {jobs}"
+        enabled = await clean_pg_conn.fetchval(
+            f'SELECT enabled FROM "{schema}".cron_schedules WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier; id is $-bound.
+            schedule_id,
+        )
+        assert enabled is False, "the disable must survive the in-flight run-now"

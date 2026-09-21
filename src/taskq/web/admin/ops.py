@@ -538,18 +538,20 @@ def register(router: APIRouter) -> None:
                 ),
                 scheduled_at=None,  # Why: "run now" is immediate, the server stamps and decides, immune to app↔DB clock skew.
                 # The operator's STORED max_pending cap bounds run-now like
-                # every other fire of a schedule: the cron tick resolves the
-                # stored cap over the registry literal (_resolve_max_pending)
-                # and the client path resolves it through the capacity cache,
-                # while the single-enqueue path this call reaches enforces
-                # only the CARRIED value, so a NULL here would silently
-                # exempt run-now from a drain the operator set. The registry
-                # literal is unknowable here (it lives in the worker's
-                # actor_registry, not the database), so the stored value is
-                # the whole truth this path can enforce; where the worker's
-                # literal is tighter than the stored cap, the client and
-                # tick paths enforce it and run-now does not - the
-                # documented residual.
+                # every other fire of a schedule: the cron tick resolves
+                # _resolve_max_pending(stored, registry literal) and the
+                # client path resolves the same rule through the capacity
+                # cache, while the single-enqueue path this call reaches
+                # enforces only the CARRIED value, so a NULL here would
+                # silently exempt run-now from a drain the operator set.
+                # A non-NULL stored cap is authoritative over the registry
+                # literal on those paths (it tightens or loosens it), so
+                # carrying the stored value alone makes run-now answer the
+                # same question they answer whenever a stored cap exists.
+                # The residual: no stored cap and a registry literal - the
+                # literal lives in the worker's actor_registry, not the
+                # database, so this path cannot know it and enforces
+                # nothing; the tick and client paths still do.
                 max_pending=ac_row["max_pending"],
                 # Provenance parity with every other fire of a schedule
                 # (the tick stamps the same key in _plan_fire): per-schedule
