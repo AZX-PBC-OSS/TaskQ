@@ -725,7 +725,13 @@ class FsmFuzzMachine(RuleBasedStateMachine):
                 seen.add(a.attempt)
             # Event trail: legal edges only; a terminal state_change event
             # is the last event of its epoch (operator re-runs write no
-            # event and start a new epoch above the watermark).
+            # event and start a new epoch above the watermark).  One
+            # documented self-loop allowance: the cancel ESCALATION writes
+            # a state_change (running, running) carrying the phase
+            # transition in its detail (cancel_phase_from/to) - a
+            # phase-carrying event, not a status transition; both backends'
+            # _write_cancel_escalation spell it identically, the row stays
+            # running.
             events = await self.backend.get_events(jid)
             terminal_seen = False
             for e in events:
@@ -734,8 +740,15 @@ class FsmFuzzMachine(RuleBasedStateMachine):
                 frm = e.detail.get("from_state")
                 to = e.detail.get("to_state")
                 assert isinstance(frm, str) and isinstance(to, str)
-                assert to in VALID_TRANSITIONS[frm], f"illegal event edge {frm} -> {to}"
-                assert not terminal_seen, "state_change after a terminal event"
+                is_escalation = (
+                    frm == "running"
+                    and to == "running"
+                    and "cancel_phase_from" in e.detail
+                    and "cancel_phase_to" in e.detail
+                )
+                if not is_escalation:
+                    assert to in VALID_TRANSITIONS[frm], f"illegal event edge {frm} -> {to}"
+                    assert not terminal_seen, "state_change after a terminal event"
                 if _is_terminal(to):
                     terminal_seen = True
 

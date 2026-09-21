@@ -66,6 +66,7 @@ _FSMS = st.one_of(
     ),
     st.tuples(st.just("cancel_request"), st.sampled_from(_TOKENS)),
     st.tuples(st.just("worker_cancel"), st.sampled_from(_TOKENS), st.sampled_from(_WORKERS)),
+    st.tuples(st.just("cancel_escalate"), st.sampled_from(_TOKENS), st.sampled_from(_WORKERS)),
     st.tuples(st.just("retry_job"), st.sampled_from(_TOKENS)),
     st.tuples(st.just("expire_lock"), st.sampled_from(_TOKENS)),
     st.just(("sweep_reclaim",)),
@@ -126,6 +127,12 @@ async def _exec_op(side: DiffSide, op: Op) -> Any:
         return ("cancel_request", token, await side.write_cancel_request(token, "operator"))
     if kind == "worker_cancel":
         return ("worker_cancel", token, await side.mark_cancelled(token, str(op[2])))
+    if kind == "cancel_escalate":
+        return (
+            "cancel_escalate",
+            token,
+            await side.write_cancel_escalation(token, str(op[2])),
+        )
     if kind == "retry_job":
         return ("retry_job", token, await side.retry_job(token))
     if kind == "expire_lock":
@@ -159,15 +166,25 @@ def _assert_snapshot_invariants(obs: dict[str, Any]) -> None:
         for a in job["attempts"]:
             assert a["attempt"] not in seen, f"{token}: duplicate attempt epoch {a['attempt']}"
             seen.add(a["attempt"])
-        # Legal event edges; terminal absorbing.
+        # Legal event edges; terminal absorbing.  One documented
+        # self-loop allowance: the cancel escalation's phase-carrying
+        # (running, running) event (both backends' _write_cancel_escalation
+        # spell it identically, the row stays running).
         terminal_seen = False
         for e in job["events"]:
             if e["kind"] != "state_change":
                 continue
             frm = e["detail"]["from_state"]
             to = e["detail"]["to_state"]
-            assert to in VALID_TRANSITIONS[frm], f"{token}: illegal event edge {frm}->{to}"
-            assert not terminal_seen, f"{token}: state_change after a terminal event"
+            is_escalation = (
+                frm == "running"
+                and to == "running"
+                and "cancel_phase_from" in e["detail"]
+                and "cancel_phase_to" in e["detail"]
+            )
+            if not is_escalation:
+                assert to in VALID_TRANSITIONS[frm], f"{token}: illegal event edge {frm}->{to}"
+                assert not terminal_seen, f"{token}: state_change after a terminal event"
             if to in terminal:
                 terminal_seen = True
 
