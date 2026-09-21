@@ -318,3 +318,66 @@ async def test_redis_outage_fallback_composition_runs_actor_via_pg() -> None:
         "the fallback acquire must have run the token-bucket PG statements, "
         "the fused acquire is one fetchrow"
     )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(
+            redis.ReadOnlyError("READONLY You can't write against a read only replica."),
+            id="readonly-error-replica-promotion",
+        ),
+        pytest.param(
+            redis.OutOfMemoryError("OOM command not allowed when used memory > 'maxmemory'."),
+            id="oom-error-maxmemory-breach",
+        ),
+    ],
+)
+async def test_redis_store_rejection_fallback_composition_runs_actor_via_pg(
+    error: Exception,
+) -> None:
+    """Redis ``ResponseError`` siblings that mean "this server cannot serve
+    right now" must degrade through the PG fallback exactly like a connection
+    failure: a replica promoted mid-flight answers writes with
+    ``ReadOnlyError``, and a maxmemory breach answers commands with
+    ``OutOfMemoryError``. Both escape a catch that names only
+    ``ConnectionError``/``TimeoutError`` - the worker then snoozes in a ~5s
+    loop for the whole promotion/maxmemory window the PG fallback was
+    designed to absorb. ``NoScriptError`` (the other ``ResponseError``
+    sibling) stays excluded on purpose: redis-py 8.x handles it client-side
+    in ``Script.__call__`` (re-EVAL after re-SCRIPT LOAD), so it never
+    signals a store outage.
+
+    Verdict asserted: DEGRADE-AND-REPORT, identical to the
+    ``ConnectionError`` composition test above.
+    """
+    _ACTOR_RUNS[0] = 0
+    pool = _FakePgPool()
+    with structlog.testing.capture_logs() as captured:
+        fake_backend, actor_runs = await _dispatch_with_dead_redis(
+            error=error, fallback_enabled=True, pg_pool=pool
+        )
+
+    assert actor_runs == 1, (
+        f"a {type(error).__name__} from the store substrate must enter the "
+        "PG fallback cleanly: the actor runs on the fallback store's "
+        "admission, exactly as it does for ConnectionError"
+    )
+    assert fake_backend.mark_failed_or_retry_calls == [], (
+        "a cleanly-entered fallback must not touch the job's failure accounting"
+    )
+    fallback_warnings = [e for e in captured if e.get("event") == "rate-limit-redis-fallback"]
+    assert len(fallback_warnings) == 1, (
+        "the degraded acquire must be distinguishable - exactly one "
+        f"rate-limit-redis-fallback warning, same as ConnectionError; "
+        f"got {[e.get('event') for e in captured]}"
+    )
+    assert fallback_warnings[0].get("backend") == "redis"
+    assert fallback_warnings[0].get("fallback") == "postgres"
+    assert pool.conns, "the fallback must actually have gone to Postgres"
+    assert any(
+        "rate_limit_buckets" in sql for sql in pool.conns[0].executed + pool.conns[0].fetched
+    ), (
+        "the fallback acquire must have run the token-bucket PG statements, "
+        "the fused acquire is one fetchrow"
+    )
