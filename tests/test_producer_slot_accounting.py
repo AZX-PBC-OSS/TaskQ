@@ -57,6 +57,12 @@ class _Active:
     def held_ids(self) -> list[object]:
         return []
 
+    def queued_ids(self) -> list[object]:
+        return []
+
+    def mark_enqueued(self, job_id: object) -> None:
+        pass
+
     def mark_claimed(self, job_id: object) -> None:
         return None
 
