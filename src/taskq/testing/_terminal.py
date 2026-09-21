@@ -252,7 +252,7 @@ async def _mark_succeeded(
         result=stored_result,
         result_size_bytes=result_size_bytes,
         result_expires_at=new_result_expires_at,
-        progress_seq=progress_seq,
+        progress_seq=max(row.progress_seq, progress_seq),
         progress_state=merged_progress,
     )
     self._append_attempt(
@@ -400,7 +400,7 @@ async def _mark_failed_or_retry(
                 last_heartbeat_at=None,
                 error_class="DeadlineExceeded",
                 error_message=DEADLINE_RETRY_EXCEEDED_MESSAGE,
-                progress_seq=progress_seq,
+                progress_seq=max(row.progress_seq, progress_seq),
                 progress_state=merged_progress,
             )
             self._jobs[job_id] = updated
@@ -452,7 +452,7 @@ async def _mark_failed_or_retry(
             # A failure retry returns the row to the pending pool, so it
             # routes by the actor's current assignment from here on.
             assignment_routed=True,
-            progress_seq=progress_seq,
+            progress_seq=max(row.progress_seq, progress_seq),
             progress_state=merged_progress,
         )
         self._jobs[job_id] = updated
@@ -495,7 +495,7 @@ async def _mark_failed_or_retry(
         error_class=error_info.error_class,
         error_message=error_info.error_message,
         error_traceback=error_info.error_traceback,
-        progress_seq=progress_seq,
+        progress_seq=max(row.progress_seq, progress_seq),
         progress_state=merged_progress,
     )
     self._jobs[job_id] = updated
@@ -570,7 +570,7 @@ async def _mark_cancelled(
         locked_by_worker=None,
         lock_expires_at=None,
         error_class=origin,
-        progress_seq=progress_seq,
+        progress_seq=max(row.progress_seq, progress_seq),
         progress_state=merged_progress,
     )
     self._append_attempt(
@@ -672,7 +672,7 @@ async def _mark_abandoned(
         # the row reads "taken away after the graces", distinct from a
         # cooperative cancel, see _sql_templates.mark_abandoned.
         error_class=CANCEL_ORIGIN_ABANDONED,
-        progress_seq=progress_seq,
+        progress_seq=max(row.progress_seq, progress_seq),
         progress_state=merged_progress,
     )
     self._append_attempt(
@@ -866,7 +866,7 @@ async def _mark_snoozed(
                 locked_by_worker=None,
                 lock_expires_at=None,
                 last_heartbeat_at=None,
-                progress_seq=progress_seq,
+                progress_seq=max(row.progress_seq, progress_seq),
                 progress_state=deadline_merged_progress,
             )
             self._append_attempt(
@@ -915,7 +915,7 @@ async def _mark_snoozed(
             # this one was rejected outright (mirrors the SQL arm).
             rate_limit_blocked_count=row.rate_limit_blocked_count
             + (1 if outcome in ("reservation_denied", "rate_limit_denied") else 0),
-            progress_seq=progress_seq,
+            progress_seq=max(row.progress_seq, progress_seq),
             progress_state=deadline_merged_progress,
         )
         self._append_attempt(
@@ -1018,7 +1018,7 @@ async def _mark_snoozed(
         # A deferral returns the row to the pending pool, so it routes by
         # the actor's current assignment from here on.
         assignment_routed=True,
-        progress_seq=progress_seq,
+        progress_seq=max(row.progress_seq, progress_seq),
         progress_state=merged_progress,
     )
     logger.debug(
@@ -1089,7 +1089,7 @@ async def _mark_retry_after(
                 locked_by_worker=None,
                 lock_expires_at=None,
                 last_heartbeat_at=None,
-                progress_seq=progress_seq,
+                progress_seq=max(row.progress_seq, progress_seq),
                 progress_state=deadline_merged_progress,
             )
             self._append_attempt(
@@ -1132,7 +1132,7 @@ async def _mark_retry_after(
             locked_by_worker=None,
             lock_expires_at=None,
             last_heartbeat_at=None,
-            progress_seq=progress_seq,
+            progress_seq=max(row.progress_seq, progress_seq),
             progress_state=deadline_merged_progress,
         )
         self._append_attempt(
@@ -1195,7 +1195,7 @@ async def _mark_retry_after(
             lock_expires_at=None,
             last_heartbeat_at=None,
             attempt=row.attempt,
-            progress_seq=progress_seq,
+            progress_seq=max(row.progress_seq, progress_seq),
             progress_state=maxatt_merged_progress,
         )
         self._append_attempt(
@@ -1269,7 +1269,7 @@ async def _mark_retry_after(
         # A deferral returns the row to the pending pool, so it routes by
         # the actor's current assignment from here on.
         assignment_routed=True,
-        progress_seq=progress_seq,
+        progress_seq=max(row.progress_seq, progress_seq),
         progress_state=merged_progress,
     )
     if consume_budget:
