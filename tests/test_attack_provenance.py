@@ -204,7 +204,9 @@ async def test_cancel_origin_truth_table_all_phases(clean_jobs_app: "JobsApp") -
                 cancel_phase=phase,
                 cancel_requested_at=requested,
             )
-            applied = await clean_jobs_app.backend.mark_cancelled(job_id, worker_id, attempt=1)
+            applied = await clean_jobs_app.backend.mark_cancelled(
+                job_id, worker_id, attempt=1, claim_epoch=1
+            )
             assert applied, f"fixture broken at phase {phase}: cancel did not apply"
 
         status, origin, _ = await _observable_state(clean_jobs_app, job_id)
@@ -243,7 +245,7 @@ async def test_phase2_without_request_is_not_forged_cooperative(
         worker_id, job_id = await _running_row(
             conn, schema, cancel_phase=2, cancel_requested_at=None
         )
-        await clean_jobs_app.backend.mark_cancelled(job_id, worker_id, attempt=1)
+        await clean_jobs_app.backend.mark_cancelled(job_id, worker_id, attempt=1, claim_epoch=1)
 
     _status, origin, _ = await _observable_state(clean_jobs_app, job_id)
     assert origin == FORCED, (
@@ -268,7 +270,9 @@ async def test_terminal_write_cannot_resurrect_a_cancelled_row(
             job_id,
         )
 
-    applied = await clean_jobs_app.backend.mark_cancelled(job_id, worker_id, attempt=1)
+    applied = await clean_jobs_app.backend.mark_cancelled(
+        job_id, worker_id, attempt=1, claim_epoch=1
+    )
     assert applied is False, "RED: mark_cancelled terminalised a succeeded job"
 
     status, origin, _ = await _observable_state(clean_jobs_app, job_id)
@@ -386,7 +390,7 @@ async def test_isolate_self_racing_a_terminal_write(
             if forced_winner == "terminal":
                 # isolate parked mid-window (it read the row as running and
                 # mine): the terminal write commits into the window.
-                applied = await backend.mark_cancelled(job_id, worker_id, attempt=1)
+                applied = await backend.mark_cancelled(job_id, worker_id, attempt=1, claim_epoch=1)
                 assert applied, (
                     f"fixture broken iter {i}: the terminal write no-oped "
                     "before isolate's arbiter ran"
@@ -398,7 +402,7 @@ async def test_isolate_self_racing_a_terminal_write(
                 # UPDATE executed, uncommitted): the terminal write is
                 # issued into that contention and cannot win.
                 terminal_task = asyncio.create_task(
-                    backend.mark_cancelled(job_id, worker_id, attempt=1)
+                    backend.mark_cancelled(job_id, worker_id, attempt=1, claim_epoch=1)
                 )
                 release.set()
                 await asyncio.wait_for(isolate_task, timeout=_WAIT)

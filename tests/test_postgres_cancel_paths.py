@@ -812,7 +812,7 @@ class TestCancelOriginAuditability:
         assert pre["cancel_requested_at"] is None
         assert pre["cancel_phase"] == 0
 
-        assert await backend.mark_cancelled(job_id, worker_id, attempt=1) is True
+        assert await backend.mark_cancelled(job_id, worker_id, attempt=1, claim_epoch=1) is True
 
         async with deps.worker_pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -855,8 +855,16 @@ class TestCancelOriginAuditability:
             unrequested_worker, unrequested_job = await setup_running_job(conn, schema)
 
         assert await backend.write_cancel_request(requested_job, "operator stop") is True
-        assert await backend.mark_cancelled(requested_job, requested_worker, attempt=1) is True
-        assert await backend.mark_cancelled(unrequested_job, unrequested_worker, attempt=1) is True
+        assert (
+            await backend.mark_cancelled(requested_job, requested_worker, attempt=1, claim_epoch=1)
+            is True
+        )
+        assert (
+            await backend.mark_cancelled(
+                unrequested_job, unrequested_worker, attempt=1, claim_epoch=1
+            )
+            is True
+        )
 
         async with deps.worker_pool.acquire() as conn:
             rows = await conn.fetch(

@@ -332,7 +332,7 @@ class TestCancelOriginAuditability:
         assert row_before.cancel_requested_at is None
         assert row_before.cancel_phase == CancelPhase.NONE
 
-        assert await backend.mark_cancelled(job_id, worker_id, attempt=1) is True
+        assert await backend.mark_cancelled(job_id, worker_id, attempt=1, claim_epoch=1) is True
 
         row = await backend.get(job_id)
         attempts = await backend.get_attempts(job_id)
@@ -354,8 +354,16 @@ class TestCancelOriginAuditability:
         unrequested_job, unrequested_worker = await _make_running_job(backend)
 
         assert await backend.write_cancel_request(requested_job, "operator stop") is True
-        assert await backend.mark_cancelled(requested_job, requested_worker, attempt=1) is True
-        assert await backend.mark_cancelled(unrequested_job, unrequested_worker, attempt=1) is True
+        assert (
+            await backend.mark_cancelled(requested_job, requested_worker, attempt=1, claim_epoch=1)
+            is True
+        )
+        assert (
+            await backend.mark_cancelled(
+                unrequested_job, unrequested_worker, attempt=1, claim_epoch=1
+            )
+            is True
+        )
 
         requested_row = await backend.get(requested_job)
         unrequested_row = await backend.get(unrequested_job)

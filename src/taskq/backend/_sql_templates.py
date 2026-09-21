@@ -40,7 +40,6 @@ from taskq.constants import (
     CANCEL_ORIGIN_UNREQUESTED,
     ERROR_CLASS_DEADLINE_EXCEEDED,
     ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED,
-    MIN_DEFERRAL_INTERVAL,
 )
 
 __all__ = ["SqlTemplates", "render"]
