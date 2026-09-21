@@ -25,6 +25,7 @@ from taskq._ids import new_uuid
 from taskq.backend._protocol import Backend, JobRow
 from taskq.testing.assertions import wait_for_condition
 from taskq.testing.jobs import make_job_row
+from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.run import (
     _CLAIM_COOLDOWN_SECONDS,
     _POLL_JITTER_FRACTION,
@@ -86,8 +87,15 @@ def _deps(*, maxsize: int, notify_enabled: bool) -> SimpleNamespace:
         liveness=SimpleNamespace(tick=lambda *a, **k: None, forget=lambda *a, **k: None),
         disowned_jobs=set(),
         # The producer's availability subtracts active jobs; the
-        # cooldown tests hold zero active throughout.
-        active_jobs=SimpleNamespace(count=lambda: 0),
+        # cooldown tests hold zero active throughout. mark_enqueued/
+        # queued_ids: the claim-coverage fence the producer marks at
+        # claim time (a real ActiveJobRegistry backs them; the tests
+        # here never read the map).
+        active_jobs=SimpleNamespace(
+            count=lambda: 0,
+            mark_enqueued=ActiveJobRegistry().mark_enqueued,
+            queued_ids=lambda: [],
+        ),
     )
 
 

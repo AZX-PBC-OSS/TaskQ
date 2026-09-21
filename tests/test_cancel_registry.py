@@ -329,3 +329,48 @@ async def test_active_job_defaults() -> None:
     task.cancel()
     with pytest.raises((asyncio.CancelledError, Exception)):
         await task
+
+
+# ── The queued map: the claim-to-take window's fence ─────────────────────
+
+
+async def test_mark_enqueued_parks_the_id_until_the_take() -> None:
+    """The producer's enqueued mark covers the claim-to-take window: the
+    id is visible to ``queued_ids()`` and invisible to ``held_ids()``
+    (the exit hand-back must keep re-pending queued rows), and the
+    consumer's take moves the coverage to the intent map atomically."""
+    registry = ActiveJobRegistry()
+    job_id = new_job_id()
+
+    registry.mark_enqueued(job_id)
+    assert registry.queued_ids() == [job_id]
+    assert job_id not in registry.held_ids()
+
+    # The consumer's take: queued coverage becomes intent coverage.
+    registry.mark_claimed(job_id)
+    assert registry.queued_ids() == []
+    assert job_id in registry.held_ids()
+
+
+async def test_mark_enqueued_is_idempotent_per_take_cycle() -> None:
+    """A re-claimed row (sweep re-pend, this worker takes it back) walks
+    queued → intent → registered without leaving residue in the queued
+    map: the reconcile probe must never see a live row as lost."""
+    registry = ActiveJobRegistry()
+    job_id = new_job_id()
+
+    registry.mark_enqueued(job_id)
+    registry.mark_claimed(job_id)
+    task = _make_task()
+    ctx = _make_ctx(job_id)
+    await registry.register(job_id, task, ctx)
+    assert registry.queued_ids() == []
+    assert job_id in registry.held_ids()
+
+    await registry.deregister(job_id)
+    assert registry.queued_ids() == []
+    assert job_id not in registry.held_ids()
+
+    task.cancel()
+    with pytest.raises((asyncio.CancelledError, Exception)):
+        await task

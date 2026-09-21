@@ -525,22 +525,56 @@ class ActiveJobRegistry:
         # set closes that window: the mark lands with no await after the
         # take, and every hand-back pass excludes both maps.
         self._claim_intents: set[JobId] = set()
+        # Claimed-but-not-yet-taken ids: the window between the
+        # producer's claim commit and the consumer's queue take. A row
+        # parked in local_queue (all consumers busy on long jobs) is
+        # running, locked to this worker, and invisible to ``all()`` and
+        # the intent map alike; a hand-back pass that excludes only
+        # those two maps would re-pend a row this process is about to
+        # execute locally. ``mark_claimed`` moves the coverage from this
+        # map to the intent map at the take, so every window of the
+        # claim-to-register chain is fenced by exactly one map.
+        self._queued: set[JobId] = set()
+
+    def mark_enqueued(self, job_id: JobId) -> None:
+        """Record a claim the producer handed to the local queue.
+
+        Called by the producer before the queue put (the put is the
+        first await after the claim's return, and the mark must precede
+        any await a hand-back pass could interleave at).
+        """
+        self._queued.add(job_id)
+
+    def queued_ids(self) -> list[JobId]:
+        """Snapshot of the rows parked in local_queue, not yet taken."""
+        return list(self._queued)
 
     def mark_claimed(self, job_id: JobId) -> None:
         """Record a queue take before any await can let a drain observe the gap.
 
         Must be called with no intervening await after the take: the
         single-threaded loop makes the record atomic with the take, which
-        is the whole guarantee.
+        is the whole guarantee. The take also moves the row's coverage
+        from the queued map to the intent map, so the claim-to-register
+        chain never has an unfenced window.
         """
         self._claim_intents.add(job_id)
+        self._queued.discard(job_id)
 
     def resolve_claim(self, job_id: JobId) -> None:
         """Drop the claim intent once ``register`` covers it or the row is released."""
         self._claim_intents.discard(job_id)
 
     def held_ids(self) -> list[JobId]:
-        """Snapshot of every row this process may still execute: registered and intent."""
+        """Snapshot of every row this process may still execute: registered and intent.
+
+        Deliberately NOT the queued ids (``queued_ids()``): a row parked
+        in local_queue at a DRAINING exit must be re-pended by the exit
+        hand-back, which excludes this snapshot only — the hand-back
+        passes (drain, isolate) and the heartbeat's lost-claim probe
+        bind different exclusions on purpose, each the narrower of the
+        two its correctness needs.
+        """
         return list(self._by_id) + list(self._claim_intents)
 
     async def register(

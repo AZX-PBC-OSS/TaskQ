@@ -441,21 +441,36 @@ async def test_heartbeat_prunes_disowned_jobs_the_fleet_has_reclaimed() -> None:
     await _one_tick(deps, worker_id)
 
     assert deps.disowned_jobs == {still_ours}
-    assert len(conn.fetch_calls) == 1
+    # Two fetches per tick now: the still-held prune probe, then the
+    # claim-loss reconcile probe (which runs every tick - the lost
+    # claim it hunts is by definition unknown to every in-memory set).
+    assert len(conn.fetch_calls) == 2
     probe_sql, probe_args = conn.fetch_calls[0]
     assert set(cast(list[UUID], probe_args[0])) == {reclaimed, still_ours}
     assert probe_args[1] == worker_id
     assert "locked_by_worker" in probe_sql and "'running'" in probe_sql
+    reconcile_sql, reconcile_args = conn.fetch_calls[1]
+    assert reconcile_args[0] == worker_id
+    # The reconcile excludes the tick's disowned snapshot (both ids).
+    assert set(cast(list[UUID], reconcile_args[1])) == {reclaimed, still_ours}
+    assert "locked_by_worker" in reconcile_sql and "started_at" in reconcile_sql
 
 
 async def test_heartbeat_skips_the_prune_probe_when_nothing_is_disowned() -> None:
-    """The common tick carries no disowned rows and must not pay a probe."""
+    """The common tick carries no disowned rows and must not pay the
+    prune probe. The claim-loss reconcile probe is the tick's one
+    unconditional fetch - the lost claim it hunts is by definition
+    absent from every in-memory set, so nothing else can decide when
+    to look for it."""
     conn = _RecordingConn(still_held=[])
     deps = _heartbeat_deps(conn, disowned=set())
 
     await _one_tick(deps, new_uuid())
 
-    assert conn.fetch_calls == []
+    prune_calls = [call for call in conn.fetch_calls if "ANY($1::uuid[])" in call[0]]
+    assert prune_calls == [], "the still-held prune probe must be skipped"
+    reconcile_calls = [call for call in conn.fetch_calls if "started_at" in call[0]]
+    assert len(reconcile_calls) == 1, "the lost-claim reconcile runs every tick"
     _sql, args = _lease_renewals(conn)[0]
     assert list(cast(list[UUID], args[2])) == []
 
@@ -558,8 +573,14 @@ async def test_producer_reowns_a_disowned_job_it_claims_again() -> None:
         liveness=SimpleNamespace(tick=lambda *a, **k: None, forget=lambda *a, **k: None),
         disowned_jobs=disowned,
         # The producer's availability subtracts active jobs; this
-        # test's single claimed job is never registered.
-        active_jobs=SimpleNamespace(count=lambda: 0),
+        # test's single claimed job is never registered. The enqueue
+        # mark lands on a real registry so the producer's fence call
+        # has somewhere to write.
+        active_jobs=SimpleNamespace(
+            count=lambda: 0,
+            mark_enqueued=ActiveJobRegistry().mark_enqueued,
+            queued_ids=lambda: [],
+        ),
     )
     local_queue: asyncio.Queue[JobRow] = asyncio.Queue(maxsize=1)
     shutdown_event = asyncio.Event()
