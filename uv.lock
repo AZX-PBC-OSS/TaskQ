@@ -2984,6 +2984,7 @@ dependencies = [
     { name = "orjson" },
     { name = "pydantic" },
     { name = "structlog" },
+    { name = "tors" },
     { name = "typer" },
     { name = "uuid-utils" },
 ]
@@ -3031,9 +3032,6 @@ reload = [
 saml = [
     { name = "itsdangerous" },
     { name = "python3-saml" },
-]
-text-accel = [
-    { name = "tors" },
 ]
 vault = [
     { name = "hvac" },
@@ -3105,13 +3103,13 @@ requires-dist = [
     { name = "sse-starlette", marker = "extra == 'fastapi'", specifier = ">=3.4.6" },
     { name = "starlette", marker = "extra == 'fastapi'", specifier = ">=1.3.1" },
     { name = "structlog", specifier = ">=26.1.0,<27" },
-    { name = "tors", marker = "extra == 'text-accel'", specifier = ">=0.10.1" },
+    { name = "tors", specifier = ">=0.10.1" },
     { name = "typer", specifier = ">=0.27.0,<1" },
     { name = "uuid-utils", specifier = ">=1.0.0,<2" },
     { name = "uvicorn", marker = "extra == 'fastapi'", specifier = ">=0.51.0,<1" },
     { name = "watchfiles", marker = "extra == 'reload'", specifier = ">=1.2.0" },
 ]
-provides-extras = ["redis", "fastapi", "reload", "bench", "otel", "prometheus", "oidc", "saml", "aad", "aws", "vault", "text-accel"]
+provides-extras = ["redis", "fastapi", "reload", "bench", "otel", "prometheus", "oidc", "saml", "aad", "aws", "vault"]
 
 [package.metadata.requires-dev]
 dev = [

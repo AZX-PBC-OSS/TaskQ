@@ -29,7 +29,7 @@ suites — passes UNCHANGED:
 
 | battery (160 tests) | new parity tests |
 |---------------------|------------------|
-| 160 passed          | 33 passed        |
+| 160 passed          | 25 passed        |
 
 ## Method
 
