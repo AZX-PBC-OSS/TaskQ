@@ -162,6 +162,63 @@ def testcompute_next_fire_after_naive_candidate_gets_localized(
 # ── compute_next_fire_after: DST gap (spring-forward) ────────────────
 
 
+def testcompute_next_fire_after_gap_day_fires_at_gap_end_not_next_day() -> None:
+    """Unforced vectors for the REAL gap behavior on spring-forward day.
+
+    On 2025-03-30 Europe/Berlin the local wall 02:00→03:00 never exists
+    (the gap is [02:00, 03:00)).  croniter's aware-seed resolution, the
+    only path production seeds reach, answers a match that falls INSIDE
+    the gap with the gap's END instant - the fire still happens that day,
+    delayed by the gap's length.  It does NOT skip to the next day's
+    match, and it does not drop the first valid post-gap match:
+
+    * a daily 02:30 fires that day at 03:00 (a shifted instant, not a
+      cron match - 'next valid cron match' would be 2025-03-31 02:30);
+    * an hourly schedule's 02:00 match shifts to 03:00 and the 03:00
+      match is that same instant, so nothing between the seed and the
+      answer is dropped;
+    * a minutely schedule's 60 gap minutes collapse to the single 03:00
+      fire (the first post-gap match, at its normal wall time).
+
+    The monkeypatched tests below pin the defensive branch that governs
+    if a future croniter ever returns a nonexistent candidate; these pin
+    what operators actually observe today.  All three strategies share
+    the gap behavior, and 'allof' returns ONE element on a gap day (a
+    gap has no fold pair to double).
+    """
+    tz_name = "Europe/Berlin"
+    tz = ZoneInfo(tz_name)
+    gap_end = datetime(2025, 3, 30, 3, 0, tzinfo=tz)
+
+    seed = datetime(2025, 3, 30, 1, 30, tzinfo=tz)  # 01:30 CET, exists
+    out = compute_next_fire_after("30 2 * * *", tz_name, seed, dst_strategy="skip")
+    assert out == [gap_end], (
+        "the transition-day fire must happen at the gap's end, not skip to "
+        f"the next day's match, got {[d.isoformat() for d in out]}"
+    )
+
+    out = compute_next_fire_after("0 * * * *", tz_name, seed, dst_strategy="skip")
+    assert out == [gap_end], (
+        "the hourly 02:00 match shifts to the gap end and IS the 03:00 "
+        f"match; nothing in between may be dropped, got {[d.isoformat() for d in out]}"
+    )
+
+    seed = datetime(2025, 3, 30, 1, 59, tzinfo=tz)
+    out = compute_next_fire_after("* * * * *", tz_name, seed, dst_strategy="skip")
+    assert out == [gap_end], (
+        "the gap's minutes are skipped and the first post-gap match fires "
+        f"at its normal wall time, got {[d.isoformat() for d in out]}"
+    )
+
+    for strategy in ("firstof", "allof"):
+        seed = datetime(2025, 3, 30, 1, 30, tzinfo=tz)
+        out = compute_next_fire_after("30 2 * * *", tz_name, seed, dst_strategy=strategy)
+        assert out == [gap_end], (
+            f"{strategy} shares the gap behavior and answers one instant on "
+            f"a gap day, got {[d.isoformat() for d in out]}"
+        )
+
+
 def testcompute_next_fire_after_gap_advances_to_next_valid_match(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

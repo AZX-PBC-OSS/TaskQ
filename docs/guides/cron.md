@@ -223,11 +223,15 @@ When a cron expression fires at a time that falls in a DST gap (spring-forward) 
 
 | Strategy | Gaps (spring-forward) | Overlaps (fall-back) |
 |---|---|---|
-| `"skip"` (default) | Advance to the next valid cron match after the gap | Use the first (earlier) occurrence |
+| `"skip"` (default) | A match inside the gap fires once at the gap's end | Use the first (earlier) occurrence |
 | `"firstof"` | Same as `skip` | Explicitly select the earlier wall-clock time |
-| `"allof"` | Same as `skip` | Fire at **both** occurrences (enqueue two jobs) |
+| `"allof"` | Same as `skip` (a gap has no fold pair: one fire) | Fire at **both** occurrences (enqueue two jobs) |
 
-For UTC schedules, DST handling is irrelevant and `"skip"` is always used.
+A gap match is *delayed*, not skipped: a daily `30 2 * * *` schedule in a zone
+whose 02:00→03:00 spring-forward makes 02:30 nonexistent still fires that day,
+at 03:00 (the gap's end). Matches after the gap are unaffected; a minutely
+schedule's gap minutes collapse to the single fire at the gap's end. For UTC
+schedules, DST handling is irrelevant and `"skip"` is always used.
 
 ### When a fire lands inside a repeated hour
 
@@ -400,6 +404,23 @@ await handle.enable()  # set enabled=True (resets consecutive_failures and last_
 await handle.delete()  # remove the schedule row
 ```
 
+### Disable and delete versus an in-flight tick
+
+A disable (or delete) takes effect for every tick that STARTS after it commits. A
+tick that is already in flight - it selected the schedule as due and planned the
+fire inside its transaction - may still land the fire it planned, exactly once.
+The failure arm of that race is guarded (a schedule disabled mid-tick takes no
+strike and has no error stamped), but the enqueue and the success advance cannot
+carry the same guard: guarding the advance while the job is already enqueued
+would strand the delivered slot behind an un-advanced `next_fire_at`, and
+re-enabling would then re-deliver the fired slot a second time. So the two
+writes agree instead: the planned fire lands once, the disable survives (the
+success advance touches no `enabled` column), the row records the fire that
+happened and moves past the delivered slot, and re-enabling does not re-deliver.
+A delete behaves the same: the in-flight fire lands, the deletion survives (no
+success advance can resurrect the row), and the delivered job carries the
+schedule id in its `cron_schedule_id` provenance metadata.
+
 ### Manual registration
 
 You can register schedules programmatically without the decorator:
@@ -520,6 +541,16 @@ The admin UI provides a schedules page at `/admin/schedules` that lists all cron
 ordered by `next_fire_at`, showing the actor, expression, timezone, enabled status, and next
 fire time. If the cron migration has not been applied, the page shows a notice directing the
 operator to run `taskq migrate up`.
+
+Run-now (`POST /schedules/{id}/run`, "Run now" on the schedules page) resolves the
+schedule's payload and enqueues one immediate job for its actor. It honors the
+operator-stored `actor_config.max_pending` cap exactly like the cron tick and the client
+enqueue path: a fire refused by the cap redirects back with the reason instead of landing a
+job past the operator's own drain. Two residuals are deliberate: run-now is an operator
+override and does not carry the `singleton` stamp (that flag lives in the worker's actor
+registry, not the database, so an admin process cannot know it; a run-now fire can therefore
+run alongside an active singleton blocker), and it does not advance `next_fire_at` - the
+schedule's next regular fire still happens as scheduled.
 
 ---
 
