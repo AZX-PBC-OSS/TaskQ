@@ -637,6 +637,14 @@ def migrate_up(
         "fails and rolls back (SET LOCAL lock_timeout). 0 waits indefinitely, "
         "parking every statement on the table behind the queued DDL.",
     ),
+    allow_checksum_drift: bool = typer.Option(
+        False,
+        "--allow-checksum-drift",
+        help="Proceed past a drifted checksum ledger: an APPLIED migration's "
+        "ledger checksum differs from the bundled file, which refuses the run "
+        "by default. Verify the edit is safe first; the drift is still logged "
+        "as a warning on every run and the ledger keeps the stored checksum.",
+    ),
     pg_credential_provider: str | None = typer.Option(
         None,
         "--pg-credential-provider",
@@ -659,6 +667,7 @@ def migrate_up(
             target=target,
             max_steps=max_steps,
             ddl_lock_timeout=ddl_lock_timeout,
+            allow_checksum_drift=allow_checksum_drift,
             conn_factory=conn_factory,
         )
     )
@@ -702,6 +711,7 @@ async def _up(
     target: str | None,
     max_steps: int | None,
     ddl_lock_timeout: float = migrate_mod.DEFAULT_MIGRATION_DDL_LOCK_TIMEOUT,
+    allow_checksum_drift: bool = False,
     conn_factory: ConnFactory | None = None,
 ) -> None:
     # Why locked: the README names `taskq migrate up` as THE deploy step, and a
@@ -732,6 +742,7 @@ async def _up(
                 target=target,
                 max_steps=max_steps,
                 ddl_lock_timeout=ddl_lock_timeout,
+                allow_checksum_drift=allow_checksum_drift,
             )
             # The optional hypertable conversion rides the same deploy step
             # and the same lock: after migrations, before the connection

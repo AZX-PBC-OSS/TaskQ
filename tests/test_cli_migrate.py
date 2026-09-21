@@ -604,3 +604,111 @@ async def test_migrate_up_terminates_hung_conn_close(monkeypatch: Any) -> None:
 
     assert fake_conn.terminated is True
     assert fake_conn.close_calls == 1
+
+
+# ── --allow-checksum-drift ────────────────────────────────────────────────
+
+
+def test_migrate_up_threads_allow_checksum_drift(monkeypatch: Any) -> None:
+    """--allow-checksum-drift threads through to apply_pending, and the
+    default run passes False: a drifted ledger refuses the run unless the
+    operator asked for the escape hatch."""
+    _patch_connect(monkeypatch)
+    apply = AsyncMock(return_value=[])
+    monkeypatch.setattr(cli_mod.migrate_mod, "apply_pending", apply)
+
+    result = runner.invoke(app, ["migrate", "up"])
+    assert result.exit_code == 0, result.output
+    assert apply.call_args.kwargs["allow_checksum_drift"] is False
+
+    result = runner.invoke(app, ["migrate", "up", "--allow-checksum-drift"])
+    assert result.exit_code == 0, result.output
+    assert apply.call_args.kwargs["allow_checksum_drift"] is True
+
+
+@pytest.mark.integration
+def test_migrate_up_checksum_drift_flag_end_to_end(pg_dsn: str, monkeypatch: Any) -> None:
+    """The tampered-ledger drill against a real PG, the full operator path
+    the ChecksumDriftError text advertises: without the flag the run exits
+    1 fail-closed (the failure report names the drift); with the flag the
+    run proceeds past the refusal and the ``migration-checksum-drift``
+    warning fires; on the NEXT run the warning fires AGAIN (never sticky
+    silence), and a no-flag default behaves exactly as before."""
+    import structlog.testing
+
+    from taskq._ids import new_base62
+
+    schema = f"cli_drift_{new_base62()}".lower()
+
+    real_connect = asyncpg.connect
+
+    async def _fresh_conn(*_args: object) -> asyncpg.Connection:
+        return await real_connect(pg_dsn)
+
+    monkeypatch.setenv("TASKQ_PG_DSN", pg_dsn)
+    monkeypatch.setenv("TASKQ_SCHEMA_NAME", schema)
+    monkeypatch.setattr(cli_mod.asyncpg, "connect", AsyncMock(side_effect=_fresh_conn))
+
+    def _tamper() -> str:
+        async def _do() -> str:
+            conn = await asyncpg.connect(pg_dsn)
+            try:
+                row = await conn.fetchrow(
+                    f'SELECT version FROM "{schema}".schema_migrations ORDER BY version LIMIT 1'  # noqa: S608 # Why: schema is a test-generated identifier, not user input; asyncpg has no parameter binding for identifiers.
+                )
+                assert row is not None
+                await conn.execute(
+                    f'UPDATE "{schema}".schema_migrations SET checksum = $1 WHERE version = $2',  # noqa: S608
+                    "0" * 64,
+                    row["version"],
+                )
+                return row["version"]
+            finally:
+                await conn.close()
+
+        return asyncio.run(_do())
+
+    drifted_key = ""
+    try:
+        # Baseline: a clean schema applies fully, flag or no flag.
+        result = runner.invoke(app, ["migrate", "up"])
+        assert result.exit_code == 0, result.output
+        result = runner.invoke(app, ["migrate", "up", "--allow-checksum-drift"])
+        assert result.exit_code == 0, result.output
+
+        drifted_key = _tamper()
+
+        # WITHOUT the flag: fail-closed, exit 1, the report names the drift.
+        result = runner.invoke(app, ["migrate", "up"])
+        assert result.exit_code == 1, result.output
+        assert "checksum drift" in plain_cli_output(result.output)
+        assert drifted_key in plain_cli_output(result.output)
+
+        # WITH the flag: the run proceeds, the drift warning still fires.
+        with structlog.testing.capture_logs() as captured:
+            result = runner.invoke(app, ["migrate", "up", "--allow-checksum-drift"])
+        assert result.exit_code == 0, result.output
+        drift_events = [e for e in captured if e.get("event") == "migration-checksum-drift"]
+        assert len(drift_events) == 1, captured
+        assert drift_events[0]["key"] == drifted_key
+
+        # The NEXT run: the warning fires AGAIN - allowing one drifted run
+        # never silences the later ones.
+        with structlog.testing.capture_logs() as captured_next:
+            result = runner.invoke(app, ["migrate", "up", "--allow-checksum-drift"])
+        assert result.exit_code == 0, result.output
+        drift_next = [e for e in captured_next if e.get("event") == "migration-checksum-drift"]
+        assert len(drift_next) == 1, captured_next
+        assert drift_next[0]["key"] == drifted_key
+    finally:
+
+        async def _cleanup() -> None:
+            conn = await asyncpg.connect(pg_dsn)
+            try:
+                await conn.execute(
+                    f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'
+                )  # Why: schema is a test-generated identifier, not user input; asyncpg has no parameter binding for identifiers.
+            finally:
+                await conn.close()
+
+        asyncio.run(_cleanup())
