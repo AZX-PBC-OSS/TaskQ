@@ -301,3 +301,51 @@ def test_disown_floor_warning_is_quiet_once_the_lease_covers_it() -> None:
     with structlog.testing.capture_logs() as logs:
         _emit_startup_warnings(s)
     assert [e for e in logs if e["event"] == "lock-lease-below-disown-exit-floor"] == []
+
+
+def test_disown_floor_warning_fires_without_the_watchdog() -> None:
+    """THE pin (#313's aggravator): the warning must not be gated on the
+    watchdog.
+
+    The double-failure residue exists whether or not the watchdog is
+    armed - the lease arithmetic does not read the flag - and an operator
+    running without it is exactly the config where the residue matters
+    most: there is no deadline trip to bound an outlived actor at all,
+    so the leader's reclaim sweep is the only exit and the floor is the
+    only thing keeping the reclaim behind the process's true exit.
+    Pre-fix the warning only fired under ``watchdog_enabled``, so this
+    config booted silent.
+    """
+    from taskq.worker._bootstrap import _emit_startup_warnings
+
+    s = _settings(TASKQ_WATCHDOG_ENABLED="false")
+    assert s.watchdog_enabled is False
+    assert s.lock_lease < s.release_disown_lease_floor  # 60 < 63: the residue is real
+
+    with structlog.testing.capture_logs() as logs:
+        _emit_startup_warnings(s)
+    entry = next(log for log in logs if log["event"] == "lock-lease-below-disown-exit-floor")
+    assert entry["log_level"] == "warning"
+    assert entry["disown_floor"] == 63.0
+    assert entry["residue_seconds"] == 3.0
+    assert "TASKQ_LOCK_LEASE" in entry["remedy"]
+    # The watchdog clause of the remedy is the conditional half: without
+    # the watchdog there is no deadline trip, so the remedy must not
+    # promise one.
+    assert "deadline trip" not in entry["remedy"], (
+        "a watchdog-disabled deployment must not be told the reclaim is "
+        "safe because the watchdog's deadline trip kills the actor - there "
+        "is no watchdog to kill it"
+    )
+
+
+def test_disown_floor_warning_is_quiet_without_the_watchdog_once_the_lease_covers_it() -> None:
+    """The floor-respected control on the other side of the gate: raising
+    the lease silences the warning with the watchdog off too."""
+    from taskq.worker._bootstrap import _emit_startup_warnings
+
+    s = _settings(TASKQ_WATCHDOG_ENABLED="false", TASKQ_LOCK_LEASE="65")
+    assert s.lock_lease >= s.release_disown_lease_floor
+    with structlog.testing.capture_logs() as logs:
+        _emit_startup_warnings(s)
+    assert [e for e in logs if e["event"] == "lock-lease-below-disown-exit-floor"] == []

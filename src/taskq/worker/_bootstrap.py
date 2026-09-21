@@ -1161,8 +1161,40 @@ def _emit_startup_warnings(settings: WorkerSettings) -> None:
     # seconds of lease on that residue is an operator call the maintainer
     # surfaces here rather than makes (see
     # WorkerSettings.release_disown_lease_floor).
-    if settings.watchdog_enabled and settings.lock_lease < settings.release_disown_lease_floor:
+    # Deliberately NOT gated on watchdog_enabled, unlike its sibling
+    # above: the lease arithmetic does not read the flag, and an operator
+    # running without the watchdog is exactly the config where the
+    # double-failure residue matters most - no deadline trip bounds an
+    # outlived actor at all, so the leader's reclaim sweep is the only
+    # exit and this floor is the only thing keeping it behind the
+    # process's true exit. Only the remedy's watchdog clause is
+    # conditional: with the watchdog armed the deadline trip kills the
+    # still-running actor inside the residue window; without it, nothing
+    # does.
+    if settings.lock_lease < settings.release_disown_lease_floor:
         residue = settings.release_disown_lease_floor - settings.lock_lease
+        if settings.watchdog_enabled:
+            remedy = (
+                "Raise TASKQ_LOCK_LEASE to at least "
+                f"{settings.release_disown_lease_floor:.0f}s (or lower "
+                "TASKQ_TERMINATION_GRACE_PERIOD) so the leader's reclaim "
+                "sweep cannot take a disowned row before the shutdown "
+                f"watchdog's deadline trip kills its still-running actor; "
+                f"the current settings leave a {residue:.1f}s window that "
+                "requires both release writes to fail AND a sweep tick to "
+                "land inside it"
+            )
+        else:
+            remedy = (
+                "Raise TASKQ_LOCK_LEASE to at least "
+                f"{settings.release_disown_lease_floor:.0f}s (or lower "
+                "TASKQ_TERMINATION_GRACE_PERIOD) so the leader's reclaim "
+                "sweep cannot take a disowned row whose still-running "
+                "actor has no shutdown watchdog to kill it; the current "
+                f"settings leave a {residue:.1f}s window that requires "
+                "both release writes to fail AND a sweep tick to land "
+                "inside it"
+            )
         _startup_log.warning(
             "lock-lease-below-disown-exit-floor",
             lock_lease=settings.lock_lease,
@@ -1173,16 +1205,7 @@ def _emit_startup_warnings(settings: WorkerSettings) -> None:
             cleanup_grace_period=settings.cleanup_grace_period,
             heartbeat_interval=settings.heartbeat_interval,
             exit_tail_seconds=settings.release_exit_tail_seconds,
-            remedy=(
-                "Raise TASKQ_LOCK_LEASE to at least "
-                f"{settings.release_disown_lease_floor:.0f}s (or lower "
-                "TASKQ_TERMINATION_GRACE_PERIOD) so the leader's reclaim "
-                "sweep cannot take a disowned row before the shutdown "
-                f"watchdog's deadline trip kills its still-running actor; "
-                f"the current settings leave a {residue:.1f}s window that "
-                "requires both release writes to fail AND a sweep tick to "
-                "land inside it"
-            ),
+            remedy=remedy,
         )
 
     # Why: TASKQ_MIGRATE_ON_START is defined on TaskQSettings, so WorkerSettings
