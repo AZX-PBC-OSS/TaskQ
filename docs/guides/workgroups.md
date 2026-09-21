@@ -98,6 +98,16 @@ taskq workgroup validate workgroup.toml
 
 Prints a summary of the config and each worker without starting any processes. Exits 1 if the config is invalid, including an `actors` reference that cannot be resolved.
 
+!!! warning "DI actors cannot be served by workgroup children"
+    Children are plain `taskq worker` subprocesses built from the `--actors`
+    registry reference, and the subprocess path registers no DI providers. An
+    actor that declares a DI dependency fails bootstrap validation with
+    `MissingProvider`, and the supervisor restart-loops it until the burst
+    limit trips. Serve DI actors through a Python entrypoint that passes
+    `di_registry=` to `worker_main` (see `examples/worker.py`, which keeps a
+    DI-free `CLI_ACTORS` registry for exactly this), and point the workgroup
+    config at that registry.
+
 Validation imports the `actors` module to resolve that reference, so run it where the application is importable: the deployment image, not a bare CI checkout. Resolving up front turns a spawn-crash-and-respawn cascade, whose real cause is buried under the restarts, into one message naming the reference. It also lets validate warn about an actor whose queue no `[[workers]]` entry consumes; that stays a warning, because another workgroup or deployment may consume it and no single supervisor knows the whole fleet.
 
 On shutdown:

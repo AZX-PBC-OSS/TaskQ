@@ -46,7 +46,7 @@ import inspect
 import typing
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
-from typing import TYPE_CHECKING, Protocol, get_type_hints, overload
+from typing import TYPE_CHECKING, Concatenate, Protocol, get_type_hints, overload
 
 import structlog
 from pydantic import BaseModel, TypeAdapter
@@ -369,7 +369,7 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
 
 @overload
 def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTypeVarUse]  # Why: TypeVars P, R are intentional for variance-free generics; each appears in the return type of overloaded signatures.
-    fn: Callable[..., object],
+    fn: Callable[Concatenate[P, ...], Awaitable[R]] | Callable[Concatenate[P, ...], R],
     /,
 ) -> ActorRef[P, R]: ...  # pyright: ignore[reportInvalidTypeVarUse]  # Why: TypeVars P, R are intentional for variance-free generics; each appears once in the return type of this overload.
 @overload
@@ -397,7 +397,10 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
     on_cancel: OnCancel | None = None,
     on_cancel_timeout: float = 3.0,
     priority: int = 0,
-) -> Callable[[Callable[..., object]], ActorRef[P, R]]: ...  # pyright: ignore[reportInvalidTypeVarUse]  # Why: TypeVars P, R are intentional for variance-free generics; each appears once in the return type of this overload.
+) -> Callable[
+    [Callable[Concatenate[P, ...], Awaitable[R]] | Callable[Concatenate[P, ...], R]],
+    ActorRef[P, R],
+]: ...  # pyright: ignore[reportInvalidTypeVarUse]  # Why: TypeVars P, R are intentional for variance-free generics; each appears once in the return type of this overload.
 def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTypeVarUse]  # Why: TypeVars P, R are intentional for variance-free generics; each appears in the return type of overloaded signatures.
     fn: Callable[..., object] | None = None,
     /,
