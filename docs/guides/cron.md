@@ -396,7 +396,8 @@ schedules = await client.list_schedules()
 handle = await client.create_schedule("daily_report", "0 3 * * *")
 
 await handle.disable()  # set enabled=False, stamps disabled_by='operator' (a deliberate disable; a restart never reverts it)
-await handle.enable()  # set enabled=True (resets consecutive_failures, clears last_fire_error and disabled_by)
+# set enabled=True (resets consecutive_failures, clears last_fire_error and disabled_by)
+await handle.enable()
 await handle.delete()  # remove the schedule row
 ```
 
@@ -490,6 +491,17 @@ transient partial-database blip (fires fail while the strike writes commit,
 realistic during failover or saturation) reaches the auto-disable threshold in
 three ticks, and without ownership the schedule would stay disabled forever
 until a human noticed. Code re-declaring the schedule is the recovery signal.
+
+The revert cannot oscillate on its own: it runs once per worker boot per
+schedule (the registration pass is a startup step), it only matches a row that
+is `enabled = false AND disabled_by = 'auto'` (a row another worker already
+reverted, or an operator-disabled row, matches nothing), and it resets
+`consecutive_failures` to 0, so re-disabling requires three fresh failing
+fires after every revert. A worker that is crash-looping therefore bounds the
+`TaskQCronScheduleDisabled` alert (a gauge, not a counter) to at most one
+disable/revert cycle per boot per schedule, at the crash loop's own rate and
+never faster; each flap reflects the row's real state, and the crash loop
+itself is the defect to alert on, not the revert.
 
 `CronScheduleSpec(owner=...)` declares who owns the lifecycle:
 

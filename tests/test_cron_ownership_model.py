@@ -497,3 +497,101 @@ class TestCreatePathProvenance:
 
         assert operator_row.disabled_by == "operator"
         assert code_row.disabled_by is None
+
+
+class TestMarkerWriteArmsSerialize:
+    """The re-enable arm (``update_schedule(enabled=True)`` / the admin
+    enable SQL: ``enabled=true`` clears ``disabled_by``) and the cron loop's
+    batched failure UPDATE (its disable arm writes ``enabled=false,
+    disabled_by='auto'``) are NOT disjoint column sets: both write
+    ``enabled``, ``consecutive_failures``, ``last_fire_error`` and
+    ``disabled_by``. They still cannot produce a torn marker state: each arm
+    writes the ``(enabled, disabled_by)`` pair as ONE atomic row version,
+    and READ COMMITTED row locking serializes the two UPDATEs, the second
+    writer re-evaluating its WHERE (EvalPlanQual) against the first
+    writer's committed version. The pin below holds the loop's failure
+    UPDATE in flight (the wedged factory keeps the tick's transaction open)
+    while an operator's mid-blip disable AND re-enable both commit on a
+    second connection, then asserts the strike still lands, owned by
+    ``'auto'`` (recoverable at the next boot, exactly the state the
+    registration pass reverts), never ``'operator'`` (which would strand
+    the row until a human) and never torn (an enabled row carrying a
+    marker)."""
+
+    async def test_operator_reenable_mid_blip_and_the_in_flight_strike_still_lands_auto(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        import asyncio
+
+        from .test_rt_cron_harness import seed_actor_config, wedge_events
+
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        await seed_actor_config(clean_pg_conn, schema, _MISSING_ACTOR)
+        schedule_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_MISSING_ACTOR,
+            name="mid-blip-reenable",
+            cron_expr=_HOURLY,
+            next_fire_at=await server_hour_floor(clean_pg_conn),
+            consecutive_failures=2,  # the wedged fire is strike three: the disable arm fires
+            payload_factory="tests.test_rt_cron_harness.wedge_then_fail",
+        )
+
+        with wedge_events() as (entered, gate):
+
+            async def _tick() -> int:
+                async with clean_pg_conn.transaction():
+                    return await tick_cron(
+                        clean_pg_conn,
+                        settings,
+                        make_backend(settings),
+                        schema,
+                        new_uuid(),
+                    )
+
+            task = asyncio.create_task(_tick())
+            await entered.wait()
+
+            # The operator's mid-blip disable and immediate re-enable, both
+            # committing INSIDE the tick's window (the failure UPDATE has
+            # not run yet). The disable stamps 'operator' (the admin/handle
+            # shape); the re-enable clears the marker (the enable arm's
+            # shape).
+            operator = await asyncpg.connect(module_pg_schema.pg_dsn)
+            try:
+                await operator.execute(
+                    f'UPDATE "{schema}".cron_schedules '  # noqa: S608  # Why: schema is a test-fixture identifier; the id is $-bound.
+                    "SET enabled = false, disabled_by = 'operator' WHERE id = $1",
+                    schedule_id,
+                )
+                await operator.execute(
+                    f'UPDATE "{schema}".cron_schedules '  # noqa: S608  # Why: schema is a test-fixture identifier; the id is $-bound.
+                    "SET enabled = true, consecutive_failures = 0, "
+                    "last_fire_error = NULL, disabled_by = NULL WHERE id = $1",
+                    schedule_id,
+                )
+            finally:
+                await operator.close()
+            gate.set()
+            fired = await task
+
+        assert fired == 0, "the wedged fire fails, the strike write runs"
+
+        row = await schedule_row(clean_pg_conn, schema, schedule_id)
+        assert row["enabled"] is False and row["disabled_by"] == "auto", (
+            "the in-flight strike (gathered while the schedule was enabled) "
+            "re-disables the row and the marker is the loop's own 'auto': "
+            "recoverable at the next boot, not stranded as operator intent"
+        )
+        assert row["consecutive_failures"] == 3
+        assert row["last_fire_error"] is not None
+
+        # The pair invariant the two arms guarantee under concurrent commit:
+        # an enabled row never carries a marker, a disabled row always
+        # carries one (or is pre-ownership NULL).
+        assert (row["enabled"] and row["disabled_by"] is not None) is False
+        assert ((not row["enabled"]) or row["disabled_by"] is None) is True
