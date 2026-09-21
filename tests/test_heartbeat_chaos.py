@@ -682,8 +682,23 @@ async def test_single_transient_tick_failure_at_documented_sizing_keeps_the_job(
             await asyncio.sleep(0.01)
 
         shutdown.set()
-        with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=5.0)
+        # Janitorial exit, not a pin: the loop's exit rides the shim's
+        # per-acquire delays and the runner's scheduler, and under a
+        # coverage-instrumented -n 4 runner 5s was a lottery (CI: a
+        # TimeoutError on this wait_for and the worker task left pending,
+        # reding the coverage leg while the same test stayed green
+        # everywhere else). The pacing pins above are already recorded;
+        # a loop that genuinely cannot exit still reds - loudly - below.
+        try:
+            await asyncio.wait_for(task, timeout=60.0)
+        except TimeoutError:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, BaseException):
+                await task
+            raise AssertionError(
+                f"the {task.get_name()} heartbeat loop did not exit within "
+                "60s of shutdown - a hang, not a pace"
+            ) from None
 
         assert reclaimed_at is None and last_status == "running", (
             f"a job whose heartbeat_timeout was sized at the documented floor "
@@ -901,8 +916,23 @@ async def test_one_fast_transient_failure_at_documented_sizing_keeps_the_job(
             await asyncio.sleep(0.01)
 
         shutdown.set()
-        with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=5.0)
+        # Janitorial exit, not a pin: the loop's exit rides the shim's
+        # per-acquire delays and the runner's scheduler, and under a
+        # coverage-instrumented -n 4 runner 5s was a lottery (CI: a
+        # TimeoutError on this wait_for and the worker task left pending,
+        # reding the coverage leg while the same test stayed green
+        # everywhere else). The pacing pins above are already recorded;
+        # a loop that genuinely cannot exit still reds - loudly - below.
+        try:
+            await asyncio.wait_for(task, timeout=60.0)
+        except TimeoutError:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, BaseException):
+                await task
+            raise AssertionError(
+                f"the {task.get_name()} heartbeat loop did not exit within "
+                "60s of shutdown - a hang, not a pace"
+            ) from None
 
         assert reclaimed_at is None and last_status == "running", (
             f"a job whose heartbeat_timeout was sized at the documented floor "
@@ -1013,8 +1043,23 @@ async def test_sustained_acquire_timeouts_across_ticks_gets_reclaimed(
             await asyncio.sleep(0.01)
 
         shutdown.set()
-        with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=5.0)
+        # Janitorial exit, not a pin: the loop's exit rides the shim's
+        # per-acquire delays and the runner's scheduler, and under a
+        # coverage-instrumented -n 4 runner 5s was a lottery (CI: a
+        # TimeoutError on this wait_for and the worker task left pending,
+        # reding the coverage leg while the same test stayed green
+        # everywhere else). The pacing pins above are already recorded;
+        # a loop that genuinely cannot exit still reds - loudly - below.
+        try:
+            await asyncio.wait_for(task, timeout=60.0)
+        except TimeoutError:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, BaseException):
+                await task
+            raise AssertionError(
+                f"the {task.get_name()} heartbeat loop did not exit within "
+                "60s of shutdown - a hang, not a pace"
+            ) from None
 
         assert reclaimed_at is not None and last_status != "running", (
             f"a worker that could not reach the database on ANY tick - every "
