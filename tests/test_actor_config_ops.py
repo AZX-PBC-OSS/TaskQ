@@ -31,6 +31,8 @@ async def _ensure_schema(conn: asyncpg.Connection, schema: str) -> None:
             max_concurrent int,
             max_pending    int,
             queue          text NOT NULL,
+            max_attempts   smallint NOT NULL DEFAULT 3,
+            retry_kind     text NOT NULL DEFAULT 'transient',
             result_ttl     float,
             metadata       jsonb NOT NULL DEFAULT '{{}}'::jsonb,
             updated_at     timestamptz NOT NULL DEFAULT now(),

@@ -27,3 +27,14 @@ class ActorConfig:
     retry_cap: timedelta | None = None
     retry_backoff: str | None = None
     retry_jitter: float | None = None
+    # The declared retry contract. Unlike the curve above these two are
+    # code-owned on every boot, not seed-only: the upsert's ON CONFLICT
+    # arm rewrites them from the literal, because they decide how many
+    # attempts a server-side fire gets and which retry family it belongs
+    # to, and a stale first-registration value there silently gives every
+    # cron-fired job the wrong retry contract. Defaults mirror the
+    # RetryPolicy defaults so a carrier built without them (test doubles,
+    # harness seeds) still round-trips; the bootstrap always passes the
+    # ref's validated values explicitly.
+    max_attempts: int = 3
+    retry_kind: str = "transient"
