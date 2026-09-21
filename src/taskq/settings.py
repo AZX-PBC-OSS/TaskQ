@@ -17,7 +17,8 @@ import os
 import re
 from datetime import timedelta
 from pathlib import Path
-from typing import Self
+from types import UnionType
+from typing import Self, Union, get_args, get_origin
 from uuid import UUID
 
 from dotenvmodel import DotEnvConfig, Field, ValidationError, ValidatorContext
@@ -177,6 +178,23 @@ class SAMLSettings(DotEnvConfig):
 _VALID_SSO_BACKENDS = frozenset({"none", "oidc", "saml"})
 
 
+def _declared_non_optional(field_type: object) -> bool:
+    """True when *field_type* does not admit ``None`` (``T``, not ``T | None``).
+
+    The empty-env guard in ``TaskQSettings.post_load`` scopes itself to
+    non-Optional fields: an Optional field's None is a legitimate "not
+    supplied", a non-Optional field's None is the empty-value coercion
+    slipping past every constraint and validator. Handles both spellings
+    the declarations use, ``X | None`` (``types.UnionType``) and
+    ``Optional[X]`` (``typing.Union``); the metaclass resolves the
+    annotation strings to runtime types before ``_fields`` is built.
+    """
+    origin = get_origin(field_type)
+    if origin is Union or origin is UnionType:
+        return type(None) not in get_args(field_type)
+    return True
+
+
 def _sso_backend_validator(value: str, ctx: ValidatorContext) -> str:
     normalized = value.lower()
     if normalized not in _VALID_SSO_BACKENDS:
@@ -242,6 +260,35 @@ def _schema_name_validator(value: str, ctx: ValidatorContext) -> str:
         check_channels_fit(value)
     except ValueError as exc:
         raise ValueError(f"{ctx.field_name}: {exc}") from exc
+    return value
+
+
+def _finite_float(value: float, ctx: ValidatorContext) -> float:
+    """Refuse a non-finite float (``nan``/``inf``) in any duration or budget field.
+
+    Why a validator hook, not the built-in ``ge``/``gt``/``le``
+    constraints: those are comparison-built (``value < ge``), and every
+    ordered comparison against ``nan`` is ``False``, so ``nan`` slips
+    past every bound a field declares -- a heartbeat interval of ``nan``
+    loads clean and then schedules every beat on ``nan``, a
+    ``result_max_bytes`` of ``nan`` defeats the size cap the same way
+    (``len(data) > nan`` is always ``False``). The hook form also runs
+    under ``load_from_dict(..., validate=False)``, where built-in
+    constraints are skipped entirely, the same property
+    ``_log_format_validator`` documents.
+
+    Finiteness only: the sign and magnitude bounds stay where they are
+    declared (``ge``/``gt``/``le``), so each field's own constraint keeps
+    its precise message, and the documented zero/negative forms
+    (``ge=0`` grace fields, the lock budgets' "0 (or less) waits
+    indefinitely" GUC convention) stay legal.
+
+    Defined before the settings classes: the float ``Field`` declarations
+    in both ``TaskQSettings`` and ``WorkerSettings`` reference this hook
+    at class-body time.
+    """
+    if not math.isfinite(value):
+        raise ValueError(f"{ctx.field_name} must be a finite number, got {value}")
     return value
 
 
@@ -359,6 +406,7 @@ class TaskQSettings(DotEnvConfig):
         description="TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS. How often the admin UI "
         "polls PG in polling/degraded mode. Injected as poll_interval_ms "
         "into every template.",
+        validator=_finite_float,
     )
     admin_worker_liveness_seconds: int = Field(
         default=30,
@@ -421,6 +469,7 @@ class TaskQSettings(DotEnvConfig):
         "the request with 503 (Retry-After: 2) after this long instead of "
         "hanging it - and every other request behind it - until the client "
         "gives up. The query itself is bounded by the pool's command_timeout.",
+        validator=_finite_float,
     )
     admin_actions_enabled: bool = Field(
         default=False,
@@ -621,6 +670,7 @@ class TaskQSettings(DotEnvConfig):
         "server-side (the lock_timeout GUC convention shared with the "
         "sibling budgets), a pool TaskQ builds still applies its per-query "
         "bound, so set a large finite value there instead.",
+        validator=_finite_float,
     )
     unique_for_lock_timeout_ms: float = Field(
         default=5000.0,
@@ -641,6 +691,7 @@ class TaskQSettings(DotEnvConfig):
         "(the lock_timeout GUC convention shared with the sibling budgets) "
         ", a pool TaskQ builds still applies its per-query bound, so set a "
         "large finite value there instead.",
+        validator=_finite_float,
     )
     idempotency_lock_timeout_ms: float = Field(
         default=5000.0,
@@ -661,6 +712,7 @@ class TaskQSettings(DotEnvConfig):
         "(the lock_timeout GUC convention shared with the sibling budgets) "
         ", a pool TaskQ builds still applies its per-query bound, so set a "
         "large finite value there instead.",
+        validator=_finite_float,
     )
 
     # -- Optional TimescaleDB hypertables ---------------------------------
@@ -1017,6 +1069,7 @@ class WorkerSettings(TaskQSettings):
         "truncated by the pool's own client-side timer. The leader/notify "
         "dedicated connections keep the configured value: no admission "
         "acquire runs on them.",
+        validator=_finite_float,
     )
     dispatch_oversample: int = Field(
         default=2,
@@ -1083,6 +1136,7 @@ class WorkerSettings(TaskQSettings):
         "less waits indefinitely server-side (the lock_timeout GUC convention "
         "shared with the sibling budgets), a TaskQ-built pool still applies "
         "its per-query bound, so set a large finite value there instead.",
+        validator=_finite_float,
     )
     sliding_window_lock_timeout_ms: float = Field(
         default=5000.0,
@@ -1105,6 +1159,7 @@ class WorkerSettings(TaskQSettings):
         "(the lock_timeout GUC convention shared with the sibling budgets), "
         "a TaskQ-built pool still applies its per-query bound, so set a large "
         "finite value there instead.",
+        validator=_finite_float,
     )
     heartbeat_pool_size: int = Field(
         default=4,
@@ -1130,6 +1185,7 @@ class WorkerSettings(TaskQSettings):
         "max_heartbeat_failures consecutive timeouts self-terminate the "
         "worker. Must be > 0: asyncpg reads 0 as 'no timeout', which "
         "turns a stalled beat into a hang.",
+        validator=_finite_float,
     )
     # worker_pool max_size is derived: int(max_concurrency * 1.5)
 
@@ -1150,6 +1206,7 @@ class WorkerSettings(TaskQSettings):
         default=10.0,
         ge=0.5,
         description="TASKQ_HEARTBEAT_INTERVAL (seconds). Period between heartbeat ticks.",
+        validator=_finite_float,
     )
     lock_lease: float = Field(
         default=60.0,
@@ -1162,6 +1219,7 @@ class WorkerSettings(TaskQSettings):
         "coherent failed-beat cascade to the heartbeat's isolate decision "
         "- the last good beat's tail plus the failed cycles "
         "(at the defaults, 10 + 4 * (10 + 2) = 58).",
+        validator=_finite_float,
     )
     leader_lease: float = Field(
         default=40.0,
@@ -1170,6 +1228,7 @@ class WorkerSettings(TaskQSettings):
         "leader's lease is trusted without a renewal; another pod takes "
         "leadership once it lapses. Renewed every heartbeat_interval, and "
         "never held to less than 4 of them.",
+        validator=_finite_float,
     )
     max_heartbeat_failures: int = Field(
         default=3,
@@ -1192,6 +1251,7 @@ class WorkerSettings(TaskQSettings):
         "sweep_expired_results, cleanup_stale_workers, and idle keyed-ref "
         "eviction. Lower values reduce recovery latency for crashed workers "
         "at the cost of more frequent PG queries.",
+        validator=_finite_float,
     )
     event_writer_batch_size: int = Field(
         default=DEFAULT_EVENT_WRITER_BATCH_SIZE,
@@ -1214,6 +1274,7 @@ class WorkerSettings(TaskQSettings):
         "reclaim_event_visibility_delay margin: a batch that cannot finish "
         "inside the watermark margin is aborted by the server rather than "
         "silently corrupting reclaim-event delivery.",
+        validator=_finite_float,
     )
     event_writer_reduced_batch_divisor: int = Field(
         default=4,
@@ -1239,6 +1300,7 @@ class WorkerSettings(TaskQSettings):
         ge=1.0,
         description="TASKQ_SWEEP_BREAKER_WINDOW_SECS (seconds). Rolling "
         "window the sweep breaker counts consecutive failures within.",
+        validator=_finite_float,
     )
     sweep_drain_batches: int = Field(
         default=8,
@@ -1308,12 +1370,14 @@ class WorkerSettings(TaskQSettings):
         ge=1.0,
         description="TASKQ_QUEUE_DEPTH_INTERVAL (seconds). Period between "
         "queue-depth metrics sampling iterations.",
+        validator=_finite_float,
     )
     reservation_slots_interval: float = Field(
         default=15.0,
         ge=1.0,
         description="TASKQ_RESERVATION_SLOTS_INTERVAL (seconds). Period "
         "between reservation-slot metrics sampling iterations.",
+        validator=_finite_float,
     )
     stranded_jobs_interval: float = Field(
         default=60.0,
@@ -1321,6 +1385,7 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_STRANDED_JOBS_INTERVAL (seconds). Period between "
         "stranded-jobs (pending jobs whose actor has no actor_config) "
         "warning checks.",
+        validator=_finite_float,
     )
 
     # ── Cancellation and cleanup grace periods ───────────
@@ -1343,16 +1408,19 @@ class WorkerSettings(TaskQSettings):
         "startup. Size the pod/container grace "
         "(terminationGracePeriodSeconds / stop_grace_period) from the "
         "same worst case, not from this setting alone.",
+        validator=_finite_float,
     )
     cancellation_grace_period: float = Field(
         default=30.0,
         ge=0.0,
         description="TASKQ_CANCELLATION_GRACE_PERIOD (seconds). Cooperative cancel phase duration.",
+        validator=_finite_float,
     )
     cleanup_grace_period: float = Field(
         default=10.0,
         ge=0.0,
         description="TASKQ_CLEANUP_GRACE_PERIOD (seconds). Force-cancel cleanup grace.",
+        validator=_finite_float,
     )
     reclaim_event_visibility_delay: float = Field(
         default=RECLAIM_EVENT_VISIBILITY_DELAY.total_seconds(),
@@ -1366,6 +1434,7 @@ class WorkerSettings(TaskQSettings):
         "against very large batches, lower it if latency matters more and writes are "
         "known to be fast. A writer that exceeds the margin can cause a silently "
         "missed event - this is a real, not merely theoretical, risk under misconfiguration.",
+        validator=_finite_float,
     )
 
     # -- Retry backoff ceiling -------------------------------------------
@@ -1472,6 +1541,7 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_HEALTH_PG_PING_TIMEOUT. Seconds to wait for "
         "dispatcher_pool.acquire() in the readiness PG ping. "
         "Default 200ms .",
+        validator=_finite_float,
     )
     health_tasks_enabled: bool = Field(
         default=False,
@@ -1525,6 +1595,7 @@ class WorkerSettings(TaskQSettings):
         "Bounds a drip-feed client that would otherwise hold a connection open forever by "
         "staying just inside a per-line timeout. Keep it at or below the shortest probe "
         "timeoutSeconds you configure.",
+        validator=_finite_float,
     )
     health_max_header_bytes: int = Field(
         default=16 * 1024,
@@ -1542,6 +1613,7 @@ class WorkerSettings(TaskQSettings):
         "readiness failure. Defaults to 5s, matching the Azure Container Apps default "
         "readiness probe timeoutSeconds, so a wedged check fails the probe rather than "
         "outliving it.",
+        validator=_finite_float,
     )
 
     # ── In-worker watchdog (hang/deadlock detection) ────────────
@@ -1561,6 +1633,7 @@ class WorkerSettings(TaskQSettings):
         "Deliberately far beyond any legitimate pause (GC, a slow tick) "
         "because the trip is terminal. Tier 2 of the lag detector; see "
         "watchdog_loop_lag_warn_budget for the non-terminal tier 1.",
+        validator=_finite_float,
     )
     watchdog_loop_lag_warn_budget: float = Field(
         default=5.0,
@@ -1569,6 +1642,7 @@ class WorkerSettings(TaskQSettings):
         "tier-1 event-loop lag threshold: faulthandler thread dump + metric "
         "+ deferred asyncio task-stack dump. Never exits; the terminal tier "
         "is watchdog_loop_lag_budget.",
+        validator=_finite_float,
     )
     watchdog_loop_lag_startup_grace: float = Field(
         default=30.0,
@@ -1577,6 +1651,7 @@ class WorkerSettings(TaskQSettings):
         "before the lag watchdog arms, covering import-heavy startup, DI "
         "bootstrap, and first dispatch. Anchored to thread start; the lag "
         "detector also arms early once the first loop liveness tick lands.",
+        validator=_finite_float,
     )
     watchdog_tick_grace_factor: float = Field(
         default=5.0,
@@ -1585,6 +1660,7 @@ class WorkerSettings(TaskQSettings):
         "loop's iteration period before its liveness tick is declared "
         "stale (floor 10s). Generous on purpose: a terminal detector must "
         "never fire on a merely loaded host.",
+        validator=_finite_float,
     )
     watchdog_dump_interval: float = Field(
         default=5.0,
@@ -1592,6 +1668,7 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_WATCHDOG_DUMP_INTERVAL (seconds). Interval "
         "between straggler logs (names + await sites of still-alive "
         "siblings) while a shutdown is in progress.",
+        validator=_finite_float,
     )
     watchdog_dump_after_fraction: float = Field(
         default=0.5,
@@ -1604,6 +1681,7 @@ class WorkerSettings(TaskQSettings):
         "countdown-start record is always logged so the window is never "
         "blind. Must be < 1: at 1.0 the deadline trip would always fire "
         "first, silently disabling the dumps.",
+        validator=_finite_float,
     )
     watchdog_stale_floor: float = Field(
         default=10.0,
@@ -1612,12 +1690,14 @@ class WorkerSettings(TaskQSettings):
         "staleness budget for any loop (period x grace_factor, floored at "
         "this value). Guards tiny intervals against false trips under "
         "host starvation, a terminal detector must never fire on load.",
+        validator=_finite_float,
     )
     watchdog_check_interval: float = Field(
         default=1.0,
         gt=0.0,
         description="TASKQ_WATCHDOG_CHECK_INTERVAL (seconds). Poll cadence "
         "for the stale-tick sweep and the loop-lag watchdog thread.",
+        validator=_finite_float,
     )
 
     # -- Polling and NOTIFY listener ------------------------
@@ -1626,6 +1706,7 @@ class WorkerSettings(TaskQSettings):
         gt=0,
         description="TASKQ_POLL_INTERVAL (seconds). Producer loop fallback "
         "polling cadence when the NOTIFY listener is unavailable.",
+        validator=_finite_float,
     )
     notify_health_check_interval: float = Field(
         default=5.0,
@@ -1633,6 +1714,7 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_NOTIFY_HEALTH_CHECK_INTERVAL (seconds). How often "
         "_health_check_loop issues SELECT 1 on notify_conn. "
         "Detection latency before reconnect is at most this interval.",
+        validator=_finite_float,
     )
     notify_reconnect_backoff_initial: float = Field(
         default=1.0,
@@ -1641,6 +1723,7 @@ class WorkerSettings(TaskQSettings):
         "Initial exponential backoff delay before the first reconnect "
         "retry. Cap is 30 s (factor 2 per attempt). "
         "Backoff sequence: 1, 2, 4, 8, 16, 30.",
+        validator=_finite_float,
     )
     notify_listener_setup_timeout: float = Field(
         default=10.0,
@@ -1666,6 +1749,7 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_NOTIFY_POLL_INTERVAL (seconds). Fallback poll "
         "cadence when NOTIFY is enabled (rarely reached - NOTIFY handles "
         "the common case). Use poll_interval when NOTIFY is disabled.",
+        validator=_finite_float,
     )
 
     # -- Credential hot-reload --------------------------------------------
@@ -1688,6 +1772,7 @@ class WorkerSettings(TaskQSettings):
         "DI factory - is marked failed for that resource - or "
         "logged as a reconnect attempt and retried - instead of wedging "
         "the reload coordinator, worker boot, or the reconnect loop.",
+        validator=_finite_float,
     )
 
     # -- Queue selection --------------------------------------------------
@@ -1724,6 +1809,7 @@ class WorkerSettings(TaskQSettings):
         "an SQLAlchemy-based service. Applied to dispatcher_pool, "
         "heartbeat_pool, worker_pool, and the conditional per-slot "
         "transaction pool.",
+        validator=_finite_float,
     )
 
     # -- Observability --------------------------------------------
@@ -1941,6 +2027,7 @@ class WorkerSettings(TaskQSettings):
         "to Postgres. Redis publishes are not throttled by this setting - "
         "each ctx.progress() call publishes immediately (fire-and-forget). "
         "Lower values increase PG write frequency; minimum 0.1 s.",
+        validator=_finite_float,
     )
     progress_data_max_bytes: int = Field(
         default=16384,
@@ -2036,6 +2123,7 @@ class WorkerSettings(TaskQSettings):
             "waits after queues appear empty before declaring drained. "
             "Only used when --until-idle is active."
         ),
+        validator=_finite_float,
     )
     idle_poll_interval: float = Field(
         default=1.0,
@@ -2044,6 +2132,7 @@ class WorkerSettings(TaskQSettings):
             "TASKQ_IDLE_POLL_INTERVAL (seconds). How often the drain "
             "monitor checks queue depth. Only used when --until-idle is active."
         ),
+        validator=_finite_float,
     )
     idle_max_runtime: float | None = Field(
         default=None,
@@ -2129,6 +2218,39 @@ class WorkerSettings(TaskQSettings):
         most one invariant can fire (e.g. a single field constraint).
         """
         errors: list[ValidationError] = []
+
+        # Empty-env guard: a present-but-empty value for a non-Optional
+        # non-str field coerces to None and SKIPS every constraint and
+        # validator (dotenvmodel validates coerced values; None is its
+        # "no value" sentinel), so the None would flow into this method's
+        # cross-field arithmetic as a raw TypeError (NoneType + float), or
+        # past it entirely for fields post_load never touches
+        # (result_max_bytes would reach _encode_result with its documented
+        # 1 KiB-1 MiB range defeated). Name each None-valued non-Optional
+        # field here, where the operator's typo is still the subject, and
+        # return before the arithmetic below can turn the same None into
+        # an untyped crash.
+        for field_name, (field_type, _finfo) in type(self)._fields.items():  # pyright: ignore[reportPrivateUsage]  # Why: the metaclass's field registry is the one authority on what the config declares; a hand-maintained list of non-Optional fields would drift behind every new setting, the same drift the registry exists to prevent.
+            if not _declared_non_optional(field_type):
+                continue
+            if getattr(self, field_name) is not None:
+                continue
+            env_var = (
+                _finfo.alias if _finfo.alias else f"{type(self).env_prefix}{field_name.upper()}"
+            )
+            errors.append(
+                ValidationError(
+                    field_name=field_name,
+                    value=None,
+                    error_msg=(
+                        f"{env_var} was set to an empty value, which parses as "
+                        f"unset; {field_name} is not optional, so no value was "
+                        "loaded. Provide a value or unset the variable."
+                    ),
+                )
+            )
+        if errors:
+            return errors
 
         # DSN fallback: if split DSNs were not provided, resolve to pg_dsn.
         # After this, pg_dsn_direct and pg_dsn_pooled are always non-None.

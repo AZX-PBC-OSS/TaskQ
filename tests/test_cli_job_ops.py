@@ -427,6 +427,32 @@ def test_cancel_where_rejects_an_unparseable_duration(
     assert fake.cancel_where_calls == []
 
 
+def test_cancel_where_rejects_a_duration_that_outruns_timedelta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A regex-valid duration past timedelta's range is the same clean
+    usage error, not a raw OverflowError traceback.
+
+    ``999999999999999w`` matches the ``--older-than`` grammar and the
+    integer multiplication is exact, so the rejection has to happen at
+    the constructor: the OverflowError it raises must not escape the CLI
+    as an untyped crash -- the boundary's contract is the one-line
+    ``--older-than`` usage error and exit 1, whichever way the text fails.
+    """
+    fake = _FakeTaskQ()
+    _patch_ops_client(monkeypatch, fake)
+
+    result = runner.invoke(
+        app,
+        ["job", "cancel-where", "--queue", "default", "--older-than", "999999999999999w"],
+    )
+
+    assert result.exit_code == 1
+    assert "--older-than" in result.stderr
+    assert "999999999999999w" in result.stderr
+    assert fake.cancel_where_calls == []
+
+
 # ── job show --traceback / --payload ───────────────────────────────────
 
 
