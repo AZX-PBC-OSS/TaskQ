@@ -1218,3 +1218,54 @@ async def test_password_callable_failure_never_ships_a_response_body_token(
     own_output = capsys.readouterr().err
     assert token not in own_output
     assert "hunter2" not in own_output
+
+
+async def test_password_callable_failure_never_ships_an_opaque_body_token(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The same #317 route with an OPAQUE (non-JWT) access token in the body:
+    the JWT-shape mask cannot see it, so the name-based OAuth token mask has
+    to. Same channel discipline as the JWT variant above: the real
+    processor chain and root handlers, the token must reach neither a
+    vendor handler nor TaskQ's own stderr."""
+    from taskq.obs import setup_logging
+
+    token = "smQ7_wJ8mP2xLk9ZhR4tNvBc3dF6gH1jY0pQ5sV2eT8o"
+    assert "." not in token  # Why: opaque means the JWT-shape pass is blind to it.
+    dsn = "postgresql://taskq:hunter2@db.internal:5432/taskq"
+
+    class _BrokenOpaqueProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_pg_credential(self) -> PgCredential:
+            self.calls += 1
+            if self.calls == 1:
+                return PgCredential(password="ok")
+            raise _HttpResponseShapedError(
+                f'{{"error": "invalid_client", "access_token": "{token}", "token_type": "mac"}}'
+            )
+
+    setup_logging(level="INFO", log_format="json")
+    foreign = _ForeignHandler()
+    logging_module.root.handlers.insert(0, foreign)
+    try:
+        factory = make_pg_pool_factory(dsn, _BrokenOpaqueProvider())
+        with patch("asyncpg.create_pool", new=AsyncMock(return_value=MagicMock())) as mock_create:
+            await factory()
+        password_arg = mock_create.call_args.kwargs["password"]
+
+        with pytest.raises(_HttpResponseShapedError):
+            await _pw(password_arg)
+    finally:
+        logging_module.root.removeHandler(foreign)
+
+    rendered = "\n".join(foreign.seen)
+    assert token not in rendered, f"opaque token reached a vendor handler:\n{rendered}"
+    assert "pg-credential-refresh-failed" in rendered
+    assert "ManagedIdentityCredential" in rendered
+    assert "hunter2" not in rendered
+
+    own_output = capsys.readouterr().err
+    assert token not in own_output
+    assert "hunter2" not in own_output

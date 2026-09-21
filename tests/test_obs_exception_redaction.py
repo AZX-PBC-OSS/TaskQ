@@ -1924,3 +1924,289 @@ def test_benign_dotted_and_base64_like_strings_survive_scrubbing(benign: str) ->
     from taskq.obs._redact_exc import _scrub_text
 
     assert _scrub_text(benign) == benign
+
+
+# ── red-team round two: what the #317 masks still missed ─────────────────
+#
+# Every test below was run against the d1cebcf1 shape of the fix and FAILED
+# there before its source change landed here (red/green). The holes:
+#
+# * a bearer header rendered with QUOTES around it -- the JSON and Python
+#   repr shapes (``"Authorization": "Bearer ..."``, ``{'Authorization':
+#   'Bearer ...'}``) -- sat between the name and the colon and the bearer
+#   pattern only allowed spaces and tabs there. A JWT under such a header
+#   escaped via the JWT pass, but an OPAQUE token escaped entirely.
+# * an opaque access token under its own name in a response body (the
+#   module docstring promised raw body tokens were covered; only the
+#   JWT-shaped ones were). OAuth token names are credential carriers by
+#   RFC 6749 regardless of the token's shape, so the value is masked by
+#   name now.
+# * a CloudFront-style ``Signature=`` query parameter: also a presigned
+#   AWS credential, and its value is base64url, which the hex-only value
+#   class could not even partially claim.
+# * a percent-encoded ``sig=`` value: the value class stopped at ``%`` and
+#   the tail rode through after the mask.
+
+_OPAQUE = "smQ7_wJ8mP2xLk9ZhR4tNvBc3dF6gH1jY0pQ5sV2eT8o"
+_OPAQUE_2 = "Zx9QpW3mK7rT2vY8bN5cD1fG4hJ6lS0aE3uIoPqRtUwMzX2"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        f'{{"headers": {{"Authorization": "Bearer {_OPAQUE}"}}}}',
+        f"KeyError: {{'Authorization': 'Bearer {_OPAQUE}'}}",
+        f'ValueError(\'body {{\\"Authorization\\": \\"Bearer {_OPAQUE}\\"}} rejected\')',
+    ],
+    ids=["json-double", "repr-single", "escaped-json-in-repr"],
+)
+def test_quoted_bearer_header_forms_are_masked(raw: str) -> None:
+    """A quote between the header name and its colon (JSON payload, Python
+    repr, a repr()d JSON string) must not blind the bearer mask: an opaque
+    token under such a header is invisible to the JWT pass, so the bearer
+    pass itself has to claim it. The masked form keeps the ``Bearer`` text
+    and the surrounding quotes readable."""
+    from taskq.obs._redact_exc import _scrub_text
+
+    out = _scrub_text(raw)
+    assert _OPAQUE not in out, f"opaque bearer token survived: {out!r}"
+    assert "Bearer ***" in out
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        f'{{"error": "oops", "access_token": "{_OPAQUE}", "token_type": "mac"}}',
+        f"KeyError: {{'access_token': '{_OPAQUE}'}}",
+        f'{{"accessToken": "{_OPAQUE}"}}',
+        f'{{"refresh_token": "{_OPAQUE}"}}',
+        f'{{"id_token": "{_OPAQUE}"}}',
+        f"GET /oauth2/token?access_token={_OPAQUE}&expires_in=3600 failed",
+        f"grant_type=refresh_token&refresh_token={_OPAQUE}",
+        f"token store dump: access_token: {_OPAQUE}",
+        f'ValueError(\'body {{\\"access_token\\": \\"{_OPAQUE}\\"}} rejected\')',
+    ],
+    ids=[
+        "json-body",
+        "repr-single-quotes",
+        "camel-case-json",
+        "refresh-token",
+        "id-token",
+        "query-string",
+        "form-body",
+        "bare-colon",
+        "escaped-json-in-repr",
+    ],
+)
+def test_oauth_token_values_are_masked_by_name(raw: str) -> None:
+    """An opaque (non-JWT) access token under its own name in a response
+    body, a query string, a form body or a repr'd dict is credential
+    material (RFC 6749) exactly like a JWT: the JWT pass cannot see it, so
+    the token NAMES must be masked themselves. camelCase spellings and the
+    repr()d ``\\\"`` form are the same credential."""
+    from taskq.obs._redact_exc import _scrub_text
+
+    out = _scrub_text(raw)
+    assert _OPAQUE not in out, f"opaque token value survived: {out!r}"
+
+
+def test_oauth_mask_keeps_neighbouring_parameters_readable() -> None:
+    """The token-value class must stop at the parameter delimiters: masking
+    ``access_token=`` may not eat ``expires_in=3600`` (that is the
+    over-redaction the password-family list exists to avoid)."""
+    from taskq.obs._redact_exc import _scrub_text
+
+    out = _scrub_text(f"GET /token?access_token={_OPAQUE}&expires_in=3600&scope=db")
+    assert _OPAQUE not in out
+    assert "expires_in=3600" in out
+    assert "scope=db" in out
+
+
+def test_two_secrets_in_one_message_are_both_masked() -> None:
+    """Pass ordering and per-match greediness must not let the first secret
+    consume the delimiters the second one needs: an OAuth body value, a
+    bearer header and a bare JWT in one message all go to ``***``."""
+    from taskq.obs._redact_exc import _scrub_text
+
+    raw = (
+        f'body {{"access_token": "{_OPAQUE}"}} then Authorization: Bearer {_OPAQUE_2}'
+        f" then bare {_ACCESS_TOKEN}"
+    )
+    out = _scrub_text(raw)
+    assert _OPAQUE not in out
+    assert _OPAQUE_2 not in out
+    assert _ACCESS_TOKEN not in out
+    assert out == 'body {"access_token": ***} then Authorization: Bearer *** then bare ***'
+
+
+def test_nested_exception_repr_carries_no_token() -> None:
+    """``str(outer)`` nesting ``repr(inner)`` (a chained failure rendered by
+    hand, or ``__context__`` flattened by ``traceback``) puts quotes and
+    backslashes around the inner token: the masks must still claim it."""
+    from taskq.obs._redact_exc import _scrub_text
+
+    raw = (
+        f'Outer(\'inner: ContextFailed("Authorization: Bearer {_OPAQUE}")'
+        f" body=\\'{_ACCESS_TOKEN}\\'')"
+    )
+    out = _scrub_text(raw)
+    assert _OPAQUE not in out
+    assert _ACCESS_TOKEN not in out
+
+
+def test_cloudfront_style_signature_query_param_is_masked() -> None:
+    """``Signature=`` is the presigned-CloudFront spelling of the same
+    credential, and its value is base64url, not hex -- the hex-only value
+    class matched neither the name nor (all of) the value."""
+    from taskq.obs._redact_exc import _scrub_text
+
+    raw = (
+        "GET /videos/movie.mp4?Expires=1758500000"
+        "&Signature=a3f9K2mQ7_pW-1xLk9ZhR4tNvBc3dF6gH1jY0pQ5sV2eT8oZx9QpW3mK7"
+        "&Key-Pair-Id=K123 failed"
+    )
+    out = _scrub_text(raw)
+    assert "a3f9K2mQ7" not in out
+    assert "Signature=***" in out
+    assert "Key-Pair-Id=K123" in out  # non-credential parameter stays
+
+
+def test_percent_encoded_sig_value_is_masked_whole() -> None:
+    """A percent-encoded ``sig=`` value must not leave its ``%XX`` tail
+    riding after the mask (fail-closed: a delimiter miss deletes more,
+    never less)."""
+    from taskq.obs._redact_exc import _scrub_text
+
+    out = _scrub_text("download failed: ?sig=dead%2Fbeef%20cafe")
+    assert "dead" not in out
+    assert "%2F" not in out
+    assert "sig=***" in out
+
+
+@pytest.mark.parametrize(
+    "benign",
+    [
+        # A base64 IMAGE payload: standard base64 carries / + = and no dots,
+        # so no three-segment JWT shape and nothing the masks may claim.
+        "img data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0"
+        "+QAAAAlwSFlzAAALEwAACxMBAJqcGAAAA/?",
+        # A Kubernetes-style FQDN: five labels, several short -- no
+        # three-16+-segment run.
+        "dial worker-7f9d.taskq-workers.production.svc.cluster.local:9010 refused",
+        # A W3C traceparent-style dotted trace id: long segments, but two
+        # segments, not three.
+        "trace 4bf92f3577b34da6a3ce929d084d41b8.span-0099-live-2026 ok",
+    ],
+    ids=["base64-image", "k8s-fqdn", "dotted-trace-id"],
+)
+def test_realistic_log_lines_survive_byte_identical(benign: str) -> None:
+    """Realistic long-token-ish log text (image data, k8s DNS names, trace
+    ids) must come through the scrub byte-identical: the JWT mask's floor is
+    what keeps it conservative and these are the shapes it must not eat."""
+    from taskq.obs._redact_exc import _scrub_text
+
+    assert _scrub_text(benign) == benign
+
+
+def test_three_long_label_hostname_is_masked_and_that_is_documented() -> None:
+    """The accepted cost of the 16+ floor: a hostname whose THREE labels are
+    all 16+ base64url chars is JWT-shaped to the mask and goes to ``***``.
+    The _JWT_RE docstring states this over-match; this pin exists so the
+    behaviour is a recorded decision, not an accident someone re-discovers
+    in production."""
+    from taskq.obs._redact_exc import _scrub_text
+
+    host = "performance-metrics.analytics-dashboard.corporate-domain"
+    assert _scrub_text(f"connection refused: {host}") == "connection refused: ***"
+
+
+def test_clean_error_line_runs_no_regex(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every regex pass in :func:`_scrub_text` sits behind a substring
+    prefilter stating a NECESSARY condition for the pattern to match. This
+    pin makes that claim executable in the strict direction: on error text
+    that carries none of the triggers, NO compiled pattern in the module may
+    run ``sub`` at all -- a dropped or typo'd prefilter (the cheap path
+    silently turning into a six-regex scan on every record) turns this red,
+    even though the masking output would be byte-identical.
+
+    The pattern list is read off the module's attributes, so a pass added
+    tomorrow is guarded without editing this test; the module convention
+    that scrub regexes are module-level constants is pinned by the
+    no-nested-quantifier guard's attribute walk.
+    """
+    import taskq.obs._redact_exc as redact_mod
+
+    class _ExplodingPattern:
+        def sub(self, *_args: object, **_kw: object) -> str:
+            raise AssertionError("a scrub regex ran .sub() on a clean line")
+
+    pattern_names = [
+        name for name, value in vars(redact_mod).items() if isinstance(value, re.Pattern)
+    ]
+    assert pattern_names, "no compiled patterns found: the pin guards an empty set"
+    for name in pattern_names:
+        monkeypatch.setattr(redact_mod, name, _ExplodingPattern())
+
+    clean_lines = [
+        "connection refused after 3 attempts",
+        "queue drained in 42ms",
+        "heartbeat missed on shard 7",
+        "worker 8f3a2b1c (pid 4417) stopped",
+    ]
+    for line in clean_lines:
+        assert redact_mod._scrub_text(line) == line
+
+
+def test_jwt_scan_stays_linear_on_long_word_runs() -> None:
+    """``_JWT_RE`` is a ``{16,}`` repeat: on a long word-run whose segments
+    all NEAR-MISS (a 4000-char base64 blob plus two dots, a run followed by
+    a one-under-the-floor segment), every start position backtracks through
+    the run and a quadratic engine would spend seconds. These are the
+    shapes a poison message reaches the scrub in (an actor formatting a
+    large object, a server echoing a token-like blob), so the scan must be
+    linear in the text. Budget is generous -- the 4000-char shapes measure
+    ~0.2 ms -- so this pin catches blowups, not noise."""
+    import time
+
+    from taskq.obs._redact_exc import _scrub_text
+
+    cases = [
+        ("A" * 4_000 + ".a.b"),  # long run, two dots behind it
+        ("A" * 4_000 + "." + "B" * 15 + ".x"),  # every start a near-miss
+        (".a.b" + "A" * 4_000),  # dots before the run
+        ("A." * 4_000),  # many short dotted runs
+    ]
+    for text in cases:
+        start = time.perf_counter()
+        _scrub_text(text)
+        elapsed = time.perf_counter() - start
+        assert elapsed < 0.05, (
+            f"scrub of a {len(text)}-char word-run took {elapsed * 1000:.1f} ms -- "
+            "the JWT scan's backtracking is no longer linear"
+        )
+
+
+def test_scrubbing_a_realistic_traceback_stays_microsecond_scale() -> None:
+    """The common large field: a rendered 27-frame traceback. Its ``.py``
+    file paths supply the dots, so (unlike trigger-free text) the JWT scan
+    DOES run on it -- that is stated in the ``_scrub_text`` docstring and
+    measured at ~15 us. Pinned under a generous bound so a future pass or
+    pattern change that makes the per-traceback cost super-linear turns
+    red here instead of in an error-storm incident."""
+    import time
+
+    from taskq.obs._redact_exc import _scrub_text
+
+    text = (
+        "Traceback (most recent call last):\n"
+        + '  File "taskq/worker.py", line 1, in run\n' * 27
+        + "RuntimeError: deadline exceeded"
+    )
+    assert text.count(".") >= 2  # Why: non-vacuous, the JWT prefilter really fires.
+    start = time.perf_counter()
+    _scrub_text(text)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 0.001, (
+        f"scrubbing a 27-frame traceback took {elapsed * 1000:.1f} ms -- "
+        "the per-traceback scan cost is no longer microsecond-scale"
+    )
