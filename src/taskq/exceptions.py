@@ -1105,7 +1105,15 @@ class BatchIdExistsError(TaskQError):
 
     Raised when :meth:`~taskq.client.JobsClient.enqueue_batch` or
     :meth:`~taskq.client.JobsClient.enqueue_batch_streaming` is called with
-    an explicit ``batch_id`` that collides with an existing batch row.
+    an explicit ``batch_id`` that collides with an existing batch row, and
+    when a member append (the chunked arms, the sub-job enqueuer's
+    fallback) targets a batch row that already reached a terminal status:
+    a terminal batch must not gain a member, every counter write guards
+    ``status = 'active'`` so its failure policy would be dead and the
+    stale-batch sweep (active rows only) could never reconcile. An ACTIVE
+    row keeps accepting appends (resumption). Appending is a backend-level
+    rule, so both backends refuse it the same way.
+
     The original ``asyncpg.UniqueViolationError`` (PG) is chained via
     ``__cause__`` when available.
     """
