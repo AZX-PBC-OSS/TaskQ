@@ -713,9 +713,16 @@ async def test_concurrent_force_deregister_one_succeeds_one_raises(
         assert len(successes) == 1
         assert len(not_found) == 1
 
-        # The winner should have cancelled exactly 1 job and disabled 1 schedule
-        # - not double-cancelled by both transactions.
-        assert successes[0].jobs_cancelled == 1
+        # Exactly one cancel lands across the two calls, but WHICH call's
+        # drain commits it is a race: the force drain commits each batch
+        # independently (documented partial progress), so the loser's
+        # committed batch can cancel the job before the winner's drain
+        # runs - the winner then reports jobs_cancelled == 0 with
+        # terminal_jobs_remaining == 1, and its final transaction (the
+        # only one that could double-cancel) rolls back on the
+        # ActorNotFoundError. The deterministic guard is the final DB
+        # state below: the job ends cancelled exactly once.
+        assert successes[0].jobs_cancelled in (0, 1)
         assert successes[0].schedules_disabled == 1
 
         # Verify final DB state - job cancelled, schedule disabled, actor_config gone.

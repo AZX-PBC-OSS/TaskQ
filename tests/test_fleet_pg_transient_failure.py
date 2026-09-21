@@ -42,7 +42,7 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_base62, new_uuid
-from taskq.backend._protocol import EnqueueArgs, JobFilter, JobId
+from taskq.backend._protocol import BulkCancelResult, EnqueueArgs, JobFilter, JobId
 from taskq.context import JobContext
 from taskq.testing.assertions import wait_for_condition
 from tests._fleet import Fleet, FleetPayload, fleet_actor_config, open_fleet
@@ -415,6 +415,29 @@ async def test_bulk_cancel_recovers_typed_after_the_database_drops_its_connectio
     cancel is the first call to reach the pool after an interruption,
     this pins that the recovery the enqueue path has reaches this caller
     too.
+
+    The interruption reaches a pooled connection through TWO flavours, and
+    the pin treats them differently because the database does:
+
+    * the dead-on-acquire race: the connection's protocol is parked on the
+      server's FATAL with no in-flight query, its first statement fails
+      LOCALLY with ``asyncpg.InternalClientError``, and the wrapper's one
+      clean retry absorbs it before the caller ever sees it. If that flavour
+      ever reaches the caller here, the recovery has not reached this path,
+      and the assertion below fails the test naming it.
+    * a mid-operation kill: the drain's batch statement itself was in flight
+      when its backend died, and asyncpg reports that with the TYPED
+      ``ConnectionDoesNotExistError`` (a ``PostgresConnectionError``, inside
+      asyncpg's own hierarchy). That error arrives after the statement
+      reached the server, so whether the batch committed is unknowable from
+      the client - the ambiguity the enqueue racing pin documents, which the
+      retry guard refuses to re-run on the enqueue paths for exactly that
+      reason. The bulk-cancel drain is the caller whose design answers it
+      (EPQ-idempotent batches, "a re-run continues where it stopped"), so
+      the recovery the contract names here is the caller's own typed retry:
+      the call is re-issued until it returns, and the test then reads the
+      row over a fresh connection to pin that the cancel CONVERGED rather
+      than merely stayed quiet.
     """
     schema = f"fleet_pgfail_cancel_{new_base62()}".lower()
     dsn = _interrupt_scoped_dsn(pg_dsn, schema)
@@ -435,21 +458,66 @@ async def test_bulk_cancel_recovers_typed_after_the_database_drops_its_connectio
             "pod's connections; no sessions were terminated"
         )
 
+        cancel_results: list[BulkCancelResult] = []
+
+        async def cancel_recovers_typed() -> bool:
+            try:
+                cancel_results.append(
+                    await pod.backend.cancel_where(
+                        JobFilter(unfinished=True), reason="fleet interruption drill"
+                    )
+                )
+            except asyncpg.InternalClientError as exc:
+                raise AssertionError(
+                    "cancel_where after the database dropped its connections raised "
+                    f"an internal driver state error ({exc}), not a database error. "
+                    "A caller cannot distinguish this from a bug in its own code, it "
+                    "matches no handler written against asyncpg's error types, and "
+                    "the pooled connection that produced it was handed out while "
+                    "still mid-operation -- the dead-on-acquire race "
+                    "_with_fresh_connection_retry exists to absorb, not recovered "
+                    "on this path"
+                ) from exc
+            except (asyncpg.PostgresConnectionError, OSError, asyncpg.InterfaceError):
+                # The mid-operation flavour: a typed database error for a
+                # batch whose commit is unknowable from the client. The
+                # drain's own design (EPQ predicates, resumable cursor)
+                # makes re-issuing the call the recovery, so the retry
+                # loop re-runs it instead of failing the test on it.
+                return False
+            return True
+
+        await wait_for_condition(
+            cancel_recovers_typed,
+            description=(
+                "cancel_where returned after the database dropped its "
+                "connections, without ever surfacing an internal driver "
+                "state error"
+            ),
+            timeout=30.0,
+        )
+        assert cancel_results, "the recovery loop returned without a cancel result"
+
+        # The recovery is not merely quiet, it cancelled the work. Read over a
+        # FRESH untagged connection: the fleet harness's own fetch rides the
+        # pod's just-killed pool and can hit the very parked window under test
+        # (the same discipline the enqueue racing pin uses for its verdict).
+        verify = await asyncpg.connect(pg_dsn)
         try:
-            await pod.backend.cancel_where(
-                JobFilter(unfinished=True), reason="fleet interruption drill"
+            rows = await verify.fetch(
+                f'SELECT status FROM "{schema}".jobs WHERE id = $1',  # noqa: S608  # Why: schema is this test's own generated identifier (new_base62); the job id is $-bound.
+                job_ids[0],
             )
-        except asyncpg.InternalClientError as exc:
-            raise AssertionError(
-                "cancel_where after the database dropped its connections raised "
-                f"an internal driver state error ({exc}), not a database error. "
-                "A caller cannot distinguish this from a bug in its own code, it "
-                "matches no handler written against asyncpg's error types, and "
-                "the pooled connection that produced it was handed out while "
-                "still mid-operation -- the dead-on-acquire race "
-                "_with_fresh_connection_retry exists to absorb, not recovered "
-                "on this path"
-            ) from exc
+        finally:
+            await verify.close()
+        assert len(rows) == 1, (
+            "the enqueued job's row vanished across the interruption and the bulk cancel"
+        )
+        assert str(rows[0]["status"]) == "cancelled", (
+            f"cancel_where recovered from the interruption but the job ended "
+            f"{rows[0]['status']!r}, not cancelled: the recovery returned "
+            "without the work landing"
+        )
 
 
 async def test_enqueue_racing_the_interruption_never_duplicates_committed_work(
