@@ -2137,6 +2137,51 @@ def test_worker_settings_repr_masks_health_token() -> None:
     assert "taskq:***@localhost:5432/taskq" in r
 
 
+def test_health_token_description_scopes_token_to_ui_serve() -> None:
+    """The health_token field description must scope the token to the
+    ``taskq ui serve`` endpoints, the only place it is enforced.
+
+    The worker's own health listeners (the unix socket and the TCP
+    ``TASKQ_HEALTH_PORT`` listener serving ``/live`` and ``/ready``, plus the
+    scrape listener's ``/metrics``) never check the token: worker/health.py
+    has no health_token/Authorization handling at all. A description that
+    says "health and metrics routes require a matching Authorization header"
+    without that scope describes a protection the worker transport does not
+    have, so an operator reading the field (IDE tooltip, generated schema)
+    believes the TCP probe port answers 401 without a bearer. The docs
+    contract lives in docs/guides/deployment.md, whose env tables must carry
+    the same scoped wording.
+    """
+    info = TaskQSettings.get_fields()["health_token"]
+    description = info[1].description or ""
+
+    assert description, (
+        "health_token has no field-level description; a reader inspecting "
+        "the field gets no scope statement at all"
+    )
+    assert "ui serve" in description, (
+        "the health_token description must name 'taskq ui serve' as the "
+        f"scope the token applies to; got: {description!r}"
+    )
+    assert "health and metrics routes require a matching 'Authorization" not in description, (
+        "the health_token description must not claim the token protects "
+        "health/metrics routes unscoped: the worker's own health and metrics "
+        "transports never check it, so the unscoped phrasing documents an "
+        f"authentication the TCP probe port does not have; got: {description!r}"
+    )
+
+    deployment_md = Path(__file__).parent.parent / "docs" / "guides" / "deployment.md"
+    env_table_row = next(
+        line
+        for line in deployment_md.read_text().splitlines()
+        if line.startswith("| `TASKQ_HEALTH_TOKEN` |")
+    )
+    assert "ui serve" in env_table_row, (
+        "the deployment.md env table row for TASKQ_HEALTH_TOKEN must carry "
+        f"the same taskq ui serve scope as the field description; got: {env_table_row!r}"
+    )
+
+
 def test_secret_str_fields_load_from_env_and_unwrap_explicitly() -> None:
     """The native mechanism round-trips the env: a raw env var loads as a
     SecretStr (masked in repr), and get_secret_value() is the only way out.
