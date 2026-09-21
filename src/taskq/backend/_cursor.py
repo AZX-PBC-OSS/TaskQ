@@ -38,6 +38,21 @@ __all__ = [
 ]
 
 
+_INT4_MIN: Final[int] = -(2**31)
+_INT4_MAX: Final[int] = 2**31 - 1
+
+
+def _parse_int4(text: str) -> int:
+    """Parse a cursor int field bounded to the int4 width its ``::int``
+    cast binds, ``ValueError`` when out of range (the malformed-cursor
+    shape the callers' guards catch), so an out-of-range value can never
+    reach the bind as a driver ``DataError``."""
+    value = int(text)
+    if not _INT4_MIN <= value <= _INT4_MAX:
+        raise ValueError(f"cursor int out of int4 range: {text!r}")
+    return value
+
+
 def encode_cursor(priority: int, scheduled_at: datetime, job_id: UUID) -> str:
     """Encode keyset pagination cursor as ``priority|iso|uuid``.
 
@@ -54,7 +69,7 @@ def decode_cursor(cursor: str) -> tuple[int, datetime, UUID]:
     parts = cursor.split("|", 2)
     if len(parts) != 3:
         raise ValueError(f"Invalid cursor format: {cursor!r}")
-    priority = int(parts[0])
+    priority = _parse_int4(parts[0])
     scheduled_at = datetime.fromisoformat(parts[1])
     job_id = UUID(parts[2])
     return priority, scheduled_at, job_id
@@ -131,6 +146,14 @@ class SortColumn:
         Never returns the raw text for a typed column: binding a ``str``
         to a ``timestamptz``/``uuid``/``int`` placeholder is the asyncpg
         ``DataError`` that 500'd every admin page turn before 2569da5.
+
+        The "int" kind also bounds to int4, the width the ``::int`` cast
+        binds: a cursor int that parses in Python but is out of the
+        column's range raises the driver's ``DataError`` (not a
+        ``ValueError``) at bind time -- past the malformed-cursor guard,
+        a hand-edited URL 500'd the page instead of falling back to the
+        first page. Out of range IS malformed, so it is refused here,
+        where the guard is watching.
         """
         if text == "":
             if not self.nullable:
@@ -138,7 +161,7 @@ class SortColumn:
             return None
         match self.kind:
             case "int":
-                return int(text)
+                return _parse_int4(text)
             case "ts":
                 return datetime.fromisoformat(text)
             case "uuid":

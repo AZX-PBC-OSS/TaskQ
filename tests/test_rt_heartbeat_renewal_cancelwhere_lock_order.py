@@ -30,7 +30,12 @@ assertions are the observable contract:
   round;
 * NO 40P01 is raised to either caller - the renewal may not turn an
   operator's bulk cancel into heartbeat tick failures (three in a row
-  isolate a healthy worker and crash-reclaim its fleet).
+  isolate a healthy worker and crash-reclaim its fleet);
+* a client-side command-budget expiry (asyncpg TimeoutError) is a
+  failed BEAT, not a deadlock: production tolerates isolated failed
+  ticks and isolates only at max_heartbeat_failures consecutive, so
+  the probe records them and pins the same line - the third
+  consecutive failed beat reds.
 """
 
 from __future__ import annotations
@@ -53,6 +58,15 @@ pytestmark = pytest.mark.integration
 _ROUNDS = 12
 _JOBS = 60
 _RACE_BOUND_SECS = 60.0
+
+#: Failed-beat tolerance for the renewal loop, mirrored from production:
+#: the worker tolerates unexpected heartbeat tick failures until
+#: max_heartbeat_failures (the settings default, 3) land CONSECUTIVELY -
+#: that is the isolate line. The probe reds at the same line: two
+#: isolated client-side command-budget expiries under a starved runner
+#: are tolerated beats (recorded, retried), the third consecutive one
+#: means the drain is starving the renewal into an isolate.
+_ISOLATE_THRESHOLD_BEATS = 3
 
 
 async def _seed_inverted_running_backlog(
@@ -126,19 +140,50 @@ async def test_heartbeat_renewal_vs_bulk_cancel_running_arm_no_deadlock_no_lost_
         # probe renews in a loop across the drain's WHOLE paging window,
         # not once at the start.
         renewals: list[int] = []
+        failed_beats: list[str] = []
         stop_renewals = asyncio.Event()
 
         async def _renew_loop(
             renewals: list[int] = renewals,
+            failed_beats: list[str] = failed_beats,
             stop_renewals: asyncio.Event = stop_renewals,
+            round_no: int = round_no,
         ) -> None:
+            consecutive_failed_beats = 0
             while not stop_renewals.is_set():
                 try:
                     renewed = await backend.heartbeat_jobs(worker_id, timedelta(seconds=30))
                 except asyncpg.PostgresError as exc:
                     deadlocks.append(("heartbeat_jobs", getattr(exc, "sqlstate", None)))
                     raise
+                except TimeoutError as exc:
+                    # A client-side budget expiry (the heartbeat pool's
+                    # command_timeout, or a pool-acquire budget), NOT a
+                    # server verdict: under a starved runner the renewal
+                    # can wait on row locks the drain holds - the exact
+                    # blocking this probe races - and legitimately outlive
+                    # the budget. Production does not crash on such a
+                    # beat: a failed tick is tolerated until
+                    # max_heartbeat_failures (3) land CONSECUTIVELY, which
+                    # is the isolate threshold. The probe pins the same
+                    # line: a failed beat is recorded and retried, the
+                    # third consecutive one reds (the worker would
+                    # isolate), and a server-side 40P01 stays fatal above.
+                    failed_beats.append(f"beat {len(failed_beats) + 1}")
+                    consecutive_failed_beats += 1
+                    if consecutive_failed_beats >= _ISOLATE_THRESHOLD_BEATS:
+                        raise AssertionError(
+                            f"round {round_no}: the renewal burned "
+                            f"{_ISOLATE_THRESHOLD_BEATS} consecutive command "
+                            f"budgets ({failed_beats}) - production isolates "
+                            "a worker at this line (max_heartbeat_failures); "
+                            "the drain is starving the renewal, not deadlocking it"
+                        ) from exc
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(stop_renewals.wait(), timeout=0.02)
+                    continue
                 renewals.append(renewed)
+                consecutive_failed_beats = 0
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(stop_renewals.wait(), timeout=0.02)
 
@@ -156,7 +201,14 @@ async def test_heartbeat_renewal_vs_bulk_cancel_running_arm_no_deadlock_no_lost_
             assert renewed == _JOBS, (
                 f"round {round_no}: the renewal must stamp every held row (got {renewed}/{_JOBS})"
             )
-        assert renewals, f"round {round_no}: the renewal never ran"
+        # The loop-liveness teeth: the renewal RACED this round - it either
+        # landed stamps (renewals) or its beats were starved by the drain's
+        # row locks and recorded (failed_beats). A round with neither means
+        # the loop never ran at all, which is the dead-renewal red. (A
+        # starved round is real: one command budget burned while the drain
+        # holds the rows, then the drain finishes and the loop exits before
+        # the next beat - production tolerates exactly that shape.)
+        assert renewals or failed_beats, f"round {round_no}: the renewal never ran"
 
         states = await _round_states(clean_pg_conn, schema, ids)
         for row in states:

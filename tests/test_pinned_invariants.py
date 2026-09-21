@@ -430,6 +430,71 @@ def test_every_mutating_admin_route_is_gated_by_actions_and_csrf() -> None:
 _MUTATING_METHODS = frozenset({"post", "put", "patch", "delete"})
 
 
+def test_mutating_sso_factory_routes_carry_a_csrf_gate() -> None:
+    """PIN (enumeration completeness): the state-changing routes the SSO
+    auth factories register are CSRF-gated, though no ``register()``
+    function ever declares them.
+
+    WHY IT MATTERS: the pin above walks only module-level ``register()``
+    functions, and the SSO routers are built by ``create_oidc_auth`` /
+    ``create_saml_auth`` - different names, same decorator shapes. Their
+    POST routes (``/logout``, ``/callback``) were invisible to that
+    enumeration: a future state-changing route added to an auth factory
+    with no CSRF at all would ship while every pin stays green. The gap
+    is closed the same way - statically, over the factory sources - with
+    the SSO-appropriate gates:
+
+    * ``logout`` depends on ``require_logout_csrf`` (the session-bound
+      token the shared ``validate_csrf`` cannot serve: there is no admin
+      session to key it from before login, and the logout token is derived
+      from the live session cookie instead).
+    * ``callback`` is the documented IdP-POSTed exception: the IdP cannot
+      carry this deployment's CSRF token, the binding is the signed
+      request-id cookie / InResponseTo match instead.
+
+    A NEW mutating handler in an auth factory must reference one of those
+    gates by name or this fails on arrival; an exemption must be a
+    deliberate edit here, with the same review bar as the register-side
+    pin's.
+    """
+    import pkgutil
+    from importlib import import_module
+
+    import taskq.web.admin.auth as auth_pkg
+
+    checked: list[str] = []
+    ungated: list[str] = []
+    for info in pkgutil.walk_packages(auth_pkg.__path__, prefix="taskq.web.admin.auth."):
+        module = import_module(info.name)
+        for fname, fn in inspect.getmembers(module, inspect.isfunction):
+            if fn.__module__ != module.__name__ or fname.startswith("_"):
+                continue
+            try:
+                source = textwrap.dedent(inspect.getsource(fn))
+                tree = ast.parse(source)
+            except (OSError, SyntaxError, TypeError):
+                continue
+            for handler, methods in _mutating_handlers(tree):
+                qualname = f"{info.name}.{fname}.{handler.name} [{'/'.join(sorted(methods))}]"
+                checked.append(qualname)
+                body = ast.dump(handler)
+                gated = any(gate in body for gate in ("require_logout_csrf", "validate_csrf"))
+                # The IdP-POSTed callback: authentication binding, not CSRF.
+                exempt = handler.name == "callback"
+                if not (gated or exempt):
+                    ungated.append(qualname)
+
+    assert checked, (
+        "the sweep found no mutating SSO factory routes at all - the walk is "
+        "broken, not the codebase (both create_oidc_auth and create_saml_auth "
+        "register a POST /logout)"
+    )
+    assert not ungated, (
+        "mutating SSO factory route(s) reference no CSRF gate and name no "
+        f"documented exemption: {ungated}"
+    )
+
+
 def _admin_register_functions() -> list[tuple[str, Any]]:
     """Every ``register(router)`` under ``taskq.web.admin`` - the only place
     admin routes are declared."""

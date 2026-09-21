@@ -61,6 +61,9 @@ from taskq.ratelimit.refs import KeyedReservationRef
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.settings import WorkerSettings
 from taskq.worker._bootstrap import worker_main, worker_main_async
+from taskq.worker._handlers import (  # pyright: ignore[reportPrivateUsage]  # Why: the SlotPoolAcquireError arm disowns the claimed row exactly as dispatch's terminal-write-infra arm does; same private-seam rationale.
+    _disown_job,
+)
 from taskq.worker._transient import (
     TRANSIENT_PG_ERRORS,
     UnexpectedLoopErrorGuard,
@@ -423,6 +426,14 @@ async def producer_loop(
                     # this claim took back is a live job of ours again:
                     # its lease must be renewed from here on.
                     deps.disowned_jobs.discard(job.id)
+                    # Fence the claim before the first await: the put is
+                    # this loop's first yield since the claim committed,
+                    # and the lost-claim probe (the heartbeat tick) must
+                    # see the row held from the instant it is running and
+                    # locked here, through the queue residence, until the
+                    # consumer's take moves the coverage to the intent
+                    # map.
+                    deps.active_jobs.mark_enqueued(job.id)
                     await local_queue.put(job)
                 continue
 
@@ -908,14 +919,20 @@ async def di_consumer_loop(
             if outcome == "failed":
                 deps.drain_failures += 1
         except SlotPoolAcquireError:
-            # Infrastructure, not a job outcome: the job is already
-            # claimed, its lock lease expires, and the reclaim sweep
-            # re-dispatches it. Counting this as a drain failure would
-            # make a Kubernetes Job / CI drain step report job failures
-            # that never happened. The acquire was recorded (counter)
-            # and logged (per-occurrence cause, job id) at the raise
-            # site; nothing to do here but leave the job to lease
-            # reclaim.
+            # Infrastructure, not a job outcome: counting this as a drain
+            # failure would make a Kubernetes Job / CI drain step report
+            # job failures that never happened. The acquire was recorded
+            # (counter) and logged (per-occurrence cause, job id) at the
+            # raise site. The row though is still running under this
+            # worker's lock with no runner left to move it: disown it so
+            # the heartbeat stops renewing the lease and the reclaim
+            # sweep hands it back - the same treatment the
+            # actor-not-found release-failure arm above gets (the
+            # pre-fix comment here said "leave the job to lease
+            # reclaim", but the tick's renewal kept that lease alive
+            # forever, so the recovery it named never came and the row
+            # was lost).
+            _disown_job(deps.disowned_jobs, job)
             continue
         except Exception:
             _consumer_log.exception("dispatch-failed", job_id=str(job.id))

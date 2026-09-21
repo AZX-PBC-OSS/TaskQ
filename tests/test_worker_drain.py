@@ -361,22 +361,37 @@ async def test_di_consumer_loop_increments_on_exception() -> None:
 async def test_di_consumer_loop_does_not_count_slot_pool_acquire_failures() -> None:
     """A slot-pool acquire failure is infrastructure, not a job outcome.
 
-    The job is already claimed and recovers by lock-lease expiry, so
-    counting it would make a drain step (Kubernetes Job, CI) report job
+    Counting it would make a drain step (Kubernetes Job, CI) report job
     failures that never happened - the exact misclassification the
     dedicated exception type exists to route around. The loop continues
     to the next job; the failure was recorded and logged at the raise
     site.
+
+    The claimed row though is DISOWNED before the continue: it is
+    running under this worker's lock with no runner left to move it,
+    and the pre-fix handler's "recovers by lock-lease expiry" was
+    fiction - the heartbeat's renewal kept that lease alive forever, so
+    the row was lost (the grand-mixin soak's settle-timeout signature).
+    The disown is what stops the renewal and lets the reclaim sweep own
+    the row.
     """
     from taskq.worker.dispatch import SlotPoolAcquireError
 
+    captured: dict[str, object] = {}
+
     async def _fake_dispatch(*args: object, **kwargs: object) -> AttemptOutcome:
+        job: Any = kwargs["job"]
+        captured["job_id"] = job.id
         raise SlotPoolAcquireError(acquire_timeout=5.0)
 
     deps = await _run_one_job_with_fake_dispatch(
         _fake_dispatch, actor_name="test_drain_fail_acquire"
     )
     assert deps.drain_failures == 0
+    assert captured["job_id"] in deps.disowned_jobs, (
+        "the claimed-but-unrunnable row must be disowned: the heartbeat's "
+        "renewal exclusion is what makes the lease-expiry reclaim real"
+    )
 
 
 async def test_di_consumer_loop_no_increment_on_cancelled_as_value() -> None:

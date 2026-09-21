@@ -453,6 +453,7 @@ def compute_next_fire_after(
     if candidate.tzinfo is None:
         candidate = candidate.replace(tzinfo=tz)
 
+    after_utc = after.astimezone(UTC)
     candidate_utc = candidate.astimezone(UTC)
     candidate_roundtrip = candidate_utc.astimezone(tz)
 
@@ -472,9 +473,48 @@ def compute_next_fire_after(
             earlier_utc = _fold_to_utc(candidate, tz, fold=0)
             later_utc = _fold_to_utc(candidate, tz, fold=1)
             return [earlier_utc, later_utc]
-        return [_fold_to_utc(candidate, tz, fold=0)]
+        earlier_utc = _fold_to_utc(candidate, tz, fold=0)
+        if earlier_utc > after_utc:
+            return [earlier_utc]
+        # The candidate's earlier occurrence is at or before the seed: the
+        # seed itself was that occurrence (the slot just fired at the
+        # earlier instant, croniter answered the fold-1 replay). Under
+        # ``skip``/``firstof`` the repeated range counts as ONE slot at the
+        # earlier occurrence, so the replay is owed nothing -- returning the
+        # fold-0 instant again would answer at or before the seed, the
+        # fixed point that leaves ``next_fire_at`` unadvanced and re-fires
+        # the schedule every tick through the rest of the repeated hour.
+        # The next owed fire is the first match beyond the range, the same
+        # answer a fold-1 seed inside the range already gets above.
+        return [_first_match_beyond_repeated_range(cron_expr, candidate, tz)]
 
     return [candidate]
+
+
+def _first_match_beyond_repeated_range(
+    cron_expr: str, candidate: datetime, tz: ZoneInfo
+) -> datetime:
+    """The first *candidate expression* match after the repeated wall range
+    that contains *candidate*'s wall time, as an aware instant in *tz*.
+
+    Mirrors the beyond-range walk the fold-1 seed branch runs above: wall
+    matches are found by a naive croniter walk (it cannot see folds), so
+    matches inside the repeated range are stepped over explicitly until
+    the answer lands beyond it. The result goes through
+    :func:`_check_gap` so a walk that lands in a DST gap advances out of
+    it rather than answering a wall time that does not exist.
+    """
+    from croniter import croniter
+
+    bounds = repeated_range_bounds(candidate, tz)
+    cr = croniter(cron_expr, candidate.replace(tzinfo=None))
+    beyond = cr.get_next(datetime)
+    if bounds is not None:
+        range_start, range_end = bounds
+        while range_start <= beyond < range_end:
+            cr = croniter(cron_expr, beyond)
+            beyond = cr.get_next(datetime)
+    return _check_gap(beyond.replace(tzinfo=tz), tz)
 
 
 def repeated_range_bounds(after_local: datetime, tz: ZoneInfo) -> tuple[datetime, datetime] | None:

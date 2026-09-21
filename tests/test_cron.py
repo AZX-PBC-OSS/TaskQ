@@ -251,6 +251,99 @@ def testcompute_next_fire_after_overlap_skip_and_firstof_use_earlier_occurrence(
     assert result[0].astimezone(UTC) == datetime(2025, 11, 2, 5, 30, 0, tzinfo=UTC)
 
 
+def testcompute_next_fire_after_overlap_seed_on_spent_earlier_occurrence_advances_beyond_range() -> (
+    None
+):
+    """A fold-0 seed SITTING ON the overlap's earlier occurrence - the slot
+    that just fired - must be answered with a fire strictly AFTER the seed
+    under ``skip`` and ``firstof``.
+
+    WHY IT MATTERS: the seed (``server_now`` in the tick, ``next_fire_at``'s
+    re-anchor) at wall 01:30 fold=0 IS the earlier occurrence, already
+    spent. croniter answers the fold-1 replay (strictly after, correct for
+    its own wall semantics); the overlap branch then re-interpreted that
+    candidate at fold=0 for ``skip``/``firstof`` - the SAME instant as the
+    seed. The tick's advance wrote a ``next_fire_at`` at or before the
+    instant that had just fired: the schedule stayed due, and re-fired
+    every tick through the rest of the repeated hour. The function's own
+    contract says it may never answer at or before its seed; for a spent
+    slot the replay is owed nothing, the next fire is the first match
+    beyond the repeated range - the same answer a fold-1 seed inside the
+    range already gets.
+    """
+    tz = ZoneInfo("America/New_York")
+    # 2025-11-02 01:30 fold=0 EDT == 05:30 UTC: the earlier occurrence of
+    # the day's only 01:30 slot, the instant a tick at that slot fires.
+    spent = datetime(2025, 11, 2, 1, 30, 0, tzinfo=tz)
+    assert spent.astimezone(UTC) == datetime(2025, 11, 2, 5, 30, 0, tzinfo=UTC)
+    assert spent.fold == 0
+    for dst_strategy in ("skip", "firstof"):
+        result = compute_next_fire_after(
+            "30 1 * * *",
+            "America/New_York",
+            spent,
+            dst_strategy=cast(Any, dst_strategy),
+        )
+        assert len(result) == 1
+        assert result[0].astimezone(UTC) > spent.astimezone(UTC), (
+            f"{dst_strategy}: a seed on the spent earlier occurrence must "
+            "be answered strictly after itself"
+        )
+        # The first match BEYOND the repeated range: the next day's 01:30
+        # (unambiguous, EST), not the fold-1 replay of today's slot.
+        assert result[0].astimezone(UTC) == datetime(2025, 11, 3, 6, 30, 0, tzinfo=UTC)
+
+
+def testcompute_next_fire_after_overlap_seed_just_before_slot_still_fires_the_slot() -> None:
+    """The spent-slot advance must not swallow the slot itself: a seed just
+    BEFORE the overlap slot still answers that slot's earlier occurrence."""
+    tz = ZoneInfo("America/New_York")
+    before = datetime(2025, 11, 2, 1, 29, 0, tzinfo=tz)
+    result = compute_next_fire_after("30 1 * * *", "America/New_York", before, dst_strategy="skip")
+    assert len(result) == 1
+    assert result[0].astimezone(UTC) == datetime(2025, 11, 2, 5, 30, 0, tzinfo=UTC)
+
+
+def testcompute_next_fire_after_overlap_seed_on_spent_slot_allof_answers_the_replay() -> None:
+    """Under ``allof`` the same spent fold-0 seed answers the fold-1
+    replay: both occurrences fire, the fold-0 one just did."""
+    tz = ZoneInfo("America/New_York")
+    spent = datetime(2025, 11, 2, 1, 30, 0, tzinfo=tz)
+    result = compute_next_fire_after("30 1 * * *", "America/New_York", spent, dst_strategy="allof")
+    assert len(result) == 1
+    assert result[0].astimezone(UTC) == datetime(2025, 11, 2, 6, 30, 0, tzinfo=UTC)
+
+
+def testcompute_next_fire_after_chain_never_stalls_in_a_repeated_range() -> None:
+    """Chained fires across a fall-back day strictly increase in absolute
+    time for every strategy: the walk has no zero-interval fixed point.
+
+    Seeds cover every minute of the repeated hour (fold 0 and fold 1),
+    the zone where the fixed point lived. This is the property the tick
+    depends on: ``next_fire_at`` advancing past the instant it was seeded
+    from is what makes a due schedule eventually not-due.
+    """
+    tz_name = "America/New_York"
+    tz = ZoneInfo(tz_name)
+    for dst_strategy in ("skip", "firstof", "allof"):
+        for minute in (0, 30, 45, 59):
+            for fold in (0, 1):
+                seed = datetime(2025, 11, 2, 1, minute, tzinfo=tz).replace(fold=fold)
+                cursor = seed
+                for _ in range(6):
+                    fires = compute_next_fire_after(
+                        "30 1 * * *",
+                        tz_name,
+                        cursor,
+                        dst_strategy=cast(Any, dst_strategy),
+                    )
+                    assert all(f.astimezone(UTC) > cursor.astimezone(UTC) for f in fires), (
+                        f"{dst_strategy} fold={fold} minute={minute}: chain broke at "
+                        f"{cursor} -> {fires}"
+                    )
+                    cursor = fires[-1]
+
+
 # ── _is_ambiguous_time converts when tzinfo is not the target tz object ──
 
 

@@ -2253,3 +2253,104 @@ async def test_a_post_tx_cut_is_one_conservative_failure_after_a_committed_tx() 
         "a post-tx budget cut is one transient failure (the TimeoutError "
         "propagates on the healthy-tick path), not zero and not two"
     )
+
+
+# ── The claim-loss reconcile (the lost dispatch batch's orphan) ──────────
+
+
+class _LostClaimPool(FakePool):
+    """FakePool yielding one conn whose ``fetch`` records calls and
+    answers the lost-claim probe from a canned row list."""
+
+    def __init__(self, fetch_rows: list[dict[str, object]] | None = None) -> None:
+        super().__init__()
+        self._lost_conn = _LostClaimConn(fetch_rows)
+        self.fetch_calls = self._lost_conn.fetch_calls
+
+    @asynccontextmanager
+    async def acquire(self, *, timeout: float | None = None) -> AsyncGenerator[FakeConn, None]:  # noqa: ASYNC109 # Why: mirrors the parent's drop-in signature.
+        self.acquire_count += 1
+        yield self._lost_conn
+
+
+class _LostClaimConn(FakeConn):
+    """FakeConn whose ``fetch`` records (sql, args) and returns canned rows."""
+
+    def __init__(self, fetch_rows: list[dict[str, object]] | None = None) -> None:
+        super().__init__()
+        self.fetch_calls: list[tuple[str, tuple[object, ...]]] = []
+        self._fetch_rows = fetch_rows if fetch_rows is not None else []
+
+    async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
+        self.fetch_calls.append((sql, args))
+        return list(self._fetch_rows)
+
+
+async def test_heartbeat_tick_disowns_the_lost_claim() -> None:
+    """A claimed row the worker holds in NO in-memory structure - the
+    dispatch batch whose commit landed server-side but whose response
+    died with the connection - is disowned by the tick's reconcile
+    probe: the renewal stops, the lease lapses, and the reclaim sweep
+    (not the heartbeat) owns the row from there.
+
+    The pre-fix tick renewed every running row locked to the worker
+    except the disowned set, and the lost batch's ids are unknown to
+    every set: the lease never lapsed, the sweep never reclaimed, and
+    the job ran forever in the soak's settle window."""
+    lost_id = new_uuid()
+    pool = _LostClaimPool(fetch_rows=[{"id": lost_id}])
+    deps, _shutdown = await _run_tick(pool=pool)
+
+    probe_calls = [
+        (sql, args)
+        for sql, args in pool.fetch_calls
+        if "locked_by_worker = $1" in sql and "started_at" in sql
+    ]
+    assert probe_calls, "the tick must probe for lost claims"
+    _sql, args = probe_calls[0]
+    # $1 worker id, $2 the exclusion array, $3 the lease-length grace.
+    assert args[2] == timedelta(seconds=18.0), (
+        "the grace is one full lease on started_at - the claim-to-register "
+        "chain is sub-lease by construction, and a row older than its own "
+        "lease with no holder anywhere is past every legitimate handoff"
+    )
+    assert lost_id in deps.disowned_jobs, (
+        "the probe's finding must be disowned - the renewal's exclusion "
+        "core is what turns the lapse into the sweep's reclaim"
+    )
+
+
+async def test_heartbeat_tick_reconcile_excludes_held_queued_disowned() -> None:
+    """The probe's exclusion array binds the union of the three holding
+    structures: registered consumers and claim intents (held_ids), rows
+    parked in the local queue (queued_ids), and this tick's disowned
+    snapshot. A row in any of them is this worker's to run - re-pending
+    it would double-execute the body."""
+    held_id = new_uuid()
+    queued_id = new_uuid()
+    disowned_id = new_uuid()
+    lost_id = new_uuid()
+    pool = _LostClaimPool(fetch_rows=[{"id": lost_id}])
+
+    def _seed(deps: WorkerDeps) -> None:
+        deps.active_jobs.mark_enqueued(queued_id)
+        deps.active_jobs.mark_claimed(held_id)
+        deps.disowned_jobs.add(disowned_id)
+
+    deps, _shutdown = await _run_tick(pool=pool, deps_hook=_seed)
+
+    probe_calls = [
+        (sql, args)
+        for sql, args in pool.fetch_calls
+        if "locked_by_worker = $1" in sql and "started_at" in sql
+    ]
+    assert probe_calls, "the tick must probe for lost claims"
+    _sql, args = probe_calls[0]
+    excluded = list(args[1])
+    assert held_id in excluded, "a claim intent must be excluded"
+    assert queued_id in excluded, "a queued row must be excluded"
+    assert disowned_id in excluded, "a disowned id must be excluded"
+    assert held_id not in deps.disowned_jobs
+    assert queued_id not in deps.disowned_jobs
+    assert lost_id in deps.disowned_jobs
+    _ = deps

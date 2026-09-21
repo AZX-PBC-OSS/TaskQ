@@ -128,6 +128,12 @@ class _FakeConn:
     async def execute(self, sql: str, *args: object) -> str:
         return "UPDATE 1"
 
+    async def fetch(self, _sql: str, *_args: object) -> list[dict[str, object]]:
+        # The tick's claim-loss reconcile probe reads its lost-claim rows
+        # here; this harness runs no orphaned claims, so the canned
+        # answer is none.
+        return []
+
     def transaction(self) -> _FakeTransaction:
         return _FakeTransaction()
 
