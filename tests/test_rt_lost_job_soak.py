@@ -552,6 +552,16 @@ async def _trial(
     _ = operator_retries
 
 
+# The soak's legitimate worst case exceeds the global 300s pytest-timeout:
+# 240 paced rounds under a coverage-instrumented, -n 4-starved runner, the
+# settle wall cap (scaled to the job count), the worker's own shutdown
+# grace periods (termination grace 85s), and the handback bound. The outer
+# 900s budget bounds only that legitimate total - a livelock reds from the
+# test's OWN inner watchdogs long before it fires (30s per blocking step,
+# 30s completion-stall, the settle's quiescence detection and wall cap,
+# 60s shutdown, 30s handback). Same shape as the e2e suite's long-legitimate
+# marks.
+@pytest.mark.timeout(900)
 @pytest.mark.parametrize("trial", range(3))
 async def test_lost_job_soak_grand_mixin(
     pg_dsn: str,
