@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
+import logging as logging_module
 import ssl as ssl_module
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1131,3 +1132,89 @@ async def test_make_redis_client_factory_no_warning_on_tls_scheme() -> None:
 
     warnings = [e for e in captured if e.get("log_level") == "warning"]
     assert not any("plaintext" in str(e.get("event", "")) for e in warnings)
+
+
+class _HttpResponseShapedError(Exception):
+    """Mimics azure.core's ``HttpResponseError``: ``str(exc)`` appends the
+    HTTP response body, which is where a managed-identity token lives.
+
+    This is the shape the refresh failure actually sees on the Entra ID
+    path, and the shape issue #317 leaked through ``error=str(exc)``.
+    """
+
+    def __init__(self, body: str) -> None:
+        super().__init__("ManagedIdentityCredential authentication failed")
+        self._body = body
+
+    def __str__(self) -> str:
+        return f"{self.args[0]}\nContent: {self._body}"
+
+
+class _ForeignHandler(logging_module.Handler):
+    """First root handler in line: snapshots the rendered record exactly as
+    a vendor handler (Azure Monitor's ``LoggingHandler``) would see it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.seen: list[str] = []
+
+    def emit(self, record: logging_module.LogRecord) -> None:
+        self.seen.append(record.getMessage())
+
+
+async def test_password_callable_failure_never_ships_a_response_body_token(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The #317 leak, end to end: a provider failure whose ``str(exc)``
+    carries a raw access token goes through the real refresh-failure log
+    call and the REAL processor chain (``structlog.testing.capture_logs``
+    bypasses processors, so it cannot be the assertion channel here), and
+    the token must reach neither the record a vendor handler reads nor
+    TaskQ's own stderr output."""
+    from taskq.obs import setup_logging
+
+    token = (
+        "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9"
+        ".eyJhdWQiOiJkYi1jbGllbnQiLCJpc3MiOiJodHRwczovL3N0cy5uZXQifQ"
+        ".KmZ0Y2hfNFJlNGxseV9zZWNyZXRfc2lnbmF0dXJlX2J5dGVz"
+    )
+    # DSN control: the URI mask predates this fix and must keep working.
+    dsn = "postgresql://taskq:hunter2@db.internal:5432/taskq"
+
+    class _BrokenProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_pg_credential(self) -> PgCredential:
+            self.calls += 1
+            if self.calls == 1:
+                return PgCredential(password="ok")
+            raise _HttpResponseShapedError(f'{{"access_token": "{token}"}}')
+
+    setup_logging(level="INFO", log_format="json")
+    foreign = _ForeignHandler()
+    logging_module.root.handlers.insert(0, foreign)
+    try:
+        factory = make_pg_pool_factory(dsn, _BrokenProvider())
+        with patch("asyncpg.create_pool", new=AsyncMock(return_value=MagicMock())) as mock_create:
+            await factory()
+        password_arg = mock_create.call_args.kwargs["password"]
+
+        with pytest.raises(_HttpResponseShapedError):
+            await _pw(password_arg)
+    finally:
+        logging_module.root.removeHandler(foreign)
+
+    rendered = "\n".join(foreign.seen)
+    assert token not in rendered, f"access token reached a vendor handler:\n{rendered}"
+    assert "pg-credential-refresh-failed" in rendered
+    # The diagnostic survives: the provider failure itself is still readable.
+    assert "ManagedIdentityCredential" in rendered
+    # DSN control: the pool's DSN must not appear in the record in any form,
+    # raw or (the unit tests pin this) masked.
+    assert "hunter2" not in rendered
+    assert "postgresql://" not in rendered
+
+    own_output = capsys.readouterr().err
+    assert token not in own_output
+    assert "hunter2" not in own_output
