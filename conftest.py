@@ -7,10 +7,13 @@ tier from being collected on every invocation shape, and ``pytest_configure`` /
 ``pytest_terminal_summary`` only fire for a root-level plugin.
 """
 
+import faulthandler
 import functools
 import importlib.util
 import ipaddress
+import os
 import socket
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -125,6 +128,58 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 # fire for a root-level plugin, and the guard's parts belong together.
 
 _BLOCKED_ATTEMPTS: list[tuple[str, str]] = []
+
+#: Force-exits intercepted in this process (see ``pytest_configure``). Each
+#: entry is ``(exit_code, first-caller-frame)`` for one ``os._exit`` the test
+#: process did not perform.
+_WATCHDOG_FORCE_EXITS: list[tuple[str, str]] = []
+
+
+class _ForceExitIntercepted(SystemExit):
+    """Raised in place of an intercepted ``os._exit``.
+
+    The caller's contract decides what survives: the watchdog's daemon
+    poll thread dies (its loop is the wedged thing), a loop task ends with
+    the exception for its awaiter to see, and the dump already went to
+    fd 2 either way. The pytest process — the thing that must report the
+    result — always survives.
+    """
+
+
+def _intercepted_force_exit(code: int) -> None:
+    """Stand in for ``os._exit`` inside the pytest process.
+
+    The worker's watchdog force-exits the process on a terminal trip
+    (``taskq.worker._watchdog``: ``os._exit(EXIT_WATCHDOG)`` with the
+    faulthandler dump written to stderr just before). In-process, that
+    process is the pytest worker itself: a watchdog trip in one test's
+    worker killed the whole xdist worker mid-suite — xdist prints
+    ``node down: Not properly terminated``, replaces the worker, the
+    replacement re-runs collection under the same co-tenancy, and the leg
+    drags to its job cap with the trip's own dump lost to pytest's
+    captured-output buffer, which a hard exit never flushes. Three such
+    worker deaths in one evening (the 3.12 leg of three separate CI runs,
+    three different suite positions) burned the 30-minute cap three times
+    with zero diagnosis.
+
+    The interception keeps the diagnosis and drops the process death: the
+    dump goes straight to fd 2 (pytest's fd-level capture cannot swallow
+    it, and a hard exit would have discarded it), the trip is recorded for
+    ``pytest_terminal_summary``, and ``SystemExit`` propagates in the
+    calling thread instead. Production semantics are untouched — the
+    watchdog still force-exits real workers; tests that pin the exit path
+    patch ``os._exit`` themselves and simply layer over this one.
+    """
+    frame = sys._getframe(1)
+    site = f"{frame.f_code.co_filename}:{frame.f_lineno} ({frame.f_code.co_name})"
+    _WATCHDOG_FORCE_EXITS.append((str(code), site))
+    os.write(
+        2,
+        f"\n=== pytest intercepted a force-exit (code={code}) at {site} - "
+        "the test process would have died here ===\n".encode(),
+    )
+    faulthandler.dump_traceback(fd=2, all_threads=True)
+    raise _ForceExitIntercepted(code)
 
 
 class OutboundNetworkBlockedError(RuntimeError):
@@ -299,6 +354,13 @@ def pytest_configure(config: pytest.Config) -> None:
             ),
             stacklevel=2,
         )
+    os._exit = _intercepted_force_exit  # type: ignore[assignment]  # Why: the seam is deliberate (see _intercepted_force_exit); mypy/pyright see a module builtin reassigned.
+
+
+@pytest.fixture
+def intercepted_force_exits() -> list[tuple[str, str]]:
+    """The force-exits this process intercepted so far (see pytest_configure)."""
+    return _WATCHDOG_FORCE_EXITS
 
 
 def pytest_sessionfinish(session: pytest.Session) -> None:
@@ -312,6 +374,7 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
     output = getattr(session.config, "workeroutput", None)
     if output is not None:
         output["taskq_blocked_attempts"] = _BLOCKED_ATTEMPTS
+        output["taskq_force_exits"] = _WATCHDOG_FORCE_EXITS
 
 
 def pytest_testnodedown(node: object, error: object) -> None:
@@ -319,6 +382,8 @@ def pytest_testnodedown(node: object, error: object) -> None:
     del error
     forwarded = getattr(node, "workeroutput", {}).get("taskq_blocked_attempts") or []
     _BLOCKED_ATTEMPTS.extend((str(nodeid), str(address)) for nodeid, address in forwarded)
+    exits = getattr(node, "workeroutput", {}).get("taskq_force_exits") or []
+    _WATCHDOG_FORCE_EXITS.extend((str(code), str(site)) for code, site in exits)
 
 
 def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
@@ -332,3 +397,7 @@ def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
     terminalreporter.section("outbound connections blocked", red=True)
     for nodeid, address in _BLOCKED_ATTEMPTS:
         terminalreporter.line(f"  {nodeid} -> {address}")
+    if _WATCHDOG_FORCE_EXITS:
+        terminalreporter.section("intercepted force-exits", red=True)
+        for code, site in _WATCHDOG_FORCE_EXITS:
+            terminalreporter.line(f"  code={code} at {site}")

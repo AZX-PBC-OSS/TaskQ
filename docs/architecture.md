@@ -2037,9 +2037,24 @@ These invariants must remain true across all changes.
 
 7. **Migration files are append-only**: never modify an applied migration.
    The migration runner stores a SHA-256 checksum of each applied file's
-   rendered SQL in `schema_migrations` and logs a `migration-checksum-drift`
-   warning when an applied file no longer matches, so tampering surfaces in
-   logs (drift is warned on, not rejected; applied migrations never re-run).
+   rendered SQL in `schema_migrations` and refuses to apply anything on top
+   of a mismatch (`ChecksumDriftError`, fail-closed: the refusal fires
+   before any statement runs, so tampering surfaces as a blocked deploy,
+   not a silent mismatch). The library-level
+   `allow_checksum_drift=True` override proceeds past the refusal, but the
+   ledger keeps the stored checksum, so the drift warning re-fires on every
+   later run; applied migrations never re-run. This applies to prose too:
+   migration comments are part of the checksummed bytes, so rewording a
+   comment in an applied file is the same break as editing its SQL. The
+   house rule going forward is that migration prose follows the same bans
+   as every other surface (no em-dashes, no filler vocabulary, no ticket
+   references, no competitor attributions) FROM THE FIRST LINE of a new
+   file; files a release has shipped are frozen byte-for-byte
+   (`tests/data/released_migrations.sha256`, enforced by
+   `tests/test_migrations_released_frozen.py`) and are never edited, prose
+   included. The violations already frozen into shipped files are
+   grandfathered; see `docs/design/migration-prose-decision.md` for the
+   enumeration and the remediation decision.
 
 8. **`BACKEND_PROTOCOL_VERSION` is checked at import time**: both
    `PostgresBackend` and `InMemoryBackend` assert the version constant at module

@@ -561,3 +561,64 @@ async def test_leaked_pending_task_report_treats_inherited_tasks_as_clean() -> N
         inherited.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await inherited
+
+
+async def test_watchdog_trip_does_not_kill_the_test_process(
+    intercepted_force_exits: list[tuple[str, str]],
+) -> None:
+    """A terminal watchdog trip in-process is a recorded event, not a dead
+    pytest worker.
+
+    The worker watchdog's contract is ``os._exit(EXIT_WATCHDOG)`` with the
+    faulthandler dump on stderr - right for a production worker, fatal for
+    the harness: in-process the "worker" IS the pytest worker, so a trip
+    killed the whole xdist node mid-suite (xdist's
+    ``node down: Not properly terminated``), xdist replaced it, and the
+    leg dragged to its job cap with the trip's dump lost to the captured-
+    output buffer a hard exit never flushes. The 3.12 leg of three separate
+    CI runs died that way in one evening, at three different suite positions.
+
+    The root conftest intercepts ``os._exit`` for the test process: the
+    dump goes to fd 2, the trip is recorded, and ``SystemExit`` propagates
+    in the calling thread instead. This pin proves the interception end to
+    end with a deterministic injection - a real ``LoopLagWatchdog`` armed
+    at a tiny budget and a deliberately blocked loop, no load lottery -
+    and asserts the trip is both survivable and named.
+    """
+    import time as _time
+
+    from taskq.worker._watchdog import LoopLagWatchdog, LoopLiveness
+
+    del intercepted_force_exits[:]
+
+    async def _blocked_run() -> None:
+        loop = asyncio.get_running_loop()
+        liveness = LoopLiveness()
+        liveness.tick("hygiene-seam-probe", period=0.2)
+        watchdog = LoopLagWatchdog(
+            loop,
+            liveness,
+            budget=0.3,
+            warn_budget=0.15,
+            startup_grace=0.05,
+            poll_interval=0.1,
+        )
+        watchdog.start()
+        try:
+            # The deterministic injection: a 0.8s loop stall, 2.6x the
+            # budget - what CI co-tenancy produces by descheduling the
+            # process. Without the seam this force-exits the process
+            # (exit code 2, zero output); with it the trip is recorded
+            # and the test keeps running.
+            _time.sleep(0.8)  # noqa: ASYNC251  # Why: the blocking call IS the injection - a deliberate loop stall the detector must catch.
+        finally:
+            watchdog.stop()
+
+    await _blocked_run()
+
+    assert intercepted_force_exits, (
+        "the watchdog trip was not intercepted - the loop-lag detector "
+        "never fired, so the seam's regression protection is vacuous"
+    )
+    code, site = intercepted_force_exits[-1]
+    assert code == "2", f"the intercepted exit code is not EXIT_WATCHDOG: {code!r} at {site}"
