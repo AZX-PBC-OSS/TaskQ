@@ -1,13 +1,15 @@
 # ruff: noqa: S608  # Why: schema name is fixture-generated and validated by the
 # migration runner's _IDENT_RE; asyncpg has no parameter binding for identifiers.
 
-"""Heartbeat-loss reclaims are discoverable off the reclaim feed.
+"""Heartbeat-loss reclaims reach the reclaim feed and every queryable table.
 
-`docs/architecture.md`'s reclaim-coverage caveat and `docs/guides/workers.md`'s
+`docs/architecture.md`'s reclaim-coverage note and `docs/guides/workers.md`'s
 isolate paragraph claim, of `isolate_self` (worker heartbeat loss):
 
-* the isolate path writes no `job_events` row, so heartbeat-loss reclaims
-  never appear on `Backend.poll_reclaim_events()` / `TaskQ.watch_reclaims()`;
+* the isolate path writes the same `reason='lock_expired'` reclaim event the
+  leader's sweep writes, with `cause='isolate_self'`, so heartbeat-loss
+  reclaims appear on `Backend.poll_reclaim_events()` /
+  `TaskQ.watch_reclaims()`;
 * the isolate path writes a `job_attempts` row carrying
   `error_class='HeartbeatLost'` whichever arm a job lands on;
 * `jobs.status='crashed'` with `error_class='HeartbeatLost'` catches the
@@ -38,6 +40,7 @@ pytest.importorskip("fastapi")
 pytest.importorskip("jinja2")
 
 from taskq._ids import new_base62, new_uuid  # Why: importorskip guard must precede.
+from taskq.backend import EventRow  # Why: importorskip guard must precede.
 from taskq.backend.clock import SystemClock  # Why: importorskip guard must precede.
 from taskq.backend.postgres import PostgresBackend  # Why: importorskip guard must precede.
 from taskq.migrate import apply_pending  # Why: importorskip guard must precede.
@@ -110,13 +113,13 @@ async def _deps_cm(settings: WorkerSettings) -> AsyncGenerator[WorkerDeps]:
 
 
 @pytest.mark.asyncio
-async def test_isolate_heartbeat_loss_is_off_feed_and_discoverable_in_tables(
+async def test_isolate_heartbeat_loss_reaches_the_feed_and_the_tables(
     pg_dsn: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The isolate re-pend/crash arms leave no reclaim-feed event, write
-    HeartbeatLost attempt rows on every arm, and the admin jobs page reads
-    the same tables."""
+    """The isolate writes its reclaim event on every arm (cause
+    'isolate_self'), HeartbeatLost attempt rows land whichever arm a job
+    takes, and the admin jobs page reads the same tables."""
     async with _open_isolate_world(pg_dsn) as (schema, deps, backend):
         conn = await asyncpg.connect(pg_dsn)
         try:
@@ -151,12 +154,20 @@ async def test_isolate_heartbeat_loss_is_off_feed_and_discoverable_in_tables(
 
             # Feed consumer running across the whole isolate: poll_reclaim_events
             # is the durable source watch_reclaims polls.
-            events_seen: list[object] = []
+            events_seen: list[EventRow] = []
             stop = asyncio.Event()
 
             async def feed_consumer() -> None:
+                cursor = 0
                 while not stop.is_set():
-                    events_seen.extend(await backend.poll_reclaim_events(after_id=0))
+                    # visibility_delay=0: the default 2s trailing-watermark
+                    # margin would outlive this poll loop; the pin asserts
+                    # presence on the feed, not the margin's timing.
+                    batch = await backend.poll_reclaim_events(
+                        after_id=cursor, visibility_delay=timedelta(0)
+                    )
+                    events_seen.extend(batch)
+                    cursor = max((e.event_id for e in batch), default=cursor)
                     await asyncio.sleep(0.02)
 
             consumer = asyncio.create_task(feed_consumer())
@@ -165,11 +176,30 @@ async def test_isolate_heartbeat_loss_is_off_feed_and_discoverable_in_tables(
             stop.set()
             await consumer
 
-            assert events_seen == [], (
-                f"the isolate produced {len(events_seen)} reclaim-feed event(s): "
-                "a graceful self-isolation must stay off the crash-reclaim feed, "
-                "so consumers counting reclaim events toward zero would stall"
+            assert len(events_seen) == 3, (
+                f"the isolate produced {len(events_seen)} reclaim-feed event(s), "
+                "expected one per job: the doc promises the isolate writes the "
+                "same reclaim event the sweep's caller writes, so a consumer "
+                "watching the feed sees every heartbeat-loss reclaim"
             )
+            assert {e.job_id for e in events_seen} == {job_crash, job_cancel, job_retry}, (
+                f"the feed's events cover "
+                f"{sorted(str(e.job_id)[-6:] for e in events_seen)}: all three "
+                "arms must announce their reclaim on the feed"
+            )
+            assert all(
+                e.detail["cause"] == "isolate_self" and e.detail["reason"] == "lock_expired"
+                for e in events_seen
+            ), (
+                "an isolate feed row must carry cause='isolate_self' (the "
+                "sweep's rows name the deadline that fired instead)"
+            )
+            by_job = {e.job_id: e.detail["to_state"] for e in events_seen}
+            assert (
+                by_job[job_crash] == "crashed"
+                and by_job[job_cancel] == "cancelled"
+                and by_job[job_retry] == "pending"
+            ), f"the feed's to_state values must name each arm's landing state: {by_job}"
 
             rows = await conn.fetch(
                 f'SELECT id, status, error_class, scheduled_at FROM "{schema}".jobs '

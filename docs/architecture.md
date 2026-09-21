@@ -445,20 +445,20 @@ transaction as the reclaim UPDATE.  Consumers observe crash-reclaimed jobs via
 `Backend.poll_reclaim_events(after_id)` or `TaskQ.watch_reclaims(after_id)`
 without enumerating every `job_id`.
 
-Coverage caveat: the feed carries Sweep 1 reclaims only.  `isolate_self`
-(worker heartbeat loss) performs the same `running → pending` / `running →
-crashed` transitions but deliberately writes no `job_events` row (a graceful
-self-isolation is not a crash-reclaim), so heartbeat-loss reclaims are outside
-`poll_reclaim_events` / `watch_reclaims` coverage.  They are discoverable
-from `job_attempts` (`error_class='HeartbeatLost'`): the isolate path
-writes an attempt row under that class whichever arm a job lands on.  A
-`jobs`-table query (`status='crashed'` with `error_class='HeartbeatLost'`)
-catches the terminal arm only -- a heartbeat-lost job with retry budget
-left re-pends to `status='pending'` and keeps whatever `error_class` the
-row had before -- so `job_attempts` is the complete source.  The admin
-UI's Jobs page (`GET /admin/jobs`) reads the same tables; see the isolate
+Coverage note: the feed carries both reclaim writers.  The leader's sweep
+rows name the deadline that fired (`lock_expired` / `heartbeat_timeout`);
+`isolate_self` (worker heartbeat loss) performs the same `running →
+pending` / `running → crashed` transitions and writes the same
+`reason='lock_expired'` event with `cause='isolate_self'` (see the isolate
 asymmetries under
-[Crash-reclaim interaction](#crash-reclaim-interaction).
+[Crash-reclaim interaction](#crash-reclaim-interaction)).  The attempt row
+is still the complete HeartbeatLost source: the isolate path writes a
+`job_attempts` row under `error_class='HeartbeatLost'` whichever arm a job
+lands on, while a `jobs`-table query (`status='crashed'` with
+`error_class='HeartbeatLost'`) catches the terminal arm only -- a
+heartbeat-lost job with retry budget left re-pends to `status='pending'`
+and keeps whatever `error_class` the row had before.  The admin UI's Jobs
+page (`GET /admin/jobs`) reads the same tables.
 
 A `running → pending` reclaim (crash or heartbeat) reschedules through the
 job's own `RetryPolicy` (base, cap, backoff kind and jitter), exactly as an
@@ -568,10 +568,12 @@ reach a terminal state. Without a reclaim feed, a SIGKILLed worker
 leaves those jobs invisible forever (the job is retried or crashed in
 SQL, and nobody in application code hears about it). Count the
 remaining jobs from the `jobs` table and use the feed as a wake
-signal, never as the ledger: `isolate_self` (worker heartbeat loss)
-writes no `job_events` row, so a consumer that decrements a counter
-once per event stalls above zero the moment a worker loses heartbeat
-while the feed, and the counter, look healthy:
+signal, never as the ledger: the reclaim feed only ever carries
+crash-reclaim events (the leader sweep's, and `isolate_self`'s under
+`cause='isolate_self'`), so a consumer that decrements a counter once
+per event can never reach zero -- a fan-out whose jobs all succeed
+delivers no reclaim event at all, and the counter stalls above zero
+while the feed looks healthy:
 
 ```python
 async def track_completions(tq: TaskQ, job_ids: list[JobId]) -> None:
@@ -593,17 +595,17 @@ async def track_completions(tq: TaskQ, job_ids: list[JobId]) -> None:
     feed = asyncio.create_task(drain_feed())
     try:
         while True:
-            # Recount, don't decrement: heartbeat-loss reclaims
-            # (isolate_self) never appear on this feed, so per-event
-            # counting can never reach zero when a worker's heartbeat
-            # dies mid-fan-out.  Query job_attempts
-            # (error_class='HeartbeatLost') or the jobs table.
+            # Recount, don't decrement: this feed only ever carries
+            # crash-reclaim events (sweep or isolate_self), so a
+            # normal-path completion (success, failure, cooperative
+            # cancel) delivers no event and per-event counting can
+            # never reach zero. The recount query is the ledger.
             if await count_unfinished(tq, job_ids) == 0:  # your own query
                 await fire_completion_callback()
                 return
             # The feed is a wake optimisation, not the ledger: normal-
             # path terminal writes (success, failure, cooperative
-            # cancel) land no job_events row, so a fan-out that never
+            # cancel) land no reclaim event, so a fan-out that never
             # crashes delivers no event and only this cadence fires
             # the callback.
             with contextlib.suppress(TimeoutError):
