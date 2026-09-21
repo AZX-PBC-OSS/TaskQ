@@ -486,7 +486,7 @@ abandonment under transient PG connectivity issues AND under pool
 contention, which the older `lock_lease >= 4 × heartbeat_interval` rule
 ignored.
 
-Error pattern: `lock_lease (...) must cover the worst coherent failed-beat cascade: (max_heartbeat_failures + 1) * (heartbeat_interval + 2 * heartbeat_command_timeout) = ...`
+Error pattern: `lock_lease (...) must cover the worst coherent failed-beat cascade: max(heartbeat_interval, heartbeat_command_timeout) + (max_heartbeat_failures + 1) * (heartbeat_interval + heartbeat_command_timeout) = ...`
 
 ### Termination budget
 

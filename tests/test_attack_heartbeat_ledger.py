@@ -488,14 +488,18 @@ async def test_the_stamp_window_residual_admits_no_phantom_cancel() -> None:
         stamped = asyncio.Event()
         real_register = registry.register
 
-        async def gated_register(job_id: object) -> object:
+        async def gated_register(job_id: object, task: object, ctx: object) -> object:
             # A fresh claim completing its registration, if it completes at
             # all, exactly in the stamp-to-delivery gap: the crash arm's
             # stamp has run, the consumer's own cancellation has not been
-            # observed yet.
+            # observed yet. (The signature mirrors
+            # ActiveJobRegistry.register's (job_id, task, ctx): a gate with
+            # the wrong arity kills the consumer AT registration - a
+            # TypeError before any claim - and this probe degenerates to
+            # asserting nothing, the vacuous-green trap this fix closes.)
             await stamped.wait()
             await asyncio.sleep(0)
-            return await real_register(job_id)  # type: ignore[arg-type]
+            return await real_register(job_id, task, ctx)  # type: ignore[arg-type]
 
         registry.register = gated_register  # type: ignore[method-assign]
 

@@ -444,6 +444,12 @@ ignore = [
 # raced coroutines consume the loop's fixtures within their own iteration
 # (the TaskGroup is fully joined before the loop advances).
 "tests/test_attack_heartbeat_ledger.py" = ["ASYNC109", "B023"]
+# The heartbeat live-loop integration attack suite: same shape as the
+# ledger attack suite (the pool doubles mirror asyncpg.Pool.acquire's
+# `timeout` kwarg; the raced coroutines and gated registrations consume
+# their own iteration's fixtures, the TaskGroup fully joined before the
+# loop advances).
+"tests/test_attack_rt_heartbeat_integration.py" = ["ASYNC109", "ASYNC110", "B023"]
 # ASYNC109: the pool doubles' timeout parameters mirror asyncpg.Pool.acquire
 # (the driver raises TimeoutError once the budget lapses); the tests pin the
 # forward contract.

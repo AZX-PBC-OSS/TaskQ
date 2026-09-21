@@ -768,14 +768,15 @@ async def test_threshold_gated_renewal_selects_rows_by_remaining_lease(
     Row-level contract of ``UPDATE_JOBS_LOCK_RENEWAL_SQL_TEMPLATE``, driven
     directly (the loop's threshold math is pinned separately in
     tests/test_heartbeat.py) with a lease of 60s and the SHIPPED
-    default-config threshold - 56s, the enforced-bound floor
-    ``(F+1) * (interval + 2 * command_timeout)`` at 10s/3/2s:
+    default-config threshold - 58s, the enforced-bound floor
+    ``max(interval, command_timeout) + (F+1) * (interval + command_timeout)``
+    at 10s/3/2s:
 
-    * a row with 58s of lease remaining (above the threshold) is left
+    * a row with 65s of lease remaining (above the threshold) is left
       entirely alone - its ``lock_expires_at`` AND ``last_heartbeat_at``
       keep their exact prior values, which is the point of the change: a
       healthy beat no longer pays a non-HOT update per running row;
-    * a row with 50s remaining - inside the (30, 56] band that
+    * a row with 50s remaining - inside the (30, 58] band that
       discriminates the shipped floor from the issue's naive half-lease
       (30s) - RENEWS: a naive-threshold build of this statement would
       leave it alone (rowcount 3, not 4), so this pin fails green-only
@@ -802,14 +803,15 @@ async def test_threshold_gated_renewal_selects_rows_by_remaining_lease(
     try:
         lease = timedelta(seconds=60.0)
         # The shipped default-config threshold (10s interval, 3 tolerated
-        # failures, 2s command timeout): 4 * (10 + 2 + 2) = 56s.
+        # failures, 2s command timeout): the tail max(10, 2) + 4 * (10 + 2)
+        # = 58s.
         threshold = _lease_renewal_threshold(
             lock_lease=lease,
             heartbeat_interval=10.0,
             max_heartbeat_failures=3,
             heartbeat_command_timeout=2.0,
         )
-        assert threshold == timedelta(seconds=56.0)
+        assert threshold == timedelta(seconds=58.0)
         _liveness, gated_sql, _slots = build_heartbeat_sql(schema, renewal_threshold=threshold)
         worker_id = new_uuid()
         other_worker = new_uuid()
@@ -856,8 +858,8 @@ async def test_threshold_gated_renewal_selects_rows_by_remaining_lease(
                     heartbeat_timeout,
                 )
 
-            await _seed(fresh_id, holder=worker_id, expires_in=58.0)
-            # The discriminating band (30, 56]: renewed by the shipped
+            await _seed(fresh_id, holder=worker_id, expires_in=65.0)
+            # The discriminating band (30, 58]: renewed by the shipped
             # floor, skipped by the naive half-lease.
             await _seed(discriminating_id, holder=worker_id, expires_in=50.0)
             await _seed(due_id, holder=worker_id, expires_in=25.0)
@@ -885,7 +887,7 @@ async def test_threshold_gated_renewal_selects_rows_by_remaining_lease(
                 threshold,
             )
             assert parse_rowcount(tag) == 4, (
-                "the gated renewal must renew exactly the (30, 56]-band row, "
+                "the gated renewal must renew exactly the (30, 58]-band row, "
                 "the under-threshold row, the heartbeat_timeout row, and the "
                 "NULL-lease row - not the fresh row, not the disowned row, "
                 "not another worker's row. A rowcount of 3 here means the "
