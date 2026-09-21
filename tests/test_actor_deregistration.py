@@ -725,10 +725,10 @@ async def test_concurrent_force_deregister_one_succeeds_one_raises(
         assert len(successes) == 1
         assert len(not_found) == 1
 
-# The winner's jobs_cancelled is attribution, not the fleet count:
+        # The winner's jobs_cancelled is attribution, not the fleet count:
         # the force path cancels in committed batches, so the losing
         # caller's committed batch may have cancelled the job before it
-# lost the actor_config DELETE race. 0 or 1 is the invariant, and
+        # lost the actor_config DELETE race. 0 or 1 is the invariant, and
         # the counter cannot pin exactly-once by itself: a double-cancel
         # split across the two callers reports 1 to each (the loser's
         # count is lost with its exception), which is why the audit-trail
