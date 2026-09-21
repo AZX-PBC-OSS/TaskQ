@@ -550,7 +550,9 @@ job past the operator's own drain. Two residuals are deliberate: run-now is an o
 override and does not carry the `singleton` stamp (that flag lives in the worker's actor
 registry, not the database, so an admin process cannot know it; a run-now fire can therefore
 run alongside an active singleton blocker), and it does not advance `next_fire_at` - the
-schedule's next regular fire still happens as scheduled.
+schedule's next regular fire still happens as scheduled. An actor capped only by its
+registry literal (no stored `actor_config.max_pending`) is likewise invisible to an admin
+process; the tick and client paths enforce that literal.
 
 ---
 
