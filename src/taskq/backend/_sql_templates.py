@@ -180,6 +180,7 @@ class SqlTemplates:
 
     # ── Read SQL templates ─────────────────────────────────────────
     get_job: str
+    get_archived_job: str
     get_attempts: str
     poll_cancel_flags: str
 
@@ -1843,6 +1844,15 @@ WHERE EXISTS (SELECT 1 FROM fixed WHERE status = 'pending')""",
         # ── Read SQL templates ─────────────────────────────────────
         get_job=f"""\
 SELECT * FROM "{s}".jobs WHERE id = $1""",
+        # Same shape as get_job against the archive tier: the client
+        # read's jobs-then-archive fallback (issue #314) probes this only
+        # when the hot read misses, so an archived id answers instead of
+        # reading as missing. jobs_archive mirrors every jobs column plus
+        # the archive-only archived_at/expire_at stamps (see
+        # _JOBS_COLUMNS_CSV in worker/_leader_shared.py), so the row ->
+        # JobRow conversion is the hot table's.
+        get_archived_job=f"""\
+SELECT * FROM "{s}".jobs_archive WHERE id = $1""",
         get_attempts=f"""\
 SELECT * FROM "{s}".job_attempts WHERE job_id = $1 ORDER BY attempt""",
         poll_cancel_flags=POLL_CANCEL_FLAGS_SQL.format(schema=s),

@@ -124,6 +124,19 @@ class JobHandle[R: BaseModel | None]:
         return self._deduplicated_onto_terminal
 
     @property
+    def archived(self) -> bool:
+        """The last observed row came from the archive tier.
+
+        Mirrors :attr:`row`'s last-observed discipline: it reads
+        :attr:`row`'s ``archived`` flag, so it is ``True`` exactly when
+        the job's row now lives in ``jobs_archive`` (the hot row was
+        pruned), and it advances with every :meth:`refresh` /
+        :meth:`status` / :meth:`wait` fetch like the row itself.
+        Constructing from an enqueue always starts ``False``.
+        """
+        return self._row.archived
+
+    @property
     def actor_name(self) -> str:
         """The actor this job targets."""
         return self._row.actor
@@ -178,11 +191,16 @@ class JobHandle[R: BaseModel | None]:
         Cheap, non-blocking: a single ``backend.get`` and a status
         projection. No polling. Use this when you want to know the
         state without waiting for a terminal transition. Advances
-        :attr:`row` to the fetched row.
+        :attr:`row` to the fetched row. An id whose row the prune moved
+        to ``jobs_archive`` answers from there (its terminal status,
+        :attr:`archived` ``True``); only an id that exists in neither
+        tier raises.
 
         Raises:
             RuntimeError: this handle was constructed without a
                 :class:`JobsClient`.
+            KeyError: the job exists in neither ``jobs`` nor
+                ``jobs_archive``.
         """
         if self._client is None:
             raise RuntimeError(
@@ -205,11 +223,15 @@ class JobHandle[R: BaseModel | None]:
         :meth:`wait`. Does not block on terminal state, returns the
         current row whatever its status. Advances :attr:`row` to the
         fetched row, so after a refresh ``handle.row`` and the return
-        value are the same row.
+        value are the same row. An id whose row the prune moved to
+        ``jobs_archive`` refreshes from there (``archived=True`` on the
+        row); only an id that exists in neither tier raises.
 
         Raises:
             RuntimeError: this handle was constructed without a
                 :class:`JobsClient`.
+            KeyError: the job exists in neither ``jobs`` nor
+                ``jobs_archive``.
         """
         if self._client is None:
             raise RuntimeError(
@@ -264,7 +286,10 @@ class JobHandle[R: BaseModel | None]:
         :attr:`result_adapter`. The result type is ``R`` exactly ,
         never ``R | None``. Missing or failed results raise. Advances
         :attr:`row` to each row the polling loop fetches, on return,
-        the terminal row the result was extracted from.
+        the terminal row the result was extracted from. A job whose row
+        the prune moved to ``jobs_archive`` waits on (and returns) the
+        archived terminal row (:attr:`archived` ``True``); only an id
+        that exists in neither tier raises ``KeyError``.
 
         Raises:
             ResultUnavailable: terminal state reached but no result was
@@ -273,6 +298,8 @@ class JobHandle[R: BaseModel | None]:
             JobFailed: the job ended in a non-success terminal state
                 (``failed`` / ``cancelled`` / ``crashed`` / ``abandoned``);
                 the row is attached to the exception for inspection.
+            KeyError: the job exists in neither ``jobs`` nor
+                ``jobs_archive``.
             TimeoutError: ``timeout`` elapsed before any terminal
                 transition was observed.
         """
