@@ -358,13 +358,18 @@ def compute_next_fire_after(
     result preserves the schedule's timezone.
 
     DST handling:
-      - **Gaps** (spring-forward): croniter may return a local time that
-        does not exist (e.g. 02:30 on a day where 02:00→03:00). The gap
-        is detected by converting the result to UTC and back; if the
-        round-trip shifts the wall-clock time, the local time was in a
-        gap. For ``skip`` and ``firstof``, the gap time is advanced to
-        the next valid cron match after the gap. For ``allof``, gap times
-        are skipped (same as ``skip``).
+      - **Gaps** (spring-forward): a cron match that falls INSIDE a gap
+        (e.g. 02:30 on a day where 02:00→03:00) fires once at the gap's
+        END instant: the fire still happens that day, delayed by the
+        gap's length.  This is croniter's own aware-seed resolution,
+        the path every production seed reaches, and all three
+        strategies share it (a gap has no fold pair, so ``allof``
+        answers a single instant on a gap day).  Matches after the gap
+        are unaffected.  The round-trip branch below is the defensive
+        layer for a croniter that ever returns a nonexistent candidate:
+        it advances such a candidate to the next valid cron match after
+        it, and ``_check_gap`` minute-steps naive-walk answers out of
+        the gap.
       - **Overlaps** (fall-back): croniter may return a local time that
         occurs twice (e.g. 01:30 on a day where 02:00→01:00). The
         overlap is detected by computing both the earlier and later UTC

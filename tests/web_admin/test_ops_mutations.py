@@ -410,6 +410,7 @@ def test_schedule_run_now_succeeds_and_enqueues(monkeypatch: pytest.MonkeyPatch)
     # The row the run-now SELECT returns: the four curve columns are NULL
     # on rows predating migration 01.00.18, and the handler must resolve
     # them to the declared defaults instead of failing or forwarding NULLs.
+    # max_pending is the operator-stored cap, NULL = no stored override.
     actor_config_row = StubRecord(
         queue="default",
         max_attempts=3,
@@ -418,6 +419,7 @@ def test_schedule_run_now_succeeds_and_enqueues(monkeypatch: pytest.MonkeyPatch)
         retry_cap=None,
         retry_backoff=None,
         retry_jitter=None,
+        max_pending=None,
     )
     conn = _ScriptedConnection(fetchrow_results=[schedule_row, actor_config_row])
     backend = StubBackend(job_row=_stub_job_row(new_uuid()))
