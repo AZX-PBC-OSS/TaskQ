@@ -910,7 +910,12 @@ async def consume_one_job(
                     # off, a Snooze must not pay for a traceback nobody reads,
                     # and the handlers that need one render it themselves.
                     # ``Exception``, not ``BaseException``: cancellation and
-                    # the terminal-write sentinels are not attempt failures.
+                    # the terminal-write sentinels are not attempt failures
+                    # (and recording a cancel on the attempt span would
+                    # misstate it as an exception). A non-Exception
+                    # BaseException from an actor body skips this recording;
+                    # the generic handler renders its traceback itself when
+                    # *text* arrives None.
                     if attempt_span.is_recording():
                         attempt_text = render_exception(exc)
                         record_exception_text(attempt_span, attempt_text)
@@ -1147,8 +1152,26 @@ async def consume_one_job(
             RetryAfter,
             ReservationUnavailable,
             ResultTooLarge,
-            Exception,
+            BaseException,
         ) as e:
+            # ``BaseException``, not ``Exception``: an actor body that raises a
+            # non-Exception BaseException (a custom BaseException subclass from a
+            # dependency, ``SystemExit`` from a sync actor calling ``sys.exit`` in
+            # its executor thread) is an ATTEMPT OUTCOME, not worker death. The
+            # previous breadth let such an exception escape this function, strand
+            # the row ``running`` until lease expiry (which then relabelled it
+            # ``WorkerCrashed`` — a false audit trail: the worker never crashed,
+            # the actor raised), and kill the consumer loop task, cancelling every
+            # in-flight sibling job. Every mature queue runtime converges on
+            # capturing this at the per-job boundary: the failure is recorded
+            # truthfully (error_class is the exception's own type name) and the
+            # worker survives to run the rest of its fleet. ``KeyboardInterrupt``
+            # is deliberately NOT captured: it is interpreter/operator intent,
+            # never an actor outcome, and swallowing it would break in-process
+            # shutdown flows; it re-raises into the loop-level handler, and the
+            # stranded row still has the lease-reclaim path as its recovery.
+            if isinstance(e, KeyboardInterrupt):
+                raise
             return await _dispatch_exception(
                 e,
                 backend=backend,
