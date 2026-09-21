@@ -28,6 +28,7 @@ from taskq.cron import (
     compute_next_fire_after,
     resolve_payload,
 )
+from taskq.exceptions import BackpressureError
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
@@ -99,7 +100,7 @@ _SCHEDULE_FETCH_FOR_RUN_SQL = (
 )
 
 _ACTOR_CONFIG_SQL = (
-    "SELECT queue, max_attempts, retry_kind, retry_base, retry_cap, "
+    "SELECT queue, max_attempts, retry_kind, max_pending, retry_base, retry_cap, "
     'retry_backoff, retry_jitter FROM "{schema}".actor_config WHERE actor = $1'
 )
 
@@ -536,9 +537,38 @@ def register(router: APIRouter) -> None:
                     else defaults.jitter
                 ),
                 scheduled_at=None,  # Why: "run now" is immediate, the server stamps and decides, immune to app↔DB clock skew.
+                # The operator's STORED max_pending cap bounds run-now like
+                # every other fire of a schedule: the cron tick resolves the
+                # stored cap over the registry literal (_resolve_max_pending)
+                # and the client path resolves it through the capacity cache,
+                # while the single-enqueue path this call reaches enforces
+                # only the CARRIED value, so a NULL here would silently
+                # exempt run-now from a drain the operator set. The registry
+                # literal is unknowable here (it lives in the worker's
+                # actor_registry, not the database), so the stored value is
+                # the whole truth this path can enforce; where the worker's
+                # literal is tighter than the stored cap, the client and
+                # tick paths enforce it and run-now does not - the
+                # documented residual.
+                max_pending=ac_row["max_pending"],
+                # Provenance parity with every other fire of a schedule
+                # (the tick stamps the same key in _plan_fire): per-schedule
+                # attribution and the allof twin-coverage walk scope jobs
+                # by this key; an empty metadata dict makes a run-now job
+                # invisible to both.
+                metadata={"cron_schedule_id": str(schedule_id)},
             )
 
-        await backend.enqueue(args)
+        try:
+            await backend.enqueue(args)
+        except BackpressureError:
+            # The stored max_pending cap refused the fire: redirect with
+            # the reason like the other preflight refusals above. The
+            # operator pressed run-now during their own drain.
+            return RedirectResponse(
+                url=f"{base_path}/schedules?error=actor+{quote_plus(actor)}+at+max_pending+cap",
+                status_code=303,
+            )
 
         # Backend-mediated mutation: the enqueue has its own committed
         # transaction, so the audit row rides a separate checkout
