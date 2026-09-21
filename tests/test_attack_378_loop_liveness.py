@@ -40,7 +40,7 @@ import pytest_asyncio
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
-from taskq._ids import new_uuid
+from taskq._ids import new_base62, new_uuid
 from taskq.backend._dispatch import _dispatch_batch
 from taskq.backend._sql_templates import render
 from taskq.testing.otel import (
@@ -69,7 +69,13 @@ _OLD_UNEXPECTED_NAME = "taskq.worker.leader_loop_unexpected_errors_total"
 _PG_DSN = os.environ.get(
     "TASKQ_ATTACK_PG_DSN", "postgres://postgres:postgres@127.0.0.1:45432/postgres"
 )
-_PG_SCHEMA = "atk378"
+# Per-process unique: the real_pg_pool fixture is module-scoped and xdist
+# may split this module's tests across workers, each instantiating the
+# fixture; a shared hard-coded name makes one worker's DROP ... CASCADE
+# teardown (and setup) remove the schema another worker's pool is using
+# (InvalidSchemaNameError under -n, intermittently). Same convention as
+# test_worker_bootstrap.py's twb_{new_base62()} label.
+_PG_SCHEMA = f"atk378_{new_base62().lower()}"
 
 
 # ─────────────────────────────────────────────────────────────────────────
