@@ -80,6 +80,7 @@ Optional extras:
 | `[oidc]`       | OIDC SSO auth for the admin UI (authlib, httpx2, itsdangerous)     |
 | `[saml]`       | SAML SSO auth for the admin UI (python3-saml, itsdangerous)        |
 | `[reload]`     | `watchfiles` for autoreload during local development                |
+| `[text-accel]` | Optional Rust-backed `tors` acceleration for the NUL-scan text guards (the pure-Python path is the always-present default; verdicts are byte-identical either way) |
 
 The core install depends only on `opentelemetry-api`; no SDK or exporters
 (see [Observability](docs/guides/observability.md)).

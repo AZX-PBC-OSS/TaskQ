@@ -14,6 +14,7 @@ exclude-newer-span = "PT24H"
 [options.exclude-newer-package]
 dotenvmodel = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 markupsafe = false
+tors = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 
 [manifest]
 constraints = [
@@ -3031,6 +3032,9 @@ saml = [
     { name = "itsdangerous" },
     { name = "python3-saml" },
 ]
+text-accel = [
+    { name = "tors" },
+]
 vault = [
     { name = "hvac" },
 ]
@@ -3101,12 +3105,13 @@ requires-dist = [
     { name = "sse-starlette", marker = "extra == 'fastapi'", specifier = ">=3.4.6" },
     { name = "starlette", marker = "extra == 'fastapi'", specifier = ">=1.3.1" },
     { name = "structlog", specifier = ">=26.1.0,<27" },
+    { name = "tors", marker = "extra == 'text-accel'", specifier = ">=0.10.1" },
     { name = "typer", specifier = ">=0.27.0,<1" },
     { name = "uuid-utils", specifier = ">=1.0.0,<2" },
     { name = "uvicorn", marker = "extra == 'fastapi'", specifier = ">=0.51.0,<1" },
     { name = "watchfiles", marker = "extra == 'reload'", specifier = ">=1.2.0" },
 ]
-provides-extras = ["redis", "fastapi", "reload", "bench", "otel", "prometheus", "oidc", "saml", "aad", "aws", "vault"]
+provides-extras = ["redis", "fastapi", "reload", "bench", "otel", "prometheus", "oidc", "saml", "aad", "aws", "vault", "text-accel"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -3214,6 +3219,22 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/19/75/241269d1da26b624c0d5e110e8149093c759b7a286138f4efd61a60e75fe/tomli_w-1.2.0.tar.gz", hash = "sha256:2dd14fac5a47c27be9cd4c976af5a12d87fb1f0b4512f81d69cce3b35ae25021", size = 7184, upload-time = "2025-01-15T12:07:24.262Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c7/18/c86eb8e0202e32dd3df50d43d7ff9854f8e0603945ff398974c1d91ac1ef/tomli_w-1.2.0-py3-none-any.whl", hash = "sha256:188306098d013b691fcadc011abd66727d3c414c571bb01b1a174ba8c983cf90", size = 6675, upload-time = "2025-01-15T12:07:22.074Z" },
+]
+
+[[package]]
+name = "tors"
+version = "0.10.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c4/d0/ab447e8515bd4cca8a4507b51294df0acbd4b0a3aad30f4d737f1aa54640/tors-0.10.1.tar.gz", hash = "sha256:88eb00ece8749d1b5e03b0528b0467136924ad9a2e16eb9f41eed31657e98d28", size = 2165775, upload-time = "2026-09-21T20:57:56.175Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0b/d9/b7839a73f79cc31cf8d2a6a4f6c73202687115eb94862613a0a95c55dc6f/tors-0.10.1-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:5b720b7518b513eb6c6479be5ba1059b3ce7bde8a56964eea03b7666e63b1345", size = 3441637, upload-time = "2026-09-21T20:57:42.199Z" },
+    { url = "https://files.pythonhosted.org/packages/56/b9/f9e70e40a5b2f4a9f15c3b9403d0e0ad22105f2e6c90e96a8bab5cc76917/tors-0.10.1-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:5730d620125536a56d052921274f10ccbbac3e70f0df28144908e392b2015db2", size = 3163848, upload-time = "2026-09-21T20:57:43.745Z" },
+    { url = "https://files.pythonhosted.org/packages/ad/fa/e9d2742cc9e48eec5ae9a570847dd4166da353c4fb93252040d350e22600/tors-0.10.1-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:e0b57af44a4a1ceba5041aef7c5114eba529d9ac3300b226b75d0d6591841acf", size = 3557042, upload-time = "2026-09-21T20:57:45.277Z" },
+    { url = "https://files.pythonhosted.org/packages/e7/01/291763c78b4d60da5069d13ac438e45776f84b766d5c61d559e32c32a91c/tors-0.10.1-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:259863d6cb2c156883263368a408abf5121a33f3c03f8b9a40197e18a1f77f7d", size = 3598613, upload-time = "2026-09-21T20:57:47.302Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/fd/01f995f9f8f7a8ec12e783407d397d4ccee475b53b9e878915fe41e6bfc0/tors-0.10.1-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:bdff22102a53a21bcfb06daad1a3eabc9fa87f033342d114c5e1f698885a0c17", size = 3732259, upload-time = "2026-09-21T20:57:49.162Z" },
+    { url = "https://files.pythonhosted.org/packages/ca/6c/eb125761812b55e0d236b494ca6d5899a379e1a316b841f3b479187f244b/tors-0.10.1-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:8a6906e419b15b5eafe1cc15b223d20541ee3425f1e126b6bb1c1e56b825cea8", size = 3881222, upload-time = "2026-09-21T20:57:51.021Z" },
+    { url = "https://files.pythonhosted.org/packages/de/3b/80369ba62849d25aff9945c682889d2a39810fb647642d7743b0b27470cb/tors-0.10.1-cp310-abi3-win_amd64.whl", hash = "sha256:a1c2b977cd8d0589550401750865bc65c2e9105b47f0837d40c0ebb61bd1637e", size = 3116956, upload-time = "2026-09-21T20:57:52.773Z" },
+    { url = "https://files.pythonhosted.org/packages/77/7c/3578bae86fc2b1636072d4672f8a724ea6908a038ace7cea9239118c5853/tors-0.10.1-cp310-abi3-win_arm64.whl", hash = "sha256:dfdc27ac67bd5292766e1d7746f5cd3b52a929b7b2c8885f03e4a345b54d5d61", size = 2917706, upload-time = "2026-09-21T20:57:54.159Z" },
 ]
 
 [[package]]

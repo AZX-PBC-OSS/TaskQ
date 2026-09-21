@@ -14,7 +14,7 @@ field type is the source of truth, not the deserializer's guess.
 
 from __future__ import annotations
 
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 import orjson
 
@@ -133,8 +133,45 @@ def dumps_str(value: Any, /) -> str:
     return dumps(value).decode("utf-8")
 
 
-def _encoded_has_nul(data: bytes, /) -> bool:
-    """True when *data* (orjson output) encodes a real NUL codepoint.
+# Optional accelerator, probed once at import (the [text-accel] extra).
+# tors.contains_unescaped is the escape-parity byte scan the pure fallback
+# below spells out, in Rust over two zero-copy PyBytes borrows with the GIL
+# released -- the same algorithm, not a near one, so the dispatch cannot
+# move a verdict (tests/test_tors_nul_parity.py pins the differential on
+# the adversarial shapes and a randomized sweep). The probe is
+# attribute-level on purpose: a tors build that predates
+# contains_unescaped degrades to the pure path instead of breaking the
+# import, and the package's absence (the default install) is a supported
+# configuration, not an error. No other tors surface is adopted: the
+# redaction scrub and payload_hash are regex/sha256 contracts whose
+# observables a tors primitive would change, and the normalization/
+# chunking APIs have no TaskQ call site at this boundary.
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    #: The escape-parity scan's signature, spelled once so the probe's
+    #: DECLARED type survives tors's absence: a contributor without the
+    #: extra cannot resolve the import, and an inferred (Unknown) probe
+    #: would spray unknown-type reports over every dispatch site.
+    _EscapeParityScan = Callable[[bytes, bytes], bool]
+
+# The declared annotation is load-bearing for the type checker, not the
+# runtime: it makes the probe's type independent of whether tors resolved.
+_tors_contains_unescaped: _EscapeParityScan | None
+# Why: the optional [text-accel] accelerator -- the absence branch below is
+# the supported default, so a missing package is probed, never an import
+# error, and an unresolvable import must not leave the probe Unknown (the
+# declared annotation above types every dispatch site either way).
+try:
+    from tors import (  # pyright: ignore[reportMissingImports]
+        contains_unescaped as _tors_contains_unescaped,  # pyright: ignore[reportUnknownVariableType]  # Why: an unresolvable import must not leave the probe Unknown -- the declared annotation above types every dispatch site either way.
+    )
+except ImportError:  # pragma: no cover - exercised with tors absent (the default install)
+    _tors_contains_unescaped = None
+
+
+def _pure_encoded_has_nul(data: bytes, /) -> bool:
+    """The pure-Python escape-parity scan; the reference :func:`_encoded_has_nul` delegates to when tors is absent.
 
     orjson renders the *literal text* ``\\u0000`` as an escaped backslash
     followed by the same six bytes, so a raw byte match is ambiguous. Each
@@ -154,6 +191,23 @@ def _encoded_has_nul(data: bytes, /) -> bool:
             return True
         pos = data.find(_NUL_ESCAPE_BYTES, pos + 1)
     return False
+
+
+def _encoded_has_nul(data: bytes, /) -> bool:
+    """True when *data* (orjson output) encodes a real NUL codepoint.
+
+    Dispatches on the import-time probe above: tors's
+    ``contains_unescaped`` (Rust, zero-copy, GIL-released) when the
+    ``[text-accel]`` extra is installed and current enough, the pure
+    :func:`_pure_encoded_has_nul` loop otherwise. Both compute the same
+    predicate -- an occurrence of :data:`_NUL_ESCAPE_BYTES` whose
+    immediately-preceding backslash run has even length -- so the verdicts
+    are byte-identical whichever path serves the call; the extra changes
+    the cost, never the answer.
+    """
+    if _tors_contains_unescaped is not None:
+        return _tors_contains_unescaped(data, _NUL_ESCAPE_BYTES)
+    return _pure_encoded_has_nul(data)
 
 
 def dumps_jsonb_str(value: Any, /) -> str:

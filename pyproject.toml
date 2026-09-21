@@ -144,6 +144,20 @@ vault = [
     # the credential providers in taskq.vault; see docs/guides/managed-identities.md.
     "hvac>=2.4.0,<3",
 ]
+text-accel = [
+    # Optional Rust-backed accelerator (maturin) for the hot text paths:
+    # the escape-parity NUL scan guarding MAX_RESULT_BYTES dispatches to
+    # tors.contains_unescaped when the package is importable. NOT a hard
+    # dependency — taskq probes for it once at import and the pure-Python
+    # scan is the default path, so an install without this extra behaves
+    # exactly as before. >=0.10.1 is the floor that ships
+    # contains_unescaped (the probe checks the attribute too, so an older
+    # build degrades rather than breaks). Resolves from PyPI or the
+    # operator's index; contributors running tests against the local
+    # tors checkout install it from the source tree instead
+    # (`uv pip install ../tors`) — do NOT point this extra at a path.
+    "tors>=0.10.1",
+]
 
 [tool.uv]
 # Pin the uv toolchain to the validated 0.12.x line: setup-uv reads
@@ -161,16 +175,18 @@ required-version = ">=0.12.7,<0.13"
 # Supply-chain hardening: never resolve to distributions published within the
 # last 24 hours, giving time for malicious releases to be detected and yanked.
 exclude-newer = "24 hours"
-# dotenvmodel is published by the same org (AZX-PBC-OSS) as TaskQ and is the
-# only same-org dependency. Opt it out of the 24-hour supply-chain quarantine
+# dotenvmodel is published by the same org (AZX-PBC-OSS) as TaskQ and is
+# one of two same-org dependencies (tors, the [text-accel] accelerator,
+# is the other). Both are opted out of the 24-hour supply-chain quarantine
 # so same-day releases can be adopted immediately; this is deliberate and
-# scoped to dotenvmodel only (every other dep still honors the cooldown).
+# scoped to the same-org packages only (every other dep still honors the
+# cooldown).
 # markupsafe is opted out for a different reason: it's a toolchain transitive
 # (jinja2 via the fastapi extra; mkdocs, mkdocs-autorefs, and mkdocstrings
 # via the dev group's docs toolchain) pinned exactly by the lockfile and
 # audited on every bump, so the cooldown adds no protection while delaying
 # same-day security releases.
-exclude-newer-package = { dotenvmodel = "0d", markupsafe = false }
+exclude-newer-package = { dotenvmodel = "0d", tors = "0d", markupsafe = false }
 # Security floors for packages TaskQ does not depend on directly. A bare
 # `uv lock --upgrade-package` fixes the resolution once; a constraint keeps it
 # fixed, and fails the lock loudly if a parent ever pins back below the floor
@@ -654,6 +670,7 @@ markers = [
     "vault: tests for the [vault] extra (skip with -m 'not vault')",
     "aws: tests for the [aws] extra (skip with -m 'not aws')",
     "fastapi: tests for the [fastapi] extra: the web admin/progress suites (skip with -m 'not fastapi')",
+    "text_accel: tests for the [text-accel] extra / tors (skip with -m 'not text_accel')",
 ]
 
 [tool.coverage.run]
