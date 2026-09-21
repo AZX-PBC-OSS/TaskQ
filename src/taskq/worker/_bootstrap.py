@@ -181,6 +181,37 @@ def _redis_configured(settings: WorkerSettings, registry: ProviderRegistry) -> b
     return registry.has_provider(redis_async.Redis)
 
 
+def _emit_progress_fanout_unconfigured_warning(
+    settings: WorkerSettings,
+    registry: ProviderRegistry,
+) -> None:
+    """Warn once when this worker's progress publishes cannot fan out.
+
+    The per-call publish in ``context.py`` keys on a resolved Redis
+    client: with no ``TASKQ_REDIS_URL`` and no registered
+    ``redis.asyncio.Redis`` provider the publish block is skipped
+    silently (the documented contract), so live consumers fall back to
+    500 ms Postgres polling. Durable progress state still rides the
+    Postgres flush, so this is a latency degradation, not data loss; the
+    warning exists because every downstream consumer degrades loudly
+    (SSE 503 ``redis_not_configured``, client poll fallback) while the
+    worker side, the one place that knows the fanout is off, said
+    nothing. Reuses ``_redis_configured`` so this cannot disagree with
+    the rate-limit gate about what counts as configured.
+    """
+    if _redis_configured(settings, registry):
+        return
+    _startup_log.warning(
+        "progress-fanout-unconfigured",
+        remedy=(
+            "Set TASKQ_REDIS_URL or register a redis.asyncio.Redis DI "
+            "provider; without one, progress events reach consumers only "
+            "through the durable Postgres flush, so live streams fall "
+            "back to 500 ms polling"
+        ),
+    )
+
+
 def _served_redis_rate_limits(
     actor_registry: Mapping[str, ActorRef[Any, Any]] | None,
     rl_registry: RateLimitRegistry,
@@ -1666,6 +1697,11 @@ async def _main(
                     "register a redis.asyncio.Redis DI provider."
                 )
                 raise RuntimeError(msg)
+        # Why: after the rate-limit gate so a boot about to crash on
+        # Redis-backed limits does not also warn about progress fanout.
+        # Without this, the worker-side publish skip in context.py is the
+        # only silent link in issue #341's loud degradation chain.
+        _emit_progress_fanout_unconfigured_warning(settings, registry)
         if settings.redis_url is not None:
             if not _redis_extra_installed():
                 # Why: without this check the missing extra surfaces later as
