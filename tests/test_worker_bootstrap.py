@@ -559,6 +559,100 @@ async def test_cancelling_main_terminates_the_worker(pg_dsn: str) -> None:
     await _cleanup_schema_for(pg_dsn, schema)
 
 
+@pytest.mark.asyncio
+@pytest.mark.load_sensitive
+async def test_cancelling_main_interrupts_in_flight_jobs_not_phantom_cancels(
+    pg_dsn: str,
+) -> None:
+    """Cancelling ``_main`` mid-job releases the job as interrupted.
+
+    The bare cancel of ``_main`` never runs ``orchestrate_shutdown`` (the
+    orchestrator is reachable only from the signal and drain paths), so
+    before the fix the consumers' teardown cancellations read origin-less
+    registry entries and fell through to ``mark_cancelled``: the job landed
+    status='cancelled' with ``cancel_phase = 0`` and
+    ``cancel_requested_at = NULL``, a phantom operator cancel that spent an
+    attempt and wrote an ``outcome='cancelled'`` attempt row. A bare cancel
+    of the worker task is the supervisor tearing the process down, the same
+    external event a SIGTERM delivers, so it stamps the SHUTDOWN origin and
+    lands the exact shape the signal path produces: pending again,
+    ``interrupt_count`` bumped, no attempt row, no cancel write.
+    """
+    from taskq.testing.pg import create_pending_job
+
+    schema = f"twb_{new_base62()}".lower()
+    await _prepare_schema_for(pg_dsn, schema)
+
+    job_running = asyncio.Event()
+
+    class _CrashPayload(BaseModel):
+        key: str
+
+    @actor(name="test_actor", max_concurrent=1)  # type: ignore[call-overload] # Why: test-only stub; ActorHandler protocol with *args/**kwargs is stricter than runtime.
+    async def test_actor(payload: _CrashPayload) -> None:
+        del payload
+        job_running.set()
+        await asyncio.sleep(3600)
+
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        job_id = await create_pending_job(conn, schema)
+    finally:
+        await conn.close()
+
+    settings = _settings_for(pg_dsn, schema)
+
+    async def _run() -> None:
+        with contextlib.suppress(asyncio.CancelledError):
+            await _main(settings, actor_registry={"test_actor": test_actor})
+
+    task = asyncio.create_task(_run())
+    # Bounded: the job must actually be running before the cancel, the
+    # pre-cancel state the pin is about.
+    try:
+        await asyncio.wait_for(job_running.wait(), timeout=30.0)
+    except TimeoutError:
+        await task
+        raise
+    task.cancel()
+    done, _pending = await asyncio.wait({task}, timeout=60.0)
+    assert done, "cancelling _main left the worker running past the bounded exit window"
+
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        row = await conn.fetchrow(
+            f"SELECT status::text AS status, cancel_phase, cancel_requested_at, "
+            f"interrupt_count FROM {schema}.jobs WHERE id = $1",
+            job_id,
+        )
+        attempts = await conn.fetch(
+            f"SELECT outcome::text AS outcome FROM {schema}.job_attempts WHERE job_id = $1",
+            job_id,
+        )
+    finally:
+        await conn.close()
+
+    assert row is not None, "the job row vanished"
+    assert row["status"] == "pending", (
+        f"a bare cancel of _main must leave the job recoverable as an "
+        f"interruption (pending), got {row['status']!r}"
+    )
+    assert row["cancel_phase"] == 0 and row["cancel_requested_at"] is None, (
+        "no operator issued a cancel: the row must not carry a cancel "
+        "request it would take a database autopsy to disprove"
+    )
+    assert row["interrupt_count"] >= 1, (
+        "the interruption must be counted on the row, the honest record of "
+        "what happened to this attempt"
+    )
+    assert attempts == [], (
+        f"a phantom cancel spends an attempt; the interrupt release writes "
+        f"no attempt row, got {[dict(a) for a in attempts]}"
+    )
+
+    await _cleanup_schema_for(pg_dsn, schema)
+
+
 # ── Cron registry auto-registration ──────────────────────────────────
 
 

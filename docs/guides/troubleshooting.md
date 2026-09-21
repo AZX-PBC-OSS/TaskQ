@@ -388,7 +388,7 @@ Worker logs `heartbeat-tick-failure` with increasing `consecutive_failures`, the
 
 ### Cause
 
-The heartbeat loop ticks every `heartbeat_interval` (default 10s). If a tick fails (`TimeoutError`, `PostgresConnectionError`, `QueryCanceledError`, `OSError`), `heartbeat_failures` increments. When `heartbeat_failures > max_heartbeat_failures` (default 3), `isolate_self` is called: it opens a fresh direct connection, transitions running jobs (retryable → `pending` with 5s delay, non-retryable → `crashed`), writes attempts with `error_class='HeartbeatLost'`, and exits. An early warning fires at `max_heartbeat_failures // 2`.
+The heartbeat loop ticks every `heartbeat_interval` (default 10s). If a tick fails with a transient error (`TimeoutError`, `PostgresConnectionError`, `QueryCanceledError`, `OSError`) or with any other unexpected, non-transient error (a revoked `UPDATE` grant, a driver contract violation), `heartbeat_failures` increments: both arms share one threshold, one gauge, and one reset-on-success rule, so a persistent refusal isolates the worker instead of looping forever on a green `/ready`. When `heartbeat_failures > max_heartbeat_failures` (default 3), `isolate_self` is called: it opens a fresh direct connection, transitions running jobs (retryable → `pending` with 5s delay, non-retryable → `crashed`), writes attempts with `error_class='HeartbeatLost'`, and exits. An early warning fires at `max_heartbeat_failures // 2`.
 
 ### Diagnosis
 

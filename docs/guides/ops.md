@@ -141,9 +141,11 @@ async def reindex_bucket(payload: Payload) -> None: ...
   `>= 2x` the fleet's `TASKQ_HEARTBEAT_INTERVAL`; a value below one heartbeat
   interval reclaims a healthy job on a single missed beat. `2x` is enough to
   absorb one transient beat because the heartbeat loop anchors its wait to each
-  tick's start rather than its end: a slow or failed tick does not push the next
-  beat out by its own duration, so the gap after one miss is one interval, not
-  two. The same rule names the
+  tick's start rather than its end, so a slow tick does not push the next beat
+  out by its own duration, and because a failed tick is not a beat: it stamps
+  nothing, so instead of also sleeping the full remaining interval it retries
+  promptly on a bounded backoff (a quarter interval), keeping the gap between
+  the good beats around one blip well inside the `2x` floor. The same rule names the
   upper-bound trap: a `heartbeat_timeout` at or above `TASKQ_LOCK_LEASE` never
   governs: the lease deadline (last beat + lease) always precedes the heartbeat
   deadline (last beat + timeout), so the lease arm reclaims first and the per-job

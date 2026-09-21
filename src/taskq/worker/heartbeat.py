@@ -14,9 +14,10 @@ whose lease is still comfortably fresh is left alone so a healthy beat
 stops paying a non-HOT update per running row per tick, while
 rows carrying a per-job ``heartbeat_timeout`` (the reclaim sweep's
 heartbeat arm needs their beats fresh) and rows at/under the threshold
-renew on every beat. After max_heartbeat_failures
-consecutive connection failures, isolate_self proactively transitions
-running jobs and signals shutdown.
+renew on every beat. After max_heartbeat_failures consecutive failed
+ticks, transient connection failures and unexpected errors alike, with
+the count reset only by a fully successful tick, isolate_self
+proactively transitions running jobs and signals shutdown.
 """
 
 import asyncio
@@ -62,6 +63,24 @@ from taskq.worker.deps import WorkerDeps
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 _meter = get_meter()
+
+#: The fraction of ``heartbeat_interval`` a FAILED tick waits before its
+#: prompt retry. A failed tick is not a beat - the one-beat-per-interval
+#: cadence promise counts beats, and a tick that raised stamped nothing -
+#: so the failed tick must not also consume the full inter-beat sleep:
+#: that made the gap between good beats after one transient blip twice
+#: the interval, exactly the ``heartbeat_timeout >= 2x interval`` floor
+#: the ops guidance calls safe, and a sweep running in the
+#: deadline-crossing window reclaimed a live, lease-valid worker. The
+#: retry waits a quarter interval: prompt enough that the recovery beat
+#: lands at ``<= (1 + this) * interval`` (comfortably inside the 2x
+#: floor), bounded so repeated failures never spin (each failure pays
+#: the backoff again, and the tick's own pool acquire is bounded at the
+#: interval), and small enough that the failed-cycle gap stays under the
+#: ``interval + 2 * heartbeat_command_timeout`` worst-beat-gap the lease
+#: arithmetic sizes against (see _lease_renewal_threshold - the bound is
+#: unchanged by this pacing, every failed cycle only gets shorter).
+_FAILED_TICK_RETRY_FRACTION = 0.25
 
 
 def _lease_renewal_threshold(
@@ -152,6 +171,31 @@ def _lease_renewal_threshold(
     clock_timestamp() + $4`` in the gated statement), so worker-clock
     skew cannot move the threshold: the same clock that stamped the
     lease judges it.
+
+    Pacing correction (the phantom-cancel round): a FAILED tick is not a
+    beat. The loop no longer sleeps the full remaining interval after a
+    tick that raised - it retries promptly, after
+    ``min(remaining, _FAILED_TICK_RETRY_FRACTION * interval)`` - so the
+    worst-case arithmetic above has to be re-derived against the new
+    pacing. A failed cycle's gap is ``duration + min(max(0, interval -
+    duration), retry_backoff)``, which is bounded by
+    ``max(interval, duration)``: a fast failed tick (the common
+    transient shape - a refused connection, an immediately-raised
+    acquire) now gaps at ``duration + retry_backoff`` (< the interval),
+    a failed tick that consumed its whole acquire allowance gaps at
+    exactly the interval, and a tick that ran past the interval gaps at
+    its own duration. The worst case is unchanged - a failed tick can
+    still cost up to ``heartbeat_interval + 2 *
+    heartbeat_command_timeout``, the same bound as before - so the
+    floor formula and every number above stay true; the prompt retry
+    only ever SHORTENS failed cycles, and every bound here is an
+    upper bound on the cascade's wall clock. What the retry buys is
+    the recovery side of the ledger: after ONE transient blip the next
+    GOOD beat lands within ``(1 + _FAILED_TICK_RETRY_FRACTION) *
+    interval`` of the last one instead of at twice the interval, which
+    is what makes the ops guidance's ``heartbeat_timeout >= 2x
+    interval`` sizing actually tolerate the blip it exists to absorb
+    (see the wait block at the bottom of ``heartbeat_loop``).
     """
     worst_beat_gap = heartbeat_interval + 2 * heartbeat_command_timeout
     safety_floor = timedelta(
@@ -172,6 +216,75 @@ _tick_duration = _meter.create_histogram(
     unit="s",
     description="Wall-clock seconds for one heartbeat tick.",
 )
+
+
+async def _failed_tick_ledger(
+    deps: WorkerDeps,
+    worker_id: UUID,
+    shutdown: asyncio.Event,
+    exc: BaseException,
+) -> bool:
+    """Record a failed heartbeat tick and decide whether the worker isolates.
+
+    BOTH failure arms of the tick funnel here, the transient arm (a PG
+    blip: connection loss, 40001, a timeout) and the unexpected arm
+    (anything else). The ledger is deliberately ONE threshold, not two: a
+    persistent non-transient fault (a REVOKE'd UPDATE, a driver contract
+    violation) fails every tick exactly as a dead PG does, and the
+    pre-fix asymmetric ledger (the transient arm counted, the unexpected
+    arm only logged) let such a fault loop forever on a worker that
+    looked perfectly healthy: ``heartbeat_failures`` pinned at 0, the
+    consecutive-failures gauge at 0, ``record_heartbeat_miss`` never
+    called, /ready green with no reasons, while the lock expired
+    underneath every running job and the reclaim sweep handed them back.
+    Both arms now share ``max_heartbeat_failures``, the
+    consecutive-failures gauge, the miss counter, the halfway early
+    warning, and the isolate decision; only a fully successful tick
+    resets the count (the loop body's own reset, the same
+    reset-on-success contract :class:`UnexpectedLoopErrorGuard` enforces
+    for the leader loops).
+
+    Why not wrap this loop in :class:`UnexpectedLoopErrorGuard` as the
+    leader loops are: the guard's contract is deliberately fatal, it
+    re-raises into the worker TaskGroup and leaves recovery to the
+    lease-expiry sweeps. The heartbeat's failure doctrine is older and
+    stronger than the guard's, and it is the right one for THIS loop:
+    ``isolate_self`` proactively transitions the running rows (pending /
+    crashed / cancelled, with ``HeartbeatLost`` attempt rows) on a fresh
+    direct connection BEFORE signalling shutdown, because the loop that
+    keeps every lease alive is the one component that must never die by
+    exception. The lease arithmetic also binds to this one threshold:
+    :func:`_lease_renewal_threshold` sizes the renewal gate against
+    ``max_heartbeat_failures + 1`` failed beats, so a second, independent
+    budget for the unexpected arm would desynchronise the isolate
+    decision from the very floor the ``lock_lease`` invariant enforces.
+
+    The in-tx cancel-hook failure keeps its carve-out: it increments
+    ``deps.heartbeat_failures`` itself, then re-raises as ``OSError``,
+    which the transient arm classifies. The transient call site guards its
+    own increment on the ``_in_tx_failed`` flag - when the in-tx hook
+    already counted this tick, the arm skips the second increment so the
+    tick counts exactly once - and then funnels into this ledger either
+    way, so the miss record, the early warning, and the isolate decision
+    run for every failed tick.
+
+    Returns True when the threshold tripped and isolate_self ran; the
+    caller exits the loop.
+    """
+    record_heartbeat_miss(str(worker_id))
+    early_warn_threshold = deps.settings.max_heartbeat_failures // 2
+    if early_warn_threshold > 0 and deps.heartbeat_failures == early_warn_threshold:
+        logger.warning(
+            "heartbeat-failures-approaching-limit",
+            worker_id=str(worker_id),
+            consecutive_failures=deps.heartbeat_failures,
+            max_heartbeat_failures=deps.settings.max_heartbeat_failures,
+            error_class=type(exc).__name__,
+        )
+    if deps.heartbeat_failures > deps.settings.max_heartbeat_failures:
+        await isolate_self(deps, worker_id, shutdown)
+        return True
+    return False
 
 
 async def heartbeat_loop(
@@ -216,6 +329,7 @@ async def heartbeat_loop(
     while not shutdown.is_set():
         deps.liveness.tick("heartbeat", period=interval)
         _in_tx_failed = False
+        _tick_failed = False
         tick_start = time.monotonic()
         try:
             _tick_raised = False
@@ -461,10 +575,10 @@ async def heartbeat_loop(
         except TRANSIENT_PG_ERRORS as e:
             tick_duration_s = time.monotonic() - tick_start
             _tick_duration.record(tick_duration_s)
+            _tick_failed = True
             if not _in_tx_failed:
                 deps.heartbeat_failures += 1
                 update_heartbeat_consecutive_failures(str(worker_id), deps.heartbeat_failures)
-            record_heartbeat_miss(str(worker_id))
             logger.warning(
                 "heartbeat-tick-failure",
                 worker_id=str(worker_id),
@@ -472,43 +586,63 @@ async def heartbeat_loop(
                 error_class=type(e).__name__,
                 error=str(e),
             )
-            early_warn_threshold = deps.settings.max_heartbeat_failures // 2
-            if early_warn_threshold > 0 and deps.heartbeat_failures == early_warn_threshold:
-                logger.warning(
-                    "heartbeat-failures-approaching-limit",
-                    worker_id=str(worker_id),
-                    consecutive_failures=deps.heartbeat_failures,
-                    max_heartbeat_failures=deps.settings.max_heartbeat_failures,
-                    error_class=type(e).__name__,
-                )
-            if deps.heartbeat_failures > deps.settings.max_heartbeat_failures:
-                await isolate_self(deps, worker_id, shutdown)
+            if await _failed_tick_ledger(deps, worker_id, shutdown, e):
                 return
-        except Exception:
+        except Exception as e:
+            # The unexpected arm counts toward the SAME isolate threshold
+            # as the transient arm (see _failed_tick_ledger): a persistent
+            # non-transient error must isolate the worker, not loop
+            # forever as a functional zombie whose counter never moves.
             tick_duration_s = time.monotonic() - tick_start
             _tick_duration.record(tick_duration_s)
+            _tick_failed = True
+            deps.heartbeat_failures += 1
+            update_heartbeat_consecutive_failures(str(worker_id), deps.heartbeat_failures)
             logger.exception(
                 "heartbeat-tick-unexpected-error",
                 worker_id=str(worker_id),
+                consecutive_failures=deps.heartbeat_failures,
+                error_class=type(e).__name__,
             )
+            if await _failed_tick_ledger(deps, worker_id, shutdown, e):
+                return
         # The wait is anchored to the tick's START, not its end, so the
-        # beat cadence is the interval however long the tick took. A
-        # fixed post-tick sleep instead makes the cadence
+        # beat cadence is the interval however long a SUCCESSFUL tick
+        # took. A fixed post-tick sleep instead makes the cadence
         # tick_duration + interval, and a tick may legitimately run for
         # nearly a whole interval, the pool acquire above is bounded at
-        # exactly that. One slow or failed tick then stretches the gap
-        # between good beats to roughly twice the interval, which is the
-        # very sizing the ops guide calls the safe floor for a per-job
-        # heartbeat_timeout: the knob's own guidance would be unable to
-        # tolerate a single transient blip, and a worker that is alive,
-        # lease-valid and beating again would lose its job to the sweep.
-        # The heartbeat's promise to the reclaim arm is a beat every
-        # interval; this is where that promise is kept. A tick that
-        # overruns the interval waits zero and re-enters immediately,
-        # which is the correct urgency, it is already late, and cannot
-        # become a hot loop, because the next tick's own pool acquire is
-        # bounded at the interval and paces it.
+        # exactly that. A tick that overruns the interval waits zero and
+        # re-enters immediately, which is the correct urgency, it is
+        # already late, and cannot become a hot loop, because the next
+        # tick's own pool acquire is bounded at the interval and paces it.
+        #
+        # A FAILED tick is NOT a beat, so it does not get the inter-beat
+        # wait either. Sleeping the full remaining interval after a tick
+        # that raised made the gap between good beats twice the interval
+        # after ONE transient blip (the failed tick stamped nothing, then
+        # the loop slept a whole interval anyway): the recovery beat
+        # landed at the ``heartbeat_timeout >= 2x interval`` floor the
+        # ops guidance calls safe rather than inside it, and a sweep
+        # running in the deadline-crossing window reclaimed a live,
+        # lease-valid worker's job - a phantom cancel, a duplicate
+        # execution of work that was never lost. So a failed tick
+        # retries promptly: it waits at most a quarter interval (bounded
+        # by what the cadence still owes, so an overrun tick still waits
+        # zero), then re-enters. The next tick after a successful
+        # recovery beat resumes the normal anchored cadence. The retry
+        # cannot hammer: each failure pays the bounded backoff again,
+        # and the per-tick pool acquire (bounded at the interval) paces
+        # every tick that does run. The ledger counts the blip exactly
+        # once - the failed tick incremented the counter, its prompt
+        # retry succeeds and resets it - so one transient failure never
+        # consumes the isolate budget, and repeated failures still
+        # isolate on the (max_heartbeat_failures + 1)-th consecutive
+        # one (each failed cycle is now SHORTER, which only moves that
+        # decision earlier inside the lease the cascade floor sizes -
+        # see _lease_renewal_threshold).
         remaining = max(0.0, interval - (time.monotonic() - tick_start))
+        if _tick_failed:
+            remaining = min(remaining, _FAILED_TICK_RETRY_FRACTION * interval)
         if cancel_wake_event is not None:
             # Wait out the remainder, but wake immediately on a cancel NOTIFY.
             with contextlib.suppress(asyncio.TimeoutError):
