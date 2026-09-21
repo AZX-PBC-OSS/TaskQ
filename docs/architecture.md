@@ -604,9 +604,22 @@ Crashes are rare so the added wakeup cost is low, but the channel's meaning
 has broadened.
 
 The index added by migration `01.00.02_01_pre_job_events_outbox.sql` uses
-`CREATE INDEX` (not `CONCURRENTLY`) and takes an exclusive lock on
-`job_events` for the duration of the build, which can stall writes to that
-heavily-written table. The migration runner supports a per-migration opt-out
+`CREATE INDEX` (not `CONCURRENTLY`). The build holds a `SHARE` lock on
+`job_events`: writes to that heavily-written table queue for the build's
+duration, reads keep flowing (`ACCESS SHARE` is compatible with `SHARE`).
+Those two behaviours were observed on PostgreSQL 18 against a 3M-row
+`job_events` in an uncommitted one-off measurement -- to reproduce, run
+the migration's `CREATE INDEX` in one psql session, then issue `SELECT
+count(*) FROM job_events` in a second (it returns immediately, inside its
+no-migration control band) and an `INSERT` in a third (it waits out the
+build). The migration file's header describes this as "an EXCLUSIVE lock
+blocking all readers and writers"; the writer-blocking half of that is
+right, the reader-blocking half is not -- `SHARE` conflicts with the
+`ROW EXCLUSIVE` mode writers take, not with the `ACCESS SHARE` mode
+readers take. Migration files are ledger-checksummed, so the header
+stands as applied and this paragraph carries the correction. The
+operational advice is unchanged.
+The migration runner supports a per-migration opt-out
 from its default transaction wrapper: the `-- taskq:no-transaction` header
 directive, which unlocks `CONCURRENTLY` forms (see
 [Non-transactional migrations](guides/upgrading.md#non-transactional-migrations)),
