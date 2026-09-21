@@ -14,6 +14,7 @@ so the suite completes in seconds rather than minutes.
 """
 
 import asyncio
+import contextlib
 import time
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime, timedelta
@@ -85,7 +86,22 @@ async def _setup_fast(
 
     stack = AsyncExitStack()
     deps: WorkerDeps = await stack.enter_async_context(open_worker_deps(settings))
-    return stack, deps, schema
+    # The test's own DB traffic (setup DML, observation reads) rides a
+    # DEDICATED connection, never deps.heartbeat_pool: the heartbeat pool's
+    # connections carry the tick's command budget (0.1s at the factory
+    # defaults), and that budget is calibrated for the tick's own liveness
+    # statement sequence, not for arbitrary test DML. A setup INSERT that
+    # waits out a co-tenant's scheduling hiccup (a -n 4 runner's other
+    # workers, coverage tracing, the containers' own PG) blew the 0.1s
+    # budget and red the setup with a bare asyncpg TimeoutError - the
+    # runner being slow, never the heartbeat contract failing. The
+    # dedicated connection carries no command timeout; the suite-wide
+    # pytest-timeout bounds it. The pool stays exclusively the loop's tick
+    # traffic, its documented contract, and the test's reads also stop
+    # contending with the loop's own acquires on the same small pool.
+    obs_conn = await asyncpg.connect(str(settings.pg_dsn_direct))
+    stack.push_async_callback(obs_conn.close)
+    return stack, deps, schema, obs_conn
 
 
 # ── Real PG last_seen_at increments ──────────────────────────────
@@ -114,9 +130,9 @@ async def test_last_seen_at_and_heartbeat_advance(module_pg_schema: ModulePgSche
     Waiting for the first tick tests the cadence contract from a running
     loop instead of racing its startup.
     """
-    stack, deps, schema = await _setup_fast(module_pg_schema)
+    stack, deps, schema, obs_conn = await _setup_fast(module_pg_schema)
     try:
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             worker_id, _job_id = await setup_running_job(
                 conn,
                 schema,
@@ -131,7 +147,7 @@ async def test_last_seen_at_and_heartbeat_advance(module_pg_schema: ModulePgSche
         try:
             deadline = time.monotonic() + 30.0
             while time.monotonic() < deadline:
-                async with deps.heartbeat_pool.acquire() as conn:
+                async with contextlib.nullcontext(obs_conn) as conn:
                     seen = await conn.fetchrow(
                         f'SELECT last_seen_at FROM "{schema}".workers WHERE id = $1',
                         worker_id,
@@ -145,7 +161,7 @@ async def test_last_seen_at_and_heartbeat_advance(module_pg_schema: ModulePgSche
 
             for _ in range(3):
                 await asyncio.sleep(_HEARTBEAT_INTERVAL + 0.05)
-                async with deps.heartbeat_pool.acquire() as conn:
+                async with contextlib.nullcontext(obs_conn) as conn:
                     # One statement per read: the server clock and the
                     # liveness value are observed atomically, so the
                     # freshness comparison below cannot be skewed by a
@@ -192,9 +208,9 @@ async def test_multi_job_lock_extension(module_pg_schema: ModulePgSchema) -> Non
     window - under a parallel ``-n`` run contending on the shared PG
     container the first tick can land seconds late, and reading un-renewed
     setup stamps would test the setup, not the renewal."""
-    stack, deps, schema = await _setup_fast(module_pg_schema)
+    stack, deps, schema, obs_conn = await _setup_fast(module_pg_schema)
     try:
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             worker_id, _ = await setup_running_job(
                 conn,
                 schema,
@@ -231,7 +247,7 @@ async def test_multi_job_lock_extension(module_pg_schema: ModulePgSchema) -> Non
             current_locks: list[asyncpg.Record] = []
             deadline = time.monotonic() + 30.0
             while time.monotonic() < deadline:
-                async with deps.heartbeat_pool.acquire() as conn:
+                async with contextlib.nullcontext(obs_conn) as conn:
                     # Single statement: every lock is compared against the
                     # server clock observed in the same read, so a
                     # wall-clock step between the tick and this read
@@ -290,9 +306,9 @@ async def test_reservation_lease_extension(module_pg_schema: ModulePgSchema) -> 
     aligned across the whole test window - they are separate clocks and
     can diverge or step (VM pause/resume, NTP drift).
     """
-    stack, deps, schema = await _setup_fast(module_pg_schema)
+    stack, deps, schema, obs_conn = await _setup_fast(module_pg_schema)
     try:
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             worker_id, job_id = await setup_running_job(
                 conn,
                 schema,
@@ -323,7 +339,7 @@ async def test_reservation_lease_extension(module_pg_schema: ModulePgSchema) -> 
             row: asyncpg.Record | None = None
             deadline = time.monotonic() + 30.0
             while time.monotonic() < deadline:
-                async with deps.heartbeat_pool.acquire() as conn:
+                async with contextlib.nullcontext(obs_conn) as conn:
                     row = await conn.fetchrow(
                         f"SELECT now() AS pg_now, lease_expires_at "
                         f'FROM "{schema}".reservation_slots WHERE job_id = $1',
@@ -352,9 +368,9 @@ async def test_sweep1_consistency(module_pg_schema: ModulePgSchema) -> None:
     """Sweep 1 consistency.
     After heartbeat stops and lock is forced expired,
     Sweep 1 SQL transitions the job to pending or crashed."""
-    stack, deps, schema = await _setup_fast(module_pg_schema)
+    stack, deps, schema, obs_conn = await _setup_fast(module_pg_schema)
     try:
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             worker_id, job_id = await setup_running_job(
                 conn,
                 schema,
@@ -372,7 +388,7 @@ async def test_sweep1_consistency(module_pg_schema: ModulePgSchema) -> None:
             shutdown.set()
             await task
 
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             await conn.execute(
                 f"UPDATE \"{schema}\".jobs SET lock_expires_at = now() - interval '60 seconds' WHERE id = $1",
                 job_id,
@@ -416,9 +432,9 @@ async def test_isolate_self_transitions_cancel_phase_gt_zero(
     explicit terminal label, with the cancel columns preserved as the
     audit trail of the honored request, the same doctrine
     mark_cancelled carries."""
-    stack, deps, schema = await _setup_fast(module_pg_schema)
+    stack, deps, schema, obs_conn = await _setup_fast(module_pg_schema)
     try:
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             worker_id, job_id = await setup_running_job(
                 conn,
                 schema,
@@ -432,7 +448,7 @@ async def test_isolate_self_transitions_cancel_phase_gt_zero(
             await isolate_self(deps, worker_id, shutdown)
         assert shutdown.is_set()
 
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             row = await conn.fetchrow(
                 f"SELECT status, cancel_phase, cancel_requested_at, finished_at "
                 f'FROM "{schema}".jobs WHERE id = $1',
@@ -468,9 +484,9 @@ async def test_isolate_self_cancel_in_flight_exhausted_lands_cancelled(
     error_class='HeartbeatLost' (that IS what happened to the attempt),
     and isolate-self-complete telemetry counts the job as cancelled, not
     crashed."""
-    stack, deps, schema = await _setup_fast(module_pg_schema)
+    stack, deps, schema, obs_conn = await _setup_fast(module_pg_schema)
     try:
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             worker_id, job_id = await setup_running_job(
                 conn,
                 schema,
@@ -486,7 +502,7 @@ async def test_isolate_self_cancel_in_flight_exhausted_lands_cancelled(
             await isolate_self(deps, worker_id, shutdown)
         assert shutdown.is_set()
 
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             row = await conn.fetchrow(
                 f"SELECT status, cancel_phase, cancel_requested_at, finished_at "
                 f'FROM "{schema}".jobs WHERE id = $1',
@@ -536,10 +552,10 @@ async def test_isolate_self_hands_back_an_indefinite_job_past_max_attempts(
     transient failure. They land in ``crashed`` with deadline budget to
     spare, and nothing on the row names a cause.
     """
-    stack, deps, schema = await _setup_fast(module_pg_schema)
+    stack, deps, schema, obs_conn = await _setup_fast(module_pg_schema)
     try:
         deadline = datetime.now(UTC) + timedelta(hours=6)
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             worker_id, job_id = await setup_running_job(
                 conn,
                 schema,
@@ -554,7 +570,7 @@ async def test_isolate_self_hands_back_an_indefinite_job_past_max_attempts(
         await isolate_self(deps, worker_id, shutdown)
         assert shutdown.is_set()
 
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             row = await conn.fetchrow(
                 f"SELECT status, finished_at, error_class, schedule_to_close "
                 f'FROM "{schema}".jobs WHERE id = $1',
@@ -587,10 +603,10 @@ async def test_isolate_self_writes_attempt_rows(module_pg_schema: ModulePgSchema
     """isolate_self writes one AttemptRow per transition.
     3 running jobs → 3 rows in job_attempts with outcome='crashed',
     error_class='HeartbeatLost', and attempt matching each job."""
-    stack, deps, schema = await _setup_fast(module_pg_schema)
+    stack, deps, schema, obs_conn = await _setup_fast(module_pg_schema)
     try:
         job_ids: list[UUID] = []
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             worker_id, jid1 = await setup_running_job(
                 conn,
                 schema,
@@ -610,7 +626,7 @@ async def test_isolate_self_writes_attempt_rows(module_pg_schema: ModulePgSchema
         await isolate_self(deps, worker_id, shutdown)
         assert shutdown.is_set()
 
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             attempts = await conn.fetch(
                 f'SELECT job_id, attempt, outcome, error_class FROM "{schema}".job_attempts '
                 "WHERE job_id = ANY($1) ORDER BY job_id",
@@ -645,9 +661,9 @@ async def test_isolate_self_non_retryable_mirrors_sweep1(
     and the crashed arm self-describes on the JOB row too: the
     pre-fix template left error_class/error_message NULL there while the
     sweep stamped its own, despite the branch-for-branch mirror claim."""
-    stack, deps, schema = await _setup_fast(module_pg_schema)
+    stack, deps, schema, obs_conn = await _setup_fast(module_pg_schema)
     try:
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             worker_id, job_id = await setup_running_job(
                 conn,
                 schema,
@@ -667,7 +683,7 @@ async def test_isolate_self_non_retryable_mirrors_sweep1(
         await isolate_self(deps, worker_id, shutdown)
         assert shutdown.is_set()
 
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             row = await conn.fetchrow(
                 f"SELECT status, finished_at, scheduled_at, error_class, error_message "
                 f'FROM "{schema}".jobs WHERE id = $1',
@@ -705,9 +721,9 @@ async def test_acceptance_definition_heartbeat_extension(
     lock_expires_at is live (future-dated against the server clock read
     alongside it), and last_heartbeat_at / workers.last_seen_at stay
     fresh (never staler than one missed tick), sampled three times."""
-    stack, deps, schema = await _setup_fast(module_pg_schema)
+    stack, deps, schema, obs_conn = await _setup_fast(module_pg_schema)
     try:
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             worker_id, j1 = await setup_running_job(
                 conn,
                 schema,
@@ -729,7 +745,7 @@ async def test_acceptance_definition_heartbeat_extension(
             for _ in range(3):
                 await asyncio.sleep(_HEARTBEAT_INTERVAL + 0.05)
 
-                async with deps.heartbeat_pool.acquire() as conn:
+                async with contextlib.nullcontext(obs_conn) as conn:
                     ws = await conn.fetchrow(
                         f"SELECT now() AS pg_now, last_seen_at "
                         f'FROM "{schema}".workers WHERE id = $1',
@@ -799,7 +815,7 @@ async def test_threshold_gated_renewal_selects_rows_by_remaining_lease(
     from taskq.backend._sql import build_heartbeat_sql, parse_rowcount
     from taskq.worker.heartbeat import _lease_renewal_threshold
 
-    stack, deps, schema = await _setup_fast(module_pg_schema)
+    stack, _deps, schema, obs_conn = await _setup_fast(module_pg_schema)
     try:
         lease = timedelta(seconds=60.0)
         # The shipped default-config threshold (10s interval, 3 tolerated
@@ -822,7 +838,7 @@ async def test_threshold_gated_renewal_selects_rows_by_remaining_lease(
         no_lease_id = new_uuid()
         disowned_id = new_uuid()
 
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             for wid in (worker_id, other_worker):
                 await conn.execute(
                     f'INSERT INTO "{schema}".workers '  # Why: schema is the fixture's throwaway identifier; every value is $n-bound.
