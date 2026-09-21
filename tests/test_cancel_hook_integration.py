@@ -452,17 +452,24 @@ async def test_force_cancel(pg_dsn: str) -> None:
 async def test_abandoned(pg_dsn: str) -> None:
     """Abandoned path.
 
-    Uses cancel_grace=0.1s and cleanup_grace=0.05s (total 0.15s) with
-    heartbeat_interval=0.2s so the combined deadline is reliably reached
-    on the same tick as phase-2, guaranteeing ABANDON_PENDING is set
-    before task.cancel() and the consumer skips mark_cancelled.
+    Uses cancel_grace=0.1s and cleanup_grace=0. The ladder fires
+    task.cancel() on the first tick whose elapsed since the phase-1
+    observation clears cancel_grace, and queues the abandon on that same
+    tick only when the same elapsed also clears
+    cancel_grace + cleanup_grace. With cleanup_grace=0 the two predicates
+    are identical, so whichever tick fires task.cancel() has
+    ABANDON_PENDING set first — the consumer skips mark_cancelled by
+    construction, not by the tick landing outside the [cancel_grace,
+    combined) window a nonzero cleanup grace leaves open (at the module
+    fixture's 0.2s interval that window is most of a tick, and a loaded
+    runner flaked the row to 'cancelled').
     """
     worker_id = new_uuid()
     async with _test_infra(
         pg_dsn,
         worker_id,
         cancellation_grace_period="0.1",
-        cleanup_grace_period="0.05",
+        cleanup_grace_period="0",
         # 3.0 >= the cascade floor 2.8 at the factory defaults (h=0.5, c=0.1).
         lock_lease="3.0",
     ) as (deps, backend, settings):

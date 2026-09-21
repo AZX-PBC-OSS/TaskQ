@@ -445,6 +445,21 @@ transaction as the reclaim UPDATE.  Consumers observe crash-reclaimed jobs via
 `Backend.poll_reclaim_events(after_id)` or `TaskQ.watch_reclaims(after_id)`
 without enumerating every `job_id`.
 
+Coverage note: the feed carries both reclaim writers.  The leader's sweep
+rows name the deadline that fired (`lock_expired` / `heartbeat_timeout`);
+`isolate_self` (worker heartbeat loss) performs the same `running →
+pending` / `running → crashed` transitions and writes the same
+`reason='lock_expired'` event with `cause='isolate_self'` (see the isolate
+asymmetries under
+[Crash-reclaim interaction](#crash-reclaim-interaction)).  The attempt row
+is still the complete HeartbeatLost source: the isolate path writes a
+`job_attempts` row under `error_class='HeartbeatLost'` whichever arm a job
+lands on, while a `jobs`-table query (`status='crashed'` with
+`error_class='HeartbeatLost'`) catches the terminal arm only -- a
+heartbeat-lost job with retry budget left re-pends to `status='pending'`
+and keeps whatever `error_class` the row had before.  The admin UI's Jobs
+page (`GET /admin/jobs`) reads the same tables.
+
 A `running → pending` reclaim (crash or heartbeat) reschedules through the
 job's own `RetryPolicy` (base, cap, backoff kind and jitter), exactly as an
 application-level failure does, not a hardcoded flat interval, and clamped at
@@ -550,35 +565,66 @@ other assumption about the deployment is wrong).
 **Worked example: fan-out completion.** The motivating use case: a
 producer fans out N jobs and must fire a callback when *all* of them
 reach a terminal state. Without a reclaim feed, a SIGKILLed worker
-leaves the counter stuck at 1 forever (the job is retried or crashed in
-SQL, and nobody in application code hears about it):
+leaves those jobs invisible forever (the job is retried or crashed in
+SQL, and nobody in application code hears about it). Count the
+remaining jobs from the `jobs` table and use the feed as a wake
+signal, never as the ledger: the reclaim feed only ever carries
+crash-reclaim events (the leader sweep's, and `isolate_self`'s under
+`cause='isolate_self'`), so a consumer that decrements a counter once
+per event can never reach zero -- a fan-out whose jobs all succeed
+delivers no reclaim event at all, and the counter stalls above zero
+while the feed looks healthy:
 
 ```python
-outstanding = len(job_ids)
-
-
-async def track_completions(tq: TaskQ) -> None:
-    global outstanding
+async def track_completions(tq: TaskQ, job_ids: list[JobId]) -> None:
     cursor = await load_reclaim_cursor()  # your own durable store
-    async for evt in tq.watch_reclaims(after_id=cursor):
-        # evt.detail: from_state/to_state ('pending' retry, or terminal
-        # 'crashed'/'cancelled'), reason='lock_expired', worker_id.
-        if evt.detail["to_state"] != "pending":  # terminal reclaim only;
-            outstanding -= 1  # retries redispatch normally
-        cursor = evt.event_id
-        await save_reclaim_cursor(cursor)  # persist AFTER processing;
-        # a crash before this re-delivers the event (at-least-once;
-        # dedupe on event_id if your decrement isn't idempotent)
-        if outstanding == 0:
-            await fire_completion_callback()
+    wake = asyncio.Event()
+
+    async def drain_feed() -> None:
+        nonlocal cursor
+        # watch_reclaims is an infinite generator: it ends only by
+        # cancellation (break out of the async for, or cancel the
+        # task), so this task runs until the tracker finishes.
+        async for evt in tq.watch_reclaims(after_id=cursor):
+            cursor = evt.event_id
+            await save_reclaim_cursor(cursor)  # persist AFTER processing;
+            # a crash before this re-delivers the event (at-least-once;
+            # dedupe on event_id if your recount isn't idempotent)
+            wake.set()  # a reclaim landed; recount now
+
+    feed = asyncio.create_task(drain_feed())
+    try:
+        while True:
+            # Recount, don't decrement: this feed only ever carries
+            # crash-reclaim events (sweep or isolate_self), so a
+            # normal-path completion (success, failure, cooperative
+            # cancel) delivers no event and per-event counting can
+            # never reach zero. The recount query is the ledger.
+            if await count_unfinished(tq, job_ids) == 0:  # your own query
+                await fire_completion_callback()
+                return
+            # The feed is a wake optimisation, not the ledger: normal-
+            # path terminal writes (success, failure, cooperative
+            # cancel) land no reclaim event, so a fan-out that never
+            # crashes delivers no event and only this cadence fires
+            # the callback.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(wake.wait(), RECOUNT_INTERVAL)
+            wake.clear()
+    finally:
+        feed.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await feed
 ```
 
 Terminal states reached on the normal path (success, failure,
-cooperative cancel) are counted as each job's own result is recorded:
-`watch_reclaims` exists to close the crash gap, where *no* application
-code runs. Only terminal reclaims decrement the counter: a
-`to_state='pending'` event means the job was rescheduled and will be
-counted when it eventually lands terminal. The producer must only prune
+cooperative cancel) need no feed at all: the recount sees them as soon
+as each job's own terminal write commits, which is why the loop recounts
+on a fixed cadence (`RECOUNT_INTERVAL`) and treats a reclaim event only
+as an early wake.  `watch_reclaims` exists to
+close the crash gap, where *no* application code runs, and to wake the
+tracker the moment a reclaim lands instead of leaving it to a fixed
+polling cadence. The producer must only prune
 `job_events` rows older than every live consumer's persisted cursor;
 rows pruned before a slow consumer reads them are permanently lost to
 that consumer.
@@ -638,7 +684,11 @@ each build. It stays transactional deliberately: the `CONCURRENTLY` form
 deadlocks under the runner's own serialized-migrator advisory lock, so apply
 it during a maintenance window (or when `jobs` is small/quiescent, e.g. right
 after a prune sweep) on any deployment where `jobs` is large; the migration
-file's header carries the full derivation.
+file's header carries the full derivation. The archive-candidate index
+migration `01.00.17_01` has a strictly wider profile still: its `DROP INDEX`
+takes `ACCESS EXCLUSIVE` on `jobs` and holds it, same transaction as the
+`CREATE INDEX`, for the whole build, so reads queue behind it too (see
+[the `01.00.17_01` note in the upgrading guide](guides/upgrading.md#migration-010017_01-holds-access-exclusive-on-jobs-for-the-whole-index-rebuild)).
 
 ---
 

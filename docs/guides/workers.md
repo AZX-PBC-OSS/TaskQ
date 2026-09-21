@@ -502,6 +502,8 @@ If `heartbeat_pool.acquire()` times out, raises a connection error, `run_in_tx` 
 3. For each job: transitions retryable jobs to `pending` (scheduled 5s in the future) and non-retryable jobs to `crashed`. Writes an attempt record with `error_class=HeartbeatLost`.
 4. Always sets `shutdown_event` so the process exits.
 
+The isolate path writes the same reclaim event the leader's sweep writes (`reason='lock_expired'`, `cause='isolate_self'`), so heartbeat-loss reclaims reach the `Backend.poll_reclaim_events()` / `TaskQ.watch_reclaims()` feed exactly like sweep reclaims.
+
 ---
 
 ## Leader election

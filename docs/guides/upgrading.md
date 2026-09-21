@@ -2247,3 +2247,47 @@ cannot-prove-it doctrine both fences apply. The in-memory testing backend
 mirrors the semantics exactly. No operator action is needed beyond applying
 the migration first; the column is never read by user-facing surfaces and
 the displayed `attempt` counter is unchanged.
+
+### Migration `01.00.17_01` holds `ACCESS EXCLUSIVE` on `jobs` for the whole index rebuild
+
+> **Unreleased.** Operational note for the archive-candidate index
+> migration; nothing breaks, but the apply blocks reads and writes on
+> `jobs` for the duration of the build.
+
+`01.00.17_01_pre_archive_candidate_index_composite.sql` rebuilds
+`jobs_finished_at_idx` as `(status, finished_at) INCLUDE (id)`: a `DROP
+INDEX` then a `CREATE INDEX`, sharing the runner's one transaction. The
+migration file's own header (frozen text: the ledger records a SHA-256 of
+every bundled file and `migrate up` fails closed on checksum drift, so the
+header cannot be corrected in place) calls the rebuild "instant (one index,
+metadata-only lock windows)". Measured through the real migration runner,
+it is neither:
+
+- The `DROP INDEX` takes `ACCESS EXCLUSIVE` on `jobs` within about a
+  millisecond and, because it shares the transaction with the `CREATE
+  INDEX`, holds it until `COMMIT`, i.e. for the whole build. Measured:
+  roughly 0.03 s at 100k rows (36 MB), 0.37 s at 1M (305 MB), 3.1 s at 10M
+  (2980 MB). For that whole window every enqueue, every dispatch `UPDATE`
+  and even a plain `count(*)` queue behind it: the lock blocks reads and
+  writes alike, not writes only.
+- `ddl_lock_timeout` bounds the WAIT for the lock, not the hold: once the
+  `DROP INDEX` holds `jobs`, a build that runs long runs long inside the
+  lock (see
+  [the migration gave up waiting for a table lock](#the-migration-gave-up-waiting-for-a-table-lock)).
+- A build longer than `dispatcher_command_timeout` (5.0 s by default) is
+  worse than a latency stall: the dispatch claim runs on the dispatcher
+  pool under that per-query budget, so past the budget the fleet's
+  dispatch iterations error instead of queueing, until the migration
+  commits.
+- The transaction is still the right shape on the abort side: a
+  `lock_timeout` abort rolls back cleanly, the old index survives, the
+  ledger stays empty, and no `INVALID` index is left behind. And exactly
+  one index changes hands, so a moment of concurrent prune-and-retry sees
+  the old plan shape, not an error.
+
+The scale is modest at defaults: the shipped 30-day
+`prune_retention_succeeded` keeps the hot `jobs` table at roughly a month
+of terminal throughput, so 10M rows and a 3 s stall is reachable without
+being typical. Apply during a maintenance window, or when `jobs` is small
+or quiescent (e.g. right after a prune sweep), on any deployment where
+`jobs` is large.
