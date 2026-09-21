@@ -21,6 +21,15 @@ Two concrete leaks, both verified by execution rather than assumed:
   included), in any casing -- appearing in a message is masked, so a DSN
   that reaches an exception by any route cannot be forwarded verbatim, in
   whichever spelling it carries the credential.
+* **Bearer tokens and signatures in HTTP-failure bodies.** A managed-identity
+  credential failure (azure-identity's ``HttpResponseError`` shape) appends
+  the HTTP body to ``str(exc)``, and the body carries a raw access token --
+  either as a standalone JWT or after ``Authorization: Bearer``. Presigned
+  AWS query strings carry the same class of credential as
+  ``X-Amz-Signature=``/``sig=`` hex. All three are masked (issue #317,
+  verified by an end-to-end repro through the pg-credential-refresh failure
+  log site); the JWT mask's conservative shape is a stated trade-off, see
+  :data:`_JWT_RE`.
 
 Scope, deliberately narrow: only ``DETAIL`` is dropped. ``HINT`` is Postgres's
 suggested fix and ``CONTEXT`` is the PL/pgSQL call stack -- both structural,
@@ -206,6 +215,57 @@ _URI_PARAM_CRED_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: ``Authorization: Bearer <token>`` in any casing and loose around the colon
+#: and spaces. Group 1 keeps the header text verbatim so the masked form still
+#: reads ``Bearer ***``; the token class stops at whitespace and the list
+#: delimiters a rendered header or a JSON-ish body can carry. ``[ \t]``, not
+#: ``\s``: ``\s`` crosses newlines, and a value that can only be terminated by
+#: a line boundary must not be able to peer past one.
+#:
+#: Matched before the JWT mask below: the header form is the more specific
+#: shape, so it claims the value first and the JWT mask finds nothing left of
+#: it to re-match.
+_BEARER_TOKEN_RE = re.compile(
+    r"(\bauthorization[ \t]*:[ \t]*bearer[ \t]+)[^\s,;\"]+",
+    re.IGNORECASE,
+)
+
+#: A JWT-shaped token: three base64url segments separated by two dots. This is
+#: deliberately CONSERVATIVE, a stated trade-off rather than a parsed JWT:
+#:
+#: * each segment must be 16+ chars. Real Entra ID / access-token segments are
+#:   far longer (a JOSE header alone is ~36), while the dotted three-segment
+#:   strings that appear legitimately -- semvers, dotted ids, filenames -- are
+#:   short in at least one segment. The floor is what keeps ``abc.def.ghi``
+#:   and ``1.2.3`` intact; the cost is a hypothetical short JWT (an ``alg:
+#:   none`` token) shipping verbatim. Un-masking a token that short loses
+#:   nothing real; mangling a short id costs a diagnostic.
+#: * the charset is base64url only (``A-Za-z0-9_-``), so ``:``, ``/``, ``@``,
+#:   ``?``, ``=`` -- the punctuation a URI or a path is built from -- can never
+#:   sit inside a match.
+#: * exactly two dots, all three segments, word-bounded: a plain base64 blob
+#:   with no dots is not token-shaped and is left alone.
+#:
+#: Written FLAT -- three separate ``{16,}`` repeats, no quantifier inside a
+#: quantifier -- because :func:`test_no_nested_quantifier_regexes_in_taskq_obs`
+#: bans the nested shape a ``(?:\.{seg}){2,}`` spelling would compile to, and
+#: the flat form matches the same strings.
+_JWT_RE = re.compile(r"\b[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b")
+
+#: AWS SigV4 signature parameters: the ``X-Amz-Signature=`` query parameter of
+#: a presigned URL and the shorter ``sig=`` spelling. The value is the hex
+#: request signature -- credential material exactly like a password -- and the
+#: password-family name list below deliberately does not carry ``sig`` (too
+#: generic a name to redact in non-AWS text), so this needs its own pattern.
+#: Group 1 keeps the parameter name verbatim, as :data:`_URI_PARAM_CRED_RE`
+#: does, so the masked form still names which parameter carried it.
+#: ``IGNORECASE``: the hex value is lowercase in the spec and case-variant in
+#: the wild, and the parameter casing is whatever the signer emitted.
+_AWS_SIG_RE = re.compile(
+    r"((?:[?&]|(?<![A-Za-z0-9_]))(?:x-amz-signature|sig)=)[0-9a-f]+",
+    re.IGNORECASE,
+)
+
 #: Lowercased trigger substrings for :data:`_URI_PARAM_CRED_RE`'s prefilter.
 #: Derived from the same name tuple, so a name added above is guarded here
 #: without a second edit, a prefilter that drifts from its pattern silently
@@ -246,35 +306,46 @@ def set_exception_redaction_enabled(enabled: bool) -> None:
 
 
 def _scrub_text(text: str) -> str:
-    """Drop Postgres DETAIL lines and mask URI credentials.
+    """Drop Postgres DETAIL lines and mask bearer, JWT and URI credentials.
 
     Both newline forms are covered: real newlines (``str(exc)``) by
     :data:`_PG_DETAIL_RE`, and the literal ``\\n`` ``repr()`` flattens them
     into by :data:`_PG_DETAIL_ESCAPED_RE`.
 
-    Both credential shapes are masked: userinfo (``scheme://user:pass@host``,
-    empty username included) by :data:`_URI_CRED_RE`, then password-family
-    connection parameters, query-string and libpq keyword/value alike, in any
-    casing, by :data:`_URI_PARAM_CRED_RE`. The order is what makes a DSN
-    carrying both at once safe (``scheme://user:SECRET@host/db?password=OTHER``):
-    the userinfo mask runs first and claims the password up to the FIRST
-    ``@``, so an RFC 3986-shaped DSN leaves the parameter mask a string whose
-    only ``@`` is the one the userinfo mask wrote ``***`` in front of. The
-    boundary really is the first ``@``, not the RFC 3986 userinfo end: a
-    password carrying an unencoded ``@`` (``scheme://user:SEC@RET@host``) is
-    masked only up to it and the tail (``RET``) rides through. That is
-    accepted rather than guessed around: an unencoded ``@`` is not valid in
-    userinfo (RFC 3986 requires percent-encoding), and in arbitrary non-URI
-    text a later ``@`` more often belongs to the next token (an email
-    address, a mention) than to the password, so last-``@`` matching would
-    over-delete diagnostics to catch a malformed shape. Neither mask's
-    ``***`` output contains anything the other regex can re-match, each
-    fires exactly once.
+    Four credential shapes are masked, in this order:
+
+    1. ``Authorization: Bearer <token>`` headers, by :data:`_BEARER_TOKEN_RE`.
+    2. Standalone JWT-shaped tokens (three base64url segments, two dots), by
+       :data:`_JWT_RE` -- the conservative-shape trade-off is documented there.
+       It runs after the bearer pass, so a header-shaped value is claimed by
+       the more specific mask first, and before the URI passes, so a token
+       riding in URI userinfo cannot be seen half-consumed.
+    3. AWS SigV4 signature parameters (``X-Amz-Signature=`` / ``sig=``), by
+       :data:`_AWS_SIG_RE` -- the password-family name list deliberately
+       excludes ``sig``, so this needs its own pattern.
+    4. userinfo (``scheme://user:pass@host``, empty username included) by
+       :data:`_URI_CRED_RE`, then password-family connection parameters,
+       query-string and libpq keyword/value alike, in any casing, by
+       :data:`_URI_PARAM_CRED_RE`. The order is what makes a DSN carrying
+       both at once safe (``scheme://user:SECRET@host/db?password=OTHER``):
+       the userinfo mask runs first and claims the password up to the FIRST
+       ``@``, so an RFC 3986-shaped DSN leaves the parameter mask a string whose
+       only ``@`` is the one the userinfo mask wrote ``***`` in front of. The
+       boundary really is the first ``@``, not the RFC 3986 userinfo end: a
+       password carrying an unencoded ``@`` (``scheme://user:SEC@RET@host``) is
+       masked only up to it and the tail (``RET``) rides through. That is
+       accepted rather than guessed around: an unencoded ``@`` is not valid in
+       userinfo (RFC 3986 requires percent-encoding), and in arbitrary non-URI
+       text a later ``@`` more often belongs to the next token (an email
+       address, a mention) than to the password, so last-``@`` matching would
+       over-delete diagnostics to catch a malformed shape. Neither mask's
+       ``***`` output contains anything the other regex can re-match, each
+       fires exactly once.
 
     The credential masks are applied unconditionally, outside the
     ``_redaction_enabled`` guard: the debugging case that wants a row value
-    never wants a password, and a DSN reaching a telemetry vendor is a
-    credential disclosure regardless of why redaction was relaxed.
+    never wants a password, and a DSN or an access token reaching a telemetry
+    vendor is a credential disclosure regardless of why redaction was relaxed.
 
     Each regex is behind a substring prefilter stating a NECESSARY condition
     for that pattern to match at all, derived from the pattern text:
@@ -282,6 +353,9 @@ def _scrub_text(text: str) -> str:
     * ``_PG_DETAIL_RE`` anchors a line on the literal ``DETAIL:`` and
       ``_PG_DETAIL_ESCAPED_RE`` matches it after an escaped newline, both
       require ``"DETAIL:"`` in the subject.
+    * ``_BEARER_TOKEN_RE`` requires the literal ``bearer``.
+    * ``_JWT_RE`` requires at least two dots (one ``str.count``).
+    * ``_AWS_SIG_RE`` requires ``sig=`` or ``x-amz-signature=``.
     * ``_URI_CRED_RE`` requires a ``scheme://`` separator.
     * ``_URI_PARAM_CRED_RE`` requires a password-family parameter name
       followed by ``=``, compared case-insensitively to match the pattern ,
@@ -291,15 +365,27 @@ def _scrub_text(text: str) -> str:
 
     Skipping a substitution when its trigger substring is absent cannot
     change the output (the pattern could not have matched), which collapses
-    the four regex passes to three substring scans for the common
-    error-bearing log field, the cost that matters at error-storm rates.
+    the regex passes to substring scans for the common error-bearing log
+    field, the cost that matters at error-storm rates. The lowercased subject
+    is recomputed only after a pass that actually substituted, so the clean
+    path lowers once, as it always did.
     """
     if _redaction_enabled and "DETAIL:" in text:
         text = _PG_DETAIL_RE.sub("", text)
         text = _PG_DETAIL_ESCAPED_RE.sub("", text)
+    lowered = text.lower()
+    if "bearer" in lowered:
+        text = _BEARER_TOKEN_RE.sub(r"\1***", text)
+        lowered = text.lower()
+    if text.count(".") >= 2:
+        text = _JWT_RE.sub("***", text)
+        lowered = text.lower()
+    if "sig=" in lowered or "x-amz-signature=" in lowered:
+        text = _AWS_SIG_RE.sub(r"\1***", text)
+        lowered = text.lower()
     if "://" in text:
         text = _URI_CRED_RE.sub(r"\1:***@", text)
-    lowered = text.lower()
+        lowered = text.lower()
     if any(trigger in lowered for trigger in _CRED_PARAM_TRIGGERS):
         return _URI_PARAM_CRED_RE.sub(r"\1***", text)
     return text

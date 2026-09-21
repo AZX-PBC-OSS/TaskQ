@@ -1761,3 +1761,166 @@ def test_repr_line_embedded_in_a_traceback_keeps_its_closers() -> None:
     # The real traceback lines around the repr line are untouched.
     assert "Traceback (most recent call last):" in safe
     assert "another exception occurred" in safe
+
+
+# ── bearer / JWT / AWS-signature credential masks (issue #317) ───────────
+#
+# A managed-identity access token reached logs through ``error=str(exc)``:
+# an azure-identity-shaped ``HttpResponseError`` appends the HTTP body to
+# ``str(exc)``, the body carries a raw bearer JWT, and the scrub pipeline's
+# masks (DETAIL lines, URI userinfo, password-family query params) matched
+# none of it. These tests pin the new masks AND the false-positive boundary:
+# a conservative JWT shape must not mangle short ids or non-JWT base64.
+
+_ACCESS_TOKEN = (
+    "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9"
+    ".eyJhdWQiOiJkYi1jbGllbnQiLCJpc3MiOiJodHRwczovL3N0cy5uZXQifQ"
+    ".KmZ0Y2hfNFJlNGxseV9zZWNyZXRfc2lnbmF0dXJlX2J5dGVz"
+)
+
+
+class _HttpResponseShapedError(Exception):
+    """Mimics azure.core's ``HttpResponseError``: ``str(exc)`` appends the
+    HTTP response body, which is where a managed-identity token lives."""
+
+    def __init__(self, body: str) -> None:
+        super().__init__("ManagedIdentityCredential authentication failed")
+        self._body = body
+
+    def __str__(self) -> str:
+        return f"{self.args[0]}\nContent: {self._body}"
+
+
+def test_access_token_in_http_response_body_is_masked_on_the_error_field() -> None:
+    """The triage's repro shape, end to end through the exact call the log
+    pipeline makes: the token must not survive, and the DSN control must
+    still mask the way it always has."""
+    from taskq.obs._redact_exc import scrub_exception_field
+
+    exc = _HttpResponseShapedError(f'{{"access_token": "{_ACCESS_TOKEN}", "token_type": "Bearer"}}')
+    scrubbed = scrub_exception_field("error", str(exc))
+    assert isinstance(scrubbed, str)  # Why: narrows the object return for the membership asserts.
+    assert _ACCESS_TOKEN not in scrubbed, "access token reached the scrubbed error field"
+    assert "***" in scrubbed
+
+    # The scrub must not have cost the diagnostic: the provider failure
+    # itself and the "Content:" separator stay for the operator.
+    assert "ManagedIdentityCredential" in scrubbed
+
+    # DSN control: unchanged behaviour on the shape the URI mask exists for.
+    dsn = "connect failed: postgresql://taskq:hunter2@db.internal:5432/taskq"
+    assert scrub_exception_field("error", dsn) == (
+        "connect failed: postgresql://taskq:***@db.internal:5432/taskq"
+    )
+
+
+def test_access_token_is_masked_when_the_exception_object_is_passed_directly() -> None:
+    """``error=exc`` (object, not string) renders through
+    ``safe_exception_message`` and needs the same masks."""
+    from taskq.obs._redact_exc import safe_exception_message
+
+    exc = _HttpResponseShapedError(f'{{"access_token": "{_ACCESS_TOKEN}"}}')
+    safe = safe_exception_message(exc)
+    assert _ACCESS_TOKEN not in safe
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        f"Authorization: Bearer {_ACCESS_TOKEN}",
+        f"authorization: bearer {_ACCESS_TOKEN}",
+        f"Authorization:Bearer {_ACCESS_TOKEN}",
+        f"AUTHORIZATION  :  BEARER {_ACCESS_TOKEN}",
+    ],
+    ids=["plain", "lowercase", "no-space", "shouty-loose-space"],
+)
+def test_bearer_authorization_header_token_is_masked(header: str) -> None:
+    from taskq.obs._redact_exc import _scrub_text
+
+    out = _scrub_text(f"request rejected: {header}")
+    assert _ACCESS_TOKEN not in out
+    # The header text is kept verbatim, only the token is replaced.
+    assert out.endswith("BEARER ***") or out.endswith("Bearer ***") or out.endswith("bearer ***")
+
+
+def test_opaque_bearer_token_is_masked_even_when_not_jwt_shaped() -> None:
+    """An opaque bearer token (no dot structure) must be caught by the
+    BEARER mask specifically: the JWT mask cannot see it, so removing the
+    bearer pattern turns this red on its own (mutation sharpness)."""
+    from taskq.obs._redact_exc import _scrub_text
+
+    opaque = "smQ7_wJ8mP2xLk9ZhR4tNvBc3dF6gH1jY0pQ5sV2eT8o"
+    assert "." not in opaque
+    out = _scrub_text(f"Authorization: Bearer {opaque} :: 401")
+    assert opaque not in out
+    assert out == "Authorization: Bearer *** :: 401"
+
+
+def test_jwt_shaped_token_is_masked_without_a_bearer_header() -> None:
+    """A bare JWT (no ``Authorization:`` prefix around it) is masked too:
+    response bodies quote the token raw."""
+    from taskq.obs._redact_exc import _scrub_text
+
+    out = _scrub_text(f"token {_ACCESS_TOKEN} rejected: expired")
+    assert _ACCESS_TOKEN not in out
+    assert out == "token *** rejected: expired"
+
+
+def test_jwt_inside_a_bearer_header_is_masked_once_without_residue() -> None:
+    """Bearer and JWT passes compose: the bearer mask claims the header form,
+    and nothing the masks write re-triggers a later pass."""
+    from taskq.obs._redact_exc import _scrub_text
+
+    raw = f"connect failed: postgresql://u:pw@h/db response: Authorization: Bearer {_ACCESS_TOKEN}"
+    out = _scrub_text(raw)
+    assert _ACCESS_TOKEN not in out
+    assert "pw@" not in out
+    assert out == "connect failed: postgresql://u:***@h/db response: Authorization: Bearer ***"
+
+
+def test_x_amz_signature_query_param_is_masked() -> None:
+    """Presigned-S3-style query strings: the signature hex is credential
+    material and the password-family param mask does not cover the name."""
+    from taskq.obs._redact_exc import _scrub_text
+
+    raw = (
+        "GET https://s3.example.test/bucket/obj"
+        "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+        "&X-Amz-Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        "&X-Amz-Expires=60 failed"
+    )
+    out = _scrub_text(raw)
+    assert "0123456789abcdef" not in out
+    assert "X-Amz-Signature=***" in out
+    assert "X-Amz-Algorithm=AWS4-HMAC-SHA256" in out  # non-credential params stay
+
+
+def test_short_sig_query_param_is_masked() -> None:
+    """``sig=`` in a query string (the other common presign spelling) is
+    masked whatever the hex length."""
+    from taskq.obs._redact_exc import _scrub_text
+
+    out = _scrub_text("download failed: https://svc.example.test/obj?sig=deadbeefdeadbeef")
+    assert "deadbeef" not in out
+    assert "sig=***" in out
+
+
+@pytest.mark.parametrize(
+    "benign",
+    [
+        "version 1.2.3 deployed",  # dotted, but segments far too short
+        "job abc-123.def-456.ghi-789 finished",  # three segments, all short
+        "digest c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0",  # base64 blob, no dots: not JWT-shaped
+        "pair aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbb ok",  # two segments, not three
+        "epoch ms 1758451200000.125 has a dot",  # numeric, single dot
+        "plain failure: connection refused after 3 attempts",
+    ],
+    ids=["semver", "short-ids", "base64-blob", "two-segments", "numeric-dot", "clean"],
+)
+def test_benign_dotted_and_base64_like_strings_survive_scrubbing(benign: str) -> None:
+    """The JWT shape is deliberately conservative (three base64url segments,
+    each 16+ chars): short ids, semvers and non-JWT base64 must come through
+    the scrub byte-identical."""
+    from taskq.obs._redact_exc import _scrub_text
+
+    assert _scrub_text(benign) == benign
