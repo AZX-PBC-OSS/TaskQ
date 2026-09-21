@@ -11,6 +11,7 @@ resolution step that runs before it and today never even reaches the
 dispatch helper.
 """
 
+import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -22,7 +23,14 @@ from taskq._ids import new_uuid
 from taskq.backend._dispatch import _dispatch_batch
 from taskq.backend._dispatch_sql import DISPATCH_STRICT_FIFO_SQL, dispatch_batch
 from taskq.backend._sql_templates import render
-from taskq.testing.otel import collect_metrics, counter_value, setup_meter, setup_tracer
+from taskq.testing.otel import (
+    collect_metrics,
+    counter_data_points,
+    counter_value,
+    histogram_points,
+    setup_meter,
+    setup_tracer,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -227,6 +235,153 @@ async def test_claimable_probe_failure_still_emits_telemetry(
         "failure counter -- indistinguishable from an idle queue"
     )
     assert counter_value(reader, failure_metric_names[0]) >= 1
+
+
+# ── the pool-acquire raise site (the round's first stage) ────────────────
+
+
+class _ExpiringAcquirePool:
+    """A pool whose acquire wait always times out.
+
+    ``acquire()`` models asyncpg.Pool.acquire: it returns the async
+    context manager, and the WAIT (the part that can raise) happens on
+    ``__aenter__``. An exhausted dispatcher pool on a saturated PG
+    raises TimeoutError here, the round's very first stage, before the
+    resolve, the probe, and the claim can even run.
+    """
+
+    class _Ctx:
+        async def __aenter__(self) -> object:
+            raise TimeoutError("simulated dispatcher pool acquire timeout")
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    def acquire(self, *, timeout: float | None = None) -> "_ExpiringAcquirePool._Ctx":
+        return self._Ctx()
+
+
+async def test_pool_acquire_failure_emits_failure_counter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A round that dies waiting for a dispatcher connection must record
+    the failure counter, the same record every sibling stage of the same
+    round (resolve, probe, claim) makes. The acquire stage sits OUTSIDE
+    the recording tries of those stages, so before the fix a pod whose
+    every round died on pool exhaustion or acquire timeout was, in the
+    metric stream, indistinguishable from one polling an idle queue:
+    silent on taskq.dispatch.failures, retries forever, /ready green."""
+    setup_tracer(monkeypatch)
+    reader = setup_meter(monkeypatch)
+
+    with pytest.raises(TimeoutError):
+        await _dispatch_batch(
+            _ExpiringAcquirePool(),  # type: ignore[arg-type] # Why: duck-typed pool; only acquire() is used.
+            render("taskq"),
+            2,
+            5.0,
+            "taskq",
+            new_uuid(),
+            ["default"],
+            10,
+            timedelta(seconds=30),
+            queue_mode_cache=None,
+        )
+
+    assert counter_value(reader, "taskq.dispatch.failures") >= 1, (
+        "a dispatch round that failed at the pool acquire emitted no "
+        "failure counter -- indistinguishable from an idle queue"
+    )
+    assert counter_data_points(reader, "taskq.dispatch.failures")[0].attributes, (
+        "the acquire-stage failure point must carry the stage labels"
+    )
+
+
+async def test_pool_wait_stays_out_of_the_query_duration_histogram(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pool wait is a different quantity from the SQL latency
+    ``taskq.dispatch.duration`` exists to measure (its contract is SQL
+    execution only): a pool-exhausted pod waiting seconds per round for a
+    connection runs zero SQL, so feeding the wait into that histogram
+    corrupts the dispatch p99 with zero-query samples. The wait lands in
+    its own histogram instead."""
+    setup_tracer(monkeypatch)
+    reader = setup_meter(monkeypatch)
+
+    with pytest.raises(TimeoutError):
+        await _dispatch_batch(
+            _ExpiringAcquirePool(),  # type: ignore[arg-type] # Why: duck-typed pool; only acquire() is used.
+            render("taskq"),
+            2,
+            5.0,
+            "taskq",
+            new_uuid(),
+            ["default"],
+            10,
+            timedelta(seconds=30),
+            queue_mode_cache=None,
+        )
+
+    assert histogram_points(reader, "taskq.dispatch.duration") == [], (
+        "pool wait was recorded on the SQL-latency histogram: the dispatch "
+        "p99 now mixes zero-query waits with query times"
+    )
+    wait_points = histogram_points(reader, "taskq.dispatch.pool_acquire_duration")
+    assert len(wait_points) == 1, (
+        "the pool wait must be observable on its own histogram, not dropped"
+    )
+    assert wait_points[0].count == 1
+    assert wait_points[0].sum > 0
+
+
+class _CancelledAcquirePool:
+    """A pool whose acquire wait is interrupted by cancellation: a
+    shutdown or a loop teardown landing while the round waits for a
+    connection."""
+
+    class _Ctx:
+        async def __aenter__(self) -> object:
+            raise asyncio.CancelledError()
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    def acquire(self, *, timeout: float | None = None) -> "_CancelledAcquirePool._Ctx":
+        return self._Ctx()
+
+
+async def test_cancelled_acquire_records_wait_not_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancelled round's wait still happened, so it records on the wait
+    histogram, but a cancellation is a shutdown, not a dispatch failure:
+    the failure counter stays silent, matching every sibling stage's
+    ``except Exception`` arms."""
+    setup_tracer(monkeypatch)
+    reader = setup_meter(monkeypatch)
+
+    with pytest.raises(asyncio.CancelledError):
+        await _dispatch_batch(
+            _CancelledAcquirePool(),  # type: ignore[arg-type] # Why: duck-typed pool; only acquire() is used.
+            render("taskq"),
+            2,
+            5.0,
+            "taskq",
+            new_uuid(),
+            ["default"],
+            10,
+            timedelta(seconds=30),
+            queue_mode_cache=None,
+        )
+
+    assert counter_value(reader, "taskq.dispatch.failures") == 0, (
+        "a cancelled round must not count as a dispatch failure"
+    )
+    wait_points = histogram_points(reader, "taskq.dispatch.pool_acquire_duration")
+    assert len(wait_points) == 1 and wait_points[0].count == 1, (
+        "the interrupted wait must still record its duration"
+    )
 
 
 # ── red-team: does the failure counter name the failure class? ──────────

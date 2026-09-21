@@ -565,7 +565,7 @@ async def test_stale_batches_server_cancel_is_transient_not_a_bug(
     streak and then deliberately kills the worker.
 
     Asserted on observable behaviour, not log text: a bug classification
-    increments ``leader_loop_unexpected_errors_total`` and, at the streak
+    increments ``loop_unexpected_errors_total`` and, at the streak
     cap, re-raises out of the loop task - so a cancel that is classified
     transiently leaves that counter at zero, keeps the sweep being
     re-attempted well past the cap, and leaves the loop task alive.
@@ -587,9 +587,7 @@ async def test_stale_batches_server_cancel_is_transient_not_a_bug(
     monkeypatch.setattr(
         transient_mod,
         "_unexpected_loop_errors",
-        unexpected_meter.create_counter(
-            "taskq.worker.leader_loop_unexpected_errors_total", unit="1"
-        ),
+        unexpected_meter.create_counter("taskq.worker.loop_unexpected_errors_total", unit="1"),
     )
 
     backend = _ScriptedBackend()
@@ -630,10 +628,7 @@ async def test_stale_batches_server_cancel_is_transient_not_a_bug(
             "the loop task died under repeated server-side cancels - a transient "
             "abort must never escalate to the backstop's deliberate kill"
         )
-        assert (
-            counter_value(unexpected_reader, "taskq.worker.leader_loop_unexpected_errors_total")
-            == 0
-        ), (
+        assert counter_value(unexpected_reader, "taskq.worker.loop_unexpected_errors_total") == 0, (
             "a server-side cancel of the stale-batches sweep hit the bug backstop - "
             "it is a transient abort and must take the sweep's warning path"
         )

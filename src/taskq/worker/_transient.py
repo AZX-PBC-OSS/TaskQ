@@ -168,12 +168,13 @@ def is_transient_pg_error(exc: BaseException, *, pooled: bool = False) -> bool:
 DEFAULT_MAX_CONSECUTIVE_UNEXPECTED = 5
 
 _unexpected_loop_errors = get_meter().create_counter(
-    name="taskq.worker.leader_loop_unexpected_errors_total",
+    name="taskq.worker.loop_unexpected_errors_total",
     unit="1",
-    description="Unexpected (non-transient) errors tolerated by a leader "
-    "maintenance loop's backstop, labelled by loop. Anything above zero "
-    "warrants investigation: either PG produced a shape the transient set "
-    "should learn, or the loop has a bug.",
+    description="Unexpected (non-transient) errors tolerated by a long-lived "
+    "loop's backstop, labelled by loop: the leader maintenance loops and "
+    "the worker producer loop. Anything above zero warrants investigation: "
+    "either PG produced a shape the transient set should learn, or the loop "
+    "has a bug.",
 )
 
 
@@ -214,8 +215,8 @@ class UnexpectedLoopErrorGuard:
         self._consecutive += 1
         _unexpected_loop_errors.add(1, {"loop": self._loop})
         _log.error(
-            "leader-loop-unexpected-error",
-            kind="leader_loop_unexpected_error",
+            "loop-unexpected-error",
+            kind="loop_unexpected_error",
             loop=self._loop,
             error=repr(exc),
             error_type=type(exc).__name__,

@@ -11,6 +11,8 @@ caches is defined one screen above it, and the queue-ops seam
 reference, worker → backend is the correct layer direction.
 """
 
+import asyncio
+import sys
 import time
 import weakref
 from collections.abc import Callable
@@ -31,7 +33,12 @@ from taskq.backend._sql_templates import SqlTemplates
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
 )
-from taskq.obs import get_logger, record_dispatch_duration, record_dispatch_failure
+from taskq.obs import (
+    get_logger,
+    record_dispatch_duration,
+    record_dispatch_failure,
+    record_pool_acquire_duration,
+)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -225,7 +232,31 @@ async def _dispatch_batch(
     # transaction here only tripled the cost of every claim; the claim is
     # one statement, so autocommit already gives it all the atomicity it
     # needs.
-    async with dispatcher_pool.acquire(timeout=acquire_timeout) as conn:
+    # The pool acquire is the round's FIRST stage, and its wait (the part
+    # that can raise) happens on the context manager's __aenter__, so it is
+    # acquired explicitly and released in the finally below. The wait is a
+    # different quantity from the SQL latency the sibling stages feed
+    # taskq.dispatch.duration with, so it gets its own histogram; the
+    # failure counter is round-scoped and records here as it does for the
+    # resolve, the probe, and the claim.
+    acquire_started = time.monotonic()
+    pool_ctx = dispatcher_pool.acquire(timeout=acquire_timeout)
+    try:
+        conn = await pool_ctx.__aenter__()
+    except asyncio.CancelledError:
+        record_pool_acquire_duration(queue_attr, time.monotonic() - acquire_started)
+        raise
+    except Exception:
+        record_pool_acquire_duration(queue_attr, time.monotonic() - acquire_started)
+        record_dispatch_failure(queue_attr)
+        raise
+    # The wait ended in a connection: record it here too. A completed
+    # wait is still a wait — the pool-exhausted pod whose multi-second
+    # waits eventually SUCCEED (the case the histogram exists to make
+    # visible) runs its SQL only after the wait, and only this record
+    # separates the two quantities in the metric stream.
+    record_pool_acquire_duration(queue_attr, time.monotonic() - acquire_started)
+    try:
         try:
             queue_modes = (
                 queue_mode_cache.resolved_modes(queues) if queue_mode_cache is not None else None
@@ -327,6 +358,12 @@ async def _dispatch_batch(
             # classification is unchanged.
             conn.terminate()
             raise
+    finally:
+        # Release the checked-out connection on every body exit, normal or
+        # exceptional. The in-flight exception info is forwarded so
+        # __aexit__ sees exactly what the async-with form would have
+        # passed it.
+        await pool_ctx.__aexit__(*sys.exc_info())
     return [_job_row_from_record(rec) for rec in records]
 
 
