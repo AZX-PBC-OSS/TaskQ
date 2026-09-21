@@ -80,6 +80,17 @@ pytestmark = pytest.mark.integration
 # finished_at) cannot catch a second row with a different finished_at).
 _FOLD_RETENTION = timedelta(hours=6)
 _FOLD_ARCHIVE_RETENTION = timedelta(days=2)
+
+#: Headroom for the stamping contract's upper side. archived_at and
+#: expire_at are two separate clock_timestamp() evaluations in one target
+#: list - two independent server clock reads, not one - so the pair can
+#: straddle a microsecond tick, and the DB host's scheduler can put a few
+#: microseconds between the two evaluations (CI observed retention + 3us).
+#: A LATER expire_at keeps the row longer - the safe direction - so the
+#: data-safety side below pins tight while this side only guards the
+#: contract against a real stamping bug (a wrong retention misses by
+#: seconds/minutes, not by the scheduler's microseconds).
+_STAMP_GAP_SANITY = timedelta(seconds=1)
 _STANDING_FIN = timedelta(hours=30)
 _LIVE_FIN = timedelta(hours=54)
 _NOW = datetime.now(UTC)
@@ -701,12 +712,25 @@ async def test_policy_never_drops_a_chunk_before_its_rows_expire(
             # The stamping contract: the write's expire_at is
             # archive-time plus the retention. archived_at and expire_at
             # are two separate clock_timestamp() evaluations in one
-            # target list, so the pair can straddle a microsecond tick:
-            # the tolerance is one clock tick, never more.
+            # target list - two independent server clock reads. The
+            # data-safety direction pins tight: the stamp may not cut the
+            # promised retention short by more than one straddled clock
+            # tick (an early expire_at is what lets the expiry sweep drop
+            # a live row). The upper side carries the scheduler's
+            # headroom (a late expire_at keeps the row longer - harmless)
+            # while still reding a real stamping bug; see
+            # _STAMP_GAP_SANITY for the CI evidence.
             stamp_gap = row["expire_at"] - row["archived_at"]
-            assert abs(stamp_gap - _FOLD_ARCHIVE_RETENTION) <= timedelta(microseconds=1), (
-                f"row {row['id']}: expire_at - archived_at = {stamp_gap}, "
-                f"not the promised {_FOLD_ARCHIVE_RETENTION}"
+            assert stamp_gap >= _FOLD_ARCHIVE_RETENTION - timedelta(microseconds=1), (
+                f"row {row['id']}: expire_at - archived_at = {stamp_gap}, cut "
+                f"the promised {_FOLD_ARCHIVE_RETENTION} short - the expiry "
+                "sweep could drop this row before its retention ends"
+            )
+            assert stamp_gap <= _FOLD_ARCHIVE_RETENTION + _STAMP_GAP_SANITY, (
+                f"row {row['id']}: expire_at - archived_at = {stamp_gap}, not "
+                f"the promised {_FOLD_ARCHIVE_RETENTION} (+{_STAMP_GAP_SANITY} "
+                "scheduler headroom) - the write stamps expire_at from "
+                "something other than archived_at + retention"
             )
             mine = [c for c in chunks if c["range_start"] <= row["finished_at"] < c["range_end"]]
             assert len(mine) == 1, f"row {row['id']} matches {len(mine)} chunks"
