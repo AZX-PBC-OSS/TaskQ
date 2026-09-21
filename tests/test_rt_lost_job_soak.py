@@ -56,7 +56,15 @@ from taskq.testing.fixtures import ModulePgSchema
 from taskq.testing.health import unique_health_sock_path
 from taskq.worker.run import _main
 
-pytestmark = [pytest.mark.integration, pytest.mark.slow]
+# The timeout: the soak's own wall bounds (240 paced rounds plus the
+# settle quiescence cap's ~4s/job backstop) exceed the 300s default on a
+# starved runner, and a pytest-timeout kill mid-asyncio is what leaves
+# tasks pending on the module loop (observed on the 3.14 leg: the 300s
+# backstop reded a healthy soak and the teardown found live tasks). 900
+# is the e2e family's value for the same wall-clock-bound tier; the
+# soak's internal caps stay the honesty mechanism - a lost job reds via
+# quiescence long before this.
+pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.timeout(900)]
 
 _ROUNDS = 240
 _STEP_BOUND_SECS = 30.0
