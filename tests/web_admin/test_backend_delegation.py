@@ -125,7 +125,8 @@ def test_cancel_passes_reason_to_backend(
     monkeypatch: pytest.MonkeyPatch,
     make_app_with_backend: Callable[..., Any],
 ) -> None:
-    """POST /jobs/{id}/cancel?reason=... passes the reason to the backend."""
+    """POST /jobs/{id}/cancel with the reason FORM field passes the reason to
+    the backend (the job detail page's cancel form collects it; #337)."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     jid = new_job_id()
     job_row = _stub_job_row(jid, status="running")
@@ -135,8 +136,7 @@ def test_cancel_passes_reason_to_backend(
     token = _get_csrf_token(client)
     resp = client.post(
         f"/jobs/{jid}/cancel",
-        params={"reason": "duplicate"},
-        data={"csrf_token": token},
+        data={"csrf_token": token, "reason": "duplicate"},
         follow_redirects=False,
     )
     assert resp.status_code == 303  # pyright: ignore[reportUnknownMemberType]
