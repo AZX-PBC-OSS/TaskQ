@@ -2168,25 +2168,28 @@ embedders that pass their loaded schema explicitly are unaffected.
 
 The load-time invariant on `WorkerSettings.lock_lease` was
 `lock_lease >= 4 * heartbeat_interval`. It ignored the per-command timeouts
-a heartbeat tick pays: a failed beat's gap spans the interval plus two
-`heartbeat_command_timeout` budgets (the tick's command sequence and its
-bounded rollback-or-close teardown, made true by enforcement by the
-per-tick command budget), and the isolate decision lands on the
-`(max_heartbeat_failures + 1)`-th consecutive failed beat, so the lease
-could lapse before the isolate decision even at the defaults under
+a heartbeat tick pays: a failed beat's cycle spans the interval plus one
+`heartbeat_command_timeout` budget (the tick's command sequence AND its
+bounded rollback-or-close teardown sharing that ONE budget, made true by
+enforcement by the per-tick command budget), and the isolate decision lands
+on the `(max_heartbeat_failures + 1)`-th consecutive failed beat, so the
+lease could lapse before the isolate decision even at the defaults under
 contention.
 
 The validator now requires
 
 ```
-lock_lease >= (max_heartbeat_failures + 1) *
-              (heartbeat_interval + 2 * heartbeat_command_timeout)
+lock_lease >= max(heartbeat_interval, heartbeat_command_timeout) +
+              (max_heartbeat_failures + 1) *
+              (heartbeat_interval + heartbeat_command_timeout)
 ```
 
 , the same sizing the lease-renewal threshold derives in
 `taskq.worker.heartbeat._lease_renewal_threshold`, so the threshold's floor
-can never exceed the lease it guards. At the defaults this is
-`4 * (10 + 2 * 2) = 56` against the 60 s lease: the shipped defaults still
+can never exceed the lease it guards. The `max(...)` term is the LAST good
+beat's tail - from its mid-tick renewal point to the next tick's start -
+the span the failed cycles do not cover. At the defaults this is
+`10 + 4 * (10 + 2) = 58` against the 60 s lease: the shipped defaults still
 load. A config tightened to the old edge (`lock_lease` at exactly
 `4 * heartbeat_interval`, or any lease below the new floor) now stops
 loading with the new message naming the command-timeout term: raise

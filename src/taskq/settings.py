@@ -959,12 +959,15 @@ def _queue_names_validator(value: list[str], ctx: ValidatorContext) -> list[str]
 class WorkerSettings(TaskQSettings):
     """Worker-specific configuration with three-pool sizing and dual-DSN support.
 
-       Extends :class:`TaskQSettings` with pool-size knobs, dual-DSN fields, and
-       the validated ``lock_lease >= (max_heartbeat_failures + 1) *
-       (heartbeat_interval + 2 * heartbeat_command_timeout)`` invariant: the
-       lease must outlive the worst coherent failed-beat cascade to the
-       heartbeat's isolate decision, with the per-tick command budget
-    making each failed beat's gap bound true by enforcement.
+    Extends :class:`TaskQSettings` with pool-size knobs, dual-DSN fields, and
+    the validated ``lock_lease >= max(heartbeat_interval,
+    heartbeat_command_timeout) + (max_heartbeat_failures + 1) *
+    (heartbeat_interval + heartbeat_command_timeout)`` invariant: the
+    lease must outlive the worst coherent failed-beat cascade to the
+    heartbeat's isolate decision - the last good beat's tail plus the
+    failed cycles - with the per-tick command budget (shared by each
+    failed beat's sequence AND teardown) making the cycle bound true
+    by enforcement.
     """
 
     # -- DSNs -----------------------------------------------------------
@@ -1153,10 +1156,12 @@ class WorkerSettings(TaskQSettings):
         ge=1.0,
         description="TASKQ_LOCK_LEASE (seconds). Time before a held lock is "
         "reclaimed by the recovery sweep. "
-        "Must be >= (max_heartbeat_failures + 1) * (heartbeat_interval + "
-        "2 * heartbeat_command_timeout): the lease must outlive the worst "
+        "Must be >= max(heartbeat_interval, heartbeat_command_timeout) + "
+        "(max_heartbeat_failures + 1) * (heartbeat_interval + "
+        "heartbeat_command_timeout): the lease must outlive the worst "
         "coherent failed-beat cascade to the heartbeat's isolate decision "
-        "(at the defaults, 4 * (10 + 2 * 2) = 56).",
+        "- the last good beat's tail plus the failed cycles "
+        "(at the defaults, 10 + 4 * (10 + 2) = 58).",
     )
     leader_lease: float = Field(
         default=40.0,
@@ -2133,26 +2138,36 @@ class WorkerSettings(TaskQSettings):
             self.pg_dsn_pooled = self.pg_dsn
 
         # lock_lease invariant: the lease must outlive the worst coherent
-        # failed-beat cascade. A heartbeat tick's beat-to-beat gap is
-        # bounded, with the per-tick command budget/ enforced,
-        # by heartbeat_interval (the pool acquire's own timeout) + ONE
-        # heartbeat_command_timeout (the tick's whole command sequence) + ONE
-        # heartbeat_command_timeout (the bounded rollback-or-close teardown);
-        # the isolate decision lands on the (max_heartbeat_failures + 1)-th
-        # consecutive failed beat, so the lease must cover
-        # (max_heartbeat_failures + 1) of those gaps. This is exactly the
-        # safety floor taskq.worker.heartbeat._lease_renewal_threshold sizes
-        # its renewal gate against, so keeping lock_lease above it guarantees
-        # that gate's floor can never exceed the lease it guards. The bare
-        # 4 * heartbeat_interval rule this check replaced ignored both
-        # command-timeout terms and let the lease lapse before the isolate
-        # decision under contention. Tightening note: this refuses
-        # configs that loaded before, a lease between the old 4x edge and
-        # the cascade floor must come up (or the command timeouts come down);
-        # see docs/guides/upgrading.md.
+        # failed-beat cascade. A heartbeat tick's failed cycle is
+        # bounded, with the per-tick command budget enforced AND the
+        # teardown (rollback + bounded close) sharing that one budget's
+        # remainder, by max(heartbeat_interval, tick cost) where the
+        # tick cost is heartbeat_interval (the pool acquire's own
+        # timeout) + ONE heartbeat_command_timeout (the tick's whole
+        # command sequence plus its teardown): a failed cycle is at most
+        # heartbeat_interval + heartbeat_command_timeout. The cascade
+        # from the LAST RENEWAL (mid-tick, where the gate re-stamps the
+        # lease) adds the last good beat's TAIL - from that renewal
+        # point to the next tick's start, at most
+        # max(heartbeat_interval, heartbeat_command_timeout) - and the
+        # isolate decision lands on the (max_heartbeat_failures + 1)-th
+        # consecutive failed beat, so the lease must cover the tail plus
+        # (max_heartbeat_failures + 1) of those cycles. This is exactly
+        # the safety floor taskq.worker.heartbeat._lease_renewal_threshold
+        # sizes its renewal gate against, so keeping lock_lease above it
+        # guarantees that gate's floor can never exceed the lease it
+        # guards. The bare (F+1) * (interval + 2 * command_timeout) rule
+        # this check replaced both ignored the command-timeout term's
+        # sharing (the pre-fix teardown's bounded close burned a SECOND
+        # full budget, and the observed cascade ran past the floor) and
+        # dropped the last good beat's tail. Tightening note: this
+        # refuses configs that loaded before, a lease between an old
+        # edge and the cascade floor must come up (or the command
+        # timeouts come down); see docs/guides/upgrading.md.
         isolate_beats = self.max_heartbeat_failures + 1
-        worst_beat_gap = self.heartbeat_interval + 2 * self.heartbeat_command_timeout
-        cascade_floor = isolate_beats * worst_beat_gap
+        worst_beat_cycle = self.heartbeat_interval + self.heartbeat_command_timeout
+        last_beat_tail = max(self.heartbeat_interval, self.heartbeat_command_timeout)
+        cascade_floor = last_beat_tail + isolate_beats * worst_beat_cycle
         if self.lock_lease < cascade_floor:
             errors.append(
                 ValidationError(
@@ -2160,10 +2175,11 @@ class WorkerSettings(TaskQSettings):
                     value=self.lock_lease,
                     error_msg=(
                         f"lock_lease ({self.lock_lease}) must cover the worst coherent "
-                        f"failed-beat cascade: (max_heartbeat_failures + 1) * "
-                        f"(heartbeat_interval + 2 * heartbeat_command_timeout) = "
-                        f"{isolate_beats} * ({self.heartbeat_interval} + 2 * "
-                        f"{self.heartbeat_command_timeout}) = {cascade_floor}"
+                        f"failed-beat cascade: max(heartbeat_interval, "
+                        f"heartbeat_command_timeout) + (max_heartbeat_failures + 1) * "
+                        f"(heartbeat_interval + heartbeat_command_timeout) = "
+                        f"{last_beat_tail} + {isolate_beats} * "
+                        f"{worst_beat_cycle} = {cascade_floor}"
                     ),
                 )
             )

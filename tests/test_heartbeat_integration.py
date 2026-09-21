@@ -768,14 +768,15 @@ async def test_threshold_gated_renewal_selects_rows_by_remaining_lease(
     Row-level contract of ``UPDATE_JOBS_LOCK_RENEWAL_SQL_TEMPLATE``, driven
     directly (the loop's threshold math is pinned separately in
     tests/test_heartbeat.py) with a lease of 60s and the SHIPPED
-    default-config threshold - 56s, the enforced-bound floor
-    ``(F+1) * (interval + 2 * command_timeout)`` at 10s/3/2s:
+    default-config threshold - 58s, the enforced-bound floor
+    ``max(interval, command_timeout) + (F+1) * (interval + command_timeout)``
+    at 10s/3/2s:
 
     * a row with 58s of lease remaining (above the threshold) is left
       entirely alone - its ``lock_expires_at`` AND ``last_heartbeat_at``
       keep their exact prior values, which is the point of the change: a
       healthy beat no longer pays a non-HOT update per running row;
-    * a row with 50s remaining - inside the (30, 56] band that
+    * a row with 50s remaining - inside the (30, 58] band that
       discriminates the shipped floor from the issue's naive half-lease
       (30s) - RENEWS: a naive-threshold build of this statement would
       leave it alone (rowcount 3, not 4), so this pin fails green-only

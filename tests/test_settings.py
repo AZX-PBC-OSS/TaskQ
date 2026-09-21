@@ -43,15 +43,29 @@ def _load(**overrides: str) -> WorkerSettings:
 # ── lock_lease invariant validation ────────────────────────────────
 
 
+def _cascade_floor(heartbeat_interval: float) -> float:
+    """The shipped cascade floor at the defaults (F=3, command_timeout=2).
+
+    Mirrors the validator's own math: the last good beat's tail plus the
+    (F+1) enforced failed cycles (acquire + ONE budget, the sequence and
+    its teardown sharing it).
+    """
+    return max(heartbeat_interval, 2.0) + (3 + 1) * (heartbeat_interval + 2.0)
+
+
 def test_lock_lease_too_small_raises() -> None:
     """lock_lease below the worst coherent failed-beat cascade raises.
 
-    : the cascade bound is (max_heartbeat_failures + 1) * (heartbeat_interval
-        + 2 * heartbeat_command_timeout), the isolate decision lands on the
-        (max_heartbeat_failures + 1)-th consecutive failed beat, and each failed
-        beat's gap is the pool acquire (bounded by heartbeat_interval) plus the
-        tick's command sequence plus its bounded teardown (one
-        heartbeat_command_timeout each, with the per-tick budget enforced).
+    : the cascade bound is max(heartbeat_interval, heartbeat_command_timeout)
+        + (max_heartbeat_failures + 1) * (heartbeat_interval +
+        heartbeat_command_timeout) - the last good beat's TAIL (from its
+        mid-tick renewal point to the next tick's start) plus the failed
+        cycles; the isolate decision lands on the (max_heartbeat_failures
+        + 1)-th consecutive failed beat, and each failed beat's cycle is
+        the pool acquire (bounded by heartbeat_interval) plus the tick's
+        ONE command budget, shared by the command sequence AND its
+        teardown (the pre-fix teardown's close burned a second full
+        budget and the observed cascade ran past the old floor).
     """
     # Pin grace periods small so only the lock_lease invariant fires
     # (cancellation+cleanup < lock_lease holds at 0.1+0.1 < 30), and the
@@ -83,7 +97,7 @@ def test_lock_lease_error_message_contains_fields() -> None:
     # The command-timeout term must be NAMED: the validator's point
     # is that the bare 4x-heartbeat rule ignored it.
     assert "heartbeat_command_timeout" in msg
-    assert "56" in msg  # 4 * (10 + 2 * 2) at the defaults
+    assert "58" in msg  # max(10, 2) + 4 * (10 + 2) at the defaults
 
 
 def test_lock_lease_at_old_invariant_edge_but_inside_cascade_refused() -> None:
@@ -109,15 +123,15 @@ def test_lock_lease_at_old_invariant_edge_but_inside_cascade_refused() -> None:
 def test_shipped_defaults_still_load_under_cascade_floor() -> None:
     """: the shipped defaults must still load.
 
-    The cascade floor at the defaults is 4 * (10 + 2 * 2) = 56s against the
-    60s lease, the same sizing _lease_renewal_threshold derives in
-    taskq.worker.heartbeat, where the gate renews every beat.
+    The cascade floor at the defaults is max(10, 2) + 4 * (10 + 2) = 58s
+    against the 60s lease, the same sizing _lease_renewal_threshold
+    derives in taskq.worker.heartbeat, where the gate renews every beat.
     """
     s = _load()
     assert s.lock_lease == 60.0
-    assert s.lock_lease >= (s.max_heartbeat_failures + 1) * (
-        s.heartbeat_interval + 2 * s.heartbeat_command_timeout
-    )
+    assert s.lock_lease >= max(s.heartbeat_interval, s.heartbeat_command_timeout) + (
+        s.max_heartbeat_failures + 1
+    ) * (s.heartbeat_interval + s.heartbeat_command_timeout)
 
 
 # ── lock_lease boundary acceptance ─────────────────────────────────
@@ -127,19 +141,20 @@ def test_lock_lease_at_boundary_accepted() -> None:
     """lock_lease == the cascade floor is accepted.
 
     The boundary moved with: at the defaults the floor is
-    4 * (10 + 2 * 2) = 56 (heartbeat_interval 10, heartbeat_command_timeout 2,
-    max_heartbeat_failures 3), not the old 4 * heartbeat_interval = 40.
+    max(10, 2) + 4 * (10 + 2) = 58 (heartbeat_interval 10,
+    heartbeat_command_timeout 2, max_heartbeat_failures 3), not the old
+    4 * heartbeat_interval = 40.
     """
-    # Lag budget pinned inside the lease (25 + 10 < 56) so the lag-lease
+    # Lag budget pinned inside the lease (25 + 10 < 58) so the lag-lease
     # invariant stays quiet and only the cascade boundary is under test.
     s = _load(
-        TASKQ_LOCK_LEASE="56.0",
+        TASKQ_LOCK_LEASE="58.0",
         TASKQ_HEARTBEAT_INTERVAL="10.0",
         TASKQ_CANCELLATION_GRACE_PERIOD="15.0",
         TASKQ_CLEANUP_GRACE_PERIOD="5.0",
         TASKQ_WATCHDOG_LOOP_LAG_BUDGET="25.0",
     )
-    assert s.lock_lease == 56.0
+    assert s.lock_lease == 58.0
 
 
 def test_lock_lease_above_boundary_accepted() -> None:
@@ -631,15 +646,16 @@ def test_lock_lease_invariant_universality(lock_lease: float, heartbeat_interval
     """ValidationError raised iff lock_lease is under the cascade floor.
 
     : at the defaults (max_heartbeat_failures 3, heartbeat_command_timeout
-        2) the floor is 4 * (heartbeat_interval + 2 * 2) = 4 * heartbeat_interval
-        + 16, strictly above the old 4 * heartbeat_interval rule the command
-        timeouts are the terms it ignored.
+        2) the floor is max(heartbeat_interval, 2) + 4 * (heartbeat_interval
+        + 2), strictly above the old 4 * heartbeat_interval rule - the
+        command timeouts AND the last good beat's tail are the terms it
+        ignored.
 
         Picks generous cancellation/cleanup grace values that always satisfy the
         cancellation invariant (sum < lock_lease) when the invariant
         holds, so the cascade boundary is the only one under test. The lag budget is
         derived as 0.7 x lease, which keeps every other invariant quiet
-        wherever the cascade invariant holds (hb <= (lease - 16)/4 < 0.3 x lease,
+        wherever the cascade invariant holds (hb <= (lease - 18)/4 < 0.3 x lease,
         so 0.7 x lease + hb < lease; and lease >= 10 in that branch, so
         0.7 x lease > 1.0 = the default check interval) - except where the
         draw cannot satisfy the lease invariant at all (heartbeat >= lease
@@ -648,7 +664,7 @@ def test_lock_lease_invariant_universality(lock_lease: float, heartbeat_interval
         DotEnvModelError covers both shapes.
     """
     # Pin grace values small enough that is satisfied for the smallest
-    # accepted lock_lease (>= 4 * heartbeat_interval + 16 >= 4 * 0.5 + 16 = 18).
+    # accepted lock_lease (>= max(0.5, 2) + 4 * 2.5 = 12).
     grace_each = 0.1
     overrides = {
         "TASKQ_LOCK_LEASE": str(lock_lease),
@@ -661,7 +677,7 @@ def test_lock_lease_invariant_universality(lock_lease: float, heartbeat_interval
         # only one under test.
         "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": str(lock_lease * 0.35),
     }
-    should_raise = lock_lease < 4 * heartbeat_interval + 16
+    should_raise = lock_lease < _cascade_floor(heartbeat_interval)
 
     if should_raise:
         with pytest.raises(DotEnvModelError, match="lock_lease"):
@@ -2234,12 +2250,17 @@ def test_release_park_remedy_arithmetic_boundaries_agree(
     holds them to the same number, and holds the remedy's number to the
     exact point where the cap stops binding.
     """
-    cascade_floor = 4 * heartbeat + 16  # the shipped defaults' cascade bound
-    lock_lease = cascade_floor + lease_slack
+    cascade_floor = _cascade_floor(heartbeat)  # the shipped defaults' cascade bound
+    # max() with the old defaults' floor: the draw's cancellation+cleanup
+    # graces (up to 20) need a lease above them whatever the interval,
+    # and the remedy boundary below is what the property actually pins.
+    lock_lease = max(cascade_floor, 4 * heartbeat + 16) + lease_slack
     s = _remedy_settings(termination, cancellation, cleanup, lock_lease, heartbeat)
-    assert (s.max_heartbeat_failures + 1) * (
-        s.heartbeat_interval + 2 * s.heartbeat_command_timeout
-    ) == 4 * heartbeat + 16  # the draw's floor assumption, pinned
+    assert max(s.heartbeat_interval, s.heartbeat_command_timeout) + (
+        s.max_heartbeat_failures + 1
+    ) * (s.heartbeat_interval + s.heartbeat_command_timeout) == _cascade_floor(
+        heartbeat
+    )  # the draw's floor assumption, pinned
 
     # The docstring inequality's right-hand side, in the association order
     # the properties themselves use.
@@ -2283,7 +2304,10 @@ def test_disown_floor_conserves_the_exit_tail(
     covers the park's early-reclaim bound can still fall short of the
     disown path's exit bound, which is why the two are separate warnings.
     """
-    lock_lease = 4 * heartbeat + 16 + lease_slack
+    # max() with the old defaults' floor: the draw's cancellation+cleanup
+    # graces (up to 20) need a lease above them whatever the interval, and
+    # the remedy boundary below is what the property actually pins.
+    lock_lease = max(_cascade_floor(heartbeat), 4 * heartbeat + 16) + lease_slack
     s = _remedy_settings(termination, cancellation, cleanup, lock_lease, heartbeat)
 
     park_boundary = termination - cancellation - cleanup + heartbeat
@@ -2306,7 +2330,10 @@ def test_shutdown_budget_flag_tracks_the_model(
     a larger cancellation grace never shrinks the modelled worst case and
     never raises the park's budget bound.
     """
-    lock_lease = 4 * heartbeat + 16 + lease_slack
+    # max() with the old defaults' floor: the draw's cancellation+cleanup
+    # graces (up to 20) need a lease above them whatever the interval, and
+    # the remedy boundary below is what the property actually pins.
+    lock_lease = max(_cascade_floor(heartbeat), 4 * heartbeat + 16) + lease_slack
     s = _remedy_settings(termination, cancellation, cleanup, lock_lease, heartbeat)
 
     assert s.worst_case_shutdown_seconds == (cancellation + cleanup + worst_case_teardown_tail())

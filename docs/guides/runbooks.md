@@ -578,7 +578,7 @@ Do not raise `TASKQ_CRON_AUTO_DISABLE_THRESHOLD` to keep a broken schedule alive
 
 1. Read `error_class` on the `heartbeat-tick-failure` lines. Connection-refused classes are network or DNS between the pod and Postgres; server-shutdown classes are the database restarting under the fleet; timeout classes are latency, and [TaskQDispatchLatencyHigh](#taskqdispatchlatencyhigh) or [TaskQSweepTimeouts](#taskqsweeptimeouts) firing alongside points at a shared database incident.
 2. A worker that crossed the budget has already isolated: it exits, the orchestrator restarts it, and its re-pended jobs dispatch elsewhere. The capacity dip is the design working; do not pin a whole fleet's queue set on one replica.
-3. If misses cluster at deploys or failovers, check the lease arithmetic the settings loader enforces: `lock_lease` must cover `(max_heartbeat_failures + 1) * (heartbeat_interval + 2 * heartbeat_command_timeout)` (56 s at the defaults). A lease tighter than that turns a beat hiccup into [TaskQRunningLeaseExpired](#taskqrunningleaseexpired).
+3. If misses cluster at deploys or failovers, check the lease arithmetic the settings loader enforces: `lock_lease` must cover `max(heartbeat_interval, heartbeat_command_timeout) + (max_heartbeat_failures + 1) * (heartbeat_interval + heartbeat_command_timeout)` (58 s at the defaults). A lease tighter than that turns a beat hiccup into [TaskQRunningLeaseExpired](#taskqrunningleaseexpired).
 4. Confirm recovery: the rate returns to 0 and the affected `taskq.workers` row's `last_seen_at` is fresh again.
 
 Do not raise `TASKQ_MAX_HEARTBEAT_FAILURES` to quiet this alert: the budget is the worker's deadline for handing its jobs back while their leases are still sane, and widening it widens the window in which a dead worker's jobs look running.
@@ -608,7 +608,7 @@ Do not raise `TASKQ_MAX_HEARTBEAT_FAILURES` to quiet this alert: the budget is t
 
 1. `taskq_heartbeat_misses_total` rising with it: the heartbeat pool cannot answer in time. Follow [TaskQHeartbeatMisses](#taskqheartbeatmisses) (connectivity first, then the heartbeat pool's `TASKQ_HEARTBEAT_POOL_SIZE` and `TASKQ_HEARTBEAT_COMMAND_TIMEOUT`).
 2. Heartbeats clean but `taskq_worker_event_loop_lag_seconds` high: the beats are late because the loop is blocked. Find the blocking actor (the worker's `event-loop-stall-attributed` warnings name it and the admin UI's Stall hotspots column aggregates it); this is an actor defect, not a lease misconfiguration.
-3. Neither, and Postgres latency is the story: widen the budget through the enforced arithmetic (`lock_lease >= (max_heartbeat_failures + 1) * (heartbeat_interval + 2 * heartbeat_command_timeout)`); a settings load that fails the invariant is the loader keeping the lease ahead of the isolation cascade, not a bug.
+3. Neither, and Postgres latency is the story: widen the budget through the enforced arithmetic (`lock_lease >= max(heartbeat_interval, heartbeat_command_timeout) + (max_heartbeat_failures + 1) * (heartbeat_interval + heartbeat_command_timeout)`); a settings load that fails the invariant is the loader keeping the lease ahead of the isolation cascade, not a bug.
 4. Confirm recovery: the p99 climbs back above the threshold, toward the full lease.
 
 Do not fix this by raising `TASKQ_LOCK_LEASE` alone when the cause is a blocked event loop: a longer lease moves the reclaim deadline out over the same wedged beat, and the actor stays wedged twice as long before anything notices.

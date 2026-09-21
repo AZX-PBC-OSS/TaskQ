@@ -77,7 +77,7 @@ _meter = get_meter()
 #: floor), bounded so repeated failures never spin (each failure pays
 #: the backoff again, and the tick's own pool acquire is bounded at the
 #: interval), and small enough that the failed-cycle gap stays under the
-#: ``interval + 2 * heartbeat_command_timeout`` worst-beat-gap the lease
+#: ``interval + heartbeat_command_timeout`` worst-beat-cycle the lease
 #: arithmetic sizes against (see _lease_renewal_threshold - the bound is
 #: unchanged by this pacing, every failed cycle only gets shorter).
 _FAILED_TICK_RETRY_FRACTION = 0.25
@@ -102,23 +102,30 @@ def _lease_renewal_threshold(
     hoped-for one. The heartbeat's tick runs its whole command sequence
     (BEGIN, the three writes, the still-held probe, the cancel hook's
     statements, COMMIT) under ONE ``asyncio.timeout(
-    heartbeat_command_timeout)`` budget, and its teardown is bounded by
-    the same budget's remainder (a rollback that fits) or by a bounded
-    close (server-side rollback on disconnect, no awaited round trip).
-    A failed tick is therefore bounded by, with every term enforced:
+    heartbeat_command_timeout)`` budget, and its teardown - the
+    rollback AND the bounded close - SHARES that one budget's remainder
+    (the close's bound is recomputed from the deadline at its own
+    instant, never a second full budget). A failed tick is therefore
+    bounded by, with every term enforced:
 
     * the pool acquire: at most ``heartbeat_interval`` (its own timeout;
       an acquire that takes the whole timeout fails the tick with no
       commands and no teardown at all);
-    * the command sequence: at most one ``heartbeat_command_timeout``
-      (the budget);
-    * the teardown: at most one ``heartbeat_command_timeout`` (the
-      bounded rollback-or-close).
+    * the command sequence PLUS its teardown: at most one
+      ``heartbeat_command_timeout`` (the budget, shared).
 
-    so the worst beat-to-beat gap is ``heartbeat_interval + 2 *
-    heartbeat_command_timeout``, and the floor is ``(F+1)`` of those ,
-    the loop isolates on the (F+1)-th consecutive failure, and the lease
-    must still be valid at that decision.
+    so a failed tick costs at most ``acquire + budget`` and the worst
+    failed cycle (tick start to tick start) is
+    ``heartbeat_interval + heartbeat_command_timeout``. The cascade to
+    the isolate decision adds ONE more span the failed cycles do not
+    cover: the LAST good beat's TAIL, from its renewal point (mid-tick,
+    where the gate re-stamped the lease) to the next tick's start -
+    bounded by ``max(heartbeat_interval, heartbeat_command_timeout)``
+    (the cadence when the last beat was cheap, the budget's remainder
+    when the acquire ate most of it). The floor is that tail plus
+    ``(F+1)`` failed cycles, the loop isolates on the (F+1)-th
+    consecutive failure, and the lease must still be valid at that
+    decision.
 
     Fix-round premise correction: the round-1 derivation assumed a
     failed tick was bounded by "acquire-block then a timed-out command"
@@ -133,29 +140,45 @@ def _lease_renewal_threshold(
     BEFORE the isolate decision while the unconditional renewal
     survived. The per-tick command budget above makes the bound true by
     enforcement, and this floor sizes against it.
+    * Round 2 (the integration attack round) measured the ENFORCED
+      cascade with worst-case ticks - a stalled-but-successful acquire,
+      a budget-cut sequence, a teardown close stalling to its bound -
+      and found the observed cascade running PAST the validator's own
+      floor: the accounting counted (F+1) failed cycles from the last
+      renewal but not the last good beat's tail, and the pre-fix
+      teardown's close burned a SECOND full command budget after the
+      rollback had consumed the remainder (observed: a cascade of
+      2.758s against a 2.4s floor at F=2, I=0.5, c=0.15). The
+      shared-remainder teardown makes the per-tick cost
+      ``acquire + ONE budget`` by enforcement, and the tail term in the
+      floor below makes the accounting cover the measured span.
 
     Consequences, stated directly:
 
     * Healthy beats: a skip happens only while remaining > threshold, so
-      the next beat's remaining is > ``threshold - worst_gap``; at the
-      floor that is ``F * worst_gap`` (>= one full worst gap for F >= 1)
-     , a healthy-but-slow worker never lets a lease lapse.
+      the next beat's remaining is > ``threshold - worst_beat_gap``; at
+      the floor that is ``F * worst_beat_gap + tail`` (>= one full worst
+      gap for F >= 1), a healthy-but-slow worker never lets a lease
+      lapse.
     * The failure cascade: the worst case is a skip at remaining
-      ``threshold + eps`` followed by ``F+1`` failed beats, each gap
-      STRICTLY under one worst gap (an acquire that consumed its whole
-      timeout fails with no commands and no teardown, a gap of exactly
-      the interval; a tick that ran commands consumed strictly less than
-      its whole acquire allowance). The lease at the isolate decision is
-      then > 0 by construction, and a worker that recovers after F
-      failures still holds a full worst gap of lease and renews it.
-    * At the DEFAULT settings the floor is ``4 * (10 + 2 + 2) = 56s``
-      against a 60s lease: the gate renews every beat, byte-identical
-      cadence to the unconditional renewal, so the round-1
-      default-settings lapse window closes outright, and the enforced
-      budget independently makes the default-config cascade survivable
-      with margin (4 gaps x 14s = 56s against the 60s lease), which the
-      un-enforced per-statement bound (statement-count-dependent, up to
-      ``interval + (k+1) * command_timeout`` per tick) is not.
+      ``threshold + eps`` followed by the last good beat's tail and
+      ``F+1`` failed beats, each cycle STRICTLY under one worst gap
+      (an acquire that consumed its whole timeout fails with no
+      commands and no teardown, a cycle of exactly the interval; a tick
+      that ran commands consumed strictly less than its whole acquire
+      allowance). The lease at the isolate decision is then > 0 by
+      construction, and a worker that recovers after F failures still
+      holds a full worst gap of lease and renews it.
+    * At the DEFAULT settings the floor is
+      ``10 + 4 * (10 + 2) = 58s`` against a 60s lease: the gate renews
+      every beat, byte-identical cadence to the unconditional renewal
+      (a beat consumes the 10s interval, the lease-threshold slack is
+      2s, so no row is ever far enough above the threshold to skip),
+      and the enforced budget independently makes the default-config
+      cascade survivable with margin (the tail 10s + 4 cycles x 12s =
+      58s against the 60s lease), which the un-enforced per-statement
+      bound (statement-count-dependent, up to ``interval + (k+1) *
+      command_timeout`` per tick) is not.
     * The gate saves again from ``lock_lease`` ≈ 70s upward (2x at 70,
       4x at 90, and the ``lock_lease / 2`` arm dominates from ≈ 112,
       giving ~6x at 120+). Raising ``heartbeat_command_timeout`` (for a
@@ -184,9 +207,10 @@ def _lease_renewal_threshold(
     acquire) now gaps at ``duration + retry_backoff`` (< the interval),
     a failed tick that consumed its whole acquire allowance gaps at
     exactly the interval, and a tick that ran past the interval gaps at
-    its own duration. The worst case is unchanged - a failed tick can
-    still cost up to ``heartbeat_interval + 2 *
-    heartbeat_command_timeout``, the same bound as before - so the
+    its own duration. The worst failed cycle is unchanged in SHAPE - a
+    failed tick still costs at most ``acquire + budget`` = up to
+    ``heartbeat_interval + heartbeat_command_timeout``, and the failed
+    cycle is bounded by ``max(interval, duration)`` - so the
     floor formula and every number above stay true; the prompt retry
     only ever SHORTENS failed cycles, and every bound here is an
     upper bound on the cascade's wall clock. What the retry buys is
@@ -197,9 +221,13 @@ def _lease_renewal_threshold(
     interval`` sizing actually tolerate the blip it exists to absorb
     (see the wait block at the bottom of ``heartbeat_loop``).
     """
-    worst_beat_gap = heartbeat_interval + 2 * heartbeat_command_timeout
+    worst_beat_gap = heartbeat_interval + heartbeat_command_timeout
+    # The last good beat's tail: from its renewal point (mid-tick) to
+    # the next tick's start - the cadence when the last beat was cheap,
+    # the budget's remainder when the acquire ate most of it.
+    last_beat_tail = max(heartbeat_interval, heartbeat_command_timeout)
     safety_floor = timedelta(
-        seconds=(max_heartbeat_failures + 1) * worst_beat_gap,
+        seconds=last_beat_tail + (max_heartbeat_failures + 1) * worst_beat_gap,
     )
     return max(safety_floor, lock_lease / 2)
 
@@ -444,7 +472,23 @@ async def heartbeat_loop(
                         # the scope expired is NOT re-cancelled (measured
                         # , asyncio.timeout fires once), so the teardown
                         # must carry its own bound rather than hide
-                        # inside the dead scope.
+                        # inside the dead scope. The ROLLBACK and the
+                        # CLOSE SHARE that one remainder - the close's
+                        # bound is recomputed from the deadline at its
+                        # own instant, so a rollback that consumed the
+                        # remainder leaves the close an immediate
+                        # terminate, never a second full command budget.
+                        # This is what holds the failed tick's enforced
+                        # cost to acquire + ONE budget (see
+                        # _lease_renewal_threshold): the pre-fix close
+                        # took a FULL second budget after the rollback
+                        # had already consumed the remainder, and a
+                        # cascade of such ticks ran
+                        # (F+1) * (interval + 2 * command_timeout) past
+                        # the last renewal PLUS the last good beat's
+                        # tail - measurably past the very cascade floor
+                        # the settings validator enforces (the
+                        # attack test pins the observed overrun).
                         left = budget_deadline - time.monotonic()
                         rolled_back = False
                         if left > 0:
@@ -463,14 +507,16 @@ async def heartbeat_loop(
                             # Terminate write (bounded, terminate() on
                             # timeout, close_conn_bounded never raises),
                             # and the pool discards the closed connection
-                            # on release. This is the budget-exhausted
-                            # path, so it is also the path that keeps the
-                            # failed tick inside the lease model's
-                            # h + 2c bound.
+                            # on release. Bounded by what the budget
+                            # still has left (shared with the rollback
+                            # above, NOT a second budget): this is the
+                            # budget-exhausted path, so it is also the
+                            # path that keeps the failed tick inside the
+                            # lease model's h + c bound.
                             await close_conn_bounded(
                                 conn,  # type: ignore[arg-type]  # Why: PoolConnectionProxy delegates close()/terminate() to the underlying Connection at runtime; pyright's stubs model the proxy as unrelated, the same delegation the run_in_tx call below relies on.
                                 "heartbeat-tick-budget",
-                                tick_command_budget,
+                                max(0.0, budget_deadline - time.monotonic()),
                                 mid_run=True,
                             )
                         # Re-raise the tick's ORIGINAL exception (a bare

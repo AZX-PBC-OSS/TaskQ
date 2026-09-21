@@ -162,20 +162,23 @@ async def reindex_bucket(payload: Payload) -> None: ...
 `RetryPolicy` backoff curve (base, cap, backoff kind, jitter: the same curve an
 application-level failure would use, not a flat interval), or lands `crashed` if attempts are
 exhausted. Invariants that keep this safe:
-`lock_lease >= (max_heartbeat_failures + 1) * (heartbeat_interval + 2 *
-heartbeat_command_timeout)` (the worst coherent failed-beat cascade, and the watchdog kills a
+`lock_lease >= max(heartbeat_interval, heartbeat_command_timeout) +
+(max_heartbeat_failures + 1) * (heartbeat_interval +
+heartbeat_command_timeout)` (the worst coherent failed-beat cascade - the last good beat's tail plus the failed cycles - and the watchdog kills a
 stalled loop *before* its leases expire. Don't lower `TASKQ_LOCK_LEASE` without re-checking both
 ([configuration.md: Validation Constraints](configuration.md#validation-constraints)).
 
 The heartbeat does not rewrite a healthy lease every beat: it renews a held
 row only when the row's remaining lease drops to the renewal threshold,
-`max(lock_lease / 2, (max_heartbeat_failures + 1) * (heartbeat_interval +
-2 * heartbeat_command_timeout))`, compared server-side on the clock that
+`max(lock_lease / 2, max(heartbeat_interval, heartbeat_command_timeout) +
+(max_heartbeat_failures + 1) * (heartbeat_interval +
+heartbeat_command_timeout))`, compared server-side on the clock that
 stamped the lease. Every term of that floor is *enforced*: the tick's whole
 command sequence (BEGIN, the writes, the cancel hook, COMMIT) runs under a
-single `TASKQ_HEARTBEAT_COMMAND_TIMEOUT` budget, its teardown is a bounded
-rollback-or-close, and the pool acquire is bounded by the heartbeat
-interval, so a failed beat costs at most `interval + 2 × command_timeout`,
+single `TASKQ_HEARTBEAT_COMMAND_TIMEOUT` budget, its teardown (the bounded
+rollback-or-close) shares that budget's remainder rather than burning a
+second one, and the pool acquire is bounded by the heartbeat interval, so a
+failed beat costs at most `interval + command_timeout`,
 and the floor covers `max_heartbeat_failures + 1` of them (the cascade the
 `lock_lease >= 4 × heartbeat_interval` invariant exists to bound). At the
 default settings (60 s lease, 10 s interval, 2 s command timeout) the floor
