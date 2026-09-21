@@ -88,10 +88,16 @@ _SETTLE_POLL_SECS = 2.0
 #: trip it, a genuinely stuck system cannot outlive it.
 _SETTLE_QUIESCE_POLLS = 8
 #: The outer wall cap, scaled to the job count: the slowest settle
-#: observed on CI ran ~0.2s/job under heavy contention; 5x headroom per
-#: job, with a floor so small populations still get a sane cap. This is a
-#: backstop only - quiescence normally ends the wait in seconds.
-_SETTLE_CAP_SECS_PER_JOB = 1.0
+#: observed on CI ran ~0.2s/job under heavy contention; the 3.13 leg
+#: under -n 4 co-tenancy ran ~2.7s/job - the kill chaos arms the
+#: producer's claim cooldown again and again, and the cooldown cycles
+#: (not CPU) set the consumption rate. 4s/job is that observed rate
+#: with margin, with a floor so small populations still get a sane
+#: cap. This is a backstop only - quiescence normally ends the wait in
+#: seconds, and quiescent-with-stragglers is the lost-job red; a
+#: still-moving population that outlives this cap is the runner being
+#: slow, not the system being stuck.
+_SETTLE_CAP_SECS_PER_JOB = 4.0
 _SETTLE_CAP_FLOOR_SECS = 120.0
 
 _QUEUE = "soak_q"
@@ -554,14 +560,14 @@ async def _trial(
 
 # The soak's legitimate worst case exceeds the global 300s pytest-timeout:
 # 240 paced rounds under a coverage-instrumented, -n 4-starved runner, the
-# settle wall cap (scaled to the job count), the worker's own shutdown
-# grace periods (termination grace 85s), and the handback bound. The outer
-# 900s budget bounds only that legitimate total - a livelock reds from the
-# test's OWN inner watchdogs long before it fires (30s per blocking step,
-# 30s completion-stall, the settle's quiescence detection and wall cap,
-# 60s shutdown, 30s handback). Same shape as the e2e suite's long-legitimate
-# marks.
-@pytest.mark.timeout(900)
+# settle wall cap (scaled to the job count at the cooldown-throttled
+# rate), the worker's own shutdown grace periods (termination grace 85s),
+# and the handback bound. The outer budget bounds only that legitimate
+# total - a livelock reds from the test's OWN inner watchdogs long before
+# it fires (30s per blocking step, 30s completion-stall, the settle's
+# quiescence detection and wall cap, 60s shutdown, 30s handback). Same
+# shape as the e2e suite's long-legitimate marks.
+@pytest.mark.timeout(2700)
 @pytest.mark.parametrize("trial", range(3))
 async def test_lost_job_soak_grand_mixin(
     pg_dsn: str,
