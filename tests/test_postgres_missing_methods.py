@@ -5,9 +5,12 @@ Covers ``count_pending_jobs``, ``extend_reservation_leases``,
 ``list_jobs`` with ``identity_key`` filter, and ``get_events``.
 """
 
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
+import asyncpg
 import pytest
+import pytest_asyncio
 
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import (
@@ -22,6 +25,36 @@ pytestmark = pytest.mark.integration
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
+
+
+@pytest_asyncio.fixture
+async def clean_state_jobs_app(clean_jobs_app: JobsApp) -> AsyncIterator[JobsApp]:
+    """``clean_jobs_app`` whose heartbeat pool carries no command budget.
+
+    ``extend_reservation_leases`` routes through ``deps.heartbeat_pool``
+    (``postgres.py`` checks out of it per call), whose connections carry
+    ``heartbeat_command_timeout`` - 0.1s at the blitz integration defaults
+    this fixture chain builds with. That budget is calibrated for the
+    heartbeat tick's own liveness statement sequence, not for a state-
+    asserting test's backend call: under a loaded CI runner the lease
+    UPDATE waits out a scheduling hiccup (a -n 4 runner's other workers,
+    coverage tracing, the containers' own PG) and blows the budget at the
+    asyncpg protocol with a bare TimeoutError raised inside the backend
+    method - the runner being slow, never the lease contract failing (CI,
+    2026-09-21). The fixture swaps in a dedicated pool with no command
+    timeout; the suite-wide pytest-timeout bounds it. What the tests
+    assert - extension counts and lease timestamps - is untouched, and
+    the same treatment is the one ``test_heartbeat_integration.py``'s
+    dedicated observation connection already established.
+    """
+    deps = clean_jobs_app.deps
+    assert deps.settings.pg_dsn_direct is not None
+    unbudgeted = await asyncpg.create_pool(deps.settings.pg_dsn_direct, min_size=1, max_size=2)
+    deps.heartbeat_pool = unbudgeted
+    try:
+        yield clean_jobs_app
+    finally:
+        await unbudgeted.close()
 
 
 async def _enqueue_job(
@@ -59,9 +92,9 @@ class TestCountPendingJobs:
     """``count_pending_jobs`` returns a dict of actor -> pending+scheduled count."""
 
     async def test_returns_correct_counts_for_multiple_actors(
-        self, clean_jobs_app: JobsApp
+        self, clean_state_jobs_app: JobsApp
     ) -> None:
-        backend = clean_jobs_app.backend
+        backend = clean_state_jobs_app.backend
 
         # Enqueue 3 jobs for actor_a, 2 for actor_b, none for actor_c
         await _enqueue_job(backend, actor="actor_a")
@@ -73,8 +106,10 @@ class TestCountPendingJobs:
         counts = await backend.count_pending_jobs(["actor_a", "actor_b", "actor_c"])
         assert counts == {"actor_a": 3, "actor_b": 2}
 
-    async def test_actors_with_no_pending_absent_from_result(self, clean_jobs_app: JobsApp) -> None:
-        backend = clean_jobs_app.backend
+    async def test_actors_with_no_pending_absent_from_result(
+        self, clean_state_jobs_app: JobsApp
+    ) -> None:
+        backend = clean_state_jobs_app.backend
 
         await _enqueue_job(backend, actor="actor_a")
 
@@ -82,15 +117,17 @@ class TestCountPendingJobs:
         assert "actor_a" in counts
         assert "actor_b" not in counts
 
-    async def test_empty_actors_list_returns_empty_dict(self, clean_jobs_app: JobsApp) -> None:
-        backend = clean_jobs_app.backend
+    async def test_empty_actors_list_returns_empty_dict(
+        self, clean_state_jobs_app: JobsApp
+    ) -> None:
+        backend = clean_state_jobs_app.backend
 
         counts = await backend.count_pending_jobs([])
         assert counts == {}
 
-    async def test_only_counts_pending_and_scheduled(self, clean_jobs_app: JobsApp) -> None:
-        backend = clean_jobs_app.backend
-        deps = clean_jobs_app.deps
+    async def test_only_counts_pending_and_scheduled(self, clean_state_jobs_app: JobsApp) -> None:
+        backend = clean_state_jobs_app.backend
+        deps = clean_state_jobs_app.deps
         schema = deps.settings.schema_name
         worker_id = new_uuid()
 
@@ -144,8 +181,8 @@ class TestCountPendingJobs:
         # Only the pending job should be counted; running+succeeded are excluded
         assert counts == {"actor_a": 1}
 
-    async def test_scheduled_jobs_are_counted(self, clean_jobs_app: JobsApp) -> None:
-        backend = clean_jobs_app.backend
+    async def test_scheduled_jobs_are_counted(self, clean_state_jobs_app: JobsApp) -> None:
+        backend = clean_state_jobs_app.backend
 
         # Enqueue a job with future scheduled_at
         await _enqueue_job(
@@ -165,9 +202,9 @@ class TestExtendReservationLeases:
     """``extend_reservation_leases`` extends the lease on reservation slots
     belonging to the specified worker's running jobs."""
 
-    async def test_extends_lease_on_reservation_slot(self, clean_jobs_app: JobsApp) -> None:
-        backend = clean_jobs_app.backend
-        deps = clean_jobs_app.deps
+    async def test_extends_lease_on_reservation_slot(self, clean_state_jobs_app: JobsApp) -> None:
+        backend = clean_state_jobs_app.backend
+        deps = clean_state_jobs_app.deps
         schema = deps.settings.schema_name
         worker_id = new_uuid()
         job_id = new_job_id()
@@ -235,10 +272,10 @@ class TestExtendReservationLeases:
         )
 
     async def test_multiple_slots_for_same_worker_all_extended(
-        self, clean_jobs_app: JobsApp
+        self, clean_state_jobs_app: JobsApp
     ) -> None:
-        backend = clean_jobs_app.backend
-        deps = clean_jobs_app.deps
+        backend = clean_state_jobs_app.backend
+        deps = clean_state_jobs_app.deps
         schema = deps.settings.schema_name
         worker_id = new_uuid()
 
@@ -287,9 +324,11 @@ class TestExtendReservationLeases:
         count = await backend.extend_reservation_leases(worker_id, timedelta(seconds=120))
         assert count == 2
 
-    async def test_slots_for_different_worker_not_affected(self, clean_jobs_app: JobsApp) -> None:
-        backend = clean_jobs_app.backend
-        deps = clean_jobs_app.deps
+    async def test_slots_for_different_worker_not_affected(
+        self, clean_state_jobs_app: JobsApp
+    ) -> None:
+        backend = clean_state_jobs_app.backend
+        deps = clean_state_jobs_app.deps
         schema = deps.settings.schema_name
         worker_a = new_uuid()
         worker_b = new_uuid()
@@ -394,8 +433,8 @@ class TestExtendReservationLeases:
             f"Worker B's lease was unexpectedly extended: old={old_lease_b}, new={lease_b}"
         )
 
-    async def test_no_running_jobs_returns_zero(self, clean_jobs_app: JobsApp) -> None:
-        backend = clean_jobs_app.backend
+    async def test_no_running_jobs_returns_zero(self, clean_state_jobs_app: JobsApp) -> None:
+        backend = clean_state_jobs_app.backend
         count = await backend.extend_reservation_leases(new_uuid(), timedelta(seconds=60))
         assert count == 0
 
@@ -406,8 +445,8 @@ class TestExtendReservationLeases:
 class TestListJobsIdentityKey:
     """``list_jobs`` with ``identity_key`` filter returns only matching jobs."""
 
-    async def test_filter_by_identity_key(self, clean_jobs_app: JobsApp) -> None:
-        backend = clean_jobs_app.backend
+    async def test_filter_by_identity_key(self, clean_state_jobs_app: JobsApp) -> None:
+        backend = clean_state_jobs_app.backend
 
         await _enqueue_job(
             backend,
@@ -424,9 +463,9 @@ class TestListJobsIdentityKey:
         assert len(rows) == 1
         assert rows[0].identity_key == IdentityKey("ABC")
 
-    async def test_filter_by_identity_key_and_status(self, clean_jobs_app: JobsApp) -> None:
-        backend = clean_jobs_app.backend
-        deps = clean_jobs_app.deps
+    async def test_filter_by_identity_key_and_status(self, clean_state_jobs_app: JobsApp) -> None:
+        backend = clean_state_jobs_app.backend
+        deps = clean_state_jobs_app.deps
         schema = deps.settings.schema_name
 
         # Enqueue a pending job with identity_key "ABC"
@@ -474,9 +513,9 @@ class TestListJobsIdentityKey:
 class TestGetEvents:
     """``get_events`` returns event rows for a job sorted by ``occurred_at``."""
 
-    async def test_get_events_returns_rows_in_order(self, clean_jobs_app: JobsApp) -> None:
-        backend = clean_jobs_app.backend
-        deps = clean_jobs_app.deps
+    async def test_get_events_returns_rows_in_order(self, clean_state_jobs_app: JobsApp) -> None:
+        backend = clean_state_jobs_app.backend
+        deps = clean_state_jobs_app.deps
         schema = deps.settings.schema_name
         job_id = new_job_id()
 
@@ -521,9 +560,9 @@ class TestGetEvents:
         assert events[1].kind == "state_change"
         assert events[1].detail == {"from_state": "running", "to_state": "succeeded"}
 
-    async def test_get_events_no_events_returns_empty(self, clean_jobs_app: JobsApp) -> None:
-        backend = clean_jobs_app.backend
-        deps = clean_jobs_app.deps
+    async def test_get_events_no_events_returns_empty(self, clean_state_jobs_app: JobsApp) -> None:
+        backend = clean_state_jobs_app.backend
+        deps = clean_state_jobs_app.deps
         schema = deps.settings.schema_name
         job_id = new_job_id()
 
@@ -544,7 +583,9 @@ class TestGetEvents:
         events = await backend.get_events(job_id)
         assert events == []
 
-    async def test_get_events_nonexistent_job_returns_empty(self, clean_jobs_app: JobsApp) -> None:
-        backend = clean_jobs_app.backend
+    async def test_get_events_nonexistent_job_returns_empty(
+        self, clean_state_jobs_app: JobsApp
+    ) -> None:
+        backend = clean_state_jobs_app.backend
         events = await backend.get_events(new_job_id())
         assert events == []

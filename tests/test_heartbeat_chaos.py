@@ -39,7 +39,7 @@ _MAX_HEARTBEAT_FAILURES = 2
 async def _setup(
     pg_dsn: str,
     **overrides: str,
-) -> tuple[AsyncExitStack, WorkerDeps, str]:
+) -> tuple[AsyncExitStack, WorkerDeps, str, asyncpg.Connection]:
     from taskq.migrate import apply_pending
 
     # The lease must scale with the isolate bound the test configures:
@@ -78,7 +78,24 @@ async def _setup(
 
     stack = AsyncExitStack()
     deps: WorkerDeps = await stack.enter_async_context(open_worker_deps(settings))
-    return stack, deps, schema
+    # The test's own DB traffic (setup DML, observation reads, the sweep
+    # polls) rides a DEDICATED connection, never deps.heartbeat_pool: the
+    # heartbeat pool's connections carry the tick's command budget
+    # (heartbeat_command_timeout = 0.1s here), a budget calibrated for the
+    # tick's own liveness statement sequence, not for arbitrary test
+    # statements. A setup INSERT or a poll-loop sweep that waits out a
+    # co-tenant's scheduling hiccup (a -n 4 runner's other workers, the
+    # containers' own PG) blew the budget at the asyncpg protocol - a bare
+    # TimeoutError from the test's own choreography (CI: the poll loop's
+    # sweep fetch reding inside the sweep's transaction) while the
+    # heartbeat contract under test was perfectly healthy, and the test's
+    # pool acquires also contended with the loop's own acquires on the
+    # same small pool. The dedicated connection carries no command
+    # timeout; the suite-wide pytest-timeout bounds it. The pool stays
+    # exclusively the loop's tick traffic, its documented contract.
+    obs_conn = await asyncpg.connect(str(settings.pg_dsn_direct))
+    stack.push_async_callback(obs_conn.close)
+    return stack, deps, schema, obs_conn
 
 
 class _FailingAcquireCtx:
@@ -141,13 +158,13 @@ async def test_tc1_kill_pg_mid_tick(pg_dsn: str) -> None:
     (caught by), deps.heartbeat_failures == 1,
     and lock_expires_at was NOT advanced (transaction rolled back).
     """
-    stack, deps, schema = await _setup(pg_dsn, MAX_HEARTBEAT_FAILURES="20")
+    stack, deps, schema, obs_conn = await _setup(pg_dsn, MAX_HEARTBEAT_FAILURES="20")
     try:
         worker_id = new_uuid()
         job_id: UUID
         initial_lock: datetime
 
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             await create_worker(conn, schema, worker_id)
             job_id = await create_running_job(
                 conn,
@@ -184,7 +201,7 @@ async def test_tc1_kill_pg_mid_tick(pg_dsn: str) -> None:
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-        async with real_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             row = await conn.fetchrow(
                 f'SELECT lock_expires_at, status FROM "{schema}".jobs WHERE id = $1',
                 job_id,
@@ -209,12 +226,12 @@ async def test_tc2_worker_isolation(pg_dsn: str) -> None:
     Assert shutdown is set by the loop's call to isolate_self and
     running jobs transition to pending or crashed.
     """
-    stack, deps, schema = await _setup(pg_dsn, MAX_HEARTBEAT_FAILURES="2")
+    stack, deps, schema, obs_conn = await _setup(pg_dsn, MAX_HEARTBEAT_FAILURES="2")
     try:
         worker_id = new_uuid()
         job_ids: list[UUID] = []
 
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             await create_worker(conn, schema, worker_id)
             for _ in range(3):
                 jid = await create_running_job(
@@ -248,7 +265,7 @@ async def test_tc2_worker_isolation(pg_dsn: str) -> None:
             f"shutdown was not set by heartbeat_loop isolation (failures={deps.heartbeat_failures})"
         )
 
-        async with real_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             for jid in job_ids:
                 row = await conn.fetchrow(
                     f'SELECT status FROM "{schema}".jobs WHERE id = $1',
@@ -274,13 +291,13 @@ async def test_tc3_pool_exhaustion(pg_dsn: str) -> None:
     seconds and failure counter incremented. Release connections.
     Assert next tick succeeds and counter resets to 0.
     """
-    stack, deps, schema = await _setup(
+    stack, deps, schema, obs_conn = await _setup(
         pg_dsn,
         MAX_HEARTBEAT_FAILURES="5",
     )
     try:
         worker_id = new_uuid()
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             await create_worker(conn, schema, worker_id)
             await create_running_job(
                 conn,
@@ -354,10 +371,10 @@ async def test_tc4_isolate_self_fresh_connect_fails(pg_dsn: str) -> None:
     """
     import taskq.worker.heartbeat as hb_module
 
-    stack, deps, schema = await _setup(pg_dsn, MAX_HEARTBEAT_FAILURES="2")
+    stack, deps, schema, obs_conn = await _setup(pg_dsn, MAX_HEARTBEAT_FAILURES="2")
     try:
         worker_id = new_uuid()
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             await create_worker(conn, schema, worker_id)
             await create_running_job(
                 conn,
@@ -371,7 +388,7 @@ async def test_tc4_isolate_self_fresh_connect_fails(pg_dsn: str) -> None:
             fail_with=asyncpg.PostgresConnectionError,  # type: ignore[arg-type] # Why: asyncpg PostgresConnectionError accepts a single str arg at runtime; pyright stubs may report arity mismatch.
         )
 
-        original_connect = hb_module.asyncpg.connect
+        original_connect = hb_module.asyncpg.connect  # pyright: ignore[reportPrivateImportUsage]  # Why: the chaos injection reaches asyncpg through the heartbeat module exactly as isolate_self's fresh-connect does; heartbeat.py's own asyncpg import is not a re-export.
 
         async def _failing_connect(*args: object, **kwargs: object) -> object:
             raise OSError("Connection refused - simulated PG outage")
@@ -413,12 +430,12 @@ async def test_tc5_query_canceled_counts_toward_isolation(pg_dsn: str) -> None:
     here exercises command_timeout at all. 57014 is server-side cancellation -
     a DBA, or a server-side statement_timeout.
     """
-    stack, deps, schema = await _setup(pg_dsn, MAX_HEARTBEAT_FAILURES="2")
+    stack, deps, schema, obs_conn = await _setup(pg_dsn, MAX_HEARTBEAT_FAILURES="2")
     try:
         worker_id = new_uuid()
         job_ids: list[UUID] = []
 
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             await create_worker(conn, schema, worker_id)
             for _ in range(2):
                 jid = await create_running_job(
@@ -460,10 +477,10 @@ async def test_tc6_oserror_on_execute(pg_dsn: str) -> None:
     Injects OSError on the 2nd execute (jobs UPDATE). Asserts heartbeat_failures
     >= 1 and lock_expires_at was NOT advanced (transaction rolled back).
     """
-    stack, deps, schema = await _setup(pg_dsn, MAX_HEARTBEAT_FAILURES="20")
+    stack, deps, schema, obs_conn = await _setup(pg_dsn, MAX_HEARTBEAT_FAILURES="20")
     try:
         worker_id = new_uuid()
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             await create_worker(conn, schema, worker_id)
             job_id = await create_running_job(
                 conn,
@@ -490,7 +507,7 @@ async def test_tc6_oserror_on_execute(pg_dsn: str) -> None:
         shutdown.set()
         with contextlib.suppress(asyncio.CancelledError):
             await task
-        async with real_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             row = await conn.fetchrow(
                 f'SELECT lock_expires_at FROM "{schema}".jobs WHERE id = $1', job_id
             )
@@ -614,7 +631,7 @@ async def test_single_transient_tick_failure_at_documented_sizing_keeps_the_job(
     instant. A reclaimed job never returns to 'running' on its own, so
     polling longer than necessary cannot manufacture a false failure.
     """
-    stack, deps, schema = await _setup(
+    stack, deps, schema, obs_conn = await _setup(
         pg_dsn,
         HEARTBEAT_INTERVAL=str(_SAFE_SIZING_INTERVAL),
         LOCK_LEASE=str(_SAFE_SIZING_LEASE),
@@ -624,7 +641,7 @@ async def test_single_transient_tick_failure_at_documented_sizing_keeps_the_job(
         worker_id = new_uuid()
         job_id: UUID
 
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             await create_worker(conn, schema, worker_id)
             job_id = await create_running_job(
                 conn,
@@ -667,7 +684,7 @@ async def test_single_transient_tick_failure_at_documented_sizing_keeps_the_job(
         reclaimed_at: float | None = None
         last_status = "running"
         while time.monotonic() < poll_until:
-            async with real_pool.acquire() as conn:
+            async with contextlib.nullcontext(obs_conn) as conn:
                 count = await PostgresBackend.sweep_expired_locks(
                     conn, _NO_GRACE, _NO_GRACE, schema=schema
                 )
@@ -724,7 +741,7 @@ async def test_single_transient_tick_failure_at_documented_sizing_keeps_the_job(
         # The worker kept beating: a fresh stamp landed, and it is newer
         # than the old beat's reclaim deadline (both stamps are DB
         # clock_timestamp() values, so no wall-clock basis is mixed).
-        async with real_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             row = await conn.fetchrow(
                 f'SELECT last_heartbeat_at FROM "{schema}".jobs WHERE id = $1', job_id
             )
@@ -852,7 +869,7 @@ async def test_one_fast_transient_failure_at_documented_sizing_keeps_the_job(
     comfortably inside the deadline, and every sweep observes a fresh
     stamp on a still-running job.
     """
-    stack, deps, schema = await _setup(
+    stack, deps, schema, obs_conn = await _setup(
         pg_dsn,
         HEARTBEAT_INTERVAL=str(_SAFE_SIZING_INTERVAL),
         LOCK_LEASE=str(_SAFE_SIZING_LEASE),
@@ -862,7 +879,7 @@ async def test_one_fast_transient_failure_at_documented_sizing_keeps_the_job(
         worker_id = new_uuid()
         job_id: UUID
 
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             await create_worker(conn, schema, worker_id)
             job_id = await create_running_job(
                 conn,
@@ -901,7 +918,7 @@ async def test_one_fast_transient_failure_at_documented_sizing_keeps_the_job(
         reclaimed_at: float | None = None
         last_status = "running"
         while time.monotonic() < poll_until:
-            async with real_pool.acquire() as conn:
+            async with contextlib.nullcontext(obs_conn) as conn:
                 count = await PostgresBackend.sweep_expired_locks(
                     conn, _NO_GRACE, _NO_GRACE, schema=schema
                 )
@@ -980,7 +997,7 @@ async def test_sustained_acquire_timeouts_across_ticks_gets_reclaimed(
     alive and still failing (not isolated, not exited) - the sweep did
     the reclaiming, not the worker giving up.
     """
-    stack, deps, schema = await _setup(
+    stack, deps, schema, obs_conn = await _setup(
         pg_dsn,
         HEARTBEAT_INTERVAL=str(_SAFE_SIZING_INTERVAL),
         LOCK_LEASE=str(_SAFE_SIZING_LEASE),
@@ -990,7 +1007,7 @@ async def test_sustained_acquire_timeouts_across_ticks_gets_reclaimed(
         worker_id = new_uuid()
         job_id: UUID
 
-        async with deps.heartbeat_pool.acquire() as conn:
+        async with contextlib.nullcontext(obs_conn) as conn:
             await create_worker(conn, schema, worker_id)
             job_id = await create_running_job(
                 conn,
@@ -1009,8 +1026,9 @@ async def test_sustained_acquire_timeouts_across_ticks_gets_reclaimed(
         real_pool = deps.heartbeat_pool
         # EVERY acquire stalls far past the loop's own
         # acquire(timeout=interval) bound: the worker cannot reach the DB
-        # on any tick, while the sweep (polling the real pool directly)
-        # can - the partitioned-worker shape.
+        # on any tick, while the sweep (polling on the test's dedicated
+        # connection, off the wrapped pool) can - the partitioned-worker
+        # shape.
         deps.heartbeat_pool = _SustainedContentionPool(  # type: ignore[assignment] # Why: chaos pool substitution, see _FailingPool pattern above.
             real_pool,
             delay=_SAFE_SIZING_INTERVAL * 10,
@@ -1032,7 +1050,7 @@ async def test_sustained_acquire_timeouts_across_ticks_gets_reclaimed(
         reclaimed_at: float | None = None
         last_status = "running"
         while time.monotonic() < poll_until:
-            async with real_pool.acquire() as conn:
+            async with contextlib.nullcontext(obs_conn) as conn:
                 count = await PostgresBackend.sweep_expired_locks(
                     conn, _NO_GRACE, _NO_GRACE, schema=schema
                 )
