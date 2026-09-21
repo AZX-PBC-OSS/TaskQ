@@ -59,6 +59,7 @@ from taskq.worker._transient import (
     UnexpectedLoopErrorGuard,
     is_transient_pg_error,
 )
+from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.run import producer_loop
 
 _LOOP_LABEL = "worker.producer"
@@ -149,7 +150,15 @@ def _producer_deps(*, poll_interval: float = 0.005, pooled: bool = False) -> Sim
     return SimpleNamespace(
         settings=settings,
         liveness=liveness,
-        active_jobs=SimpleNamespace(all=list, count=lambda: 0),
+        active_jobs=SimpleNamespace(
+            all=list,
+            count=lambda: 0,
+            # The producer's enqueue path stamps the queued map on the
+            # registry (run.py mark_enqueued); the stub tracks nothing,
+            # but the call must land - a real registry's bound method,
+            # the same shape test_producer_claim_cooldown.py uses.
+            mark_enqueued=ActiveJobRegistry().mark_enqueued,
+        ),
         disowned_jobs=set(),
         dispatcher_pool=_NoopPool(),
     )
