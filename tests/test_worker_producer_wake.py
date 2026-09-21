@@ -96,13 +96,24 @@ def _producer_deps(
         pg_is_pooled=pooled,
     )
     liveness = SimpleNamespace(tick=lambda *args, **kwargs: None, forget=lambda *a, **k: None)
+    # A real registry backs the claim-coverage marks: the producer's
+    # mark_enqueued lands here, and the tests read queued_ids() through
+    # the same object.
+    registry = ActiveJobRegistry()
     return SimpleNamespace(
         settings=settings,
         liveness=liveness,
         # `all` feeds the drain-path hand-back; `count` the producer's
         # availability accounting. Tests that need a live count
         # override it on the namespace.
-        active_jobs=SimpleNamespace(all=list, count=lambda: 0),
+        active_jobs=SimpleNamespace(
+            all=list,
+            count=lambda: 0,
+            mark_enqueued=registry.mark_enqueued,
+            queued_ids=registry.queued_ids,
+            mark_claimed=registry.mark_claimed,
+            held_ids=registry.held_ids,
+        ),
         disowned_jobs=set(),
         dispatcher_pool=_NoopPool(),
     )
@@ -571,3 +582,49 @@ async def test_remap_error_stays_loud_when_the_pooled_gate_is_closed(
     assert not [e for e in captured if e.get("event") == "dispatch-batch-transient"], (
         f"no quiet degradation with the gate closed: {captured}"
     )
+
+
+# ── The claim's enqueued mark: the lost-batch orphan's fence ─────────────
+
+
+async def test_claim_marks_enqueued_before_the_queue_put() -> None:
+    """Every claimed row is fenced from the heartbeat's lost-claim probe
+    from the instant its claim commits: the producer marks it enqueued
+    BEFORE the first put await, the id stays in queued_ids() while it
+    waits in local_queue, and it is invisible to held_ids() (the exit
+    hand-back must keep re-pending queued rows). The unfenced claim is
+    exactly the dispatch batch whose response died with the connection:
+    the probe would disown a row this worker is about to run."""
+    job = make_job_row(status="pending")
+    backend = _RecordingBackend(jobs=[job])
+    deps = _producer_deps(poll_interval=5.0, maxsize=1)
+    local_queue: asyncio.Queue[JobRow] = asyncio.Queue(maxsize=1)
+
+    slot_freed = asyncio.Event()
+    shutdown_event = asyncio.Event()
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(
+        producer_loop(
+            deps,  # type: ignore[arg-type]  # Why: SimpleNamespace stand-in for WorkerDeps, the established producer-loop unit pattern.
+            local_queue,
+            shutdown_event,
+            stop_event,
+            backend=cast(Backend, backend),
+            worker_id=new_uuid(),
+            slot_freed_event=slot_freed,
+        )
+    )
+    try:
+        await wait_for_condition(
+            lambda: local_queue.qsize() == 1,
+            description="the claim lands in the local queue",
+            timeout=2.0,
+        )
+        assert deps.active_jobs.queued_ids() == [job.id], (
+            "the claimed row must be fenced as queued from the put onward"
+        )
+        assert job.id not in deps.active_jobs.held_ids()
+    finally:
+        stop_event.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5.0)

@@ -239,6 +239,34 @@ _SELECT_STILL_HELD_SQL_TEMPLATE = (
     'SELECT id FROM "{schema}".jobs '
     "WHERE id = ANY($1::uuid[]) AND locked_by_worker = $2 AND status = 'running'"
 )
+# The claim-loss reconcile: rows this worker CLAIMED (running, locked
+# here, ``started_at`` stamped by the claim CTE) that no in-memory
+# structure holds - no registry entry, no claim intent, never queued,
+# never disowned. Exactly one producer-side event loses the ids: a
+# ``dispatch_batch`` whose commit landed server-side but whose response
+# died with the connection (the transient arm logs
+# ``dispatch-batch-transient`` and moves on). Unreconciled, the renewal
+# below keeps such a row's lease alive for as long as the process
+# lives - the lock-lease-expiry backstop can never fire and the job is
+# lost (the grand-mixin soak's settle-timeout signature: running rows
+# the heartbeat itself extends). The probe disowns what it finds: the
+# renewal stops (the shared exclusion core), the lease lapses within
+# one lease of the disown, and Sweep 1 reclaims the row with its own
+# attempt rows, reclaim events and budget predicates - the recovery
+# every "recovers by lock-lease expiry" docstring already promises.
+# The grace is a full lease on ``started_at``: the claim-to-register
+# chain (claim → queue → take → intent → register) is bounded by
+# scheduler steps and loop lag, orders of magnitude under one lease,
+# and a row older than its own lease with no holder anywhere is past
+# every legitimate handoff. ``started_at IS NULL`` (direct-SQL
+# reachable only; dispatch always stamps it) never matches - the same
+# exclusion the attempt-ledger arms carry.
+_SELECT_LOST_CLAIMS_SQL_TEMPLATE = (
+    'SELECT id FROM "{schema}".jobs '
+    "WHERE locked_by_worker = $1 AND status = 'running' "
+    "AND NOT (id = ANY($2::uuid[])) "
+    "AND started_at < clock_timestamp() - $3::interval"
+)
 _tick_duration = _meter.create_histogram(
     name="taskq.heartbeat.tick_duration_seconds",
     unit="s",
@@ -349,6 +377,7 @@ async def heartbeat_loop(
         update_reservation_leases_sql,
     ) = build_heartbeat_sql(schema, renewal_threshold=renewal_threshold)
     select_still_held_sql = _SELECT_STILL_HELD_SQL_TEMPLATE.format(schema=schema)
+    select_lost_claims_sql = _SELECT_LOST_CLAIMS_SQL_TEMPLATE.format(schema=schema)
 
     # Monotonic stamp of the last jobs-lock renewal that landed: the
     # reference the next tick measures its remaining lease against. None
@@ -374,7 +403,8 @@ async def heartbeat_loop(
                         # ONE command-timeout for the tick's whole command
                         # sequence: BEGIN, the liveness write, the gated
                         # renewal, the reservation-lease write, the
-                        # still-held probe, the cancel hook's statements,
+                        # still-held probe, the lost-claim reconcile
+                        # probe, the cancel hook's statements,
                         # COMMIT. Each statement's own pool-level
                         # command_timeout stays as the inner backstop; the
                         # budget is what bounds the SEQUENCE, because a
@@ -437,6 +467,36 @@ async def heartbeat_loop(
                                 )
                                 still_held = {row["id"] for row in held_rows}
                                 deps.disowned_jobs.difference_update(set(disowned) - still_held)
+                            # The claim-loss reconcile: running rows locked
+                            # here that nothing holds. The exclusion binds
+                            # the THREE maps in one array - registered +
+                            # intents (held_ids), queued (parked in the
+                            # local queue), and this tick's disowned
+                            # snapshot - and the lease-length grace on
+                            # started_at spares every in-flight handoff
+                            # (see the template's comment). Found ids are
+                            # disowned: this tick's renewal has already
+                            # run, the NEXT tick stops renewing them, and
+                            # Sweep 1 owns the reclaim from there.
+                            lost_excluded = sorted(
+                                {
+                                    *deps.active_jobs.held_ids(),
+                                    *deps.active_jobs.queued_ids(),
+                                    *disowned,
+                                }
+                            )
+                            lost_rows = await conn.fetch(
+                                select_lost_claims_sql, worker_id, lost_excluded, lock_lease
+                            )
+                            if lost_rows:
+                                lost_ids: list[UUID] = [row["id"] for row in lost_rows]
+                                deps.disowned_jobs.update(lost_ids)
+                                logger.warning(
+                                    "claim-loss-reconciled",
+                                    kind="claim_loss_reconciled",
+                                    worker_id=str(worker_id),
+                                    job_ids=[str(j) for j in lost_ids],
+                                )
                             if cancel_controller is not None:
                                 try:
                                     await cancel_controller.run_in_tx(conn)  # type: ignore[arg-type]  # Why: asyncpg PoolConnectionProxy is a Connection subclass at runtime; pyright types don't reflect this delegation.
