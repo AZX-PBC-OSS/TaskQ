@@ -544,8 +544,14 @@ async def _run_prune_batch(
         except Exception:
             # The not-deadline arm of the same control signal: any batch
             # this machinery ran and lost must reach the breaker, whatever
-            # the fault. CancelledError is deliberately not counted - a
-            # shutdown cancellation is not a prune failure.
+            # the fault. CancelledError is not counted: it is a
+            # BaseException on this project's Python floor (>= 3.12), so it
+            # never enters this arm at all, which is the correct
+            # accounting either way - a shutdown cancellation is not a
+            # prune failure. The same holds for KeyboardInterrupt and
+            # SystemExit: they bypass both arms and the callers' except
+            # Exception handlers alike, and propagate to the shutdown
+            # chain with the transaction rolled back.
             if sizer is not None:
                 sizer.on_timeout()
             record_sweep_unexpected_error(sweep_name)

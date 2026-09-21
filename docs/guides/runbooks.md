@@ -185,6 +185,24 @@ Extra workers consume `pending` jobs faster but promote nothing.
 
 ---
 
+## TaskQSweepUnexpectedErrors
+
+**What fired.** `rate(taskq_maintenance_leader_sweep_unexpected_errors_total[5m]) > 0` for 5 minutes: prune-family sweep batches (the `prune` and `archive_expiry` sweeps) are being aborted by an error outside the deadline family, a constraint violation, a connection reset, or any other fault that is not a statement cancel. `TaskQSweepTimeouts` covers the deadline family only; this counter is the rest, and without it a drain stopped by this class reads healthy on every success-path metric: the row counters and success stamps only move on success, so a prune that keeps failing looks like a quiet day.
+
+**How to confirm.**
+
+- Metric: `taskq_maintenance_leader_sweep_unexpected_errors_total` rising, labeled by `sweep_name` (`prune` or `archive_expiry`). The `prune-failed` / `archive-expiry-failed` error log lines carry the `error` repr next to each increment; the exception class is the diagnosis.
+- Cadence: one increment per aborted batch, and the first aborted batch ends the sweep attempt, so the counter advances on the retry ladder (`TASKQ_SWEEP_BREAKER_*` backoff, 60s doubling to a 1800s cap) rather than per batch per second. A rate that stays positive over the 5m window is a persistent failure, not a busy drain.
+- Latch: the batch-size breaker counts these failures the same as deadline failures, so `TaskQSweepDegraded` firing alongside means the worker has latched to the reduced tier and is still failing there.
+
+**How to remediate.**
+
+1. Read the exception class on the `prune-failed` log line. A `UniqueViolationError` against the archive tables usually means duplicate archive targets: check for a second writer inserting into `jobs_archive` (a sibling taskq deployment pointed at the same schema), or a partially-restored backup.
+2. A connection-class error (`PostgresConnectionError`, `OSError`): treat as a database or network incident; the retry ladder resumes the drain when the connection is back.
+3. Anything else: the error class is new, the reduced tier is the safety net that keeps the batches small while you look. If the sweep stays stopped, the retention backlog grows silently behind `TaskQSweepDegraded`; escalate before the backlog hits dispatch latency.
+
+---
+
 ## TaskQSweepDegraded
 
 **What fired.** `taskq_maintenance_leader_sweep_batch_size < taskq_maintenance_leader_sweep_batch_size_configured` (for 0m, page immediately): a sweep is running at the reduced batch tier. The worker itself is reporting an unhealthy database: the batch-size breaker only latches after repeated batch cancellations, and it does not unlatch for the rest of the process lifetime. Both series are emitted by the same worker under the same `sweep_name` label, so the comparison always tracks that worker's own `TASKQ_EVENT_WRITER_BATCH_SIZE` configuration; no threshold to maintain.

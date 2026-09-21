@@ -124,6 +124,11 @@ _NAME_MAP: list[tuple[str, str, str]] = [
         "taskq_maintenance_leader_sweep_timeouts_total",
         "counter",
     ),
+    (
+        "taskq.maintenance_leader.sweep_unexpected_errors",
+        "taskq_maintenance_leader_sweep_unexpected_errors_total",
+        "counter",
+    ),
     # Name already ends in the unit word "seconds" - the no-double-suffix rule.
     (
         "taskq.maintenance_leader.sweep_last_success_seconds",
@@ -219,6 +224,7 @@ _EXPECTED_ALERT_NAMES = {
     "TaskQScheduledBacklogGrowing",
     "TaskQPromotionStalled",
     "TaskQSweepTimeouts",
+    "TaskQSweepUnexpectedErrors",
     "TaskQSweepDegraded",
     "TaskQLeaderLockContention",
     "TaskQRateLimitDependencyOutage",
@@ -286,6 +292,9 @@ def _populate_all_instruments(meter: Any) -> None:
         1, {"actor": "a", "status": "succeeded"}
     )
     meter.create_counter("taskq.maintenance_leader.sweep_timeouts", unit="1").add(
+        1, {"sweep_name": "scheduled_to_pending"}
+    )
+    meter.create_counter("taskq.maintenance_leader.sweep_unexpected_errors", unit="1").add(
         1, {"sweep_name": "scheduled_to_pending"}
     )
     meter.create_observable_gauge(
@@ -370,13 +379,13 @@ def _populate_all_instruments(meter: Any) -> None:
 
 
 def test_rules_yaml_parses_correctly() -> None:
-    """rules.yaml has no YAML errors; single group; 21 rules with required fields."""
+    """rules.yaml has no YAML errors; single group; 22 rules with required fields."""
     assert _RULES_YAML.exists(), f"rules.yaml not found at {_RULES_YAML}"
     data = yaml.safe_load(_RULES_YAML.read_text())
     groups = data["groups"]
     assert len(groups) == 1
     rules = groups[0]["rules"]
-    assert len(rules) == 21
+    assert len(rules) == 22
     for rule in rules:
         assert "alert" in rule
         assert "expr" in rule
@@ -385,14 +394,14 @@ def test_rules_yaml_parses_correctly() -> None:
         assert "summary" in rule.get("annotations", {})
 
 
-# ── rules.yaml has exactly 21 alerts ───────────────────────────────
+# ── rules.yaml has exactly 22 alerts ───────────────────────────────
 
 
 def test_rules_yaml_exactly_21_alerts() -> None:
-    """rules.yaml contains exactly 21 alerts with the names."""
+    """rules.yaml contains exactly 22 alerts with the names."""
     data = yaml.safe_load(_RULES_YAML.read_text())
     rules = data["groups"][0]["rules"]
-    assert len(rules) == 21
+    assert len(rules) == 22
     assert {r["alert"] for r in rules} == _EXPECTED_ALERT_NAMES
 
 

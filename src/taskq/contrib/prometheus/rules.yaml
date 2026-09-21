@@ -241,6 +241,27 @@ groups:
             keeps that failure observable. Runbook:
             docs/guides/runbooks.md#taskqsweeptimeouts.
 
+      - alert: TaskQSweepUnexpectedErrors
+        expr: rate(taskq_maintenance_leader_sweep_unexpected_errors_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TaskQ sweep batches are aborting on errors outside the deadline family"
+          description: >-
+            Sweep batches are being aborted by errors the deadline family does
+            not name: a constraint violation, a connection reset, any fault
+            that is not a statement cancel. The deadline family lands on
+            TaskQSweepTimeouts; everything else that aborts a prune-family
+            batch lands here, because the sweep's own row counters and
+            success stamps only move on success, so a drain stopped by this
+            class reads healthy on every other plane. Cardinality: one
+            increment per aborted batch, and the first aborted batch ends
+            the sweep attempt, so the rate tracks the prune retry ladder
+            (60s doubling to a 1800s cap), the same per-attempt cadence
+            TaskQSweepTimeouts already alerts on. Runbook:
+            docs/guides/runbooks.md#taskqsweepunexpectederrors.
+
       - alert: TaskQSweepDegraded
         expr: taskq_maintenance_leader_sweep_batch_size < taskq_maintenance_leader_sweep_batch_size_configured
         for: 0m
