@@ -20,7 +20,7 @@ import asyncpg
 import pytest
 from pydantic import TypeAdapter
 
-from taskq._ids import new_job_id
+from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import JobId, JobRow
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.client._handle import JobHandle
@@ -41,6 +41,7 @@ async def _seed_terminal_job(
     *,
     status: str = "succeeded",
     job_id: JobId | None = None,
+    attempt: int = 0,
 ) -> JobId:
     """One terminal job already past any retention, ready for the prune."""
     jid = job_id if job_id is not None else new_job_id()
@@ -49,17 +50,18 @@ async def _seed_terminal_job(
         f"""INSERT INTO {schema}.jobs (
             id, actor, queue, payload, max_attempts, retry_kind,
             status, priority, scheduled_at, schedule_to_close,
-            finished_at, metadata, payload_schema_ver
+            finished_at, metadata, payload_schema_ver, attempt
         ) VALUES (
             $1, 'test_actor', 'default', '{{"v": 1}}'::jsonb, 3, 'transient',
             $2::{schema}.job_status, 0, $3, $4,
-            $5, '{{}}'::jsonb, 1
+            $5, '{{}}'::jsonb, 1, $6
         )""",  # noqa: S608  # Why: schema is fixture-derived; every value is $N-bound
         jid,
         status,
         now,
         now + timedelta(hours=1),
         now - timedelta(minutes=5),
+        attempt,
     )
     return jid
 
@@ -243,3 +245,84 @@ async def test_a_never_existed_id_keeps_the_documented_missing_behavior(
         await handle.status()
     with pytest.raises(KeyError):
         await handle.refresh()
+
+
+async def _seed_attempt(
+    conn: asyncpg.Connection,
+    schema: str,
+    job_id: JobId,
+    *,
+    attempt: int = 1,
+) -> None:
+    """One succeeded attempt row for *job_id*, the history a prune moves
+    to ``job_attempts_archive`` alongside the job row."""
+    started = datetime.now(UTC)
+    worker_id = new_uuid()
+    await conn.execute(
+        f"""INSERT INTO {schema}.workers (id, hostname, pid, queues)
+        VALUES ($1, 'rt-archived-reads', 1, '{{default}}')""",  # noqa: S608  # Why: schema is fixture-derived; every value is $N-bound
+        worker_id,
+    )
+    await conn.execute(
+        f"""INSERT INTO {schema}.job_attempts (
+            job_id, attempt, started_at, finished_at, outcome,
+            worker_id, metadata
+        ) VALUES (
+            $1, $2, $3, $4, 'succeeded', $5, '{{}}'::jsonb
+        )""",  # noqa: S608  # Why: schema is fixture-derived; every value is $N-bound
+        job_id,
+        attempt,
+        started,
+        started + timedelta(seconds=1),
+        worker_id,
+    )
+
+
+@pytest.mark.integration
+async def test_get_attempts_answers_an_archived_jobs_attempt_history(
+    clean_jobs_app: JobsApp,
+    module_pg_schema: ModulePgSchema,
+    client_settings: TaskQSettings,
+) -> None:
+    """``get_attempts`` for an archived job answers the moved attempt
+    history, not an empty list.
+
+    The prune moves the job's attempt rows to ``job_attempts_archive``
+    in the same statement that moves the job row to ``jobs_archive``.
+    The get fallback (issue #314) made the ROW honest - ``handle.row``
+    reports ``attempt=1`` - while ``get_attempts`` kept reading the hot
+    ``job_attempts`` table only, so the same handle reported a job with
+    an attempt count and NO attempt history: the row said it ran, the
+    history said it never did.
+    """
+    _deps, backend = clean_jobs_app
+    client = JobsClient(backend, settings=client_settings)
+    conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+    try:
+        job_id = await _seed_terminal_job(conn, module_pg_schema.schema_name, attempt=1)
+        await _seed_attempt(conn, module_pg_schema.schema_name, job_id)
+        await _prune_into_archive(conn, module_pg_schema.schema_name, job_id)
+    finally:
+        await conn.close()
+
+    row = await backend.get(job_id)
+    assert row is not None
+    assert row.archived is True
+    assert row.attempt >= 1, "the archived row carries the attempt count"
+
+    attempts = await backend.get_attempts(job_id)
+    assert attempts, (
+        "the archived job's attempt history was moved to "
+        "job_attempts_archive by the prune, but get_attempts answered "
+        "empty: the row claims an attempt happened, the history claims "
+        "nothing did"
+    )
+    assert attempts[0].attempt == 1
+    assert attempts[0].outcome == "succeeded"
+    assert all(a.job_id == job_id for a in attempts)
+
+    handle = await client.get(job_id)
+    assert handle is not None
+    assert await handle.attempts(), (
+        "JobHandle.attempts() must see the archived attempt history the same handle's row counts"
+    )

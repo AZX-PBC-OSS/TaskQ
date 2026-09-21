@@ -182,6 +182,7 @@ class SqlTemplates:
     get_job: str
     get_archived_job: str
     get_attempts: str
+    get_archived_attempts: str
     poll_cancel_flags: str
 
     # ── Dispatch SQL templates ─────────────────────────────────────
@@ -1855,6 +1856,15 @@ SELECT * FROM "{s}".jobs WHERE id = $1""",
 SELECT * FROM "{s}".jobs_archive WHERE id = $1""",
         get_attempts=f"""\
 SELECT * FROM "{s}".job_attempts WHERE job_id = $1 ORDER BY attempt""",
+        # Same shape as get_attempts against the archive tier: the client
+        # read's hot-then-archive fallback (issue #314) probes this only
+        # when the hot read comes back empty, so an archived job's moved
+        # attempt history answers instead of reading as never-happened.
+        # job_attempts_archive mirrors every job_attempts column (the
+        # prune CTE's _JOB_ATTEMPTS_COLUMNS_CSV), so the row ->
+        # AttemptRow conversion is the hot table's.
+        get_archived_attempts=f"""\
+SELECT * FROM "{s}".job_attempts_archive WHERE job_id = $1 ORDER BY attempt""",
         poll_cancel_flags=POLL_CANCEL_FLAGS_SQL.format(schema=s),
         # ── Dispatch SQL templates ─────────────────────────────────
         dispatch_strict_fifo=DISPATCH_STRICT_FIFO_SQL.format(schema=s),

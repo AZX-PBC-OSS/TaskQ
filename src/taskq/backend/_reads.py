@@ -165,8 +165,23 @@ async def _get_attempts(
     sql: SqlTemplates,
     job_id: JobId,
 ) -> list[AttemptRow]:
+    """One job's attempt history, hot table first, archive tier on an
+    empty hot read.
+
+    The prune moves the job's attempt rows to ``job_attempts_archive``
+    in the same statement that moves the job row to ``jobs_archive``
+    (issue #314's tier pair): answering the hot table alone reported an
+    archived job's history as empty while the same job's ``get`` answered
+    its archived row -- the row claimed an attempt happened, the history
+    claimed nothing did. An empty hot read for a LIVE job (never started,
+    no attempts yet) pays one extra archive probe, the same shape ``_get``
+    pays on its hot miss; ``get_attempts`` is a read-back path, not a
+    dispatch-loop hot path.
+    """
     async with _bounded_checkout(pool, "get_attempts") as conn:
         records = await conn.fetch(sql.get_attempts, job_id)
+        if not records:
+            records = await conn.fetch(sql.get_archived_attempts, job_id)
     return [
         AttemptRow(
             job_id=JobId(rec["job_id"]),
