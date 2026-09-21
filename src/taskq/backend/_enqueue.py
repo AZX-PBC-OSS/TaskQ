@@ -31,6 +31,8 @@ from taskq.backend._protocol import (
     EnqueueArgs,
     JobRow,
     batch_cap_groups,
+    batch_cap_refusal_kernel,
+    cap_keyed_pairs,
     duplicate_pair_actor_mismatch,
     first_duplicate_idempotency_pair,
     first_singleton_collision_actor,
@@ -532,70 +534,53 @@ async def _batch_cap_refusals(
     partitions admission per actor (over-cap actors' items refused as a
     group, everyone else's admitted, see ``_enqueue_batch``), while the
     atomic chunk arm refuses the whole call before any INSERT.
+
+    The resolution, discount, and refusal comparison themselves are
+    :func:`batch_cap_refusal_kernel`, the shared pure kernel the
+    in-memory mirror drives with its own store's answers to the same
+    three questions (overrides, stored pairs, live counts); this function
+    is the PG tier's I/O for those inputs plus the per-refusal log and
+    metric, nothing else.
     """
     groups = batch_cap_groups(args_list)
     if not groups:
         return []
     stored_rows = await conn.fetch(sql.list_actor_max_pending)
-    stored = {str(rec["actor"]): rec["max_pending"] for rec in stored_rows}
-    effective: dict[str, int] = {}
-    for actor, (_, carried) in groups.items():
-        override = stored.get(actor)
-        effective[actor] = int(override) if override is not None else carried
+    stored: dict[str, int | None] = {str(rec["actor"]): rec["max_pending"] for rec in stored_rows}
     recs = await conn.fetch(sql.count_pending_jobs, list(groups))
     existing = {str(rec["actor"]): int(rec["cnt"]) for rec in recs}
     # Pairs already stored write no new row (ON CONFLICT returns the
     # existing one): discount them so a batch of pure retries is not
     # refused for capacity it will not consume. Scoped to capped actors
     # with idempotency keys; the fetch is skipped entirely otherwise.
-    keyed = [
-        (args.actor, args.idempotency_scope, str(args.idempotency_key))
-        for args in args_list
-        if args.max_pending is not None and args.idempotency_key is not None
-    ]
-    deduped_counts: dict[str, int] = {}
+    keyed = cap_keyed_pairs(args_list)
+    stored_pairs: set[tuple[str, str]] = set()
     if keyed:
-        seen_in_batch: set[tuple[str, str]] = set()
-        stored_pairs: set[tuple[str, str]] = set()
         found = await conn.fetch(
             sql.enqueue_batch_fetch_existing,
             [scope for _, scope, _ in keyed],
             [key for _, _, key in keyed],
         )
-        for rec in found:
-            stored_pairs.add((str(rec["idempotency_scope"]), str(rec["idempotency_key"])))
-        for actor, scope, key in keyed:
-            pair = (scope, key)
-            # Stored pair: dedupes to the existing row. First in-batch
-            # occurrence of a new pair: writes one row. Repeats: dedupe
-            # to the first. Counted per item, not per distinct pair (a
-            # set would collapse repeats and under-discount).
-            if pair in stored_pairs or pair in seen_in_batch:
-                deduped_counts[actor] = deduped_counts.get(actor, 0) + 1
-            seen_in_batch.add(pair)
-    refusals: list[MaxPendingExceededError] = []
-    for actor, (batch_count, _carried) in groups.items():
-        cap = effective[actor]
-        have = existing.get(actor, 0)
-        admitted = batch_count - deduped_counts.get(actor, 0)
-        if have + admitted > cap:
-            # Why log + metric here (parity with the single path, which
-            # does both before raising): a partitioned bulk refusal is a
-            # producer-pressure event per refused actor, not per item.
-            logger.warning(
-                "max-pending-exceeded",
-                actor=actor,
-                current_count=have,
-                max_pending=cap,
-            )
-            record_backpressure_error(actor, kind="max_pending")
-            refusals.append(
-                MaxPendingExceededError(
-                    actor=actor,
-                    current_count=have,
-                    max_pending=cap,
-                )
-            )
+        stored_pairs = {
+            (str(rec["idempotency_scope"]), str(rec["idempotency_key"])) for rec in found
+        }
+    refusals = batch_cap_refusal_kernel(
+        args_list,
+        stored_overrides=stored,
+        stored_pairs=stored_pairs,
+        existing_counts=existing,
+    )
+    for refusal in refusals:
+        # Why log + metric here (parity with the single path, which
+        # does both before raising): a partitioned bulk refusal is a
+        # producer-pressure event per refused actor, not per item.
+        logger.warning(
+            "max-pending-exceeded",
+            actor=refusal.actor,
+            current_count=refusal.current_count,
+            max_pending=refusal.max_pending,
+        )
+        record_backpressure_error(refusal.actor, kind="max_pending")
     return refusals
 
 
