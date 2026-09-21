@@ -436,6 +436,7 @@ async def test_archive_write_binds_the_candidate_windows_returned_ids() -> None:
         archive_interval=timedelta(days=365),
         actor=None,
         statement_timeout_ms=1_000,
+        sweep_name="prune",
         sizer=None,
     )
     assert rows == []
@@ -458,6 +459,7 @@ async def test_archive_write_binds_the_candidate_windows_returned_ids() -> None:
         archive_interval=timedelta(days=365),
         actor=None,
         statement_timeout_ms=1_000,
+        sweep_name="prune",
         sizer=None,
     )
     assert not rows

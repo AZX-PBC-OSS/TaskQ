@@ -45,6 +45,7 @@ from taskq.obs import (
     record_pruned_jobs,
     record_sweep_batch_size,
     record_sweep_batch_size_configured,
+    record_sweep_unexpected_error,
 )
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.settings import WorkerSettings
@@ -505,6 +506,7 @@ async def _run_prune_batch(
     sql: str,
     *args: object,
     statement_timeout_ms: int,
+    sweep_name: str,
     sizer: SweepBatchSizer | None,
 ) -> Sequence[asyncpg.Record]:
     """Run one prune-family batch statement under the shared batch machinery.
@@ -515,12 +517,21 @@ async def _run_prune_batch(
     the error path), the same wrapper every bounded backend sweep in
     :mod:`taskq.backend._sweeps` applies, so the prune family gets the
     identical guarantee: one committed, server-bounded statement per
-    batch, whatever the backlog behind it. A deadline-family abort
-    (``QueryCanceledError`` from the server-side timeout,
-    ``TimeoutError`` from a client-side one) counts against *sizer* when
-    given and re-raises: the caller's failure path retries later at the
-    latched reduced tier, and every batch this call already committed
-    stays committed, a stopped drain is a pause, not a rollback.
+    batch, whatever the backlog behind it.
+
+    Every aborted batch counts against *sizer* when given, and re-raises:
+    a deadline-family abort (``QueryCanceledError`` from the server-side
+    timeout, ``TimeoutError`` from a client-side one) counts as today,
+    and so does ANY other exception - the reduced tier is the safety net
+    for the next unknown failure mode, so an archive
+    UniqueViolation-class error must count toward the same failure
+    threshold too, not leave the breaker unlatched while every retry
+    re-runs the same full-size batch. The caller's failure path retries
+    later at the latched reduced tier, and every batch this call already
+    committed stays committed, a stopped drain is a pause, not a
+    rollback. A non-deadline abort also lands on
+    ``record_sweep_unexpected_error`` under *sweep_name*, the metric
+    plane the deadline family's ``sweep_timeouts`` counter leaves silent.
     """
     async with conn.transaction():
         prev_timeout = await _apply_batch_statement_timeout(conn, statement_timeout_ms)
@@ -529,6 +540,15 @@ async def _run_prune_batch(
         except DEADLINE_ERRORS:
             if sizer is not None:
                 sizer.on_timeout()
+            raise
+        except Exception:
+            # The not-deadline arm of the same control signal: any batch
+            # this machinery ran and lost must reach the breaker, whatever
+            # the fault. CancelledError is deliberately not counted - a
+            # shutdown cancellation is not a prune failure.
+            if sizer is not None:
+                sizer.on_timeout()
+            record_sweep_unexpected_error(sweep_name)
             raise
         # Success path only: restore the caller's timeout inside the
         # still-open transaction (a savepoint RELEASE would otherwise
@@ -551,6 +571,7 @@ async def _run_prune_archive_batch(
     archive_interval: timedelta,
     actor: str | None,
     statement_timeout_ms: int,
+    sweep_name: str,
     sizer: SweepBatchSizer | None,
 ) -> Sequence[asyncpg.Record]:
     """Run one archive batch: the candidate window, then the lock-bearing
@@ -575,6 +596,12 @@ async def _run_prune_archive_batch(
     callers sizing outer deadlines against a prune loop must budget the
     2x bound, not one statement's.
 
+    Failure accounting mirrors :func:`_run_prune_batch`: every aborted
+    batch (deadline family and any other exception alike) counts against
+    *sizer* when given, a non-deadline abort lands on
+    ``record_sweep_unexpected_error`` under *sweep_name*, and the
+    exception re-raises.
+
     Returns the write statement's
     deleted groups (empty when the window found nothing eligible, and
     empty when every candidate dropped out at lock time: a row a
@@ -595,6 +622,16 @@ async def _run_prune_archive_batch(
         except DEADLINE_ERRORS:
             if sizer is not None:
                 sizer.on_timeout()
+            raise
+        except Exception:
+            # The not-deadline arm of the same control signal, same
+            # derivation as _run_prune_batch above: the candidate window
+            # and the archive write are ONE batch, so a UniqueViolation
+            # (or any other non-deadline fault) aborting either must
+            # reach the breaker and the metric plane.
+            if sizer is not None:
+                sizer.on_timeout()
+            record_sweep_unexpected_error(sweep_name)
             raise
         # Success path only, same derivation as _run_prune_batch above.
         await _restore_statement_timeout(conn, prev_timeout)
@@ -682,6 +719,7 @@ async def prune_terminal_jobs(
                 archive_interval=archive_interval,
                 actor=None,
                 statement_timeout_ms=statement_timeout_ms,
+                sweep_name="prune",
                 sizer=sizer,
             )
             if not rows:
@@ -723,6 +761,7 @@ async def prune_terminal_jobs(
                         archive_interval=archive_interval,
                         actor=actor_name,
                         statement_timeout_ms=statement_timeout_ms,
+                        sweep_name="prune",
                         sizer=sizer,
                     )
                     if not rows:
@@ -800,6 +839,7 @@ async def archive_expiry_sweep(
             sql,
             size,
             statement_timeout_ms=statement_timeout_ms,
+            sweep_name="archive_expiry",
             sizer=sizer,
         )
         if not rows:
