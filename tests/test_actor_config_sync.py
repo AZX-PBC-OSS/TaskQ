@@ -79,6 +79,8 @@ def _make_record(
     queue: str = "default",
     result_ttl: float | None = None,
     metadata: dict[str, object] | None = None,
+    max_attempts: int = 3,
+    retry_kind: str = "transient",
 ) -> FakeRecord:
     md = metadata if metadata is not None else {}
     return FakeRecord(
@@ -89,6 +91,8 @@ def _make_record(
             "queue": queue,
             "result_ttl": result_ttl,
             "metadata": dumps_str(md),
+            "max_attempts": max_attempts,
+            "retry_kind": retry_kind,
         }
     )
 
@@ -123,6 +127,8 @@ async def _ensure_schema(conn: asyncpg.Connection, schema: str) -> None:
             max_concurrent int,
             max_pending    int,
             queue          text NOT NULL,
+            max_attempts   smallint NOT NULL DEFAULT 3,
+            retry_kind     text NOT NULL DEFAULT 'transient',
             result_ttl     float,
             metadata       jsonb NOT NULL DEFAULT '{{}}'::jsonb,
             updated_at     timestamptz NOT NULL DEFAULT now(),
@@ -136,7 +142,7 @@ async def _ensure_schema(conn: asyncpg.Connection, schema: str) -> None:
 
 async def _select_configs(conn: asyncpg.Connection, schema: str) -> list[dict[str, object]]:
     rows = await conn.fetch(
-        f'SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata FROM "{schema}".actor_config ORDER BY actor'
+        f'SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata, max_attempts, retry_kind FROM "{schema}".actor_config ORDER BY actor'
     )
     return [dict(row) for row in rows]
 
@@ -477,6 +483,97 @@ async def test_upsert_sql_preserves_operator_owned_columns_on_conflict() -> None
     assert "result_ttl" not in on_conflict
     assert "queue" not in on_conflict
     assert "metadata" in on_conflict
+
+
+@pytest.mark.asyncio
+async def test_upsert_sql_updates_retry_contract_on_conflict() -> None:
+    """The rendered UPSERT's ON CONFLICT clause assigns max_attempts and
+    retry_kind from EXCLUDED, the code-owned family.
+
+    These two columns decide how many attempts a server-side fire gets
+    and which retry family it belongs to: cron fires and the admin
+    run-now build their EnqueueArgs from the stored actor_config row
+    (cron_loop's fire reads max_attempts/retry_kind straight off the
+    row). If the conflict arm left them at the first-registration value,
+    an actor re-registering with a changed RetryPolicy would silently
+    serve every later server-side fire a stale retry contract, which is
+    exactly the bug this pin exists to keep dead.
+    """
+    fake_conn = FakeAsyncpgConnection()
+    fake_conn.set_select_rows([])
+
+    await sync_actor_config(
+        fake_conn,  # pyright: ignore[reportArgumentType] Why: FakeAsyncpgConnection is a unit-test double; real asyncpg.Connection subtyping would require protocol-level mocking
+        [_make_config("X")],
+    )
+
+    sql, _params = fake_conn._execute_calls[0]
+    on_conflict = sql.split("DO UPDATE SET", 1)[1]
+    assert "max_attempts   = EXCLUDED.max_attempts" in on_conflict
+    assert "retry_kind     = EXCLUDED.retry_kind" in on_conflict
+
+
+@pytest.mark.asyncio
+async def test_retry_contract_arrays_in_upsert_params() -> None:
+    """The declared max_attempts/retry_kind reach the UPSERT as the last
+    two parameter arrays ($11 smallint[], $12 text[]).
+
+    Appended after the curve arrays so the long-standing positional
+    assertions (params[0]..params[9]) keep their meaning.
+    """
+    fake_conn = FakeAsyncpgConnection()
+    fake_conn.set_select_rows([])
+
+    await sync_actor_config(
+        fake_conn,  # pyright: ignore[reportArgumentType] Why: FakeAsyncpgConnection is a unit-test double; real asyncpg.Connection subtyping would require protocol-level mocking
+        [
+            ActorConfig(
+                actor="X",
+                max_concurrent=None,
+                queue="default",
+                max_attempts=50,
+                retry_kind="indefinite",
+            )
+        ],
+    )
+
+    assert len(fake_conn._execute_calls) == 1
+    _sql, params = fake_conn._execute_calls[0]
+    assert params[10] == [50]
+    assert params[11] == ["indefinite"]
+
+
+@pytest.mark.asyncio
+async def test_retry_contract_divergence_warns_and_does_not_raise() -> None:
+    """A stored/registered retry-contract mismatch is a warning, never an
+    error, and the UPSERT still rewrites the stored pair.
+
+    Code owns these columns: the boot overwrites the stored value with
+    the registered literal on every sync. The warning is what makes the
+    overwrite visible (parity with the capacity/queue override events),
+    since server-side fires read the row this statement is about to
+    change.
+    """
+    fake_conn = FakeAsyncpgConnection()
+    fake_conn.set_select_rows(
+        [_make_record("X", queue="default", max_attempts=3, retry_kind="transient")]
+    )
+
+    await sync_actor_config(
+        fake_conn,  # pyright: ignore[reportArgumentType] Why: FakeAsyncpgConnection is a unit-test double; real asyncpg.Connection subtyping would require protocol-level mocking
+        [
+            ActorConfig(
+                actor="X",
+                max_concurrent=None,
+                queue="default",
+                max_attempts=50,
+                retry_kind="indefinite",
+            )
+        ],
+        force=False,
+    )
+
+    assert len(fake_conn._execute_calls) == 1
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

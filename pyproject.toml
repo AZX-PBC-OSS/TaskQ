@@ -400,6 +400,11 @@ ignore = [
 # hashed identifier.
 "tests/test_attack_provenance.py" = ["S608"]
 "tests/test_cron_integration.py" = ["S608", "SIM117"]
+# Same rationale — schema name validated against _IDENT_RE (via
+# sync_actor_config/tick_cron's own guards); all user-supplied values use
+# $N parameter binding. SIM117: the nested acquire/transaction shape is
+# the same idiomatic tick pattern as test_cron_integration.py.
+"tests/test_actor_config_retry_contract_pg.py" = ["S608", "SIM117"]
 # Same rationale — schema name validated against _IDENT_RE; all
 # user-supplied values use $N parameter binding.
 "tests/test_web_admin_integration.py" = ["S608"]

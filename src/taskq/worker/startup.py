@@ -18,7 +18,8 @@ from taskq.obs import get_logger
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 _SELECT_ACTOR_CONFIG_SQL = """
-SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata
+SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata,
+       max_attempts, retry_kind
   FROM "{schema}".actor_config
  WHERE actor = ANY($1::text[])
 """.strip()
@@ -39,20 +40,38 @@ SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata
 # registered value, which is safe because `sync_actor_config` has already
 # raised (or the caller passed ``force=True``) for metadata drift before
 # this statement runs.
+# ``max_attempts`` and ``retry_kind`` are the opposite family: CODE-owned
+# on every boot, always re-written from the ``@actor(...)`` literal. They
+# decide how many attempts a server-side fire gets and which retry family
+# it belongs to (cron fires and the admin run-now build their EnqueueArgs
+# from the stored row), so leaving them at the first-registration value
+# hands every later fire a stale retry contract. No operator surface can
+# write these columns (`taskq actor-config set` moves capacity, `move-queue`
+# moves the queue, neither touches them), so a stored/registered
+# disagreement can only be a changed code literal or an out-of-band hand
+# edit; the code literal is the declaration of record and must win, and
+# ``actor-config-retry-contract-change`` (emitted by `sync_actor_config`
+# below) is what makes the win visible instead of silent.
 _UPSERT_ACTOR_CONFIG_SQL = """
 INSERT INTO "{schema}".actor_config (
     actor, max_concurrent, max_pending, queue, result_ttl, metadata,
-    retry_base, retry_cap, retry_backoff, retry_jitter
+    retry_base, retry_cap, retry_backoff, retry_jitter,
+    max_attempts, retry_kind
 )
 SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata::jsonb,
-       retry_base, retry_cap, retry_backoff, retry_jitter
+       retry_base, retry_cap, retry_backoff, retry_jitter,
+       max_attempts, retry_kind
   FROM unnest(
       $1::text[], $2::int[], $3::int[], $4::text[], $5::float[], $6::text[],
-      $7::interval[], $8::interval[], $9::text[], $10::float8[]
+      $7::interval[], $8::interval[], $9::text[], $10::float8[],
+      $11::smallint[], $12::text[]
   ) AS t(actor, max_concurrent, max_pending, queue, result_ttl, metadata,
-         retry_base, retry_cap, retry_backoff, retry_jitter)
+         retry_base, retry_cap, retry_backoff, retry_jitter,
+         max_attempts, retry_kind)
 ON CONFLICT (actor) DO UPDATE SET
     metadata       = EXCLUDED.metadata,
+    max_attempts   = EXCLUDED.max_attempts,
+    retry_kind     = EXCLUDED.retry_kind,
     updated_at     = clock_timestamp()
 """.strip()
 
@@ -153,13 +172,25 @@ async def sync_actor_config(
            raised unless ``force=True``. With ``force=True`` the mismatch
            is logged at ``actor-config-drift-overwrite`` (error level) and
            the UPSERT overwrites the stored value.
+         - **The retry contract** (``max_attempts``, ``retry_kind``) is
+           code-owned: a differing registered literal is logged at
+           ``actor-config-retry-contract-change`` (warning level) and the
+           UPSERT below overwrites the stored pair with the registered
+           value. These columns decide the retry behaviour of every
+           server-side fire (cron fires and the admin run-now build their
+           ``EnqueueArgs`` from the stored row), so the declaration of
+           record must win on every boot, and no operator surface can
+           write them.
       3. Upsert all registered rows via ``INSERT ... ON CONFLICT (actor)
-         DO UPDATE SET metadata = EXCLUDED.metadata, updated_at =
-         clock_timestamp()``, the capacity columns and the queue
-         assignment are omitted from the ``SET`` clause so an existing
-         row's ``max_concurrent`` / ``max_pending`` / ``result_ttl`` /
-         ``queue`` survive unchanged; they are populated by the
-         ``INSERT`` list only when the row is first created.
+         DO UPDATE SET metadata = EXCLUDED.metadata, max_attempts =
+         EXCLUDED.max_attempts, retry_kind = EXCLUDED.retry_kind,
+         updated_at = clock_timestamp()``: the capacity columns and the
+         queue assignment are omitted from the ``SET`` clause so an
+         existing row's ``max_concurrent`` / ``max_pending`` /
+         ``result_ttl`` / ``queue`` survive unchanged; they are populated
+         by the ``INSERT`` list only when the row is first created. The
+         retry contract columns are in the ``SET`` clause so a changed
+         ``@actor`` literal reaches the next server-side fire.
 
     Both phases run inside a single ``async with conn.transaction():``
     block so a SELECT-then-UPSERT race is impossible against another
@@ -234,6 +265,32 @@ async def sync_actor_config(
                     stored=stored_row["queue"],
                 )
 
+            retry_contract_values: dict[str, object] = {
+                "max_attempts": stored_row["max_attempts"],
+                "retry_kind": stored_row["retry_kind"],
+            }
+            registered_retry_contract: dict[str, object] = {
+                "max_attempts": cfg.max_attempts,
+                "retry_kind": cfg.retry_kind,
+            }
+            if retry_contract_values != registered_retry_contract:
+                # Warning, never an error: max_attempts/retry_kind are
+                # code-owned and the UPSERT below overwrites the stored
+                # pair with the registered literal on every boot. No
+                # operator surface can write these columns, so the stored
+                # value differing means either the code literal changed
+                # since the last registration or the row was edited
+                # out-of-band; either way the stored retry contract is
+                # about to change, and server-side fires (cron, admin
+                # run-now) read this row, so the change is worth a line
+                # in the log even though it is not drift to refuse.
+                logger.warning(
+                    "actor-config-retry-contract-change",
+                    actor=cfg.actor,
+                    registered=registered_retry_contract,
+                    stored=retry_contract_values,
+                )
+
             structural_values: dict[str, dict[str, object]] = {
                 "metadata": stored_metadata,
             }
@@ -265,14 +322,18 @@ async def sync_actor_config(
         queue_array: list[str] = [cfg.queue for cfg in actor_configs]
         result_ttl_array: list[float | None] = [cfg.result_ttl for cfg in actor_configs]
         metadata_array: list[str] = [dumps_jsonb_str(cfg.metadata) for cfg in actor_configs]
-        # The declared retry curve: seeded on first create (the same
-        # semantics as max_attempts/retry_kind), so cron fires and the
-        # admin run-now re-pend on the curve the actor declared instead
-        # of the EnqueueArgs defaults.
+        # The declared retry curve: seeded on first create, so cron fires
+        # and the admin run-now re-pend on the curve the actor declared
+        # instead of the EnqueueArgs defaults.
         base_array: list[timedelta | None] = [cfg.retry_base for cfg in actor_configs]
         cap_array: list[timedelta | None] = [cfg.retry_cap for cfg in actor_configs]
         backoff_array: list[str | None] = [cfg.retry_backoff for cfg in actor_configs]
         jitter_array: list[float | None] = [cfg.retry_jitter for cfg in actor_configs]
+        # The declared retry contract: code-owned, rewritten on every boot
+        # (see the upsert SQL comment for why this family is not
+        # operator-owned like the capacity fields).
+        attempts_array: list[int] = [cfg.max_attempts for cfg in actor_configs]
+        kind_array: list[str] = [cfg.retry_kind for cfg in actor_configs]
 
         await conn.execute(
             _UPSERT_ACTOR_CONFIG_SQL.format(schema=schema),
@@ -286,6 +347,8 @@ async def sync_actor_config(
             cap_array,
             backoff_array,
             jitter_array,
+            attempts_array,
+            kind_array,
         )
 
     logger.info(
