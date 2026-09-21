@@ -381,14 +381,18 @@ it**: multi-replica deployments and `uvicorn --workers N` need no sticky
 sessions, and a login whose callback lands on a different process than the
 one that issued it completes normally.
 
-One caveat survives that: the consumed-assertion replay record (and the
-answered-request record) are per process. A party who captured a complete ACS
-POST (cookie plus response body) can mint one additional session per
-sibling process within the 300 s cookie window, and the records are
-capped/evictable under a flood of valid assertions. Over HTTPS that capture
-implies a compromised client, a MITM, or a TLS break, each of which already
-yields session theft directly; closing it fully needs a replay record in a
-store every replica shares, which is tracked separately.
+One caveat remains, and it is a different one than it used to be: the
+consumed-assertion replay record and the answered-request record live in a
+shared Postgres table (`saml_replay_store`, created by the bundled
+migrations) that every replica reads and writes, so a captured ACS POST
+replayed against a sibling process is refused there the same as on the
+accepting process, and no flood of valid assertions can evict a consumed
+record (rows expire by TTL, never by pressure). The store needs the admin
+app's Postgres pool, which `taskq ui serve` always wires; mounting the SAML
+router on a bare app of your own (no `pg_pool`/`schema` in `app.state`)
+falls back to per-process records with exactly the old limits. Over HTTPS a
+captured POST still implies a compromised client, a MITM, or a TLS break,
+each of which already yields session theft directly.
 
 ### The cookie-less fallback (opt-in, default off)
 
