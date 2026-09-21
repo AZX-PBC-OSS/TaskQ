@@ -302,7 +302,7 @@ WITH upd AS (
             clock_timestamp() + $7::interval,
             result_expires_at
         ),
-        progress_seq = $5,
+        progress_seq = GREATEST(progress_seq, $5),
         progress_state = CASE WHEN $6::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $6::jsonb ELSE progress_state END
     WHERE {JOB_FENCE_BOUND_SQL.format(attempt_bind=8, epoch_bind=9)}
     RETURNING *
@@ -341,7 +341,7 @@ WITH upd AS (
         error_class = $3,
         error_message = $4,
         error_traceback = $5,
-        progress_seq = $6,
+        progress_seq = GREATEST(progress_seq, $6),
         progress_state = CASE WHEN $7::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $7::jsonb ELSE progress_state END
     WHERE {JOB_FENCE_BOUND_SQL.format(attempt_bind=8, epoch_bind=9)}
     RETURNING *
@@ -464,7 +464,7 @@ retried AS (
         error_class = $4,
         error_message = $5,
         error_traceback = $6,
-        progress_seq = $7,
+        progress_seq = GREATEST(j.progress_seq, $7),
         progress_state = CASE WHEN $8::jsonb IS NOT NULL
                               THEN COALESCE(j.progress_state, '{{}}'::jsonb) || $8::jsonb
                               ELSE j.progress_state END
@@ -488,7 +488,7 @@ deadline_failed AS (
         locked_by_worker = NULL,
         lock_expires_at = NULL,
         last_heartbeat_at = NULL,
-        progress_seq = $7,
+        progress_seq = GREATEST(j.progress_seq, $7),
         progress_state = CASE WHEN $8::jsonb IS NOT NULL
                               THEN COALESCE(j.progress_state, '{{}}'::jsonb) || $8::jsonb
                               ELSE j.progress_state END
@@ -592,7 +592,7 @@ WITH upd AS (
         error_class = CASE WHEN cancel_phase = 2 THEN '{CANCEL_ORIGIN_FORCED}'
                            WHEN cancel_requested_at IS NOT NULL THEN '{CANCEL_ORIGIN_COOPERATIVE}'
                            ELSE '{CANCEL_ORIGIN_UNREQUESTED}' END,
-        progress_seq = $3,
+        progress_seq = GREATEST(progress_seq, $3),
         progress_state = CASE WHEN $4::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $4::jsonb ELSE progress_state END
     WHERE {JOB_FENCE_BOUND_SQL.format(attempt_bind=5, epoch_bind=6)}
     RETURNING *
@@ -628,7 +628,7 @@ WITH upd AS (
     SET status = 'abandoned',
         finished_at = clock_timestamp(),
         error_class = '{CANCEL_ORIGIN_ABANDONED}',
-        progress_seq = $2,
+        progress_seq = GREATEST(progress_seq, $2),
         progress_state = CASE WHEN $3::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $3::jsonb ELSE progress_state END
     -- The NULL-lease arm is defense-in-depth for the no-exit cell
     -- (running x lock_expires_at IS NULL x dead holder): Postgres has
@@ -816,7 +816,7 @@ snoozed AS (
         snooze_count = CASE WHEN $7::text = 'snoozed' THEN j.snooze_count + 1 ELSE j.snooze_count END,
         rate_limit_blocked_count = CASE WHEN $7::text IN ('reservation_denied', 'rate_limit_denied') THEN j.rate_limit_blocked_count + 1 ELSE j.rate_limit_blocked_count END,
         metadata = j.metadata || COALESCE((SELECT metadata_update FROM params), '{{}}'::jsonb),
-        progress_seq = (SELECT progress_seq FROM params),
+        progress_seq = GREATEST(j.progress_seq, (SELECT progress_seq FROM params)),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
       {JOB_FENCE_SQL}
@@ -865,7 +865,7 @@ deadline_cancelled AS (
         locked_by_worker = NULL,
         lock_expires_at = NULL,
         last_heartbeat_at = NULL,
-        progress_seq = (SELECT progress_seq FROM params),
+        progress_seq = GREATEST(j.progress_seq, (SELECT progress_seq FROM params)),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
       {JOB_FENCE_SQL}
@@ -893,7 +893,7 @@ deadline_failed AS (
         -- deferral is NOT counted here, snooze_count tallies deferrals
         -- the job actually took, and this one was rejected outright.
         rate_limit_blocked_count = CASE WHEN $7::text IN ('reservation_denied', 'rate_limit_denied') THEN j.rate_limit_blocked_count + 1 ELSE j.rate_limit_blocked_count END,
-        progress_seq = (SELECT progress_seq FROM params),
+        progress_seq = GREATEST(j.progress_seq, (SELECT progress_seq FROM params)),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
       {JOB_FENCE_SQL}
@@ -1001,7 +1001,7 @@ WITH params AS (
         -- routes by the actor's current assignment from here on (the
         -- routing contract in taskq/backend/_dispatch_sql.py).
         assignment_routed = true,
-        progress_seq = (SELECT progress_seq FROM params),
+        progress_seq = GREATEST(j.progress_seq, (SELECT progress_seq FROM params)),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
       {JOB_FENCE_SQL}
@@ -1047,7 +1047,7 @@ deadline_cancelled AS (
         locked_by_worker = NULL,
         lock_expires_at = NULL,
         last_heartbeat_at = NULL,
-        progress_seq = (SELECT progress_seq FROM params),
+        progress_seq = GREATEST(j.progress_seq, (SELECT progress_seq FROM params)),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
       {JOB_FENCE_SQL}
@@ -1067,7 +1067,7 @@ max_attempts_failed AS (
         locked_by_worker = NULL,
         lock_expires_at = NULL,
         last_heartbeat_at = NULL,
-        progress_seq = (SELECT progress_seq FROM params),
+        progress_seq = GREATEST(j.progress_seq, (SELECT progress_seq FROM params)),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
       {JOB_FENCE_SQL}
@@ -1098,7 +1098,7 @@ deadline_failed AS (
         locked_by_worker = NULL,
         lock_expires_at = NULL,
         last_heartbeat_at = NULL,
-        progress_seq = (SELECT progress_seq FROM params),
+        progress_seq = GREATEST(j.progress_seq, (SELECT progress_seq FROM params)),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
       {JOB_FENCE_SQL}
@@ -1256,7 +1256,7 @@ snoozed AS (
         assignment_routed = true,
         attempt = {ATTEMPT_REFUND_SQL},
         snooze_count = j.snooze_count + 1,
-        progress_seq = (SELECT progress_seq FROM params),
+        progress_seq = GREATEST(j.progress_seq, (SELECT progress_seq FROM params)),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
       {JOB_FENCE_SQL}
@@ -1299,7 +1299,7 @@ deadline_cancelled AS (
         locked_by_worker = NULL,
         lock_expires_at = NULL,
         last_heartbeat_at = NULL,
-        progress_seq = (SELECT progress_seq FROM params),
+        progress_seq = GREATEST(j.progress_seq, (SELECT progress_seq FROM params)),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
       {JOB_FENCE_SQL}
@@ -1319,7 +1319,7 @@ deadline_failed AS (
         locked_by_worker = NULL,
         lock_expires_at = NULL,
         last_heartbeat_at = NULL,
-        progress_seq = (SELECT progress_seq FROM params),
+        progress_seq = GREATEST(j.progress_seq, (SELECT progress_seq FROM params)),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
       {JOB_FENCE_SQL}
