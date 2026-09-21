@@ -59,13 +59,13 @@ from taskq.backend._protocol import (
     SqlOutcomeBranch,
     parse_outcome_branch,
 )
-from taskq.backend._sql_fragments import JOB_FENCE_BOUND_SQL
 from taskq.backend._sql_templates import render
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.exceptions import WorkerOwnershipMismatch
 from taskq.migrate import apply_pending
 from taskq.settings import WorkerSettings
+from taskq.testing.assertions import assert_transition_sequence
 from taskq.testing.fixtures import ModulePgSchema
 
 pytestmark = pytest.mark.integration
@@ -147,8 +147,8 @@ async def _setup_pg(pg_dsn: str, schema: str) -> PostgresBackend:
 
 async def _dispatched_job(
     backend: PostgresBackend, schema: str, worker_id: UUID, *, stc_s: float | None = None
-) -> tuple[Any, int]:
-    """One enqueued job claimed by this worker; returns (job_id, attempt)."""
+) -> tuple[Any, int, int]:
+    """One enqueued job claimed by this worker; returns (job_id, attempt, claim_epoch)."""
     async with backend._deps.dispatcher_pool.acquire() as conn:  # type: ignore[union-attr]
         await conn.execute(
             f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) '
@@ -179,7 +179,11 @@ async def _dispatched_job(
         worker_id, ["default"], limit=1, lock_lease=timedelta(seconds=30)
     )
     assert rows and rows[0].id == job_id
-    return rows[0].id, rows[0].attempt
+    # The claim view the handler must present on every later write: the
+    # fence binds BOTH the attempt epoch and the claim epoch (JobRow
+    # .claim_epoch, bumped +1 by every dispatch claim), and a caller that
+    # cannot present them no-ops by design (the cannot-prove-it doctrine).
+    return rows[0].id, rows[0].attempt, rows[0].claim_epoch
 
 
 def _mutate_label(sql_text: str, honest: str) -> str:
@@ -248,10 +252,10 @@ async def test_atk_mutated_arm_label_raises_and_never_rewrites_the_row(
     backend = await _setup_pg(pg_dsn, schema)
     worker_id = new_uuid()
 
-    async def arrange() -> tuple[Any, int]:
+    async def arrange() -> tuple[Any, int, int]:
         return await _dispatched_job(backend, schema, worker_id)
 
-    async def write(job_id: Any, attempt: int) -> tuple[Any, JobRow | None]:
+    async def write(job_id: Any, attempt: int, claim_epoch: int) -> tuple[Any, JobRow | None]:
         call = getattr(backend, target.method)
         if target.method == "mark_failed_or_retry":
             result = await call(
@@ -259,15 +263,22 @@ async def test_atk_mutated_arm_label_raises_and_never_rewrites_the_row(
                 worker_id,
                 ErrorInfo(error_class="RuntimeError", error_message="boom", error_traceback=None),
                 attempt=attempt,
+                claim_epoch=claim_epoch,
                 **target.kwargs,
             )
         else:
-            result = await call(job_id, worker_id, attempt=attempt, **target.kwargs)
+            result = await call(
+                job_id,
+                worker_id,
+                attempt=attempt,
+                claim_epoch=claim_epoch,
+                **target.kwargs,
+            )
         return result, await backend.get(job_id)
 
     async def drive() -> tuple[Any, JobRow | None, Any]:
-        job_id, attempt = await arrange()
-        result, row = await write(job_id, attempt)
+        job_id, attempt, claim_epoch = await arrange()
+        result, row = await write(job_id, attempt, claim_epoch)
         return result, row, job_id
 
     _honest_return, honest_row, _honest_job = await drive()
@@ -279,10 +290,10 @@ async def test_atk_mutated_arm_label_raises_and_never_rewrites_the_row(
         original,
         **{target.statement: _mutate_label(getattr(original, target.statement), target.honest_arm)},
     )
-    mutated_job_id, mutated_attempt = await arrange()
+    mutated_job_id, mutated_attempt, _mutated_epoch = await arrange()
     try:
         with pytest.raises(ValueError, match="unknown outcome_branch"):
-            await write(mutated_job_id, mutated_attempt)
+            await write(mutated_job_id, mutated_attempt, _mutated_epoch)
     finally:
         backend._sql = original
     mutated_job = mutated_job_id
@@ -313,13 +324,14 @@ async def test_atk_denial_reason_contract(pg_dsn: str, module_pg_schema: ModuleP
     worker_id = new_uuid()
 
     # Cell 1: a live (non-terminal) denial - no state_change event at all.
-    job_id, attempt = await _dispatched_job(backend, schema, worker_id, stc_s=60.0)
+    job_id, attempt, claim_epoch = await _dispatched_job(backend, schema, worker_id, stc_s=60.0)
     verdict = await backend.mark_snoozed(
         job_id,
         worker_id,
         timedelta(seconds=10),
         outcome="rate_limit_denied",
         attempt=attempt,
+        claim_epoch=claim_epoch,
         denial_reason="capacity",
     )
     assert verdict == "scheduled"
@@ -331,13 +343,14 @@ async def test_atk_denial_reason_contract(pg_dsn: str, module_pg_schema: ModuleP
 
     # Cell 2: the denial whose schedule_to_close lapses dies through the
     # terminal deadline arm, and the event detail names the reason.
-    job_id, attempt = await _dispatched_job(backend, schema, worker_id, stc_s=5.0)
+    job_id, attempt, claim_epoch = await _dispatched_job(backend, schema, worker_id, stc_s=5.0)
     verdict = await backend.mark_snoozed(
         job_id,
         worker_id,
         timedelta(seconds=10),
         outcome="rate_limit_denied",
         attempt=attempt,
+        claim_epoch=claim_epoch,
         denial_reason="unavailable",
     )
     assert verdict == "failed"
@@ -345,13 +358,14 @@ async def test_atk_denial_reason_contract(pg_dsn: str, module_pg_schema: ModuleP
     assert deadline_event.detail.get("denial_reason") == "unavailable"
 
     # Cell 2b: the same terminal arm on a saturation denial names 'capacity'.
-    job_id, attempt = await _dispatched_job(backend, schema, worker_id, stc_s=5.0)
+    job_id, attempt, claim_epoch = await _dispatched_job(backend, schema, worker_id, stc_s=5.0)
     verdict = await backend.mark_snoozed(
         job_id,
         worker_id,
         timedelta(seconds=10),
         outcome="reservation_denied",
         attempt=attempt,
+        claim_epoch=claim_epoch,
         denial_reason="capacity",
     )
     assert verdict == "failed"
@@ -360,9 +374,14 @@ async def test_atk_denial_reason_contract(pg_dsn: str, module_pg_schema: ModuleP
 
     # Cell 3: a PLAIN snooze through the same terminal arm - no
     # denial_reason key, the detail shape is unchanged.
-    job_id, attempt = await _dispatched_job(backend, schema, worker_id, stc_s=5.0)
+    job_id, attempt, claim_epoch = await _dispatched_job(backend, schema, worker_id, stc_s=5.0)
     verdict = await backend.mark_snoozed(
-        job_id, worker_id, timedelta(seconds=10), outcome="snoozed", attempt=attempt
+        job_id,
+        worker_id,
+        timedelta(seconds=10),
+        outcome="snoozed",
+        attempt=attempt,
+        claim_epoch=claim_epoch,
     )
     assert verdict == "failed"
     deadline_event = next(e for e in await backend.get_events(job_id) if e.kind == "state_change")
@@ -379,7 +398,7 @@ async def test_atk_illegal_outcome_and_reason_raise_before_any_write(
     schema = module_pg_schema.schema_name
     backend = await _setup_pg(pg_dsn, schema)
     worker_id = new_uuid()
-    job_id, attempt = await _dispatched_job(backend, schema, worker_id)
+    job_id, attempt, _claim_epoch = await _dispatched_job(backend, schema, worker_id)
 
     with pytest.raises(ValueError):
         await backend.mark_snoozed(
@@ -405,9 +424,9 @@ async def test_atk_illegal_outcome_and_reason_raise_before_any_write(
 
 async def _redispatch_same_worker(
     backend: PostgresBackend, schema: str, job_id: Any, worker_id: UUID, expect_attempt: int
-) -> int:
+) -> tuple[int, int]:
     """Reclaim the row (its lease expires) and re-claim it on the SAME
-    worker; returns the row's new attempt epoch."""
+    worker; returns the row's new (attempt, claim_epoch) claim view."""
     from taskq.backend._sweeps import sweep_expired_locks
 
     async with backend._deps.dispatcher_pool.acquire() as conn:  # type: ignore[union-attr]
@@ -427,7 +446,10 @@ async def _redispatch_same_worker(
         worker_id, ["default"], limit=1, lock_lease=timedelta(seconds=30)
     )
     assert rows and rows[0].id == job_id and rows[0].attempt == expect_attempt
-    return rows[0].attempt
+    # The claim epoch advanced: every claim stamps an epoch no earlier
+    # claim could ever stamp (01.00.18_02_pre_claim_epoch.sql).
+    assert rows[0].claim_epoch > 0
+    return rows[0].attempt, rows[0].claim_epoch
 
 
 @pytest.mark.asyncio
@@ -444,13 +466,25 @@ async def test_atk_stale_epoch_write_never_applies_to_the_live_attempt(
     worker_id = new_uuid()
 
     # ── the bound spelling (mark_succeeded / mark_failed / mark_cancelled) ──
-    job_id, attempt = await _dispatched_job(backend, schema, worker_id)
+    job_id, attempt, stale_epoch = await _dispatched_job(backend, schema, worker_id)
     assert attempt == 1
-    await _redispatch_same_worker(backend, schema, job_id, worker_id, expect_attempt=2)
+    live_attempt, live_epoch = await _redispatch_same_worker(
+        backend, schema, job_id, worker_id, expect_attempt=2
+    )
+    assert live_epoch != stale_epoch, "the re-claim must stamp a fresh claim epoch"
 
-    # The stale attempt-1 handler's writes arrive late: none may apply.
-    assert await backend.mark_succeeded(job_id, worker_id, {"stale": True}, attempt=1) is False
-    assert await backend.mark_cancelled(job_id, worker_id, attempt=1) is False
+    # The stale attempt-1 handler's writes arrive late, presenting the FULL
+    # stale claim view (its own attempt AND its own claim epoch): none may
+    # apply.
+    assert (
+        await backend.mark_succeeded(
+            job_id, worker_id, {"stale": True}, attempt=1, claim_epoch=stale_epoch
+        )
+        is False
+    )
+    assert (
+        await backend.mark_cancelled(job_id, worker_id, attempt=1, claim_epoch=stale_epoch) is False
+    )
     with pytest.raises(WorkerOwnershipMismatch):
         await backend.mark_failed_or_retry(
             job_id,
@@ -458,6 +492,7 @@ async def test_atk_stale_epoch_write_never_applies_to_the_live_attempt(
             ErrorInfo(error_class="RuntimeError", error_message="stale", error_traceback=None),
             timedelta(seconds=10),
             attempt=1,
+            claim_epoch=stale_epoch,
         )
     row = await backend.get(job_id)
     assert row is not None and row.status == "running" and row.attempt == 2, (
@@ -465,19 +500,70 @@ async def test_atk_stale_epoch_write_never_applies_to_the_live_attempt(
         f"status={row.status if row else None}"
     )
 
-    # The LIVE attempt's own write still applies: the fence refused the
-    # epoch, not the write.
-    assert await backend.mark_succeeded(job_id, worker_id, {"ok": True}, attempt=2) is True
-    row = await backend.get(job_id)
-    assert row is not None and row.status == "succeeded"
-
-    # ── the aliased spelling (the multi-arm arbiters) ──
-    job_id, attempt = await _dispatched_job(backend, schema, worker_id)
-    await _redispatch_same_worker(backend, schema, job_id, worker_id, expect_attempt=2)
-    verdict = await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=30), attempt=1)
-    assert verdict == "noop", f"a stale attempt-1 deferral moved the live row: {verdict!r}"
+    # The fence is a CONJUNCTION: a write that gets ANY conjunct wrong must
+    # not land. The hybrid view here (the row's CURRENT claim epoch paired
+    # with the STALE attempt) is what isolates the attempt-epoch conjunct -
+    # the full-stale-view writes above are already refused by the newer
+    # claim epoch, so a misfolded attempt conjunct would sail through them.
+    assert (
+        await backend.mark_succeeded(
+            job_id, worker_id, {"hybrid": True}, attempt=1, claim_epoch=live_epoch
+        )
+        is False
+    )
     row = await backend.get(job_id)
     assert row is not None and row.status == "running" and row.attempt == 2
+
+    # The LIVE attempt's own write, presenting ITS OWN claim view, still
+    # applies: the fence refused the stale epochs, not the write.
+    assert (
+        await backend.mark_succeeded(
+            job_id, worker_id, {"ok": True}, attempt=live_attempt, claim_epoch=live_epoch
+        )
+        is True
+    )
+    row = await backend.get(job_id)
+    assert row is not None and row.status == "succeeded"
+    # The honest outcome's full event trail: the lock-expiry reclaim hands
+    # the row back (running → pending), the re-dispatch writes no event
+    # row, and the LIVE write terminalises ONCE (running → succeeded) -
+    # the stale writes contributed nothing to the feed.
+    assert_transition_sequence(
+        await backend.get_events(job_id),
+        [
+            ("running", "pending"),
+            ("running", "succeeded"),
+        ],
+    )
+
+    # ── the aliased spelling (the multi-arm arbiters) ──
+    job_id, attempt, stale_epoch = await _dispatched_job(backend, schema, worker_id)
+    live_attempt, live_epoch = await _redispatch_same_worker(
+        backend, schema, job_id, worker_id, expect_attempt=2
+    )
+    verdict = await backend.mark_snoozed(
+        job_id, worker_id, timedelta(seconds=30), attempt=1, claim_epoch=stale_epoch
+    )
+    assert verdict == "noop", f"a stale attempt-1 deferral moved the live row: {verdict!r}"
+    # The same hybrid isolation on the aliased spelling: the stale attempt
+    # paired with the CURRENT claim epoch must still be refused, by the
+    # attempt-epoch conjunct alone.
+    verdict = await backend.mark_snoozed(
+        job_id, worker_id, timedelta(seconds=30), attempt=1, claim_epoch=live_epoch
+    )
+    assert verdict == "noop", f"a hybrid stale-attempt deferral moved the live row: {verdict!r}"
+    # The fenced-out deferrals took the no-op path: the row's fate is
+    # unchanged and the live claim view still applies afterwards.
+    row = await backend.get(job_id)
+    assert row is not None and row.status == "running" and row.attempt == 2
+    assert (
+        await backend.mark_succeeded(
+            job_id, worker_id, {"ok": True}, attempt=live_attempt, claim_epoch=live_epoch
+        )
+        is True
+    )
+    row = await backend.get(job_id)
+    assert row is not None and row.status == "succeeded"
 
 
 # ── fence-fragment misfold drill ───────────────────────────────────────────
@@ -490,25 +576,26 @@ _MISFOLDS: dict[str, tuple[str, str]] = {
         "AND j.attempt = (SELECT attempt FROM params)",
         "AND j.attempt >= 0",  # a tautology: the conjunct is gone
     ),
-    # The bound spelling loses its attempt-epoch conjunct.
+    # The bound spelling loses its attempt-epoch conjunct. The pair edits
+    # the SOURCE TEXT (the fragment value is spelled across two adjacent
+    # string literals in the module), so the old string is the literal
+    # substring the module actually contains.
     "bound_attempt": (
-        JOB_FENCE_BOUND_SQL,
-        JOB_FENCE_BOUND_SQL.replace(" AND attempt = ${attempt_bind}", ""),
+        "AND attempt = ${attempt_bind}",
+        "",  # the conjunct is gone
     ),
     # The bound spelling's worker conjunct drifts to a bind position no
     # caller populates with the worker id.
     "bound_worker_bind": (
-        JOB_FENCE_BOUND_SQL,
-        JOB_FENCE_BOUND_SQL.replace("locked_by_worker = $2", "locked_by_worker = $9"),
+        "locked_by_worker = $2",
+        "locked_by_worker = $9",
     ),
     # The SHARP one: an ARITY-PRESERVING semantic misfold on the bound
     # spelling - the epoch conjunct becomes a tautology over every later
     # attempt. Only the stale-epoch behavior pin can catch this.
     "bound_attempt_semantic": (
-        JOB_FENCE_BOUND_SQL,
-        JOB_FENCE_BOUND_SQL.replace(
-            "AND attempt = ${attempt_bind}", "AND attempt >= ${attempt_bind}"
-        ),
+        "AND attempt = ${attempt_bind}",
+        "AND attempt >= ${attempt_bind}",
     ),
 }
 
@@ -516,7 +603,7 @@ _NET_TESTS = (
     "tests/test_terminal_sql_bind_arity.py",
     "tests/test_rt_diff_terminal.py",
     "tests/test_postgres_terminal_writes.py",
-    "tests/atk351_typed_outcomes.py::test_atk_stale_epoch_write_never_applies_to_the_live_attempt",
+    "tests/test_typed_outcomes_attacks.py::test_atk_stale_epoch_write_never_applies_to_the_live_attempt",
 )
 
 
