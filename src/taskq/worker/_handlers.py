@@ -1005,7 +1005,7 @@ async def _handle_generic_exception(
     backend: Backend,
     job: JobRow,
     worker_id: UUID,
-    e: Exception,
+    e: BaseException,
     actor_config: ActorConfigLike,
     max_retry_backoff: timedelta,
     span: trace.Span,

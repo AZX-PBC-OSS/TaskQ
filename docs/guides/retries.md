@@ -4,6 +4,8 @@
 
 When an actor raises an exception, TaskQ evaluates the actor's `RetryPolicy` to decide whether to reschedule the job (retry) or mark it permanently failed. The retry system applies only to genuine exceptions; control-flow signals `Snooze` and `RetryAfter` are handled separately (see [Control-flow signals](#9-control-flow-signals)) and follow different rules regarding attempt counting.
 
+This includes exceptions that do not derive from `Exception`: a `BaseException` subclass raised by an actor body (a custom panic-grade type, or `SystemExit` from a sync actor calling `sys.exit()` in its executor thread) is captured at the attempt boundary and classified like any other failure — the row lands `failed` with the exception's own type name as `error_class`, and the worker survives to run its remaining jobs. One buggy actor can never kill the worker or strand its row `running` for the lease sweep to relabel `WorkerCrashed`. The single deliberate exception is `KeyboardInterrupt`: it is interpreter/operator intent, never an actor outcome, and it propagates (the row is recovered by the lease-reclaim path).
+
 ---
 
 ## 1. RetryPolicy: field reference
