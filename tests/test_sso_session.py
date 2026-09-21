@@ -7,6 +7,7 @@ guarantees without duplication.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -15,7 +16,7 @@ import pytest
 pytest.importorskip("fastapi")
 pytest.importorskip("itsdangerous")
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import RedirectResponse
 from fastapi.testclient import TestClient
 
@@ -23,6 +24,7 @@ from taskq.web.admin.auth._session import (
     IdentityClaims,
     SessionManager,
     create_auth_dependency,
+    create_session_verifier,
 )
 
 pytestmark = [pytest.mark.fastapi]
@@ -209,3 +211,83 @@ def test_secret_remains_required_first_constructor_argument() -> None:
     existing SessionManager(secret=..., ...) call site is untouched."""
     with pytest.raises(TypeError, match="secret"):
         SessionManager()  # type: ignore[reportCallIssue]  # Why: deliberately omitting the required secret to pin that the repr change added no default.
+
+
+# ── Session re-check exposed for long-lived SSE streams (#316) ────────────
+
+
+def _request_with_cookie(cookie: str | None) -> Request:
+    headers: list[tuple[bytes, bytes]] = []
+    if cookie is not None:
+        headers.append((b"cookie", f"taskq_session={cookie}".encode()))
+    scope: dict[str, Any] = {
+        "type": "http",
+        "method": "GET",
+        "path": "/",
+        "headers": headers,
+        "query_string": b"",
+    }
+    return Request(scope)
+
+
+def test_dependency_exposes_session_verifier_attribute() -> None:
+    """The auth dependency carries the re-check the SSE routers derive (#316).
+
+    A stream that authenticates only at request acceptance keeps delivering
+    frames after its session is invalidated; the routers that own such streams
+    re-invoke this attribute's callable before every streamed event and at
+    every keepalive tick.
+    """
+    manager = SessionManager(secret="test-secret-key-32bytes-long!!", max_age_seconds=3600)
+    dep = create_auth_dependency(manager, frozenset())
+    assert getattr(dep, "session_verifier", None) is not None
+
+
+async def test_session_verifier_accepts_a_valid_session() -> None:
+    manager = SessionManager(secret="test-secret-key-32bytes-long!!", max_age_seconds=3600)
+    cookie = manager.create_session_cookie(_make_claims(groups=frozenset({"admins"})))
+    verifier = create_session_verifier(manager, frozenset())
+    assert await verifier(_request_with_cookie(cookie)) is True
+
+
+async def test_session_verifier_rejects_a_rotated_secret() -> None:
+    """Rotating session_secret invalidates the live stream: the cookie the
+    stream was opened with no longer verifies under the new manager."""
+    issuer = SessionManager(secret="secret-a-32bytes-long-aaaaaa!", max_age_seconds=3600)
+    cookie = issuer.create_session_cookie(_make_claims())
+    rotated = SessionManager(secret="secret-b-32bytes-long-bbbbbb!", max_age_seconds=3600)
+    verifier = create_session_verifier(rotated, frozenset())
+    assert await verifier(_request_with_cookie(cookie)) is False
+
+
+async def test_session_verifier_rejects_an_expired_session() -> None:
+    manager = SessionManager(secret="test-secret-key-32bytes-long!!", max_age_seconds=3600)
+    cookie = manager.create_session_cookie(_make_claims())
+    expired_horizon = SessionManager(secret="test-secret-key-32bytes-long!!", max_age_seconds=0)
+    verifier = create_session_verifier(expired_horizon, frozenset())
+    # Why the sleep: itsdangerous compares the cookie's age against
+    # max_age_seconds; an immediate verify sees age < 1s and passes. The
+    # same one-tick wait the expiry test above the fold uses.
+    await asyncio.sleep(1.1)
+    assert await verifier(_request_with_cookie(cookie)) is False
+
+
+async def test_session_verifier_enforces_the_allowlist() -> None:
+    """Tightening allowed_groups ends live streams on the next re-check."""
+    manager = SessionManager(secret="test-secret-key-32bytes-long!!", max_age_seconds=3600)
+    cookie = manager.create_session_cookie(_make_claims(groups=frozenset({"viewers"})))
+    verifier = create_session_verifier(manager, frozenset({"admins"}))
+    assert await verifier(_request_with_cookie(cookie)) is False
+
+
+async def test_session_verifier_rejects_a_missing_cookie() -> None:
+    manager = SessionManager(secret="test-secret-key-32bytes-long!!", max_age_seconds=3600)
+    verifier = create_session_verifier(manager, frozenset())
+    assert await verifier(_request_with_cookie(None)) is False
+
+
+async def test_session_verifier_no_allowlist_accepts_any_valid_session() -> None:
+    manager = SessionManager(secret="test-secret-key-32bytes-long!!", max_age_seconds=3600)
+    cookie = manager.create_session_cookie(_make_claims(groups=frozenset({"any"})))
+    verifier = create_session_verifier(manager, frozenset())
+    assert await verifier(_request_with_cookie(cookie)) is True
