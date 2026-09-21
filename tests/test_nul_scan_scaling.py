@@ -48,6 +48,41 @@ Runs in the serial load-sensitive lane: it gates a timing ratio, which
 is load-fragile by nature even with min-of-N and the twin's
 cancellation; the serial lane is the honest home for a timing-shape
 test.
+
+Known boundary -- what this gate CAN and CANNOT see. The gate reliably
+detects INTERPRETER-level superlinear work, which is the realistic
+regression class for a pure-Python scan: a memcpy-cheap quadratic sim
+(an O(pos) copy per match added to the scan's loop) measured ~+84
+excess on the runner that sourced the pin's mutant numbers (+16 to +17
+on a second runner; the committed-test mutant lands at +7 to +8) --
+all far over the 2.5 gate. But a C-LEVEL O(pos) per-match term (one
+`bytes.rfind` over the payload per match, no copy) measures excess
+-0.24 to -0.45 (-0.47 to +0.35 on the second runner) -- UNDER the 2.5
+gate, invisible: a C scan is roughly two orders of magnitude cheaper
+per byte than the interpreter loop, so the added O(pos) work never
+lifts the scan's ratio above its twin's. An earlier draft of this
+docstring claimed a C-level O(pos) rescan per match lands at +3.5 and
+is caught; that measurement was wrong, and the correct numbers are the
+ones in this paragraph.
+
+Operational rule that follows: a future edit delegating per-match work
+to C-level O(pos) primitives (rfind/index/count with a start bound, a
+regex over the payload, any per-match C scan of the remaining bytes)
+is INVISIBLE to this gate and MUST be caught in review. Review check,
+named explicitly: any change to `_encoded_has_nul` (or to the
+terminal-write path that calls it) that adds, replaces, or wraps a
+per-match step with a C-level primitive whose cost grows with match
+position or payload length cannot be trusted to this test; require the
+author to state the term's complexity in the PR description and to add
+a mutant to this file simulating the new shape, with its measured
+excess, before merging.
+
+LOAD stability, with provenance: across 10 loaded runs (8 busy cores
+on the sourcing runner) the excess measured -0.96 to +0.60, against
+the 2.5 gate (-0.93 to -0.24 across 10 loaded runs on the second
+runner). The margin is not an artifact of one quiet machine; it holds
+under contention, and both bands are why the gate value is 2.5 and not
+something tighter.
 """
 
 import subprocess
@@ -131,8 +166,11 @@ def test_nul_scan_growth_is_linear_relative_to_its_twin() -> None:
     # together and the difference stays in band -- the raw 16.50x CI
     # flake of the previous gate divides out. Superlinear shapes leave
     # an absolute excess: a memcpy-cheap quadratic sim (an O(pos) copy
-    # per match) lands at +7 to +8 units and a C-level O(pos) rescan
-    # per match at +3.5.
+    # per match) lands at +7 to +8 units and fails the gate. A C-level
+    # O(pos) rfind per match lands IN the linear band (-0.47 to +0.35)
+    # and does NOT fail it -- the gate's sensitivity boundary is
+    # python-level work; see the docstring's known boundary and its
+    # review rule for that case.
     assert excess < _DIFFERENCE_GATE, (
         f"the NUL scan grew {scan_ratio:.2f}x for 8x the input while its "
         f"find-advance twin grew {twin_ratio:.2f}x (excess {excess:+.2f} ratio "
