@@ -546,13 +546,21 @@ Run-now (`POST /schedules/{id}/run`, "Run now" on the schedules page) resolves t
 schedule's payload and enqueues one immediate job for its actor. It honors the
 operator-stored `actor_config.max_pending` cap exactly like the cron tick and the client
 enqueue path: a fire refused by the cap redirects back with the reason instead of landing a
-job past the operator's own drain. Two residuals are deliberate: run-now is an operator
-override and does not carry the `singleton` stamp (that flag lives in the worker's actor
-registry, not the database, so an admin process cannot know it; a run-now fire can therefore
-run alongside an active singleton blocker), and it does not advance `next_fire_at` - the
-schedule's next regular fire still happens as scheduled. An actor capped only by its
-registry literal (no stored `actor_config.max_pending`) is likewise invisible to an admin
-process; the tick and client paths enforce that literal.
+job past the operator's own drain. The stored cap is the same value every fire path reads,
+so a stale or orphaned config row (an actor deleted without its `actor_config` row, a cap
+left at 0) refuses run-now exactly as it refuses the tick and every client enqueue; the
+remedy is the config row itself, there is no run-now bypass. Two residuals are deliberate:
+run-now is an operator override and does not carry the `singleton` stamp (that flag lives in
+the worker's actor registry, not the database, so an admin process cannot know it; a run-now
+fire can therefore run alongside an active singleton blocker), and it does not advance
+`next_fire_at` - the schedule's next regular fire still happens as scheduled. An actor
+capped only by its registry literal (no stored `actor_config.max_pending`) is likewise
+invisible to an admin process; the tick and client paths enforce that literal. The job does
+carry the schedule's `cron_schedule_id` provenance stamp, the same key the tick stamps: the
+allof twin-coverage walk (see "When a fire lands inside a repeated hour") reads it to scope
+delivered instants to the schedule that enqueued them, so a run-now fire that lands inside a
+due overlap window counts as that occurrence's delivery and the walk advances past it - the
+manual fire satisfies the owed occurrence, the tick does not double-deliver it.
 
 ---
 
