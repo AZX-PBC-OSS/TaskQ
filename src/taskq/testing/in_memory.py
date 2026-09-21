@@ -982,6 +982,12 @@ class InMemoryBackend:
                     f"schedule for actor {args.actor!r} name {args.name!r} already exists"
                 )
         sid = new_uuid()
+        # Same create-time provenance rule as backend/_schedules.py: an
+        # operator-owned schedule created disabled carries operator intent
+        # from birth; a code-owned one starts unowned (NULL).
+        disabled_by: str | None = None
+        if not args.enabled and args.owner == "operator":
+            disabled_by = "operator"
         record = ScheduleRecord(
             id=sid,
             actor=args.actor,
@@ -992,6 +998,7 @@ class InMemoryBackend:
             payload_factory=args.payload_factory,
             identity_key=args.identity_key,
             enabled=args.enabled,
+            disabled_by=disabled_by,
             last_fired_at=None,
             last_fire_error=None,
             consecutive_failures=0,
@@ -1040,6 +1047,12 @@ class InMemoryBackend:
             if args.enabled:
                 updates["consecutive_failures"] = 0
                 updates["last_fire_error"] = None
+                updates["disabled_by"] = None
+            else:
+                # Mirror of backend/_schedules.update_schedule: a disable
+                # through the backend API is operator-driven, the cron
+                # loop's auto-disable stamps 'auto' in its own statement.
+                updates["disabled_by"] = "operator"
         if args.payload_factory is not None:
             updates["payload_factory"] = args.payload_factory
         elif args.clear_payload_factory:

@@ -1407,10 +1407,17 @@ async def tick_cron(
         # ``AND s.enabled = true`` keeps the pre-batching guard, so a
         # schedule disabled by anyone else mid-tick is left alone and shows
         # up as the rowcount shortfall below.
+        #
+        # ``disabled_by = 'auto'`` rides the disabling arm only: it is the
+        # provenance the worker's registration pass reads at the next boot
+        # to tell a stale auto-disable (code re-declares the schedule, the
+        # boot reverts it) from operator intent (never reverted). Strikes
+        # short of the threshold leave it alone.
         tag: str = await conn.execute(
             f'UPDATE "{schema}".cron_schedules s '
             f"SET last_fire_error = f.err, consecutive_failures = f.consecutive, "
-            f"enabled = CASE WHEN f.disable THEN false ELSE s.enabled END "
+            f"enabled = CASE WHEN f.disable THEN false ELSE s.enabled END, "
+            f"disabled_by = CASE WHEN f.disable THEN 'auto' ELSE s.disabled_by END "
             f"FROM unnest($1::uuid[], $2::text[], $3::int[], $4::bool[]) "
             f"AS f(id, err, consecutive, disable) "
             f"WHERE s.id = f.id AND s.enabled = true",

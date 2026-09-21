@@ -62,11 +62,16 @@ _SCHEDULES_SQL = (
 
 _SCHEDULE_ENABLE_SQL = (
     'UPDATE "{schema}".cron_schedules '
-    "SET enabled = true, consecutive_failures = 0, last_fire_error = NULL "
+    "SET enabled = true, consecutive_failures = 0, last_fire_error = NULL, "
+    "disabled_by = NULL "
     "WHERE id = $1"
 )
 
-_SCHEDULE_DISABLE_SQL = 'UPDATE "{schema}".cron_schedules SET enabled = false WHERE id = $1'
+# A disable from the admin UI is operator intent: the ownership marker is
+# what keeps the worker's startup registration pass from ever reverting it.
+_SCHEDULE_DISABLE_SQL = (
+    "UPDATE \"{schema}\".cron_schedules SET enabled = false, disabled_by = 'operator' WHERE id = $1"
+)
 
 _SCHEDULE_FETCH_FOR_SKIP_SQL = (
     "SELECT cron_expr, timezone, dst_strategy, next_fire_at, clock_timestamp() AS db_now "

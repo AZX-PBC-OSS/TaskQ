@@ -1987,6 +1987,23 @@ changelog becomes the authoritative record and these notes age out.
 
 ### Cron, queries, and admin
 
+- **Cron schedule ownership model (`disabled_by`, migration `01.00.19_01`)**:
+  `cron_schedules` gains a nullable `disabled_by text` column recording WHO
+  disabled a schedule: `'auto'` (the cron loop's failure-count auto-disable),
+  `'operator'` (schedule handle `disable()`, the CLI, the admin UI, actor
+  deregistration), or NULL (enabled, or disabled before this column existed;
+  read as operator intent). A CHECK constraint enforces the two values. The
+  worker's startup registration pass now re-enables a schedule auto-disabled
+  on a transient failure blip **only** when the re-declaring spec is
+  code-owned (`CronScheduleSpec.owner="code"`, the default) and declares
+  `enabled=True`; operator-disabled rows stay disabled across restarts, the
+  guarantee the create-only registration design always intended but could not
+  express. Upgrades are safe by construction: existing rows all read
+  `disabled_by=NULL`, and NULL is never re-enabled, so every schedule a
+  human or auto-disable left disabled before the upgrade stays disabled until
+  the operator acts -- the old behavior, unchanged. Fresh installs get the
+  column from the migration chain. See
+  [cron.md](cron.md#schedule-ownership).
 - **`name` and `identity_key` fields on `CronScheduleSpec`** for per-property
   cron schedules and cron↔on-demand dedup.
 - **`JobSortField` enum and `JobFilter.order_by`** for "latest run by

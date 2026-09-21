@@ -19,7 +19,7 @@ import asyncio
 import contextlib
 import importlib
 import math
-from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any, cast
 
@@ -46,6 +46,7 @@ from taskq.auth import (
     reload_schedule_of,
 )
 from taskq.backend._protocol import Backend, JobRow, ScheduleCreateArgs
+from taskq.backend._records import parse_rowcount
 from taskq.backend.clock import Clock, SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.client._enqueuer import SubJobEnqueuer
@@ -870,6 +871,127 @@ def _resolve_rl_registry(
             )
         return cast(RateLimitRegistry, entry.impl)
     return rl_registry
+
+
+async def _revert_stale_auto_disable(
+    deps: WorkerDeps,
+    settings: WorkerSettings,
+    spec: CronScheduleSpec,
+) -> bool:
+    """Re-enable a schedule row the cron loop auto-disabled, at registration.
+
+    The ownership model (issue #342): ``cron_schedules.disabled_by`` records
+    who disabled a row. ``'auto'`` is the cron loop's failure-count
+    auto-disable, and the code re-declaring the schedule at startup proves the
+    declaration is live again, so the boot reverts the disable (``enabled=true``,
+    ``consecutive_failures=0``, ``last_fire_error=NULL``, ``disabled_by=NULL``):
+    a transient partial-DB blip (fires fail, strike writes commit) must not
+    permanently halt recurring work until a human intervenes. ``'operator'``
+    is a deliberate disable (schedule handle, CLI, admin UI, actor
+    deregistration) and is NEVER reverted by a boot, exactly the intent the
+    create-only registration design guards; NULL predates ownership tracking
+    and reads as operator intent (the safe side of the ambiguity).
+
+    Only a code-owned, code-enabled spec may revert: an ``owner='operator'``
+    spec merely ships the declaration, and a spec declared ``enabled=False``
+    does not assert the schedule should run. Returns whether a row was
+    re-enabled.
+    """
+    if spec.owner != "code" or not spec.enabled:
+        return False
+    async with deps.dispatcher_pool.acquire(timeout=settings.dispatcher_command_timeout) as conn:
+        tag: str = await conn.execute(
+            f'UPDATE "{settings.schema_name}".cron_schedules '  # noqa: S608  # Why: schema validated against _IDENT_RE at WorkerSettings load; asyncpg cannot bind identifiers, the values below are $-bound.
+            f"SET enabled = true, consecutive_failures = 0, last_fire_error = NULL, "
+            f"disabled_by = NULL "
+            f"WHERE actor = $1 AND name = $2 AND enabled = false AND disabled_by = 'auto'",
+            spec.actor,
+            spec.name,
+        )
+    return parse_rowcount(tag) > 0
+
+
+async def _register_cron_schedules(
+    backend: Backend,
+    deps: WorkerDeps,
+    settings: WorkerSettings,
+    specs: Sequence[CronScheduleSpec],
+) -> None:
+    """Register every code-declared cron spec against the database.
+
+    Create-first: a fresh spec inserts its row, seeded with the PG server
+    clock (the cron tick's due-check and catch-up cutoff are server-side, so
+    a Python-clock seed would shift the first fire by the app↔DB skew). On
+    conflict the pass is otherwise write-free -- an operator's runtime change
+    (disable, retime) must not be reverted by a redeploy -- except the one
+    ownership-driven recovery in :func:`_revert_stale_auto_disable`: a stale
+    ``'auto'`` disable of a code-owned schedule. Structural drift (cron_expr,
+    timezone, dst_strategy the row kept despite a changed declaration) is
+    warned, never written, by :func:`_warn_on_cron_drift`.
+    """
+    async with deps.dispatcher_pool.acquire(
+        timeout=settings.dispatcher_command_timeout
+    ) as _seed_conn:
+        seed_now: datetime = await _seed_conn.fetchval("SELECT clock_timestamp()")
+    for spec in specs:
+        next_fires = compute_next_fire_after(
+            spec.cron_expr,
+            spec.timezone,
+            seed_now,
+            dst_strategy=spec.dst_strategy,
+        )
+        next_fire = next_fires[0]
+        metadata: dict[str, object] = {}
+        if spec.static_payload is not None:
+            metadata["static_payload"] = spec.static_payload
+        try:
+            await backend.create_schedule(
+                ScheduleCreateArgs(
+                    actor=spec.actor,
+                    cron_expr=spec.cron_expr,
+                    timezone=spec.timezone,
+                    next_fire_at=next_fire,
+                    dst_strategy=spec.dst_strategy,
+                    payload_factory=spec.payload_factory,
+                    enabled=spec.enabled,
+                    owner=spec.owner,
+                    name=spec.name,
+                    identity_key=spec.identity_key,
+                    metadata=metadata,
+                )
+            )
+        except asyncpg.UniqueViolationError:
+            # Why: the (actor, name) UNIQUE constraint means a schedule
+            # for this (actor, name) already exists; this registration
+            # pass never modifies existing rows except the narrow
+            # auto-disable recovery below.
+            #
+            # Create-only is deliberate -- an operator's runtime change
+            # (disable, retime) must not be reverted by a redeploy. But
+            # it also means that changing a @cron decorator's cron_expr,
+            # timezone or dst_strategy in code deploys "successfully"
+            # and silently keeps the OLD cadence. Structural
+            # actor_config drift raises ActorConfigDriftList and refuses
+            # to start; cron drift produced one DEBUG line that named
+            # the code's values and never compared them to the stored
+            # row, so the mismatch itself was undetectable at any log
+            # level. Compare and warn, without changing the write
+            # semantics.
+            reverted = await _revert_stale_auto_disable(deps, settings, spec)
+            if reverted:
+                _startup_log.info(
+                    "cron-schedule-auto-disable-reverted",
+                    actor=spec.actor,
+                    name=spec.name,
+                )
+            await _warn_on_cron_drift(backend, spec)
+        else:
+            _startup_log.info(
+                "cron-schedule-registered",
+                actor=spec.actor,
+                expr=spec.cron_expr,
+                next_fire_at=next_fire.isoformat(),
+            )
 
 
 async def _warn_on_cron_drift(backend: Backend, spec: CronScheduleSpec) -> None:
@@ -1846,63 +1968,7 @@ async def _main(
                 ) from exc
 
         if _cron_registry:
-            # Why: seed the first next_fire_at from the PG server clock, the
-            # cron tick's due-check and catch-up cutoff are server-side, so a
-            # Python-clock seed would shift the first fire by the app↔DB skew.
-            async with deps.dispatcher_pool.acquire(
-                timeout=settings.dispatcher_command_timeout
-            ) as _seed_conn:
-                seed_now: datetime = await _seed_conn.fetchval("SELECT clock_timestamp()")
-            for spec in _cron_registry:
-                next_fires = compute_next_fire_after(
-                    spec.cron_expr,
-                    spec.timezone,
-                    seed_now,
-                    dst_strategy=spec.dst_strategy,
-                )
-                next_fire = next_fires[0]
-                metadata: dict[str, object] = {}
-                if spec.static_payload is not None:
-                    metadata["static_payload"] = spec.static_payload
-                try:
-                    await backend.create_schedule(
-                        ScheduleCreateArgs(
-                            actor=spec.actor,
-                            cron_expr=spec.cron_expr,
-                            timezone=spec.timezone,
-                            next_fire_at=next_fire,
-                            dst_strategy=spec.dst_strategy,
-                            payload_factory=spec.payload_factory,
-                            enabled=spec.enabled,
-                            name=spec.name,
-                            identity_key=spec.identity_key,
-                            metadata=metadata,
-                        )
-                    )
-                except asyncpg.UniqueViolationError:
-                    # Why: the (actor, name) UNIQUE constraint means a schedule
-                    # for this (actor, name) already exists; this registration
-                    # pass is insert-only and never modifies existing rows.
-                    #
-                    # Create-only is deliberate -- an operator's runtime change
-                    # (disable, retime) must not be reverted by a redeploy. But
-                    # it also means that changing a @cron decorator's cron_expr,
-                    # timezone or dst_strategy in code deploys "successfully"
-                    # and silently keeps the OLD cadence. Structural
-                    # actor_config drift raises ActorConfigDriftList and refuses
-                    # to start; cron drift produced one DEBUG line that named
-                    # the code's values and never compared them to the stored
-                    # row, so the mismatch itself was undetectable at any log
-                    # level. Compare and warn, without changing the write
-                    # semantics.
-                    await _warn_on_cron_drift(backend, spec)
-                else:
-                    _startup_log.info(
-                        "cron-schedule-registered",
-                        actor=spec.actor,
-                        expr=spec.cron_expr,
-                        next_fire_at=next_fire.isoformat(),
-                    )
+            await _register_cron_schedules(backend, deps, settings, _cron_registry)
 
         install_signal_handlers(
             loop,
