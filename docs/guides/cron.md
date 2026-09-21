@@ -395,8 +395,8 @@ schedules = await client.list_schedules()
 # Find the schedule by actor name or inspect schedule_id
 handle = await client.create_schedule("daily_report", "0 3 * * *")
 
-await handle.disable()  # set enabled=False
-await handle.enable()  # set enabled=True (resets consecutive_failures and last_fire_error)
+await handle.disable()  # set enabled=False, stamps disabled_by='operator' (a deliberate disable; a restart never reverts it)
+await handle.enable()  # set enabled=True (resets consecutive_failures, clears last_fire_error and disabled_by)
 await handle.delete()  # remove the schedule row
 ```
 
@@ -424,10 +424,12 @@ at most one schedule per actor is allowed, the legacy single-schedule behaviour.
 ### Auto-discovery at startup
 
 At worker startup, the bootstrap iterates `get_registered_crons()` and calls
-`create_schedule()` for each spec. This is **create-only, skip-on-conflict**: existing
-`cron_schedules` rows are never modified by the registration pass. If a `cron()`
-call's parameters change after the schedule was first registered, the operator must
-manually update or delete and recreate the schedule.
+`create_schedule()` for each spec. This is **create-first, skip-on-conflict**:
+existing `cron_schedules` rows are never modified by the registration pass,
+with exactly one exception (see [Schedule ownership](#schedule-ownership) below:
+a stale `auto` disable of a code-owned schedule is reverted). If a `cron()`
+call's parameters change after the schedule was first registered, the operator
+must manually update or delete and recreate the schedule.
 
 ---
 
@@ -465,6 +467,40 @@ per tick rather than assuming a prior tick's registration survived.
 
 Calling `handle.enable()` resets `consecutive_failures` to 0 and clears `last_fire_error`;
 the metric reconciles to match on the next tick with due work, not immediately.
+
+---
+
+## Schedule ownership
+
+`cron_schedules.disabled_by` records **who disabled a schedule** (migration
+`01.00.19_01_pre_cron_disabled_by`), because the two ways a schedule ends up
+disabled need opposite treatment at worker restart:
+
+| `disabled_by` | Meaning | At the next worker restart |
+|---|---|---|
+| `'auto'` | The cron loop's failure-count auto-disable (see [Failure handling](#failure-handling)) | **Reverted** for code-owned, code-enabled specs: the boot is proof the `@cron` declaration is live again, so the disable is stale |
+| `'operator'` | A deliberate disable: schedule handle `disable()`, the CLI, the admin UI, actor deregistration | **Never reverted**, whatever owns the spec |
+| NULL | Enabled, or disabled before this column existed (the safe reading of that ambiguity is operator intent) | Untouched |
+
+The revert is narrow: it re-enables the row, resets `consecutive_failures` to 0,
+clears `last_fire_error` and the marker, and logs
+`cron-schedule-auto-disable-reverted`. It fires only when the registering spec
+declares `owner="code"` (the default) and `enabled=True`. Why it exists: a
+transient partial-database blip (fires fail while the strike writes commit,
+realistic during failover or saturation) reaches the auto-disable threshold in
+three ticks, and without ownership the schedule would stay disabled forever
+until a human noticed. Code re-declaring the schedule is the recovery signal.
+
+`CronScheduleSpec(owner=...)` declares who owns the lifecycle:
+
+* `"code"` (default): the schedule is declared by a `@cron` decorator, and the
+  registration pass owns the enable state at startup in the narrow sense above.
+* `"operator"`: the schedule is managed by an operator (for example created
+  through `JobsClient.create_schedule`). The registration pass never re-enables
+  it, even after an auto-disable: an operator who wants it running re-enables it.
+
+Operator intent is never reverted in any configuration; only the `'auto'`
+marker is ever cleared by a boot.
 
 ---
 

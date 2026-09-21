@@ -14,7 +14,7 @@ from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final, cast
+from typing import Any, Final, Literal, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -628,6 +628,18 @@ class CronScheduleSpec:
 
     ``dst_strategy`` controls how DST gaps and overlaps are handled.
     See :data:`DstStrategy` for the semantics of each strategy.
+
+    ``owner`` controls who owns the schedule's enable/disable lifecycle:
+
+    * ``"code"`` (default): the schedule is declared by a ``@cron`` decorator
+      and the worker registration pass owns the enable state at startup. A
+      schedule the cron loop auto-disabled on a *transient* failure blip is
+      re-enabled when the code re-declares the schedule (the boot is proof
+      the declaration is live again); an operator's deliberate disable is
+      never reverted.
+    * ``"operator"``: an operator owns the lifecycle (a schedule created
+      through ``JobsClient.create_schedule``). The registration pass never
+      re-enables it, whatever disabled it.
     """
 
     actor: str
@@ -639,6 +651,7 @@ class CronScheduleSpec:
     name: str = ""
     identity_key: IdentityKey | None = None
     enabled: bool = True
+    owner: Literal["code", "operator"] = "code"
 
 
 @dataclass(frozen=True, slots=True)
@@ -649,8 +662,11 @@ class ScheduleHandle:
     Async methods delegate to the ``Backend`` injected at construction time
     (not part of the public ``__init__`` signature) via ``ScheduleUpdateArgs``.
     ``enable()`` passes ``ScheduleUpdateArgs(enabled=True)``; the backend
-    resets ``consecutive_failures=0`` and ``last_fire_error=NULL`` when
-    ``enabled=True`` is set.
+    resets ``consecutive_failures=0``, ``last_fire_error=NULL`` and
+    ``disabled_by=NULL`` when ``enabled=True`` is set. ``disable()`` passes
+    ``enabled=False``, which stamps ``disabled_by='operator'``: a deliberate
+    disable is operator intent, and the worker's startup registration pass
+    reverts only the cron loop's own ``'auto'`` marker.
     """
 
     schedule_id: UUID
@@ -665,6 +681,13 @@ class ScheduleHandle:
     identity_key: IdentityKey | None = None
 
     async def disable(self) -> None:
+        """Disable this schedule.
+
+        Writes ``disabled_by='operator'`` alongside ``enabled=false``: a
+        deliberate disable is operator intent, recorded so the worker's
+        startup registration pass never reverts it (only the cron loop's
+        own auto-disable is recoverable, see :class:`CronScheduleSpec`).
+        """
         await self._backend.update_schedule(
             self.schedule_id,
             ScheduleUpdateArgs(enabled=False),

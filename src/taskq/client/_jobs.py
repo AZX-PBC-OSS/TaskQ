@@ -21,7 +21,7 @@ from contextlib import AsyncExitStack, contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta
 from itertools import islice
-from typing import TYPE_CHECKING, Any, NoReturn, cast
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 from uuid import UUID
 
 import structlog
@@ -1767,10 +1767,19 @@ class JobsClient:
         name: str = "",
         identity_key: IdentityKey | None = None,
         enabled: bool = True,
+        owner: Literal["code", "operator"] = "operator",
     ) -> "ScheduleHandle":
         """Create a cron schedule.  Raises :class:`ValueError` if both
         *payload_factory* and *static_payload* are provided, or if
         *cron_expr* is invalid.
+
+        *owner* declares who owns the schedule's enable/disable lifecycle.
+        ``"operator"`` (the default here: a client-created schedule is an
+        operator act) records operator ownership from birth, so a schedule
+        created disabled carries ``disabled_by='operator'`` and no worker
+        boot ever reverts it; ``"code"`` matches a ``@cron`` declaration,
+        whose stale auto-disable a boot reverts (see
+        :class:`CronScheduleSpec`).
 
         The ``(actor, name)`` UNIQUE constraint means each ``(actor, name)``
         pair may have at most one schedule; a second ``create_schedule`` for
@@ -1838,6 +1847,7 @@ class JobsClient:
             dst_strategy=dst_strategy,
             payload_factory=payload_factory,
             enabled=enabled,
+            owner=owner,
             name=name,
             identity_key=identity_key,
             metadata=metadata,
