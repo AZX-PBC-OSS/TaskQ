@@ -63,6 +63,14 @@ _STEP_BOUND_SECS = 30.0
 _STALL_BOUND_SECS = 30.0
 _HANDBACK_BOUND_SECS = 30.0
 
+#: A zero-kill terminate round retries across this window before it reds:
+#: the worker's poll interval is 50ms and a live event loop rebuilds its
+#: pools in well under a second, so 10s of half-second polls rides out
+#: every reconnect window a starved runner can produce while still
+#: bounding the soak's added wall clock to one window per trial.
+_TERMINATE_RECONNECT_WINDOW_SECS = 10.0
+_TERMINATE_RECONNECT_POLL_SECS = 0.5
+
 # Settle = QUIESCENCE DETECTION, not a fixed deadline: the soak exists to
 # catch LOST or LIVELOCKED jobs, and "pending but the runner is slow" is
 # not a defect. A fixed settle deadline against throughput is a CI lottery
@@ -405,13 +413,44 @@ async def _trial(
                 operator_retries += 1
 
         if round_no % 33 == 5:
+            # A zero kill has two live explanations: the worker exited (the
+            # defect the post-run assertions pin - still red below), or the
+            # worker is mid-RECONNECT: a prior terminate round or a server
+            # blip closed its sessions and the pools are rebuilding. The
+            # soak's own notify-conn-error / ConnectionDoesNotExistError
+            # trail is that window, and the worker's 50ms poll cadence
+            # rebuilds a pool in well under a second when the loop is
+            # live. The old instant assertion read the reconnect window as
+            # an early exit - a CI lottery (red on CI, unreproducible
+            # green on retry). The interruption is retried across the
+            # window instead: the chaos is still delivered the moment the
+            # worker holds a session again, and a worker alive but
+            # session-less for the WHOLE window (a dead reconnect) reds
+            # exactly as before.
             killed = await _bounded(
                 _kill_worker_connections(schema, dsn), f"round {round_no} terminate"
             )
+            if killed == 0 and not worker_task.done():
+                reconnect_deadline = (
+                    asyncio.get_running_loop().time() + _TERMINATE_RECONNECT_WINDOW_SECS
+                )
+                while killed == 0 and not worker_task.done():
+                    if asyncio.get_running_loop().time() >= reconnect_deadline:
+                        break
+                    await _bounded(
+                        asyncio.sleep(_TERMINATE_RECONNECT_POLL_SECS),
+                        f"round {round_no} reconnect poll",
+                    )
+                    killed = await _bounded(
+                        _kill_worker_connections(schema, dsn),
+                        f"round {round_no} terminate (reconnect retry)",
+                    )
             assert killed > 0 or worker_task.done(), (
                 "the interruption must end at least one session (a zero kill "
-                "means the worker holds no sessions - it has already exited, "
-                "which the post-run assertions pin as a defect)"
+                "across the reconnect window means the worker holds no "
+                "sessions: it has either exited, which the post-run "
+                "assertions pin as a defect, or its reconnect is dead - "
+                "neither is a healthy soak)"
             )
 
         # Real-time pacing: a round every ~100ms keeps the soak's wall
