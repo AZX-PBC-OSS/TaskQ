@@ -73,7 +73,7 @@ from taskq.worker.cancel import make_cancel_controller
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.dispatch import SlotPoolAcquireError, dispatch_one_job
 from taskq.worker.queue_ops import QueueRow
-from taskq.worker.shutdown import drain_local_queue_to_pending
+from taskq.worker.shutdown import ShutdownPhase, drain_local_queue_to_pending
 from taskq.worker.startup import capacity_field_diverges
 
 __all__ = [  # pyright: ignore[reportUnsupportedDunderAll]  # Why: _main is lazily re-exported via __getattr__
@@ -899,8 +899,27 @@ async def di_consumer_loop(
             continue
 
         actor_ref = actor_registry[job.actor]
-        try:
-            outcome = await dispatch_one_job(
+        # The attempt runs in a per-job child task, and the child is what
+        # consume_one_job registers as the job's inflight attempt
+        # (asyncio.current_task() inside the child). The pre-fix code awaited
+        # dispatch_one_job inline, so the registered task was THIS loop task,
+        # and the cancel ladder's phase-2 escalation
+        # (cancel.py's active.task.cancel()) cancelled the whole loop:
+        # CancelledError is a BaseException, the handlers below catch only
+        # SlotPoolAcquireError and Exception, so it propagated out of the
+        # while, the TaskGroup discarded the cancelled sibling, nothing
+        # respawned it, and the slot never served another row (the producer's
+        # availability counts queue depth minus active jobs, never live
+        # consumers, so the worker stranded max_concurrency rows and parked).
+        # The child scopes every cancel of a registered attempt task to the
+        # one job: phase-2 escalation, the shutdown orchestrator's
+        # CANCELLING/FORCING phases, and the isolate path all cancel the
+        # child, this loop survives, and the cancel's delivery semantics are
+        # unchanged (a cancel of this loop while it awaits the child
+        # propagates into the child first, exactly as it used to hit these
+        # frames inline).
+        dispatch_task = asyncio.create_task(
+            dispatch_one_job(
                 backend=backend,
                 deps=deps,
                 job=job,
@@ -915,7 +934,43 @@ async def di_consumer_loop(
                 active_jobs=deps.active_jobs,
                 max_retry_backoff=deps.settings.max_retry_backoff,
                 enqueuer=enqueuer,
-            )
+            ),
+            name=f"job-attempt:{job.id}",
+        )
+        try:
+            try:
+                outcome = await dispatch_task
+            except asyncio.CancelledError:
+                # Route by WHO was cancelled. This loop task's own
+                # cancellation (the TaskGroup's teardown cancel, count
+                # elevated) or any shutdown signal means the child was killed
+                # as part of the worker coming down: re-raise, the loop dies
+                # with the job exactly as the pre-fix inline path did. The
+                # remaining case is the child ALONE being cancelled while
+                # this loop lives: an operator cancel's phase-2 escalation
+                # (or an actor that raised CancelledError itself). The child
+                # already terminalised the job through its own CancelledError
+                # handler (mark_cancelled, or mark_interrupted on a shutdown
+                # origin); the CancelledError out of the await is the job's
+                # outcome surfacing, not this loop's death. Absorb it as the
+                # cancelled outcome and keep serving: the loop's survival is
+                # the invariant, one stuck job must not take the slot with
+                # it. No uncancel() is owed: this task was never cancelled,
+                # its count is untouched on this path.
+                current = asyncio.current_task()
+                if (
+                    (current is not None and current.cancelling() > 0)
+                    or shutdown_event.is_set()
+                    or deps.producer_stop_event.is_set()
+                    or deps.shutdown_phase is not ShutdownPhase.NONE
+                ):
+                    raise
+                outcome = "cancelled"
+                _consumer_log.info(
+                    "dispatch-force-cancelled-slot-continues",
+                    job_id=str(job.id),
+                    actor=job.actor,
+                )
             if outcome == "failed":
                 deps.drain_failures += 1
         except SlotPoolAcquireError:
