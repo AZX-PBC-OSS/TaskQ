@@ -28,7 +28,7 @@ derives it from its ``actor_registry``.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from uuid import UUID
 
 import asyncpg
@@ -53,7 +53,7 @@ from .test_rt_cron_harness import (
     seed_actor_config,
     seed_schedule,
     server_now,
-    ten_min_floor,
+    server_ten_min_floor,
 )
 
 pytestmark = pytest.mark.integration
@@ -120,7 +120,7 @@ class TestSingletonParity:
         blocker_id = await seed_active_job(
             clean_pg_conn, schema, _SINGLETON_ACTOR, status="running", singleton=True
         )
-        due_slot = ten_min_floor(datetime.now(UTC))
+        due_slot = await server_ten_min_floor(clean_pg_conn)
         schedule_id = await seed_schedule(
             clean_pg_conn,
             schema,
@@ -211,7 +211,7 @@ class TestSingletonParity:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _SINGLETON_ACTOR)
-        due_slot = ten_min_floor(datetime.now(UTC))
+        due_slot = await server_ten_min_floor(clean_pg_conn)
         schedule_id = await seed_schedule(
             clean_pg_conn,
             schema,
@@ -267,7 +267,7 @@ class TestSingletonParity:
         # A catch-up seeding: the slot is 30 minutes old, so the first
         # (suppressed) advance stays in the past and the schedule is due
         # again immediately - no clock manipulation needed for tick 2.
-        slot = ten_min_floor(datetime.now(UTC)) - timedelta(minutes=30)
+        slot = await server_ten_min_floor(clean_pg_conn) - timedelta(minutes=30)
         schedule_id = await seed_schedule(
             clean_pg_conn,
             schema,
@@ -339,7 +339,7 @@ class TestSingletonParity:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _SINGLETON_ACTOR)
-        grid = ten_min_floor(datetime.now(UTC))
+        grid = await server_ten_min_floor(clean_pg_conn)
         early_id = await seed_schedule(
             clean_pg_conn,
             schema,
@@ -422,7 +422,7 @@ class TestAutoDisableTrap:
         # wall clock, so all three ticks find the schedule due and suppress
         # for real - a future-advancing seed would make ticks 2 and 3
         # trivially empty and prove nothing about the strike path.
-        slot = ten_min_floor(datetime.now(UTC)) - timedelta(minutes=30)
+        slot = await server_ten_min_floor(clean_pg_conn) - timedelta(minutes=30)
         schedule_id = await seed_schedule(
             clean_pg_conn,
             schema,
@@ -493,7 +493,7 @@ class TestMixedBatch:
         await seed_active_job(
             clean_pg_conn, schema, _SINGLETON_ACTOR, status="running", singleton=True
         )
-        due_slot = ten_min_floor(datetime.now(UTC))
+        due_slot = await server_ten_min_floor(clean_pg_conn)
         suppressed_id = await seed_schedule(
             clean_pg_conn,
             schema,
@@ -587,7 +587,7 @@ class TestMaxPendingParity:
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _CAPPED_ACTOR)
         pending_id = await seed_active_job(clean_pg_conn, schema, _CAPPED_ACTOR, status="pending")
-        due_slot = ten_min_floor(datetime.now(UTC))
+        due_slot = await server_ten_min_floor(clean_pg_conn)
         schedule_id = await seed_schedule(
             clean_pg_conn,
             schema,
@@ -696,7 +696,7 @@ class TestFailureClassification:
             actor=_SINGLETON_ACTOR,
             name="genuine-failure",
             cron_expr=_TEN_MINUTELY,
-            next_fire_at=ten_min_floor(datetime.now(UTC)),
+            next_fire_at=await server_ten_min_floor(clean_pg_conn),
             identity_key="genuine-failure",
             payload_factory="tests.test_rt_cron_singleton_parity.boom_factory",
         )
@@ -757,7 +757,7 @@ class TestSuppressionPreservesStreak:
         blocker_id = await seed_active_job(
             clean_pg_conn, schema, _SINGLETON_ACTOR, status="running", singleton=True
         )
-        due_slot = ten_min_floor(datetime.now(UTC))
+        due_slot = await server_ten_min_floor(clean_pg_conn)
         schedule_id = await seed_schedule(
             clean_pg_conn,
             schema,
