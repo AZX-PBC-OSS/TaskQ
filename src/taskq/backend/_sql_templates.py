@@ -163,6 +163,7 @@ class SqlTemplates:
     # ── Cancel-path UPDATE statements ──────────────────────────────
     cancel_pending_scheduled: str
     cancel_running: str
+    cancel_request: str
     cancel_escalation: str
 
     # ── Enqueue SQL templates ──────────────────────────────────────
@@ -1590,6 +1591,83 @@ UPDATE "{s}".jobs
 SET cancel_requested_at = clock_timestamp(), cancel_phase = 1
 WHERE id = $1 AND status = 'running' AND cancel_phase = 0
 RETURNING locked_by_worker""",
+        # write_cancel_request's SINGLE arbiter statement, fused for the
+        # same reason every mark_* here is one statement. Its two-statement
+        # predecessor — probe pending/scheduled, then arm the running
+        # stamp — held NO row lock between the probe and the second
+        # UPDATE, so a consumer re-queue (a deferral arm's snoozed CTE, a
+        # failure retry's retried CTE) committing in that window escaped
+        # BOTH arms: the probe read 'running' and matched nothing, the
+        # running arm re-read 'scheduled' under READ COMMITTED and matched
+        # nothing, and write_cancel_request returned False on a job the
+        # operator had asked to cancel — no phase on the row, no
+        # cancel_request event, nothing for the cancel ladder to see. The
+        # operator's request VANISHED, the mirror image of the launder the
+        # deferral fences close (there the same id is reported twice; here
+        # it is reported never). The in-memory twin is a single-pass check
+        # with no await between the arms and never had the window.
+        #
+        # The fusion closes it the way the terminal writes close theirs:
+        # ONE statement, the row locked by the prev CTE's FOR UPDATE from
+        # probe through UPDATE, the arm chosen by CASE on the LOCKED
+        # observation. A re-queue either commits entirely before the probe
+        # (the pending/scheduled arm sees it and terminalises with the
+        # CancelledBeforeStart origin) or blocks on the lock and commits
+        # entirely after the stamp (the row carries phase 1; the deferral
+        # fence routes it to noop). No third ordering exists.
+        #
+        # Arms and their exact legacy shapes:
+        # - pending/scheduled: terminalise 'cancelled', finished_at stamped,
+        #   the cancel-origin marker on the ROW only (the state_change
+        #   detail keeps its {from_state, to_state} shape, the
+        #   differential corpus pins it), then one cancel_request event;
+        # - running at phase 0: stamp cancel_requested_at + phase 1, one
+        #   cancel_request event; the NOTIFY still fires from Python, off
+        #   the RETURNING holder (pg_notify lives in the caller's
+        #   transaction there, unchanged);
+        # - terminal rows, abandoned rows, and rows already carrying a
+        #   phase match nothing: the False contract is unchanged, and a
+        #   False now means ONLY "there was nothing left to cancel".
+        cancel_request=f"""\
+WITH prev AS (
+    SELECT status AS prev_status, cancel_phase
+    FROM "{s}".jobs WHERE id = $1 FOR UPDATE
+),
+upd AS (
+    UPDATE "{s}".jobs j
+    SET status = CASE WHEN p.prev_status IN ('pending', 'scheduled')
+                      THEN 'cancelled'::"{s}".job_status ELSE j.status END,
+        finished_at = CASE WHEN p.prev_status IN ('pending', 'scheduled')
+                           THEN clock_timestamp() ELSE j.finished_at END,
+        error_class = CASE WHEN p.prev_status IN ('pending', 'scheduled')
+                           THEN '{CANCEL_ORIGIN_PENDING}' ELSE j.error_class END,
+        cancel_requested_at = CASE WHEN p.prev_status = 'running' AND j.cancel_phase = 0
+                                   THEN clock_timestamp() ELSE j.cancel_requested_at END,
+        cancel_phase = CASE WHEN p.prev_status = 'running' AND j.cancel_phase = 0
+                            THEN 1 ELSE j.cancel_phase END
+    FROM prev p
+    WHERE j.id = $1
+      AND (p.prev_status IN ('pending', 'scheduled')
+           OR (p.prev_status = 'running' AND p.cancel_phase = 0))
+    RETURNING j.*, p.prev_status AS prev_status
+),
+pending_evt AS (
+    INSERT INTO "{s}".job_events (job_id, occurred_at, kind, detail)
+    SELECT u.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', u.prev_status, 'to_state', 'cancelled')
+    FROM upd u
+    WHERE u.prev_status IN ('pending', 'scheduled')
+),
+request_evt AS (
+    INSERT INTO "{s}".job_events (job_id, occurred_at, kind, detail)
+    SELECT u.id, clock_timestamp(), 'cancel_request',
+           -- jsonb_strip_nulls: a NULL reason omits the key, exactly the
+           -- _insert_cancel_request_event shape the two-statement form
+           -- wrote.
+           jsonb_strip_nulls(jsonb_build_object('reason', $2::text))
+    FROM upd u
+)
+SELECT u.prev_status, u.locked_by_worker FROM upd u""",
         cancel_escalation=CANCEL_ESCALATION_SQL.format(schema=s),
         # ── Enqueue SQL templates ──────────────────────────────────
         # schedule_to_close is single-domain server-side on this arm: the
