@@ -382,8 +382,13 @@ async def apply_batch_terminal_outcome(
       attempts completion.
     - ``"failed"``: increments the consecutive-failure counter.  If the
       threshold is reached, aborts the batch and logs ``batch-aborted``
-     , abort wins, so no completion attempt runs on that path.  If the
-      threshold is not reached, attempts completion.
+     , abort wins, so no completion attempt runs on that path.  The
+      event reports the threshold DECISION (the abort was issued for
+      this count); the flip itself can still be delayed by the bounded
+      batches-row wait, a skip is separately disclosed by the
+      ``batch-abort-row-lock-timeout`` debug event, and the next
+      threshold-triggered abort or the stale-batch sweep re-arbitrates.
+      If the threshold is not reached, attempts completion.
     - ``"cancelled"`` / ``"crashed"``: attempts completion.
     - ``"snoozed"`` / ``"reservation_denied"`` / ``"rate_limit_denied"`` /
       ``"scheduled"`` / ``"noop"``: returns immediately, the job is

@@ -1407,6 +1407,20 @@ async def _lock_batch_membership(conn: ConnLike, schema: str, batch_ids: list[UU
     the bulk-import paths never create one) lock nothing, a batch that
     does not exist cannot be completed, so there is no race to close.
 
+    The same locked read refuses a TERMINAL batch row: a member append
+    against a row whose status is ``'complete'`` or ``'aborted'`` raises
+    :class:`~taskq.exceptions.BatchIdExistsError`, the same typed refusal
+    the create_batch arms give a batch_id collision. Without it the
+    chunked arms (an explicit ``batch_id`` is forwarded verbatim) would
+    silently commit pending members under a terminal row, where every
+    counter write guards ``status = 'active'`` so the batch's failure
+    policy is dead, wait_for_batch readers that saw the terminal status
+    have moved on, and the stale-batch sweep (active rows only) can never
+    reconcile, the deterministic twin of the uncommitted-append race the
+    lock above closes. An ACTIVE row keeps appending (resumption), only
+    a terminal one refuses. The status rides the FOR UPDATE the lock
+    already takes, so the check adds no lock or round trip.
+
     Blocking (no SKIP LOCKED) is deliberate on this side: appenders serialize
     per batch, each hold bounded by its own short chunk transaction, and
     the deadlock detector covers the one exotic inversion (an appender
@@ -1420,8 +1434,13 @@ async def _lock_batch_membership(conn: ConnLike, schema: str, batch_ids: list[UU
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
-    lock_sql = f'SELECT id FROM "{schema}".batches WHERE id = ANY($1::uuid[]) FOR UPDATE'
-    await conn.execute(lock_sql, batch_ids)
+    lock_sql = f'SELECT id, status FROM "{schema}".batches WHERE id = ANY($1::uuid[]) FOR UPDATE'
+    locked = await conn.fetch(lock_sql, batch_ids)
+    terminal = [r["id"] for r in locked if r["status"] != "active"]
+    if terminal:
+        from taskq.exceptions import BatchIdExistsError
+
+        raise BatchIdExistsError(terminal[0])
 
 
 async def _enqueue_batch(

@@ -59,6 +59,7 @@ from taskq.client._args import (
 from taskq.client._capacity import ActorCapacityCache
 from taskq.client._handle import JobHandle
 from taskq.exceptions import (
+    BatchIdExistsError,
     BatchMaxPendingExceededError,
     PartialBatchError,
     SubEnqueueError,
@@ -373,7 +374,11 @@ class SubJobEnqueuer:
         :meth:`~taskq.client.JobsClient.enqueue_batch`. Pass an explicit
         ``batch_id`` to correlate this batch with a caller-constructed
         identifier (e.g. a finalizer job enqueued separately that needs to
-        reference the same batch).
+        reference the same batch). An explicit ``batch_id`` naming an
+        existing TERMINAL batch row raises
+        :class:`~taskq.exceptions.BatchIdExistsError`, the same refusal
+        the create_batch arms give a collision, a terminal batch must not
+        gain a member. An ACTIVE row keeps accepting appends (resumption).
 
         Raises ``ValueError`` when ``items`` is empty or exceeds
         ``MAX_BATCH_SIZE``, the same guardrails
@@ -483,6 +488,15 @@ class SubJobEnqueuer:
         if self._worker_pool is None:
             raise RuntimeError("ctx.jobs is only available inside an actor body")
 
+        # The fallback's member writes are single enqueues: no membership
+        # lock wraps them, so the bulk arms' terminal-batch refusal never
+        # runs on this path. Check the row once here: a terminal batch
+        # must not gain a member through this arm either, the same typed
+        # refusal the create_batch and bulk arms give a batch_id reuse.
+        existing_batch = await self._backend.get_batch(resolved_batch_id)
+        if existing_batch is not None and existing_batch.status != "active":
+            raise BatchIdExistsError(resolved_batch_id)
+
         handles = []
         failed_items: list[tuple[int, Exception]] = []
         batch_id_str = str(resolved_batch_id)
@@ -527,6 +541,20 @@ class SubJobEnqueuer:
         snapshot = self._pending_buffer
         self._pending_buffer = []
         self._loop_enqueue_args.clear()
+        # A buffered member write must not land on a batch row that went
+        # terminal while the parent's transaction was in flight: the
+        # single enqueues below bypass the bulk arms' terminal-batch
+        # refusal (the membership lock and the in-memory preflights),
+        # so the check happens here, before anything is written.
+        stamped: dict[str, UUID] = {}
+        for args in snapshot:
+            raw = args.metadata.get("batch_id")
+            if raw is not None:
+                stamped[str(raw)] = UUID(str(raw))
+        for batch_id in stamped.values():
+            row = await self._backend.get_batch(batch_id)
+            if row is not None and row.status != "active":
+                raise BatchIdExistsError(batch_id)
         failed_items: list[tuple[EnqueueArgs, Exception]] = []
         for args in snapshot:
             try:
