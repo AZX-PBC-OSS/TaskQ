@@ -271,6 +271,11 @@ def _deps(pool: _ScriptedPool, max_heartbeat_failures: int) -> MagicMock:
     deps = MagicMock(spec=WorkerDeps)
     deps.settings = _settings(max_heartbeat_failures)
     deps.heartbeat_pool = pool  # type: ignore[assignment]
+    # The REAL registry, not a Mock child: the tick's claim-loss reconcile
+    # probe reads active_jobs.held_ids()/queued_ids() as the renewal's
+    # exclusion array; a Mock child's return value poisons the probe and
+    # every beat dies an AttributeError death before its commit.
+    deps.active_jobs = ActiveJobRegistry()
     deps.disowned_jobs = set()
     deps.heartbeat_failures = 0
     deps.is_leader = asyncio.Event()
