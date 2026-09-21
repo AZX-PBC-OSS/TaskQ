@@ -106,6 +106,8 @@ __all__ = [
     "record_reservation_reclaim_drain_rows",
     "record_reservation_reclaim_heal_failure",
     "record_sub_enqueue_failure",
+    "record_sweep_timeout",
+    "record_sweep_unexpected_error",
     "safe_start_span",
     "set_otel_enabled",
     "update_disabled_schedules_count",
@@ -2064,6 +2066,38 @@ _sweep_timeouts = get_meter().create_counter(
         "actor_backlog / reservation_slots), labeled by sweep_name. A "
         "non-zero rate means work is being aborted or going unobserved, "
         "not completing slowly."
+    ),
+    unit="1",
+)
+
+
+def record_sweep_unexpected_error(sweep_name: str) -> None:
+    """Count a sweep batch that failed with an error OUTSIDE the deadline
+    family.
+
+    Called on the failure path, never the success path, from the prune
+    family's batch machinery: a batch aborted by an archive
+    UniqueViolation-class error (or any other transient fault the deadline
+    family does not name) never reaches ``record_sweep_timeout``, and the
+    sweep's own row counters and success stamps only move on success, so
+    without this counter a stopped drain reads healthy on every metric
+    plane. Respects ``_otel_enabled``, no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _sweep_unexpected_errors.add(1, {"sweep_name": sweep_name})
+
+
+_sweep_unexpected_errors = get_meter().create_counter(
+    "taskq.maintenance_leader.sweep_unexpected_errors",
+    description=(
+        "Sweep batch statements that failed with an error outside the "
+        "deadline family (a constraint violation, a connection reset, any "
+        "transient fault that is not a statement cancel), labeled by "
+        "sweep_name. The deadline family is counted on sweep_timeouts; "
+        "everything else that aborts a batch lands here, so a sweep that "
+        "keeps failing on an unexpected error is countable even though "
+        "every success-path metric it has reads healthy."
     ),
     unit="1",
 )
