@@ -1105,14 +1105,42 @@ class BatchIdExistsError(TaskQError):
 
     Raised when :meth:`~taskq.client.JobsClient.enqueue_batch` or
     :meth:`~taskq.client.JobsClient.enqueue_batch_streaming` is called with
-    an explicit ``batch_id`` that collides with an existing batch row.
+    an explicit ``batch_id`` that collides with an existing batch row, and
+    when a member append (the chunked arms, the sub-job enqueuer's
+    fallback) targets a batch row that already reached a terminal status:
+    a terminal batch must not gain a member, every counter write guards
+    ``status = 'active'`` so its failure policy would be dead and the
+    stale-batch sweep (active rows only) could never reconcile. An ACTIVE
+    row keeps accepting appends (resumption). Appending is a backend-level
+    rule, so both backends refuse it the same way.
+
     The original ``asyncpg.UniqueViolationError`` (PG) is chained via
     ``__cause__`` when available.
+
+    The two raising situations are distinguishable on the instance:
+    ``reason`` is ``"exists"`` for a create-collision (the batch_id names a
+    row this call did not mean to append to) and ``"terminal"`` for a
+    member append against a row that already finished. The remedy is the
+    same shape (use a batch_id that names the batch you mean), but a caller
+    driving resumption-by-append reads ``reason`` to tell "stop appending,
+    this batch is finished" from "you picked an id that is taken".
     """
 
-    def __init__(self, batch_id: UUID) -> None:
+    def __init__(
+        self,
+        batch_id: UUID,
+        *,
+        reason: Literal["exists", "terminal"] = "exists",
+    ) -> None:
         self.batch_id = batch_id
-        super().__init__(
-            f"batch_id {batch_id} already exists; use a different batch_id "
-            f"or omit it to auto-generate one"
-        )
+        self.reason = reason
+        if reason == "terminal":
+            super().__init__(
+                f"batch_id {batch_id} is terminal ('complete' or 'aborted') and "
+                f"cannot gain a member; use a fresh batch_id for new work"
+            )
+        else:
+            super().__init__(
+                f"batch_id {batch_id} already exists; use a different batch_id "
+                f"or omit it to auto-generate one"
+            )
