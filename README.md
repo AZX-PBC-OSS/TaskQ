@@ -29,6 +29,10 @@ Async-native, Postgres-backed background job library for Python 3.12+.
   broker required.
 - **Async-native**: built on `asyncio` and `asyncpg` from the ground up; no
   thread pools or sync wrappers on the hot path.
+- **NUL-safe text storage**: jsonb-bound payloads are guarded by a
+  Rust-accelerated escape-parity byte scan (`tors`, a core dependency)
+  that rejects real NUL codepoints without misreading the literal
+  `\u0000` text.
 - **Rate limiting**: sliding-window and token-bucket algorithms with
   composition, a provider/registry layer, and Postgres fallback when Redis is
   unavailable.
@@ -80,7 +84,6 @@ Optional extras:
 | `[oidc]`       | OIDC SSO auth for the admin UI (authlib, httpx2, itsdangerous)     |
 | `[saml]`       | SAML SSO auth for the admin UI (python3-saml, itsdangerous)        |
 | `[reload]`     | `watchfiles` for autoreload during local development                |
-| `[text-accel]` | Optional Rust-backed `tors` acceleration for the NUL-scan text guards (the pure-Python path is the always-present default; verdicts are byte-identical either way) |
 
 The core install depends only on `opentelemetry-api`; no SDK or exporters
 (see [Observability](docs/guides/observability.md)).

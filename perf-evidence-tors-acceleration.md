@@ -1,41 +1,35 @@
-# tors `[text-accel]` adoption — the NUL scan's before/after, measured
+# tors adoption — the NUL scan's before/after, measured
 
 `taskq._json._encoded_has_nul` guards `MAX_RESULT_BYTES` (65536) on every
 terminal write: it classifies `\\u0000` byte runs on already-serialized
 orjson output, where a live escape (a real NUL, rejected with
 `NUL_JSONB_ERROR`) and the literal six-character text are
 byte-ambiguous until the backslash run before each match is counted. The
-pure-Python loop behind it was measured linear at adoption
+pure-Python loop that ran before adoption was measured linear
 (`perf-evidence` history: 175.8 → 1438.4 µs for 1000 → 8000
 escaped-literal matches, ~1.7 ms worst case at the bound, on the event
 loop).
 
-The `taskq-py[text-accel]` extra adopts `tors` (0.10.1, maturin/Rust) as
-an OPTIONAL accelerator: an import-time probe binds
+TaskQ now adopts `tors` (0.10.1, maturin/Rust) as a core dependency —
+first-party, published by the same org (AZX PBC) as TaskQ. The scan is
 `tors.contains_unescaped` — the same escape-parity scan in Rust over two
-zero-copy `PyBytes` borrows with the GIL released — and the dispatch
-falls back to the pure loop whenever the package is absent or too old.
-No TaskQ API changed shape; the import surface is untouched.
+zero-copy `PyBytes` borrows with the GIL released — imported directly:
+one code path, no probe, no fallback. No TaskQ API changed shape; the
+import surface is untouched.
 
-## Parity (both configurations, proven by execution)
+## Parity (proven by execution)
 
-`tests/test_tors_nul_parity.py` differential-pins the dispatch against an
+`tests/test_tors_nul_parity.py` differential-pins the scan against an
 independent oracle on the adversarial shapes (mid / terminal / offset-0 /
 dense / escaped-literal / backslash runs k=1..5 / multibyte boundaries)
-plus a 500-example hypothesis sweep over backslash-heavy bytes, and pins
-the probe wiring (dispatch serves tors iff tors is importable). The
+plus a 500-example hypothesis sweep over backslash-heavy bytes. The
 pre-existing battery — `test_nul_scan_scaling`, the
 input-validation-hardening suite, the redaction suites, the NUL-guard
-suites — passes UNCHANGED in both configurations:
+suites — passes UNCHANGED:
 
-| configuration            | battery (160 tests) | new parity tests |
-|--------------------------|---------------------|------------------|
-| tors absent (pure path)  | 160 passed          | 36 passed        |
-| tors 0.10.1 present      | 160 passed          | 38 passed, 1 skipped¹ |
-
-¹ `test_dispatch_is_the_pure_fallback_when_tors_is_absent` skips by
-design when tors is importable — it pins the absent-package
-configuration specifically.
+| battery (160 tests) | new parity tests |
+|---------------------|------------------|
+| 160 passed          | 33 passed        |
 
 ## Method
 
@@ -57,7 +51,7 @@ configuration specifically.
 - Engine: CPython 3.13.15, Linux x86_64 (AMD Ryzen AI MAX+ 395),
   otherwise idle. Treat the numbers as a class, not a bound.
 
-## Results — tors absent (the "before", pure path; dispatch == pure)
+## Results — the pure-Python baseline (the "before")
 
 | payload                  | bytes     | pure µs | dispatch µs | ratio  | verdicts |
 |--------------------------|-----------|---------|-------------|--------|----------|
@@ -73,7 +67,7 @@ configuration specifically.
 (Consistent with the scaling pin's recorded 175.8 → 1438.4 µs — same
 class, different machine.)
 
-## Results — tors 0.10.1 present (the "after", dispatch serves tors)
+## Results — tors 0.10.1 (the "after", the shipped scan)
 
 | payload                  | bytes     | pure µs | dispatch µs | ratio  | verdicts |
 |--------------------------|-----------|---------|-------------|--------|----------|
@@ -88,7 +82,7 @@ class, different machine.)
 
 ## Verdict
 
-- The dispatch WINS measurably on every shape that walks the payload:
+- The scan WINS measurably on every shape that walks the payload:
   **30–36x** on the escaped-literal worst shape at every size (the
   ~1.5 ms worst case at the 65536-byte bound drops to ~47 µs), 26x on
   the clean miss, 30x on the realistic 40k-row and 3 MB results. The
@@ -97,7 +91,10 @@ class, different machine.)
   which is exactly why `tests/test_tors_nul_perf.py` gates the
   escaped-literal corpus and the realistic payload, gated at ≥5x
   (a small fraction of the measured 30–36x, so runner noise cannot flip
-  the verdict while a hardware change cannot strand the pin).
+  the verdict while a hardware change cannot strand the pin). The pure
+  baseline those ratios are measured against is spelled in the perf gate
+  and the A/B script themselves — the scan serves one path, so the
+  baseline lives where it is timed.
 - The redaction layer was evaluated and NOT adopted, on measurement and
   on scope: `sanitize_nul_str`'s single-pair `str.replace` is ~6x faster
   than the nearest 1:1 tors primitive (`tors.replace_many`, 19.9 µs vs
@@ -107,8 +104,7 @@ class, different machine.)
   DETAIL/credential masks are regex contracts whose observables a tors
   scrubber (`scrub_pii` is a different redaction semantics) would
   change — out of scope by the adoption's parity rule.
-- Absence of tors is a supported configuration: the pure path is the
-  default and the pin, the extra resolves `tors>=0.10.1` from PyPI or
-  the operator's index (the lock's 24-hour quarantine is opted out for
-  the same-org publisher, per the dotenvmodel precedent), and the perf
-  gates skip cleanly without the package.
+- `tors>=0.10.1` is a core dependency, first-party like dotenvmodel
+  (published by the same org, AZX PBC), so the lock's 24-hour quarantine
+  is opted out for it per the dotenvmodel precedent; every other dep
+  still honors the cooldown.

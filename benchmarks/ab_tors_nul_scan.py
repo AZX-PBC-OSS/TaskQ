@@ -1,11 +1,12 @@
-"""A/B: the NUL scan's pure-Python path vs the tors [text-accel] dispatch.
+"""A/B: the tors scan vs the pure-Python baseline it replaced.
 
 ``taskq._json._encoded_has_nul`` guards MAX_RESULT_BYTES on every terminal
-write. Since the tors adoption it dispatches on an import-time probe:
-``tors.contains_unescaped`` (Rust, zero-copy, GIL-released) when the
-``[text-accel]`` extra is installed, the pure escape-parity loop otherwise.
-This script times BOTH implementations in one process -- the pure function
-directly and whatever the dispatch serves -- so the before/after pair is
+write. tors is a core dependency (first-party, same org), and the scan IS
+``tors.contains_unescaped`` (Rust, zero-copy, GIL-released) -- one code
+path. The pure-Python implementation that preceded it is spelled below as
+the timing baseline: carrying tors is justified only while it keeps
+winning against that baseline. This script times BOTH in one process --
+the pure baseline directly and the shipped scan -- so the pair is
 interpreter-fair and the parity of the two verdicts is asserted on every
 timed payload (a speedup on a different answer is worthless).
 
@@ -30,23 +31,46 @@ closest estimate of the scan's own cost), warm-up rounds excluded, both
 arms interleaved so thermal drift cancels.
 
 Run: .venv/bin/python benchmarks/ab_tors_nul_scan.py
-     (tors arm reports "absent" without the [text-accel] extra)
 """
 
 from __future__ import annotations
 
 import time
 
+import tors
+
 # pyright: reportPrivateUsage=false
-# Why: the A/B target IS the private seam -- _encoded_has_nul (the dispatch)
-# and _pure_encoded_has_nul (the fallback) are the two arms, and
-# _NUL_ESCAPE_BYTES documents the needle.
-from taskq._json import _NUL_ESCAPE_BYTES, _pure_encoded_has_nul
-from taskq._json import _encoded_has_nul as _dispatched
+# Why: the A/B target IS the private seam -- _encoded_has_nul (the shipped
+# scan) and _NUL_ESCAPE_BYTES (the needle) are TaskQ's internals.
+from taskq._json import _NUL_ESCAPE_BYTES
+from taskq._json import _encoded_has_nul as _tors_scan
 
 _ROUNDS = 5
 _WARMUP = 1
 _SCANS_PER_ROUND = 20
+
+
+def _pure_encoded_has_nul(data: bytes, /) -> bool:
+    """The pure-Python escape-parity scan; the timing baseline.
+
+    orjson renders the *literal text* ``\\u0000`` as an escaped backslash
+    followed by the same six bytes, so a raw byte match is ambiguous. Each
+    match is confirmed by counting the backslashes immediately before it:
+    an even run means the escape is live (a real NUL); an odd run means the
+    match's leading backslash closes a ``\\\\`` pair and the sequence is the
+    literal six characters, which ``jsonb`` accepts.
+    """
+    pos = data.find(_NUL_ESCAPE_BYTES)
+    while pos != -1:
+        backslashes = 0
+        cursor = pos - 1
+        while cursor >= 0 and data[cursor : cursor + 1] == b"\\":
+            backslashes += 1
+            cursor -= 1
+        if backslashes % 2 == 0:
+            return True
+        pos = data.find(_NUL_ESCAPE_BYTES, pos + 1)
+    return False
 
 
 def _payloads() -> dict[str, bytes]:
@@ -86,14 +110,7 @@ def _dumps(value: object) -> bytes:
 
 
 def main() -> None:
-    try:
-        import tors  # pyright: ignore[reportMissingImports]  # Why: the probe reports tors's ABSENCE as a supported configuration, so the optional package cannot be a hard import.
-
-        tors_note = f"tors {tors.__version__} present (dispatch serves tors)"
-    except ImportError:
-        tors_note = "tors absent (dispatch serves the pure path)"
-
-    print(f"engine note: {tors_note}")
+    print(f"engine note: tors {tors.__version__} (the shipped scan)")
     print(f"needle: {_NUL_ESCAPE_BYTES!r}")
     print(
         f"method: min({_ROUNDS}) rounds x {_SCANS_PER_ROUND} scans, "
@@ -114,12 +131,12 @@ def main() -> None:
             pure_times.append((time.perf_counter() - t0) / _SCANS_PER_ROUND)
             t0 = time.perf_counter()
             for _ in range(_SCANS_PER_ROUND):
-                _dispatched(payload)
+                _tors_scan(payload)
             disp_times.append((time.perf_counter() - t0) / _SCANS_PER_ROUND)
         pure = min(pure_times) * 1e6
         disp = min(disp_times) * 1e6
         ratio = pure / disp
-        verdicts = "match" if _pure_encoded_has_nul(payload) == _dispatched(payload) else "MISMATCH"
+        verdicts = "match" if _pure_encoded_has_nul(payload) == _tors_scan(payload) else "MISMATCH"
         print(
             f"{name:<26} {len(payload):>9} {pure:>10.1f} {disp:>12.1f} {ratio:>6.2f}x {verdicts:>9}"
         )

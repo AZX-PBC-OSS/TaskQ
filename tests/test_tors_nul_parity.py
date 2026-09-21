@@ -1,25 +1,21 @@
-"""The tors dispatch on the NUL scan is byte-equivalent to the pure path.
+"""The tors NUL scan answers the escape-parity question.
 
 ``taskq._json._encoded_has_nul`` guards MAX_RESULT_BYTES on every terminal
-write. With the ``[text-accel]`` extra installed it dispatches to
-``tors.contains_unescaped`` (an import-time probe, NOT a hard dependency);
-without tors it runs the pure :func:`taskq._json._pure_encoded_has_nul`
-loop. Both must answer the SAME question -- is there a ``\\u0000`` byte
-run here whose immediately-preceding backslash run has EVEN length --
+write. tors is a first-party core dependency (same org, AZX PBC), so the
+scan IS ``tors.contains_unescaped`` -- one code path, no probe, no pure
+fallback. It must answer exactly one question -- is there a ``\\u0000``
+byte run here whose immediately-preceding backslash run has EVEN length --
 because the verdict decides whether a job's terminal write raises
 ``NUL_JSONB_ERROR`` or binds to jsonb.
 
-This module pins that parity three ways:
+This module pins that answer two ways:
 
 * the named adversarial shapes (mid / terminal / dense / escaped-literal /
   backslash-run boundaries) against an INDEPENDENT oracle spelled here,
-  not against ``_pure_encoded_has_nul`` -- the pure function is TaskQ's
-  fallback, so sharing its code would make a shared defect invisible;
+  not against the tors implementation -- sharing no code with the scan is
+  what makes a differential failure meaningful;
 * a randomized byte sweep (hypothesis) over backslash-heavy payloads,
-  the shapes where a parity gap could actually hide;
-* the probe wiring itself: the dispatch serves tors iff tors is
-  importable, so "tors present" can never silently serve pure code (or
-  vice versa).
+  the shapes where a parity gap could actually hide.
 
 The shape algebra, so the expectations below are checkable: payload bytes
 ``k`` backslashes followed by ``u0000`` contain exactly one needle match
@@ -28,26 +24,17 @@ so an ODD number of backslashes is a live NUL escape (JSON: ``\\u0000``)
 and an EVEN number is the literal text ``u0000`` behind escaped
 backslashes, which jsonb accepts. The escaped-literal worst shape
 (``tests/test_nul_scan_scaling.py``'s corpus) is the even case, ``k = 2``.
-
-Absence of tors is a supported configuration, the pure path is the pin:
-every test here runs and passes in BOTH configurations. The perf gate
-that requires tors lives in ``tests/test_tors_nul_perf.py`` behind the
-house ``importorskip``.
 """
 
 from __future__ import annotations
-
-import importlib.util
 
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-import taskq._json as json_module
 from taskq._json import (
     NUL_JSONB_ERROR,
     _encoded_has_nul,
-    _pure_encoded_has_nul,
     dumps_jsonb_str,
     dumps_str,
 )
@@ -127,24 +114,6 @@ def test_named_adversarial_shapes_match_the_oracle(data: bytes, expected: bool) 
     assert _oracle(data) is expected, "oracle disagrees with the pin's expectation"
 
 
-@pytest.mark.parametrize(
-    "data",
-    [
-        b'"clean result payload"',
-        b'"mid\\u0000point"',
-        b'"terminal\\u0000"',
-        b'""' + b"\\u0000" * 64,
-        _escape_literals(64),
-        b'"' + b"\\" * 5 + b"u0000" + b'"',
-        b'"' + b"\\" * 4 + b"u0000" + b'"',
-        '"héllo→\\u0000→wörld"'.encode(),
-    ],
-)
-def test_pure_fallback_and_oracle_agree_on_the_named_shapes(data: bytes) -> None:
-    """The pure fallback and the oracle are independent implementations of one rule."""
-    assert _pure_encoded_has_nul(data) == _oracle(data)
-
-
 # --- randomized sweep -------------------------------------------------------
 
 
@@ -171,58 +140,6 @@ def _backslash_heavy_bytes() -> st.SearchStrategy[bytes]:
 @given(_backslash_heavy_bytes())
 def test_randomized_backslash_heavy_sweep_matches_the_oracle(data: bytes) -> None:
     assert _encoded_has_nul(data) == _oracle(data)
-
-
-@settings(max_examples=200, deadline=None)
-@given(_backslash_heavy_bytes())
-def test_randomized_sweep_matches_the_pure_fallback(data: bytes) -> None:
-    """The dispatch and the pure fallback agree wherever the input lands."""
-    assert _encoded_has_nul(data) == _pure_encoded_has_nul(data)
-
-
-# --- the probe wiring -------------------------------------------------------
-
-
-def test_probe_serves_tors_iff_tors_is_importable() -> None:
-    """The dispatch serves tors exactly when the package is importable.
-
-    Both configurations are supported: this pin proves the probe tracks
-    reality whichever one the suite is running in, so a stale or broken
-    tors install cannot leave TaskQ believing it has an accelerator it
-    does not (or serving one that is not there).
-    """
-    try:
-        import tors
-
-        available = hasattr(tors, "contains_unescaped")
-    except ImportError:
-        available = False
-    assert (json_module._tors_contains_unescaped is not None) is available
-
-
-def test_dispatch_is_the_pure_fallback_when_tors_is_absent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Without tors the probe is None and the dispatch DELEGATES to the fallback.
-
-    Proven by interception, not identity: with the probe None, the
-    fallback is the only code the dispatch can serve, so a call must
-    reach it.
-    """
-    if importlib.util.find_spec("tors") is not None:
-        pytest.skip("tors importable: the absent-package configuration is not this one")
-    assert json_module._tors_contains_unescaped is None
-
-    calls: list[bytes] = []
-    original = json_module._pure_encoded_has_nul
-
-    def _spy(data: bytes) -> bool:
-        calls.append(data)
-        return original(data)
-
-    monkeypatch.setattr(json_module, "_pure_encoded_has_nul", _spy)
-    assert _encoded_has_nul(b'"probe"') is False
-    assert calls == [b'"probe"']
 
 
 # --- the consumers of the verdict -------------------------------------------
@@ -253,9 +170,9 @@ def test_verdicts_hold_at_the_max_result_bytes_boundary(n_units: int) -> None:
     """The scan's verdict is stable across the MAX_RESULT_BYTES boundary.
 
     The terminal write scans result_bytes before the size bound is
-    reported; payloads at and around 65536 bytes must classify the same
-    in both configurations, including the no-live-escape full walk at
-    exactly the bound (9362 seven-byte units + the two quote bytes).
+    reported; payloads at and around 65536 bytes must classify the same,
+    including the no-live-escape full walk at exactly the bound (9362
+    seven-byte units + the two quote bytes).
     """
     payload = _escape_literals(n_units)
     assert 65_529 <= len(payload) <= 65_543

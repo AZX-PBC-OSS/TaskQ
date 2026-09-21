@@ -40,24 +40,24 @@ The Makefile routes every command through `uv run --no-sync` (`UVRUN` in the Mak
 
 Every command target above takes an `env` prerequisite that verifies the environment matches before running. If you call `uv` directly, use `uv run --no-sync <command>` — and change the environment only via `make install` (or the same `uv sync --locked ...` arguments), never an unlocked `uv sync`.
 
-#### The `[text-accel]` extra and the local `tors` checkout
+#### The `tors` dependency and the local `tors` checkout
 
-The optional `[text-accel]` extra (`tors>=0.10.1`) accelerates the
-escape-parity NUL scan that guards `MAX_RESULT_BYTES`; without it TaskQ
-runs the pure-Python scan, which is the default and the behavioral pin
-(both paths are byte-equivalent — `tests/test_tors_nul_parity.py`). The
-extra resolves `tors` from PyPI or your configured index, so `make
-install` covers it. To test against the tors source tree instead of a
-released wheel, install it into the project venv from the local checkout
-path (do NOT add a path dependency to `pyproject.toml` — the extra must
-keep referencing the published package):
+`tors` (`tors>=0.10.1`) is a core dependency, like `dotenvmodel` — it is
+published by the same org (AZX PBC) as TaskQ. It accelerates the
+escape-parity NUL scan that guards `MAX_RESULT_BYTES`
+(`tests/test_tors_nul_parity.py` pins the scan against an independent
+oracle). `make install` covers it: the requirement resolves `tors` from
+PyPI or your configured index. To test against the tors source tree
+instead of a released wheel, install it into the project venv from the
+local checkout path (do NOT add a path dependency to `pyproject.toml` —
+the requirement must keep referencing the published package):
 
 ```bash
 uv pip install --python .venv/bin/python ../tors   # or wherever your tors checkout lives
 ```
 
-A local install satisfies the same import-time probe; `tests/test_tors_nul_perf.py`
-gates the measured win and skips cleanly when the package is absent.
+`tests/test_tors_nul_perf.py` gates the measured win over the pure-Python
+baseline.
 
 ### Test Commands
 
