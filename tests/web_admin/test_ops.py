@@ -972,6 +972,8 @@ def test_schedule_run_now_enqueues_job(monkeypatch: pytest.MonkeyPatch) -> None:
             ),
             # NULL curve columns: the row predates migration 01.00.18,
             # and the handler resolves them to the declared defaults.
+            # max_pending is the operator-stored cap (NULL = no stored
+            # override): run-now passes it through to the enqueue.
             "actor_config WHERE actor": StubRecord(
                 {
                     "queue": "default",
@@ -981,6 +983,7 @@ def test_schedule_run_now_enqueues_job(monkeypatch: pytest.MonkeyPatch) -> None:
                     "retry_cap": None,
                     "retry_backoff": None,
                     "retry_jitter": None,
+                    "max_pending": None,
                 }
             ),
         },
