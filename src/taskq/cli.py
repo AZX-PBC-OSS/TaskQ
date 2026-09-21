@@ -3024,7 +3024,21 @@ def _parse_older_than(text: str) -> timedelta:
     seconds = int(match.group(1))
     unit = match.group(2) or "s"
     unit_secs = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}[unit]
-    return timedelta(seconds=seconds * unit_secs)
+    # A regex-valid duration can still outrun timedelta's own range
+    # (999999999 days): the multiplication is exact, the constructor is
+    # what overflows, and the raw OverflowError would surface as a
+    # traceback instead of this function's clean one-line usage error.
+    # The magnitude is rejected here, with the same shape of message the
+    # non-matching form above emits, so junk is a usage error at the door
+    # whichever way it fails the grammar.
+    try:
+        return timedelta(seconds=seconds * unit_secs)
+    except OverflowError:
+        typer.echo(
+            f"invalid --older-than duration: {text!r} (the duration is too large)",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
 
 
 def _cancel_where_predicates_text() -> str:
