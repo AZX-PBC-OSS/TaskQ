@@ -28,10 +28,10 @@ Submitting any form enqueues a job and redirects to the admin job-detail page wh
 
 | File | What it demonstrates |
 |---|---|
-| `client_script.py` | Standalone CLI script for enqueuing jobs, backfills, cancellation, and job listing outside a web app. Run with `uv run python examples/client_script.py [--backfill N \| --cancel ID \| --list \| --realworld]`. |
+| `client_script.py` | Standalone CLI script for enqueuing jobs, backfills, cancellation, and job listing outside a web app. Run with `uv run python -m examples.client_script [--backfill N \| --cancel ID \| --list \| --realworld]` (module form: the script imports `examples.actors`, which needs the repo root on the import path). |
 | `test_example.py` | Unit tests using `InMemoryBackend` + `FakeClock` — no Postgres or Redis required. Run with `uv run pytest examples/test_example.py -v`. |
-| `workgroup.toml` | Workgroup supervisor config for multi-queue worker management. Run with `uv run taskq workgroup examples/workgroup.toml`. |
-| `otel_setup.py` | OpenTelemetry SDK initialization for tracing with Jaeger or any OTLP collector. Run with `uv run python examples/otel_setup.py` (requires `[otel]` extra). |
+| `workgroup.toml` | Workgroup supervisor config for multi-queue worker management. Run with `uv run taskq workgroup start examples/workgroup.toml` (or `taskq workgroup validate examples/workgroup.toml` to check the config without starting). Serves the DI-free actor subset — workgroup children are plain `taskq worker` subprocesses and cannot register DI providers. |
+| `otel_setup.py` | OpenTelemetry SDK initialization for tracing with Jaeger or any OTLP collector. Run with `uv run python -m examples.otel_setup` (requires `[otel]` extra). |
 | `fastapi_app/aad.py` | Azure managed-identity (Entra ID) deployment scaffold — AAD-authenticated worker and web app wired through `taskq[aad]` credential-provider factories, including the serve-mode lifespan ownership pattern. Run with `uv run python -m examples.fastapi_app.aad worker` or `... serve` (requires Azure resources; see the [Managed Identities guide](https://AZX-PBC-OSS.github.io/TaskQ/guides/managed-identities/)). |
 
 ## Actor Table

@@ -9,7 +9,12 @@
 # The supervisor spawns one child process per [[workers]] entry, monitors
 # them for crashes, and restarts with exponential backoff.
 
-actors = "examples.worker:ACTORS"
+# Children are plain `taskq worker` subprocesses, which build no DI
+# registry: examples.worker:ACTORS includes DI actors (fetch, db_lookup,
+# send_digest_email) that would fail bootstrap validation with
+# MissingProvider. CLI_ACTORS is the DI-free subset — see
+# examples/worker.py.
+actors = "examples.worker:CLI_ACTORS"
 
 [defaults]
 worker_group = "examples"
