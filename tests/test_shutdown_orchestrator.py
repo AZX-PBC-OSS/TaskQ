@@ -1402,10 +1402,11 @@ _valid_grace_settings = st.tuples(
     lambda t: (
         t[0] + t[1] < t[2] - 5.0
         and t[0] + t[1] < t[3]
-        # The cascade floor: (max_heartbeat_failures + 1) *
-        # (heartbeat_interval + 2 * heartbeat_command_timeout) at the defaults
-        # (F=3, c=2) is 4 * hb + 16.
-        and t[3] >= 4 * t[4] + 16
+        # The cascade floor: max(heartbeat_interval,
+        # heartbeat_command_timeout) + (max_heartbeat_failures + 1) *
+        # (heartbeat_interval + heartbeat_command_timeout) at the defaults
+        # (F=3, c=2) is 4 * hb + 18.
+        and t[3] >= 4 * t[4] + 18
     )
 )
 
@@ -1449,9 +1450,9 @@ _invalid_grace_settings = st.tuples(
     lambda t: (
         t[0] + t[1] >= t[2] - 5.0
         or t[0] + t[1] >= t[3]
-        # The cascade floor at the defaults (F=3, c=2): 4 * hb + 16,
+        # The cascade floor at the defaults (F=3, c=2): 4 * hb + 18,
         # its violation alone is enough for the rejection under test.
-        or t[3] < 4 * t[4] + 16
+        or t[3] < 4 * t[4] + 18
     )
 )
 

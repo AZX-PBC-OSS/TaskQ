@@ -31,7 +31,7 @@ pytestmark = pytest.mark.integration
 
 _HEARTBEAT_INTERVAL = 0.5
 # The factory's tiny heartbeat command timeout: the cascade floor's
-# per-beat gap is heartbeat_interval + 2 * heartbeat_command_timeout = 0.7s.
+# per-beat cycle is heartbeat_interval + heartbeat_command_timeout = 0.6s.
 _HB_COMMAND_TIMEOUT = 0.1
 _MAX_HEARTBEAT_FAILURES = 2
 
@@ -43,12 +43,17 @@ async def _setup(
     from taskq.migrate import apply_pending
 
     # The lease must scale with the isolate bound the test configures:
-    # (F+1) failed beats at ~0.7s of worst gap each is what the
-    # cascade floor requires, so an F=20 chaos config needs a ~15s lease,
-    # a 3s lease under 21 failed beats is exactly what the validator now
-    # refuses. An explicit LOCK_LEASE override still wins.
+    # the tail (max(interval, command_timeout)) plus (F+1) failed cycles
+    # at ~0.6s of worst cycle each is what the cascade floor requires,
+    # so an F=20 chaos config needs a ~13s lease, a 3s lease under 21
+    # failed beats is exactly what the validator now refuses. An
+    # explicit LOCK_LEASE override still wins.
     max_failures = int(overrides.get("MAX_HEARTBEAT_FAILURES", _MAX_HEARTBEAT_FAILURES))
-    default_lease = (max_failures + 1) * (_HEARTBEAT_INTERVAL + 2 * _HB_COMMAND_TIMEOUT) + 0.3
+    default_lease = (
+        max(_HEARTBEAT_INTERVAL, _HB_COMMAND_TIMEOUT)
+        + (max_failures + 1) * (_HEARTBEAT_INTERVAL + _HB_COMMAND_TIMEOUT)
+        + 0.3
+    )
     merged: dict[str, str] = {
         "HEARTBEAT_INTERVAL": str(_HEARTBEAT_INTERVAL),
         "HEARTBEAT_COMMAND_TIMEOUT": str(_HB_COMMAND_TIMEOUT),

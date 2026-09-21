@@ -1606,14 +1606,15 @@ def test_build_heartbeat_sql_liveness_shape_pins_the_merge() -> None:
 
 def test_lease_renewal_threshold_default_config() -> None:
     """Defaults (lease 60s, interval 10s, 3 failures, 2s command timeout):
-    the enforced-bound floor (F+1) * (interval + 2 * command_timeout) =
-    4 * 14 = 56s sits at/above the harvestable slack (lease - interval
-    = 50s), so the gate renews every beat at the default lease - the
-    unconditional cadence, no lapse window - and the savings begin from
-    lease ≈ 70s (see the sibling tests). The floor's terms are all
-    ENFORCED by the tick's command budget (interval: the acquire's own
-    timeout; one command timeout: the sequence budget; one more: the
-    bounded rollback-or-close teardown)."""
+    the enforced-bound floor - the last good beat's tail (max(interval,
+    command_timeout) = 10s) plus (F+1) failed cycles of (interval +
+    command_timeout) = 10 + 4 * 12 = 58s - sits at/above the harvestable
+    slack (lease - interval = 50s), so the gate renews every beat at the
+    default lease - the unconditional cadence, no lapse window - and the
+    savings begin from lease ≈ 70s (see the sibling tests). The floor's
+    terms are all ENFORCED by the tick's command budget (interval: the
+    acquire's own timeout; one command timeout: the sequence AND the
+    teardown sharing its remainder)."""
     from taskq.worker.heartbeat import _lease_renewal_threshold
 
     threshold = _lease_renewal_threshold(
@@ -1622,7 +1623,7 @@ def test_lease_renewal_threshold_default_config() -> None:
         max_heartbeat_failures=3,
         heartbeat_command_timeout=2.0,
     )
-    assert threshold == timedelta(seconds=56.0)
+    assert threshold == timedelta(seconds=58.0)
     # 56 >= 50 = lease - interval: the beat after a renewal carries 50s
     # (still at/under the threshold), so nothing is ever skipped.
     assert threshold >= timedelta(seconds=50.0)
@@ -1742,13 +1743,19 @@ def test_naive_half_lease_threshold_lapses_before_isolation_at_defaults() -> Non
     command_timeout = 2.0
     failures = 3
     naive_threshold = lease / 2
-    # Worst coherent beat gap under the ENFORCED tick bound (fix
-    # round): acquire <= interval, the command sequence <= one command
-    # timeout (the tick's single budget), the bounded
-    # rollback-or-close teardown <= one more.
-    gap = interval + 2 * command_timeout
+    # Worst coherent failed CYCLE under the ENFORCED tick bound (fix
+    # rounds): acquire <= interval, and the tick's command sequence AND
+    # its bounded teardown SHARE one command timeout.
+    gap = interval + command_timeout
+    # The last good beat's TAIL: from its mid-tick renewal point (where
+    # the gate re-stamps the lease) to the next tick's start - the span
+    # the failed cycles do not cover. Bounded by max(interval,
+    # command_timeout): the cadence when the last beat was cheap, the
+    # budget's remainder when the acquire ate most of it.
+    tail = max(interval, command_timeout)
 
     remaining = naive_threshold + 1e-6  # the last successful beat skipped here
+    remaining -= tail  # the skip beat's own tail, before the failures start
     for _ in range(failures + 1):  # the failure cascade to the isolate decision
         remaining -= gap
     assert remaining < 0, (
@@ -1759,17 +1766,19 @@ def test_naive_half_lease_threshold_lapses_before_isolation_at_defaults() -> Non
     )
 
     # The shipped floor holds the same cascade: strictly-positive
-    # remaining at the isolate decision (gaps are strictly under the
-    # worst bound), and a full gap of margin for a worker that recovers
-    # after only F failures.
+    # remaining at the isolate decision (the tail and the cycles are
+    # strictly under their bounds), and a full gap of margin for a
+    # worker that recovers after only F failures.
     from taskq.worker.heartbeat import _lease_renewal_threshold
 
     floor = _lease_renewal_threshold(timedelta(seconds=lease), interval, failures, command_timeout)
     remaining = floor.total_seconds() + 1e-6
+    remaining -= tail * (1.0 - 1e-9)  # strictly under the worst tail
     for _ in range(failures + 1):
-        remaining -= gap * (1.0 - 1e-9)  # strictly under the worst gap
+        remaining -= gap * (1.0 - 1e-9)  # strictly under the worst cycle
     assert remaining > 0
     remaining = floor.total_seconds() + 1e-6
+    remaining -= tail * (1.0 - 1e-9)
     for _ in range(failures):
         remaining -= gap * (1.0 - 1e-9)
     assert remaining > gap  # recovering after F failures still holds margin
@@ -1788,7 +1797,6 @@ def test_naive_half_lease_threshold_lapses_before_isolation_at_defaults() -> Non
         min_size=4,
         max_size=12,
     ),
-    teardown_scale=st.lists(st.floats(min_value=0.01, max_value=0.999), min_size=4, max_size=12),
     recover_after=st.integers(min_value=0, max_value=10),
 )
 def test_gated_renewal_never_lets_a_live_lease_lapse(
@@ -1799,7 +1807,6 @@ def test_gated_renewal_never_lets_a_live_lease_lapse(
     acquire_scale: list[float],
     statement_count: list[int],
     statement_scale: list[list[float]],
-    teardown_scale: list[float],
     recover_after: int,
 ) -> None:
     """Property: under the shipped threshold and the tick's ENFORCED
@@ -1820,8 +1827,10 @@ def test_gated_renewal_never_lets_a_live_lease_lapse(
       express the attack's shape: two just-under-timeout statements
       succeeding, then a timeout);
     * a bounded teardown - a rollback that fits the budget's remainder,
-      or the bounded close (server-side rollback on disconnect), drawn
-      up to (strictly under) one command timeout.
+      or the bounded close (server-side rollback on disconnect) - the
+      teardown spends the SAME budget's remainder, never a second
+      budget (the shared-remainder rule the integration attack round
+      pinned).
 
     The beat-to-beat gap is bounded by ``max(interval, tick_duration)`` -
     the loop anchors its wait to the tick's START, and a FAILED tick
@@ -1840,8 +1849,9 @@ def test_gated_renewal_never_lets_a_live_lease_lapse(
     threshold = _lease_renewal_threshold(
         timedelta(seconds=lease), interval, failures, command_timeout
     ).total_seconds()
-    worst_gap = interval + 2 * command_timeout  # acquire + budget + teardown
-    cascade_bound = (failures + 1) * worst_gap
+    worst_cycle = interval + command_timeout  # acquire + budget (shared teardown)
+    tail = max(interval, command_timeout)  # the last good beat's tail
+    cascade_bound = tail + (failures + 1) * worst_cycle
 
     def _tick(i: int, *, healthy: bool) -> tuple[float, bool]:
         """One tick's (gap, renewed) under the enforced budget.
@@ -1849,7 +1859,8 @@ def test_gated_renewal_never_lets_a_live_lease_lapse(
         Returns the beat-to-beat gap and whether the tick's renewal
         landed. A healthy tick completes its statement sequence within
         the budget and commits (the renewal landed); an unhealthy one is
-        cut at the budget and pays the bounded teardown instead.
+        cut at the budget, and its teardown - rollback AND bounded close
+        - spends the remainder of the SAME budget, never a second one.
         """
         acquire = interval * acquire_scale[i % len(acquire_scale)]
         scales = statement_scale[i % len(statement_scale)]
@@ -1864,10 +1875,11 @@ def test_gated_renewal_never_lets_a_live_lease_lapse(
             teardown = 0.0
         else:
             # The sequence wants more than the budget; the budget cuts
-            # it at one command timeout.
+            # it at one command timeout, and the teardown spends the
+            # remainder of the SAME budget (the shared-remainder rule).
             seq = command_timeout
             renewed = False
-            teardown = command_timeout * teardown_scale[i % len(teardown_scale)]
+            teardown = 0.0
         duration = acquire + seq + teardown
         return max(interval, duration), renewed
 
@@ -1876,8 +1888,8 @@ def test_gated_renewal_never_lets_a_live_lease_lapse(
         # policy operating at beat boundaries can keep it - the
         # unconditional renewal has exactly the same exposure (this is
         # the 4x invariant's own blind spot: it sizes the cascade as
-        # (F+1) * interval, but a failed beat costs up to interval + 2 x
-        # command_timeout even under the enforced budget). What the gate
+        # (F+1) * interval, but a failed beat costs up to interval + command_timeout
+        # even under the enforced budget). What the gate
         # must guarantee there is that it does not make things WORSE:
         # the threshold's safety floor IS the cascade bound, so the gate
         # renews on every beat - exactly the unconditional behaviour.
@@ -1904,7 +1916,10 @@ def test_gated_renewal_never_lets_a_live_lease_lapse(
     # Phase 2 - the failure cascade: up to F failed ticks (renewal never
     # lands), then either the isolate decision (recover_after > F: the
     # worker is gone by design, the lease may do what leases do) or a
-    # recovering tick.
+    # recovering tick. The last healthy beat's TAIL - from its renewal
+    # point (where remaining was re-stamped) to the next tick's start -
+    # is consumed before the first failed cycle.
+    remaining -= tail
     cascade_len = min(recover_after, failures + 1)
     for i in range(cascade_len):
         gap, _renewed = _tick(i, healthy=False)
@@ -1930,9 +1945,9 @@ def test_the_round1_floor_was_under_sized_for_multi_command_ticks() -> None:
     just-under-timeout statements, expiring the lease 3.2-9.2s before
     the isolate decision while the unconditional renewal survived).
 
-    This pins WHY the floor's second command-timeout term (the teardown)
-    and the tick's single command budget are critical: with either
-    removed, the default-config cascade is under-sized again.
+    This pins WHY the tick's single command budget AND the cascade
+    floor's tail term are critical: with either removed, the
+    default-config cascade is under-sized again.
     """
     interval, command_timeout, failures, lease = 10.0, 2.0, 3, 60.0
     round1_floor = (failures + 1) * (interval + command_timeout)
@@ -1942,7 +1957,7 @@ def test_the_round1_floor_was_under_sized_for_multi_command_ticks() -> None:
     # command timeout (two succeed, the third times out) plus the
     # transaction rollback's round trip.
     brownout_tick = 7.0 + 3 * (command_timeout * 0.95) + command_timeout * 0.95
-    assert brownout_tick > interval + 2 * command_timeout, (
+    assert brownout_tick > interval + command_timeout, (
         "the brownout shape must exceed the ENFORCED bound - that is "
         "the point of the budget: the tick is cut at one command "
         "timeout instead of running its statements out"
@@ -1965,8 +1980,20 @@ def test_the_round1_floor_was_under_sized_for_multi_command_ticks() -> None:
     # slack: the gate never skips, so no cascade can start from a skip.
     assert shipped.total_seconds() >= lease - interval
     # And the enforced bound itself keeps the every-beat cascade inside
-    # the lease: 4 gaps at the enforced worst vs the 60s lease.
-    assert (failures + 1) * (interval + 2 * command_timeout) < lease
+    # the lease: the last good beat's tail plus (F+1) enforced failed
+    # cycles (acquire + ONE budget, the sequence and its teardown
+    # sharing it) against the 60s lease. The UN-enforced brownout tick
+    # (per-statement bounds) would overrun the same lease - the budget
+    # is load-bearing - and the round-1 floor without the tail term
+    # would under-count the cascade by exactly that tail.
+    tail = max(interval, command_timeout)
+    enforced_cascade = tail + (failures + 1) * (interval + command_timeout)
+    assert enforced_cascade < lease
+    unenforced_cascade = tail + (failures + 1) * brownout_tick
+    assert unenforced_cascade > lease, (
+        "the per-statement brownout must overrun the default lease - "
+        "that is the overrun the enforced budget exists to cut"
+    )
 
 
 def test_build_heartbeat_sql_threshold_selects_the_gated_statement() -> None:
@@ -2123,9 +2150,11 @@ async def test_the_tick_command_budget_cuts_a_brownout_tick() -> None:
     the OLD per-statement accounting, run two of them and cut on the
     third - ~3x the command timeout in total, the gap the round-1 floor
     assumed away. Under the single budget the tick is CUT at one command
-    timeout: the third statement never starts, the teardown CLOSES the
-    connection (no rollback round trip - the budget was exhausted), and
-    the tick counts as exactly ONE transient failure."""
+    timeout: the third statement never starts, and the teardown - whose
+    rollback AND close SHARE the budget's remainder (never a second full
+    budget) - terminates the connection immediately, the server rolling
+    the transaction back on disconnect. The tick counts as exactly ONE
+    transient failure."""
     budget = 0.06
     # Three statements at 0.8x the budget each: per-statement, all three
     # are legal (2.4x the budget in total before the tick is done).
@@ -2142,16 +2171,24 @@ async def test_the_tick_command_budget_cuts_a_brownout_tick() -> None:
         "budget must cut the sequence before it outlives one command "
         "timeout"
     )
-    # The teardown took the CLOSE path (the budget was exhausted), not a
-    # rollback round trip.
-    assert conn.closed, "the budget-exhausted teardown must close, not roll back"
+    # The teardown found the budget exhausted (the close's bound is the
+    # remainder, shared with the rollback - here ~zero), so it did not
+    # wait for a graceful close: it terminated, and the server rolls the
+    # transaction back on disconnect. The pre-fix teardown handed the
+    # close a SECOND full budget; the shared remainder is what holds the
+    # failed tick to acquire + ONE budget (see _lease_renewal_threshold).
+    assert conn.terminated, (
+        "the budget-exhausted teardown must terminate immediately - the "
+        "close may not burn a second command budget the rollback's "
+        "remainder cannot cover"
+    )
     # And the whole tick stayed inside the model's bound: acquire (~0
-    # here) + one budget + the bounded close.
-    assert tick_duration < 3 * budget, (
+    # here) + ONE budget covering the sequence AND the teardown.
+    assert tick_duration < 2 * budget, (
         f"the brownout tick took {tick_duration:.3f}s - more than the "
-        "budget plus the bounded close; the per-statement shape (2.4x "
-        "the budget before even reaching the third statement) escaped "
-        "again"
+        "single shared budget; the per-statement shape (2.4x the budget "
+        "before even reaching the third statement) escaped again, or the "
+        "teardown spent a second budget"
     )
 
 
