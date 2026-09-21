@@ -25,7 +25,10 @@ _NOTIFY_SQL_FRAGMENT = "pg_notify"
 
 
 def _running_record() -> dict[str, object]:
-    return {"prev_status": None, "locked_by_worker": new_uuid()}
+    # The fused cancel_request statement RETURNs the locked observation:
+    # prev_status drives the arm choice, locked_by_worker feeds the NOTIFY
+    # payload. A 'running' prev_status at phase 0 is the notify-guard arm.
+    return {"prev_status": "running", "locked_by_worker": new_uuid()}
 
 
 def _mock_pool(conn: Mock) -> Mock:
@@ -45,13 +48,13 @@ def _mock_pool(conn: Mock) -> Mock:
 def _scripted_conn(notify_error: Exception) -> Mock:
     """A conn stub for write_cancel_request's running-job path.
 
-    fetchrow: no pending/scheduled row, then a running row (drives the
-    cancel_phase=1 branch). execute: succeeds for the in-transaction
-    cancel_request event INSERT, raises *notify_error* for the
-    post-commit pg_notify round trip.
+    fetchrow: ONE call, the fused arbiter, returning the locked running
+    row (drives the cancel_phase=1 branch). execute: raises *notify_error*
+    for the post-commit pg_notify round trip (the events are written
+    server-side by the arbiter statement itself).
     """
     conn = Mock()
-    conn.fetchrow = AsyncMock(side_effect=[None, _running_record()])
+    conn.fetchrow = AsyncMock(side_effect=[_running_record()])
 
     async def scripted_execute(sql: str, *args: object) -> object:
         if _NOTIFY_SQL_FRAGMENT in sql:
@@ -137,7 +140,7 @@ class TestWriteCancelRequestNotifyGuard:
         monkeypatch.setattr(postgres_mod, "logger", mock_logger)
 
         conn = Mock()
-        conn.fetchrow = AsyncMock(side_effect=[None, _running_record()])
+        conn.fetchrow = AsyncMock(side_effect=[_running_record()])
         conn.execute = AsyncMock()
         conn.transaction = MagicMock()
         backend = _make_backend(_mock_pool(conn))
