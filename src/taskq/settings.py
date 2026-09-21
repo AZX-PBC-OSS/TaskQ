@@ -663,6 +663,31 @@ class TaskQSettings(DotEnvConfig):
         "large finite value there instead.",
     )
 
+    # -- Optional TimescaleDB hypertables ---------------------------------
+    # On TaskQSettings (not WorkerSettings) because the conversion runs from
+    # the `taskq migrate up` deploy step, which loads this model. The
+    # retention INTERVALS the conversion derives chunk sizes and policies
+    # from stay worker-scoped (TASKQ_ARCHIVE_RETENTION_PERIOD,
+    # TASKQ_EVENT_RETENTION_PERIOD); the deploy step loads WorkerSettings for
+    # that step, see taskq.timescale.
+    timescaledb_hypertables: bool = Field(
+        default=False,
+        description="TASKQ_TIMESCALEDB_HYPERTABLES. Opt in to TimescaleDB "
+        "hypertables for the retention tables (jobs_archive, "
+        "job_attempts_archive on their time columns, job_events on "
+        "occurred_at) and Timescale-managed retention policies built from "
+        "TASKQ_ARCHIVE_RETENTION_PERIOD and TASKQ_EVENT_RETENTION_PERIOD. "
+        "Default false: "
+        "with the flag off, setup issues ZERO new statements against the "
+        "server and behavior is identical to plain Postgres, which remains "
+        "fully supported. With the flag true, `taskq migrate up` requires the "
+        "server to offer and load the timescaledb extension and fails loudly "
+        "naming this setting when it does not (it never silently degrades); "
+        "see docs/guides/timescaledb.md. The worker and client never touch "
+        "this flag: the conversion is deploy-step DDL, and the sweeps keep "
+        "running unchanged alongside the retention policies.",
+    )
+
     @classmethod
     def load(
         cls,

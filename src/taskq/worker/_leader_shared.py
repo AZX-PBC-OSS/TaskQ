@@ -410,15 +410,39 @@ _ARCHIVE_CTE_SQL = (
     # ago is archived; the re-check is retained as belt and braces (the
     # locks just taken guarantee the version cannot have moved).
     '  AND j.status = $1::"{schema}".job_status'
+    # The archive-once guard: a job id that already holds an archive row
+    # is never archived again (the NOT EXISTS probe rides the archive's
+    # id-leading index in every mode). This is what lets the optional
+    # hypertable mode widen the archive's uniqueness from PRIMARY KEY
+    # (id) to UNIQUE (id, finished_at) - a hypertable requires the
+    # partition column in every unique constraint, so bare-id uniqueness
+    # is inexpressible there - without changing the re-archive
+    # semantics: on vanilla Postgres the same shape met the primary key
+    # as a loud non-transient error that wedged every later batch, the
+    # guard replaces the wedge with a fold (the existing archive row
+    # stands) in BOTH modes, so the prune converges identically and the
+    # semantics are pinned by the same tests in both.
+    '  AND NOT EXISTS (SELECT 1 FROM "{schema}".jobs_archive a WHERE a.id = j.id)'
     "  RETURNING id, actor, status"
     "), moved_attempts AS ("
     f'  INSERT INTO "{{schema}}".job_attempts_archive ({_JOB_ATTEMPTS_COLUMNS_CSV})'
     f"  SELECT {_JOB_ATTEMPTS_COLUMNS_QUALIFIED_CSV}"
     '  FROM "{schema}".job_attempts ja'
     "  JOIN moved m ON ja.job_id = m.id"
+    "), verified AS MATERIALIZED ("
+    # Every candidate row this statement locked and still verified
+    # terminal, whether or not the INSERT above folded it into an
+    # existing archive row: the delete arm removes the live row either
+    # way, so a folded id converges (exactly one archive row, no live
+    # row) instead of re-entering the window forever. The folded edge
+    # loses only the retried job's post-ghost attempts; the standing
+    # archive row is the pre-retry version.
+    '  SELECT j.id FROM "{schema}".jobs j'
+    "  JOIN locked l ON j.id = l.id"
+    '  AND j.status = $1::"{schema}".job_status'
     "), deleted AS ("
     '  DELETE FROM "{schema}".jobs'
-    "  WHERE id IN (SELECT id FROM moved)"
+    "  WHERE id IN (SELECT id FROM verified)"
     # The lock-time re-check's second line of defense: the row version
     # this statement deletes must still be the terminal one it archived.
     # Rows were locked and verified in `locked`, so a version change

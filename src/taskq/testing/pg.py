@@ -94,12 +94,17 @@ DEFAULT_ACTORS: tuple[str, ...] = (
 )
 
 # Tables truncated by truncate_schema() in FK-safe cascade order.
-# schema_migrations is excluded, migration metadata is not test data.
+# job_attempts_archive is listed BEFORE jobs_archive: on vanilla Postgres
+# the CASCADE from jobs_archive would reach it anyway, but the optional
+# hypertable mode drops that foreign key (no table may reference a
+# hypertable), so the explicit entry keeps the reset complete in both
+# modes. schema_migrations is excluded, migration metadata is not test data.
 _TRUNCATE_TABLES: tuple[str, ...] = (
     "reservation_slots",
     "rate_limit_window_entries",
     "rate_limit_buckets",
     "cron_schedules",
+    "job_attempts_archive",
     "jobs_archive",
     "jobs",
     "workers",

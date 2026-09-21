@@ -195,6 +195,54 @@ jobs:
       - name: Run both families together
         run: uv run --no-sync pytest -n 2 -m "${{ matrix.select }}"
 
+  test-timescale:
+    # The optional-TimescaleDB lane (TASKQ_TIMESCALEDB_HYPERTABLES): the
+    # feature's own module, run for real. Like the slow and e2e tiers, the
+    # containers are testcontainers booted by the fixtures themselves (the
+    # module's timescale_container and the shared pg_dsn pair), so this job
+    # needs only Docker on the runner - a service container would be dead
+    # weight no test reads. TASKQ_TEST_TIMESCALEDB_IMAGE is pinned to the
+    # same tag the module defaults to, so the lane and the module can never
+    # disagree about which server they mean. Serially, not under xdist: the
+    # module boots ONE module-scoped timescale container, and each xdist
+    # worker would boot its own.
+    #
+    # The check at the bottom is the lane's contract: every test of the
+    # module must RUN. skip_test_without_docker() makes a container-less
+    # run exit 0 with skips, so a green lane with skips would prove
+    # nothing - the summary is parsed and any skip, deselection, or
+    # failure fails the job. Bump the floor when the module grows.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-uv-env
+        with:
+          sync-args: --all-extras --group dev
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Run the hypertable module (a skip here is a failure)
+        env:
+          TASKQ_TEST_TIMESCALEDB_IMAGE: timescale/timescaledb:2.30.1-pg18
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/timescale-pytest.txt"
+          uv run --no-sync pytest tests/test_timescaledb_hypertables.py -rs | tee "$out"
+          uv run --no-sync python - "$out" <<'PY'
+          import re
+          import sys
+
+          summary = open(sys.argv[1], encoding="utf-8").read().strip().splitlines()[-1]
+          passed = int(re.search(r"(\d+) passed", summary).group(1))
+          assert passed >= 11, f"the module's 11 tests did not all pass: {summary}"
+          for bad in ("skipped", "deselected", "failed", "error"):
+              assert bad not in summary, f"the lane must be skip-free: {summary}"
+          PY
+
   slow-suite:
     # The slow-marked family's own lane: the fleet/chaos tier whose tests are
     # wall-clock-bound (lease expirations, failover windows, subprocess-timed
