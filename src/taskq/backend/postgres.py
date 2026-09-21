@@ -156,8 +156,6 @@ from taskq.backend._sweeps import (
     sweep_scheduled_to_pending,
 )
 from taskq.backend._terminal import (
-    _insert_cancel_request_event,
-    _insert_state_change_event,
     _mark_abandoned,
     _mark_cancelled,
     _mark_failed_or_retry,
@@ -816,22 +814,22 @@ class PostgresBackend:
 
         async with _bounded_checkout(self._worker_pool, "write_cancel_request") as conn:
             async with conn.transaction():
-                rec = await conn.fetchrow(self._sql.cancel_pending_scheduled, job_id)
-                if rec is not None:
-                    prev_status: str = rec["prev_status"]
+                # ONE statement decides: the prev CTE's FOR UPDATE holds the
+                # row from probe through UPDATE, so a consumer re-queue
+                # cannot slip between the pending/scheduled arm and the
+                # running arm and escape both (the two-statement form's
+                # vanished-request race; see cancel_request's template
+                # comment). Both arms' events are written by the same
+                # statement, so the report and the state can never disagree.
+                rec = await conn.fetchrow(self._sql.cancel_request, job_id, reason)
+                if rec is None:
+                    return False
+                prev_status: str = rec["prev_status"]
+                if prev_status in ("pending", "scheduled"):
                     _prev_status = prev_status
-                    await _insert_state_change_event(
-                        conn, self._sql, job_id, prev_status, "cancelled"
-                    )
-                    await _insert_cancel_request_event(conn, self._sql, job_id, reason)
                 else:
-                    cancel_rec = await conn.fetchrow(self._sql.cancel_running, job_id)
-                    if cancel_rec is not None:
-                        _cancel_phase = 1
-                        _locked_by_worker = cancel_rec["locked_by_worker"]
-                        await _insert_cancel_request_event(conn, self._sql, job_id, reason)
-                    else:
-                        return False
+                    _cancel_phase = 1
+                    _locked_by_worker = rec["locked_by_worker"]
 
         if _prev_status is not None:
             log_state_change(
