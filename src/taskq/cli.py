@@ -82,6 +82,7 @@ from taskq.exceptions import (
 )
 from taskq.obs import OtelExporterConfigurationError, configure_exporters, setup_logging
 from taskq.settings import TaskQSettings, WorkerSettings
+from taskq.timescale import TimescaleDBUnavailableError, enable_hypertables
 from taskq.types import BulkCancelResult
 from taskq.worker._stall_tally import remedy_for_kind
 from taskq.worker.dev import dev_watch_loop
@@ -732,6 +733,25 @@ async def _up(
                 max_steps=max_steps,
                 ddl_lock_timeout=ddl_lock_timeout,
             )
+            # The optional hypertable conversion rides the same deploy step
+            # and the same lock: after migrations, before the connection
+            # closes. With TASKQ_TIMESCALEDB_HYPERTABLES false (the default)
+            # this is a zero-statement gate; with it true, enable_hypertables
+            # refuses loudly when the server cannot honor the feature.
+            # WorkerSettings.load() re-reads the same cascade: the retention
+            # intervals the conversion derives chunk sizes and policies from
+            # are worker-scoped fields, so the deploy step reads them from
+            # the environment the workers themselves run with.
+            if settings.timescaledb_hypertables:
+                await enable_hypertables(
+                    conn, schema=settings.schema_name, settings=WorkerSettings.load()
+                )
+    except TimescaleDBUnavailableError as exc:
+        # A capability refusal, not a migration failure: _report_up_failure
+        # would misfile it as broken schema state. The error already names
+        # the setting and what the server is missing.
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
     except SystemExit as exc:
         # Lock contention. Already a precise message; reporting it through
         # _report_up_failure would misfile a queueing problem as a broken
