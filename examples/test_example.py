@@ -41,7 +41,7 @@ class RetryPayload(BaseModel):
     fail_until_attempt: int
 
 
-@actor(retry=RetryPolicy(max_attempts=5, base=__import__("datetime").timedelta(seconds=0)))
+@actor(retry=RetryPolicy(max_attempts=5, base=__import__("datetime").timedelta(seconds=1)))
 async def flaky_actor(payload: RetryPayload, ctx: JobContext[RetryPayload]) -> None:
     if ctx.attempt <= payload.fail_until_attempt:
         raise ValueError(f"intentional failure on attempt {ctx.attempt}")

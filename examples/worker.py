@@ -93,6 +93,20 @@ ACTORS: dict[str, ActorRef[Any, Any]] = {
     "generate_thumbnail": generate_thumbnail,
 }
 
+# The workgroup supervisor and the `taskq worker` CLI spawn plain
+# `taskq worker` subprocesses, which build no DI registry —
+# build_registry() below runs only in this module's __main__ path. Actors
+# that declare a DI dependency (fetch, db_lookup, send_digest_email) would
+# fail bootstrap validation with MissingProvider, so the subprocess-facing
+# registry excludes them. (batch_finalizer's `db: asyncpg.Pool` is fine:
+# the worker auto-registers its own pool when no provider is declared.)
+# Serve the DI actors through this module's __main__ worker instead.
+CLI_ACTORS: dict[str, ActorRef[Any, Any]] = {
+    name: ref
+    for name, ref in ACTORS.items()
+    if name not in ("fetch", "db_lookup", "send_digest_email")
+}
+
 if __name__ == "__main__":
     settings = WorkerSettings.load()
 

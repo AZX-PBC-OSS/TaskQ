@@ -354,7 +354,7 @@ async def get_result(job_id: UUID, request: Request) -> Response:
             html = _templates.get_template("result.html").render(
                 job_id=job_id,
                 status=status,
-                result=result.model_dump() if result is not None else None,
+                result=result.model_dump(),
                 admin_url=settings.admin_url,
                 done=True,
             )

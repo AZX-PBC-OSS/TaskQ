@@ -38,7 +38,7 @@ uv add "taskq-py[redis,fastapi]"          # full
 
 | Extra | Installs | Features enabled |
 |-------|----------|-----------------|
-| `taskq-py[redis]` | `redis>=7.4` | Real-time progress fanout via Redis pub/sub, Redis-backed rate limiters (`TokenBucket`, `SlidingWindow`) |
+| `taskq-py[redis]` | `redis>=8.0.1` | Real-time progress fanout via Redis pub/sub, Redis-backed rate limiters (`TokenBucket`, `SlidingWindow`) |
 | `taskq-py[otel]` | `opentelemetry-sdk`, `opentelemetry-exporter-otlp` | Configuring OTel providers programmatically; in-process test utilities in `taskq.testing.otel` |
 | `taskq-py[fastapi]` | `fastapi`, `jinja2`, `sse-starlette`, `uvicorn` | Admin UI (`taskq ui serve`), SSE progress bridge |
 | `taskq-py[prometheus]` | `opentelemetry-exporter-prometheus` | Prometheus metric scrapes via `taskq.contrib.prometheus` |
