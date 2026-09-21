@@ -54,13 +54,15 @@ _STALENESS_BOUND = timedelta(seconds=2 * _HEARTBEAT_INTERVAL)
 
 async def _setup_fast(
     module_pg_schema: ModulePgSchema,
-) -> tuple[AsyncExitStack, WorkerDeps, str]:
+) -> tuple[AsyncExitStack[bool | None], WorkerDeps, str, asyncpg.Connection]:
     """Create WorkerDeps with fast heartbeat intervals per test.
 
     Uses the module-scoped PG schema (migrated once per test file) and
     truncates all tables for per-test isolation.
 
-    Returns (stack, deps, schema) - the caller MUST ``await stack.aclose()``.
+    Returns (stack, deps, schema, obs_conn) - the caller MUST ``await
+    stack.aclose()``; *obs_conn* is the test's dedicated DML connection
+    (no command timeout) and closes with the stack.
     """
     import asyncpg
 
