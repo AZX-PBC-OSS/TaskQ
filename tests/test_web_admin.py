@@ -190,6 +190,7 @@ def test_sse_returns_sentinel(monkeypatch: pytest.MonkeyPatch) -> None:
         semaphore: asyncio.Semaphore,
         pool: object,
         schema: object,
+        session_verifier: object | None = None,
     ) -> AsyncIterator[str]:
         try:
             from taskq import _json
@@ -283,6 +284,7 @@ async def test_sse_429_on_concurrency_exhaustion(monkeypatch: pytest.MonkeyPatch
         semaphore: asyncio.Semaphore,
         pool: object,
         schema: object,
+        session_verifier: object | None = None,
     ) -> AsyncIterator[str]:
         try:
             from taskq import _json

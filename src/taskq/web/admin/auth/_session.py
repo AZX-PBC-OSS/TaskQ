@@ -17,7 +17,7 @@ imported lazily inside :class:`SessionManager` so that ``AuthBundle`` and
 extra installed.
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from hashlib import sha256
@@ -35,6 +35,7 @@ __all__ = [
     "IdentityClaims",
     "SessionManager",
     "create_auth_dependency",
+    "create_session_verifier",
     "current_sso_logout_token",
     "logout_csrf_token",
     "require_logout_csrf",
@@ -261,6 +262,39 @@ def _unauthorized(request: Request, login_path: str) -> NoReturn:
     raise HTTPException(status_code=401, detail="not authenticated")
 
 
+def create_session_verifier(
+    session_manager: SessionManager,
+    allowed_groups: frozenset[str] = frozenset(),
+) -> Callable[[Request], Awaitable[bool]]:
+    """Build the session re-check that long-lived SSE streams re-invoke (#316).
+
+    A stream that authenticates only at request acceptance keeps delivering
+    frames after its session is invalidated. The routers that own such streams
+    (the per-job progress SSE bridge and the admin ``/sse/{topic}`` endpoint)
+    re-invoke this callable before every yielded event and at every keepalive
+    tick, and close the stream when it answers ``False``.
+
+    The check is the same one the auth dependency runs per request -- cookie
+    signature, ``max_age_seconds`` expiry, and the group allowlist -- so all
+    three invalidation paths end a live stream: rotating ``session_secret``,
+    the session ageing out, and ``allowed_groups`` no longer intersecting the
+    identity's groups. A stateless signed-cookie session has no server-side
+    revocation list; this re-check covers exactly what the per-request check
+    covers, at the stream's tick cadence.
+    """
+
+    async def _verify(request: Request) -> bool:
+        cookie = request.cookies.get(session_manager.cookie_name)
+        if cookie is None:
+            return False
+        claims = session_manager.verify_session_cookie(cookie)
+        if claims is None:
+            return False
+        return not (allowed_groups and allowed_groups.isdisjoint(claims.groups))
+
+    return _verify
+
+
 def create_auth_dependency(
     session_manager: SessionManager,
     allowed_groups: frozenset[str] = frozenset(),
@@ -291,4 +325,10 @@ def create_auth_dependency(
         _sso_logout_token.set(logout_csrf_token(session_manager.secret, cookie))
         return claims
 
+    # The re-check long-lived SSE streams re-invoke (#316): same session
+    # inputs as this dependency, exposed as an attribute so
+    # create_router(auth_dependency=...) can derive it without a second
+    # parameter every host must remember to pass.
+    cast_to_any: Any = _dependency
+    cast_to_any.session_verifier = create_session_verifier(session_manager, allowed_groups)
     return _dependency

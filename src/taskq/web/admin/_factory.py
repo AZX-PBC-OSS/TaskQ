@@ -9,11 +9,11 @@ import importlib
 import pkgutil
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import asyncpg
 import structlog
@@ -290,6 +290,20 @@ def get_redis_client(request: Request) -> Any | None:
     return client
 
 
+def get_session_verifier(request: Request) -> Callable[[Request], Awaitable[bool]] | None:
+    """Dependency: the SSE session re-check from ``app.state`` (#316).
+
+    Long-lived SSE streams re-invoke it (before every yielded event, at every
+    keepalive tick) so a session revoked mid-stream stops receiving frames.
+    ``getattr`` with a ``None`` default rather than an attribute read: a host
+    that mounted the router without calling ``setup_admin_state`` -- the state
+    the other page dependencies already require -- gets an unrechecked stream
+    (the pre-#316 behavior) rather than a 500 on every ``/sse`` route.
+    """
+    verifier: Any = getattr(request.app.state, "taskq_session_verifier", None)
+    return verifier
+
+
 def get_templates(request: Request) -> Environment:
     """Dependency: yields the Jinja2 Environment from ``app.state``."""
     env: Environment = request.app.state.templates
@@ -502,6 +516,10 @@ class AdminBundle:
     base_path: str
     backend: Backend | None = None
     rate_limit_registry: RateLimitRegistry | None = None
+    # The SSE session re-check (#316), derived from auth_dependency when the
+    # factory was not given one explicitly; setup_admin_state copies it onto
+    # app.state where the /sse/{topic} endpoint resolves it per request.
+    session_verifier: Callable[[Request], Awaitable[bool]] | None = None
 
 
 def setup_admin_state(app: _AppLike, bundle: AdminBundle) -> None:
@@ -520,6 +538,7 @@ def setup_admin_state(app: _AppLike, bundle: AdminBundle) -> None:
     app.state.rate_limit_registry = (
         bundle.rate_limit_registry if bundle.rate_limit_registry is not None else _rl_singleton
     )
+    app.state.taskq_session_verifier = bundle.session_verifier
 
 
 def create_router(
@@ -532,6 +551,7 @@ def create_router(
     base_path: str = "",
     backend: Backend | None = None,
     rate_limit_registry: RateLimitRegistry | None = None,
+    session_verifier: Callable[[Request], Awaitable[bool]] | None = None,
 ) -> AdminBundle:
     """Create the admin UI FastAPI router.
 
@@ -549,11 +569,28 @@ def create_router(
     the admin pages read configured primitives from (e.g. the API-process
     instance in a multi-process deployment).  Default ``None`` resolves to
     the module singleton, same-process behavior is unchanged.
+
+    ``session_verifier`` is the optional async re-check long-lived SSE streams
+    re-invoke (#316) -- ``Callable[[Request], Awaitable[bool]]`` returning
+    whether the session that opened the stream is still valid. When omitted,
+    it is derived from the ``session_verifier`` attribute the taskq auth
+    dependencies (``create_auth_dependency``, ``token_auth``) attach to the
+    callable they return; with neither, SSE streams authenticate once at
+    subscribe, the pre-#316 behavior.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
 
     settings = TaskQSettings.load()
+
+    # Session re-check derivation (#316): prefer the explicit parameter, fall
+    # back to the attribute the taskq auth dependencies attach. An auth
+    # dependency without a re-check cannot be safely re-invoked by us (it may
+    # need FastAPI dependency injection), so the fallback is no re-check --
+    # the same subscribe-once model the router-level Depends alone gives.
+    if session_verifier is None and auth_dependency is not None:
+        derived_verifier: Any = getattr(auth_dependency, "session_verifier", None)
+        session_verifier = cast("Callable[[Request], Awaitable[bool]] | None", derived_verifier)
 
     env = Environment(
         autoescape=True,
@@ -646,6 +683,7 @@ def create_router(
         auth_dependency=auth_dependency,
         resolve_pg_pool=get_pg_pool,
         resolve_redis_client=get_redis_client,
+        session_verifier=session_verifier,
     )
     router.include_router(progress_router, prefix="/jobs")
 
@@ -659,6 +697,7 @@ def create_router(
         base_path=base_path,
         backend=backend,
         rate_limit_registry=rate_limit_registry,
+        session_verifier=session_verifier,
     )
 
 

@@ -448,6 +448,23 @@ The auth dependency re-checks the group allowlist on every request, so changing
 group no longer intersects the allowlist gets 401 on the next request). Rotating
 `session_secret` invalidates all sessions at once.
 
+**Long-lived SSE streams** are the one place a per-request check is not
+enough, so both streaming endpoints (the per-job progress stream and the
+admin `/sse/{topic}` channel) re-run the same session verification while the
+stream is open: before every streamed event and at every keepalive tick. A
+session invalidated mid-stream -- a rotated `session_secret`, a session that
+ages past `max_age_seconds`, or an `allowed_groups` change that excludes the
+identity -- ends the live stream within one keepalive interval (at most 60
+seconds, whatever `sse_heartbeat_interval` is set to); the browser's
+`EventSource` reconnects, is refused with 401, and the user logs in again.
+This re-check reads the same signed cookie the per-request check reads, so it
+covers exactly what that check covers; a stateless cookie session has no
+server-side revocation list to consult. Streams built with taskq's own
+`create_auth_dependency` or `token_auth` get the re-check automatically; a
+host supplying its own `auth_dependency` can pass a `session_verifier`
+(`Callable[[Request], Awaitable[bool]]`) to `create_router` and is warned at
+startup when it does not.
+
 ---
 
 ### Logging out
