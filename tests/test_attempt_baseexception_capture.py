@@ -34,12 +34,14 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
+from pydantic import BaseModel, TypeAdapter
 
-from taskq._ids import new_job_id
-from taskq.backend._protocol import EnqueueArgs
+from taskq._ids import new_job_id, new_uuid
+from taskq.actor import ActorRef
+from taskq.backend._protocol import EnqueueArgs, JobRow
 from taskq.backend.clock import SystemClock
 from taskq.retry import RetryPolicy
-from taskq.testing.actor import EmptyPayload, StubActorConfig
+from taskq.testing.actor import EmptyPayload, FakeBackend, StubActorConfig
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.worker._consumer import consume_one_job
@@ -48,6 +50,7 @@ if TYPE_CHECKING:
     from taskq.testing.fixtures import JobsApp
 
 _START = datetime(2025, 1, 1, tzinfo=UTC)
+_WORKER_ID_TX = new_uuid()
 
 
 class ActorBoom(BaseException):
@@ -179,6 +182,104 @@ async def test_actor_keyboard_interrupt_still_propagates() -> None:
     row = await backend.get(args.id)
     assert row is not None
     assert row.status == "running"
+
+
+# ── Transactional path: the same contract, buffer discipline intact ─────
+
+
+class _ChildResult(BaseModel):
+    ok: bool = True
+
+
+class _FakeConnection:
+    """Minimal asyncpg.Connection stand-in with a transaction() context manager."""
+
+    class _Transaction:
+        async def __aenter__(self) -> "_FakeConnection._Transaction":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    def transaction(self) -> "_FakeConnection._Transaction":
+        return _FakeConnection._Transaction()
+
+    async def execute(self, query: str, *args: object) -> str:
+        return ""
+
+
+def _child_ref() -> "ActorRef[EmptyPayload, _ChildResult]":
+    async def _handler(payload: EmptyPayload) -> _ChildResult:
+        return _ChildResult()
+
+    return ActorRef(
+        name="child",
+        queue="default",
+        fn=_handler,
+        wants_ctx=False,
+        dependencies={},
+        payload_type=EmptyPayload,
+        result_adapter=TypeAdapter(_ChildResult),
+        retry=RetryPolicy(),
+        result_ttl=None,
+    )
+
+
+class _TxBackend(FakeBackend):
+    """FakeBackend with the transactional-write surfaces the tx path
+    reaches, mirroring the sub-enqueue harness's fake."""
+
+    BACKEND_PROTOCOL_VERSION: int = 1
+    supports_transactional_simulation: bool = True
+
+    async def enqueue_with_conn(self, conn: object, args: EnqueueArgs) -> JobRow:
+        raise AssertionError("a failed attempt must not enqueue its buffered sub-jobs")
+
+
+async def test_tx_actor_baseexception_discards_buffer_and_fails_truthfully() -> None:
+    """Transactional-path twin: a non-Exception BaseException from the
+    actor body routes through the generic handler with the buffer-discard
+    pre-handler intact — no buffered sub-enqueue leaks past the rollback —
+    and the failure write carries the real error class (the same routing
+    a RuntimeError takes, whose discard pin this mirrors)."""
+    import asyncpg
+
+    from taskq.client._enqueuer import SubJobEnqueuer
+    from taskq.testing.actor import as_backend, default_actor_config
+    from taskq.testing.jobs import make_job_row
+
+    fb = _TxBackend()
+    enqueuer = SubJobEnqueuer(
+        loop_scope_resolved={asyncpg.Connection: _FakeConnection()},
+        worker_pool=None,
+        backend=fb,
+    )
+    await enqueuer.enqueue(_child_ref(), EmptyPayload())
+    assert enqueuer.pending_count == 1
+
+    def boom(_job: object, _ctx: object) -> None:
+        raise ActorBoom("buggy actor raised BaseException")
+
+    # The BaseException must not escape the consumer.
+    await consume_one_job(
+        as_backend(fb),
+        make_job_row(),
+        _WORKER_ID_TX,
+        run_actor=boom,  # type: ignore[arg-type]  # Why: object-typed actor callable, matching the sub-enqueue harness shape this test mirrors.
+        actor_config=default_actor_config(),
+        payload_type=EmptyPayload,
+        clock=FakeClock(start=_START),
+        enqueuer=enqueuer,
+        transaction_conn=_FakeConnection(),
+    )
+
+    # The buffered sub-enqueue was discarded, not leaked past the rollback.
+    assert enqueuer.pending_count == 0
+    # And the failure write landed with the exception's own class name.
+    assert len(fb.mark_failed_or_retry_calls) == 1
+    error_info = fb.mark_failed_or_retry_calls[0]["error_info"]
+    assert error_info is not None
+    assert error_info.error_class == "ActorBoom"  # pyright: ignore[reportAttributeAccessIssue]  # Why: mark_failed_or_retry_calls stores untyped objects from mock; error_class exists at runtime.
 
 
 # ── Production-backend twin: the same contract through PostgresBackend ──

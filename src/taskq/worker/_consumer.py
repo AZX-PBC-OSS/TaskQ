@@ -1548,8 +1548,17 @@ async def _consume_transactional(
         RetryAfter,
         ReservationUnavailable,
         ResultTooLarge,
-        Exception,
+        BaseException,
     ) as e:
+        # ``BaseException``, not ``Exception``: the same per-attempt
+        # capture contract consume_one_job's final arm applies (see its
+        # comment). Without it a non-Exception BaseException from the
+        # actor body would skip the pre_handler below, leaking this
+        # attempt's buffered sub-enqueues past the transaction rollback,
+        # and skip the truthful error stamping entirely. KeyboardInterrupt
+        # keeps its interpreter/operator semantics, as there.
+        if isinstance(e, KeyboardInterrupt):
+            raise
         return await _dispatch_exception(
             e,
             backend=backend,
