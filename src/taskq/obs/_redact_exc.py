@@ -24,12 +24,22 @@ Two concrete leaks, both verified by execution rather than assumed:
 * **Bearer tokens and signatures in HTTP-failure bodies.** A managed-identity
   credential failure (azure-identity's ``HttpResponseError`` shape) appends
   the HTTP body to ``str(exc)``, and the body carries a raw access token --
-  either as a standalone JWT or after ``Authorization: Bearer``. Presigned
+  as a standalone JWT, after ``Authorization: Bearer`` (quoted renderings of
+  the header included), or under its own OAuth token name
+  (``access_token``/``refresh_token``/``id_token``, camelCase included),
+  which is what catches an OPAQUE token the JWT shape cannot see. Presigned
   AWS query strings carry the same class of credential as
-  ``X-Amz-Signature=``/``sig=`` hex. All three are masked (issue #317,
-  verified by an end-to-end repro through the pg-credential-refresh failure
-  log site); the JWT mask's conservative shape is a stated trade-off, see
-  :data:`_JWT_RE`.
+  ``X-Amz-Signature=``/``Signature=``/``sig=`` values. All are masked
+  (issue #317, verified by an end-to-end repro through the
+  pg-credential-refresh failure log site). Stated limits, so the next
+  reader knows they are decisions rather than gaps: a token whose header
+  name was corrupted by homoglyphs is not caught (the masks are literal,
+  and a corrupted name is not the header the credential was sent under);
+  an opaque credential appearing with NEITHER a bearer header nor a token
+  name around it is not caught (masking arbitrary long strings would
+  over-redact diagnostics); the JWT mask's conservative shape is its own
+  trade-off, see :data:`_JWT_RE` -- which over-masks a three-long-label
+  hostname, an accepted cost recorded there.
 
 Scope, deliberately narrow: only ``DETAIL`` is dropped. ``HINT`` is Postgres's
 suggested fix and ``CONTEXT`` is the PL/pgSQL call stack -- both structural,
@@ -222,13 +232,88 @@ _URI_PARAM_CRED_RE = re.compile(
 #: ``\s``: ``\s`` crosses newlines, and a value that can only be terminated by
 #: a line boundary must not be able to peer past one.
 #:
+#: The optional ``["'\\]`` runs around the colon and ``bearer`` admit the
+#: QUOTED header spellings a response body or a repr()d dict renders: JSON
+#: (``"Authorization": "Bearer ..."``, the ``\"``-escaped form included) and
+#: Python repr (``{'Authorization': 'Bearer ...'}``). The classes only match
+#: runs of quotes, backslashes and blanks, so they cannot jump over the
+#: letters of an intervening value to reach an unrelated ``bearer`` -- the
+#: first non-blank, non-quote character after the colon must literally be
+#: the scheme word. Without them an opaque token under a quoted header
+#: shipped verbatim: the JWT pass cannot see a token with no dot structure,
+#: which is exactly what an error body echoing request headers carries.
+#: The token class also stops at ``'`` and ``\`` for the same reason: the
+#: closing quote of a quoted value must terminate the token, not ride with
+#: it.
+#:
 #: Matched before the JWT mask below: the header form is the more specific
 #: shape, so it claims the value first and the JWT mask finds nothing left of
 #: it to re-match.
 _BEARER_TOKEN_RE = re.compile(
-    r"(\bauthorization[ \t]*:[ \t]*bearer[ \t]+)[^\s,;\"]+",
+    r"(\bauthorization[\"'\\]*[ \t]*:[ \t]*[\"'\\]*[ \t]*bearer[ \t]+)[^\s,;\"'\\]+",
     re.IGNORECASE,
 )
+
+#: OAuth token parameter names whose value is credential material by
+#: RFC 6749, whatever the token's shape: an OPAQUE access token (no dot
+#: structure) is invisible to the JWT mask below, and a response body or
+#: form body quoting one under its own name is the same disclosure as a
+#: JWT under ``Authorization: Bearer``. Both the RFC 6749 snake_case
+#: spellings and the camelCase ones caches and SDKs render are listed;
+#: ``IGNORECASE`` makes the casing itself irrelevant, both spellings exist
+#: because the separator differs (``_`` vs nothing).
+#:
+#: Kept to the token family: names like ``token`` or ``key`` alone are too
+#: generic to redact in non-credential text -- the same discipline the
+#: password-family list below applies.
+_OAUTH_TOKEN_NAMES = (
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "accessToken",
+    "refreshToken",
+    "idToken",
+)
+
+#: A quoted-value or assignment delimiter: JSON/repr quotes around the
+#: token (``"access_token": "..."``, ``{'access_token': '...'}``, the
+#: ``\"``-escaped form a repr()d JSON string renders), a bare-colon
+#: key/value dump (``access_token: ...``), or form/query encoding
+#: (``access_token=...``). A quote is matched as backslash-then-quote or a
+#: bare quote -- written as an ALTERNATION of quantifier-free arms and not
+#: ``\\?["']`` because a ``?`` whose body carries another repeat is the
+#: nested-quantifier shape
+#: ``test_no_nested_quantifier_regexes_in_taskq_obs`` bans; ``[ \t]``, not
+#: ``\s``: the delimiter must not be able to peer past a line boundary, for
+#: the same reason :data:`_BEARER_TOKEN_RE` documents.
+_OAUTH_TOKEN_QUOTE = r"(?:\\[\"']|[\"'])"  # noqa: S105  # Why: a regex quote-class snippet, not a secret; the bandit rule keys on the quote characters.
+
+#: The masked shape for an OAuth token value. Group 1 keeps the name and
+#: its delimiter verbatim (as :data:`_URI_PARAM_CRED_RE` does), group 2 is
+#: the value: a quoted string consumed whole, or an unquoted token. The
+#: unquoted class stops at whitespace, ``&``/``;`` (the next form
+#: parameter) and ``,`` -- the delimiters a rendered query string or body
+#: can carry -- so masking ``access_token=`` never eats the neighbouring
+#: ``expires_in=3600``. ``IGNORECASE``: the casing is whatever the sender
+#: emitted.
+_OAUTH_TOKEN_RE = re.compile(
+    r"((?:[?&]|(?<![A-Za-z0-9_]))(?:"
+    + "|".join(_OAUTH_TOKEN_NAMES)
+    + r")(?:"
+    + _OAUTH_TOKEN_QUOTE
+    + r"?[ \t]*:[ \t]*|=))("
+    + _OAUTH_TOKEN_QUOTE
+    + r"[^\s\"']+"
+    + _OAUTH_TOKEN_QUOTE
+    + r"|[^\s&;,\"']+)",
+    re.IGNORECASE,
+)
+
+#: Lowercased trigger substrings for :data:`_OAUTH_TOKEN_RE`'s prefilter,
+#: derived from the same name tuple the pattern is built from -- a name
+#: added above is guarded here without a second edit, the same derivation
+#: :data:`_CRED_PARAM_TRIGGERS` uses.
+_OAUTH_TOKEN_TRIGGERS = tuple(name.lower() for name in _OAUTH_TOKEN_NAMES)
 
 #: A JWT-shaped token: three base64url segments separated by two dots. This is
 #: deliberately CONSERVATIVE, a stated trade-off rather than a parsed JWT:
@@ -245,6 +330,18 @@ _BEARER_TOKEN_RE = re.compile(
 #:   sit inside a match.
 #: * exactly two dots, all three segments, word-bounded: a plain base64 blob
 #:   with no dots is not token-shaped and is left alone.
+#: * KNOWN OVER-MATCH, accepted and recorded: a string with three base64url
+#:   segments of 16+ each is masked whatever it means, and a hostname whose
+#:   three labels are all that long (``performance-metrics.
+#:   analytics-dashboard.corporate-domain``) is such a string -- it goes to
+#:   ``***`` in an error message. That is the cost side of the floor choice:
+#:   the mask is fail-closed (a shape this JWT-like is deleted, the
+#:   diagnostic loses a hostname rather than a vendor gaining a token), the
+#:   16+ floor cannot be raised without letting a real short-segment JWT
+#:   (an ``alg: HS256`` JOSE header is 20 chars) through, and no regex can
+#:   tell a JWT from such a hostname without decoding it.
+#:   ``test_three_long_label_hostname_is_masked_and_that_is_documented``
+#:   records the decision.
 #:
 #: Written FLAT -- three separate ``{16,}`` repeats, no quantifier inside a
 #: quantifier -- because :func:`test_no_nested_quantifier_regexes_in_taskq_obs`
@@ -252,17 +349,24 @@ _BEARER_TOKEN_RE = re.compile(
 #: the flat form matches the same strings.
 _JWT_RE = re.compile(r"\b[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b")
 
-#: AWS SigV4 signature parameters: the ``X-Amz-Signature=`` query parameter of
-#: a presigned URL and the shorter ``sig=`` spelling. The value is the hex
-#: request signature -- credential material exactly like a password -- and the
-#: password-family name list below deliberately does not carry ``sig`` (too
-#: generic a name to redact in non-AWS text), so this needs its own pattern.
-#: Group 1 keeps the parameter name verbatim, as :data:`_URI_PARAM_CRED_RE`
-#: does, so the masked form still names which parameter carried it.
-#: ``IGNORECASE``: the hex value is lowercase in the spec and case-variant in
-#: the wild, and the parameter casing is whatever the signer emitted.
+#: AWS presigned-URL signature parameters: the ``X-Amz-Signature`` query
+#: parameter of a SigV4 presigned URL, the ``Signature`` spelling CloudFront
+#: signed URLs use, and the shorter ``sig=``. The value -- hex for SigV4,
+#: base64url for CloudFront's RSA signature -- is credential material
+#: exactly like a password, and the password-family name list below
+#: deliberately does not carry ``sig``/``signature`` (too generic a name to
+#: redact in non-AWS text), so this needs its own pattern. Group 1 keeps the
+#: parameter name verbatim, as :data:`_URI_PARAM_CRED_RE` does, so the
+#: masked form still names which parameter carried it.
+#:
+#: The value class is the URL-safe token alphabet plus ``%`` (lowercase hex
+#: per the SigV4 spec, but case-variant in the wild, and a value that was
+#: percent-encoded must not leave its ``%XX`` tail riding after the mask --
+#: a delimiter miss deletes more, never less). It stops at whitespace,
+#: ``&`` and ``,``/``;`` like the other parameter-value classes.
+#: ``IGNORECASE``: the parameter casing is whatever the signer emitted.
 _AWS_SIG_RE = re.compile(
-    r"((?:[?&]|(?<![A-Za-z0-9_]))(?:x-amz-signature|sig)=)[0-9a-f]+",
+    r"((?:[?&]|(?<![A-Za-z0-9_]))(?:x-amz-signature|signature|sig)=)[0-9a-z_%-]+",
     re.IGNORECASE,
 )
 
@@ -312,18 +416,29 @@ def _scrub_text(text: str) -> str:
     :data:`_PG_DETAIL_RE`, and the literal ``\\n`` ``repr()`` flattens them
     into by :data:`_PG_DETAIL_ESCAPED_RE`.
 
-    Four credential shapes are masked, in this order:
+    Five credential shapes are masked, in this order:
 
-    1. ``Authorization: Bearer <token>`` headers, by :data:`_BEARER_TOKEN_RE`.
-    2. Standalone JWT-shaped tokens (three base64url segments, two dots), by
+    1. ``Authorization: Bearer <token>`` headers -- quoted renderings
+       (``"Authorization": "Bearer ..."``, ``{'Authorization': '...'}``, the
+       escaped-quote form) included -- by :data:`_BEARER_TOKEN_RE`.
+    2. OAuth token values under their own names (``access_token``,
+       ``refresh_token``, ``id_token``, camelCase spellings included; JSON,
+       repr, bare-colon, query and form encodings), by
+       :data:`_OAUTH_TOKEN_RE`. This is what catches an OPAQUE access token
+       in a response body: it has no dot structure for the JWT mask to see.
+       It runs after the bearer pass and before the JWT pass, so the
+       name-specific mask claims a value first and the shape-generic mask
+       finds nothing left of it to re-match.
+    3. Standalone JWT-shaped tokens (three base64url segments, two dots), by
        :data:`_JWT_RE` -- the conservative-shape trade-off is documented there.
        It runs after the bearer pass, so a header-shaped value is claimed by
        the more specific mask first, and before the URI passes, so a token
        riding in URI userinfo cannot be seen half-consumed.
-    3. AWS SigV4 signature parameters (``X-Amz-Signature=`` / ``sig=``), by
-       :data:`_AWS_SIG_RE` -- the password-family name list deliberately
-       excludes ``sig``, so this needs its own pattern.
-    4. userinfo (``scheme://user:pass@host``, empty username included) by
+    4. Presigned-URL signature parameters (``X-Amz-Signature=``,
+       ``Signature=``, ``sig=``), by :data:`_AWS_SIG_RE` -- the
+       password-family name list deliberately excludes ``sig``/
+       ``signature``, so this needs its own pattern.
+    5. userinfo (``scheme://user:pass@host``, empty username included) by
        :data:`_URI_CRED_RE`, then password-family connection parameters,
        query-string and libpq keyword/value alike, in any casing, by
        :data:`_URI_PARAM_CRED_RE`. The order is what makes a DSN carrying
@@ -354,8 +469,21 @@ def _scrub_text(text: str) -> str:
       ``_PG_DETAIL_ESCAPED_RE`` matches it after an escaped newline, both
       require ``"DETAIL:"`` in the subject.
     * ``_BEARER_TOKEN_RE`` requires the literal ``bearer``.
-    * ``_JWT_RE`` requires at least two dots (one ``str.count``).
-    * ``_AWS_SIG_RE`` requires ``sig=`` or ``x-amz-signature=``.
+    * ``_OAUTH_TOKEN_RE`` requires one of the token names, lowercased
+      (``access_token`` ...).
+    * ``_JWT_RE`` requires at least two dots (one ``str.count``). That
+      condition is WEAK on rendered tracebacks -- every ``.py`` in a file
+      path supplies dots -- so the JWT scan does run on them: measured
+      ~15 us for a 27-frame traceback, linear in the text (the poison
+      shapes -- long word-runs with near-miss segments, the
+      backtracking food of a ``{16,}`` repeat -- are pinned linear by
+      ``test_jwt_scan_stays_linear_on_long_word_runs``). A stronger
+      str-level necessary condition does not exist: "a dot with 16 word
+      chars beside it" already requires a scan that costs what the pass
+      costs. ``test_clean_error_line_runs_no_regex`` pins the strict
+      claim this docstring makes: on trigger-free text NO regex runs.
+    * ``_AWS_SIG_RE`` requires ``sig=`` or ``signature=`` (the latter
+      covers ``x-amz-signature=``, which contains it).
     * ``_URI_CRED_RE`` requires a ``scheme://`` separator.
     * ``_URI_PARAM_CRED_RE`` requires a password-family parameter name
       followed by ``=``, compared case-insensitively to match the pattern ,
@@ -377,10 +505,13 @@ def _scrub_text(text: str) -> str:
     if "bearer" in lowered:
         text = _BEARER_TOKEN_RE.sub(r"\1***", text)
         lowered = text.lower()
+    if any(trigger in lowered for trigger in _OAUTH_TOKEN_TRIGGERS):
+        text = _OAUTH_TOKEN_RE.sub(r"\1***", text)
+        lowered = text.lower()
     if text.count(".") >= 2:
         text = _JWT_RE.sub("***", text)
         lowered = text.lower()
-    if "sig=" in lowered or "x-amz-signature=" in lowered:
+    if "sig=" in lowered or "signature=" in lowered:
         text = _AWS_SIG_RE.sub(r"\1***", text)
         lowered = text.lower()
     if "://" in text:
