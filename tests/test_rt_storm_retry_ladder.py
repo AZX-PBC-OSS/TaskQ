@@ -492,7 +492,12 @@ def test_failure_retry_floor_must_match_the_deferral_family() -> None:
 
     The consuming ``mark_retry_after_consume_true`` arm is pinned to
     keep the RAW delay: a consuming retry is a real execution bounded by
-    the budget it spends, not by the deferral floor.
+    the budget it spends, not by the deferral floor. The ban is on the
+    floor EXPRESSION, not on the token ``GREATEST``: since the
+    progress-seq merge fix the arm also carries GREATEST-merged
+    ``progress_seq`` writes (the stream's total order - a different
+    column, a different contract); the delay path itself must stay raw -
+    ``$3::interval`` flows into the params CTE unprefixed.
     """
     sql = render_sql("taskq")
     floor_sql = f"interval '{MIN_DEFERRAL_INTERVAL.total_seconds()} seconds'"
@@ -528,11 +533,19 @@ def test_failure_retry_floor_must_match_the_deferral_family() -> None:
         "the retried arm's scheduled_at and both arms' deadline comparisons "
         "must read the floored effective_delay - one effective delay per write"
     )
-    # The consuming RetryAfter arm keeps the RAW delay by design:
-    assert "GREATEST" not in sql.mark_retry_after_consume_true, (
+    # The consuming RetryAfter arm keeps the RAW delay by design. The
+    # ban is on the deferral family's floor expression - not on the
+    # token GREATEST: the arm also GREATEST-merges progress_seq (the
+    # stream's total order, a different column and contract), and the
+    # delay must flow raw.
+    assert greatest_floor not in sql.mark_retry_after_consume_true, (
         "the consuming RetryAfter arm must keep the raw delay - its requeue "
         "is a real execution bounded by the budget it spends, not the "
         "deferral floor"
+    )
+    assert "$3::interval AS delay" in sql.mark_retry_after_consume_true, (
+        "the consuming RetryAfter arm must read its raw delay parameter "
+        "unfloored - the params CTE hands the requeue the caller's delay"
     )
 
 
