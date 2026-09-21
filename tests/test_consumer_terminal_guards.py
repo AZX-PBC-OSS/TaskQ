@@ -323,20 +323,22 @@ async def test_cancel_write_omits_progress_state_for_a_clean_buffer() -> None:
     """No progress reported → the cancel write carries no progress state.
 
     Not ``{}``: an empty dict is a value the terminal SQL would write over
-    the row's existing progress_state.
+    the row's existing progress_state. The seq still advances: the running
+    transition consumed 1 on the buffer and the cancel write consumes 2.
     """
     call = await _cancelled_write(report_progress=False)
 
     assert call["progress_state"] is None
-    assert call["progress_seq"] == 0
+    assert call["progress_seq"] == 2
 
 
 async def test_cancel_write_carries_progress_state_for_a_dirty_buffer() -> None:
-    """Progress reported → the cancel write carries it, unflushed."""
+    """Progress reported → the cancel write carries it, unflushed, and
+    consumes the next seq past it (running at 1, progress at 2, cancel 3)."""
     call = await _cancelled_write(report_progress=True)
 
     assert call["progress_state"] == {"step": 7}
-    assert call["progress_seq"] == 1
+    assert call["progress_seq"] == 3
 
 
 # ── a fenced terminal write must not silently commit ─────────────────

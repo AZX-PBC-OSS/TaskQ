@@ -7,9 +7,9 @@ __all__ = [
     "_EncodedProgressData",
     "_PendingPublish",
     "_ProgressBuffer",
+    "_consume_state_change_seq",
     "_progress_after_flush",
     "_seq_and_state_after_flush_attempt",
-    "_snapshot_progress",
     "_terminal_seq_and_state",
 ]
 
@@ -51,6 +51,15 @@ class _PendingPublish:
 @dataclass
 class _ProgressBuffer:
     """Mutable per-job accumulator; not part of the public API.
+
+    The seq it accumulates (``base_seq + pending_seq_delta``) is the job's
+    total event order: progress calls consume one value each, state-change
+    events consume one via :func:`_consume_state_change_seq`, and the
+    terminal/requeue helpers (:func:`_terminal_seq_and_state`,
+    :func:`_seq_and_state_after_flush_attempt`) consume one past the head
+    for the write they serve. No event on the wire can repeat another's
+    seq, and every consumed value reaches the durable row riding a flush
+    delta or a ``mark_*`` absolute SET.
 
     Intentionally not frozen, ``pending_seq_delta``, ``dirty``, and
     ``last_flush_at`` are mutated on every progress call and flush.
@@ -98,27 +107,13 @@ class _ProgressBuffer:
     pending_publish: _PendingPublish | None = None
 
 
-def _snapshot_progress(
-    buffer: _ProgressBuffer | None,
-) -> tuple[int, dict[str, object]]:
-    """Return (seq, state) from a progress buffer for a terminal write.
-
-    If the buffer is None or clean, returns (0, {}), the caller's default.
-    If dirty, returns the full accumulated seq (base_seq + pending_seq_delta)
-    and a copy of pending_state so the terminal write carries all progress.
-    """
-    if buffer is None or not buffer.dirty:
-        return 0, {}
-    return buffer.base_seq + buffer.pending_seq_delta, dict(buffer.pending_state)
-
-
 def _progress_after_flush(
     buffer: _ProgressBuffer | None,
 ) -> tuple[int, dict[str, object]]:
-    """Return (seq, state) after a pre-terminal flush has completed.
+    """Return (seq, state) from the flushed buffer WITHOUT consuming a seq.
 
     After ``_flush_buffer_immediate`` succeeds, ``buffer.base_seq`` holds the
-    authoritative sequence and ``pending_seq_delta == 0``.  This helper reads
+    authoritative flushed seq and ``pending_seq_delta == 0``.  This helper reads
     those values directly.  If the buffer is None, returns (0, {}).
     """
     if buffer is None:
@@ -126,21 +121,53 @@ def _progress_after_flush(
     return buffer.base_seq, dict(buffer.pending_state)
 
 
+def _consume_state_change_seq(buffer: _ProgressBuffer | None) -> int:
+    """Consume the next seq for a state-change event; return the consumed seq.
+
+    The seq is a strict total order over the job's whole event stream,
+    progress and state-change events alike, so a state-change event
+    carries ``head + 1``, never the head itself: a consumer deduping or
+    resuming by seq alone (EventSource ``Last-Event-ID`` discipline)
+    must be able to tell the state-change event apart from the progress
+    event before it, and one carrying the head is indistinguishable
+    from a duplicate of that event.
+
+    The consumption is recorded on ``pending_seq_delta``, so every later
+    reader of the head (the next ``ctx.progress`` call, the flush
+    delta, the terminal helpers) stacks on it, and it reaches the
+    durable row riding the next flush delta or the next ``mark_*``
+    absolute SET. Deliberately not ``dirty``: a consumption alone is
+    not unflushed progress work, and one extra flush UPDATE per
+    zero-progress dispatch buys nothing the terminal write's absolute
+    SET does not already carry. A ``None`` buffer (no progress surfaces
+    wired) consumes nothing and returns 0, the caller's default.
+    """
+    if buffer is None:
+        return 0
+    buffer.pending_seq_delta += 1
+    return buffer.base_seq + buffer.pending_seq_delta
+
+
 def _terminal_seq_and_state(
     buffer: _ProgressBuffer | None,
 ) -> tuple[int, dict[str, object]]:
-    """Return (seq, state) for a terminal write that directly SETs progress_seq.
+    """Return (seq, state) for a state-change write that directly SETs progress_seq.
 
-    Unlike :func:`_snapshot_progress`, which returns ``(0, {})`` when the buffer
-    is clean, this helper always computes ``base_seq + pending_seq_delta`` ,
-    the authoritative current sequence regardless of flush state.  All
-    ``mark_*`` SQL uses direct assignment (``SET progress_seq = $N``), so
-    returning 0 for a clean buffer with ``base_seq > 0`` would clobber the
+    The seq is CONSUMED: the returned value is ``base_seq +
+    pending_seq_delta + 1``, one past the buffer's head, so the
+    state-change event the write publishes is strictly greater than
+    every event before it on the stream, and the write's absolute
+    ``SET progress_seq = $N`` lands that consumed value durably, so the
+    next attempt's buffer seeds from it and the total order survives
+    redispatch. The helper always computes one past the head regardless
+    of flush state.  All ``mark_*`` SQL uses
+    direct assignment (``SET progress_seq = $N``), so returning 0 for a
+    clean buffer with ``base_seq > 0`` would clobber the
     previously-flushed value.
     """
     if buffer is None:
         return 0, {}
-    return buffer.base_seq + buffer.pending_seq_delta, dict(buffer.pending_state)
+    return buffer.base_seq + buffer.pending_seq_delta + 1, dict(buffer.pending_state)
 
 
 def _seq_and_state_after_flush_attempt(
@@ -148,19 +175,21 @@ def _seq_and_state_after_flush_attempt(
 ) -> tuple[int, dict[str, object] | None]:
     """Return (seq, state) after a pre-terminal flush attempt.
 
-    If the flush succeeded (buffer is clean), reads ``base_seq`` and
-    ``pending_state`` directly via :func:`_progress_after_flush`.  If the
-    flush failed silently (buffer still dirty, connection error, pool
-    timeout, etc.), falls back to :func:`_snapshot_progress` which returns
-    ``base_seq + pending_seq_delta`` and a copy of ``pending_state`` so
-    the pending delta is not lost in the terminal write.
+    The projection is the same whatever the flush attempt did: a
+    succeeded flush retired the delta into ``base_seq`` (clean,
+    ``pending_seq_delta == 0``), a failed one left it standing (dirty,
+    connection error, pool timeout, etc.), and both shapes put the
+    authoritative head at ``base_seq + pending_seq_delta``. The
+    terminal write CONSUMES one past that head
+    (:func:`_terminal_seq_and_state`), so the terminal event's seq is
+    exactly one greater than the last event the buffer carried,
+    progress or state-change alike, and the absolute SET carries the
+    consumed value so neither an unflushed delta nor the consumption
+    is lost in the write.
 
     Returns ``(int, dict | None)`` where ``None`` means no progress to write.
     """
-    if buffer is not None and buffer.dirty:
-        seq, state = _snapshot_progress(buffer)
-    else:
-        seq, state = _progress_after_flush(buffer)
+    seq, state = _terminal_seq_and_state(buffer)
     if not state:
         return seq, None
     return seq, state

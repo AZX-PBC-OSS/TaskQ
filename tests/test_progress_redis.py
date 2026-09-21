@@ -245,7 +245,10 @@ async def test_ti2_hundred_progress_events(
     kind='progress' events (the first call publishes; calls racing that
     in-flight publish latch on the buffer and the running task re-publishes
     the latched latest event), the LAST event carries the final seq and
-    step; PG progress_seq == 100 after final flush; status = 'succeeded'.
+    step; the dispatch's running transition consumed seq 1, so the 100
+    progress calls run 2..101 and the final publish carries 101; PG
+    progress_seq == 101 after the terminal write consumed its own seq
+    past the last progress event; status = 'succeeded'.
     """
     import redis.asyncio as redis_async
 
@@ -296,8 +299,9 @@ async def test_ti2_hundred_progress_events(
             f"got {len(received_events)}"
         )
         last_event = received_events[-1]
-        assert last_event["seq"] == 100, (
-            f"expected the final publish to carry seq 100, got {last_event['seq']}"
+        assert last_event["seq"] == 101, (
+            f"expected the final publish to carry seq 101 (the running "
+            f"transition consumed seq 1), got {last_event['seq']}"
         )
         assert last_event["step"] == 100
 
@@ -305,8 +309,9 @@ async def test_ti2_hundred_progress_events(
             deps.worker_pool, deps.settings.schema_name, "_progress_redis_hundred"
         )
         assert pg_row["status"] == "succeeded"
-        assert pg_row["progress_seq"] == 100, (
-            f"expected progress_seq==100, got {pg_row['progress_seq']}"
+        assert pg_row["progress_seq"] == 102, (
+            f"expected progress_seq==102 (the terminal write consumed one "
+            f"past the last progress event at 101), got {pg_row['progress_seq']}"
         )
     finally:
         await stack.aclose()

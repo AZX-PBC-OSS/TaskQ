@@ -927,11 +927,13 @@ async def test_publish_progress_event_construction_error_is_fire_and_forget(
 # ── Regression: clean-buffer cancel path preserves base_seq (not 0) ──────
 
 
-async def test_cancel_clean_buffer_passes_base_seq_not_zero() -> None:
+async def test_cancel_clean_buffer_consumes_one_past_base_seq() -> None:
     """Regression for findings-3 Critical: when the buffer is clean (post-flush,
-    base_seq=5, pending_seq_delta=0), the cancel path must compute seq as
-    base_seq + pending_seq_delta = 5, NOT 0. The _terminal_seq_and_state helper
-    ensures this; _snapshot_progress would have returned 0."""
+    base_seq=5, pending_seq_delta=0), the cancel path must read the head from
+    base_seq (5), NOT 0, and the state-change write CONSUMES the next seq
+    (6): the cancel event must strictly follow the progress event at 5, so a
+    seq-cursor consumer never dedupes it away. _terminal_seq_and_state
+    ensures both the head read and the consumption."""
     from taskq._ids import new_job_id, new_uuid
     from taskq.backend._protocol import EnqueueArgs
     from taskq.progress._buffer import _terminal_seq_and_state
@@ -984,8 +986,8 @@ async def test_cancel_clean_buffer_passes_base_seq_not_zero() -> None:
     cancel_buf = buffers.pop(job_id)
     cancel_seq, cancel_state = _terminal_seq_and_state(cancel_buf)
 
-    # The critical assertion: cancel_seq must be 5, not 0
-    assert cancel_seq == 5
+    # The critical assertion: cancel_seq must be 6 (head 5, consumed), not 0
+    assert cancel_seq == 6
     assert cancel_state == {"step": 5}
 
     await backend.mark_cancelled(
@@ -995,7 +997,7 @@ async def test_cancel_clean_buffer_passes_base_seq_not_zero() -> None:
     row = await backend.get(job_id)
     assert row is not None
     assert row.status == "cancelled"
-    assert row.progress_seq == 5
+    assert row.progress_seq == 6
 
     # Publish terminal state_change event with the correct override values
     _rc, settings, _bufs = _make_publish_args(redis_client=redis_client, publish_global=False)
@@ -1016,7 +1018,7 @@ async def test_cancel_clean_buffer_passes_base_seq_not_zero() -> None:
     assert parsed["kind"] == "state_change"
     assert parsed["status"] == "cancelled"
     assert parsed["terminal"] is True
-    assert parsed["seq"] == 5
+    assert parsed["seq"] == 6
 
 
 # ── Failure WARNING carries the job fields; success binds nothing ───

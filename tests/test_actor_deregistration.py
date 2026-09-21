@@ -676,6 +676,18 @@ async def test_concurrent_force_deregister_one_succeeds_one_raises(
     blocks, then sees 0 rows after the first commits. The DELETE returns
     a row for only one transaction; the other gets 0 rows and raises
     ActorNotFoundError.
+
+    jobs_cancelled is attribution-racy under concurrency, so the winner
+    may report 0: the force path cancels in COMMITTED batches ("a
+    mid-drain failure leaves the batches already committed as partial
+    progress, and a re-run continues where it stopped"), and two
+    concurrent deregistrations are each the other's re-run. The caller
+    whose committed batch actually cancelled the job can lose the
+    actor_config DELETE race and raise, leaving the winning caller's
+    own count at 0. The counter alone cannot pin exactly-once either: a
+    double-cancel split across the two callers reports 1 to each (the
+    loser's count dies with its exception), so the job's event audit
+    trail below is what proves the exactly-once invariant.
     """
     schema = module_pg_schema.schema_name
     await sync_actor_config(
@@ -713,16 +725,19 @@ async def test_concurrent_force_deregister_one_succeeds_one_raises(
         assert len(successes) == 1
         assert len(not_found) == 1
 
-        # Exactly one cancel lands across the two calls, but WHICH call's
-        # drain commits it is a race: the force drain commits each batch
-        # independently (documented partial progress), so the loser's
-        # committed batch can cancel the job before the winner's drain
-        # runs - the winner then reports jobs_cancelled == 0 with
-        # terminal_jobs_remaining == 1, and its final transaction (the
-        # only one that could double-cancel) rolls back on the
-        # ActorNotFoundError. The deterministic guard is the final DB
-        # state below: the job ends cancelled exactly once.
+        # The winner's jobs_cancelled is attribution, not the fleet count:
+        # the force path cancels in committed batches, so the losing
+        # caller's committed batch may have cancelled the job before it
+        # lost the actor_config DELETE race. 0 or 1 is the invariant, and
+        # the counter cannot pin exactly-once by itself: a double-cancel
+        # split across the two callers reports 1 to each (the loser's
+        # count is lost with its exception), which is why the audit-trail
+        # assertion below is the exactly-once pin.
         assert successes[0].jobs_cancelled in (0, 1)
+        # schedules_disabled stays exactly 1: the disable rides the same
+        # final transaction as the DELETE, so a final transaction that
+        # raises (the loser) rolls its disable back, and only the
+        # committing caller's count survives.
         assert successes[0].schedules_disabled == 1
 
         # Verify final DB state - job cancelled, schedule disabled, actor_config gone.
@@ -731,6 +746,28 @@ async def test_concurrent_force_deregister_one_succeeds_one_raises(
         )
         assert await _job_status(clean_pg_conn, schema, job_id) == "cancelled"
         assert await _schedule_state(clean_pg_conn, schema, sched_id) == "disabled"
+
+        # Exactly-once cancellation, pinned on the audit trail rather than
+        # the attribution counter: the job's event history must carry
+        # exactly ONE deregister-cancel state_change. The final row status
+        # above cannot distinguish a single cancel from a double (a second
+        # cancel rewrites finished_at and leaves the same status, and its
+        # count dies with the caller's ActorNotFoundError), so this is the
+        # assertion that bites: dropping the drain's EPQ re-check lets the
+        # second caller's drain re-cancel a row whose snapshot predates the
+        # first caller's commit, and exactly this assertion fails.
+        import json
+
+        cancel_events = await clean_pg_conn.fetch(
+            f"SELECT detail::text AS detail "  # noqa: S608  # Why: schema validated by _IDENT_RE; job_id is a test UUID.
+            f'  FROM "{schema}".job_events '
+            f" WHERE job_id = $1 AND kind = 'state_change'",
+            job_id,
+        )
+        details = [json.loads(e["detail"]) for e in cancel_events]
+        assert [(d["to_state"], d["reason"]) for d in details] == [
+            ("cancelled", "actor_deregistered")
+        ], f"expected exactly one deregister-cancel event, got {details}"
     finally:
         await conn2.close()
 

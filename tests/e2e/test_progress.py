@@ -1,21 +1,26 @@
-"""Progress e2e - progress persisted to PG and fanned out over Redis pub/sub.
+"""Progress e2e - progress observable by resuming and subscribing consumers.
 
 Scenario:
-``generate_report`` 4 stages → ``progress_state``/``progress_seq`` reach 100%
-via ``e2e_pg_pool``; pub/sub verified by subscribing to the **global** progress
-channel (``progress_global_channel(schema)``) **before** enqueueing - the
+``generate_report`` 4 stages → progress reaches 100% and is observable
+through the library's public streaming surfaces; pub/sub verified by
+subscribing to the **global** progress channel
+(``progress_global_channel(schema)``) **before** enqueueing - the
 per-job channel is unknowable pre-enqueue and pub/sub drops late subscribers -
 then filtering events by ``job_id``.
 
-Asserted values are read from the library, not guessed:
+Asserted behavior is read from the library's public surfaces, not guessed:
 
-- Progress columns: ``progress_state jsonb`` / ``progress_seq int`` on
-  ``{schema}.jobs`` (migrations/01.00.00_01_pre_initial.sql).
-- Final persisted values: the consumer success path flushes the coalesce
-  buffer immediately and the terminal write SETs ``progress_seq`` while
-  merging the accumulated state (``worker/_consumer.py`` →
-  ``_seq_and_state_after_flush_attempt`` → ``mark_succeeded``), so a 4-stage
-  report lands at seq 4 with step=4 / percent=100.0 / detail="stage 4 store".
+- Resume contract (persistence): a consumer that reconnects with a cursor
+  behind the durable snapshot receives exactly one catch-up terminal event
+  carrying the job's full accumulated state - the snapshot the endpoint
+  reads from the ``jobs`` row's ``progress_state`` jsonb - and the stream
+  closes with ``done`` (``web/progress.py``; docs/guides/progress.md,
+  "Reconnect semantics").
+- Fanout: every subscriber on the global channel receives the identical
+  event sequence; within a worker's lifetime no event's ``seq`` repeats and
+  the terminal event strictly follows every event before it (the seq total
+  order, docs/guides/progress.md; pinned at unit level in
+  tests/test_progress_seq_total_order.py).
 - Wire payload: ``taskq.progress.ProgressEvent`` serialised with
   ``exclude_none=True`` (``progress/_publish.py``); the global fanout channel
   name comes from ``taskq.constants.progress_global_channel`` and fanout is on
@@ -36,7 +41,7 @@ import subprocess
 import sys
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
@@ -45,13 +50,12 @@ from taskq.constants import progress_global_channel
 from taskq.progress import ProgressEvent
 
 from ._assertions import poll_until
-from .actors import GenerateReportPayload, ReportResult, generate_report
+from .actors import GenerateReportPayload, generate_report
 
 if TYPE_CHECKING:
     import asyncpg
 
     from taskq import TaskQ
-    from taskq.client import JobHandle
 
     from .conftest import E2EDragonfly, E2ESchema, E2EWorker
 
@@ -71,49 +75,114 @@ def _report_payload(run_id: str) -> GenerateReportPayload:
 async def test_progress_persisted_to_pg(
     e2e_client: TaskQ,
     e2e_worker: E2EWorker,
-    e2e_pg_pool: asyncpg.Pool,
     e2e_schema: E2ESchema,
+    e2e_dragonfly: E2EDragonfly,
     run_id: str,
 ) -> None:
-    """4-stage report → ``jobs.progress_state`` at 100% with ``progress_seq == 4``.
+    """A consumer resuming after completion observes the durable snapshot.
+
+    Persistence is proven through the documented resume contract
+    (docs/guides/progress.md, "Reconnect semantics"): a client that
+    reconnects with a cursor behind the durable snapshot receives exactly
+    one catch-up terminal event - the accumulated state snapshot the
+    endpoint reads from the ``jobs`` row - and the stream closes with
+    ``done``. The catch-up payload is therefore the persisted state
+    observed through the public SSE API; no internal column is read.
 
     ``handle.wait()`` returns only after the terminal write commits, so the
-    post-wait read is deterministic - no polling required. asyncpg returns
-    JSONB as ``str``, so ``progress_state`` is parsed before asserting.
+    post-wait resume is deterministic - no polling required.
     """
-    handle = await e2e_client.enqueue(generate_report, _report_payload(run_id))
-    await handle.wait(timeout=60)
+    proc, client, _port = await _spawn_admin_sse(e2e_schema, e2e_dragonfly)
+    try:
+        handle = await e2e_client.enqueue(generate_report, _report_payload(run_id))
+        await handle.wait(timeout=60)
 
-    row = await e2e_pg_pool.fetchrow(
-        f"""
-        SELECT progress_state, progress_seq
-        FROM "{e2e_schema.schema_name}".jobs
-        WHERE id = $1
-        """,
-        handle.job_id,
-    )
+        # Arrangement: the resuming consumer's cursor. 0 = the client holds
+        # no events, so the durable snapshot is strictly ahead of it and the
+        # documented catch-up must fire instead of the stream hanging.
+        resume_cursor = "0"
 
-    assert row is not None
-    assert row["progress_seq"] == 4
-    state: dict[str, object] = json.loads(row["progress_state"])
-    assert state == {"step": 4, "percent": 100.0, "detail": "stage 4 store"}
+        sse_url = f"/admin/jobs/api/job/{handle.job_id}/progress/stream"
+        blocks: list[dict[str, str]] = []
+        current: dict[str, str] = {}
+        async with asyncio.timeout(30):
+            async with client.stream(
+                "GET", sse_url, headers={"Last-Event-ID": resume_cursor}
+            ) as resp:
+                assert resp.status_code == 200, f"SSE endpoint returned {resp.status_code}"
+                assert resp.headers.get("content-type", "").startswith("text/event-stream"), (
+                    f"expected text/event-stream, got {resp.headers.get('content-type')}"
+                )
+                async for line in resp.aiter_lines():
+                    for prefix, key in (
+                        ("event: ", "event"),
+                        ("id: ", "id"),
+                        ("data: ", "data"),
+                    ):
+                        if line.startswith(prefix):
+                            current[key] = line[len(prefix) :]
+                            break
+                    if current.get("event") == "done":
+                        blocks.append(current)
+                        current = {}
+                        break
+                    if line == "" and current:
+                        blocks.append(current)
+                        current = {}
+
+        # The catch-up fired: exactly one terminal event, then the close - a
+        # hung stream (no catch-up for a cursor behind the snapshot) or a
+        # dribble of extra events is a resume-contract regression.
+        assert [block["event"] for block in blocks] == ["terminal", "done"], (
+            f"a resuming consumer must receive one catch-up terminal then done; got {blocks}"
+        )
+
+        # The snapshot carries the job's full accumulated state - the
+        # 4-stage report's final stage - not a partial intermediate.
+        terminal = blocks[0]
+        assert json.loads(terminal["data"]) == {
+            "step": 4,
+            "percent": 100.0,
+            "detail": "stage 4 store",
+        }
+
+        # The catch-up never rewinds the consumer: its event id is strictly
+        # ahead of the cursor it resumed from.
+        assert int(terminal["id"]) > int(resume_cursor)
+
+    finally:
+        await client.aclose()
+        await asyncio.to_thread(_shutdown_admin, proc)
 
 
 async def test_progress_fanout_pubsub(
     e2e_client: TaskQ,
     e2e_worker: E2EWorker,
-    e2e_pg_pool: asyncpg.Pool,
     e2e_schema: E2ESchema,
     e2e_dragonfly: E2EDragonfly,
     run_id: str,
 ) -> None:
-    """A pre-enqueue subscriber on the global channel receives this job's events.
+    """Every subscriber on the global channel receives the same ordered events.
 
     SUBSCRIBE-first is mandatory: Dragonfly pub/sub drops messages published
-    before the subscription registers server-side. The subscribe ack is read
-    back explicitly so the enqueue cannot race registration. Events are
-    filtered by ``job_id`` (not ``run_id``): the wire payload is a
+    before the subscription registers server-side. Both subscribers' subscribe
+    acks are read back explicitly so the enqueue cannot race registration.
+    Events are filtered by ``job_id`` (not ``run_id``): the wire payload is a
     ``ProgressEvent``, which carries no ``run_id``.
+
+    Two independent subscribers register before the enqueue and each collects
+    this job's events. Asserted behavior (docs/guides/progress.md):
+
+    - fanout equivalence: both subscribers receive the identical event
+      sequence - same payloads, same order;
+    - no duplicates and no rewinds: within a worker's lifetime no event's
+      ``seq`` repeats, and the terminal event's ``seq`` is strictly greater
+      than every event before it, so a seq-cursor consumer (the
+      ``Last-Event-ID`` discipline) neither drops the terminal nor sees
+      state go backwards;
+    - the terminal event is a ``succeeded`` state_change carrying the job's
+      full accumulated 4-stage state - the observable record of what the
+      terminal write merged.
 
     Resilience (F3): a dropped pub/sub socket under container resource
     pressure is retried with a fresh SUBSCRIBE inside an overall 90 s
@@ -121,84 +190,110 @@ async def test_progress_fanout_pubsub(
     (fire-and-forget), but the fanout must still deliver the terminal event
     afterwards. A stalled listen (``TimeoutError``) FAILS the test: a fanout
     that stops delivering is a regression signal, not a skip-shaped pass.
-    The PG ground-truth assertion (``progress_state``/``progress_seq``)
-    always runs as the authority on progress persistence.
     """
     import redis.asyncio as redis_async
 
     channel = progress_global_channel(e2e_schema.schema_name)
     url = f"{e2e_dragonfly.host_url}/{e2e_schema.redis_db}"
-    redis_client = redis_async.from_url(url, decode_responses=False)
-    received: list[ProgressEvent] = []
-    handle: JobHandle[ReportResult] | None = None
-    terminal_seen = False
+    redis_clients = [redis_async.from_url(url, decode_responses=False) for _ in range(2)]
+    received: list[list[ProgressEvent]] = [[], []]
     try:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + 90.0
-        while not terminal_seen:
-            pubsub = redis_client.pubsub()
-            try:
-                await pubsub.subscribe(channel)
-                # SUBSCRIBE-first is mandatory: read the ack back explicitly
-                # so the enqueue cannot race registration server-side.
-                async with asyncio.timeout(10):
-                    while True:
-                        ack = await pubsub.get_message(ignore_subscribe_messages=False, timeout=1.0)
-                        if ack is not None and ack["type"] == "subscribe":
-                            break
 
-                if handle is None:
-                    handle = await e2e_client.enqueue(generate_report, _report_payload(run_id))
+        # SUBSCRIBE-first is mandatory: both pubsubs register (acks read back
+        # explicitly) before the enqueue can race them server-side.
+        pubsubs = [client.pubsub() for client in redis_clients]
+        for pubsub in pubsubs:
+            await pubsub.subscribe(channel)
+        for pubsub in pubsubs:
+            async with asyncio.timeout(10):
+                while True:
+                    ack = await pubsub.get_message(ignore_subscribe_messages=False, timeout=1.0)
+                    if ack is not None and ack["type"] == "subscribe":
+                        break
 
-                async with asyncio.timeout(max(0.0, deadline - loop.time())):
-                    async for msg in pubsub.listen():
-                        if msg.get("type") != "message":
-                            continue
-                        event = ProgressEvent.model_validate_json(msg["data"])
-                        if event.job_id != handle.job_id:
-                            continue
-                        received.append(event)
-                        if event.terminal:
-                            terminal_seen = True
-                            break
-            except redis_async.ConnectionError:
-                # F3 transport flake: dropped pub/sub socket - resubscribe
-                # and keep listening within the overall deadline.
-                continue
-            finally:
+        handle = await e2e_client.enqueue(generate_report, _report_payload(run_id))
+
+        async def drain(index: int, pubsub: Any) -> None:
+            """Collect this job's events for subscriber *index* until terminal.
+
+            A dropped socket (F3) re-subscribes on a fresh connection and
+            keeps listening within the overall deadline; a stalled listen
+            raises ``TimeoutError`` and fails the test. The first pass
+            listens on the caller's already-subscribed pubsub.
+            """
+            terminal_seen = False
+            while not terminal_seen:
+                try:
+                    async with asyncio.timeout(max(0.0, deadline - loop.time())):
+                        async for msg in pubsub.listen():
+                            if msg.get("type") != "message":
+                                continue
+                            event = ProgressEvent.model_validate_json(msg["data"])
+                            if event.job_id != handle.job_id:
+                                continue
+                            received[index].append(event)
+                            if event.terminal:
+                                terminal_seen = True
+                                break
+                except redis_async.ConnectionError:
+                    # F3 transport flake: dropped pub/sub socket - resubscribe
+                    # and keep listening within the overall deadline.
+                    pass
+                finally:
+                    await pubsub.aclose()
+                if not terminal_seen:
+                    pubsub = redis_clients[index].pubsub()
+                    await pubsub.subscribe(channel)
+
+        try:
+            async with asyncio.TaskGroup() as task_group:
+                for index, pubsub in enumerate(pubsubs):
+                    task_group.create_task(drain(index, pubsub))
+        finally:
+            for pubsub in pubsubs:
                 await pubsub.aclose()
+
+        await handle.wait(timeout=60)
     finally:
-        await redis_client.aclose()
+        for redis_client in redis_clients:
+            await redis_client.aclose()
 
-    assert handle is not None
+    events_a, events_b = received
 
-    await handle.wait(timeout=60)
-
-    # PG ground truth (authority): the terminal progress write landed.
-    row = await e2e_pg_pool.fetchrow(
-        f"""
-        SELECT progress_state, progress_seq
-        FROM "{e2e_schema.schema_name}".jobs
-        WHERE id = $1
-        """,
-        handle.job_id,
-    )
-    assert row is not None
-    assert row["progress_seq"] == 4
-    state: dict[str, object] = json.loads(row["progress_state"])
-    assert state == {"step": 4, "percent": 100.0, "detail": "stage 4 store"}
-
-    # Fanout proof - unconditional: the listen loop only exits with the
+    # Fanout proof - unconditional: each drain loop only exits with the
     # terminal event in hand (a stall raises TimeoutError and fails above).
-    progress_events = [event for event in received if event.kind == "progress"]
+    progress_events = [event for event in events_a if event.kind == "progress"]
     assert progress_events, (
         f"expected >= 1 progress event for job {handle.job_id} on {channel!r}; "
-        f"received {[(event.kind, event.seq) for event in received]}"
+        f"received {[(event.kind, event.seq) for event in events_a]}"
     )
-    assert all(event.actor == "generate_report" for event in received)
-    assert received[-1].kind == "state_change"
-    assert received[-1].terminal is True
-    assert received[-1].status == "succeeded"
+    assert all(event.actor == "generate_report" for event in events_a)
+
+    # Fanout equivalence: both subscribers received the identical sequence -
+    # same payloads, same order.
+    assert [event.model_dump_json(exclude_none=True) for event in events_a] == [
+        event.model_dump_json(exclude_none=True) for event in events_b
+    ], (
+        f"subscribers on {channel!r} must receive the same events in the same "
+        f"order; got {[(e.kind, e.seq) for e in events_a]} vs "
+        f"{[(e.kind, e.seq) for e in events_b]}"
+    )
+
+    # No duplicates and no rewinds: within a worker's lifetime every event's
+    # seq is unique and strictly increasing, so a seq-cursor consumer sees
+    # every event exactly once and never state going backwards.
+    seqs = [event.seq for event in events_a]
+    assert seqs == sorted(set(seqs)), f"fanout seq duplicates or rewinds: {seqs}"
+
+    # The terminal strictly follows everything before it: a consumer that
+    # dedupes by seq can never drop it or mistake it for a duplicate.
+    terminal = events_a[-1]
+    assert all(terminal.seq > seq for seq in seqs[:-1]), f"terminal seq rewinds: {seqs}"
+    assert terminal.kind == "state_change"
+    assert terminal.terminal is True
+    assert terminal.status == "succeeded"
 
 
 # ── Progress SSE stream via admin server ──────────────────────────────────
@@ -263,6 +358,75 @@ def _sse_admin_readiness(
     return _ready
 
 
+async def _spawn_admin_sse(
+    e2e_schema: E2ESchema,
+    e2e_dragonfly: E2EDragonfly,
+) -> tuple[subprocess.Popen[str], httpx.AsyncClient, int]:
+    """Spawn one admin server subprocess with the Redis progress bridge.
+
+    The port is chosen bind-and-release (TOCTOU window: another process can
+    win it before the child binds), so a child that exits early with
+    "address already in use" is retried on a fresh port, up to
+    ``_SSE_MAX_BIND_ATTEMPTS`` attempts. Returns the child process, an
+    authorized client bound to it, and the chosen port; the caller owns
+    both (``_shutdown_admin`` / ``aclose``).
+    """
+    token = secrets.token_hex(16)
+    python_path = os.environ.get("PYTHONPATH")
+    redis_url = f"{e2e_dragonfly.host_url}/{e2e_schema.redis_db}"
+
+    for attempt in range(1, _SSE_MAX_BIND_ATTEMPTS + 1):
+        port = _sse_free_port()
+        env = {
+            **os.environ,
+            "TASKQ_PG_DSN": e2e_schema.host_dsn,
+            "TASKQ_SCHEMA_NAME": e2e_schema.schema_name,
+            "TASKQ_E2E_ADMIN_TOKEN": token,
+            "TASKQ_E2E_ADMIN_PORT": str(port),
+            "TASKQ_E2E_REDIS_URL": redis_url,
+            "PYTHONPATH": (
+                str(_SSE_REPO_ROOT)
+                if not python_path
+                else f"{_SSE_REPO_ROOT}{os.pathsep}{python_path}"
+            ),
+        }
+        proc = await asyncio.to_thread(
+            lambda env=env: subprocess.Popen(  # noqa: S603
+                [sys.executable, str(_SSE_ADMIN_ENTRY)],
+                cwd=str(_SSE_REPO_ROOT),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        )
+        client = httpx.AsyncClient(
+            base_url=f"http://127.0.0.1:{port}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=httpx.Timeout(connect=10.0, read=90.0, write=10.0, pool=10.0),
+        )
+
+        try:
+            try:
+                await poll_until(
+                    _sse_admin_readiness(proc, client),
+                    timeout=30.0,
+                    description=f"admin server readiness at {client.base_url}",
+                )
+            except TimeoutError:
+                logs = await asyncio.to_thread(_shutdown_admin, proc)
+                msg = f"admin server not ready within 30s\n{logs}"
+                raise RuntimeError(msg) from None
+        except RuntimeError as exc:
+            await client.aclose()
+            if "address already in use" in str(exc).lower() and attempt < _SSE_MAX_BIND_ATTEMPTS:
+                continue  # lost the bind race - fresh port, fresh child
+            raise
+        return proc, client, port
+
+    raise AssertionError("unreachable: the bind-retry loop always returns or raises")
+
+
 async def test_progress_sse_stream(
     e2e_client: TaskQ,
     e2e_worker: E2EWorker,
@@ -293,74 +457,9 @@ async def test_progress_sse_stream(
     stream. The SSE handler subscribes Redis BEFORE reading the PG
     snapshot, so events published between the enqueue and the subscribe
     are captured by the initial PG snapshot read.
-
-    The port is chosen bind-and-release (TOCTOU window: another process can
-    win it before the child binds), so a child that exits early with
-    "address already in use" is retried on a fresh port, up to
-    ``_SSE_MAX_BIND_ATTEMPTS`` attempts.
     """
-    token = secrets.token_hex(16)
-    python_path = os.environ.get("PYTHONPATH")
-    redis_url = f"{e2e_dragonfly.host_url}/{e2e_schema.redis_db}"
-
-    proc: subprocess.Popen[str] | None = None
-    client: httpx.AsyncClient | None = None
-    port = 0
+    proc, client, port = await _spawn_admin_sse(e2e_schema, e2e_dragonfly)
     try:
-        for attempt in range(1, _SSE_MAX_BIND_ATTEMPTS + 1):
-            port = _sse_free_port()
-            env = {
-                **os.environ,
-                "TASKQ_PG_DSN": e2e_schema.host_dsn,
-                "TASKQ_SCHEMA_NAME": e2e_schema.schema_name,
-                "TASKQ_E2E_ADMIN_TOKEN": token,
-                "TASKQ_E2E_ADMIN_PORT": str(port),
-                "TASKQ_E2E_REDIS_URL": redis_url,
-                "PYTHONPATH": (
-                    str(_SSE_REPO_ROOT)
-                    if not python_path
-                    else f"{_SSE_REPO_ROOT}{os.pathsep}{python_path}"
-                ),
-            }
-            proc = await asyncio.to_thread(
-                lambda env=env: subprocess.Popen(  # noqa: S603
-                    [sys.executable, str(_SSE_ADMIN_ENTRY)],
-                    cwd=str(_SSE_REPO_ROOT),
-                    env=env,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                )
-            )
-            client = httpx.AsyncClient(
-                base_url=f"http://127.0.0.1:{port}",
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=httpx.Timeout(connect=10.0, read=90.0, write=10.0, pool=10.0),
-            )
-
-            try:
-                try:
-                    await poll_until(
-                        _sse_admin_readiness(proc, client),
-                        timeout=30.0,
-                        description=f"admin server readiness at {client.base_url}",
-                    )
-                except TimeoutError:
-                    logs = await asyncio.to_thread(_shutdown_admin, proc)
-                    msg = f"admin server not ready within 30s\n{logs}"
-                    raise RuntimeError(msg) from None
-            except RuntimeError as exc:
-                await client.aclose()
-                if (
-                    "address already in use" in str(exc).lower()
-                    and attempt < _SSE_MAX_BIND_ATTEMPTS
-                ):
-                    continue  # lost the bind race - fresh port, fresh child
-                raise
-            break
-
-        assert proc is not None and client is not None
-
         handle = await e2e_client.enqueue(generate_report, _report_payload(run_id))
         await handle.wait(timeout=60)
 
@@ -373,7 +472,7 @@ async def test_progress_sse_stream(
         # terminal event followed by done, then closes the stream.
         sse_client = httpx.AsyncClient(
             base_url=f"http://127.0.0.1:{port}",
-            headers={"Authorization": f"Bearer {token}"},
+            headers={"Authorization": client.headers["Authorization"]},
             timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
         )
         try:
@@ -396,7 +495,5 @@ async def test_progress_sse_stream(
         assert "terminal" in events, f"expected a 'terminal' SSE event; events seen: {events}"
 
     finally:
-        if client is not None:
-            await client.aclose()
-        if proc is not None:
-            await asyncio.to_thread(_shutdown_admin, proc)
+        await client.aclose()
+        await asyncio.to_thread(_shutdown_admin, proc)
