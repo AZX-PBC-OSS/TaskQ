@@ -199,6 +199,18 @@ async def ts_conn(
         settings = _ts_settings(timescale_dsn, ts_schema)
         report = await enable_hypertables(conn, schema=ts_schema, settings=settings)
         assert set(report.converted) == {"job_events", "jobs_archive", "job_attempts_archive"}
+        # add_retention_policy's default next_start is ~now, so a policy's
+        # first background run can land at any moment - including between a
+        # test's seeds and its pre-policy assertions, which would make
+        # "chunks before the policy runs" a race (seen on CI: the aged
+        # event chunk already dropped before the explicit force). Defer
+        # every policy to the far future here; the legs that need a real
+        # policy run pull next_start back to now themselves
+        # (_force_policies_now), so what they assert stays the policy's
+        # own run, triggered on the test's clock, not the scheduler's.
+        await _schedule_policies(
+            conn, ts_schema, next_start=datetime.now(UTC) + timedelta(days=3650)
+        )
         yield conn
     finally:
         # Schema names are per-test unique and the module container is
@@ -326,8 +338,10 @@ async def test_re_enable_converges(timescale_dsn: str, ts_schema: str) -> None:
 # ── Retention policies really drop chunks ─────────────────────────────────
 
 
-async def _force_policies_now(conn: asyncpg.Connection, schema: str) -> None:
-    """Pull every retention policy's next run to now.
+async def _schedule_policies(
+    conn: asyncpg.Connection, schema: str, *, next_start: datetime
+) -> None:
+    """Move every retention policy's next run to *next_start*.
 
     The policies run in TimescaleDB's background workers; tests do not
     wait out a schedule interval, they move the job's next_start (the
@@ -343,8 +357,19 @@ async def _force_policies_now(conn: asyncpg.Connection, schema: str) -> None:
         await conn.execute(
             "SELECT alter_job($1, next_start => $2::timestamptz)",
             r["job_id"],
-            datetime.now(UTC),
+            next_start,
         )
+
+
+async def _force_policies_now(conn: asyncpg.Connection, schema: str) -> None:
+    """Pull every retention policy's next run to now.
+
+    The policies run in TimescaleDB's background workers; tests do not
+    wait out a schedule interval, they move the job's next_start (the
+    supported alter_job knob) and let the worker execute the registered
+    policy itself, so the chunk drop under test is the real policy run.
+    """
+    await _schedule_policies(conn, schema, next_start=datetime.now(UTC))
 
 
 async def _chunk_names(conn: asyncpg.Connection, schema: str, table: str) -> list[str]:
@@ -626,6 +651,15 @@ async def test_prune_folds_ghosts_and_archives_identically_on_both_engines(
             await _migrate(conn, schema)
             if label == "timescale":
                 await enable_hypertables(conn, schema=schema, settings=_ts_settings(dsn, schema))
+                # Same deferral as the ts_conn fixture: the scenario's
+                # assertions count rows a ~now-scheduled policy run could
+                # drop mid-test (the seeded rows are 31 days old, the
+                # retention is 2). The policy's behavior is not what this
+                # leg tests - engine parity of the prune is - so the
+                # policies must not fire while it runs.
+                await _schedule_policies(
+                    conn, schema, next_start=datetime.now(UTC) + timedelta(days=3650)
+                )
             outcomes[label] = await _prune_scenario(conn, schema)
         finally:
             await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
