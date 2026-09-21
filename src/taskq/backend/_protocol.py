@@ -68,6 +68,7 @@ __all__ = [
     "BulkCancelResult",
     "CancelFlag",
     "CancelPhase",
+    "CronScheduleOwner",
     "DenialReason",
     "DstStrategy",
     "EnqueueArgs",
@@ -87,6 +88,7 @@ __all__ = [
     "RateLimitBackend",
     "RetryKind",
     "ScheduleCreateArgs",
+    "ScheduleDisabledBy",
     "ScheduleRecord",
     "ScheduleUpdateArgs",
     "SnoozeOutcome",
@@ -1276,6 +1278,19 @@ class JobFilter:
         )
 
 
+#: Who owns a cron schedule's enable/disable lifecycle. ``code`` schedules are
+#: declared by a ``@cron`` decorator: the registration pass reverts a stale
+#: auto-disable when the code re-declares the schedule at startup. ``operator``
+#: schedules are managed by an operator (client ``create_schedule``): the
+#: registration pass never touches their enable state.
+CronScheduleOwner = Literal["code", "operator"]
+
+#: Who disabled a cron schedule: ``auto`` is the cron loop's failure-count
+#: auto-disable (recoverable at registration), ``operator`` is a deliberate
+#: disable that no boot reverts. NULL on an enabled row.
+ScheduleDisabledBy = Literal["auto", "operator"]
+
+
 @dataclass(frozen=True, slots=True)
 class ScheduleCreateArgs:
     """Input struct for :meth:`Backend.create_schedule`.
@@ -1300,6 +1315,7 @@ class ScheduleCreateArgs:
     dst_strategy: DstStrategy = "skip"
     payload_factory: str | None = None
     enabled: bool = True
+    owner: CronScheduleOwner = "code"
     name: str = ""
     identity_key: IdentityKey | None = None
     metadata: dict[str, object] = field(default_factory=dict[str, object])
@@ -1313,6 +1329,11 @@ class ScheduleCreateArgs:
             raise ValueError(
                 f"Invalid dst_strategy: {self.dst_strategy!r}; "
                 f"valid strategies are {sorted(DST_STRATEGIES)}"
+            )
+        if self.owner not in get_args(CronScheduleOwner):
+            raise ValueError(
+                f"Invalid owner: {self.owner!r}; "
+                f"valid owners are {sorted(get_args(CronScheduleOwner))}"
             )
         self._check_no_nul_text()
 
@@ -1416,6 +1437,7 @@ class ScheduleRecord(BaseModel):
     payload_factory: str | None
     identity_key: IdentityKey | None = None
     enabled: bool
+    disabled_by: ScheduleDisabledBy | None = None
     last_fired_at: datetime | None
     last_fire_error: str | None
     consecutive_failures: int

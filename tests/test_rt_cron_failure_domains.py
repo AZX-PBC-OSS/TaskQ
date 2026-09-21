@@ -813,6 +813,11 @@ class TestMissingActorIsolation:
         assert row["enabled"] is False, "the third consecutive failure must auto-disable"
         assert row["consecutive_failures"] == 3
         assert row["last_fire_error"] == _LOOKUP_ERROR
+        assert row["disabled_by"] == "auto", (
+            "the auto-disable must be attributed to the cron loop: the 'auto' "
+            "ownership marker is what lets the registration pass revert it at "
+            "the next boot while operator intent stays untouched"
+        )
         assert disabled_counts == [1], (
             f"the disabling tick must refresh the disabled-schedules count exactly "
             f"once with the committed count; saw {disabled_counts}"

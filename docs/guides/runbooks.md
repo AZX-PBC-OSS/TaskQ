@@ -434,8 +434,16 @@ The leader-count operand is what makes this alertable at all. A healthy multi-wo
 **How to remediate.**
 
 1. Fix the `payload_factory` the `last_fire_error` names and deploy the correction before re-enabling. Re-enabling a still-broken schedule spends three more strikes on the same defect and lands back here.
-2. Re-enable the schedule: the schedule handle's `enable()` resets `consecutive_failures` to 0 and clears `last_fire_error`, and the admin UI's schedules page exposes the same action. Missed fires inside `TASKQ_CRON_CATCH_UP_WINDOW` catch up on the next tick after enabling; older misses are skipped by design.
-3. Confirm recovery: the gauge returns to 0 and `cron fired` lines resume for the re-enabled schedule.
+2. Check whether a restart already resolved it. Since the ownership model, the schedule row carries `disabled_by`: `'auto'` (the cron loop's failure-count auto-disable) is reverted automatically the next time a worker boot re-declares a code-owned schedule (`enabled=true`, `consecutive_failures=0`, the marker cleared, and a `cron-schedule-auto-disable-reverted` log line at the boot). So if the failure was a transient blip (failover, saturation) and the fixed or still-declared code re-registers the schedule, the alert resolves on the next boot and this section's step 2 is unnecessary. A row with `disabled_by='operator'` or NULL is deliberate operator intent: no restart re-enables it, only the steps below do.
+
+   ```sql
+   SELECT actor, name, enabled, disabled_by, consecutive_failures, last_fire_error
+   FROM taskq.cron_schedules
+   WHERE disabled_by IS NOT NULL OR NOT enabled
+   ORDER BY actor, name;
+   ```
+3. Re-enable the schedule: the schedule handle's `enable()` resets `consecutive_failures` to 0, clears `last_fire_error` and `disabled_by`, and the admin UI's schedules page exposes the same action. Missed fires inside `TASKQ_CRON_CATCH_UP_WINDOW` catch up on the next tick after enabling; older misses are skipped by design.
+4. Confirm recovery: the gauge returns to 0 and `cron fired` lines resume for the re-enabled schedule.
 
 Do not raise `TASKQ_CRON_AUTO_DISABLE_THRESHOLD` to keep a broken schedule alive: the auto-disable exists so a permanently failing factory stops consuming tick budget every second, and a larger budget only delays the same silence.
 

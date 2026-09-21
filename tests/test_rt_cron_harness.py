@@ -392,14 +392,16 @@ async def seed_schedule(
     identity_key: str | None = None,
     consecutive_failures: int = 0,
     enabled: bool = True,
+    disabled_by: str | None = None,
 ) -> UUID:
     """Insert one cron_schedules row and return its id."""
     schedule_id = new_uuid()
     await conn.execute(
         f'INSERT INTO "{schema}".cron_schedules '  # noqa: S608  # Why: schema is a test-fixture identifier; values are $-bound.
         "(id, actor, name, cron_expr, timezone, dst_strategy, payload_factory, "
-        "enabled, next_fire_at, metadata, identity_key, consecutive_failures) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, '{}'::jsonb, $10, $11)",
+        "enabled, next_fire_at, metadata, identity_key, consecutive_failures, "
+        "disabled_by) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, '{}'::jsonb, $10, $11, $12)",
         schedule_id,
         actor,
         name,
@@ -411,6 +413,7 @@ async def seed_schedule(
         next_fire_at,
         identity_key,
         consecutive_failures,
+        disabled_by,
     )
     return schedule_id
 
