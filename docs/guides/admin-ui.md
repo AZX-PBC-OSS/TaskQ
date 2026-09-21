@@ -187,6 +187,57 @@ Cancel writes a cancel request to Postgres; retry resets a terminal job to
 `pending` via `backend.retry_job`. Ensure the authentication layer covers
 these endpoints in production: they can modify job state.
 
+### Audit trail
+
+Every admin-UI operator mutation records one row in the `{schema}.admin_audit`
+table (migration `01.00.19_01_pre_admin_audit`): **who** did **what** to
+**which target**, **why**, and when. The table exists because before it, an
+admin mutation left no principal anywhere - the auth dependency verified the
+session and then its identity was discarded, so "who cancelled this job?"
+was unanswerable from the database.
+
+What is recorded per mutation:
+
+| Route | `action` | `target_type` | `reason` / `detail` |
+|---|---|---|---|
+| `POST /jobs/{id}/cancel` | `job.cancel` | `job` | reason from the cancel form; the principal is also folded into the job's `cancel_request` event in `job_events`, so the per-job event log carries it |
+| `POST /jobs/{id}/retry` | `job.retry` | `job` | |
+| `POST /schedules/{id}/enable` | `schedule.enable` | `schedule` | |
+| `POST /schedules/{id}/disable` | `schedule.disable` | `schedule` | |
+| `POST /schedules/{id}/skip` | `schedule.skip` | `schedule` | detail: the computed `next_fire_at` |
+| `POST /schedules/{id}/run` | `schedule.run` | `schedule` | detail: the enqueued job id |
+| `POST /actors/{actor}/deregister` | `actor.deregister` | `actor` | detail: the `force` / `purge_queue` flags |
+
+Semantics worth knowing:
+
+- **The principal is the auth dependency's subject.** For the shipped OIDC
+  and SAML dependencies that is the `subject` claim of the session. A custom
+  `auth_dependency` passed to `create_router()` may return any principal; its
+  `subject` attribute (or the string itself) is recorded. When the router
+  runs with **no** auth dependency (dev deployments only; startup fails
+  closed everywhere else), the explicit subject `anonymous` is recorded, so
+  a dev-system row is never mistaken for an attributed one.
+- **Same transaction where possible.** The schedule mutations and actor
+  deregistration write their mutation and audit row in one transaction: an
+  audit insert that fails rolls the mutation back. The job cancel/retry
+  mutations go through the backend, which commits its own transaction, so
+  the audit row is written immediately after the backend call reports
+  success; a failure to record it is logged (`admin-audit-record-failed`)
+  but does not fail a mutation that already landed.
+- **Nothing is recorded when nothing happened.** The 403 disabled paths, 404s,
+  409 conflicts, and CSRF rejections write no audit row; the trail only
+  contains mutations that actually applied.
+- **No foreign key to jobs, on purpose.** The trail's targets are exactly the
+  rows routine maintenance prunes, archives, and deregisters; an FK would let
+  that maintenance erase the record of who did what. `target_id` stays
+  readable after the target is gone, and the job detail page renders the
+  per-job trail for live and archived jobs alike.
+
+**Retention:** no sweep touches `admin_audit`; rows accumulate for the life
+of the schema. That is deliberate - a silent retention window is a hole in
+the trail wearing a policy's clothes. If your compliance regime needs a
+bound, archive and truncate the table deliberately on your own schedule.
+
 ---
 
 ## Routes
