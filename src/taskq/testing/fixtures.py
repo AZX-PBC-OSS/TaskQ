@@ -87,7 +87,7 @@ stdlib-only.
 import asyncio
 import inspect
 import os
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -409,6 +409,8 @@ def actor_runner() -> ActorRunnerCallable:
 async def _open_pg_backend(
     pg_dsn: str,
     schema_name: str,
+    *,
+    settings_overrides: Mapping[str, str] | None = None,
 ) -> tuple[AsyncExitStack, WorkerDeps, PostgresBackend]:
     """Open WorkerDeps + PostgresBackend against the PG container.
 
@@ -419,6 +421,12 @@ async def _open_pg_backend(
 
     Performs: settings construction → schema drop/recreate → migrations →
     pool open → backend construction.
+
+    ``settings_overrides`` rides into :func:`make_integration_settings_dict`
+    for callers whose test asserts state, not timing, and so must not
+    inherit the blitz heartbeat defaults' tight client-side command
+    timeout (a timing test wants that bound; a load-flaky one drowns in
+    it under parallel CI).
 
     Heavy imports (asyncpg, WorkerSettings, PostgresBackend, etc.) are
     done inside this function to keep the module-level import surface
@@ -436,7 +444,9 @@ async def _open_pg_backend(
     from taskq.testing.settings import make_integration_settings_dict
     from taskq.worker.deps import open_worker_deps
 
-    settings = WorkerSettings.load_from_dict(make_integration_settings_dict(pg_dsn))
+    settings = WorkerSettings.load_from_dict(
+        make_integration_settings_dict(pg_dsn, **(settings_overrides or {}))
+    )
     # Override schema name, make_integration_settings_dict defaults to a
     # per-call unique name, but these fixtures manage the schema lifecycle
     # themselves (drop/migrate/seed) under a caller-chosen name.
