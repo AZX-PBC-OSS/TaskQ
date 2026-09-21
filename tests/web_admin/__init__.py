@@ -143,9 +143,16 @@ def _stub_job_row(
 class StubBackend:
     """Minimal Backend stub that records method calls for assertion."""
 
-    def __init__(self, *, job_row: JobRow | None = None, retry_result: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        job_row: JobRow | None = None,
+        retry_result: bool = True,
+        cancel_result: bool = True,
+    ) -> None:
         self._job_row = job_row
         self._retry_result = retry_result
+        self._cancel_result = cancel_result
         self.cancel_calls: list[tuple[UUID, str | None]] = []
         self.retry_calls: list[UUID] = []
         self.enqueue_calls: list[EnqueueArgs] = []
@@ -155,7 +162,7 @@ class StubBackend:
 
     async def write_cancel_request(self, job_id: Any, reason: str | None) -> bool:
         self.cancel_calls.append((job_id, reason))
-        return True
+        return self._cancel_result
 
     async def retry_job(self, job_id: Any) -> bool:
         self.retry_calls.append(job_id)
