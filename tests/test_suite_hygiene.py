@@ -94,6 +94,7 @@ from taskq.testing.fixtures import (
     run_isolation_token,
 )
 from tests.conftest import (
+    _call_window_leak_report,  # pyright: ignore[reportPrivateUsage]  # Why: shared test-infra helper under test; mirrors the conftest imports above.
     _leaked_pending_task_report,  # pyright: ignore[reportPrivateUsage]  # Why: shared test-infra helper under test; mirrors the conftest imports above.
     _module_db_name,  # pyright: ignore[reportPrivateUsage]  # Why: shared test-infra naming helper under test; mirrors tests/e2e's imports of conftest helpers.
 )
@@ -622,3 +623,43 @@ async def test_watchdog_trip_does_not_kill_the_test_process(
     )
     code, site = intercepted_force_exits[-1]
     assert code == "2", f"the intercepted exit code is not EXIT_WATCHDOG: {code!r} at {site}"
+
+
+async def _hygiene_window_probe_coro() -> None:
+    await asyncio.sleep(3600)
+
+
+async def test_call_window_leak_report_names_test_end_residue() -> None:
+    """The call-window snapshot's contract: a task that was pending when
+    the test's body finished is named - whether it is STILL pending by the
+    guard's teardown check (the live diff's case) or finished during the
+    teardown window (the shape the live diff cannot see: a worker bootstrap
+    left mid-drain at test end, reaped by an awaiting teardown fixture,
+    the exact shape run 35648058316's leak report demanded land on the
+    leaking test).  An empty window reports nothing."""
+    window_dead: list[asyncio.Task[object]] = []
+    finished = asyncio.create_task(_hygiene_noop(), name="hygiene-window-finished")
+    await finished  # completed in-call: never pending at call end
+    still = asyncio.create_task(_hygiene_window_probe_coro(), name="hygiene-window-still")
+    reaped = asyncio.create_task(_hygiene_window_probe_coro(), name="hygiene-window-reaped")
+    reaped.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await reaped
+    # `reaped` is done NOW, but the snapshot model is: it was pending at
+    # call end and done by teardown - so the pin feeds the done task list
+    # the guard's teardown would hand the classifier.
+    window_dead.append(reaped)
+    try:
+        report = _call_window_leak_report(window_dead)
+        assert report is not None, "a task pending at call end, gone by teardown, went unreported"
+        assert "'hygiene-window-reaped'" in report
+        assert "pending at test end" in report
+        # The live-diff case: the same guard names a task still pending.
+        live_case = _leaked_pending_task_report(set(), asyncio.all_tasks())
+        assert live_case is not None
+        assert "'hygiene-window-still'" in live_case
+    finally:
+        still.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await still
+    assert _call_window_leak_report([]) is None
