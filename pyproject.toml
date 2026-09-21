@@ -326,6 +326,10 @@ ignore = [
 # Same rationale as test_postgres_terminal_writes.py — schema name is
 # validated against _IDENT_RE before interpolation; all user-supplied
 # values use $N parameter binding.
+"tests/test_terminal_drift_guards.py" = ["S608"]
+# Same rationale as test_postgres_terminal_writes.py — schema name is
+# validated against _IDENT_RE before interpolation; all user-supplied
+# values use $N parameter binding.
 "tests/test_postgres_cancel_paths.py" = ["S608"]
 # Same rationale — schema name validated against _IDENT_RE; all
 # user-supplied values use $N parameter binding.
