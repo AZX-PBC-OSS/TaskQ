@@ -1765,6 +1765,11 @@ an identical row into `jobs_archive` plus two extra columns:
 `job_attempts_archive` mirrors `job_attempts` with the same schema and an FK to
 `jobs_archive(id) ON DELETE CASCADE`. Sweeps 5 and 6 are both batched atomic
 CTEs, so `jobs_archive` and `job_attempts_archive` stay in sync by construction.
+This is the vanilla-Postgres contract only: with
+`TASKQ_TIMESCALEDB_HYPERTABLES=true` no table may reference a hypertable, so
+this FK is dropped and the two tables align by chunk retention instead (an
+attempt can outlive its parent's chunk by up to one chunk interval; see
+[timescaledb.md](guides/timescaledb.md#what-the-conversion-does)).
 
 `job_events` rows are **not** archived: they are deleted by cascade when the
 parent `jobs` row is pruned. Historical event data is not available in the
