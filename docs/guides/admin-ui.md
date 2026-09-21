@@ -206,7 +206,8 @@ What is recorded per mutation:
 | `POST /schedules/{id}/disable` | `schedule.disable` | `schedule` | |
 | `POST /schedules/{id}/skip` | `schedule.skip` | `schedule` | detail: the computed `next_fire_at` |
 | `POST /schedules/{id}/run` | `schedule.run` | `schedule` | detail: the enqueued job id |
-| `POST /actors/{actor}/deregister` | `actor.deregister` | `actor` | detail: the `force` / `purge_queue` flags |
+| `POST /actors/{actor}/deregister` | `actor.deregister` | `actor` | detail: the `force` / `purge_queue` flags, and the purge's scope (the queue name, whether its definition row was purged, jobs cancelled, schedules disabled, terminal jobs left) |
+| `POST /rate-limits/{bucket}/reset` | `rate_limit.reset` | `rate_limit_bucket` | only when reset is enabled (`TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET=true`) |
 
 Semantics worth knowing:
 
@@ -216,17 +217,44 @@ Semantics worth knowing:
   `subject` attribute (or the string itself) is recorded. When the router
   runs with **no** auth dependency (dev deployments only; startup fails
   closed everywhere else), the explicit subject `anonymous` is recorded, so
-  a dev-system row is never mistaken for an attributed one.
+  a dev-system row is never mistaken for an attributed one. The subject's
+  shape is pinned at the audit boundary, not trusted: control characters
+  (NUL, newlines, ESC) are escaped, and the recorded subject is capped at
+  512 characters. A buggy or hostile auth dependency therefore cannot write
+  an unbounded row, forge a log/page structure, or break the text bind -
+  it also cannot block the mutation it arrived on.
 - **Same transaction where possible.** The schedule mutations and actor
   deregistration write their mutation and audit row in one transaction: an
-  audit insert that fails rolls the mutation back. The job cancel/retry
+  audit insert that fails rolls the mutation back (pinned against real
+  PostgreSQL, including a COMMIT that fails after both statements
+  succeeded - both roll back). The job cancel/retry
   mutations go through the backend, which commits its own transaction, so
   the audit row is written immediately after the backend call reports
   success; a failure to record it is logged (`admin-audit-record-failed`)
   but does not fail a mutation that already landed.
 - **Nothing is recorded when nothing happened.** The 403 disabled paths, 404s,
   409 conflicts, and CSRF rejections write no audit row; the trail only
-  contains mutations that actually applied.
+  contains mutations that actually applied. A cancel that lost the race (the
+  backend reports a cancel request already in flight) applied nothing itself,
+  so it writes no row and never folds its operator onto the other writer's
+  event.
+- **When the audit record itself fails, the answer depends on the transaction
+  shape, and both halves are honest about it.** For the same-transaction
+  mutations, fail-closed is possible and it is what happens: the mutation
+  rolls back with the failed insert. For the backend-mediated mutations the
+  backend call has ALREADY committed when the audit write runs - there is no
+  fail-closed option that tells the truth (reporting failure would invite a
+  retry of a landed mutation), so those degrade to warn-mode: the failure is
+  logged (`admin-audit-record-failed`) AND counted on the
+  `taskq.admin.audit.record_failed` OpenTelemetry counter (attribute
+  `operation` is `record` for the audit row, `fold` for the cancel-event
+  fold; `action` names the mutation). **Alert on a nonzero rate of that
+  counter**: a wedged pool or an unmigrated schema can keep the trail
+  degraded indefinitely, and the counter is the only signal that survives a
+  log-retention window. This is a deliberate operator preference question
+  answered by transaction shape rather than a setting: where atomicity is
+  reachable it is enforced, where it is not, the mutation tells the truth
+  and the metric carries the alarm.
 - **No foreign key to jobs, on purpose.** The trail's targets are exactly the
   rows routine maintenance prunes, archives, and deregisters; an FK would let
   that maintenance erase the record of who did what. `target_id` stays

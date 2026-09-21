@@ -176,13 +176,19 @@ def register(router: APIRouter) -> None:
             # actor can never vanish while the record of who removed it
             # fails to land (or the reverse).
             try:
-                await deregister_actor(
+                result = await deregister_actor(
                     conn, actor, force=force, purge_queue=purge_queue, schema=schema
                 )
             except ActorNotFoundError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from None
             except ActorDeregistrationError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from None
+            # The purge_queue arm is the destructive multi-row piece
+            # (every active job on the actor's orphaned queue), so the
+            # audit row records its SCOPE, not just the flag: which queue
+            # was purged and how many rows each stage touched. A trail
+            # that says "purge: true" without naming the queue or the row
+            # counts cannot answer "what exactly did this button delete".
             await record_admin_action(
                 conn,
                 schema=schema,
@@ -190,7 +196,15 @@ def register(router: APIRouter) -> None:
                 action=ACTION_ACTOR_DEREGISTER,
                 target_type=TARGET_TYPE_ACTOR,
                 target_id=actor,
-                detail={"force": force, "purge_queue": purge_queue},
+                detail={
+                    "force": force,
+                    "purge_queue": purge_queue,
+                    "queue": result.queue,
+                    "queue_purged": result.queue_purged,
+                    "jobs_cancelled": result.jobs_cancelled,
+                    "schedules_disabled": result.schedules_disabled,
+                    "terminal_jobs_remaining": result.terminal_jobs_remaining,
+                },
             )
 
         return RedirectResponse(

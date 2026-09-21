@@ -62,4 +62,4 @@ COMMENT ON COLUMN "{schema}".admin_audit.principal_subject IS
 
 COMMENT ON COLUMN "{schema}".admin_audit.action IS
     'One of: job.cancel | job.retry | schedule.enable | schedule.disable | '
-    'schedule.skip | schedule.run | actor.deregister';
+    'schedule.skip | schedule.run | actor.deregister | rate_limit.reset';

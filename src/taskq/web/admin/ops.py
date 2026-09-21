@@ -33,17 +33,20 @@ from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
 from taskq.web.admin._audit import (
     ACTION_JOB_RETRY,
+    ACTION_RATE_LIMIT_RESET,
     ACTION_SCHEDULE_DISABLE,
     ACTION_SCHEDULE_ENABLE,
     ACTION_SCHEDULE_RUN,
     ACTION_SCHEDULE_SKIP,
     TARGET_TYPE_JOB,
+    TARGET_TYPE_RATE_LIMIT_BUCKET,
     TARGET_TYPE_SCHEDULE,
     record_admin_action,
     record_admin_action_safe,
 )
 from taskq.web.admin._constants import (
     _TERMINAL_STATUSES,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
+    parse_text_filter,
 )
 from taskq.web.admin._factory import (
     get_admin_pool,
@@ -807,12 +810,19 @@ def register(router: APIRouter) -> None:
         settings: Any = Depends(get_settings),
         base_path: str = Depends(get_base_path),
         rl_registry: RateLimitRegistry = Depends(get_rl_registry),
+        principal: Any = Depends(get_principal),
     ) -> RedirectResponse:
         from taskq.settings import WorkerSettings
 
         allow_reset = getattr(settings, "admin_ui_allow_rate_limit_reset", False)
         if not allow_reset:
             raise HTTPException(status_code=403, detail="Rate limit reset is disabled")
+
+        # The bucket name reaches the audit row's target_id (a text bind)
+        # besides the store itself: the same NUL guard every other audited
+        # text applies, so a %00 is a clean 400 rather than an opaque
+        # driver error swallowed into a trail-less mutation.
+        parse_text_filter(bucket_name, "bucket_name")
 
         rl_settings = WorkerSettings.load_from_dict(
             {
@@ -870,6 +880,24 @@ def register(router: APIRouter) -> None:
                     "that configures the bucket"
                 ),
             ) from exc
+
+        # This is an admin-UI operator mutation (it reopens a throttled
+        # bucket, which is a state change a throttle-dependent system
+        # feels immediately), so it gets an audit row like every other
+        # mutation route -- previously it was the one mutation the trail
+        # did not see. The reset's store write has its own committed
+        # transaction inside the registry (backend-mediated shape): the
+        # row rides a separate checkout and degrades loudly
+        # (record_admin_action_safe) rather than failing a reset that
+        # already applied.
+        await record_admin_action_safe(
+            pool,
+            schema=schema,
+            principal=principal,
+            action=ACTION_RATE_LIMIT_RESET,
+            target_type=TARGET_TYPE_RATE_LIMIT_BUCKET,
+            target_id=bucket_name,
+        )
 
         return RedirectResponse(url=f"{base_path}/rate-limits", status_code=303)
 
