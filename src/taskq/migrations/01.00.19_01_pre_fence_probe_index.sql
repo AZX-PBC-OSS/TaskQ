@@ -1,0 +1,72 @@
+-- The fenced terminal/lease write's probe index: the job id as a trailing
+-- KEY column of the running-holder partial index. Forward-only; there is
+-- no down migration. To revert, recreate the two-key form
+-- `(locked_by_worker) WHERE status = 'running'` by hand. The literal
+-- "{schema}" token is substituted at apply time by the migration runner.
+--
+-- ── Why this index exists ───────────────────────────────────────────
+-- Every fenced single-row write (mark_succeeded / mark_failed /
+-- mark_retry / mark_cancelled, the per-job lease checks) targets one row
+-- by the fence
+-- `id = $1 AND status = 'running' AND locked_by_worker = $2 AND attempt = $k
+-- AND claim_epoch = $m`. The row is unique by `id = $1` (the primary
+-- key), but the planner is free to drive the UPDATE from ANY index the
+-- quals admit, and after bulk churn (a large enqueue burst lands before
+-- autovacuum's next ANALYZE; `reltuples` goes stale and every equality
+-- selectivity collapses to the same one-row estimate) the planner
+-- measured on PostgreSQL 18 picks the running-holder partial index
+-- `jobs_locked_by_worker_running_idx (locked_by_worker) WHERE status =
+-- 'running'` and evaluates `id = $1` as a post-scan Filter: the write
+-- walks EVERY running row the worker holds — measured at 1.3 ms and 91
+-- buffers for one terminal write at a 2,000-row running population
+-- (vs 0.06 ms and 18 buffers driven by the primary key), per terminal
+-- write, for the whole drain.
+--
+-- With `id` as the trailing key column the same mispicked plan becomes
+-- harmless: both equality quals are Index Conds (a non-leading key
+-- column is still evaluated inside the index, never a heap-visiting
+-- Filter), so the scan touches one index entry and one heap row
+-- regardless of which index the planner picks or how stale the
+-- statistics are. This is the hot-claim-path index discipline: the
+-- column that filters every fenced probe rides in the key.
+--
+-- ── Why the trailing key costs (almost) nothing ────────────────────
+-- The index is partial on `status = 'running'`, so its body holds only
+-- in-flight rows and stays small by construction; entries leave the
+-- index on every terminal/reclaim transition. Appending the id widens
+-- each entry by ~16 bytes (uuid) on an index whose per-entry cost the
+-- claim UPDATE's status transition already pays. Every existing reader
+-- keeps its plan class: the heartbeat renewal
+-- (`locked_by_worker = $1 AND status = 'running'`) and the web-admin
+-- running count scan the leading-column prefix unchanged, and the
+-- per-job lease check (`id = ANY($1::uuid[]) AND locked_by_worker =
+-- $2`) gains the same trailing-key filtering this migration exists to
+-- give the fence.
+--
+-- ── Why plain DROP + CREATE INDEX, not the no-transaction
+--    CONCURRENTLY form ──
+-- Same deadlock shape as 01.00.10_01 (see that file's full
+-- derivation): the migration runner serializes concurrent migrators
+-- with pg_advisory_lock, a second replica's blocking lock wait is an
+-- open transaction, and CREATE INDEX CONCURRENTLY waits for every
+-- transaction that started before it — a cycle the deadlock detector
+-- breaks by failing the apply. This file therefore follows
+-- 01.00.02_01 / 01.00.07_01 / 01.00.10_01's precedent: a transactional
+-- plain DROP INDEX + CREATE INDEX, whose ordinary locks queue behind
+-- the advisory-lock waiter without a snapshot-wait cycle.
+--
+-- OPS NOTE (locks), same caveat as 01.00.10_01: the pair below takes a
+-- write-blocking lock on jobs for the duration of the drop+build;
+-- build time is proportional to the current RUNNING row count (the
+-- partial predicate), not the whole table. Operators with a large
+-- in-flight population should run the equivalent
+-- `CREATE INDEX CONCURRENTLY IF NOT EXISTS
+-- jobs_locked_by_worker_running_idx_new ON "{schema}".jobs
+-- (locked_by_worker, id) WHERE status = 'running'` (then swap the two
+-- indexes by name in one transaction) manually outside the migration
+-- runner during a maintenance window, and let this migration's
+-- IF NOT EXISTS no-op.
+DROP INDEX IF EXISTS "{schema}".jobs_locked_by_worker_running_idx;
+CREATE INDEX IF NOT EXISTS jobs_locked_by_worker_running_idx
+    ON "{schema}".jobs (locked_by_worker, id)
+    WHERE status = 'running';
