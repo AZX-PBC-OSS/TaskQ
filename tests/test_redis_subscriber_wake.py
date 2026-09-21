@@ -381,8 +381,9 @@ async def test_redis_subscriber_receives_progress_events(
         pg_row = await _get_job_by_id(deps.worker_pool, schema, job_id)
         assert pg_row is not None
         assert pg_row["status"] == "succeeded"
-        assert pg_row["progress_seq"] == 5, (
-            f"expected progress_seq==5, got {pg_row['progress_seq']}"
+        assert pg_row["progress_seq"] == 7, (
+            f"expected progress_seq==7 (5 progress calls plus the running "
+            f"transition's and the terminal write's consumed seqs), got {pg_row['progress_seq']}"
         )
     finally:
         await stack.aclose()
@@ -441,8 +442,9 @@ async def test_multiple_subscribers_receive_same_events(
         pg_row = await _get_job_by_id(deps.worker_pool, schema, job_id)
         assert pg_row is not None
         assert pg_row["status"] == "succeeded"
-        assert pg_row["progress_seq"] == 5, (
-            f"expected progress_seq==5, got {pg_row['progress_seq']}"
+        assert pg_row["progress_seq"] == 7, (
+            f"expected progress_seq==7 (5 progress calls plus the running "
+            f"transition's and the terminal write's consumed seqs), got {pg_row['progress_seq']}"
         )
     finally:
         await tq1.close()
@@ -549,14 +551,16 @@ async def test_subscriber_filters_per_job_channel_no_cross_talk(
         pg_row_b = await _get_job_by_id(deps.worker_pool, schema, job_id_b)
         assert pg_row_b is not None
         assert pg_row_b["status"] == "succeeded"
-        assert pg_row_b["progress_seq"] == 3, (
-            f"expected progress_seq==3 for job B, got {pg_row_b['progress_seq']}"
+        assert pg_row_b["progress_seq"] == 5, (
+            f"expected progress_seq==5 for job B (3 progress calls plus the "
+            f"running transition's and the terminal write's consumed seqs), "
+            f"got {pg_row_b['progress_seq']}"
         )
 
         pg_row_a = await _get_job_by_id(deps.worker_pool, schema, job_id_a)
         assert pg_row_a is not None
         assert pg_row_a["status"] == "succeeded"
-        assert pg_row_a["progress_seq"] == 5
+        assert pg_row_a["progress_seq"] == 7
     finally:
         await stack.aclose()
 
@@ -625,7 +629,7 @@ async def test_redis_reconnection_subscriber_recovers(
         pg_row1 = await _get_job_by_id(deps.worker_pool, schema, job_id1)
         assert pg_row1 is not None
         assert pg_row1["status"] == "succeeded"
-        assert pg_row1["progress_seq"] == 1
+        assert pg_row1["progress_seq"] == 3
 
         # ── Phase 2: new subscriber, new job (reconnect) ─────────────────
         wid2 = new_uuid()
@@ -674,7 +678,7 @@ async def test_redis_reconnection_subscriber_recovers(
         pg_row2 = await _get_job_by_id(deps.worker_pool, schema, job_id2)
         assert pg_row2 is not None
         assert pg_row2["status"] == "succeeded"
-        assert pg_row2["progress_seq"] == 1
+        assert pg_row2["progress_seq"] == 3
     finally:
         await stack.aclose()
 
@@ -711,8 +715,10 @@ async def test_redis_unavailable_pg_still_records_progress(
         pg_row = await _get_job_by_id(deps.worker_pool, schema, job_id)
         assert pg_row is not None
         assert pg_row["status"] == "succeeded"
-        assert pg_row["progress_seq"] == 5, (
-            f"expected progress_seq==5 (PG-only path), got {pg_row['progress_seq']}"
+        assert pg_row["progress_seq"] == 7, (
+            f"expected progress_seq==7 (PG-only path: 5 progress calls plus "
+            f"the running transition's and the terminal write's consumed "
+            f"seqs), got {pg_row['progress_seq']}"
         )
     finally:
         await stack.aclose()

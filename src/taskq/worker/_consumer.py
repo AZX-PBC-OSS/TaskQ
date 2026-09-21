@@ -77,6 +77,7 @@ from taskq.obs import (
     safe_start_span,
 )
 from taskq.progress._buffer import (
+    _consume_state_change_seq,
     _ProgressBuffer,
     _seq_and_state_after_flush_attempt,
     _terminal_seq_and_state,
@@ -759,6 +760,15 @@ async def consume_one_job(
         # no-ops instead of clobbering the new epoch's progress.
         _buf = _ProgressBuffer(job_id=job.id, base_seq=job.progress_seq, attempt=job.attempt)
         _progress_buffers[job.id] = _buf
+        # The running transition is itself an event on the job's stream:
+        # it consumes the next seq (the seq is a strict total order over
+        # progress and state-change events alike), recorded on the buffer
+        # so the running publish below, every later ctx.progress call,
+        # the flush deltas, and the terminal helpers all stack on it and
+        # no later event can repeat the seq it carried. The consumption
+        # rides the next flush delta or the next mark_* absolute SET to
+        # the durable row, so the next attempt's buffer seeds past it.
+        _consume_state_change_seq(_buf)
 
     _parent_tags_token = _parent_tags_var.set(tuple(job.tags))
 

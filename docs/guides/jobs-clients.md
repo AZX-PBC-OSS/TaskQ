@@ -1070,7 +1070,7 @@ rows, and advancing only on the PG fallback would make the semantics backend-dep
 | `job_id` | `UUID` | The job this event belongs to. |
 | `actor` | `str` | Actor name. |
 | `ts` | `datetime` | Server-side timestamp. |
-| `seq` | `int` | Strictly-monotone sequence number. Use for dedup and `Last-Event-ID` resumption. |
+| `seq` | `int` | Strictly-monotone sequence number: the total order over the job's whole event stream (state-change events consume it too). Use for dedup and `Last-Event-ID` resumption. |
 | `status` | `str` | Current job status at publish time. |
 | `step` | `int \| None` | Step counter, if reported by the actor. |
 | `percent` | `float \| None` | Completion percentage, if reported. |

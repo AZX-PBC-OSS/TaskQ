@@ -325,8 +325,21 @@ async def test_property_sweep_equivalence(
     from taskq.worker.heartbeat import _ISOLATE_JOB_SQL_TEMPLATE
 
     attempt, max_attempts, retry_kind, cancel_phase, offset_secs = params
+    # This test asserts row STATE, not timing, so it must not inherit the
+    # blitz integration default's 0.1s client-side command timeout on the
+    # heartbeat pool every statement here rides: under a parallel ``-n`` run
+    # on a 2-vCPU CI runner, event-loop starvation past 100ms makes any
+    # statement's round-trip raise TimeoutError - a load flake hypothesis
+    # then reports as a FlakyFailure. 5s only trips on real pathology. The
+    # cascade floor rises with it (lock_lease >= 4 * (heartbeat_interval +
+    # 2 * heartbeat_command_timeout)); the lease value itself is inert here,
+    # the jobs carry explicit lock_expires_at stamps.
+    _overrides = {
+        "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "5.0",
+        "TASKQ_LOCK_LEASE": "60.0",
+    }
     stack, deps, _backend = await _open_pg_backend(
-        pg_dsn, schema_name=f"tlp_{new_base62()}".lower()
+        pg_dsn, schema_name=f"tlp_{new_base62()}".lower(), settings_overrides=_overrides
     )
     try:
         schema = deps.settings.schema_name

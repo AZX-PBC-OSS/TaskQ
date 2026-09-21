@@ -55,6 +55,33 @@ server-to-client via:
 5. At job completion or crash, the buffer is flushed one final time before the terminal status
    is written.
 
+**The `seq` is the event stream's total order.** Every event on a job's stream carries a `seq`
+strictly greater than every event before it, progress events and state-change events alike:
+state-change events (the `running` transition at dispatch, retries, snoozes, and the terminal
+exits `succeeded` / `failed` / `cancelled` / `abandoned` / interrupted releases) each consume
+the next `seq` value rather than repeating the last progress event's. A consumer deduping or
+resuming by `seq` alone (the `Last-Event-ID` discipline below) therefore sees every event
+exactly once, and the terminal event always arrives strictly after the last progress event it
+supersedes. The durable `jobs.progress_seq` carries the same total order: it ends at the
+terminal event's consumed seq. The snapshot guarantee is scoped to events whose durable write
+has landed: a reconnecting consumer resuming from the Postgres snapshot never rewinds past any
+event whose write reached `jobs.progress_seq`. One window to know about: the `running`
+transition consumes its seq in memory (and publishes it to Redis) but is deliberately not
+durable on its own, so a job whose actor never calls `ctx.progress()` holds `progress_seq == 0`
+until its terminal write, and a client that saw `running` and reconnects before the next flush
+or the terminal finds the snapshot unchanged. The live stream is unaffected; only the
+Postgres snapshot lags until the next durable write.
+
+**The total order holds within a worker's lifetime, not across worker death.** The reclaim
+sweep does not touch `jobs.progress_seq`, so if a worker dies mid-job the reclaimed job's next
+attempt re-publishes `running` at a seq the wire has already carried (a terminal publish whose
+`mark_*` write failed does the same when the job retries). Across worker death a seq-cursor
+consumer can therefore see the same seq twice with different payloads; deduping by `seq` is
+safe for events whose durable write landed, and the Postgres snapshot remains authoritative
+across the gap. During a rolling deploy, workers still on the previous release emit
+state-change events that repeat the head instead of consuming a new seq until they are
+upgraded; a seq-cursor guard drops those as duplicates, which is the old, safe behaviour.
+
 Redis publishes are coalesced: at most one publish per job is in flight at a time; a call racing
 a running publish is latched onto the buffer and the running task re-publishes the latch when its
 round trip lands, so the final publish always lands. **Postgres retains only the most recent
@@ -127,7 +154,7 @@ async for event in handle.progress_stream():
 | `job_id` | `UUID` | Job this event belongs to. |
 | `actor` | `str` | Actor name. |
 | `ts` | `datetime` | Server-side timestamp. |
-| `seq` | `int` | Strictly-monotone sequence number. |
+| `seq` | `int` | Strictly-monotone sequence number: the total order over the job's whole event stream, state-change events included. |
 | `status` | `str` | Current job status at publish time. |
 | `step` | `int \| None` | Step counter. |
 | `percent` | `float \| None` | Completion percentage. |
@@ -186,7 +213,10 @@ is no race window: if an event arrived between the disconnect and the reconnect 
 the Redis subscription. A catch-up snapshot is emitted from Postgres when
 `progress_seq > last_event_id`. The header wins over `?last_event_id=` when both are present,
 and a header that is not a non-negative integer (every id this stream issues is one) is
-rejected with `400` rather than read as "no cursor".
+rejected with `400` rather than read as "no cursor". Because state-change events consume `seq`,
+a consumer that reconnects after the last progress event still finds the row's `progress_seq`
+one ahead (the terminal consumed it) and receives the terminal snapshot instead of hanging on a
+stream nothing further is published to.
 
 ---
 
@@ -318,6 +348,19 @@ between polls.
     the last one seen, and the periodically-flushed Postgres `progress_state`/`progress_seq`
     is always the durable source of truth: a dropped Redis publish never loses progress data,
     it only delays a subscriber's view of it until the next successful publish or the next poll.
+
+- **`seq` is a total order; state-change events consume it.** Every state-change event (the
+  dispatch `running` transition, retries, snoozes, and every terminal or interrupted exit)
+  advances the same counter a progress event does, so deduping by `seq` alone is correct for
+  events whose durable write landed. Two windows put duplicate seqs back on the wire: a worker
+  dying mid-job re-publishes `running` (or a terminal) at a seq already carried, and a rolling
+  deploy's not-yet-upgraded workers emit the old repeated-head state-change events until they
+  are upgraded. Both produce duplicates a seq-cursor guard already drops; the Postgres
+  snapshot stays authoritative across the gap. Consumers written against the older
+  progress-only contract, where a
+  state-change event repeated the last progress event's `seq` and a seq-cursor guard dropped
+  it, need no change beyond removing any special-case handling that assumed the repeats: the
+  extra, correctly-ordered seq values they now see are ordinary events.
 
 - **Redis is optional, not required.** Without `TASKQ_REDIS_URL` configured (or the `[redis]`
   extra installed), `ctx.progress()` still coalesces and flushes to Postgres exactly as

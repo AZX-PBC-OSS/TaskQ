@@ -817,6 +817,32 @@ fallback moved behind `TASKQ_SAML_ALLOW_COOKIELESS_FALLBACK`, **default
 These change what your code *does* without changing what it *accepts*. Nothing
 raises, so nothing points you at the call site; audit for them explicitly.
 
+* **State-change events now consume the progress `seq` (it is the event
+  stream's total order).** A state-change event (the dispatch `running`
+  transition, retries, snoozes, and every terminal or interrupted exit) used
+  to carry the last progress event's `seq` unchanged; it now carries one
+  past it, and the durable `jobs.progress_seq` ends at the terminal event's
+  consumed value. Consumers deduping or resuming by `seq` alone were the
+  reason: a guard keyed on `seq` treated every state-change event as a
+  duplicate of the progress event sharing its number and dropped it, so a
+  terminal event could never arrive and an SSE stream never closed. Existing
+  consumers that dedupe progress events see extra, correctly-ordered values
+  and need no change; consumers that special-cased the old repeats (or
+  snapshotted from Postgres on every reconnect because seq-cursor delivery
+  of state was unreliable) can drop the special cases. Scope the guarantee
+  to events whose durable write landed: across worker death it does not
+  hold, because the reclaim sweep does not touch `progress_seq`, so the
+  reclaimed job's next attempt re-publishes `running` at a seq the wire
+  already carried (a terminal publish whose `mark_*` write failed repeats
+  its seq on retry the same way), and a consumer can see the same seq twice
+  with different payloads; the Postgres snapshot stays authoritative across
+  the gap. During a rolling deploy, workers still on the previous release
+  emit state-change events that repeat the head instead of consuming a new
+  seq until they are upgraded; both windows produce duplicates a seq-cursor
+  guard already drops. There is no migration:
+  the counter keeps its column, type, and monotonicity, only the state-change
+  increments are new.
+
 * **The wake payload names the inserted row's queue, and queue-scoped
   subscribers filter on it.** The insert trigger's NOTIFY carried an empty
   payload and woke every worker's producer; it now names the row's queue

@@ -1832,10 +1832,12 @@ async def test_cancel_path_passes_progress_state_none() -> None:
 # ── Regression: cancel path with clean buffer preserves base_seq ──────────
 
 
-async def test_cancel_clean_buffer_passes_base_seq_not_zero() -> None:
+async def test_cancel_clean_buffer_consumes_one_past_base_seq() -> None:
     """Regression for findings-3 Critical: when the progress buffer is clean
     (post-flush, base_seq > 0, pending_seq_delta=0), the cancel path must
-    pass progress_seq=base_seq to mark_cancelled, NOT 0."""
+    pass a consumed seq one past the buffer's head to mark_cancelled, NOT 0
+    and NOT the head itself (a seq-cursor consumer would dedupe the cancel
+    event into the event before it)."""
     from unittest.mock import MagicMock
 
     from taskq.progress._buffer import _ProgressBuffer
@@ -1876,9 +1878,11 @@ async def test_cancel_clean_buffer_passes_base_seq_not_zero() -> None:
     assert call["job_id"] == job.id
     assert call["worker_id"] == _WORKER_ID
     assert call["progress_state"] is None
-    # The critical assertion: progress_seq must equal the buffer's
-    # base_seq (5, from job.progress_seq), not 0
-    assert call["progress_seq"] == 5
+    # The critical assertion: progress_seq reads the buffer's head (base 5)
+    # plus the running transition's consumed seq (6) and consumes one past
+    # that head for the cancel event itself (7): the cancel event strictly
+    # follows the running event on the stream, never repeating its seq.
+    assert call["progress_seq"] == 7
 
 
 # ── Regression: dispatch path passes deps so progress_buffers is live ────
