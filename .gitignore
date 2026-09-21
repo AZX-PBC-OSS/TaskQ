@@ -82,3 +82,5 @@ vendor/
 
 # Cross-version benchmark matrix venvs (benchmarks/run_matrix.sh)
 .bench-matrix/
+
+coverage.json

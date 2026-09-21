@@ -658,3 +658,188 @@ async def test_isolate_self_excludes_claim_intent_rows() -> None:
     # attempt INSERT, the local body's epoch keeps the row.
     assert conn.execute_calls == [], "the claim intent's row must never enter the isolate's re-pend"
     assert shutdown.is_set()
+
+
+# ── Test: isolate does not re-stamp an in-flight cancel ──────────────────
+
+
+async def test_isolate_self_preserves_an_already_cancelled_entry() -> None:
+    """An entry the CANCELLING orchestrator already routed (origin stamped,
+    phase escalated, task unwound) must pass through isolate untouched.
+
+    isolate's per-entry arms are guarded on the entry's current state
+    exactly so a shutdown racing an operator cancel cannot overwrite the
+    cancel origin the interrupt arm routes on, re-escalate a phase the
+    ladder already advanced, or cancel() a task that already exited. The
+    observable contract: the origin stamp list stays empty, the phase and
+    its observation time are preserved, and the join does not wait on a
+    done task (no join-timeout warning).
+    """
+    from types import SimpleNamespace
+
+    import structlog.testing
+
+    from taskq.backend._protocol import CancelPhase
+    from taskq.context import CancelOrigin
+
+    job_id = new_uuid()
+    origin_stamps: list[CancelOrigin] = []
+
+    async def _already_exiting() -> None:
+        return None
+
+    entry_task = asyncio.create_task(_already_exiting())
+    await entry_task  # the task is done before isolate runs
+
+    entry = SimpleNamespace(
+        job_id=job_id,
+        task=entry_task,
+        ctx=SimpleNamespace(
+            cancel_event=asyncio.Event(),
+            _set_cancel_origin=origin_stamps.append,
+        ),
+        cancel_phase=CancelPhase.FORCED,
+        cancel_observed_at=None,
+        cancel_origin=CancelOrigin.OPERATOR,
+    )
+    deps = _make_deps()
+    deps.active_jobs._by_id[job_id] = entry  # type: ignore[reportAttributeAccessUsage, index-assign]  # Why: unit test injects a minimal entry; same convention as test_isolate_self_cancels_live_actors_and_excludes_their_rows.
+
+    conn = FakeConn()
+
+    async def fake_connect(
+        dsn: str, *, timeout: float, command_timeout: float | None = None
+    ) -> FakeConn:
+        return conn
+
+    import asyncpg as apg
+
+    orig_connect = apg.connect
+    apg.connect = fake_connect  # type: ignore[method-assign]  # Why: patching asyncpg.connect for unit test; restored in finally.
+    try:
+        with structlog.testing.capture_logs() as logs:
+            shutdown = asyncio.Event()
+            await asyncio.wait_for(isolate_self(deps, new_uuid(), shutdown), timeout=10.0)
+    finally:
+        apg.connect = orig_connect  # type: ignore[method-assign]
+
+    assert origin_stamps == [], (
+        "isolate must not overwrite the entry's cancel origin: the "
+        "interrupt arm routes on that stamp, and a SHUTDOWN overwrite "
+        "would reclassify an operator cancel"
+    )
+    assert entry.cancel_phase == CancelPhase.FORCED, (
+        "isolate must not de-escalate (or re-stamp) a phase the cancel ladder already advanced"
+    )
+    assert entry.cancel_observed_at is None
+    assert not any(e["event"] == "isolate-self-actor-join-timeout" for e in logs), (
+        "a done task must not enter the join: waiting on it would bound "
+        "every isolate by the grace periods for no reason"
+    )
+    assert shutdown.is_set()
+
+
+async def test_isolate_self_warns_and_proceeds_when_an_actor_ignores_cancellation() -> None:
+    """An actor body that swallows its cancellation outlives the join
+    bound: isolate must log the stragglers (job ids included) and proceed
+    with the re-pend, the bounded-wait contract — never hang the shutdown
+    on an uncooperative handler."""
+    import contextlib
+    from types import SimpleNamespace
+
+    import structlog.testing
+
+    from taskq.backend._protocol import CancelPhase
+    from taskq.context import CancelOrigin
+
+    job_id = new_uuid()
+    park = asyncio.Event()
+
+    async def _stubborn_consumer() -> None:
+        try:
+            await park.wait()
+        except asyncio.CancelledError:
+            await park.wait()  # swallows the first cancel, like a handler
+            # that defers cleanup past the grace periods.
+
+    entry_task = asyncio.create_task(_stubborn_consumer())
+    await asyncio.sleep(0)  # let the task reach its park
+
+    entry = SimpleNamespace(
+        job_id=job_id,
+        task=entry_task,
+        ctx=SimpleNamespace(
+            cancel_event=asyncio.Event(),
+            _set_cancel_origin=lambda origin: None,
+        ),
+        cancel_phase=CancelPhase.NONE,
+        cancel_observed_at=None,
+        cancel_origin=CancelOrigin.NONE,
+    )
+    deps = _make_deps()  # grace periods 0.0; the join bound is CLOSE_TIMEOUT_SECS alone
+    deps.active_jobs._by_id[job_id] = entry  # type: ignore[reportAttributeAccessUsage, index-assign]  # Why: same minimal-entry convention as the other isolate tests.
+
+    conn = FakeConn()
+
+    async def fake_connect(
+        dsn: str, *, timeout: float, command_timeout: float | None = None
+    ) -> FakeConn:
+        return conn
+
+    import asyncpg as apg
+
+    orig_connect = apg.connect
+    apg.connect = fake_connect  # type: ignore[method-assign]  # Why: patching asyncpg.connect for unit test; restored in finally.
+    try:
+        with structlog.testing.capture_logs() as logs:
+            shutdown = asyncio.Event()
+            await asyncio.wait_for(isolate_self(deps, new_uuid(), shutdown), timeout=10.0)
+    finally:
+        apg.connect = orig_connect  # type: ignore[method-assign]
+        # The stubborn task outlived the join; retire it so the leaked-task
+        # guard sees a clean loop.
+        park.set()
+        entry_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await entry_task
+
+    timeouts = [e for e in logs if e["event"] == "isolate-self-actor-join-timeout"]
+    assert len(timeouts) == 1, (
+        f"an actor that ignores cancellation must surface exactly one "
+        f"join-timeout warning, got {[e['event'] for e in logs]}"
+    )
+    assert str(job_id) in timeouts[0]["still_running"], (
+        "the warning must name the straggling job so the operator can "
+        "find which handler defied the shutdown"
+    )
+    assert shutdown.is_set(), (
+        "the bounded join must proceed with the re-pend and the shutdown "
+        "when the grace periods lapse, not hang on the straggler"
+    )
+
+
+async def test_isolate_self_refuses_a_schema_that_is_not_an_identifier() -> None:
+    """The isolate interpolates the schema into its SQL templates, so a
+    schema value that is not a plain identifier must raise before any
+    connection is opened. WorkerSettings validates schema_name at load;
+    this pin holds the defense's own contract should a caller ever
+    bypass that (the same fail-loud contract cleanup_stale_workers_sql
+    and complete_stale_batches_sql carry)."""
+    deps = _make_deps()
+    # Plain attribute assignment (the settings object does not run
+    # validators on mutation): the pin is the function's guard, not the
+    # settings layer's.
+    deps.settings.schema_name = 'bad"; DROP schema'  # type: ignore[reportAttributeAssignmentIssue]
+
+    import asyncpg as apg
+
+    async def _no_connect(*args: object, **kwargs: object) -> None:
+        raise AssertionError("isolate must not open a connection for an invalid schema")
+
+    orig_connect = apg.connect
+    apg.connect = _no_connect  # type: ignore[method-assign]  # Why: patching asyncpg.connect for unit test; restored in finally.
+    try:
+        with pytest.raises(ValueError, match="invalid schema identifier"):
+            await isolate_self(deps, new_uuid(), asyncio.Event())
+    finally:
+        apg.connect = orig_connect  # type: ignore[method-assign]

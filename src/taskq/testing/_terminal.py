@@ -83,9 +83,9 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.testing.in_me
 
 
 def _merge_progress(
-    current: dict[str, object] | None,
+    current: dict[str, object],
     update: dict[str, object] | None,
-) -> dict[str, object] | None:
+) -> dict[str, object]:
     """Mirror PG ``COALESCE(progress_state,'{}') || new`` for terminal writes.
 
     The merge result is round-tripped through the same guarded
@@ -108,9 +108,7 @@ def _merge_progress(
     (over-deep nesting) still stands, escaping cannot repair it.
     """
     if update is not None:
-        return _round_trip_progress_state((current or {}) | update)
-    if current is None:
-        return None
+        return _round_trip_progress_state(current | update)
     return _round_trip_progress_state(current)
 
 

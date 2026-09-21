@@ -252,7 +252,6 @@ async def _insert_state_change_event(
     job_id: JobId,
     from_state: str,
     to_state: str,
-    error_class: str | None = None,
     worker_id: UUID | None = None,
     extra_detail: dict[str, object] | None = None,
 ) -> None:
@@ -261,8 +260,6 @@ async def _insert_state_change_event(
         "from_state": from_state,
         "to_state": to_state,
     }
-    if error_class is not None:
-        detail["error_class"] = error_class
     if worker_id is not None:
         detail["worker_id"] = str(worker_id)
     if extra_detail is not None:
@@ -638,7 +635,7 @@ async def _mark_retry(
             # drift and must fail loudly rather than masquerade as one of
             # the two contracts this caller reports.
             raise AssertionError(f"mark_retry cannot emit outcome branch: {branch}")
-        case _:
+        case _:  # pragma: no cover - the union is closed upstream by parse_outcome_branch's ValueError (pinned in tests/test_terminal_drift_guards.py)
             assert_never(branch)
 
 
@@ -883,7 +880,7 @@ async def _mark_snoozed(
             # and must fail loudly rather than fall through to the
             # "failed" contract a stale arm spelling used to get.
             raise AssertionError(f"mark_snoozed cannot emit outcome branch: {branch}")
-        case _:
+        case _:  # pragma: no cover - the union is closed upstream by parse_outcome_branch's ValueError (pinned in tests/test_terminal_drift_guards.py)
             assert_never(branch)
 
 
@@ -997,7 +994,7 @@ async def _mark_retry_after(
             # parsed branch is template drift and must fail loudly
             # rather than read back as a deadline failure.
             raise AssertionError(f"mark_retry_after cannot emit outcome branch: {branch}")
-        case _:
+        case _:  # pragma: no cover - the union is closed upstream by parse_outcome_branch's ValueError (pinned in tests/test_terminal_drift_guards.py)
             assert_never(branch)
 
 
@@ -1082,7 +1079,7 @@ async def _mark_interrupted(
             # handled above; any other parsed branch is template drift and
             # must fail loudly rather than read back as a deadline failure.
             raise AssertionError(f"mark_interrupted cannot emit outcome branch: {branch}")
-        case _:
+        case _:  # pragma: no cover - the union is closed upstream by parse_outcome_branch's ValueError (pinned in tests/test_terminal_drift_guards.py)
             assert_never(branch)
 
 
