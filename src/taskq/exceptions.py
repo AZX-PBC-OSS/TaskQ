@@ -1116,11 +1116,31 @@ class BatchIdExistsError(TaskQError):
 
     The original ``asyncpg.UniqueViolationError`` (PG) is chained via
     ``__cause__`` when available.
+
+    The two raising situations are distinguishable on the instance:
+    ``reason`` is ``"exists"`` for a create-collision (the batch_id names a
+    row this call did not mean to append to) and ``"terminal"`` for a
+    member append against a row that already finished. The remedy is the
+    same shape (use a batch_id that names the batch you mean), but a caller
+    driving resumption-by-append reads ``reason`` to tell "stop appending,
+    this batch is finished" from "you picked an id that is taken".
     """
 
-    def __init__(self, batch_id: UUID) -> None:
+    def __init__(
+        self,
+        batch_id: UUID,
+        *,
+        reason: Literal["exists", "terminal"] = "exists",
+    ) -> None:
         self.batch_id = batch_id
-        super().__init__(
-            f"batch_id {batch_id} already exists; use a different batch_id "
-            f"or omit it to auto-generate one"
-        )
+        self.reason = reason
+        if reason == "terminal":
+            super().__init__(
+                f"batch_id {batch_id} is terminal ('complete' or 'aborted') and "
+                f"cannot gain a member; use a fresh batch_id for new work"
+            )
+        else:
+            super().__init__(
+                f"batch_id {batch_id} already exists; use a different batch_id "
+                f"or omit it to auto-generate one"
+            )

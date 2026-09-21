@@ -495,7 +495,7 @@ class SubJobEnqueuer:
         # refusal the create_batch and bulk arms give a batch_id reuse.
         existing_batch = await self._backend.get_batch(resolved_batch_id)
         if existing_batch is not None and existing_batch.status != "active":
-            raise BatchIdExistsError(resolved_batch_id)
+            raise BatchIdExistsError(resolved_batch_id, reason="terminal")
 
         handles = []
         failed_items: list[tuple[int, Exception]] = []
@@ -537,24 +537,21 @@ class SubJobEnqueuer:
         transaction has committed. Per-item flush failures are collected
         and re-raised as :class:`~taskq.exceptions.SubEnqueueError` after
         the loop completes so callers can detect lost sub-jobs.
+
+        A batch row that went terminal while the parent's transaction was
+        in flight refuses its members at the backend's single-enqueue write
+        site (the terminal-batch guard, the twin of the PG single path's
+        membership lock), so a terminal batch's buffered members surface
+        HERE, per item, through that same SubEnqueueError collection - not
+        as a wholesale preflight raise, which would speak no documented
+        error contract, discard the buffered args with no handle to them,
+        and block the flush of unrelated batches' buffered members. The
+        refusal itself is not negotiable: nothing from a terminal batch
+        lands, the bulk arms refuse it the same way.
         """
         snapshot = self._pending_buffer
         self._pending_buffer = []
         self._loop_enqueue_args.clear()
-        # A buffered member write must not land on a batch row that went
-        # terminal while the parent's transaction was in flight: the
-        # single enqueues below bypass the bulk arms' terminal-batch
-        # refusal (the membership lock and the in-memory preflights),
-        # so the check happens here, before anything is written.
-        stamped: dict[str, UUID] = {}
-        for args in snapshot:
-            raw = args.metadata.get("batch_id")
-            if raw is not None:
-                stamped[str(raw)] = UUID(str(raw))
-        for batch_id in stamped.values():
-            row = await self._backend.get_batch(batch_id)
-            if row is not None and row.status != "active":
-                raise BatchIdExistsError(batch_id)
         failed_items: list[tuple[EnqueueArgs, Exception]] = []
         for args in snapshot:
             try:

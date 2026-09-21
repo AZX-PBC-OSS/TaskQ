@@ -71,7 +71,7 @@ def _refuse_terminal_batch_members(self: "InMemoryBackend", args_list: list[Enqu
     for _batch_id_str, batch_id in seen.items():
         row = self._batches.get(batch_id)
         if row is not None and row.status != "active":
-            raise BatchIdExistsError(batch_id)
+            raise BatchIdExistsError(batch_id, reason="terminal")
 
 
 async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
@@ -248,6 +248,26 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         retry_backoff=args.retry_backoff,
         retry_jitter=args.retry_jitter,
     )
+
+    # The single arm's terminal-batch guard, GUARD parity with the PG
+    # single path's membership lock (which covers this write site for the
+    # sub-job enqueuer's fallback arm and the buffer flush, whose
+    # client-level get_batch preflights are check-then-act with awaits
+    # between the check and each write). There is no await between this
+    # read and the store below, so on the twin the check-then-write is
+    # atomic per event-loop step, the mirror of PG's lock-held-to-commit.
+    # A missing batch row (the bulk-import shape) refuses nothing, an
+    # ACTIVE row appends (resumption), a terminal row raises the bulk
+    # arms' typed refusal; a batch-stamped row that dedup-hits above
+    # never reaches this store, so no refusal fires for it.
+    raw_batch_id = args.metadata.get("batch_id")
+    if raw_batch_id is not None:
+        batch_id = UUID(str(raw_batch_id))
+        batch_row = self._batches.get(batch_id)
+        if batch_row is not None and batch_row.status != "active":
+            from taskq.exceptions import BatchIdExistsError
+
+            raise BatchIdExistsError(batch_id, reason="terminal")
 
     if args.id in self._jobs:
         # Why a function-level import: the driver-free import-surface

@@ -867,7 +867,16 @@ async def _enqueue_on_conn(
     """
     owns_transaction = owns_transaction or not conn.is_in_transaction()
     unique_for_single_flight = args.unique_for is not None and args.identity_key is not None
-    if (args.max_pending is not None or unique_for_single_flight) and not conn.is_in_transaction():
+    raw_batch_id = args.metadata.get("batch_id")
+    if (
+        args.max_pending is not None
+        or unique_for_single_flight
+        # A batch-stamped single joins the same transaction-scoped family:
+        # the membership lock below is only a guard against the completion
+        # arbiters if it lives until the INSERT's commit, and on a bare
+        # connection every statement is its own transaction.
+        or raw_batch_id is not None
+    ) and not conn.is_in_transaction():
         # Why a transaction here and not just the lock: pg_advisory_xact_lock
         # releases at transaction end, so on a bare caller connection (every
         # statement its own transaction) the lock below would release before
@@ -897,6 +906,25 @@ async def _enqueue_on_conn(
                 owns_transaction=True,
                 mark_wrote=mark_wrote,
             )
+    if raw_batch_id is not None:
+        # The single arm's membership lock, GUARD parity with the bulk arms:
+        # every member INSERT holds the batches-row lock with the status read
+        # under FOR UPDATE, in the same transaction as the INSERT. The bulk
+        # arms' closures (enqueue_batch's INSERT, enqueue_batch_fast's COPY)
+        # do this already; the single arm is the member write the sub-job
+        # enqueuer's no-connection fallback and the buffer flush reach, whose
+        # client-level get_batch preflights are check-then-act with real
+        # await boundaries between the check and each write, so a batch row
+        # that goes terminal mid-call (a concurrent threshold abort) is
+        # refused HERE, at the write site, not at the stale preflight. A
+        # missing batch row locks nothing (the bulk-import shape writes
+        # members before create_batch), an ACTIVE row just takes the lock,
+        # a terminal row raises the bulk arms' typed refusal. Lock order is
+        # membership FIRST, then the unique_for / max_pending advisory locks
+        # below, the bulk arms' own order, so no cycle can form with them
+        # (they take no membership lock; this arm takes no advisory lock
+        # before this one).
+        await _lock_batch_membership(conn, schema, [UUID(str(raw_batch_id))])
     if args.unique_for is not None and args.identity_key is not None:
         # Why a lock at all: what follows is a check-then-insert. Under READ
         # COMMITTED two dispatchers enqueuing the same (actor, identity_key)
@@ -1440,7 +1468,7 @@ async def _lock_batch_membership(conn: ConnLike, schema: str, batch_ids: list[UU
     if terminal:
         from taskq.exceptions import BatchIdExistsError
 
-        raise BatchIdExistsError(terminal[0])
+        raise BatchIdExistsError(terminal[0], reason="terminal")
 
 
 async def _enqueue_batch(
