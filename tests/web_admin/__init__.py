@@ -33,8 +33,25 @@ class StubRecord(dict[str, object]):
     """Minimal asyncpg.Record duck type for testing."""
 
 
+class StubTransaction:
+    """Minimal asyncpg transaction duck type: enters and exits, rolls nothing back."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+
 class StubConnection:
     """Minimal asyncpg.Connection duck type that returns empty results."""
+
+    def transaction(self) -> StubTransaction:
+        # The admin mutation routes wrap their writes in
+        # conn.transaction() (the audit row commits with the mutation);
+        # the real connection's block is where atomicity lives, the stub
+        # only has to be enterable.
+        return StubTransaction()
 
     async def fetch(self, query: str, *args: object) -> list[StubRecord]:
         return []
