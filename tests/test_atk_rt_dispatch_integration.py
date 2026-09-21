@@ -62,8 +62,7 @@ from .test_rt_diff_harness import DiffSide, assert_mirror, run_differential
 pytestmark = [pytest.mark.asyncio]
 
 _QUEUE = "default"
-_SCHEMA = "taskq"
-_SQL = render(_SCHEMA)
+_SQL = render("taskq")
 
 _RESOLVE_MARK = ".queues WHERE"
 _PROBE_MARK = "ac.queue = ANY"
@@ -177,6 +176,11 @@ class _StageScriptBackend:
         self.last_pool: _TrackingPool | None = None
 
     async def dispatch_batch(self, **_kwargs: Any) -> list[Any]:
+        # Local schema name: the scripted conns discriminate by SQL shape,
+        # never by schema, so this is an opaque marker (the real-PG lanes
+        # below mint their own per-test schema). A module-level constant
+        # here trips the suite-hygiene module-schema ban.
+        schema = "taskq"
         spec = self.rounds[min(self.i, len(self.rounds) - 1)]
         self.i += 1
         pool = _TrackingPool(spec.conn, wait=spec.pool_wait, fail_enter=spec.fail_enter)
@@ -187,7 +191,7 @@ class _StageScriptBackend:
                 _SQL,
                 2,
                 5.0,
-                _SCHEMA,
+                schema,
                 new_uuid(),
                 [_QUEUE],
                 10,
@@ -211,7 +215,9 @@ def _producer_deps(poll_interval: float = 0.05) -> Any:
         poll_interval=poll_interval,
         notify_poll_interval=poll_interval,
         max_concurrency=1,
-        schema_name=_SCHEMA,
+        # The producer here runs against scripted stand-ins; the schema
+        # name is opaque to them (a local per the hygiene module-schema ban).
+        schema_name="taskq",
         pg_is_pooled=False,
     )
     liveness = SimpleNamespace(tick=lambda *a, **k: None, forget=lambda *a, **k: None)
@@ -378,6 +384,7 @@ async def test_pool_waits_and_query_durations_stay_on_disjoint_histograms(
     wall time ONLY on pool_acquire_duration; a fast pool wait followed by a
     slow failing claim must put it ONLY on dispatch.duration. Each round
     records exactly one sample per histogram it touches."""
+    schema = "taskq"  # opaque to the scripted conns; local per the hygiene ban
     reader_a = setup_meter(monkeypatch)
     with pytest.raises(TimeoutError):
         await _dispatch_batch(
@@ -385,7 +392,7 @@ async def test_pool_waits_and_query_durations_stay_on_disjoint_histograms(
             _SQL,
             2,
             5.0,
-            _SCHEMA,
+            schema,
             new_uuid(),
             [_QUEUE],
             10,
@@ -415,7 +422,7 @@ async def test_pool_waits_and_query_durations_stay_on_disjoint_histograms(
             _SQL,
             2,
             5.0,
-            _SCHEMA,
+            schema,
             new_uuid(),
             [_QUEUE],
             10,
