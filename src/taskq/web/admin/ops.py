@@ -31,6 +31,17 @@ from taskq.cron import (
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
+from taskq.web.admin._audit import (
+    ACTION_JOB_RETRY,
+    ACTION_SCHEDULE_DISABLE,
+    ACTION_SCHEDULE_ENABLE,
+    ACTION_SCHEDULE_RUN,
+    ACTION_SCHEDULE_SKIP,
+    TARGET_TYPE_JOB,
+    TARGET_TYPE_SCHEDULE,
+    record_admin_action,
+    record_admin_action_safe,
+)
 from taskq.web.admin._constants import (
     _TERMINAL_STATUSES,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
 )
@@ -39,6 +50,7 @@ from taskq.web.admin._factory import (
     get_backend,
     get_base_path,
     get_csrf_token,
+    get_principal,
     get_realtime_ctx,
     get_redis_client,
     get_rl_registry,
@@ -252,6 +264,7 @@ def register(router: APIRouter) -> None:
         schema: str = Depends(get_schema),
         base_path: str = Depends(get_base_path),
         settings: TaskQSettings = Depends(get_settings),
+        principal: Any = Depends(get_principal),
     ) -> RedirectResponse:
         if not settings.admin_actions_enabled:
             raise HTTPException(status_code=403, detail="Admin actions are disabled")
@@ -260,14 +273,28 @@ def register(router: APIRouter) -> None:
 
         async with pool.acquire() as conn:
             try:
-                result = await conn.execute(enable_sql, schedule_id)
+                # ONE transaction for the mutation AND its audit row: a
+                # schedule that flips enabled while its audit insert fails
+                # (or the reverse) is exactly the unattributable-state
+                # defect the audit trail exists to prevent. The 404 raises
+                # inside the block, so "UPDATE 0" writes neither row.
+                async with conn.transaction():
+                    result = await conn.execute(enable_sql, schedule_id)
+                    if result == "UPDATE 0":
+                        raise HTTPException(status_code=404, detail="Schedule not found")
+                    await record_admin_action(
+                        conn,
+                        schema=schema,
+                        principal=principal,
+                        action=ACTION_SCHEDULE_ENABLE,
+                        target_type=TARGET_TYPE_SCHEDULE,
+                        target_id=str(schedule_id),
+                    )
             except UndefinedTableError:
                 return RedirectResponse(
                     url=f"{base_path}/schedules?error=cron+scheduling+not+installed",
                     status_code=303,
                 )
-            if result == "UPDATE 0":
-                raise HTTPException(status_code=404, detail="Schedule not found")
 
         return RedirectResponse(url=f"{base_path}/schedules", status_code=303)
 
@@ -279,6 +306,7 @@ def register(router: APIRouter) -> None:
         schema: str = Depends(get_schema),
         base_path: str = Depends(get_base_path),
         settings: TaskQSettings = Depends(get_settings),
+        principal: Any = Depends(get_principal),
     ) -> RedirectResponse:
         if not settings.admin_actions_enabled:
             raise HTTPException(status_code=403, detail="Admin actions are disabled")
@@ -287,14 +315,25 @@ def register(router: APIRouter) -> None:
 
         async with pool.acquire() as conn:
             try:
-                result = await conn.execute(disable_sql, schedule_id)
+                # Same-transaction audit, same 404-raises-inside shape as
+                # schedule_enable above.
+                async with conn.transaction():
+                    result = await conn.execute(disable_sql, schedule_id)
+                    if result == "UPDATE 0":
+                        raise HTTPException(status_code=404, detail="Schedule not found")
+                    await record_admin_action(
+                        conn,
+                        schema=schema,
+                        principal=principal,
+                        action=ACTION_SCHEDULE_DISABLE,
+                        target_type=TARGET_TYPE_SCHEDULE,
+                        target_id=str(schedule_id),
+                    )
             except UndefinedTableError:
                 return RedirectResponse(
                     url=f"{base_path}/schedules?error=cron+scheduling+not+installed",
                     status_code=303,
                 )
-            if result == "UPDATE 0":
-                raise HTTPException(status_code=404, detail="Schedule not found")
 
         return RedirectResponse(url=f"{base_path}/schedules", status_code=303)
 
@@ -306,6 +345,7 @@ def register(router: APIRouter) -> None:
         schema: str = Depends(get_schema),
         base_path: str = Depends(get_base_path),
         settings: TaskQSettings = Depends(get_settings),
+        principal: Any = Depends(get_principal),
     ) -> RedirectResponse:
         if not settings.admin_actions_enabled:
             raise HTTPException(status_code=403, detail="Admin actions are disabled")
@@ -314,54 +354,70 @@ def register(router: APIRouter) -> None:
         skip_sql = _SCHEDULE_SKIP_SQL.format(schema=schema)
 
         async with pool.acquire() as conn:
+            # ONE transaction around the read-modify-write and its audit
+            # row: the skip is two statements against the same row, and
+            # both plus the audit row commit together.
             try:
-                row = await conn.fetchrow(fetch_sql, schedule_id)
+                async with conn.transaction():
+                    row = await conn.fetchrow(fetch_sql, schedule_id)
+                    if row is None:
+                        raise HTTPException(status_code=404, detail="Schedule not found")
+
+                    cron_expr: str = row["cron_expr"]
+                    tz_name: str = row["timezone"]
+                    current_next: datetime = row["next_fire_at"]
+                    # Subscript, not .get(default): the fetch is contracted to
+                    # provide this column, and a defaulting read is exactly what
+                    # made the cron loop silently skip for 'allof' schedules
+                    # whatever they stored (7d7e01c). The coercion mirrors
+                    # cron_loop's: the column is CHECK-constrained to the three
+                    # strategies, this only guards a hand-edited row.
+                    dst_strategy_raw: str = row["dst_strategy"]
+                    dst_strategy: DstStrategy = (
+                        dst_strategy_raw if dst_strategy_raw in DST_STRATEGIES else "skip"
+                    )
+
+                    # The advance-until-future test must run in the same clock
+                    # domain that later decides the schedule is due: the cron loop
+                    # fires on `next_fire_at <= clock_timestamp()` server-side, so
+                    # comparing against this process's clock would let a skewed app
+                    # clock write a `next_fire_at` that PG already considers past --
+                    # firing immediately, which is the one outcome "skip" exists to
+                    # prevent. Read from the same row fetch, so it costs no round
+                    # trip.
+                    db_now: datetime = row["db_now"]
+                    new_next = compute_next_fire_after(
+                        cron_expr, tz_name, current_next, dst_strategy=dst_strategy
+                    )[0]
+                    for _ in range(1000):
+                        if new_next > db_now:
+                            break
+                        new_next = compute_next_fire_after(
+                            cron_expr, tz_name, new_next, dst_strategy=dst_strategy
+                        )[0]
+                    else:
+                        raise HTTPException(
+                            status_code=400, detail="cron expression produces no future fire time"
+                        )
+
+                    await conn.execute(skip_sql, schedule_id, new_next)
+                    await record_admin_action(
+                        conn,
+                        schema=schema,
+                        principal=principal,
+                        action=ACTION_SCHEDULE_SKIP,
+                        target_type=TARGET_TYPE_SCHEDULE,
+                        target_id=str(schedule_id),
+                        detail={"next_fire_at": new_next.isoformat()},
+                    )
             except UndefinedTableError:
+                # The schedule fetch (or the audit INSERT) hit a schema the
+                # migration has not reached: nothing commits, the operator
+                # gets the same not-installed redirect as before.
                 return RedirectResponse(
                     url=f"{base_path}/schedules?error=cron+scheduling+not+installed",
                     status_code=303,
                 )
-            if row is None:
-                raise HTTPException(status_code=404, detail="Schedule not found")
-
-            cron_expr: str = row["cron_expr"]
-            tz_name: str = row["timezone"]
-            current_next: datetime = row["next_fire_at"]
-            # Subscript, not .get(default): the fetch is contracted to
-            # provide this column, and a defaulting read is exactly what
-            # made the cron loop silently skip for 'allof' schedules
-            # whatever they stored (7d7e01c). The coercion mirrors
-            # cron_loop's: the column is CHECK-constrained to the three
-            # strategies, this only guards a hand-edited row.
-            dst_strategy_raw: str = row["dst_strategy"]
-            dst_strategy: DstStrategy = (
-                dst_strategy_raw if dst_strategy_raw in DST_STRATEGIES else "skip"
-            )
-
-            # The advance-until-future test must run in the same clock
-            # domain that later decides the schedule is due: the cron loop
-            # fires on `next_fire_at <= clock_timestamp()` server-side, so
-            # comparing against this process's clock would let a skewed app
-            # clock write a `next_fire_at` that PG already considers past --
-            # firing immediately, which is the one outcome "skip" exists to
-            # prevent. Read from the same row fetch, so it costs no round
-            # trip.
-            db_now: datetime = row["db_now"]
-            new_next = compute_next_fire_after(
-                cron_expr, tz_name, current_next, dst_strategy=dst_strategy
-            )[0]
-            for _ in range(1000):
-                if new_next > db_now:
-                    break
-                new_next = compute_next_fire_after(
-                    cron_expr, tz_name, new_next, dst_strategy=dst_strategy
-                )[0]
-            else:
-                raise HTTPException(
-                    status_code=400, detail="cron expression produces no future fire time"
-                )
-
-            await conn.execute(skip_sql, schedule_id, new_next)
 
         return RedirectResponse(url=f"{base_path}/schedules", status_code=303)
 
@@ -374,6 +430,7 @@ def register(router: APIRouter) -> None:
         base_path: str = Depends(get_base_path),
         backend: Backend | None = Depends(get_backend),
         settings: TaskQSettings = Depends(get_settings),
+        principal: Any = Depends(get_principal),
     ) -> RedirectResponse:
         if not settings.admin_actions_enabled:
             raise HTTPException(status_code=403, detail="Admin actions are disabled")
@@ -475,15 +532,34 @@ def register(router: APIRouter) -> None:
 
         await backend.enqueue(args)
 
+        # Backend-mediated mutation: the enqueue has its own committed
+        # transaction, so the audit row rides a separate checkout
+        # (record_admin_action_safe degrades loudly if it cannot land).
+        # The enqueued job id is the useful detail: the audit row is how
+        # an orphan job on a queue is traced back to the operator who
+        # pressed run-now.
+        await record_admin_action_safe(
+            pool,
+            schema=schema,
+            principal=principal,
+            action=ACTION_SCHEDULE_RUN,
+            target_type=TARGET_TYPE_SCHEDULE,
+            target_id=str(schedule_id),
+            detail={"enqueued_job_id": str(args.id)},
+        )
+
         return RedirectResponse(url=f"{base_path}/schedules", status_code=303)
 
     @router.post("/jobs/{job_id}/retry")
     async def job_retry(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
         job_id: UUID,
         _csrf: None = Depends(validate_csrf),
+        pool: BoundedPool = Depends(get_admin_pool),
+        schema: str = Depends(get_schema),
         base_path: str = Depends(get_base_path),
         backend: Backend | None = Depends(get_backend),
         settings: TaskQSettings = Depends(get_settings),
+        principal: Any = Depends(get_principal),
     ) -> RedirectResponse:
         if not settings.admin_actions_enabled:
             raise HTTPException(status_code=403, detail="Admin actions are disabled")
@@ -516,6 +592,18 @@ def register(router: APIRouter) -> None:
         retried = await backend.retry_job(JobId(job_id))
         if not retried:
             raise HTTPException(status_code=409, detail="Job is not in a retryable state")
+
+        # Backend-mediated mutation: retry_job committed its own
+        # transaction, so the audit row rides a separate checkout
+        # (record_admin_action_safe degrades loudly if it cannot land).
+        await record_admin_action_safe(
+            pool,
+            schema=schema,
+            principal=principal,
+            action=ACTION_JOB_RETRY,
+            target_type=TARGET_TYPE_JOB,
+            target_id=str(job_id),
+        )
 
         return RedirectResponse(url=f"{base_path}/jobs/{job_id}", status_code=303)
 

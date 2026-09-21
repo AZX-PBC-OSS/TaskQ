@@ -522,6 +522,52 @@ def setup_admin_state(app: _AppLike, bundle: AdminBundle) -> None:
     )
 
 
+def _capture_principal_dependency(
+    auth_dependency: Callable[..., Any] | None,
+) -> Callable[..., Any]:
+    """Build the router-level dependency that resolves the request's principal.
+
+    The auth dependency's return value used to be discarded here: it ran
+    as a bare router-level ``Depends`` purely for its side effect (raise
+    or pass), so no handler could see WHOSE fingers were on the keyboard
+    and the admin UI's mutations had no audit trail. This wrapper keeps
+    the same router-level placement (auth still runs before every page)
+    but stores the returned principal on ``request.state.principal``;
+    handlers read it through :func:`get_principal`.
+
+    With ``auth_dependency=None`` (dev deployments only; the factory fails
+    closed otherwise) the stored principal is ``None``: the audit writer
+    resolves that to the explicit ``anonymous`` subject rather than
+    crashing the mutation.
+    """
+    if auth_dependency is None:
+
+        async def _capture_anonymous(request: Request) -> None:
+            request.state.principal = None
+
+        return _capture_anonymous
+
+    async def _capture_authenticated(
+        request: Request,
+        claims: Any = Depends(auth_dependency),
+    ) -> None:
+        request.state.principal = claims
+
+    return _capture_authenticated
+
+
+def get_principal(request: Request) -> Any:
+    """Dependency: the principal the auth dependency returned for this request.
+
+    An :class:`~taskq.web.admin.auth.IdentityClaims` for the shipped SSO
+    dependencies, whatever a host's custom ``auth_dependency`` returns, or
+    ``None`` on the no-auth dev path (resolved to ``anonymous`` at the
+    audit boundary). Mutation handlers pass it straight through to
+    :func:`taskq.web.admin._audit.record_admin_action`.
+    """
+    return getattr(request.state, "principal", None)
+
+
 def create_router(
     pg_pool: asyncpg.Pool,
     *,
@@ -576,9 +622,15 @@ def create_router(
     # and repeating it per page is how one page would end up telling a
     # different story about staleness than the next. It is cached for
     # _CLOCK_OFFSET_TTL, so this is one extra query per 30 s, not per request.
-    router_dependencies: list[Any] = [Depends(_refresh_clock_offset)]
-    if auth_dependency is not None:
-        router_dependencies.insert(0, Depends(auth_dependency))
+    #
+    # The principal capture sits FIRST (where the bare auth dependency used
+    # to be): it wraps that same dependency, keeps it running before every
+    # page, and stores its return value on request.state.principal so the
+    # mutation routes can attribute their audit rows.
+    router_dependencies: list[Any] = [
+        Depends(_capture_principal_dependency(auth_dependency)),
+        Depends(_refresh_clock_offset),
+    ]
     router_kwargs: dict[str, Any] = {
         "route_class": _csrf_route_class(settings),
         "dependencies": router_dependencies,
