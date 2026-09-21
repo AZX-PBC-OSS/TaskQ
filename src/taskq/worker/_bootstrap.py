@@ -181,33 +181,52 @@ def _redis_configured(settings: WorkerSettings, registry: ProviderRegistry) -> b
     return registry.has_provider(redis_async.Redis)
 
 
-def _emit_progress_fanout_unconfigured_warning(
-    settings: WorkerSettings,
-    registry: ProviderRegistry,
-) -> None:
+def _emit_progress_fanout_unconfigured_warning(redis_client: object | None) -> None:
     """Warn once when this worker's progress publishes cannot fan out.
 
-    The per-call publish in ``context.py`` keys on a resolved Redis
-    client: with no ``TASKQ_REDIS_URL`` and no registered
-    ``redis.asyncio.Redis`` provider the publish block is skipped
-    silently (the documented contract), so live consumers fall back to
-    500 ms Postgres polling. Durable progress state still rides the
-    Postgres flush, so this is a latency degradation, not data loss; the
-    warning exists because every downstream consumer degrades loudly
-    (SSE 503 ``redis_not_configured``, client poll fallback) while the
-    worker side, the one place that knows the fanout is off, said
-    nothing. Reuses ``_redis_configured`` so this cannot disagree with
-    the rate-limit gate about what counts as configured.
+    The per-call publish in ``context.py`` keys on the resolved Redis
+    client: when it is ``None`` the publish block is skipped silently
+    (the documented contract), so live consumers fall back to 500 ms
+    Postgres polling. Durable progress state still rides the Postgres
+    flush, so this is a latency degradation, not data loss; the warning
+    exists because every downstream consumer degrades loudly (SSE 503
+    ``redis_not_configured``, client poll fallback) while the worker
+    side, the one place that knows the fanout is off, said nothing.
+
+    The predicate is *redis_client*, ``WorkerDeps.redis_client`` at the
+    call site: the exact object the publish block tests. It is
+    deliberately NOT ``_redis_configured``, the rate-limit gate's
+    predicate: the two consumers resolve Redis through different
+    machinery, so "configured" is not one predicate. Rate limiters
+    resolve through DI (``register_redis_pool`` → ``get_redis_pool``),
+    and a user-registered ``redis.asyncio.Redis`` provider serves them
+    while never reaching ``WorkerDeps.redis_client``, so the gate's
+    predicate would suppress this warning for a deployment whose fanout
+    is actually off (a false negative). Conversely, a caller-owned
+    ``WorkerConnections.redis_client`` or ``redis_client_factory`` wires
+    the fanout with no URL and no DI provider, and the gate's predicate
+    would warn on a working fanout (a false positive). ``deps`` is fully
+    resolved before the call site runs, so the check is exact at the
+    moment it fires.
+
+    Placement: after the rate-limit gate, so a boot about to crash on
+    Redis-backed limits does not also warn about progress fanout. Every
+    crash before that line (settings validation, import failures, the
+    schema-currency refusal, a failed deps open) leaves no worker
+    serving jobs at all, so there is no live fanout to warn about; the
+    call sits before the TaskGroup starts any actor, so no publish can
+    precede the check.
     """
-    if _redis_configured(settings, registry):
+    if redis_client is not None:
         return
     _startup_log.warning(
         "progress-fanout-unconfigured",
         remedy=(
-            "Set TASKQ_REDIS_URL or register a redis.asyncio.Redis DI "
-            "provider; without one, progress events reach consumers only "
-            "through the durable Postgres flush, so live streams fall "
-            "back to 500 ms polling"
+            "Set TASKQ_REDIS_URL or pass a Redis client via "
+            "WorkerConnections (redis_client or redis_client_factory); "
+            "without one, progress events reach consumers only through "
+            "the durable Postgres flush, so live streams fall back to "
+            "500 ms polling"
         ),
     )
 
@@ -1700,8 +1719,11 @@ async def _main(
         # Why: after the rate-limit gate so a boot about to crash on
         # Redis-backed limits does not also warn about progress fanout.
         # Without this, the worker-side publish skip in context.py is the
-        # only silent link in issue #341's loud degradation chain.
-        _emit_progress_fanout_unconfigured_warning(settings, registry)
+        # only silent link in issue #341's loud degradation chain. The
+        # predicate is the resolved client (the exact object the publish
+        # block tests), not the gate's _redis_configured - the derivation
+        # is in the helper's docstring.
+        _emit_progress_fanout_unconfigured_warning(redis_client=deps.redis_client)
         if settings.redis_url is not None:
             if not _redis_extra_installed():
                 # Why: without this check the missing extra surfaces later as
