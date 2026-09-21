@@ -28,8 +28,10 @@ timestamps sit at the same logical elapsed and bucket identically however
 loaded the runner is:
 
 * ``None`` - the column is NULL;
-* ``"past"`` - the instant is at least 0.5 s before the snapshot's now;
-* ``"now"`` - within 0.5 s of the snapshot's now;
+* ``"past"`` - materially before the side's own scenario span (beyond the
+  0.5 s slack below the span's start);
+* ``"now"`` - within the side's own scenario wall span, or within 0.5 s of
+  the snapshot's now;
 * a rounded integer - seconds AFTER the snapshot's now (retry backoffs,
   lock leases, result expiries; PG's sub-second statement latency is
   absorbed by the rounding).
@@ -61,6 +63,7 @@ this harness.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import fields, replace
@@ -122,23 +125,47 @@ class _StubBackendDeps:
 Scenario = Callable[["DiffSide"], Awaitable[None]]
 
 
-def _bucket(ts: datetime | None, now: datetime) -> Any:
+def _bucket(
+    ts: datetime | None,
+    now: datetime,
+    span_start: datetime | None = None,
+) -> Any:
     """Normalize one timestamp onto the domain-relative bucket scale.
 
-    The fence is 0.5 s: the reference is each side's own scenario-end
-    clock reading, so the two sides' write instants bucket against
-    comparable references (the mirror's clock is frozen during its
+    The fence is the side's own scenario wall span (``span_start`` .. ``now``,
+    the scenario-end clock reading) plus 0.5 s of slack below the span's
+    start; the future fence stays 0.5 s. The reference is each side's own
+    scenario-end clock reading, so the two sides' write instants bucket
+    against comparable references (the mirror's clock is frozen during its
     scenario; bucketing it against the advanced clock read its writes as
-    "past" purely because the PG side's wall time moved on). A scenario
-    whose assertion rides the fence keeps its boundary-sensitive write
-    last in the scenario, where the reference is captured; the fence
-    itself must not widen past the smallest asserted backoff.
+    "past" purely because the PG side's wall time moved on).
+
+    Why the span, and why this width: the mirror's backend-stamped writes all
+    sit exactly at its scenario-end reference (the frozen clock), while PG's
+    are stamped at wall time THROUGHOUT the scenario - so a single-instant
+    fence read the same logical write as "now" on the mirror and "past" on PG
+    whenever the runner stretched PG's inter-action wall time past 0.5 s (the
+    CI flake on test_diff_sweep1_cancel_carveout_margin, whose cancel request
+    is stamped two sweeps before the reference: only the bucket strings
+    differed). A write the scenario itself stamped is "at now" on both
+    engines - runner latency between actions is not a backend behavioral
+    difference - so the "now" window covers the side's own scenario span.
+    The 0.5 s slack below the span's start keeps every anchored past offset
+    reading "past" (the smallest in the corpus is 1 s before the anchor:
+    planted created_at / cancel_requested_at), and the future fence stays
+    0.5 s so the smallest asserted backoff (5 s in the sweep corpus) keeps
+    its exact rounded bucket - the fence must not widen past the smallest
+    asserted backoff. A scenario whose assertion rides the fence still keeps
+    its boundary-sensitive offset-bearing write last in the scenario, where
+    the reference is captured.
     """
     if ts is None:
         return None
     delta = (ts - now).total_seconds()
     if delta >= 0.5:
         return round(delta)
+    if span_start is not None and ts >= span_start - timedelta(seconds=0.5):
+        return "now"
     if delta <= -0.5:
         return "past"
     return "now"
@@ -769,7 +796,12 @@ class DiffSide:
 
     # ── Snapshot ───────────────────────────────────────────────────────
 
-    async def _job_observable(self, jid: JobId, now: datetime) -> dict[str, Any]:
+    async def _job_observable(
+        self,
+        jid: JobId,
+        now: datetime,
+        span_start: datetime | None,
+    ) -> dict[str, Any]:
         row = await self.backend.get(jid)
         attempts = await self.backend.get_attempts(jid)
         events = await self.backend.get_events(jid)
@@ -809,17 +841,17 @@ class DiffSide:
             "attempt": row.attempt,
             "max_attempts": row.max_attempts,
             "retry_kind": row.retry_kind,
-            "schedule_to_close": _bucket(row.schedule_to_close, now),
+            "schedule_to_close": _bucket(row.schedule_to_close, now, span_start),
             "start_to_close": _seconds(row.start_to_close),
             "heartbeat_timeout": _seconds(row.heartbeat_timeout),
-            "created_at": _bucket(row.created_at, now),
-            "scheduled_at": _bucket(row.scheduled_at, now),
-            "started_at": _bucket(row.started_at, now),
-            "finished_at": _bucket(row.finished_at, now),
-            "last_heartbeat_at": _bucket(row.last_heartbeat_at, now),
+            "created_at": _bucket(row.created_at, now, span_start),
+            "scheduled_at": _bucket(row.scheduled_at, now, span_start),
+            "started_at": _bucket(row.started_at, now, span_start),
+            "finished_at": _bucket(row.finished_at, now, span_start),
+            "last_heartbeat_at": _bucket(row.last_heartbeat_at, now, span_start),
             "locked_by_worker": self.worker_token(row.locked_by_worker),
-            "lock_expires_at": _bucket(row.lock_expires_at, now),
-            "cancel_requested_at": _bucket(row.cancel_requested_at, now),
+            "lock_expires_at": _bucket(row.lock_expires_at, now, span_start),
+            "cancel_requested_at": _bucket(row.cancel_requested_at, now, span_start),
             "cancel_phase": int(row.cancel_phase),
             "error_class": row.error_class,
             "error_message": row.error_message,
@@ -828,7 +860,7 @@ class DiffSide:
             "progress_seq": row.progress_seq,
             "result": row.result,
             "result_size_bytes": row.result_size_bytes,
-            "result_expires_at": _bucket(row.result_expires_at, now),
+            "result_expires_at": _bucket(row.result_expires_at, now, span_start),
             "idempotency_key": row.idempotency_key,
             "idempotency_scope": row.idempotency_scope,
             "trace_id": row.trace_id,
@@ -870,7 +902,7 @@ class DiffSide:
                 out[key] = value
         return out
 
-    def _norm_value(self, value: Any, now: datetime) -> Any:
+    def _norm_value(self, value: Any, now: datetime, span_start: datetime | None) -> Any:
         if isinstance(value, UUID):
             if value in self._token_by_id:
                 return self._token_by_id[value]
@@ -878,19 +910,24 @@ class DiffSide:
         if isinstance(value, JobRow):
             return self.token_of(value.id)
         if isinstance(value, datetime):
-            return _bucket(value, now)
+            return _bucket(value, now, span_start)
         if isinstance(value, dict):
             # Why the cast: ``value`` is Any, and isinstance-narrowing leaves
             # its items Unknown (pyright strict) - cast re-declares the
             # narrowed container so every element is Any, not Unknown.
             mapping = cast("dict[Any, Any]", value)
-            return {k: self._norm_value(v, now) for k, v in mapping.items()}
+            return {k: self._norm_value(v, now, span_start) for k, v in mapping.items()}
         if isinstance(value, (list, tuple)):
             sequence = cast("list[Any] | tuple[Any, ...]", value)
-            return [self._norm_value(v, now) for v in sequence]
+            return [self._norm_value(v, now, span_start) for v in sequence]
         return value
 
-    async def _batch_observable(self, bid: UUID, now: datetime) -> dict[str, Any]:
+    async def _batch_observable(
+        self,
+        bid: UUID,
+        now: datetime,
+        span_start: datetime | None,
+    ) -> dict[str, Any]:
         row = await self.backend.get_batch(bid)
         if row is None:
             return {"present": False}
@@ -901,7 +938,7 @@ class DiffSide:
             "consecutive_failures": row.consecutive_failures,
             "failure_threshold": row.failure_threshold,
             "finalizer_job_id": self.token_of(row.finalizer_job_id),
-            "completed_at": _bucket(row.completed_at, now),
+            "completed_at": _bucket(row.completed_at, now, span_start),
         }
 
     async def snapshot(self, ref: datetime | None = None) -> dict[str, Any]:
@@ -914,11 +951,13 @@ class DiffSide:
         frozen during its scenario while PG's advances in wall time, so a
         shared reference reads the two sides' identical write instants at
         different buckets whenever a loaded runner stretches the PG
-        scenario past the fence.
+        scenario past the fence. The fence itself is the side's own
+        scenario wall span (``self._t0`` .. ``ref``); see :func:`_bucket`.
         """
         now = ref if ref is not None else await self.now()
+        span_start = self._t0
         jobs = {
-            token: await self._job_observable(jid, now)
+            token: await self._job_observable(jid, now, span_start)
             for token, jid in self._jobs_by_token.items()
         }
         status_counts: dict[str, int] = {}
@@ -927,14 +966,14 @@ class DiffSide:
             if row is not None:
                 status_counts[row.status] = status_counts.get(row.status, 0) + 1
         batches = {
-            token: await self._batch_observable(bid, now)
+            token: await self._batch_observable(bid, now, span_start)
             for token, bid in self._batches_by_token.items()
         }
         return {
             "jobs": jobs,
             "status_counts": status_counts,
             "batches": batches,
-            "records": {k: self._norm_value(v, now) for k, v in self._records.items()},
+            "records": {k: self._norm_value(v, now, span_start) for k, v in self._records.items()},
         }
 
     async def teardown_pg_schema(self) -> None:
@@ -1122,6 +1161,51 @@ async def test_diff_harness_baseline_green(pg_dsn: str) -> None:
     assert pg["status_counts"] == {"scheduled": 1, "failed": 1}
 
 
+# ── Bucket-fence regression: mid-scenario writes bucket 'now' on both sides ─
+
+
+async def _fence_stretch_scenario(side: DiffSide) -> None:
+    # The immediate enqueue stamps scheduled_at at each side's own now, and
+    # the cancel request stamps cancel_requested_at mid-scenario; the forced
+    # 0.75 s wall tail (sleep never wakes early) then puts BOTH writes
+    # beyond the 0.5 s fence from the PG side's scenario-end reference - the
+    # loaded-runner shape the CI flake on
+    # test_diff_sweep1_cancel_carveout_margin hit (its cancel request is
+    # stamped two sweeps before the reference; only the bucket strings
+    # differed). Offset-bearing writes keep the harness's documented rule:
+    # the dispatch's 60 s lease goes LAST in the scenario, where the
+    # reference is captured, so its rounded bucket stays exact.
+    await side.enqueue("j1", scheduled_in=None)
+    await side.write_cancel_request("j1", "fence-probe")
+    await asyncio.sleep(0.75)
+    await side.dispatch("w1", ["default"], limit=5)
+
+
+async def test_diff_bucket_fence_absorbs_scenario_wall_time(pg_dsn: str) -> None:
+    """A backend-stamped write beyond the fence from the reference still buckets 'now'.
+
+    Deterministic repro of the loaded-runner flake: the mirror's frozen clock
+    pins every write at its own scenario-end reference ('now') while PG's
+    stamps carry the scenario's wall time and crossed the 0.5 s 'past' fence.
+    The forced 0.75 s tail (sleep never wakes early) pins the fence rule:
+    mid-scenario writes bucket identically on both engines, and every
+    behavioral observable - status, cancel phase, event trail, attempt row -
+    stays exact.
+    """
+    mem, pg = await run_differential(_fence_stretch_scenario, pg_dsn=pg_dsn)
+    assert_mirror(
+        "backend-stamped writes landing beyond the 0.5s fence from the "
+        "reference (a loaded runner's wall-time stretch) bucket identically "
+        "on both backends - 'now' on both, never 'past' on one and 'now' on "
+        "the other - with every behavioral observable unaffected",
+        mem,
+        pg,
+    )
+    assert pg["jobs"]["j1"]["status"] == "cancelled"
+    assert pg["jobs"]["j1"]["scheduled_at"] == "now"
+    assert pg["jobs"]["j1"]["created_at"] == "now"
+
+
 # ── Projection completeness: the differential's blind-spot guard ────────
 
 
@@ -1167,7 +1251,11 @@ async def test_job_observable_projects_every_jobrow_field() -> None:
     memory._jobs[JobId(planted.id)] = planted  # pyright: ignore[reportPrivateUsage]  # Why: test-only private seeding, the established same-module pattern (DiffSide.plant).
     side.register_job_id("j1", JobId(planted.id))
 
-    obs = await side._job_observable(JobId(planted.id), await side.now())  # pyright: ignore[reportPrivateUsage]  # Why: the self-test inspects the harness's own projection directly.
+    obs = await side._job_observable(  # pyright: ignore[reportPrivateUsage]  # Why: the self-test inspects the harness's own projection directly.
+        JobId(planted.id),
+        await side.now(),
+        side._t0,  # pyright: ignore[reportPrivateUsage]  # Why: harness-owned anchor, the same reference snapshot() buckets against.
+    )
 
     missing = {f.name for f in fields(JobRow)} - set(obs)
     assert not missing, (
