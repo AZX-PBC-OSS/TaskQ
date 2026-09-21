@@ -380,7 +380,8 @@ async def test_di_consumer_loop_does_not_count_slot_pool_acquire_failures() -> N
     captured: dict[str, object] = {}
 
     async def _fake_dispatch(*args: object, **kwargs: object) -> AttemptOutcome:
-        captured["job_id"] = kwargs["job"].id
+        job: Any = kwargs["job"]
+        captured["job_id"] = job.id
         raise SlotPoolAcquireError(acquire_timeout=5.0)
 
     deps = await _run_one_job_with_fake_dispatch(
