@@ -376,6 +376,20 @@ class InMemoryBackend:
         error_traceback: str | None,
         worker_id: UUID | None,
     ) -> None:
+        rows = self._attempts.setdefault(job_id, [])
+        # Mirrors the ON CONFLICT (job_id, attempt) DO NOTHING guard every
+        # PG job_attempts insert carries (the same guard _write_attempt
+        # applies to the direct-write path): the claim's ceiling clamp can
+        # repeat an attempt number (a row parked at the smallint ceiling
+        # claims again at 32767 with a fresh claim epoch), and PG keeps
+        # the first record of the number - "keep the first record, never
+        # roll the transition back", the comment on every attempt CTE in
+        # backend/_sql_templates.py / _terminal.py. The twin's terminal
+        # and deferral writers must not accumulate duplicates PG refused
+        # to store: below the ceiling every epoch's number is fresh and
+        # the guard is a no-op; at the ceiling it is the doctrine.
+        if any(row.attempt == attempt for row in rows):
+            return
         duration_ms: int | None = None
         if started_at is not None:
             duration_ms = int((now - started_at).total_seconds() * 1000)
