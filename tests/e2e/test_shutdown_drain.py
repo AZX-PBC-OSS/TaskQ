@@ -596,8 +596,11 @@ class _CountingHeartbeatPool:
 
 
 # The steady-state tick against this fleet: BEGIN, the liveness write, the
-# gated lease renewal, the reservation write, the cancel-hook poll, COMMIT.
-_TICK_COMMAND_COUNT = 6
+# gated lease renewal, the reservation write, the claim-loss reconcile
+# probe (one indexed SELECT - it rides the tick's existing transaction and
+# single command budget, but it IS a round trip), the cancel-hook poll,
+# COMMIT.
+_TICK_COMMAND_COUNT = 7
 
 
 async def test_heartbeat_tick_round_trip_budget(
@@ -668,11 +671,12 @@ async def test_heartbeat_tick_round_trip_budget(
         assert len(commands) == _TICK_COMMAND_COUNT, (
             f"one heartbeat tick issued {len(commands)} commands, expected "
             f"{_TICK_COMMAND_COUNT} (BEGIN, the liveness write, the gated "
-            f"lease renewal, the reservation write, the cancel-hook poll, "
-            f"COMMIT); the tick's round-trip sequence grew - under this "
-            f"fleet's 0.5 s command budget nothing else would fail, so "
-            f"either fold the round trip into an existing statement, or "
-            f"re-derive the budget and this pin together. "
+            f"lease renewal, the reservation write, the claim-loss "
+            f"reconcile probe, the cancel-hook poll, COMMIT); the tick's "
+            f"round-trip sequence grew - under this fleet's 0.5 s command "
+            f"budget nothing else would fail, so either fold the round "
+            f"trip into an existing statement, or re-derive the budget "
+            f"and this pin together. "
             f"Commands observed: {[sql[:80] for sql in commands]}"
         )
     finally:
