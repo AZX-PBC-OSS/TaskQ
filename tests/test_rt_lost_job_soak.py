@@ -79,13 +79,15 @@ _TERMINATE_RECONNECT_POLL_SECS = 0.5
 # when every job is terminal OR the system is quiescent - see
 # ``_settle_quiescent`` for the exact conditions.
 _SETTLE_POLL_SECS = 2.0
-#: K consecutive inert polls declare quiescence. The worker's poll
-#: interval is 50ms, but the window must also ride out scheduler
-#: starvation: the worker pins its own event-loop lag budget at 1.2s
-#: (watchdog_loop_lag_budget), and a fully saturated runner can push a
-#: poll cycle past several seconds. Eight 2s polls (~16s of frozen
-#: observable state) is ~13x that budget - slow-but-alive workers never
-#: trip it, a genuinely stuck system cannot outlive it.
+#: K consecutive inert polls declare quiescence. The window must ride out
+#: scheduler starvation: a fully saturated runner can push a poll cycle
+#: past several seconds (this soak's own -n 4 co-tenancy pacing is
+#: ~2.7s/job), and the worker's lag watchdog pins the terminal trip at
+#: 4.0s (watchdog_loop_lag_budget, the largest value its lease cascade
+#: admits). Eight 2s polls (~16s of frozen observable state) is 4x that
+#: budget and 3x the worker's own 5s retry-backoff maturity, so a
+#: stalled-but-alive worker's cycle lands inside one window while a
+#: genuinely stuck system cannot outlive it.
 _SETTLE_QUIESCE_POLLS = 8
 #: The outer wall cap, scaled to the job count: the slowest settle
 #: observed on CI ran ~0.2s/job under heavy contention; the 3.13 leg
@@ -159,7 +161,18 @@ def _settings(pg_dsn: str, schema: str) -> WorkerSettings:
             "cancellation_grace_period": "1",
             "cleanup_grace_period": "1",
             "heartbeat_command_timeout": "0.1",
-            "watchdog_loop_lag_budget": "1.2",
+            # 4.0 is the largest value the lease cascade admits
+            # (4.0 + heartbeat_interval 0.5 < lock_lease 5), not the
+            # smallest: the trip is TERMINAL (os._exit), so the budget
+            # must clear the worst legitimate stall, and a saturated
+            # -n 4 runner's co-tenancy pushes a poll cycle past several
+            # seconds (this soak's own observed pacing: ~2.7s/job). The
+            # old 1.2 - the minimum the 1.0s check interval admits -
+            # tripped on legitimate co-tenancy lag and killed the pytest
+            # worker mid-suite (xdist "node down", three CI legs in one
+            # evening). A wedged loop still trips at 4s, 7.5x inside the
+            # 30s step watchdogs below.
+            "watchdog_loop_lag_budget": "4.0",
             "watchdog_loop_lag_warn_budget": "0.5",
             "max_concurrency": "4",
             "queues": [_QUEUE],
