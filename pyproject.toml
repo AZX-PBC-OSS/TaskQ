@@ -374,6 +374,13 @@ ignore = [
 # user-supplied values use $N parameter binding.
 "tests/test_heartbeat_chaos.py" = ["S608"]
 "tests/test_leader_integration.py" = ["S608"]
+# Same rationale — schema name comes from the jobs_app fixture's per-test
+# hashed identifier; all user-supplied values use $N parameter binding.
+"tests/test_isolate_reclaim_feed.py" = ["S608"]
+# Attack suite: same fixture-derived schema interpolation; every value is
+# $N-bound and the schema comes from the jobs_app fixture's per-test
+# hashed identifier.
+"tests/test_attack_provenance.py" = ["S608"]
 "tests/test_cron_integration.py" = ["S608", "SIM117"]
 # Same rationale — schema name validated against _IDENT_RE; all
 # user-supplied values use $N parameter binding.

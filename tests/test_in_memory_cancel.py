@@ -23,7 +23,7 @@ from uuid import UUID
 
 import taskq.constants as _constants
 from taskq._ids import new_job_id
-from taskq.backend._protocol import EnqueueArgs, JobId
+from taskq.backend._protocol import CancelPhase, EnqueueArgs, JobId
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 
@@ -308,6 +308,7 @@ class TestCancelOriginAuditability:
         backend = _make_backend()
         job_id, worker_id = await _make_running_job(backend)
 
+        assert await backend.write_cancel_request(job_id, "operator stop") is True
         assert await backend.mark_cancelled(job_id, worker_id, attempt=1, claim_epoch=1) is True
 
         row = await backend.get(job_id)
@@ -317,6 +318,59 @@ class TestCancelOriginAuditability:
             "a cooperative cancel wrote no error_class - cancel origin is "
             "unauditable on the job row"
         )
+
+    async def test_unrequested_cancel_stamps_its_own_origin(self) -> None:
+        """A terminal cancel of a row that carries no cancel request (a
+        sibling crash, an actor self cancel, a leaked child cancellation)
+        reads ``CancelledWithoutRequest``, never ``CancelledCooperatively``:
+        the cooperative marker claims an operator asked, and no request
+        exists anywhere on this row."""
+        backend = _make_backend()
+        job_id, worker_id = await _make_running_job(backend)
+        row_before = await backend.get(job_id)
+        assert row_before is not None
+        assert row_before.cancel_requested_at is None
+        assert row_before.cancel_phase == CancelPhase.NONE
+
+        assert await backend.mark_cancelled(job_id, worker_id, attempt=1, claim_epoch=1) is True
+
+        row = await backend.get(job_id)
+        attempts = await backend.get_attempts(job_id)
+        events = await backend.get_events(job_id)
+        assert row is not None
+        assert row.status == "cancelled"
+        assert row.cancel_requested_at is None
+        assert row.cancel_phase == CancelPhase.NONE
+        assert row.error_class == _constants.CANCEL_ORIGIN_UNREQUESTED
+        assert attempts[0].error_class == _constants.CANCEL_ORIGIN_UNREQUESTED
+        assert events[-1].detail["error_class"] == _constants.CANCEL_ORIGIN_UNREQUESTED
+
+    async def test_unrequested_cancel_is_distinct_from_the_cooperative_one(self) -> None:
+        """A row the operator asked to cancel and one the runtime cancelled
+        on its own must never read the same ``error_class``: the two cells
+        are the distinction the origin markers exist to carry."""
+        backend = _make_backend()
+        requested_job, requested_worker = await _make_running_job(backend)
+        unrequested_job, unrequested_worker = await _make_running_job(backend)
+
+        assert await backend.write_cancel_request(requested_job, "operator stop") is True
+        assert (
+            await backend.mark_cancelled(requested_job, requested_worker, attempt=1, claim_epoch=1)
+            is True
+        )
+        assert (
+            await backend.mark_cancelled(
+                unrequested_job, unrequested_worker, attempt=1, claim_epoch=1
+            )
+            is True
+        )
+
+        requested_row = await backend.get(requested_job)
+        unrequested_row = await backend.get(unrequested_job)
+        assert requested_row is not None and unrequested_row is not None
+        assert requested_row.error_class == _constants.CANCEL_ORIGIN_COOPERATIVE
+        assert unrequested_row.error_class == _constants.CANCEL_ORIGIN_UNREQUESTED
+        assert requested_row.error_class != unrequested_row.error_class
 
     async def test_cancel_origins_are_distinguishable_on_the_row(self) -> None:
         """Cooperative cancel, forced abandon and cancelled-while-pending
@@ -339,6 +393,10 @@ class TestCancelOriginAuditability:
         )
         await backend.enqueue(pending_args)
 
+        # The cooperative cell carries the request the marker claims: a
+        # real operator cancel lands the request on the row first, the
+        # actor's yield terminalises it second.
+        assert await backend.write_cancel_request(coop_job, "operator stop") is True
         assert await backend.mark_cancelled(coop_job, coop_worker, attempt=1, claim_epoch=1) is True
         # The abandon path requires the escalated phase the forcing ladder reaches.
         backend._jobs[abandon_job] = _dc_replace(backend._jobs[abandon_job], cancel_phase=2)

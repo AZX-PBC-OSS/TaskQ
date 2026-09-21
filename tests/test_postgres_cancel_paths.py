@@ -16,11 +16,13 @@ from taskq.backend._protocol import EnqueueArgs
 from taskq.constants import (
     CANCEL_ORIGIN_COOPERATIVE,
     CANCEL_ORIGIN_FORCED,
+    CANCEL_ORIGIN_UNREQUESTED,
 )
 from taskq.testing.assertions import (
     assert_has_event,
     assert_job_status,
     assert_job_terminal,
+    parse_detail,
 )
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.in_memory import InMemoryBackend
@@ -700,6 +702,10 @@ class TestCancelOriginAuditability:
             abandon_worker, abandon_job = await setup_running_job(conn, schema)
             pending_job = await create_pending_job(conn, schema)
 
+        # The cooperative cell carries the request the marker claims: a
+        # real operator cancel lands the request on the row first, the
+        # actor's yield terminalises it second.
+        assert await backend.write_cancel_request(coop_job, "operator stop") is True
         assert await backend.mark_cancelled(coop_job, coop_worker, attempt=1, claim_epoch=1) is True
         # The abandon path is only reachable once the cooperative window
         # has elapsed and the cancel escalated to forcing.
@@ -782,6 +788,93 @@ class TestCancelOriginAuditability:
         assert row["error_class"] == CANCEL_ORIGIN_COOPERATIVE
         assert attempt is not None
         assert attempt["error_class"] == CANCEL_ORIGIN_COOPERATIVE
+
+    async def test_no_request_cancel_stamps_the_unrequested_marker(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """A terminal cancel of a row that carries no cancel request (a
+        sibling task crash, an actor self cancel, a leaked child
+        cancellation) reads ``CancelledWithoutRequest`` on the row, the
+        attempt, and the event detail, never ``CancelledCooperatively``:
+        the cooperative marker claims an operator asked, and no request
+        exists anywhere on this row."""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            worker_id, job_id = await setup_running_job(conn, schema)
+            pre = await conn.fetchrow(
+                f'SELECT cancel_requested_at, cancel_phase FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+        assert pre is not None
+        assert pre["cancel_requested_at"] is None
+        assert pre["cancel_phase"] == 0
+
+        assert await backend.mark_cancelled(job_id, worker_id, attempt=1, claim_epoch=1) is True
+
+        async with deps.worker_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT status, error_class, cancel_requested_at, cancel_phase "
+                f'FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+            attempt = await conn.fetchrow(
+                f'SELECT error_class FROM "{schema}".job_attempts WHERE job_id = $1', job_id
+            )
+            event = await conn.fetchrow(
+                f'SELECT detail FROM "{schema}".job_events '
+                f"WHERE job_id = $1 AND kind = 'state_change' "
+                f"AND detail->>'to_state' = 'cancelled'",
+                job_id,
+            )
+        assert row is not None
+        assert row["status"] == "cancelled"
+        assert row["cancel_requested_at"] is None
+        assert row["cancel_phase"] == 0
+        assert row["error_class"] == CANCEL_ORIGIN_UNREQUESTED
+        assert attempt is not None
+        assert attempt["error_class"] == CANCEL_ORIGIN_UNREQUESTED
+        assert event is not None
+        event_detail = parse_detail(event["detail"])
+        assert event_detail["error_class"] == CANCEL_ORIGIN_UNREQUESTED
+
+    async def test_no_request_cancel_is_distinct_from_the_cooperative_one(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """A row the operator asked to cancel and one the runtime cancelled
+        on its own must never read the same ``error_class``: the two cells
+        are the distinction the origin markers exist to carry."""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            requested_worker, requested_job = await setup_running_job(conn, schema)
+            unrequested_worker, unrequested_job = await setup_running_job(conn, schema)
+
+        assert await backend.write_cancel_request(requested_job, "operator stop") is True
+        assert (
+            await backend.mark_cancelled(requested_job, requested_worker, attempt=1, claim_epoch=1)
+            is True
+        )
+        assert (
+            await backend.mark_cancelled(
+                unrequested_job, unrequested_worker, attempt=1, claim_epoch=1
+            )
+            is True
+        )
+
+        async with deps.worker_pool.acquire() as conn:
+            rows = await conn.fetch(
+                f'SELECT id, error_class FROM "{schema}".jobs WHERE id = ANY($1::uuid[])',
+                [requested_job, unrequested_job],
+            )
+        by_id = {r["id"]: r["error_class"] for r in rows}
+        assert by_id[requested_job] == CANCEL_ORIGIN_COOPERATIVE
+        assert by_id[unrequested_job] == CANCEL_ORIGIN_UNREQUESTED
+        assert by_id[requested_job] != by_id[unrequested_job]
 
     async def test_phase_2_cancel_stamps_the_forced_marker(self, clean_jobs_app: JobsApp) -> None:
         """A running job cancelled after escalation (cancel_phase=2) reads
