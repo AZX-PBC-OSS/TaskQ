@@ -40,6 +40,7 @@ from taskq.backend._sql import (
     build_heartbeat_sql,
     parse_rowcount,
 )
+from taskq.backend._sql_fragments import ATTEMPT_REFUND_SQL
 from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: isolate and the reclaim sweep must decide a job's budget and its hand-back delay identically, one fragment, no second hand-maintained copy.
     _RECLAIM_DELAY_SQL,
     _RECLAIM_HAS_BUDGET_SQL,
@@ -254,18 +255,50 @@ _SELECT_STILL_HELD_SQL_TEMPLATE = (
 # one lease of the disown, and Sweep 1 reclaims the row with its own
 # attempt rows, reclaim events and budget predicates - the recovery
 # every "recovers by lock-lease expiry" docstring already promises.
-# The grace is a full lease on ``started_at``: the claim-to-register
-# chain (claim → queue → take → intent → register) is bounded by
-# scheduler steps and loop lag, orders of magnitude under one lease,
-# and a row older than its own lease with no holder anywhere is past
-# every legitimate handoff. ``started_at IS NULL`` (direct-SQL
-# reachable only; dispatch always stamps it) never matches - the same
-# exclusion the attempt-ledger arms carry.
-_SELECT_LOST_CLAIMS_SQL_TEMPLATE = (
-    'SELECT id FROM "{schema}".jobs '
-    "WHERE locked_by_worker = $1 AND status = 'running' "
-    "AND NOT (id = ANY($2::uuid[])) "
-    "AND started_at < clock_timestamp() - $3::interval"
+#
+# The disown REFUNDS the claim-time increment. Dispatch stamps
+# ``attempt = j.attempt + 1`` at claim (backend/_dispatch_sql.py), before
+# any actor sees the job, and this reconcile's rows are exactly the ones
+# the increment was charged for and no execution ever covered: no
+# registry entry means no actor, no intent means no take, never queued
+# means never handed out. Without the refund, the disowned row carries
+# the charged attempt into Sweep 1's budget predicate, and a
+# ``max_attempts=1`` job (or a ``non_retryable`` one at its budget edge)
+# terminalises 'crashed' there having never executed, with a crashed
+# ``job_attempts`` row asserting the execution and attributing it to a
+# worker that never held a running actor (issue 458's measured record).
+# The refund is the shutdown drain's rule, applied at the same
+# discriminator: a claim that never reached an actor bought nothing, so
+# it spends nothing (worker/shutdown.py's ``drain_local_queue_to_pending``,
+# the third sink for a lost grip, refunds through the same
+# ``ATTEMPT_REFUND_SQL`` fragment this statement reuses - one fragment,
+# the alias-qualified spelling, for every never-started hand-back).
+#
+# The row itself stays ``running`` and locked: unlike the drain, which
+# re-pends and hands the row to the fleet directly, the reconcile's tick
+# has already run its renewal, so the disowned row keeps the lease it
+# holds until it lapses and Sweep 1 owns the reclaim with its own
+# attempt rows, reclaim events and budget predicates (issue 418's
+# recovery contract, preserved).
+#
+# The refund is exactly-once per claim. Within a process the tick's
+# exclusion array folds the disowned set, so the refunded row stops
+# matching. Across a worker restart ``disowned_jobs`` is empty and the
+# row still satisfies this predicate, so the statement un-stamps
+# ``started_at`` as it refunds: the claim's stamp named an execution that
+# never started, and with it gone the ``started_at <`` bound below stops
+# matching the row whatever id re-probes it. NULL is the honest value,
+# the same "never started" the attempt-ledger arms already exclude (the
+# sweep's attempt INSERT coalesces a NULL stamp through the per-row clock
+# fallback, and the next claim stamps it fresh), so no reader learns a
+# new shape - only the fabrication goes away.
+_RECONCILE_LOST_CLAIMS_SQL_TEMPLATE = (
+    'UPDATE "{schema}".jobs j SET '  # noqa: S608  # Why: schema validated against _IDENT_RE before interpolation; asyncpg has no parameter binding for identifiers (the still-held template's same shape).
+    f"attempt = {ATTEMPT_REFUND_SQL}, started_at = NULL "
+    "WHERE j.locked_by_worker = $1 AND j.status = 'running' "
+    "AND NOT (j.id = ANY($2::uuid[])) "
+    "AND j.started_at < clock_timestamp() - $3::interval "
+    "RETURNING j.id"
 )
 _tick_duration = _meter.create_histogram(
     name="taskq.heartbeat.tick_duration_seconds",
@@ -377,7 +410,7 @@ async def heartbeat_loop(
         update_reservation_leases_sql,
     ) = build_heartbeat_sql(schema, renewal_threshold=renewal_threshold)
     select_still_held_sql = _SELECT_STILL_HELD_SQL_TEMPLATE.format(schema=schema)
-    select_lost_claims_sql = _SELECT_LOST_CLAIMS_SQL_TEMPLATE.format(schema=schema)
+    refund_lost_claims_sql = _RECONCILE_LOST_CLAIMS_SQL_TEMPLATE.format(schema=schema)
 
     # Monotonic stamp of the last jobs-lock renewal that landed: the
     # reference the next tick measures its remaining lease against. None
@@ -475,6 +508,8 @@ async def heartbeat_loop(
                             # snapshot - and the lease-length grace on
                             # started_at spares every in-flight handoff
                             # (see the template's comment). Found ids are
+                            # refunded (the claim-time increment of a
+                            # never-started execution goes back) and
                             # disowned: this tick's renewal has already
                             # run, the NEXT tick stops renewing them, and
                             # Sweep 1 owns the reclaim from there.
@@ -486,7 +521,7 @@ async def heartbeat_loop(
                                 }
                             )
                             lost_rows = await conn.fetch(
-                                select_lost_claims_sql, worker_id, lost_excluded, lock_lease
+                                refund_lost_claims_sql, worker_id, lost_excluded, lock_lease
                             )
                             if lost_rows:
                                 lost_ids: list[UUID] = [row["id"] for row in lost_rows]
