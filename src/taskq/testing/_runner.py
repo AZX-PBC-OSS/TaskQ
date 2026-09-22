@@ -629,7 +629,9 @@ def archive_terminal_jobs(
     if to_archive:
         archived_ids = set(to_archive)
         backend._events = [  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
-            e for e in backend._events if e.job_id not in archived_ids  # pyright: ignore[reportPrivateUsage]
+            e
+            for e in backend._events
+            if e.job_id not in archived_ids  # pyright: ignore[reportPrivateUsage]
         ]
 
     for status in by_status:

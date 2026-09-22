@@ -45,7 +45,7 @@ from taskq.testing.fixtures import JobsApp, ModulePgSchema
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.worker._leader_shared import prune_terminal_jobs
 
-from .test_enqueue_coverage import _Record, _full_record
+from .test_enqueue_coverage import _full_record, _Record
 
 _SCHEMA_LABEL = "taskq"
 _SQL = render_sql(_SCHEMA_LABEL)
@@ -173,7 +173,9 @@ async def _seed_archived_job(
     the clock)."""
     enqueued = await backend.enqueue(_enqueue_args())
     worker_id = backend._worker_id  # pyright: ignore[reportPrivateUsage]
-    claimed = await backend.dispatch_batch(worker_id, ["default"], limit=1, lock_lease=timedelta(seconds=60))
+    claimed = await backend.dispatch_batch(
+        worker_id, ["default"], limit=1, lock_lease=timedelta(seconds=60)
+    )
     assert [j.id for j in claimed] == [enqueued.id], (
         "the scenario needs the seeded job claimed, its narration accrues "
         "through the real transitions"
@@ -284,9 +286,7 @@ class TestGetArchiveFallbackParity:
     async def test_hot_hit_is_not_marked_archived_on_both(self) -> None:
         """The marker tracks the tier, not age: a hot row reads False on
         both backends."""
-        pg_conn = _FakeReadConn(
-            fetchrow_map={'FROM "taskq".jobs WHERE': _Record(_full_record())}
-        )
+        pg_conn = _FakeReadConn(fetchrow_map={'FROM "taskq".jobs WHERE': _Record(_full_record())})
 
         pg_row = await _pg_get(_FakeReadPool(pg_conn), _SQL, JobId(_full_record()["id"]))
         mem_backend = _memory_backend()
@@ -477,7 +477,7 @@ async def _seed_event(
     await conn.execute(
         f"""INSERT INTO {schema}.job_events (job_id, occurred_at, kind, detail)
         VALUES ($1, $2, 'state_change',
-        '{{"from_state": "pending", "to_state": "pending"}}'::jsonb)""",
+        '{{"from_state": "pending", "to_state": "pending"}}'::jsonb)""",  # noqa: S608  # Why: schema is fixture-derived; every value is $N-bound
         job_id,
         datetime.now(UTC),
     )
