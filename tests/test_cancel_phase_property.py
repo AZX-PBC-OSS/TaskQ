@@ -8,8 +8,15 @@ invariant from
 Escalation may fire more than once per job: the healing arm added with the
 rolled-back phase-2 write fix re-issues the escalation (and therefore
 ``task.cancel()``) while PG still reports COOPERATIVE, so the oracle tracks
-the count of completed escalation arms and requires ``task.cancelling()`` to
-match it exactly - one cancel per arm, none from any other path.
+the count of legitimate cancellation deliveries and requires
+``task.cancelling()`` to match it exactly. Two sites deliver: the
+phase-2 arm's non-abandon branch (one per completed arm), and
+``run_post_tx``'s drain, which delivers the FIRST cancellation for an
+abandon that applied - the same-tick abandon arm queues the abandon
+without cancelling, because a cancellation delivered inside the
+heartbeat transaction would let the consumer deregister while the
+escalation is still uncommitted, and a rollback would strand the job
+against an empty registry.
 
 Each step tuple carries ``(clock_advance, db_phase, cancel_grace,
 cleanup_grace)``. The hook sees ``db_phase`` as the PG-reported phase on that
@@ -182,12 +189,15 @@ async def test_cancel_phase_ordering_property(
     - ``INSERT_EVENT_SQL`` sits between the UPDATE and ``task.cancel()``.
     - ``cancel_phase`` only increases monotonically.
     - ``cancel_observed_at`` is set at most once with a finite value.
-    - ``task.cancelling()`` equals the number of completed escalation
-      arms: one ``task.cancel()`` per arm, and no other code path may
-      cancel the task.  Escalation may legitimately fire more than once
+    - ``task.cancelling()`` equals the number of legitimate cancellation
+      deliveries: one per completed non-abandon escalation arm, plus the
+      drain's first delivery for an applied abandon.  The same-tick
+      abandon arm delivers none in-transaction; its cancellation is the
+      drain's, after ``mark_abandoned`` makes the abandon durable.
+      Escalation may legitimately fire more than once
       per job - the rolled-back-write healing arm re-issues it while PG
-      still reads COOPERATIVE - so the count is compared against the
-      arms fired, not against a constant.
+      still reads COOPERATIVE - so the count is tracked across steps, not
+      compared against a constant.
     """
     job_id = new_job_id()
     ctx = _make_ctx()
@@ -198,7 +208,7 @@ async def test_cancel_phase_ordering_property(
 
     prev_phase: CancelPhase = CancelPhase.NONE
     observed_at_set_count: int = 0
-    escalations_fired: int = 0
+    cancellations_delivered: int = 0
 
     for step_idx, (advance, db_phase, cancel_grace, cleanup_grace) in enumerate(steps):
         active = registry.get(job_id)
@@ -227,7 +237,6 @@ async def test_cancel_phase_ordering_property(
 
         controller = make_cancel_controller(deps, new_uuid(), backend)  # type: ignore[arg-type] # Why: _FakeBackend only implements mark_abandoned; the controller never calls the other Backend protocol methods
         await controller.run_in_tx(recorder)  # type: ignore[arg-type] # Why: _Recorder is a test stub; asyncpg.Connection[Record] cannot be structurally satisfied without the real driver
-        await controller.run_post_tx()
 
         # Escalation arms are checked before the deregister-break so an
         # escalation that queues for abandonment on the same tick (local
@@ -246,23 +255,45 @@ async def test_cancel_phase_ordering_property(
                 f"INSERT_EVENT_SQL must be at execute_calls[1], "
                 f"between UPDATE and task.cancel() (step {step_idx})"
             )
-            # UPDATE + INSERT in the log is the signature of the full
-            # phase-2 block having run, so task.cancel() followed it once.
-            escalations_fired += 1
+        # The same-tick abandon arm (intermediate ABANDON_PENDING) delivers
+        # NO in-tx cancellation: the abandon write is not durable until the
+        # drain lands it, and a cancellation delivered inside the
+        # transaction lets the consumer unwind and deregister while the
+        # escalation is still uncommitted - a rollback then strands the
+        # row running at phase 1 with the entry gone from the registry.
+        # The cancellation is the DRAIN's, after mark_abandoned applies.
+        intermediate = registry.get(job_id)
+        arm_cancels = (
+            1
+            if escalated_this_step
+            and intermediate is not None
+            and intermediate.cancel_phase == CancelPhase.FORCED
+            else 0
+        )
 
-        # The escalation block (cancel.py phase-2) is the ONLY task.cancel()
-        # site, firing once per completed arm - including the healing arm
-        # that re-issues a rolled-back phase-2 write while PG still reads
-        # COOPERATIVE, so more than one arm per job is legitimate.  The task
-        # is never reaped inside the loop (no await here suspends the event
-        # loop; the abandon drain's shield only runs on the tick that
-        # deregisters and breaks), so the counter must match exactly: it
-        # catches both a stray cancel from another path (e.g. fast-advance)
-        # and a double cancel inside a single arm.
-        assert task.cancelling() == escalations_fired, (
-            f"task.cancelling() must equal the number of completed escalation "
-            f"arms ({escalations_fired}) - one task.cancel() per arm, no other "
-            f"cancel path (step {step_idx})"
+        # The drain is the second legitimate cancel site: the FIRST
+        # delivery of the cancellation for an abandon that applied, only
+        # when the entry is still registered and no earlier arm already
+        # delivered it. The task is never reaped inside the loop (no await
+        # here suspends the event loop; the abandon drain's shield only
+        # runs on the tick that deregisters and breaks).
+        was_cancelling = task.cancelling() > 0
+        abandons_before = len(backend.mark_abandoned_calls)
+        await controller.run_post_tx()
+        drain_applied = len(backend.mark_abandoned_calls) > abandons_before
+        drain_cancels = 1 if drain_applied and not was_cancelling and not task.done() else 0
+        cancellations_delivered += arm_cancels + drain_cancels
+
+        # The counter must match exactly: it catches a stray cancel from
+        # another path (e.g. fast-advance), a double cancel inside a
+        # single arm, and an in-tx cancel on the same-tick abandon arm
+        # (whose rollback-rollback recovery depends on the entry staying
+        # registered until the drain's cancellation).
+        assert task.cancelling() == cancellations_delivered, (
+            f"task.cancelling() must equal the number of legitimate "
+            f"cancellation deliveries ({cancellations_delivered}) - one "
+            f"per completed non-abandon escalation arm or per applied "
+            f"abandon's drain, no other cancel path (step {step_idx})"
         )
 
         active = registry.get(job_id)
