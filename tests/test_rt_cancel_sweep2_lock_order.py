@@ -17,17 +17,31 @@ committed page terminalised, nothing counts twice), and the leader loop
 classifies ``DeadlockDetectedError`` as transient and sweeps again next
 tick.
 
-The pin asserts the observable contract under that inversion, over a
-handful of bounded trials (the detector's intervention is
-scheduler-timed, the outcomes are not):
+Two pins live here.
 
-* BOTH operations complete - neither parks unbounded behind the other;
-* no lost update: every overdue job ends terminal exactly once, either
-  'failed'/'DeadlineExceeded' (the sweep won the row) or
-  'cancelled'/'CancelledBeforeStart' (the drain won it), never pending,
-  never both;
-* the event trail says the same: one ``state_change`` per job, and a
-  ``cancel_request`` exactly on the drain's rows.
+The first is the concurrent race over a handful of bounded trials.  Its
+contract is conservation, not scheduling: BOTH operations complete, no
+lost update - every overdue job ends terminal exactly once, either
+'failed'/'DeadlineExceeded' (the sweep won the row) or
+'cancelled'/'CancelledBeforeStart' (the drain won it), never pending,
+never both - and the event trail says the same: one ``state_change`` per
+job, a ``cancel_request`` exactly on the drain's rows.  HOW the rows
+split between the two writers is the scheduler's business: the sweep's
+candidate round trip and the drain's first batch race, and on a starved
+runner the drain may commit every batch before the sweep's statement
+lands, so ``swept == 0`` is a legal outcome of this test (the
+conservation checks below hold at any split; the count reconciliation
+fails on any lost update, which is the defect class this hunt exists
+for).
+
+The second pins the property the race cannot sample deterministically:
+the drain does not MONOPOLISE the backlog across its runtime.  Each
+batch commits and releases its row locks before the next candidate
+window, so a deadline sweep arriving mid-drain always finds unlocked
+overdue rows to own.  A gated witness pool parks the drain before its
+second batch's candidate, the sweep runs to completion inline (it wins
+rows BY CONSTRUCTION, no lottery), then the drain resumes and both
+complete with the same conservation contract.
 """
 
 from __future__ import annotations
@@ -94,7 +108,9 @@ async def _seed_inverted_backlog(
 
 
 async def _final_states(
-    conn: asyncpg.Connection, schema: str, ids: list[UUID]
+    conn: asyncpg.Connection,
+    schema: str,
+    ids: list[UUID],
 ) -> list[dict[str, Any]]:
     return [
         dict(r)
@@ -118,6 +134,122 @@ async def _event_counts(
     for r in rows:
         per_job.setdefault(r["job_id"], {})[r["kind"]] = r["n"]
     return per_job
+
+
+class _BatchBoundaryPool:
+    """Duck-typed pool that parks the drain at its running-arm statement.
+
+    The drain's per-batch sequence is: the pending/scheduled arm (one
+    fused statement), then the running arm, then the batch's event
+    writes.  Gating on the running arm's SQL signature means: batch
+    one's pending arm has executed (its row locks are HELD, the batch
+    uncommitted) - and crucially, the drain never holds more than its
+    current batch's locks, so the backlog beyond the batch is pending
+    and unlocked.
+    """
+
+    def __init__(self, inner: asyncpg.Pool, gate_sql: str) -> None:
+        self._inner = inner
+        self._gate_sql = gate_sql
+        self.gate_entered = asyncio.Event()
+        self.gate_release = asyncio.Event()
+
+    async def _through(self, method: str, conn, query, args, kw):
+        if not self.gate_entered.is_set() and self._gate_sql in query:
+            self.gate_entered.set()
+            await self.gate_release.wait()
+        return await getattr(conn, method)(query, *args, **kw)
+
+    async def acquire(self) -> "_GatedConn":
+        conn = await self._inner.acquire()
+        return _GatedConn(conn, self)
+
+
+class _GatedConn:
+    """Duck-typed connection: every call routes through the pool's gate,
+    then forwards to the real connection with the caller's API shape."""
+
+    def __init__(self, conn: asyncpg.Connection, pool: "_BatchBoundaryPool") -> None:
+        self._conn = conn
+        self._pool = pool
+
+    async def execute(self, query, *args, **kw):
+        return await self._pool._through("execute", self._conn, query, args, kw)
+
+    async def fetch(self, query, *args, **kw):
+        return await self._pool._through("fetch", self._conn, query, args, kw)
+
+    async def fetchval(self, query, *args, **kw):
+        return await self._pool._through("fetchval", self._conn, query, args, kw)
+
+    def __getattr__(self, item):
+        return getattr(self._conn, item)
+
+
+async def _assert_conservation(
+    clean_pg_conn: asyncpg.Connection,
+    schema: str,
+    ids: list[UUID],
+    swept: int,
+    result,
+) -> None:
+    """The contract both pins share: every row terminal exactly once,
+    the counts reconcile, the event trail matches the winner."""
+    states = await _final_states(clean_pg_conn, schema, ids)
+    by_status: dict[str, int] = {}
+    for row in states:
+        by_status[row["status"]] = by_status.get(row["status"], 0) + 1
+        if row["status"] == "failed":
+            assert row["error_class"] == "DeadlineExceeded", (
+                "a row the sweep won carries the sweep's own error class"
+            )
+        elif row["status"] == "cancelled":
+            assert row["error_class"] == CANCEL_ORIGIN_PENDING, (
+                "a row the drain won carries the drain's cancel-origin class"
+            )
+        else:
+            pytest.fail(
+                f"LOST UPDATE: job {row['id']} ended {row['status']!r} - under the "
+                "inverted row-lock order one operation dropped a row it had "
+                "windowed, and no retry picked it up"
+            )
+    assert by_status.get("failed", 0) == swept, (
+        "the sweep's count is exactly the rows it terminalised - nothing "
+        "it locked was lost to the drain"
+    )
+    assert by_status.get("cancelled", 0) == result.cancelled_directly, (
+        "the drain's count is exactly the rows it terminalised - nothing "
+        "it locked was lost to the sweep, and no row was counted twice"
+    )
+    assert sum(by_status.values()) == len(ids)
+
+    per_job = await _event_counts(clean_pg_conn, schema, ids)
+    for row in states:
+        kinds = per_job.get(row["id"], {})
+        assert kinds.get("state_change", 0) == 1, (
+            f"job {row['id']} must carry exactly one terminal state_change"
+        )
+        if row["status"] == "cancelled":
+            assert kinds.get("cancel_request", 0) == 1
+        else:
+            assert "cancel_request" not in kinds, "a row the sweep won was never a cancel target"
+    state_by_id = {r["id"]: r for r in states}
+    events = await clean_pg_conn.fetch(
+        f'SELECT job_id, kind, detail FROM "{schema}".job_events '
+        "WHERE job_id = ANY($1::uuid[]) ORDER BY job_id, kind",
+        ids,
+    )
+    for e in events:
+        detail = parse_detail(e["detail"])
+        if e["kind"] != "state_change":
+            continue
+        row = state_by_id[e["job_id"]]
+        expected = (
+            {"from_state": "pending", "to_state": "failed", "error_class": "DeadlineExceeded"}
+            if row["status"] == "failed"
+            else {"from_state": "pending", "to_state": "cancelled"}
+        )
+        assert detail == expected
 
 
 @pytest.mark.parametrize("trial", range(_TRIALS))
@@ -151,68 +283,68 @@ async def test_deadline_sweep_and_bulk_cancel_under_inverted_row_orders_both_com
     swept: int = await asyncio.wait_for(sweep_task, timeout=_RACE_BOUND_SECS)
     result, notify_targets = await asyncio.wait_for(cancel_task, timeout=_RACE_BOUND_SECS)
 
-    # Both operations ran to completion on the same row set: the sweep
-    # took its one bounded batch, the drain took the rest of the backlog
-    # (all rows stay pending/scheduled for it, nothing re-feeds the
-    # match set mid-race).
-    assert swept >= 1, "the sweep must win at least one row of the inverted backlog"
+    # How the rows split is the scheduler's business: the sweep's
+    # candidate round trip races the drain's first batch, and on a
+    # starved runner the drain may commit every batch first, so
+    # swept == 0 is a legal outcome here (both still complete; the
+    # conservation contract below holds at any split).  The
+    # no-monopoly property - the drain cannot hold the backlog across
+    # its runtime - is pinned deterministically by the companion test.
     assert result.cancel_requested == 0, "every row is pending; the running arm matches nothing"
     assert notify_targets == []
 
-    states = await _final_states(clean_pg_conn, schema, ids)
-    by_status: dict[str, int] = {}
-    for row in states:
-        by_status[row["status"]] = by_status.get(row["status"], 0) + 1
-        if row["status"] == "failed":
-            assert row["error_class"] == "DeadlineExceeded", (
-                "a row the sweep won carries the sweep's own error class"
-            )
-        elif row["status"] == "cancelled":
-            assert row["error_class"] == CANCEL_ORIGIN_PENDING, (
-                "a row the drain won carries the drain's cancel-origin class"
-            )
-        else:
-            pytest.fail(
-                f"LOST UPDATE: job {row['id']} ended {row['status']!r} - under the "
-                "inverted row-lock order one operation dropped a row it had "
-                "windowed, and no retry picked it up"
-            )
-    assert by_status.get("failed", 0) == swept, (
-        "the sweep's count is exactly the rows it terminalised - nothing "
-        "it locked was lost to the drain"
-    )
-    assert by_status.get("cancelled", 0) == result.cancelled_directly, (
-        "the drain's count is exactly the rows it terminalised - nothing "
-        "it locked was lost to the sweep, and no row was counted twice"
-    )
-    assert sum(by_status.values()) == _BACKLOG
+    await _assert_conservation(clean_pg_conn, schema, ids, swept, result)
 
-    per_job = await _event_counts(clean_pg_conn, schema, ids)
-    for row in states:
-        kinds = per_job.get(row["id"], {})
-        assert kinds.get("state_change", 0) == 1, (
-            f"job {row['id']} must carry exactly one terminal state_change"
+
+async def test_the_drain_releases_its_batch_locks_so_the_sweep_always_gets_a_window(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """The no-monopoly property, forced: the drain parks before its
+    SECOND batch's candidate (batch one is committed, its locks
+    released, rows batch two-plus still pending and unlocked); the
+    deadline sweep runs to completion in that window and wins rows BY
+    CONSTRUCTION - no scheduling lottery.  The drain then resumes over
+    the remainder and both complete under the conservation contract."""
+    schema = module_pg_schema.schema_name
+    render(schema)
+    tag = "sweep2x_monopoly"
+    ids = await _seed_inverted_backlog(clean_pg_conn, schema, tag, _BACKLOG)
+
+    # The drain's per-batch statement sequence: its pending/scheduled
+    # arm, then its running arm, then the batch's event writes.  The
+    # gate parks the drain at the FIRST running arm: batch one's
+    # pending rows (10) are locked and its batch is uncommitted, and
+    # the backlog beyond that batch is pending and unlocked.
+    pool = _BatchBoundaryPool(module_pg_pool, gate_sql="cancel_phase = 1")
+    drain_task = asyncio.create_task(
+        _cancel_where(
+            pool,  # type: ignore[arg-type]  # Why: duck-typed pool; only acquire() is used.
+            schema,
+            render(schema),
+            JobFilter(tags=(tag,)),
+            "offboard",
+            batch_size=_BATCH,
         )
-        if row["status"] == "cancelled":
-            assert kinds.get("cancel_request", 0) == 1
-        else:
-            assert "cancel_request" not in kinds, "a row the sweep won was never a cancel target"
-    # The state_change detail names the winner per row, spot-checking
-    # the two shapes on every event row.
-    state_by_id = {r["id"]: r for r in states}
-    events = await clean_pg_conn.fetch(
-        f'SELECT job_id, kind, detail FROM "{schema}".job_events '
-        "WHERE job_id = ANY($1::uuid[]) ORDER BY job_id, kind",
-        ids,
     )
-    for e in events:
-        detail = parse_detail(e["detail"])
-        if e["kind"] != "state_change":
-            continue
-        row = state_by_id[e["job_id"]]
-        expected = (
-            {"from_state": "pending", "to_state": "failed", "error_class": "DeadlineExceeded"}
-            if row["status"] == "failed"
-            else {"from_state": "pending", "to_state": "cancelled"}
-        )
-        assert detail == expected
+
+    await asyncio.wait_for(pool.gate_entered.wait(), timeout=_RACE_BOUND_SECS)
+
+    # Batch one's rows are locked by the drain's uncommitted batch; the
+    # sweep's SKIP LOCKED skips exactly those and owns the unlocked
+    # remainder.  The sweep runs to completion inline.
+    swept: int = await asyncio.wait_for(
+        sweep_deadline_exceeded(clean_pg_conn, schema=schema, batch_size=_BATCH),
+        timeout=_RACE_BOUND_SECS,
+    )
+    assert swept >= 1, (
+        "the sweep owns unlocked overdue rows by construction: the drain "
+        "holds only its current batch's locks, so the sweep's window has rows"
+    )
+
+    pool.gate_release.set()
+    result, notify_targets = await asyncio.wait_for(drain_task, timeout=_RACE_BOUND_SECS)
+    assert notify_targets == []
+
+    await _assert_conservation(clean_pg_conn, schema, ids, swept, result)
