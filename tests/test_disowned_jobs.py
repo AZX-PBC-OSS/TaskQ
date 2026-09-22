@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
@@ -21,6 +22,7 @@ from uuid import UUID
 
 import asyncpg
 import pytest
+import pytest_asyncio
 
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import Backend, EnqueueArgs, ErrorInfo, JobId, JobRow
@@ -511,32 +513,81 @@ async def _leases(backend: Backend, ids: list[UUID]) -> dict[UUID, datetime]:
     return leases
 
 
+@pytest_asyncio.fixture
+async def unbudgeted_heartbeat_backend(backend_pair: Backend) -> AsyncIterator[Backend]:
+    """``backend_pair`` whose PG heartbeat pool carries no command budget.
+
+    ``heartbeat_jobs`` checks out of ``deps.heartbeat_pool`` per call
+    (``postgres.py`` routes the renewal through ``_bounded_checkout`` of
+    it), whose connections carry ``heartbeat_command_timeout`` - a budget
+    calibrated for the heartbeat tick's own liveness statement sequence,
+    not for a state-asserting test's backend call: under a loaded CI
+    runner the renewal UPDATE waits out a scheduling hiccup (a loaded
+    runner's other workers, the containers' own PG) and blows the budget
+    at the asyncpg protocol with a bare TimeoutError raised inside the
+    backend method - the runner being slow, never the disown contract
+    failing (PR 444's board, 2026-09). The fixture swaps in a dedicated
+    pool with no command timeout; the suite-wide pytest-timeout bounds
+    it. The backend reads the pool through a live property over ``deps``
+    (the same hot-reload path ``reload_credentials`` uses), so the swap
+    reaches the method under test. What the tests assert - renewal
+    counts and lease timestamps - is untouched, and the same treatment
+    is the one the family fix (5d6c2108) applied to
+    ``test_postgres_missing_methods.py``'s extend path.
+    """
+    deps = cast(
+        WorkerDeps | None, getattr(backend_pair, "_deps", None)
+    )  # Why the private access: backend_pair builds the PG backend through _open_pg_backend and yields only the backend; the family fix routes through the deps that construction handed it. The memory twin has no deps, no pool, nothing budgeted, and falls through unchanged.
+    if deps is None:
+        yield backend_pair
+        return
+    assert deps.settings.pg_dsn_direct is not None  # post-load guarantee
+    unbudgeted = await asyncpg.create_pool(deps.settings.pg_dsn_direct, min_size=1, max_size=2)
+    deps.heartbeat_pool = unbudgeted
+    try:
+        yield backend_pair
+    finally:
+        await unbudgeted.close()
+
+
 @pytest.mark.integration
-async def test_backend_heartbeat_jobs_skips_the_disowned_rows(backend_pair: Backend) -> None:
+async def test_backend_heartbeat_jobs_skips_the_disowned_rows(
+    unbudgeted_heartbeat_backend: Backend,
+) -> None:
     """The renewal the backend exposes is the one the worker's heartbeat
     issues: a disowned id is excluded from it on both twins, so a caller
     of the protocol cannot renew a lease the worker has given up."""
-    worker_id, (disowned, sibling) = await _two_running_jobs(backend_pair)
-    before = await _leases(backend_pair, [disowned, sibling])
+    worker_id, (disowned, sibling) = await _two_running_jobs(unbudgeted_heartbeat_backend)
+    before = await _leases(unbudgeted_heartbeat_backend, [disowned, sibling])
 
-    renewed = await backend_pair.heartbeat_jobs(
+    renewed = await unbudgeted_heartbeat_backend.heartbeat_jobs(
         worker_id, timedelta(seconds=120), disowned=[disowned]
     )
 
     assert renewed == 1
-    after = await _leases(backend_pair, [disowned, sibling])
+    after = await _leases(unbudgeted_heartbeat_backend, [disowned, sibling])
     assert after[disowned] == before[disowned]
     assert after[sibling] > before[sibling]
 
 
 @pytest.mark.integration
 async def test_backend_heartbeat_jobs_with_nothing_disowned_renews_every_row(
-    backend_pair: Backend,
+    unbudgeted_heartbeat_backend: Backend,
 ) -> None:
-    worker_id, ids = await _two_running_jobs(backend_pair)
-    assert await backend_pair.heartbeat_jobs(worker_id, timedelta(seconds=120)) == 2
-    assert await backend_pair.heartbeat_jobs(worker_id, timedelta(seconds=120), disowned=[]) == 2
-    assert await backend_pair.heartbeat_jobs(worker_id, timedelta(seconds=120), disowned=ids) == 0
+    worker_id, ids = await _two_running_jobs(unbudgeted_heartbeat_backend)
+    assert await unbudgeted_heartbeat_backend.heartbeat_jobs(worker_id, timedelta(seconds=120)) == 2
+    assert (
+        await unbudgeted_heartbeat_backend.heartbeat_jobs(
+            worker_id, timedelta(seconds=120), disowned=[]
+        )
+        == 2
+    )
+    assert (
+        await unbudgeted_heartbeat_backend.heartbeat_jobs(
+            worker_id, timedelta(seconds=120), disowned=ids
+        )
+        == 0
+    )
 
 
 # ── Producer side: a row handed back to this worker is owned again ──────
