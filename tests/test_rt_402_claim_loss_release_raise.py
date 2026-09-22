@@ -302,13 +302,19 @@ async def test_dispatch_round_that_raises_after_its_claim_commit_recovers(
             await asyncio.sleep(0.5)
 
         # The recovery is a RE-DISPATCH, not a silent terminalization:
-        # each row's attempt advanced past the stranded claim's attempt.
+        # the rows re-claimed and ran to terminal. The re-dispatch runs on
+        # the REFUNDED attempt (issue 458: the reconcile refunds the
+        # claim-time increment of a claim that never reached an actor, so
+        # the re-claim is each job's FIRST attempt), not on a second
+        # charged attempt: an attempt >= 2 here would mean the stranded
+        # claim's charge stood and spent this job's budget.
         rows = await _job_rows(probe, schema)
         for r in rows:
             if r["id"] in ids:
-                assert r["attempt"] >= 2, (
-                    f"the recovered job must show a second attempt "
-                    f"(re-claimed after the reconcile), got attempt={r['attempt']}"
+                assert r["attempt"] == 1, (
+                    f"the recovered job must re-run on the refunded attempt "
+                    f"(the reconcile refunds the claim-time increment of a "
+                    f"never-executed claim), got attempt={r['attempt']}"
                 )
     finally:
         await probe.close()

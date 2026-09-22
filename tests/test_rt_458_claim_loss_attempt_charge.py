@@ -1,0 +1,415 @@
+"""Issue 458: the claim-loss reconcile charges an attempt to a job that never ran.
+
+The chain, all on one real PostgreSQL:
+
+1. The dispatch claim increments ``attempt`` at claim time, before any
+   actor sees the job (``backend/_dispatch_sql.py``: ``attempt =
+   LEAST(j.attempt + 1, 32767)``), and the claim is autocommit.
+2. A round that commits its claim and then fails (the #402 shape) leaves
+   the row ``running``, locked, and held by no in-memory structure.
+3. The heartbeat's claim-loss reconcile (``worker/heartbeat.py``) finds
+   the orphan after one full lease on ``started_at`` and disowns it. The
+   ONLY write is the in-memory ``disowned_jobs`` update: nothing refunds
+   the claim-time increment.
+4. The lease lapses and Sweep 1 evaluates its budget predicate
+   (``backend/_sweeps.py``: ``WHEN {has_budget} THEN 'pending' ... ELSE
+   'crashed'``). A ``max_attempts=1`` job (or a ``non_retryable`` one at
+   its budget edge) lands terminal ``crashed`` having never executed, and
+   the crashed arm writes a ``job_attempts`` row for the charged attempt:
+   a record asserting an execution that did not happen, indistinguishable
+   from a genuine mid-execution crash.
+
+The rule the sibling sink already enforces (``worker/shutdown.py``'s
+``drain_local_queue_to_pending``, which refunds through
+``ATTEMPT_REFUND_SQL``): a claim that never reached an actor bought
+nothing, so it spends nothing. The reconcile must refund the same way
+while keeping the row ``running`` so Sweep 1 still owns the reclaim.
+
+No fakes: the real rendered dispatch CTE (``_sql_templates.render`` →
+``_dispatch_sql.dispatch_batch``), the real ``heartbeat_loop``, and the
+real ``sweep_expired_locks`` so the sweep's own attempt and event writes
+are in scope. Timing is deterministic by seeding: the reconcile's grace
+and the sweep's expiry are anchored to the PG clock with aged
+``started_at`` / ``lock_expires_at`` stamps instead of wall-clock sleeps
+(the same discipline the sweep pins use).
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import timedelta
+from typing import Any
+from uuid import UUID
+
+import asyncpg
+import pytest
+
+from taskq._ids import new_uuid
+from taskq.backend._dispatch_sql import dispatch_batch
+from taskq.backend._sql_templates import render
+from taskq.backend.postgres import PostgresBackend
+from taskq.settings import WorkerSettings
+from taskq.testing.fixtures import ModulePgSchema
+from taskq.worker.deps import WorkerDeps
+from taskq.worker.heartbeat import heartbeat_loop
+from taskq.worker.shutdown import drain_local_queue_to_pending
+
+pytestmark = pytest.mark.integration
+
+_QUEUE = "issue458_q"
+
+#: The reconcile's grace is one full lease on ``started_at``; seeds age the
+#: stamp by double that so the probe fires on the first tick.
+_LEASE = timedelta(seconds=3.0)
+_GRACE_AGING = "6 seconds"
+
+#: Settings for the heartbeat deps. The interval only paces the loop's
+#: wait between ticks: the test synchronises on the tick hook, never on
+#: the clock.
+_HEARTBEAT_INTERVAL = "0.5"
+_COMMAND_TIMEOUT = "0.1"
+
+
+async def _seed_worker(conn: asyncpg.Connection, schema: str, worker_id: UUID) -> None:
+    await conn.execute(
+        f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) '  # noqa: S608  # Why: schema is a fixture identifier validated by the backend; every value is $-bound or a module constant.
+        "VALUES ($1, 'test-host', 12345, ARRAY['default'])",
+        worker_id,
+    )
+    # The dispatch CTE's candidate walk iterates the actor registry
+    # (per_actor_capacity over actor_config); an unregistered actor's
+    # pending rows are invisible to every round.
+    await conn.execute(
+        f'INSERT INTO "{schema}".actor_config (actor, queue) '  # noqa: S608
+        "VALUES ('issue458_actor', $1) ON CONFLICT (actor) DO NOTHING",
+        _QUEUE,
+    )
+
+
+async def _seed_pending_job(
+    conn: asyncpg.Connection,
+    schema: str,
+    *,
+    max_attempts: int = 1,
+    attempt: int = 0,
+) -> UUID:
+    """One pending job at the given counter: the default is the
+    budget-edge shape the issue measures (``max_attempts=1``, any claim
+    consumes the whole budget); ``attempt`` seeds prior spend for the pins
+    that must observe a counter move."""
+    rows = await conn.fetch(
+        f'INSERT INTO "{schema}".jobs '  # noqa: S608
+        "(id, actor, queue, payload, status, max_attempts, retry_kind, "
+        "attempt, scheduled_at) VALUES (gen_random_uuid(), 'issue458_actor', "
+        f"'{_QUEUE}', '{{}}'::jsonb, 'pending', $1, 'transient', "
+        "$2, clock_timestamp()) RETURNING id",
+        max_attempts,
+        attempt,
+    )
+    job_id: UUID = rows[0]["id"]
+    return job_id
+
+
+async def _claim_via_real_dispatch_cte(
+    conn: asyncpg.Connection, schema: str, worker_id: UUID
+) -> asyncpg.Record:
+    """The real rendered dispatch CTE, the real claim: autocommit, the row
+    is ``running`` and charged before this helper returns."""
+    sql = render(schema).dispatch_strict_fifo
+    rows = await dispatch_batch(
+        conn,
+        sql=sql,
+        queues=[_QUEUE],
+        limit_n=1,
+        worker_id=worker_id,
+        lock_lease=_LEASE,
+    )
+    assert len(rows) == 1, f"the claim must land: got {len(rows)} rows"
+    return rows[0]
+
+
+async def _age_started_at(conn: asyncpg.Connection, schema: str, job_id: UUID) -> None:
+    """Anchor the reconcile's grace to the PG clock (no wall-clock sleep):
+    the claim's ``started_at`` ages past one full lease."""
+    await conn.execute(
+        f'UPDATE "{schema}".jobs SET started_at = '  # noqa: S608
+        "clock_timestamp() - interval '" + _GRACE_AGING + "' WHERE id = $1",
+        job_id,
+    )
+
+
+async def _age_lock_expiry(conn: asyncpg.Connection, schema: str, job_id: UUID) -> None:
+    """Anchor Sweep 1's lease-arm eligibility to the PG clock: the disowned
+    row's lease has lapsed."""
+    await conn.execute(
+        f'UPDATE "{schema}".jobs SET lock_expires_at = '  # noqa: S608
+        "clock_timestamp() - interval '1 second' WHERE id = $1",
+        job_id,
+    )
+
+
+async def _job_row(conn: asyncpg.Connection, schema: str, job_id: UUID) -> dict[str, Any]:
+    rows = await conn.fetch(
+        f"SELECT id::text, status::text AS status, attempt, claim_epoch, "  # noqa: S608
+        f"started_at, locked_by_worker::text AS locked_by "
+        f'FROM "{schema}".jobs WHERE id = $1',
+        job_id,
+    )
+    assert rows, f"job {job_id} vanished"
+    return dict(rows[0])
+
+
+async def _attempt_rows(
+    conn: asyncpg.Connection, schema: str, job_id: UUID
+) -> list[dict[str, Any]]:
+    rows = await conn.fetch(
+        f"SELECT attempt, outcome::text AS outcome, error_message "  # noqa: S608
+        f'FROM "{schema}".job_attempts WHERE job_id = $1 ORDER BY attempt',
+        job_id,
+    )
+    return [dict(r) for r in rows]
+
+
+def _heartbeat_settings(pg_dsn: str, schema: str) -> WorkerSettings:
+    return WorkerSettings.load_from_dict(
+        {
+            "pg_dsn": pg_dsn,
+            "schema_name": schema,
+            "heartbeat_interval": _HEARTBEAT_INTERVAL,
+            "heartbeat_command_timeout": _COMMAND_TIMEOUT,
+            "lock_lease": str(_LEASE.total_seconds()),
+            "watchdog_loop_lag_budget": "1.2",
+            "watchdog_loop_lag_warn_budget": "0.5",
+            "cancellation_grace_period": "0.0",
+            "cleanup_grace_period": "0.0",
+        }
+    )
+
+
+def _heartbeat_deps(pg_dsn: str, schema: str, pool: asyncpg.Pool) -> WorkerDeps:
+    """Real deps on the real schema: empty registries, the claimed row is
+    held by nothing, exactly the post-claim-loss shape."""
+    return WorkerDeps(
+        settings=_heartbeat_settings(pg_dsn, schema),
+        dispatcher_pool=pool,  # type: ignore[arg-type]  # Why: the drain reads this pool; a real pool is a drop-in.
+        heartbeat_pool=pool,  # type: ignore[arg-type]
+        worker_pool=pool,  # type: ignore[arg-type]
+        notify_conn=None,
+        leader_conn=None,
+    )
+
+
+async def _one_tick(deps: WorkerDeps, worker_id: UUID) -> None:
+    """Run the real ``heartbeat_loop`` for exactly one tick against real
+    PG, synchronised on the tick-duration hook (the idiom the disowned-jobs
+    pins use, here over a live pool)."""
+    import taskq.worker.heartbeat as hb_mod
+
+    shutdown = asyncio.Event()
+    tick_done = asyncio.Event()
+    prev_record = hb_mod._tick_duration.record  # type: ignore[reportPrivateUsage]  # Why: the tick-complete hook the heartbeat unit tests synchronise on.
+
+    def _record_and_signal(value: float, *args: object, **kwargs: object) -> None:
+        prev_record(value, *args, **kwargs)
+        tick_done.set()
+
+    hb_mod._tick_duration.record = _record_and_signal  # type: ignore[method-assign,reportPrivateUsage]  # Why: as above.
+    try:
+        task = asyncio.create_task(heartbeat_loop(deps, worker_id, shutdown))
+        await asyncio.wait_for(tick_done.wait(), timeout=10.0)
+        shutdown.set()
+        await task
+    finally:
+        hb_mod._tick_duration.record = prev_record  # type: ignore[method-assign,reportPrivateUsage]
+
+
+async def test_reconcile_refunds_the_claim_time_increment_of_a_job_that_never_ran(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """The claim-loss reconcile must never charge an attempt to a job that
+    never started executing.
+
+    RED on main (the reconcile disowns without refunding): the sweep
+    terminalises the never-executed job 'crashed' and writes a
+    ``job_attempts`` row for the charged attempt, the record the issue
+    measured:
+
+    ``state-change attempt=1 cause=lock_expired to_state=crashed`` /
+    ``job_attempts: [(1, 'crashed', 'lock expired before worker reported
+    terminal state')]``
+    """
+    schema = module_pg_schema.schema_name
+    worker_id = new_uuid()
+    await _seed_worker(clean_pg_conn, schema, worker_id)
+    job_id = await _seed_pending_job(clean_pg_conn, schema)
+
+    # 1. The claim commits (autocommit): running, locked, attempt charged.
+    claimed = await _claim_via_real_dispatch_cte(clean_pg_conn, schema, worker_id)
+    assert claimed["status"] == "running"
+    assert claimed["attempt"] == 1, "the claim charges the attempt at claim time"
+    assert claimed["locked_by_worker"] == worker_id
+
+    # 2. The round dies after the commit (the #402 shape): the JobRow batch
+    #    is discarded, the row is held by no in-memory structure.
+
+    # 3. The real heartbeat_loop's claim-loss reconcile probes the orphan
+    #    (started_at aged past one lease) and disowns it.
+    await _age_started_at(clean_pg_conn, schema, job_id)
+    deps = _heartbeat_deps(module_pg_schema.pg_dsn, schema, module_pg_pool)
+    await _one_tick(deps, worker_id)
+    assert job_id in deps.disowned_jobs, (
+        "the reconcile must disown the orphan: without the disown the row is "
+        "renewed for the worker's lifetime (the #402 defect)"
+    )
+
+    # The disown must NOT have charged the attempt: the row stays running,
+    # locked to this worker (Sweep 1 owns the reclaim), at the attempt the
+    # job actually reached, which for a never-executed claim is the
+    # pre-claim counter.
+    row = await _job_row(clean_pg_conn, schema, job_id)
+    assert row["status"] == "running", (
+        f"the reconcile must keep the row running so Sweep 1 owns the reclaim, got {row}"
+    )
+    assert row["locked_by"] == str(worker_id)
+    assert row["attempt"] == 0, (
+        f"the reconcile must refund the claim-time increment of a job that "
+        f"never started executing (a claim that never reached an actor bought "
+        f"nothing, so it spends nothing), got attempt={row['attempt']}"
+    )
+
+    # 4. The lease lapses; the real Sweep 1 reclaims. With the budget
+    #    restored the job must re-pend, NOT terminalise.
+    await _age_lock_expiry(clean_pg_conn, schema, job_id)
+    count = await PostgresBackend.sweep_expired_locks(
+        clean_pg_conn,
+        timedelta(0),
+        timedelta(0),
+        schema=schema,
+    )
+    assert count == 1, f"the lapsed row must be reclaimed, sweep count={count}"
+
+    row = await _job_row(clean_pg_conn, schema, job_id)
+    assert row["status"] == "pending", (
+        f"a never-executed job with its budget restored must re-pend, got "
+        f"{row}: the sweep fabricated a terminal state for an execution that "
+        f"did not happen"
+    )
+
+    # The record: the sweep's reclaim ledger (one job_attempts row per
+    # reclaimed row, every branch, its own pinned contract) must sit at
+    # the REFUNDED attempt, the pre-claim counter. On main the unrefunded
+    # charge leaves [(1, 'crashed', 'lock expired before worker reported
+    # terminal state')]: the charged attempt recorded as an execution that
+    # did not happen, indistinguishable from a genuine mid-execution crash.
+    attempts = await _attempt_rows(clean_pg_conn, schema, job_id)
+    assert [(a["attempt"], a["outcome"]) for a in attempts] == [(0, "crashed")], (
+        f"the reclaim's attempt ledger must not claim the charged attempt "
+        f"(the claim charged attempt 1 and nothing ever executed it), got "
+        f"{attempts}"
+    )
+
+    # 5. The budget was not consumed: the job re-dispatches. The reclaim's
+    #    re-pend schedules the row on the retry backoff (the same hand-back
+    #    delay every reclaim arm stamps); anchor it to the PG clock so the
+    #    re-claim is deterministic.
+    await clean_pg_conn.execute(
+        f'UPDATE "{schema}".jobs SET scheduled_at = '  # noqa: S608
+        "clock_timestamp() - interval '1 second' WHERE id = $1",
+        job_id,
+    )
+    reclaims = await _claim_via_real_dispatch_cte(clean_pg_conn, schema, worker_id)
+    assert reclaims["attempt"] == 1, (
+        f"the re-claim must be the job's FIRST attempt, got attempt="
+        f"{reclaims['attempt']}: the reconcile's unrefunded charge spent a "
+        f"retry this job never used"
+    )
+
+
+async def test_reconcile_refund_is_exactly_once_across_a_same_id_restart(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """The refund must be exactly-once per claim.
+
+    Within a process the reconcile's exclusion array folds the disowned
+    set, so the refunded row stops matching. Across a restart
+    ``disowned_jobs`` is empty and the row still satisfies the reconcile's
+    own predicate, so a restarted worker with the same id would refund it
+    twice: a double refund revisits an attempt number a genuine earlier
+    execution may already hold a ``job_attempts`` row for, the exact
+    PK-collision the refund idiom's safety argument rules out. The refund
+    must therefore move the row out of its own predicate's match set.
+
+    The seeded job carries one spent attempt (a genuine earlier
+    execution's terminal row) so the double refund is observable: the
+    GREATEST floor in the shared fragment would absorb a second refund of
+    a fresh job's counter, and the pin would pass vacuously.
+    """
+    schema = module_pg_schema.schema_name
+    worker_id = new_uuid()
+    await _seed_worker(clean_pg_conn, schema, worker_id)
+    job_id = await _seed_pending_job(clean_pg_conn, schema, max_attempts=3, attempt=1)
+    # The spent attempt's genuine ledger row: what a second refund would
+    # make the next claim's terminal write collide with.
+    await clean_pg_conn.execute(
+        f'INSERT INTO "{schema}".job_attempts '  # noqa: S608
+        "(job_id, attempt, started_at, finished_at, outcome) "
+        "VALUES ($1, 1, clock_timestamp(), clock_timestamp(), 'succeeded')",
+        job_id,
+    )
+
+    await _claim_via_real_dispatch_cte(clean_pg_conn, schema, worker_id)
+    await _age_started_at(clean_pg_conn, schema, job_id)
+
+    # First process: the reconcile refunds once (the claim charged
+    # attempt 2; the refund returns the counter to the spent attempt).
+    deps = _heartbeat_deps(module_pg_schema.pg_dsn, schema, module_pg_pool)
+    await _one_tick(deps, worker_id)
+    row = await _job_row(clean_pg_conn, schema, job_id)
+    assert row["attempt"] == 1, f"the first reconcile must refund once, got {row}"
+
+    # The restart: same worker id, EMPTY disowned set (fresh process
+    # memory), the row still running and locked to this id. One more tick.
+    deps_after_restart = _heartbeat_deps(module_pg_schema.pg_dsn, schema, module_pg_pool)
+    assert not deps_after_restart.disowned_jobs
+    await _one_tick(deps_after_restart, worker_id)
+
+    row = await _job_row(clean_pg_conn, schema, job_id)
+    assert row["attempt"] == 1, (
+        f"the refund must be exactly-once per claim: a restarted worker with "
+        f"the same id re-probed the orphan and refunded a second time, "
+        f"got attempt={row['attempt']} - the next claim would re-create the "
+        f"spent attempt epoch its genuine ledger row already holds"
+    )
+    assert row["status"] == "running", f"the refunded row must stay Sweep 1's, got {row}"
+
+
+async def test_drain_refunds_the_same_never_started_row_shape(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """Control: the sibling sink (the shutdown drain) already refunds the
+    identical row shape through the shared fragment. This passes before and
+    after the fix; it is the semantic the reconcile must match."""
+    schema = module_pg_schema.schema_name
+    worker_id = new_uuid()
+    await _seed_worker(clean_pg_conn, schema, worker_id)
+    job_id = await _seed_pending_job(clean_pg_conn, schema)
+
+    await _claim_via_real_dispatch_cte(clean_pg_conn, schema, worker_id)
+
+    deps = _heartbeat_deps(module_pg_schema.pg_dsn, schema, module_pg_pool)
+    drained = await drain_local_queue_to_pending(deps, worker_id)
+    assert drained == 1, "the drain must hand the claimed-but-unstarted row back"
+
+    row = await _job_row(clean_pg_conn, schema, job_id)
+    assert row["status"] == "pending", f"the drain re-pends, got {row}"
+    assert row["attempt"] == 0, (
+        f"the drain refunds the claim-time increment ('a claim that never "
+        f"reached an actor bought nothing, so it spends nothing'), got "
+        f"attempt={row['attempt']}"
+    )
