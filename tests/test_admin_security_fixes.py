@@ -11,6 +11,8 @@ Covers:
 """
 
 import re
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -72,6 +74,15 @@ class _ScheduleRunConn:
 
     async def fetch(self, query: str, *args: object) -> list[dict[str, Any]]:
         return []
+
+    def transaction(self) -> Any:
+        # The schedule mutation routes wrap their write and its audit row
+        # in conn.transaction(); the fake only has to be enterable.
+        @asynccontextmanager
+        async def _tx() -> AsyncGenerator[None, None]:
+            yield
+
+        return _tx()
 
     async def execute(self, query: str, *args: object) -> str:
         return "SELECT 1"

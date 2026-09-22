@@ -19,6 +19,9 @@ Papered defects and pins
    ``UntranslatableCharacterError: unsupported Unicode escape sequence``),
    so ``POST /jobs/{id}/cancel?reason=…%00…`` is an opaque 500 instead of
    the family's clean 400. RED: ``test_cancel_reason_nul_is_400_not_500``.
+   (Since the #324/#337 audit-trail change, ``reason`` is a FORM field
+   posted from the cancel form's reason input; the NUL guard at the route
+   is unchanged and still pinned.)
 
 2. REAL DEFECT - the job detail page renders ``result`` unbounded
    (jobs.py:625 + templates/job_detail.html:219)::
@@ -199,12 +202,12 @@ def _make_client(
     return TestClient(app, raise_server_exceptions=False)
 
 
-def _csrf_post(client: TestClient, path: str) -> Any:
+def _csrf_post(client: TestClient, path: str, data: dict[str, str] | None = None) -> Any:
     """CSRF-valid POST that does NOT follow the 303 - the stub pool serves no
     detail row, so following the redirect would 404 for reasons unrelated to
     the behavior under test."""
     client.cookies.set("taskq_csrf_token", "rt-csrf")
-    return client.post(path, data={"csrf_token": "rt-csrf"}, follow_redirects=False)
+    return client.post(path, data={"csrf_token": "rt-csrf", **(data or {})}, follow_redirects=False)
 
 
 def _big_result_job_row(job_id: Any, result_json: str) -> dict[str, Any]:
@@ -271,12 +274,14 @@ def test_cancel_reason_nul_is_400_not_500() -> None:
     client = _make_client(_StubPool(_DetailConn(None)), backend=backend)
 
     # Control: a clean reason cancels fine (proves the route itself works).
-    ok = _csrf_post(client, f"/jobs/{job_id}/cancel?reason=operator-requested")
+    # reason is a FORM field now (the job detail page's cancel form collects
+    # it), so it posts in the body, not the query string.
+    ok = _csrf_post(client, f"/jobs/{job_id}/cancel", data={"reason": "operator-requested"})
     assert ok.status_code == 303, (
         f"control pin: a NUL-free reason must cancel (303); got {ok.status_code}"
     )
 
-    rejected = _csrf_post(client, f"/jobs/{job_id}/cancel?reason=boom%00mid")
+    rejected = _csrf_post(client, f"/jobs/{job_id}/cancel", data={"reason": "boom\x00mid"})
     assert rejected.status_code == 400, (
         "CONTRACT: POST /jobs/{id}/cancel?reason=…%00… must be rejected with 400 at "
         "the route - reason reaches the job_events jsonb insert "
@@ -397,7 +402,7 @@ def test_sso_group_allowlist_gates_mutations_not_only_reads() -> None:
         IdentityClaims(subject="dev-1", email=None, groups=frozenset({"developers"}), raw={})
     )
     client.cookies.set("taskq_session", outsider)
-    denied = _csrf_post(client, f"/jobs/{job_id}/cancel?reason=rt-outside-allowlist")
+    denied = _csrf_post(client, f"/jobs/{job_id}/cancel", data={"reason": "rt-outside-allowlist"})
     assert denied.status_code == 401, (
         "CONTRACT: the SSO group allowlist gates admin mutations, not only reads - "
         "an authenticated-but-out-of-allowlist session must be refused (401 for "
@@ -409,7 +414,7 @@ def test_sso_group_allowlist_gates_mutations_not_only_reads() -> None:
         IdentityClaims(subject="op-1", email=None, groups=frozenset({"ops"}), raw={})
     )
     client.cookies.set("taskq_session", member)
-    allowed = _csrf_post(client, f"/jobs/{job_id}/cancel?reason=rt-inside-allowlist")
+    allowed = _csrf_post(client, f"/jobs/{job_id}/cancel", data={"reason": "rt-inside-allowlist"})
     assert allowed.status_code == 303, (
         f"CONTRACT: an in-allowlist session reaches the cancel handler; got "
         f"{allowed.status_code} {allowed.text[:200]!r}"

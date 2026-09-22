@@ -598,7 +598,15 @@ def test_reservations_page_merges_pg_state_and_extra_bucket(
     )
     orphan_row = StubRecord(bucket_name="legacy-bucket", held_count=0, free_count=1, total_slots=1)
 
-    conn = _ScriptedConnection(fetch_results=[[configured_row, orphan_row], []])
+    # Fetch order with a configured reservation: the page reads
+    # (reservations, held), sync_slots then reads per reservation
+    # (existing, insert) through its OWN transaction - the shared stub
+    # supports conn.transaction(), so the sync completes here instead of
+    # erroring into the degraded no-refetch path - and the page REFETCHES
+    # (reservations, held) to render post-sync state.
+    conn = _ScriptedConnection(
+        fetch_results=[[configured_row, orphan_row], [], [], [], [configured_row, orphan_row], []]
+    )
     client = _make_app(_ScriptedPool(conn))
     resp = client.get("/reservations")
     assert resp.status_code == 200  # pyright: ignore[reportUnknownMemberType]
