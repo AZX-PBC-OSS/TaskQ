@@ -900,6 +900,32 @@ def register(router: APIRouter) -> None:
             }
         )
 
+        # The redis outage family the #421 fallback pins exactly, mirrored
+        # here because the reset path has NO PG fallback to absorb them
+        # (deliberately: the PG rows for a redis-backed bucket are a
+        # worker-published read model, so a PG-side "reset" cannot reset
+        # the admission state and would lie to the operator). redis is an
+        # optional dependency and a None client (memory/PG-backed bucket)
+        # cannot raise any of these, so the family resolves lazily and
+        # stays empty when redis is absent. Note redis.exceptions.
+        # TimeoutError inherits RedisError, not the builtin, so the
+        # TimeoutError arm above would never have caught it.
+        reset_outage_family: tuple[type[BaseException], ...] = ()
+        if redis_client is not None:
+            try:
+                import redis as _redis_mod
+                from redis.exceptions import OutOfMemoryError as _RedisOOMError
+                from redis.exceptions import ReadOnlyError as _RedisReadOnlyError
+            except ImportError:  # pragma: no cover - redis absent means redis_client is None
+                pass
+            else:
+                reset_outage_family = (
+                    _redis_mod.ConnectionError,
+                    _redis_mod.TimeoutError,
+                    _RedisOOMError,
+                    _RedisReadOnlyError,
+                )
+
         try:
             await rl_registry.reset(
                 bucket_name,
@@ -928,6 +954,31 @@ def register(router: APIRouter) -> None:
                     f"{settings.admin_acquire_timeout}s; whether the store "
                     "applied it is unknowable from here - re-check the page "
                     "before retrying."
+                ),
+                headers={"Retry-After": "2"},
+            ) from None
+        except reset_outage_family as exc:
+            # The store CANNOT SERVE the reset (a replica promoted
+            # mid-flight answers READONLY, a maxmemory breach answers OOM,
+            # the #421 outage classes; plus the connection/timeout shapes
+            # the same fallback absorbs on the acquire path). No fallback
+            # exists here (see the family's comment above), so the honest
+            # answer is the same 503/Retry-After the timeout arm gives:
+            # the reset's round trip must reach the operator as a clean
+            # refusal, never as a raw 500 -- and a refused mutation writes
+            # no audit row (the audit write below is not reached).
+            logger.warning(
+                "rate-limit-reset-store-outage",
+                bucket_name=_log_safe_text(bucket_name),
+                error_type=type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"Rate limit reset could not reach the store "
+                    f"({type(exc).__name__}); whether the store applied it "
+                    "is unknowable from here - re-check the page before "
+                    "retrying."
                 ),
                 headers={"Retry-After": "2"},
             ) from None
