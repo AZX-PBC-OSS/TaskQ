@@ -18,8 +18,9 @@ from taskq._ids import new_uuid
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.constants import wake_channel
+from taskq.testing.assertions import wait_for_condition
 from taskq.testing.settings import make_integration_settings
-from taskq.worker.notify import notify_listener_loop
+from taskq.worker.notify import _connected_lookup, notify_listener_loop
 
 pytestmark = pytest.mark.integration
 
@@ -126,9 +127,24 @@ async def test_listen_active_before_loop_and_remains_after(pg_dsn: str) -> None:
 
     Phase 1: pg_listening_channels() after open_worker_deps but before
     notify_listener_loop verifies the contract.
-    Phase 2: after spawn + brief drain, channel remains present - asyncpg
-    add_listener is idempotent at the SQL level because duplicate LISTEN
-    statements are no-ops.
+    Phase 2: after the loop's add_listener setup has COMPLETED, channel
+    remains present - asyncpg add_listener is idempotent at the SQL level
+    because duplicate LISTEN statements are no-ops.
+
+    Choreography (why not a sleep): deps.notify_conn is a dedicated
+    single-user connection. The loop's setup runs three add_listener calls,
+    each a LISTEN execute on it, and its health check later runs SELECT 1 on
+    it - asyncpg refuses a second concurrent _execute with
+    InterfaceError('another operation is in progress') (the
+    _stmt_exclusive_section guard in Connection._execute). Querying
+    pg_listening_channels() on the same connection therefore needs the loop
+    quiescent: this test waits for the loop's connected flag (set strictly
+    after all three add_listener calls, strictly before the health-check
+    task starts). The health check's first action is await
+    sleep(notify_health_check_interval) - a hard asyncio lower bound, 1 s
+    under the integration defaults - so the introspection query (one round
+    trip) cannot collide with the setup LISTENs or the first SELECT 1 no
+    matter how long the setup took.
     """
     worker_settings = make_integration_settings(pg_dsn)
     channel = wake_channel(worker_settings.schema_name)
@@ -150,7 +166,16 @@ async def test_listen_active_before_loop_and_remains_after(pg_dsn: str) -> None:
                 name="notify.listener",
             )
 
-            await asyncio.sleep(0.05)
+            # Wait for the loop's setup to complete (connected flag flips
+            # after the third add_listener, before the health-check task
+            # starts) instead of guessing a sleep that outlives every
+            # runner's scheduling latency. 3 channels x the 10 s per-LISTEN
+            # setup bound is the honest worst case.
+            await wait_for_condition(
+                lambda: _connected_lookup.get(backend, False),
+                description="notify listener setup completion (connected flag)",
+                timeout=30.0,
+            )
 
             result = await deps.notify_conn.fetchval("SELECT pg_listening_channels()")
             assert result == channel, f"Phase 2: expected {channel!r}, got {result!r}"
