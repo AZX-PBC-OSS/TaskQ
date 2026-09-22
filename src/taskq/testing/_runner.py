@@ -575,6 +575,11 @@ def archive_terminal_jobs(
     ``archived_at = clock.now()`` and ``expire_at = clock.now() +
     archive_retention``; copies ``_attempts`` entries to
     ``_archive_attempts``; removes from ``_jobs`` and ``_attempts``.
+    The archived jobs' ``_events`` rows are dropped: production's
+    ``job_events.job_id`` foreign key is ``ON DELETE CASCADE``, so the
+    prune's ``DELETE FROM jobs`` removes them in the same statement
+    (there is no ``job_events_archive``), and a ``get_events`` for an
+    archived id answers empty on both backends.
 
     When *statuses* is provided, only jobs in those terminal statuses
     are considered, allowing the caller to simulate per-status
@@ -615,6 +620,19 @@ def archive_terminal_jobs(
         by_actor[row.actor] = by_actor.get(row.actor, 0) + 1
         by_status[row.status] = by_status.get(row.status, 0) + 1
         archived_count += 1
+
+    # Production cascades the archived jobs' job_events away with the
+    # prune's DELETE FROM jobs (job_events.job_id REFERENCES jobs ON
+    # DELETE CASCADE, and no events archive exists): the narration does
+    # not outlive the table it narrates. Keeping them would make the
+    # twin's get_events answer for an archived id while PG answers empty.
+    if to_archive:
+        archived_ids = set(to_archive)
+        backend._events = [  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+            e
+            for e in backend._events
+            if e.job_id not in archived_ids  # pyright: ignore[reportPrivateUsage]
+        ]
 
     for status in by_status:
         cutoffs[status] = cutoff

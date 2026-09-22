@@ -15,6 +15,41 @@ submodules; this module holds the cohesive core: ``__init__``, heartbeat,
 cancel signals, sweeps, and schedule CRUD.
 
 Single-threaded by contract, do not share across threads or event loops.
+
+Parity map
+----------
+
+Every Backend protocol method models PostgresBackend's CURRENT observable
+behavior, verified by differential tests (the seeded-scenario shape of
+``tests/test_batch_cap_refusals_parity.py``), not by this docstring. The
+archive tier's read semantics are the #314 class: ``get`` and
+``get_attempts`` fall back to the archive storage on a hot miss exactly
+as PG probes ``jobs_archive`` / ``job_attempts_archive``, the prune
+simulation drops the archived jobs' events the way PG's cascade does,
+and archive hits carry ``archived=True`` on the row.
+
+The divergences that remain are inherent: the twin cannot model them
+without a server. They are simulations, silently standing in for the
+production behavior named here:
+
+- Advisory locks and ``FOR UPDATE SKIP LOCKED``: single-threaded
+  execution never contends, so lock waits, fencing races, and
+  concurrent-claim interleavings answer "uncontended" always. A test
+  that needs a lost race needs PG.
+- Statement timeouts, pool checkouts, and connection lifecycle: no
+  driver exists; a timeout abort or a dead connection has no twin shape.
+- ``pg_notify`` transport: wake subscriptions are in-process events;
+  cross-process payload/channel delivery is not modeled.
+- Clock arbitration: the injected Clock stands in for the server clock
+  (same predicate, single arbiter), so clock-skew scenarios are exactly
+  as wrong as the injected clock is told to be.
+- Reclaim-event visibility delay: accepted and ignored (single-threaded
+  insertion order already equals commit order; see
+  ``_poll_reclaim_events``).
+- Result-TTL expiry: evaluated at read time instead of by a leader
+  sweep's bounded batch (see ``_post_sweep_result_view``).
+- Hypertable/Timescale archive modes: only vanilla-Postgres semantics
+  are modeled.
 """
 
 import asyncio

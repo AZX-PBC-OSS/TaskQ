@@ -1755,7 +1755,9 @@ class TestArchiveTerminalJobs:
         assert result.by_status == {"succeeded": 5}
 
         for jid in old_ids:
-            assert await backend.get(jid) is None
+            read_back = await backend.get(jid)
+            assert read_back is not None
+            assert read_back.archived is True
             archived = await backend.get_archived(jid)
             assert archived is not None
             assert archived.row.status == "succeeded"
@@ -2070,7 +2072,10 @@ class TestExpireArchivedJobs:
 class TestArchiveFallbackLookup:
     async def test_archived_job_retrievable(self) -> None:
         """After archive_terminal_jobs(), a job absent from _jobs
-        but present in _archive is retrievable via get_archived."""
+        but present in _archive answers through BOTH read seams, the
+        parity behavior (``get`` falls back to the archive tier with
+        ``archived=True`` exactly as PG's ``get`` probes jobs_archive,
+        and ``get_archived`` answers the wrapper)."""
         from dataclasses import replace as _replace
 
         from taskq.testing.clock import FakeClock
@@ -2090,7 +2095,11 @@ class TestArchiveFallbackLookup:
             archive_retention=timedelta(days=365),
         )
 
-        assert await backend.get(row.id) is None
+        read_back = await backend.get(row.id)
+        assert read_back is not None
+        assert read_back.id == row.id
+        assert read_back.status == "succeeded"
+        assert read_back.archived is True
         archived = await backend.get_archived(row.id)
         assert archived is not None
         assert archived.row.id == row.id
@@ -2154,7 +2163,9 @@ async def test_prune_invariant_archives_old_keeps_recent(
     if should_archive:
         assert result.total_deleted == 1
         assert result.archived == 1
-        assert await backend.get(row.id) is None
+        read_back = await backend.get(row.id)
+        assert read_back is not None
+        assert read_back.archived is True
         archived = await backend.get_archived(row.id)
         assert archived is not None
         assert archived.row.status == status
