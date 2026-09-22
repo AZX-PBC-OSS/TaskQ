@@ -18,6 +18,7 @@ from taskq.backend._protocol import (
     JobId,
     JobRow,
     batch_cap_groups,
+    batch_cap_refusal_kernel,
     duplicate_pair_actor_mismatch,
     first_duplicate_idempotency_pair,
     first_singleton_collision_actor,
@@ -643,53 +644,47 @@ async def _batch_cap_refusals(
     writing, mirroring the PG tier's ``ON CONFLICT`` discount. Returns
     one :class:`MaxPendingExceededError` per over-cap actor; the caller
     decides partition-vs-abort (see ``_enqueue_batch``).
+
+    All three rules (override resolution, pair discount, the refusal
+    comparison) are :func:`batch_cap_refusal_kernel`, the same shared
+    pure kernel the PG tier's ``_batch_cap_refusals`` drives; this
+    function is the mirror's I/O for the kernel's three inputs (its own
+    actor-config metadata, its own idempotency index, its own job-table
+    scan) plus the per-refusal log and metric, nothing else.
     """
     counts = batch_cap_groups(args_list)
-    deduped_counts: dict[str, int] = {}
-    seen_in_batch: set[tuple[str, str]] = set()
-    for args in args_list:
-        if args.max_pending is None or args.idempotency_key is None:
-            continue
-        pair = (args.idempotency_scope, str(args.idempotency_key))
-        # Counted per item: a set would collapse repeats of one pair
-        # and under-discount.
-        if pair in self._idempotency_index or pair in seen_in_batch:
-            deduped_counts[args.actor] = deduped_counts.get(args.actor, 0) + 1
-        seen_in_batch.add(pair)
-    refusals: list[MaxPendingExceededError] = []
-    for actor, (batch_count, carried) in counts.items():
-        stored = self._actor_configs_meta.get(actor)
-        cap = (
-            stored.max_pending if stored is not None and stored.max_pending is not None else carried
-        )
-        existing = sum(
+    stored_overrides: dict[str, int | None] = {
+        actor: cfg.max_pending for actor, cfg in self._actor_configs_meta.items()
+    }
+    existing = {
+        actor: sum(
             1
             for row in self._jobs.values()
             if row.actor == actor and row.status in ("pending", "scheduled")
         )
-        admitted = batch_count - deduped_counts.get(actor, 0)
-        if existing + admitted > cap:
-            # Why log + metric here (parity with the PG tier's
-            # _batch_cap_refusals, which does both before appending, and
-            # through it with the single path): a partitioned bulk
-            # refusal is a producer-pressure event per refused actor, not
-            # per item. A mirror that refused silently would ship an app
-            # with blank backpressure dashboards in production: an
-            # operator's dashboards read this warning and this counter.
-            logger.warning(
-                "max-pending-exceeded",
-                actor=actor,
-                current_count=existing,
-                max_pending=cap,
-            )
-            record_backpressure_error(actor, kind="max_pending")
-            refusals.append(
-                MaxPendingExceededError(
-                    actor=actor,
-                    current_count=existing,
-                    max_pending=cap,
-                )
-            )
+        for actor in counts
+    }
+    refusals = batch_cap_refusal_kernel(
+        args_list,
+        stored_overrides=stored_overrides,
+        stored_pairs=self._idempotency_index.keys(),
+        existing_counts=existing,
+    )
+    for refusal in refusals:
+        # Why log + metric here (parity with the PG tier's
+        # _batch_cap_refusals, which does both before appending, and
+        # through it with the single path): a partitioned bulk
+        # refusal is a producer-pressure event per refused actor, not
+        # per item. A mirror that refused silently would ship an app
+        # with blank backpressure dashboards in production: an
+        # operator's dashboards read this warning and this counter.
+        logger.warning(
+            "max-pending-exceeded",
+            actor=refusal.actor,
+            current_count=refusal.current_count,
+            max_pending=refusal.max_pending,
+        )
+        record_backpressure_error(refusal.actor, kind="max_pending")
     return refusals
 
 

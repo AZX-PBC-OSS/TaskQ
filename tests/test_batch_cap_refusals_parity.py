@@ -96,7 +96,7 @@ async def _pg_refusals(
     *,
     existing_counts: dict[str, int],
     stored_pairs: set[tuple[str, str]],
-    override_caps: dict[str, int] | None = None,
+    override_caps: dict[str, int | None] | None = None,
 ) -> list[Any]:
     """Drive the PG ``_batch_cap_refusals`` with a fake connection whose
     fetch results model the same world (existing pending counts, stored
@@ -147,7 +147,7 @@ async def _memory_refusals(
     *,
     existing_counts: dict[str, int],
     stored_pairs: set[tuple[str, str]],
-    override_caps: dict[str, int] | None = None,
+    override_caps: dict[str, int | None] | None = None,
 ) -> list[Any]:
     """Drive the in-memory ``_batch_cap_refusals`` with a backend seeded
     to the same world as ``_pg_refusals`` models."""

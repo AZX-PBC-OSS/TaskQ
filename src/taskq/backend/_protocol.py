@@ -13,7 +13,7 @@ creating a circular dependency through the re-export boundary in
 import asyncio
 import re
 import warnings
-from collections.abc import Collection, Container, Iterable, Sequence
+from collections.abc import Collection, Container, Iterable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager as AsyncContextManager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -50,6 +50,7 @@ from taskq.constants import (
     check_max_attempts_domain,
     check_priority_domain,
 )
+from taskq.exceptions import MaxPendingExceededError
 
 __all__ = [
     "BACKEND_PROTOCOL_VERSION",
@@ -788,6 +789,98 @@ def batch_cap_groups(args_list: list[EnqueueArgs]) -> dict[str, tuple[int, int]]
         if args.actor not in caps or cap < caps[args.actor]:
             caps[args.actor] = cap
     return {actor: (counts[actor], caps[actor]) for actor in counts}
+
+
+def cap_keyed_pairs(args_list: list[EnqueueArgs]) -> list[tuple[str, str, str]]:
+    """The ``(actor, idempotency_scope, idempotency_key)`` triples the cap
+    discount may need to look up in storage.
+
+    Only items that are BOTH capped and idempotency-keyed can have their
+    capacity discounted: an uncapped item is invisible to backpressure,
+    and an item without a key always writes a fresh row (nothing to
+    dedupe against). The pair is the ``(scope, str(key))`` shape the
+    storage indexes use on both backends, so one traversal feeds both
+    consumers: the PG tier's batched ``fetch_existing`` probe (which
+    needs the raw scope/key lists to query with) and
+    :func:`batch_cap_refusal_kernel`'s discount arithmetic. Pure function
+    over the args; lives here (not in the PG bulk path) so the in-memory
+    mirror, which must not import driver-bound modules, drives the
+    identical discount from the identical triples.
+    """
+    return [
+        (args.actor, args.idempotency_scope, str(args.idempotency_key))
+        for args in args_list
+        if args.max_pending is not None and args.idempotency_key is not None
+    ]
+
+
+def batch_cap_refusal_kernel(
+    args_list: list[EnqueueArgs],
+    *,
+    stored_overrides: Mapping[str, int | None],
+    stored_pairs: Container[tuple[str, str]],
+    existing_counts: Mapping[str, int],
+) -> list[MaxPendingExceededError]:
+    """The one cap-refusal rule both backends enforce, as a pure function.
+
+    Resolves each capped actor's effective cap (a stored operator
+    override wins over the carried literal; an absent or cleared override
+    falls back to it), discounts the batch's idempotency pairs (a pair
+    already in *stored_pairs*, or repeated within the batch, dedupes
+    instead of writing and consumes no capacity -- counted per item, not
+    per distinct pair, so a set of repeats discounts each of them), and
+    applies the refusal comparison: M1 ``>`` semantics, existing
+    pending+scheduled plus net admissions, a batch filling exactly to the
+    limit admitted.
+
+    The backend-specific inputs are the three mappings the caller alone
+    can see: its stored operator overrides (*stored_overrides*), the
+    idempotency pairs its storage already holds (*stored_pairs*), and the
+    per-actor live pending+scheduled counts (*existing_counts*). The PG
+    tier fetches them as aggregated rows, the in-memory mirror scans its
+    own index and job table, but the arithmetic over them is THIS
+    function's alone -- previously it was hand-maintained twice, once per
+    backend, and only test pins held the copies together. Refusal ORDER
+    is batch order (``batch_cap_groups`` insertion order), and each
+    refusal carries the resolved effective cap as ``max_pending``, the
+    number the caller must relax to admit more.
+
+    Returns one :class:`MaxPendingExceededError` per over-cap actor; an
+    empty list admits the whole batch. Raising, logging, and the
+    backpressure metric stay with the CALLER: they are per-tier
+    observations (each backend's own logger, its own call site), while
+    the decision of what to refuse is made exactly once, here.
+    """
+    groups = batch_cap_groups(args_list)
+    if not groups:
+        return []
+    keyed = cap_keyed_pairs(args_list)
+    # Counted per item, not per distinct pair (a set would collapse
+    # repeats and under-discount): the first occurrence of a new pair
+    # writes one row, every stored-or-repeated occurrence after it
+    # dedupes to one that exists.
+    deduped_counts: dict[str, int] = {}
+    seen_in_batch: set[tuple[str, str]] = set()
+    for actor, scope, key in keyed:
+        pair = (scope, key)
+        if pair in stored_pairs or pair in seen_in_batch:
+            deduped_counts[actor] = deduped_counts.get(actor, 0) + 1
+        seen_in_batch.add(pair)
+    refusals: list[MaxPendingExceededError] = []
+    for actor, (batch_count, carried) in groups.items():
+        override = stored_overrides.get(actor)
+        cap = override if override is not None else carried
+        have = existing_counts.get(actor, 0)
+        admitted = batch_count - deduped_counts.get(actor, 0)
+        if have + admitted > cap:
+            refusals.append(
+                MaxPendingExceededError(
+                    actor=actor,
+                    current_count=have,
+                    max_pending=cap,
+                )
+            )
+    return refusals
 
 
 def first_duplicate_idempotency_pair(
