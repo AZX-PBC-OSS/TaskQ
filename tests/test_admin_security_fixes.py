@@ -13,6 +13,7 @@ Covers:
 import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
@@ -60,6 +61,15 @@ class _ScheduleRunConn:
             return self._schedule_row
         if "actor_config" in query:
             return self._actor_config_row
+        return None
+
+    async def fetchval(self, query: str, *args: object) -> Any:
+        # The router's clock-offset probe runs on the same dependency-owned
+        # checkout as the handlers, so the fake answers it like a real
+        # asyncpg connection would: an aware server instant, not an
+        # AttributeError the probe has to degrade around.
+        if "clock_timestamp" in query:
+            return datetime.now(UTC)
         return None
 
     async def fetch(self, query: str, *args: object) -> list[dict[str, Any]]:
@@ -186,12 +196,16 @@ def test_schedule_run_now_rejects_rapid_retrigger(
             "queue": "default",
             "max_attempts": 3,
             "retry_kind": "transient",
-            # The run-now SELECT's seven-column contract; NULL curve
-            # columns resolve to the declared defaults.
+            # The run-now SELECT's column contract, max_pending included:
+            # the cap carry reads the stored value off this row, so the
+            # fake must carry what the query selects. NULL curve columns
+            # resolve to the declared defaults; a NULL max_pending is no
+            # stored override.
             "retry_base": None,
             "retry_cap": None,
             "retry_backoff": None,
             "retry_jitter": None,
+            "max_pending": None,
         },
     )
     pool = _StubPool(conn)
