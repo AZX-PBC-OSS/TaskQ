@@ -618,6 +618,7 @@ def bench_job_row_decode() -> list[ABResult]:
             retry_backoff="exponential",
             retry_jitter=0.1,
             assignment_routed=False,
+            claim_epoch=0,
             completed_at=None,
             consecutive_failures=0,
             expected_size=None,
@@ -673,6 +674,7 @@ def bench_job_row_decode() -> list[ABResult]:
             span_id=rec["span_id"],
             metadata=jsonb_to_dict(meta) or {},
             tags=tuple(tags) if tags else (),
+            claim_epoch=rec["claim_epoch"],
         )
 
     rows = [make_record(i) for i in range(1000)]
