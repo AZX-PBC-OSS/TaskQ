@@ -140,8 +140,8 @@ const routes = [
             pollCount += 1;
             return {
                 status: "succeeded",
-                progress_state: { percent: 50, data: { a: 1, b: 2 } },
-                progress_seq: 3,
+                progress_state: { detail: "phase", percent: 50, data: { a: 1, b: 2 } },
+                progress_seq: 4,
             };
         },
     },
@@ -172,15 +172,21 @@ function advance(ms) {
 
 new Function(src)();
 if (scenario === "realtime-empty-progress") {
-    global.lastEventSource.emit("terminal", { kind: "state_change", terminal: true }, "2");
+    global.lastEventSource.emit("terminal", {}, "2");
 } else if (scenario === "realtime-progress") {
-    global.lastEventSource.emit("progress", { kind: "progress", percent: 50 }, "2");
-    global.lastEventSource.emit("terminal", { kind: "state_change", percent: 50, terminal: true }, "3");
+    global.lastEventSource.emit("progress", { kind: "progress", detail: "retained" }, "2");
+    global.lastEventSource.emit("progress", { kind: "progress", percent: 50 }, "3");
+    global.lastEventSource.emit(
+        "terminal",
+        { kind: "state_change", percent: 50, detail: "retained", terminal: true },
+        "4",
+    );
 } else if (scenario === "sse-to-polling") {
+    global.lastEventSource.emit("progress", { kind: "progress", detail: "phase" }, "2");
     global.lastEventSource.emit(
         "progress",
         { kind: "progress", data: { b: 2, a: 1 }, percent: 50 },
-        "2",
+        "3",
     );
 } else if (scenario === "initial-progress") {
     global.lastEventSource.emit("progress", { percent: 50 }, "2");
@@ -270,16 +276,16 @@ def test_realtime_does_not_render_the_empty_initial_progress_state() -> None:
 
 @requires_node
 def test_realtime_renders_a_later_progress_update_once() -> None:
-    """A terminal SSE event does not duplicate the last real progress."""
+    """An accumulated terminal state does not duplicate a progress delta."""
     log = _drive("realtime-progress")
-    assert log.count("append-progress") == 1
+    assert log.count("append-progress") == 2
 
 
 @requires_node
 def test_sse_to_polling_deduplicates_the_last_realtime_progress_event() -> None:
-    """Polling does not duplicate progress after health-driven fallback."""
+    """Polling deduplicates an accumulated snapshot after SSE deltas."""
     log = _drive("sse-to-polling")
-    assert log.count("append-progress") == 1
+    assert log.count("append-progress") == 2
 
 
 @requires_node
@@ -291,8 +297,8 @@ def test_initial_sse_snapshot_does_not_duplicate_server_rendered_progress() -> N
 
 @requires_node
 def test_transient_sse_error_keeps_native_eventsource_reconnect() -> None:
-    """A disconnect alone does not close SSE or prematurely start polling."""
+    """A disconnect keeps native reconnect while polling durable state."""
     log = _drive("transient-sse-error")
     assert "sse-close" not in log
-    assert "fetch:/taskq/jobs/api/job/j1/state" not in log
+    assert "fetch:/taskq/jobs/api/job/j1/state" in log
     assert log[-1] == "mode:realtime"

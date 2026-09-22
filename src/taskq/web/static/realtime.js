@@ -13,6 +13,7 @@
     let pollingActive = false;
     let pollingInterval = null;
     let lastSeenSeq = 0;
+    let accumulatedProgress = {};
     let lastRenderedProgress = null;
 
     function getBadgeEl() {
@@ -44,7 +45,7 @@
     function progressState(evt) {
         const state = {};
         for (const field of PROGRESS_FIELDS) {
-            if (Object.hasOwn(evt, field) && evt[field] != null) {
+            if (Object.prototype.hasOwnProperty.call(evt, field) && evt[field] != null) {
                 state[field] = evt[field];
             }
         }
@@ -69,12 +70,15 @@
         return JSON.stringify(canonicalize(state));
     }
 
-    function acceptProgress(seq, rawState) {
+    function acceptProgress(seq, rawState, merge) {
         if (!Number.isInteger(seq) || seq <= lastSeenSeq) return;
         lastSeenSeq = seq;
 
         const state = progressState(rawState);
-        const fingerprint = progressFingerprint(state);
+        accumulatedProgress = merge
+            ? { ...accumulatedProgress, ...state }
+            : state;
+        const fingerprint = progressFingerprint(accumulatedProgress);
         if (fingerprint === null || fingerprint === lastRenderedProgress) return;
 
         lastRenderedProgress = fingerprint;
@@ -157,7 +161,7 @@
                 .then(function (res) { return res.json(); })
                 .then(function (body) {
                     if (!pollingActive) return;
-                    acceptProgress(body.progress_seq, body.progress_state ?? {});
+                    acceptProgress(body.progress_seq, body.progress_state ?? {}, false);
                     if (TERMINAL_STATUSES.has(body.status)) {
                         stopPolling();
                     }
@@ -189,23 +193,32 @@
         const es = new EventSource(`${BASE}/jobs/api/job/${jobId}/progress/stream`);
         eventSource = es;
 
-        function handleProgressMessage(rawEvent) {
+        function handleProgressMessage(rawEvent, render, terminalEvent) {
             let evt;
             try {
                 evt = JSON.parse(rawEvent.data);
             } catch {
                 return;
             }
-            acceptProgress(Number(rawEvent.lastEventId), evt);
-            if (evt.terminal) {
+            const seq = Number(rawEvent.lastEventId);
+            if (render) {
+                acceptProgress(seq, evt, evt.kind === "progress");
+            } else if (Number.isInteger(seq) && seq > lastSeenSeq) {
+                lastSeenSeq = seq;
+            }
+            stopPolling();
+            if (terminalEvent || evt.terminal) {
                 es.close();
                 eventSource = null;
-                stopPolling();
             }
         }
 
-        es.addEventListener("progress", handleProgressMessage);
-        es.addEventListener("terminal", handleProgressMessage);
+        es.addEventListener("progress", function (event) {
+            handleProgressMessage(event, true, false);
+        });
+        es.addEventListener("terminal", function (event) {
+            handleProgressMessage(event, true, true);
+        });
 
         es.addEventListener("done", function () {
             es.close();
@@ -215,9 +228,9 @@
 
         es.addEventListener("error", function () {
             // EventSource reconnects with Last-Event-ID. The periodic Redis
-            // health probe switches to polling only when the backend is
-            // actually unavailable, rather than treating every disconnect
-            // as an outage and discarding the browser's resume cursor.
+            // health probe still owns the mode badge, while polling provides
+            // durable progress if the stream endpoint itself stays broken.
+            startPolling();
         });
     }
 
@@ -279,8 +292,10 @@
         }
         try {
             const initialState = JSON.parse(section.getAttribute("data-progress-state") ?? "{}");
-            lastRenderedProgress = progressFingerprint(progressState(initialState));
+            accumulatedProgress = progressState(initialState);
+            lastRenderedProgress = progressFingerprint(accumulatedProgress);
         } catch {
+            accumulatedProgress = {};
             lastRenderedProgress = null;
         }
 
