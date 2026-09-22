@@ -20,7 +20,7 @@ dependency carries, mirroring the real wiring one-for-one.
 import asyncio
 import contextlib
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import timedelta
 from typing import Any
 from uuid import UUID
@@ -43,7 +43,6 @@ from taskq.web.progress import (
 
 pytestmark = [pytest.mark.fastapi]
 
-_SCHEMA = "taskq"
 _HEARTBEAT = timedelta(milliseconds=20)
 _MAX_SSE = 2
 
@@ -137,7 +136,7 @@ def _make_app(pubsub: _KeepalivePubSub) -> tuple[FastAPI, dict[str, bool]]:
     router = create_router(
         _StubPool(),  # pyright: ignore[reportArgumentType]  # Why: duck-typed stub pool satisfies the asyncpg surface the route reads.
         _StubRedis(pubsub),  # pyright: ignore[reportArgumentType]
-        schema=_SCHEMA,
+        schema="taskq",
         auth_dependency=_dependency,
         sse_heartbeat_interval=_HEARTBEAT,
         max_sse_connections=_MAX_SSE,
@@ -514,10 +513,32 @@ async def test_heartbeat_interval_above_the_cap_is_clamped_and_warned(
     real_gen = progress_mod._event_generator
     captured: dict[str, Any] = {}
 
-    async def _spy(**kwargs: Any) -> AsyncIterator[Any]:
+    async def _spy(
+        pubsub: Any,
+        channel: str,
+        job_id: UUID,
+        is_terminal: bool,
+        progress_seq: int,
+        progress_data: str,
+        resolved_last_event_id: int | None,
+        heartbeat_secs: float,
+        sse_slot_semaphore: asyncio.Semaphore | None = None,
+        session_verifier: Callable[[], Awaitable[bool]] | None = None,
+    ) -> AsyncIterator[Any]:
         # Runs when the route builds the generator, before streaming starts.
-        captured["heartbeat_secs"] = kwargs.get("heartbeat_secs")
-        async for event in real_gen(**kwargs):
+        captured["heartbeat_secs"] = heartbeat_secs
+        async for event in real_gen(
+            pubsub,
+            channel,
+            job_id,
+            is_terminal,
+            progress_seq,
+            progress_data,
+            resolved_last_event_id,
+            heartbeat_secs,
+            sse_slot_semaphore,
+            session_verifier,
+        ):
             yield event
 
     monkeypatch.setattr(progress_mod, "_event_generator", _spy)
@@ -535,7 +556,7 @@ async def test_heartbeat_interval_above_the_cap_is_clamped_and_warned(
         router = create_router(
             _StubPool(),  # pyright: ignore[reportArgumentType]  # Why: duck-typed stub pool satisfies the asyncpg surface the route reads.
             _StubRedis(_KeepalivePubSub()),
-            schema=_SCHEMA,
+            schema="taskq",
             auth_dependency=_dependency,
             sse_heartbeat_interval=timedelta(hours=1),
             max_sse_connections=_MAX_SSE,

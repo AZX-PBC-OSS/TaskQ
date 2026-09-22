@@ -429,13 +429,17 @@ async def test_sse_endpoint_returns_event_stream(
     """
     import asyncio as _asyncio
     from collections.abc import AsyncIterator as AsyncIteratorStr
+    from collections.abc import Awaitable, Callable
 
     import taskq.web.admin.sse as _sse_mod
 
     # Signature mirrors taskq.web.admin.sse._sse_generator exactly - a double
     # that outlives the real signature stops standing in for anything.
     async def _finite_generator(
-        semaphore: _asyncio.Semaphore, pool: Any, schema: Any
+        semaphore: _asyncio.Semaphore,
+        resolve_pool: Callable[[], Any],
+        schema: str | None,
+        session_verifier: Callable[[], Awaitable[bool]] | None = None,
     ) -> AsyncIteratorStr[str]:
         try:
             yield 'event: status\ndata: {"status":"awaiting_progress_backend"}\n\n'
