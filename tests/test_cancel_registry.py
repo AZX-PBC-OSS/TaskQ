@@ -302,7 +302,8 @@ async def test_concurrent_register_deregister_atomicity() -> None:
     register_coros = [register_one(jid, t) for jid, t in zip(job_ids, tasks, strict=True)]
     entries = await asyncio.gather(*register_coros)
     deregister_coros = [
-        deregister_one(jid, entry) for jid, entry in zip(job_ids[:n_deregister], entries[:n_deregister], strict=True)
+        deregister_one(jid, entry)
+        for jid, entry in zip(job_ids[:n_deregister], entries[:n_deregister], strict=True)
     ]
 
     await asyncio.gather(*deregister_coros)
