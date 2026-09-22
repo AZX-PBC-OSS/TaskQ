@@ -40,7 +40,12 @@ Design notes
   Bounded staleness: at most one keepalive interval between the revocation and
   the stream ending; the effective keepalive interval is capped at
   ``_SSE_HEARTBEAT_CAP_SECS`` so the bound holds no matter how a host
-  configures ``sse_heartbeat_interval``.
+  configures ``sse_heartbeat_interval`` (the clamp is logged at startup).
+  The re-check itself is bounded too (``SESSION_RECHECK_TIMEOUT_SECS``): a
+  verifier that hangs is fail-closed revocation, never a frozen generator.
+  The check is cookie-only -- no session store, no DB round trip -- so
+  server-side revocation of a still-validly-signed cookie is impossible by
+  construction (docs/guides/sso.md states the same limits).
 """
 
 import asyncio
@@ -67,7 +72,7 @@ from taskq.constants import (
 )
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
-from taskq.web._sse_limit import acquire_sse_slot
+from taskq.web._sse_limit import SESSION_RECHECK_TIMEOUT_SECS, acquire_sse_slot
 
 logger = structlog.get_logger("taskq.web.progress")
 
@@ -221,11 +226,34 @@ async def _event_generator(
     browser's EventSource reconnects and is refused at the door.
     """
 
+    _recheck_count = {"n": 0}
+
     async def _session_still_valid() -> bool:
         if session_verifier is None:
             return True
+        first_check = _recheck_count["n"] == 0
         try:
-            return bool(await session_verifier())
+            _recheck_count["n"] += 1
+            return bool(
+                await asyncio.wait_for(
+                    session_verifier(),
+                    timeout=SESSION_RECHECK_TIMEOUT_SECS,
+                )
+            )
+        except TimeoutError:
+            # A verifier that outlives its bound is an unknown session
+            # state, not a pass: fail closed, but say WHY -- a hung verifier
+            # (wedged IdP introspection call) wedging the stream is a
+            # different incident from a revoked session, and the revocation
+            # warning below would misname it.
+            logger.warning(
+                "sse-session-recheck-timeout",
+                job_id=str(job_id),
+                channel=channel,
+                timeout_secs=SESSION_RECHECK_TIMEOUT_SECS,
+                stream_phase="initial" if first_check else "streaming",
+            )
+            return False
         except Exception:
             # Fail closed: an unknown session state must not keep a
             # privileged stream open. Logged below via the shared
@@ -461,12 +489,18 @@ def create_router(
         it before every yielded event and at every keepalive tick and end on
         failure, so a session revoked mid-stream (secret rotation, expiry, an
         allowlist change) stops receiving frames within one keepalive
-        interval, capped at 60 s. When omitted, the router derives it from
-        the ``session_verifier`` attribute the taskq auth dependencies
-        (``create_auth_dependency``, ``token_auth``) attach to the callable
-        they return; a host supplying its own ``auth_dependency`` without
-        that attribute gets a warning and streams that authenticate once,
-        exactly as the router-level ``Depends`` did before #316.
+        interval, capped at 60 s. Each invocation is bounded by
+        ``SESSION_RECHECK_TIMEOUT_SECS`` (5 s): a verifier that hangs or
+        outlives the bound is treated as failure -- fail closed -- so a wedged
+        host verifier cannot freeze the generator inside its keepalive path.
+        When omitted, the router derives it from the ``session_verifier``
+        attribute the taskq auth dependencies (``create_auth_dependency``,
+        ``token_auth``) attach to the callable they return. A host supplying
+        its own ``auth_dependency`` MUST pass ``session_verifier`` explicitly
+        to keep the re-check: without the attribute the router logs a
+        one-per-router ``progress-stream-no-session-verifier`` warning and
+        the streams authenticate once, exactly as the router-level ``Depends``
+        did before #316.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
@@ -538,6 +572,23 @@ def create_router(
     # interval of hours would silently move that bound to hours. The loop and
     # the fallback ping below are both capped at _SSE_HEARTBEAT_CAP_SECS.
     _effective_heartbeat_secs = min(_heartbeat_secs, _SSE_HEARTBEAT_CAP_SECS)
+    if _heartbeat_secs > _SSE_HEARTBEAT_CAP_SECS:
+        # The clamp itself must not be silent: a host that asked for an hour
+        # between keepalives otherwise discovers the 60 s floor only by
+        # reading the source. Once per router (this runs in create_router).
+        logger.warning(
+            "sse-heartbeat-interval-clamped",
+            configured_seconds=_heartbeat_secs,
+            effective_seconds=_effective_heartbeat_secs,
+            detail=(
+                "sse_heartbeat_interval exceeds the "
+                f"{_SSE_HEARTBEAT_CAP_SECS:g} s cap and is clamped: the "
+                "keepalive tick is also the session re-check cadence "
+                "(#316), so a longer interval would silently loosen the "
+                "bound on how long a revoked session keeps receiving "
+                "frames."
+            ),
+        )
     _acquire_timeout = settings.admin_acquire_timeout
 
     def _constructed_pool() -> asyncpg.Pool:

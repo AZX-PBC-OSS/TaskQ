@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from taskq.constants import events_channel
 from taskq.settings import TaskQSettings
+from taskq.web._sse_limit import SESSION_RECHECK_TIMEOUT_SECS
 from taskq.web.admin._factory import (
     get_pg_pool,
     get_realtime_mode,
@@ -63,14 +64,38 @@ async def _sse_generator(
     auth (#316): it runs before the first frame and once per loop iteration --
     before every yielded event and at every keepalive tick -- and a failure
     ends the stream, the finally releasing the topic's semaphore slot. Any
-    exception out of the verifier is treated as revocation (fail closed).
+    exception out of the verifier is treated as revocation (fail closed), and
+    so is a check that outlives ``SESSION_RECHECK_TIMEOUT_SECS``: a hung
+    host verifier must not freeze the generator inside its own keepalive
+    path.
     """
+
+    _recheck_count = {"n": 0}
 
     async def _session_still_valid() -> bool:
         if session_verifier is None:
             return True
+        first_check = _recheck_count["n"] == 0
         try:
-            return bool(await session_verifier())
+            _recheck_count["n"] += 1
+            return bool(
+                await asyncio.wait_for(
+                    session_verifier(),
+                    timeout=SESSION_RECHECK_TIMEOUT_SECS,
+                )
+            )
+        except TimeoutError:
+            # A verifier that outlives its bound is an unknown session
+            # state, not a pass: fail closed, and say WHY -- a hung verifier
+            # (wedged IdP introspection call) wedging the stream is a
+            # different incident from a revoked session.
+            logger.warning(
+                "admin-sse-session-recheck-timeout",
+                topic=schema,
+                timeout_secs=SESSION_RECHECK_TIMEOUT_SECS,
+                stream_phase="initial" if first_check else "streaming",
+            )
+            return False
         except Exception:
             # Fail closed: an unknown session state must not keep an
             # admin stream open.

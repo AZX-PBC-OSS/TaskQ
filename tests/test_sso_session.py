@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from collections.abc import Callable
+from typing import Any, ClassVar
 
 import pytest
 
@@ -291,3 +292,78 @@ async def test_session_verifier_no_allowlist_accepts_any_valid_session() -> None
     cookie = manager.create_session_cookie(_make_claims(groups=frozenset({"any"})))
     verifier = create_session_verifier(manager, frozenset())
     assert await verifier(_request_with_cookie(cookie)) is True
+
+
+async def test_secret_rotation_by_assignment_reaches_a_live_streams_verifier() -> None:
+    """Rotation via ``manager.secret = ...`` ends a live stream's re-check.
+
+    A live stream holds the verifier derived at router-construction time: a
+    closure over the SessionManager OBJECT, not a snapshot of its secret.
+    verify_session_cookie therefore re-derives its signer when the secret
+    has rotated, so the stream's next tick fails the stale cookie (fail
+    closed). Pinning this: the pre-rotation-aware verifier kept validating
+    the old cookie after the assignment, so a rotated deployment's live
+    streams lived forever under the old key while sso.md claimed rotation
+    ends them within one keepalive interval.
+    """
+    manager = SessionManager(secret="secret-a-32bytes-long-aaaaaa!", max_age_seconds=3600)
+    dep = create_auth_dependency(manager, frozenset())
+    dep_obj: Any = dep  # Why Any: the attribute is attached dynamically by create_auth_dependency; pyright cannot see it on the plain function type.
+    verifier: Callable[..., Any] = dep_obj.session_verifier
+    cookie = manager.create_session_cookie(_make_claims())
+    request = _request_with_cookie(cookie)
+
+    assert await verifier(request) is True
+    manager.secret = "secret-b-32bytes-long-bbbbbb!"
+    assert await verifier(request) is False, (
+        "a rotated session_secret must fail the live stream's next re-check"
+    )
+    # Sessions minted after the rotation verify under the new key.
+    new_cookie = manager.create_session_cookie(_make_claims())
+    assert await verifier(_request_with_cookie(new_cookie)) is True
+
+
+async def test_secret_restored_within_one_tick_revalidates() -> None:
+    """The honest window, pinned: a stateless cookie re-check reads the
+    CURRENT secret per tick, so a secret restored before the stream's next
+    tick re-validates the session the operator briefly killed. That one-tick
+    re-validation after a rotate-and-restore is inherent to a stateless
+    design (there is no store to record revocation in); pinning it so a
+    future change that silently widens the window has to confront this test.
+    """
+    secret_a = "secret-a-32bytes-long-aaaaaa!"
+    manager = SessionManager(secret=secret_a, max_age_seconds=3600)
+    dep = create_auth_dependency(manager, frozenset())
+    dep_obj: Any = dep  # Why Any: the attribute is attached dynamically by create_auth_dependency; pyright cannot see it on the plain function type.
+    verifier: Callable[..., Any] = dep_obj.session_verifier
+    cookie = manager.create_session_cookie(_make_claims())
+    request = _request_with_cookie(cookie)
+
+    manager.secret = "secret-b-32bytes-long-bbbbbb!"
+    manager.secret = secret_a  # restored before the next tick
+    assert await verifier(request) is True
+
+
+async def test_session_verifier_consults_only_the_cookie() -> None:
+    """The re-check performs NO store round trip: any request attribute
+    beyond ``cookies`` implies a session-store/database/IdP hit, and a
+    1k-stream wall re-checking once per 60 s would turn the re-check into a
+    per-second query storm. Pins the cookie-only contract sso.md states --
+    including its corollary: server-side revocation of a still-validly-signed,
+    still-unexpired cookie is impossible by construction."""
+    manager = SessionManager(secret="test-secret-key-32bytes-long!!", max_age_seconds=3600)
+    cookie = manager.create_session_cookie(_make_claims())
+    verifier = create_session_verifier(manager, frozenset())
+
+    class _ProbeRequest:
+        # ClassVar: the probe is never instantiated with state; the class
+        # attribute IS the cookie jar the contract allows the verifier to read.
+        cookies: ClassVar[dict[str, str]] = {manager.cookie_name: cookie}
+
+        def __getattr__(self, name: str) -> Any:
+            raise AssertionError(
+                f"the session re-check touched request.{name!r}: it must be "
+                "cookie-only (no store, no DB round trip)"
+            )
+
+    assert await verifier(_ProbeRequest()) is True  # type: ignore[arg-type]  # Why: the probe deliberately satisfies only the cookie surface the contract allows.

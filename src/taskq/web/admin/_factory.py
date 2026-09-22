@@ -575,8 +575,11 @@ def create_router(
     whether the session that opened the stream is still valid. When omitted,
     it is derived from the ``session_verifier`` attribute the taskq auth
     dependencies (``create_auth_dependency``, ``token_auth``) attach to the
-    callable they return; with neither, SSE streams authenticate once at
-    subscribe, the pre-#316 behavior.
+    callable they return. A host supplying its own ``auth_dependency``
+    without that attribute MUST pass ``session_verifier`` explicitly to keep
+    the re-check; otherwise the admin ``/sse/{topic}`` streams authenticate
+    once at subscribe, the pre-#316 behavior, and a one-per-router
+    ``admin-sse-no-session-verifier`` warning fires at startup.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
@@ -591,6 +594,24 @@ def create_router(
     if session_verifier is None and auth_dependency is not None:
         derived_verifier: Any = getattr(auth_dependency, "session_verifier", None)
         session_verifier = cast("Callable[[Request], Awaitable[bool]] | None", derived_verifier)
+    if auth_dependency is not None and session_verifier is None:
+        # Same loud warning the progress router emits: a third-party auth
+        # dependency (one built without taskq's create_auth_dependency /
+        # token_auth) carries no session_verifier attribute, and the honest
+        # fallback is streams that authenticate once -- which must be a
+        # startup warning, not a silent best-effort call. Once per router:
+        # this runs in create_router, before any stream exists.
+        logger.warning(
+            "admin-sse-no-session-verifier",
+            detail=(
+                "auth_dependency exposes no session_verifier re-check, so the "
+                "admin /sse/{topic} streams authenticate once at subscribe "
+                "and keep delivering frames after a session is revoked. Pass "
+                "a session_verifier to create_router, or build the "
+                "dependency with taskq's create_auth_dependency/token_auth, "
+                "which attach one."
+            ),
+        )
 
     env = Environment(
         autoescape=True,

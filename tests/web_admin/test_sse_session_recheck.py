@@ -280,3 +280,33 @@ async def test_admin_sse_stream_opened_before_revocation_ends_after_recheck(
             task.cancel()
             with contextlib.suppress(BaseException):
                 await task
+
+
+async def test_sse_generator_hung_verifier_is_bounded_and_fails_closed() -> None:
+    """A verifier that hangs is bounded (fail closed), same as the progress
+    generator: the stream ends within the re-check bound, the topic slot is
+    released, and the timeout is logged as its own incident."""
+    sem = asyncio.Semaphore(1)
+    await sem.acquire()
+
+    async def _hung() -> bool:
+        await asyncio.sleep(3600)
+        # Unreachable unless the re-check bound is gone: reaching this raise
+        # means the verifier was awaited to completion, i.e. the stream froze.
+        raise AssertionError("the hung verifier completed: the re-check is unbounded")
+
+    started = time.monotonic()
+    with structlog.testing.capture_logs() as logs:
+        gen = _sse_generator(sem, lambda: None, None, _hung)
+        frames: list[str] = []
+        async with asyncio.timeout(30):
+            async for frame in gen:
+                frames.append(frame)
+    elapsed = time.monotonic() - started
+
+    assert frames == [], "a hung verifier is revocation: no frame may be emitted"
+    assert elapsed < 60, f"the hung verifier must be bounded, took {elapsed:.1f}s"
+    assert sem._value == 1  # pyright: ignore[reportPrivateUsage]  # Why: no public API to read the permit state; the release is the assertion.
+    assert any(e.get("event") == "admin-sse-session-recheck-timeout" for e in logs), (
+        "the timeout must be visible as its own incident, not a silent revocation"
+    )

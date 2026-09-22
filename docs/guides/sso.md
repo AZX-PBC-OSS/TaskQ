@@ -452,18 +452,46 @@ group no longer intersects the allowlist gets 401 on the next request). Rotating
 enough, so both streaming endpoints (the per-job progress stream and the
 admin `/sse/{topic}` channel) re-run the same session verification while the
 stream is open: before every streamed event and at every keepalive tick. A
-session invalidated mid-stream -- a rotated `session_secret`, a session that
-ages past `max_age_seconds`, or an `allowed_groups` change that excludes the
-identity -- ends the live stream within one keepalive interval (at most 60
-seconds, whatever `sse_heartbeat_interval` is set to); the browser's
-`EventSource` reconnects, is refused with 401, and the user logs in again.
-This re-check reads the same signed cookie the per-request check reads, so it
-covers exactly what that check covers; a stateless cookie session has no
-server-side revocation list to consult. Streams built with taskq's own
-`create_auth_dependency` or `token_auth` get the re-check automatically; a
-host supplying its own `auth_dependency` can pass a `session_verifier`
-(`Callable[[Request], Awaitable[bool]]`) to `create_router` and is warned at
-startup when it does not.
+session invalidated mid-stream -- a session that ages past
+`max_age_seconds`, an `allowed_groups` change that excludes the identity,
+or a rotated `session_secret` -- ends the live stream within one keepalive
+interval (at most 60 seconds, whatever `sse_heartbeat_interval` is set to; a
+larger interval is clamped to that 60 s cap and the clamp is logged at
+startup); the browser's `EventSource` reconnects, is refused with 401, and
+the user logs in again.
+
+What the re-check consults, exactly: the request's cookie bytes and nothing
+else. There is no session store, no database round trip, no IdP call -- one
+signature verification per tick, microseconds of CPU. That is the same
+statelessness the per-request check has, and it carries the same limits:
+
+- **Server-side revocation of a still-validly-signed, still-unexpired
+  cookie is impossible.** "Log this session out" is not an operation a
+  stateless cookie supports; a revocation reaches a live stream only by
+  making its cookie stop verifying (rotate the secret, let it age out, or
+  change `allowed_groups`).
+- **Rotation is read per tick from the session manager's signing key.**
+  Assigning a new `session_secret` (the manager built the stream's re-check
+  around the manager object, so `manager.secret = "new"` -- the rotation
+  `session_secret`'s "rotate to invalidate all sessions" describes) ends
+  every live stream within one tick. Rebuilding the router with a fresh
+  manager ends new requests, but a stream already running keeps the
+  verifier it was built with. A secret restored to its old value within one
+  keepalive tick re-validates the streams it briefly ended; that one-tick
+  window is inherent to a stateless cookie design.
+- **Each re-check invocation is bounded** (5 s). A host-supplied verifier
+  that hangs -- a wedged introspection endpoint -- is treated as
+  revocation, fail closed, rather than freezing the stream inside its own
+  keepalive path.
+
+Streams built with taskq's own `create_auth_dependency` or `token_auth` get
+the re-check automatically. A host supplying its own `auth_dependency`
+**must** pass a `session_verifier` (`Callable[[Request], Awaitable[bool]]`)
+to `create_router` explicitly to keep the re-check: a third-party dependency
+carries no verifier attribute for the router to derive, the stream then
+authenticates once (the pre-#316 behavior), and both routers warn at
+startup -- `admin-sse-no-session-verifier` and
+`progress-stream-no-session-verifier`, once per router, not per request.
 
 ---
 
