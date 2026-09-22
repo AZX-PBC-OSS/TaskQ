@@ -29,6 +29,10 @@ Async-native, Postgres-backed background job library for Python 3.12+.
   broker required.
 - **Async-native**: built on `asyncio` and `asyncpg` from the ground up; no
   thread pools or sync wrappers on the hot path.
+- **NUL-safe text storage**: jsonb-bound payloads are guarded by a
+  Rust-accelerated escape-parity byte scan (`tors`, a core dependency)
+  that rejects real NUL codepoints without misreading the literal
+  `\u0000` text.
 - **Rate limiting**: sliding-window and token-bucket algorithms with
   composition, a provider/registry layer, and Postgres fallback when Redis is
   unavailable.

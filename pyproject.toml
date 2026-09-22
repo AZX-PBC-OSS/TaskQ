@@ -39,6 +39,15 @@ dependencies = [
     "orjson>=3.11.9",
     "pydantic>=2.13.4,<3",
     "structlog>=26.1.0,<27",
+    # Rust-backed escape-parity byte scan for the NUL guard on the jsonb
+    # write path (src/taskq/_json.py imports tors.contains_unescaped
+    # directly). First-party: published by the same org (AZX PBC) as
+    # TaskQ, so it is a core dependency, not an extra. >=0.10.1 is the
+    # floor that ships contains_unescaped. Resolves from PyPI or the
+    # operator's index; contributors testing against the local tors
+    # checkout install it from the source tree instead
+    # (`uv pip install ../tors`) — do NOT point this requirement at a path.
+    "tors>=0.10.1",
     "typer>=0.27.0,<1",
     "uuid-utils>=1.0.0,<2",
 ]
@@ -144,7 +153,6 @@ vault = [
     # the credential providers in taskq.vault; see docs/guides/managed-identities.md.
     "hvac>=2.4.0,<3",
 ]
-
 [tool.uv]
 # Pin the uv toolchain to the validated 0.12.x line: setup-uv reads
 # required-version from pyproject and installs the highest match in CI.
@@ -161,16 +169,17 @@ required-version = ">=0.12.7,<0.13"
 # Supply-chain hardening: never resolve to distributions published within the
 # last 24 hours, giving time for malicious releases to be detected and yanked.
 exclude-newer = "24 hours"
-# dotenvmodel is published by the same org (AZX-PBC-OSS) as TaskQ and is the
-# only same-org dependency. Opt it out of the 24-hour supply-chain quarantine
-# so same-day releases can be adopted immediately; this is deliberate and
-# scoped to dotenvmodel only (every other dep still honors the cooldown).
+# dotenvmodel and tors are published by the same org (AZX-PBC-OSS) as
+# TaskQ and are core dependencies; both are opted out of the 24-hour
+# supply-chain quarantine so same-day releases can be adopted immediately;
+# this is deliberate and scoped to the same-org packages only (every other
+# dep still honors the cooldown).
 # markupsafe is opted out for a different reason: it's a toolchain transitive
 # (jinja2 via the fastapi extra; mkdocs, mkdocs-autorefs, and mkdocstrings
 # via the dev group's docs toolchain) pinned exactly by the lockfile and
 # audited on every bump, so the cooldown adds no protection while delaying
 # same-day security releases.
-exclude-newer-package = { dotenvmodel = "0d", markupsafe = false }
+exclude-newer-package = { dotenvmodel = "0d", tors = "0d", markupsafe = false }
 # Security floors for packages TaskQ does not depend on directly. A bare
 # `uv lock --upgrade-package` fixes the resolution once; a constraint keeps it
 # fixed, and fails the lock loudly if a parent ever pins back below the floor

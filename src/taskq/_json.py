@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any, Final
 
 import orjson
+from tors import contains_unescaped
 
 from taskq.exceptions import UnencodableValue
 
@@ -133,27 +134,31 @@ def dumps_str(value: Any, /) -> str:
     return dumps(value).decode("utf-8")
 
 
+# The escape-parity byte scan, spelled by tors: contains_unescaped runs in
+# Rust over two zero-copy PyBytes borrows with the GIL released -- the same
+# algorithm the pre-tors pure-Python loop spelled out, not a near one, so
+# the scan cannot move a verdict (tests/test_tors_nul_parity.py pins the
+# differential on the adversarial shapes and a randomized sweep against an
+# independent oracle). tors is a first-party core dependency (same org,
+# AZX PBC), so the import is direct: one code path, no probe, no fallback.
+# No other tors surface is adopted: the redaction scrub and payload_hash
+# are regex/sha256 contracts whose observables a tors primitive would
+# change, and the normalization/chunking APIs have no TaskQ call site at
+# this boundary.
+
+
 def _encoded_has_nul(data: bytes, /) -> bool:
     """True when *data* (orjson output) encodes a real NUL codepoint.
 
-    orjson renders the *literal text* ``\\u0000`` as an escaped backslash
-    followed by the same six bytes, so a raw byte match is ambiguous. Each
-    match is confirmed by counting the backslashes immediately before it:
-    an even run means the escape is live (a real NUL); an odd run means the
-    match's leading backslash closes a ``\\\\`` pair and the sequence is the
-    literal six characters, which ``jsonb`` accepts.
+    Delegates to tors's ``contains_unescaped`` (Rust, zero-copy,
+    GIL-released), the escape-parity scan: an occurrence of
+    :data:`_NUL_ESCAPE_BYTES` is live exactly when the
+    immediately-preceding backslash run has even length. The pure-Python
+    implementation that preceded it is kept as the timing baseline in
+    ``tests/test_tors_nul_perf.py`` and ``benchmarks/ab_tors_nul_scan.py``,
+    where the measured win over it is what justifies carrying tors.
     """
-    pos = data.find(_NUL_ESCAPE_BYTES)
-    while pos != -1:
-        backslashes = 0
-        cursor = pos - 1
-        while cursor >= 0 and data[cursor : cursor + 1] == b"\\":
-            backslashes += 1
-            cursor -= 1
-        if backslashes % 2 == 0:
-            return True
-        pos = data.find(_NUL_ESCAPE_BYTES, pos + 1)
-    return False
+    return contains_unescaped(data, _NUL_ESCAPE_BYTES)
 
 
 def dumps_jsonb_str(value: Any, /) -> str:
