@@ -1153,6 +1153,15 @@ async def tick_cron(
     *conn* MUST already be in an open transaction, the advisory lock is
     transaction-scoped and releases on COMMIT/ROLLBACK.
 
+    The tick also registers a notification listener on *conn* (the telemetry
+    commit gate, see :func:`_emit_on_commit`) and leaves it registered: the
+    shipped caller owns a dedicated conn that keeps the listener for the
+    conn's lifetime.  A caller checking *conn* out of a pool must retire the
+    listener before release (``cron_commit_gate_channel`` /
+    ``_dispatch_commit_gate``), or asyncpg flags the release with an
+    InterfaceWarning and the pool hands the next waiter a session that
+    still LISTENs.
+
     One tick is a bounded batch: at most *limit* due schedules (ordered by
     ``next_fire_at``) are selected, planned in memory, and written with one
     batched enqueue plus one UPDATE per outcome branch.  A catch-up burst

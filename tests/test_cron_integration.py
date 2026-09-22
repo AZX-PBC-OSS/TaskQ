@@ -19,16 +19,26 @@ from taskq.backend._protocol import Backend
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.client._jobs import JobsClient
-from taskq.constants import schema_lock_name
+from taskq.constants import cron_commit_gate_channel, schema_lock_name
 from taskq.cron import compute_next_fire_after
 from taskq.settings import WorkerSettings
 from taskq.testing.fixtures import _create_worker
 from taskq.testing.otel import setup_tracer
-from taskq.worker.cron_loop import tick_cron
+from taskq.worker.cron_loop import _dispatch_commit_gate, tick_cron
 from taskq.worker.deps import WorkerDeps, open_worker_deps
 from taskq.worker.leader import MaintenanceLeader
 
-pytestmark = pytest.mark.integration
+pytestmark = [
+    pytest.mark.integration,
+    # asyncpg warns (InterfaceWarning) when a pooled connection is released
+    # with a notification listener still registered: a released conn must be
+    # clean, or the pool hands another waiter a session that still LISTENs
+    # and still runs a foreign callback.  Escalating the warning to an error
+    # here pins that rule for this module's tick checkouts: the commit gate
+    # (see _tick) is the only listener a tick may arm, and _tick must retire
+    # it before the pool reclaims the conn.
+    pytest.mark.filterwarnings("error::asyncpg.exceptions.InterfaceWarning"),
+]
 
 _HEARTBEAT_INTERVAL = 1.0
 _LOCK_LEASE = 1250.0
@@ -267,7 +277,7 @@ async def test_ti1_cron_fire_past_schedule(pg_dsn: str) -> None:
                 next_fire_at=datetime.now(UTC) - timedelta(hours=2),
             )
 
-        async with deps.dispatcher_pool.acquire() as conn:
+        async with _tick_conn(deps.dispatcher_pool, schema) as conn:
             async with conn.transaction():
                 await tick_cron(conn, deps.settings, backend, schema, worker_id)
 
@@ -317,7 +327,7 @@ async def test_ti2_auto_disable_after_3_failures(
             )
 
         for _ in range(3):
-            async with deps.dispatcher_pool.acquire() as conn:
+            async with _tick_conn(deps.dispatcher_pool, schema) as conn:
                 async with conn.transaction():
                     await tick_cron(conn, deps.settings, backend, schema, worker_id)
 
@@ -366,7 +376,7 @@ async def test_ti3_advisory_lock_prevents_double_fire(pg_dsn: str) -> None:
             )
 
         async def _tick_in_tx(pool: asyncpg.Pool) -> None:
-            async with pool.acquire() as c:
+            async with _tick_conn(pool, schema) as c:
                 async with c.transaction():
                     await tick_cron(c, deps.settings, backend, schema, worker_id)
 
@@ -411,7 +421,7 @@ async def test_ti4_static_payload_schedule(pg_dsn: str) -> None:
                 metadata={"static_payload": {"key": "value"}},
             )
 
-        async with deps.dispatcher_pool.acquire() as conn:
+        async with _tick_conn(deps.dispatcher_pool, schema) as conn:
             async with conn.transaction():
                 await tick_cron(conn, deps.settings, backend, schema, worker_id)
 
@@ -451,7 +461,7 @@ async def test_ti5_import_error_at_fire_time(pg_dsn: str) -> None:
                 next_fire_at=datetime.now(UTC) - timedelta(hours=2),
             )
 
-        async with deps.dispatcher_pool.acquire() as conn:
+        async with _tick_conn(deps.dispatcher_pool, schema) as conn:
             async with conn.transaction():
                 await tick_cron(conn, deps.settings, backend, schema, worker_id)
 
@@ -606,7 +616,7 @@ async def test_ti8_reenable_after_auto_disable(pg_dsn: str) -> None:
             )
 
         for _ in range(3):
-            async with deps.dispatcher_pool.acquire() as conn:
+            async with _tick_conn(deps.dispatcher_pool, schema) as conn:
                 async with conn.transaction():
                     await tick_cron(conn, deps.settings, backend, schema, worker_id)
 
@@ -625,7 +635,7 @@ async def test_ti8_reenable_after_auto_disable(pg_dsn: str) -> None:
         assert sched["consecutive_failures"] == 0
         assert sched["last_fire_error"] is None
 
-        async with deps.dispatcher_pool.acquire() as conn:
+        async with _tick_conn(deps.dispatcher_pool, schema) as conn:
             await _insert_actor_config(conn, schema, "reenable_actor")
             async with conn.transaction():
                 await tick_cron(conn, deps.settings, backend, schema, worker_id)
@@ -784,7 +794,7 @@ async def test_tc2_base_exception_propagates(pg_dsn: str, monkeypatch: pytest.Mo
 
         monkeypatch.setattr(cron_loop_mod, "resolve_payload", _raise_system_exit)
         with pytest.raises((SystemExit, BaseExceptionGroup)):  # type: ignore[name-defined]
-            async with deps.dispatcher_pool.acquire() as conn:
+            async with _tick_conn(deps.dispatcher_pool, schema) as conn:
                 async with conn.transaction():
                     await tick_cron(conn, deps.settings, backend, schema, worker_id)
 
@@ -885,7 +895,7 @@ async def test_tn3_actor_not_validated_at_create_time(pg_dsn: str) -> None:
             )
         assert count == 1
 
-        async with deps.dispatcher_pool.acquire() as conn:
+        async with _tick_conn(deps.dispatcher_pool, schema) as conn:
             async with conn.transaction():
                 await tick_cron(conn, deps.settings, backend, schema, worker_id)
 
@@ -937,10 +947,45 @@ async def _dispatch_eligible_count(pool: asyncpg.Pool, schema: str, actor: str) 
         )
 
 
+@asynccontextmanager
+async def _tick_conn(
+    pool: asyncpg.Pool, schema: str
+) -> AsyncGenerator[asyncpg.pool.PoolConnectionProxy, None]:
+    """A pooled checkout fit to hand to :func:`tick_cron`.
+
+    The tick arms its telemetry on a notification listener registered on the
+    conn it is given (``_emit_on_commit``'s commit gate) and leaves it there
+    by design: the shipped leader passes its dedicated ``cron_conn``, which
+    keeps the listener for the conn's lifetime.  A pooled checkout must come
+    back to the pool CLEAN, or asyncpg flags the release with an
+    InterfaceWarning (escalated to an error by this module's pin): the pool
+    would hand another waiter a session that still LISTENs on the gate
+    channel and still runs a foreign callback.  So on EVERY exit path,
+    including a tick that raised (a rollback leaves the client-side
+    registration even though Postgres discarded the LISTEN), retire the
+    gate: one round trip first, so the self-NOTIFY a committed tick sent is
+    read and dispatched before the listener goes away.
+    """
+    async with pool.acquire() as conn:
+        try:
+            yield conn
+        finally:
+            try:
+                await conn.fetchval("SELECT 1")
+                await conn.remove_listener(cron_commit_gate_channel(schema), _dispatch_commit_gate)
+            except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+                # A dead conn cannot leak anything: the release discards it
+                # and asyncpg's release check never runs.  Swallowing here
+                # only stops cleanup from masking the test's own failure;
+                # a live conn raises nothing above, so its remove_listener
+                # always completes.
+                pass
+
+
 async def _tick(
     pool: asyncpg.Pool, settings: WorkerSettings, backend: Backend, schema: str, worker_id: UUID
 ) -> None:
-    async with pool.acquire() as conn:
+    async with _tick_conn(pool, schema) as conn:
         async with conn.transaction():
             await tick_cron(conn, settings, backend, schema, worker_id)
 
@@ -1250,7 +1295,7 @@ async def test_allof_schedule_fires_both_occurrences_of_a_repeated_hour(pg_dsn: 
                 next_fire_at=fire_at,
             )
 
-        async with deps.dispatcher_pool.acquire() as conn, conn.transaction():
+        async with _tick_conn(deps.dispatcher_pool, schema) as conn, conn.transaction():
             await tick_cron(conn, settings, backend, schema, worker_id)
 
         async with deps.dispatcher_pool.acquire() as conn:
@@ -1306,7 +1351,7 @@ async def test_skip_schedule_fires_a_repeated_hour_only_once(pg_dsn: str) -> Non
                 next_fire_at=datetime(2025, 11, 2, 5, 0, tzinfo=UTC),
             )
 
-        async with deps.dispatcher_pool.acquire() as conn, conn.transaction():
+        async with _tick_conn(deps.dispatcher_pool, schema) as conn, conn.transaction():
             await tick_cron(conn, settings, backend, schema, worker_id)
 
         async with deps.dispatcher_pool.acquire() as conn:
@@ -1352,7 +1397,7 @@ async def test_cron_due_check_is_statement_time_not_transaction_start(pg_dsn: st
                 next_fire_at=datetime.now(UTC) + timedelta(hours=1),
             )
 
-        async with deps.dispatcher_pool.acquire() as conn:
+        async with _tick_conn(deps.dispatcher_pool, schema) as conn:
             async with conn.transaction():
                 await conn.execute(
                     f'UPDATE "{schema}".cron_schedules '
