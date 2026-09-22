@@ -70,6 +70,7 @@ from taskq.worker._consumer import (
 from taskq.worker._handlers import (
     _TERMINAL_WRITE_INFRA_EXCEPTIONS,  # pyright: ignore[reportPrivateUsage]  # Why: dispatch_one_job's direct-call path for _handle_generic_exception needs the same infra guard as _run_terminal_path to prevent false terminal Redis publishes and exception mislabeling.
     AttemptOutcome,
+    _ActorSystemExitAttemptError,  # pyright: ignore[reportPrivateUsage]  # Why: the sync-actor thread boundary raises the typed SystemExit carrier (see _run_sync_actor_tracked's docstring); _dispatch_exception unwraps it at the attempt boundary.
     _disown_job,  # pyright: ignore[reportPrivateUsage]  # Why: same rationale as _TERMINAL_WRITE_INFRA_EXCEPTIONS above.
     _handle_generic_exception,  # pyright: ignore[reportPrivateUsage]  # Why: _handle_generic_exception implements the same exception→retry/fail routing as consume_one_job's inner handlers; dispatch_one_job needs it for DI-resolution failures that escape consume_one_job's own try/except.
     _log_terminal_write_failed,  # pyright: ignore[reportPrivateUsage]  # Why: same rationale as _TERMINAL_WRITE_INFRA_EXCEPTIONS above.
@@ -130,8 +131,37 @@ async def _run_sync_actor_tracked(
     :func:`taskq._shield.shield_with_retrieval` applies to a detached
     terminal write, so an actor that fails in the thread after a cancel is
     a visible signal, not asyncio "exception never retrieved" noise.
+
+    ``SystemExit`` conversion (the ``_thread_body`` wrapper): an actor
+    calling ``sys.exit()`` is a job-level failure, the actor's own bug,
+    never a worker shutdown signal. Left raw, the executor thread task
+    would end with ``SystemExit``, and CPython's ``Task.__step`` re-raises
+    exactly ``(KeyboardInterrupt, SystemExit)`` bare after
+    ``set_exception`` (``Handle._run`` re-raises the pair past the loop's
+    generic handler), killing the event loop before this ``await`` (or the
+    consumer's ``except BaseException`` attempt boundary) can run: the
+    worker dies, the consumer teardown records the job ``cancelled``, and
+    every co-resident sibling is cancelled with it. Raising
+    :class:`taskq.worker._handlers._ActorSystemExitAttemptError` (an ordinary
+    ``Exception``) instead lets the outcome cross the task boundary as an
+    attempt outcome; ``_dispatch_exception`` unwraps the carrier, so the
+    row records the actor's own ``SystemExit``. ``KeyboardInterrupt`` is
+    deliberately not converted: interpreter/operator intent, never an
+    actor outcome (the same carve-out the consumer's attempt boundary
+    applies), it propagates raw. Every other ``BaseException`` already
+    stops at ``set_exception`` (no bare re-raise) and is delivered here
+    unchanged, #399's contract.
     """
-    thread_task: asyncio.Task[object] = asyncio.ensure_future(asyncio.to_thread(fn, **actor_kwargs))
+
+    def _thread_body() -> object:
+        try:
+            return fn(**actor_kwargs)
+        except KeyboardInterrupt:
+            raise
+        except SystemExit as exc:
+            raise _ActorSystemExitAttemptError(exc) from exc
+
+    thread_task: asyncio.Task[object] = asyncio.ensure_future(asyncio.to_thread(_thread_body))
     ctx._set_sync_actor_task(thread_task)
     # The process-wide twin of the ctx stash: the shutdown path's exit
     # gate (await_tracked_actor_reap) reads this registry to decide

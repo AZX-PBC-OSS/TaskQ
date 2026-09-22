@@ -100,6 +100,7 @@ from taskq.worker._handlers import (
     _TERMINAL_WRITE_BUDGET,  # pyright: ignore[reportPrivateUsage]  # Why: the release write's own bounded budget sizes the reserve the interrupted-actor exit park must leave before the shutdown deadline (see _interrupted_actor_hold).
     _TERMINAL_WRITE_INFRA_EXCEPTIONS,
     AttemptOutcome,
+    _ActorSystemExitAttemptError,
     _AttemptFencedOut,
     _disown_job,
     _dispatch_exception,
@@ -1158,7 +1159,16 @@ async def consume_one_job(
             # non-Exception BaseException (a custom BaseException subclass from a
             # dependency, ``SystemExit`` from a sync actor calling ``sys.exit`` in
             # its executor thread) is an ATTEMPT OUTCOME, not worker death. The
-            # previous breadth let such an exception escape this function, strand
+            # two delivery shapes differ, and only together cover the contract:
+            # a BaseException raised in THIS task's frame (an async actor's
+            # body, or the _ActorSystemExitAttemptError carrier the sync-actor
+            # thread boundary raises for a raw thread SystemExit, and the tx
+            # task boundary likewise) is delivered into this frame by the
+            # awaiting task's normal wakeup and lands here; a raw SystemExit
+            # left inside a TASK's own step would kill the loop before any
+            # wake-up runs, which is why both task boundaries convert it.
+            # The previous breadth let such an exception escape this function,
+            # strand
             # the row ``running`` until lease expiry (which then relabelled it
             # ``WorkerCrashed`` — a false audit trail: the worker never crashed,
             # the actor raised), and kill the consumer loop task, cancelling every
@@ -1470,7 +1480,25 @@ async def _consume_transactional(
     # Why an explicit task instead of shielding the coroutine directly:
     # the handle is needed on the cancellation path to retrieve the
     # detached outcome (see _retrieve_detached_outcome).
-    tx_task: asyncio.Task[object] = asyncio.create_task(_run_actor_in_tx())
+    #
+    # Why the SystemExit conversion wraps the task body: this coroutine IS
+    # the tx task's step, and CPython's Task.__step re-raises exactly
+    # (KeyboardInterrupt, SystemExit) bare after set_exception, killing the
+    # loop before the shielded await below can run (the same mechanism
+    # _run_sync_actor_tracked's thread boundary converts for a sync actor).
+    # An async actor's sys.exit() is a job-level failure, not worker death:
+    # the carrier crosses as an ordinary Exception and _dispatch_exception
+    # unwraps it, so the row records the actor's own SystemExit.
+    # KeyboardInterrupt stays raw (operator intent, never an actor
+    # outcome); the fenced/terminal-write sentinels and CancelledError are
+    # not SystemExit and pass untouched.
+    async def _run_actor_in_tx_tracked() -> object:
+        try:
+            return await _run_actor_in_tx()
+        except SystemExit as exc:
+            raise _ActorSystemExitAttemptError(exc) from exc
+
+    tx_task: asyncio.Task[object] = asyncio.create_task(_run_actor_in_tx_tracked())
     try:
         await asyncio.shield(tx_task)
         await invoke_on_success(
@@ -1557,6 +1585,11 @@ async def _consume_transactional(
         # attempt's buffered sub-enqueues past the transaction rollback,
         # and skip the truthful error stamping entirely. KeyboardInterrupt
         # keeps its interpreter/operator semantics, as there.
+        # ``SystemExit`` from an async actor arrives as the
+        # _ActorSystemExitAttemptError carrier (the tx task's own step would
+        # otherwise re-raise it bare and kill the loop, see
+        # _run_actor_in_tx_tracked above); _dispatch_exception unwraps it,
+        # so the row records the actor's own SystemExit.
         if isinstance(e, KeyboardInterrupt):
             raise
         return await _dispatch_exception(
