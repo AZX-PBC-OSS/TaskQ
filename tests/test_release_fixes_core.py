@@ -398,16 +398,20 @@ def test_worker_fenced_terminal_templates_carry_the_attempt_epoch_conjunct() -> 
 @pytest.mark.asyncio
 async def test_sub_job_enqueuer_enqueue_batch_uses_supplied_batch_id() -> None:
     import dataclasses
+    from datetime import UTC, datetime
 
     from examples.actors.basic import CounterPayload, counter
 
-    from taskq.backend._protocol import EnqueueArgs, JobRow
+    from taskq.backend._protocol import BatchRow, EnqueueArgs, JobRow
     from taskq.batch import EnqueueItem
     from taskq.client._enqueuer import SubJobEnqueuer
     from taskq.testing.jobs import make_job_row
 
     class _EnqueueOnlyBackend:
         supports_transactional_simulation = False
+
+        def __init__(self) -> None:
+            self.get_batch_calls: list[UUID] = []
 
         async def enqueue(self, args: EnqueueArgs) -> JobRow:
             base = make_job_row(actor=args.actor, queue=args.queue, payload=args.payload)
@@ -417,6 +421,27 @@ async def test_sub_job_enqueuer_enqueue_batch_uses_supplied_batch_id() -> None:
             # No stored rows → capacity resolution falls back to literals,
             # the pre-operator-ownership behavior this test exercises.
             return {}
+
+        async def get_batch(self, batch_id: UUID) -> BatchRow | None:
+            # The fallback arm reads the batch row before writing members:
+            # a terminal row must refuse, an ACTIVE row appends. The double
+            # answers with an active row so the write proceeds, and records
+            # the queried id so the test pins the supplied batch_id
+            # passthrough at the read boundary too.
+            self.get_batch_calls.append(batch_id)
+            return BatchRow(
+                id=batch_id,
+                queue="default",
+                status="active",
+                expected_size=1,
+                consecutive_failures=0,
+                failure_threshold=None,
+                finalizer_job_id=None,
+                originating_actor=None,
+                created_at=datetime.now(UTC),
+                completed_at=None,
+                metadata={},
+            )
 
     backend = _EnqueueOnlyBackend()
     enqueuer = SubJobEnqueuer(
@@ -435,6 +460,9 @@ async def test_sub_job_enqueuer_enqueue_batch_uses_supplied_batch_id() -> None:
     row = handles[0]._row
     assert row.metadata is not None
     assert row.metadata.get("batch_id") == str(supplied_batch_id)
+    # The fallback arm's terminal-batch preflight queried THIS id: the
+    # supplied batch_id reached the read boundary, not a regenerated one.
+    assert backend.get_batch_calls == [supplied_batch_id]
 
 
 # ── Finding 3: token-bucket PG cold-start over-admission ────────────────
