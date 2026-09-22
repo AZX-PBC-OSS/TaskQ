@@ -105,6 +105,7 @@ type AttemptOutcome = Literal[
 
 __all__ = [
     "AttemptOutcome",
+    "_ActorSystemExitAttemptError",
     "_AttemptFencedOut",
     "_TerminalWriteFailed",
     "_disown_job",
@@ -116,6 +117,7 @@ __all__ = [
     "_handle_timeout",
     "_log_terminal_write_failed",
     "_terminal_write_with_retry",
+    "_unwrap_actor_system_exit",
 ]
 
 # Infra failures during the terminal-write itself (DB connection drop,
@@ -283,6 +285,54 @@ class _AttemptFencedOut(BaseException):
     reports ``"noop"`` (the outcome batch policy and the dispatch metrics
     already treat as "nothing was this dispatch's to move").
     """
+
+
+class _ActorSystemExitAttemptError(Exception):
+    """Typed carrier for an actor's ``SystemExit``: an attempt outcome, not
+    worker death.
+
+    CPython's ``Task.__step`` special-cases exactly ``(KeyboardInterrupt,
+    SystemExit)``: after ``set_exception`` it re-raises the exception bare,
+    and ``Handle._run`` re-raises that pair past the loop's generic
+    exception handler, so a task whose coroutine ends with ``SystemExit``
+    kills the event loop before any queued wake-up (the awaiting
+    consumer's ``except BaseException`` attempt boundary) can run. Every
+    other ``BaseException`` stops at ``set_exception`` and is delivered to
+    the awaiter normally (#399's per-attempt capture contract already
+    covers those); only this pair escapes. ``KeyboardInterrupt`` is
+    deliberately left alone: interpreter/operator intent, never an actor
+    outcome.
+
+    ``SystemExit`` from actor code (``sys.exit()`` in a CLI-derived helper,
+    argparse path or test double) is the ACTOR's bug, a job-level failure:
+    the task boundaries the actor body crosses (the sync actor's executor
+    thread task, the transactional path's ``_run_actor_in_tx`` task) raise
+    this carrier instead, an ordinary ``Exception`` whose ``.original`` is
+    the actor's own ``SystemExit``. ``_dispatch_exception`` unwraps the
+    carrier before routing, so the attempt is recorded truthfully
+    (``error_class`` is ``"SystemExit"``, the traceback carries the actor's
+    frame via the cause chain) and the worker survives; the carrier's own
+    name never reaches a row or a log.
+    """
+
+    def __init__(self, original: SystemExit) -> None:
+        self.original = original
+        super().__init__(f"actor raised SystemExit: {original.code!r}")
+
+
+def _unwrap_actor_system_exit(exc: BaseException) -> BaseException:
+    """Return the actor's own exception for a ``_ActorSystemExitAttemptError``
+    carrier, *exc* unchanged otherwise.
+
+    The single unwrapping point: both consumer arms route every captured
+    attempt exception through :func:`_dispatch_exception`, so the retry
+    decision, the ``ErrorInfo`` stamping, the hooks and the error reporter
+    all observe the actor's own ``SystemExit``, never the carrier (whose
+    type name would be a false audit trail).
+    """
+    if isinstance(exc, _ActorSystemExitAttemptError):
+        return exc.original
+    return exc
 
 
 def _log_terminal_write_failed(
@@ -1207,6 +1257,8 @@ async def _dispatch_exception(
         actor's provable exit, which only the job's tracked handles can attest.
     """
     from taskq.worker._consumer import _run_terminal_path
+
+    exc = _unwrap_actor_system_exit(exc)
 
     if pre_handler is not None:
         pre_handler()
