@@ -137,6 +137,7 @@ async def _run_get_through_dead_server(
 
     class _Sql:
         get_job = "SELECT 1"
+        get_archived_job = "SELECT 1"
 
     started = time.monotonic()
     with structlog.testing.capture_logs() as logs:
