@@ -33,6 +33,12 @@ _NEW_ALERTS = (
     "TaskQLeaderLockContention",
 )
 
+#: The unexpected-error half of the sweep family: prune-family batch aborts
+#: outside the deadline family land on their own counter, their own alert,
+#: and their own runbook, a degradation signal like the timeout half. Pinned
+#: here so the drift checks (runbook anchor, bridged series) bind it too.
+_SWEEP_UNEXPECTED_ALERTS = ("TaskQSweepUnexpectedErrors",)
+
 #: The alerts the observability burn added on top - the denial/outage
 #: family (rate-limit store dependency, cron lock contention, the
 #: zombie-running lease gauge) - under the same runbook and emitted-series
@@ -91,7 +97,12 @@ _CRON_BUDGET_SEVERITIES = {
 #: Every runbook-carrying alert, for the checks that apply to both
 #: generations alike.
 _ALL_RUNBOOKED_ALERTS = (
-    _NEW_ALERTS + _OUTAGE_ALERTS + _JOB_OUTCOME_ALERTS + _UNSERVED_ALERTS + _CRON_BUDGET_ALERTS
+    _NEW_ALERTS
+    + _SWEEP_UNEXPECTED_ALERTS
+    + _OUTAGE_ALERTS
+    + _JOB_OUTCOME_ALERTS
+    + _UNSERVED_ALERTS
+    + _CRON_BUDGET_ALERTS
 )
 
 
