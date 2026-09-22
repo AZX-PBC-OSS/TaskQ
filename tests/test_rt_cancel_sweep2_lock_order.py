@@ -47,6 +47,7 @@ complete with the same conservation contract.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any
 from uuid import UUID
 
@@ -137,39 +138,65 @@ async def _event_counts(
 
 
 class _BatchBoundaryPool:
-    """Duck-typed pool that parks the drain at its running-arm statement.
+    """Duck-typed pool that parks the drain between its first two batches.
 
-    The drain's per-batch sequence is: the pending/scheduled arm (one
-    fused statement), then the running arm, then the batch's event
-    writes.  Gating on the running arm's SQL signature means: batch
-    one's pending arm has executed (its row locks are HELD, the batch
-    uncommitted) - and crucially, the drain never holds more than its
-    current batch's locks, so the backlog beyond the batch is pending
-    and unlocked.
+    The drain's per-round sequence is two arms, EACH a bounded fixpoint
+    loop of committed batches: the pending/scheduled arm windows the
+    match set batch by batch (one committed transaction per batch: the
+    arm statement, then the batch's event writes) until the window comes
+    back short, and only then does the running arm start its own loop.
+    The arms' statements travel through ``conn.fetchrow``, so the gate
+    lives on the fetchrow route.
+
+    Gating on the pending arm's SQL text and parking at its SECOND
+    execution lands the park exactly between batch one's COMMIT and
+    batch two's candidate: batch one's ten rows are terminal and its
+    row locks left with the transaction, nothing is locked at the park,
+    and the backlog beyond batch one is pending and unlocked.
     """
 
-    def __init__(self, inner: asyncpg.Pool, gate_sql: str) -> None:
+    def __init__(self, inner: asyncpg.Pool, gate_sql: str, gate_on_match: int = 1) -> None:
         self._inner = inner
         self._gate_sql = gate_sql
+        self._gate_on_match = gate_on_match
+        self._matches = 0
         self.gate_entered = asyncio.Event()
         self.gate_release = asyncio.Event()
 
     async def _through(self, method: str, conn, query, args, kw):
         if not self.gate_entered.is_set() and self._gate_sql in query:
-            self.gate_entered.set()
-            await self.gate_release.wait()
+            self._matches += 1
+            if self._matches >= self._gate_on_match:
+                self.gate_entered.set()
+                await self.gate_release.wait()
         return await getattr(conn, method)(query, *args, **kw)
 
-    async def acquire(self) -> "_GatedConn":
+    async def acquire(self) -> _GatedConn:
         conn = await self._inner.acquire()
         return _GatedConn(conn, self)
+
+    async def release(
+        self,
+        conn,
+        timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg.Pool.release's own keyword; the checkout forwards it verbatim.
+    ) -> None:
+        # The drain's checkout releases through THIS pool (the release is
+        # what returns the connection and carries the bounded reset).
+        # Without the forwarding, asyncpg's checkout swallows the
+        # AttributeError as pool hygiene and every batch LEAKS its
+        # connection from the inner module pool (max_size 4): the next
+        # acquire wedges the drain, and pool.close() in the fixture
+        # teardown hangs the pytest process with it.
+        await self._inner.release(
+            conn._conn, timeout=timeout
+        )  # Why: the wrapper and the connection live in this file; the attribute is the harness's own plumbing, not a foreign private.
 
 
 class _GatedConn:
     """Duck-typed connection: every call routes through the pool's gate,
     then forwards to the real connection with the caller's API shape."""
 
-    def __init__(self, conn: asyncpg.Connection, pool: "_BatchBoundaryPool") -> None:
+    def __init__(self, conn: asyncpg.Connection, pool: _BatchBoundaryPool) -> None:
         self._conn = conn
         self._pool = pool
 
@@ -178,6 +205,9 @@ class _GatedConn:
 
     async def fetch(self, query, *args, **kw):
         return await self._pool._through("fetch", self._conn, query, args, kw)
+
+    async def fetchrow(self, query, *args, **kw):
+        return await self._pool._through("fetchrow", self._conn, query, args, kw)
 
     async def fetchval(self, query, *args, **kw):
         return await self._pool._through("fetchval", self._conn, query, args, kw)
@@ -312,15 +342,21 @@ async def test_the_drain_releases_its_batch_locks_so_the_sweep_always_gets_a_win
     tag = "sweep2x_monopoly"
     ids = await _seed_inverted_backlog(clean_pg_conn, schema, tag, _BACKLOG)
 
-    # The drain's per-batch statement sequence: its pending/scheduled
-    # arm, then its running arm, then the batch's event writes.  The
-    # gate parks the drain at the FIRST running arm: batch one's
-    # pending rows (10) are locked and its batch is uncommitted, and
-    # the backlog beyond that batch is pending and unlocked.
-    pool = _BatchBoundaryPool(module_pg_pool, gate_sql="cancel_phase = 1")
+    # The drain's per-round sequence: the pending/scheduled arm drains
+    # the match set as committed batches until its window comes back
+    # short, and ONLY then does the running arm start.  So the gate sits
+    # on the pending arm's statement and parks at its SECOND execution:
+    # batch one is committed (ten rows terminal, its locks left with
+    # that transaction), the park is before batch two's candidate, and
+    # the thirty rows beyond batch one are pending and unlocked.
+    pool = _BatchBoundaryPool(
+        module_pg_pool,
+        gate_sql="IN ('pending', 'scheduled')",
+        gate_on_match=2,
+    )
     drain_task = asyncio.create_task(
         _cancel_where(
-            pool,  # type: ignore[arg-type]  # Why: duck-typed pool; only acquire() is used.
+            pool,  # type: ignore[arg-type]  # Why: duck-typed pool; only acquire() and release() are used.
             schema,
             render(schema),
             JobFilter(tags=(tag,)),
@@ -329,18 +365,41 @@ async def test_the_drain_releases_its_batch_locks_so_the_sweep_always_gets_a_win
         )
     )
 
+    try:
+        await _pin_the_no_monopoly_property(pool, drain_task, clean_pg_conn, schema, ids)
+    finally:
+        pool.gate_release.set()
+        if not drain_task.done():
+            # A red pin raises before it awaits the drain; cancel and
+            # drain the task so the suite's leftover-task guard sees the
+            # failure shape, not teardown noise.
+            drain_task.cancel()
+            with contextlib.suppress(
+                asyncio.CancelledError, Exception
+            ):  # Why: failure-path hygiene, the pin's own failure already propagated.
+                await drain_task
+
+
+async def _pin_the_no_monopoly_property(
+    pool,
+    drain_task,
+    clean_pg_conn: asyncpg.Connection,
+    schema: str,
+    ids: list[UUID],
+) -> None:
     await asyncio.wait_for(pool.gate_entered.wait(), timeout=_RACE_BOUND_SECS)
 
-    # Batch one's rows are locked by the drain's uncommitted batch; the
-    # sweep's SKIP LOCKED skips exactly those and owns the unlocked
-    # remainder.  The sweep runs to completion inline.
+    # Batch one is committed; the park is before batch two's candidate,
+    # so nothing is locked.  The sweep's SKIP LOCKED owns unlocked
+    # overdue rows by construction.
     swept: int = await asyncio.wait_for(
         sweep_deadline_exceeded(clean_pg_conn, schema=schema, batch_size=_BATCH),
         timeout=_RACE_BOUND_SECS,
     )
     assert swept >= 1, (
         "the sweep owns unlocked overdue rows by construction: the drain "
-        "holds only its current batch's locks, so the sweep's window has rows"
+        "parks between its first two committed batches with nothing "
+        "locked, so the sweep's window has rows"
     )
 
     pool.gate_release.set()
