@@ -1059,12 +1059,36 @@ async def test_drain_batch_cost_does_not_grow_as_the_backlog_is_cancelled(
     Measured as rows the plan visited and discarded per batch, which is the
     wasted work itself rather than a proxy for it, so the pin holds at any
     table size and does not turn into a timing flake.
+
+    Why the backlog here is 2000 and not a toy 200: the plan that skips the
+    cancelled rows is a choice, not a guarantee. At a 200-row backlog the
+    planner prices the cursor-bounded pkey walk and a Seq Scan + Sort + Limit
+    (the cursor demoted to a post-scan filter) within a few cost points of
+    each other, and a mid-drain statistics refresh moves the coin: on a
+    shared CI cluster autovacuum landed between batches and the drive
+    statement flipped to the re-walk shape for the rest of the drain
+    (measured on the red leg: ``[0, 0, 0, 0, 0, 0, 0, 141, 161, 181]`` -- the
+    ``+ batch_size`` per batch and the +1 probe row are the seq scan visiting
+    every already-cancelled row). Re-ANALYZE between batches is not the cure
+    but the trigger at that scale: injecting ``VACUUM (ANALYZE)`` before
+    every batch at 200 rows reproduces the flip deterministically
+    (``[0, 0, 0, 0, 0, 101, 121, 141, 161, 0]``). At 2000 rows the choice is
+    no longer a coin toss -- the walk's cost is bounded by the batch while
+    the seq scan's grows with the table -- and the per-batch
+    ``VACUUM (ANALYZE)`` injection no longer flips it (measured, 3 runs,
+    100 batches each: all zero). Real backlogs sit far on the decisive side
+    of that margin: at 200k rows drained in 20k-row batches with a
+    ``VACUUM (ANALYZE)`` before EVERY batch (more adversarial than any
+    production autovacuum), every batch stayed on the cursor walk and
+    discarded nothing. So the pin deepens the backlog to take the planner
+    out of the coin toss instead of weakening what it asserts; the bound
+    below is unchanged.
     """
     schema = module_pg_schema.schema_name
     conn = clean_pg_conn
     render(schema)
     batch_size = 20
-    total = batch_size * 10
+    total = batch_size * 100
 
     job_ids = [new_uuid() for _ in range(total)]
     await _seed_jobs(conn, schema, job_ids, status="pending", tags=["tenant-acme"])
@@ -1240,12 +1264,20 @@ async def test_running_arm_drain_batch_cost_does_not_grow_as_requests_accumulate
     Fixing the terminal arm alone leaves this half of the defect in place,
     so the same visit-cost pin is applied here, measured the same way:
     rows the production drive statement visited and discarded per batch.
+
+    The backlog is 2000 rows for the same reason the terminal arm's pin
+    deepens its own (see that test): at a 200-row backlog the planner's
+    choice between the cursor-bounded walk and the Seq Scan + Sort re-walk
+    is a coin toss that a mid-drain autovacuum statistics refresh flips,
+    and re-ANALYZE between batches is the flip's trigger at that scale, not
+    its cure. At 2000 rows the walk wins decisively whatever the stats
+    refresh does, and the per-batch cost bound below is unchanged.
     """
     schema = module_pg_schema.schema_name
     conn = clean_pg_conn
     render(schema)
     batch_size = 20
-    total = batch_size * 10
+    total = batch_size * 100
 
     job_ids = [new_uuid() for _ in range(total)]
     await _seed_jobs(conn, schema, job_ids, status="running", tags=["tenant-acme"])
