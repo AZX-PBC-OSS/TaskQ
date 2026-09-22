@@ -156,6 +156,51 @@ async def test_registration_seeds_declared_retry_contract(pg_dsn: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_retry_contract_rewrite_does_not_disturb_null_curves(pg_dsn: str) -> None:
+    """A pre-curve actor_config row (curve columns NULL, the shape rows had
+    before the curve migration) survives a re-registration whose literal
+    declares a curve: the conflict arm rewrites the code-owned contract
+    pair and leaves the seed-only curve columns exactly as they were.
+
+    The contract rewrite touching the curve arms would flip a NULL (or a
+    first-seeded) curve on every boot - the curve is documented seed-only,
+    the opposite ownership of the contract pair."""
+    schema = f"test_contract_{new_base62()}"
+    async with _open_cron(pg_dsn, schema) as (schema_name, _stack, deps, _backend, _wid):
+        async with deps.dispatcher_pool.acquire() as conn:
+            # Simulate the pre-curve row: contract pair present, curve NULL.
+            await conn.execute(
+                f"INSERT INTO {schema_name}.actor_config "
+                "(actor, queue, max_attempts, retry_kind) "
+                "VALUES ('contract_actor', 'default', 3, 'transient')"
+            )
+
+            await sync_actor_config(conn, [_build_actor_config()], schema=schema_name)
+
+            row = await conn.fetchrow(
+                f"SELECT max_attempts, retry_kind, retry_base, retry_cap, "
+                f"retry_backoff, retry_jitter FROM {schema_name}.actor_config "
+                "WHERE actor = 'contract_actor'"
+            )
+            assert row is not None
+            # The code-owned pair converged on this boot.
+            assert row["max_attempts"] == DECLARED_MAX_ATTEMPTS
+            assert row["retry_kind"] == DECLARED_RETRY_KIND
+            # The seed-only curve columns were not touched by the conflict
+            # arm: the pre-curve NULLs survive the re-registration.
+            assert (
+                row["retry_base"] is None
+                and row["retry_cap"] is None
+                and row["retry_backoff"] is None
+                and row["retry_jitter"] is None
+            ), (
+                "the contract rewrite must not seed or overwrite the curve "
+                f"columns on conflict; got ({row['retry_base']}, {row['retry_cap']}, "
+                f"{row['retry_backoff']}, {row['retry_jitter']})"
+            )
+
+
+@pytest.mark.asyncio
 async def test_cron_fire_uses_declared_retry_contract(pg_dsn: str) -> None:
     """A server-side cron fire creates a job carrying the declared
     max_attempts/retry_kind, not the DDL defaults."""
@@ -195,4 +240,96 @@ async def test_cron_fire_uses_declared_retry_contract(pg_dsn: str) -> None:
             assert job["retry_kind"] == DECLARED_RETRY_KIND, (
                 "the cron-fired job must carry the declared retry_kind, "
                 "not the actor_config DDL default of 'transient'"
+            )
+
+
+@pytest.mark.asyncio
+async def test_contract_downgrade_leaves_created_jobs_at_their_creation_time_contract(
+    pg_dsn: str,
+) -> None:
+    """A code-literal DOWNGRADE (indefinite/transient with headroom to a
+    tight transient budget) moves only the rows created after it lands.
+
+    A job's retry contract is stamped on the job row at enqueue time (the
+    enqueuer writes max_attempts/retry_kind from the EnqueueArgs it was
+    built with); nothing re-reads actor_config for a job that already
+    exists. So re-registering with a tighter contract and firing again
+    must leave the first job's columns untouched - the first fire's row
+    keeps the contract it was created under, the second fire carries the
+    new one. The opposite shape (a stored row re-read rewriting existing
+    jobs) would retroactively retrain jobs that already committed to a
+    budget."""
+    schema = f"test_contract_{new_base62()}"
+    async with _open_cron(pg_dsn, schema) as (schema_name, _stack, deps, backend, wid):
+        async with deps.dispatcher_pool.acquire() as conn:
+            await sync_actor_config(conn, [_build_actor_config()], schema=schema_name)
+            cron_expr = "* * * * *"
+            await conn.execute(
+                f'INSERT INTO "{schema_name}".cron_schedules '
+                "(id, actor, cron_expr, timezone, dst_strategy, payload_factory, "
+                "enabled, next_fire_at, metadata) "
+                "VALUES ($1, $2, $3, $4, $5, NULL, TRUE, $6, $7::jsonb)",
+                new_uuid(),
+                "contract_actor",
+                cron_expr,
+                "UTC",
+                "skip",
+                datetime.now(UTC) - timedelta(hours=2),
+                '{"static_payload": {"key": "value"}}',
+            )
+
+        async with deps.dispatcher_pool.acquire() as conn:
+            async with conn.transaction():
+                await tick_cron(conn, deps.settings, backend, schema_name, wid)
+
+        async with deps.dispatcher_pool.acquire() as conn:
+            # The downgrade: a tight non_retryable budget replaces the
+            # generous indefinite one, the conflict arm rewrites the row.
+            downgraded = ActorConfig(
+                actor="contract_actor",
+                max_concurrent=None,
+                queue="default",
+                max_attempts=1,
+                retry_kind="non_retryable",
+            )
+            await sync_actor_config(conn, [downgraded], schema=schema_name)
+
+            row = await conn.fetchrow(
+                f"SELECT max_attempts, retry_kind FROM {schema_name}.actor_config "
+                "WHERE actor = 'contract_actor'"
+            )
+            assert row is not None
+            assert (row["max_attempts"], row["retry_kind"]) == (1, "non_retryable")
+
+            # The first tick advanced the schedule's next_fire_at a minute
+            # out; pull it back into the past so the second tick fires
+            # under the downgraded contract.
+            await conn.execute(
+                f'UPDATE "{schema_name}".cron_schedules '
+                "SET next_fire_at = $1 WHERE actor = 'contract_actor'",
+                datetime.now(UTC) - timedelta(hours=2),
+            )
+
+        async with deps.dispatcher_pool.acquire() as conn:
+            async with conn.transaction():
+                await tick_cron(conn, deps.settings, backend, schema_name, wid)
+
+        async with deps.dispatcher_pool.acquire() as conn:
+            jobs = await conn.fetch(
+                f'SELECT max_attempts, retry_kind FROM "{schema_name}".jobs '
+                "WHERE actor = 'contract_actor' ORDER BY created_at, id"
+            )
+            assert len(jobs) == 2, f"two fires expected, got {len(jobs)}"
+            first, second = jobs
+            assert (first["max_attempts"], first["retry_kind"]) == (
+                DECLARED_MAX_ATTEMPTS,
+                DECLARED_RETRY_KIND,
+            ), (
+                "a job created under the pre-downgrade contract must keep its "
+                f"creation-time contract; got ({first['max_attempts']}, "
+                f"{first['retry_kind']!r})"
+            )
+            assert (second["max_attempts"], second["retry_kind"]) == (1, "non_retryable"), (
+                "a job created after the downgrade must carry the downgraded "
+                f"contract; got ({second['max_attempts']}, {second['retry_kind']!r})"
             )

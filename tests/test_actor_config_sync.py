@@ -9,6 +9,7 @@ from typing import Any
 
 import asyncpg
 import pytest
+import structlog.types
 
 from taskq._ids import new_base62
 from taskq._json import dumps_str, loads
@@ -483,6 +484,13 @@ async def test_upsert_sql_preserves_operator_owned_columns_on_conflict() -> None
     assert "result_ttl" not in on_conflict
     assert "queue" not in on_conflict
     assert "metadata" in on_conflict
+    # The retry curve stays seed-only: present in the INSERT list so a first
+    # registration seeds it, absent from the conflict arm so a re-boot never
+    # overwrites what the seed (or a NULL left by a pre-curve row) holds.
+    assert "retry_base" not in on_conflict
+    assert "retry_cap" not in on_conflict
+    assert "retry_backoff" not in on_conflict
+    assert "retry_jitter" not in on_conflict
 
 
 @pytest.mark.asyncio
@@ -544,7 +552,9 @@ async def test_retry_contract_arrays_in_upsert_params() -> None:
 
 
 @pytest.mark.asyncio
-async def test_retry_contract_divergence_warns_and_does_not_raise() -> None:
+async def test_retry_contract_divergence_warns_and_does_not_raise(
+    structlog_capture: list[structlog.types.EventDict],
+) -> None:
     """A stored/registered retry-contract mismatch is a warning, never an
     error, and the UPSERT still rewrites the stored pair.
 
@@ -574,6 +584,75 @@ async def test_retry_contract_divergence_warns_and_does_not_raise() -> None:
     )
 
     assert len(fake_conn._execute_calls) == 1
+
+    # The warning must actually fire: deleting the logger.warning call below
+    # must turn this pin red, the overwrite it announces would otherwise be
+    # silent. The event carries the PRE-write stored pair - it announces the
+    # mismatch the upsert is about to erase, not the converged values it
+    # just wrote (a warning describing a mismatch it already erased would be
+    # noise about nothing).
+    change_events = [
+        e for e in structlog_capture if e["event"] == "actor-config-retry-contract-change"
+    ]
+    assert len(change_events) == 1, (
+        "a stored/registered retry-contract mismatch must emit exactly one "
+        f"actor-config-retry-contract-change warning per changed actor per "
+        f"boot; got {len(change_events)}: {change_events!r}"
+    )
+    event = change_events[0]
+    assert event["actor"] == "X"
+    assert event["registered"] == {"max_attempts": 50, "retry_kind": "indefinite"}
+    assert event["stored"] == {"max_attempts": 3, "retry_kind": "transient"}, (
+        "the warning must describe the STORED pair it is about to overwrite "
+        "(the pre-write state server-side fires were reading), not the "
+        f"converged pair the upsert just wrote: {event['stored']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_retry_contract_convergence_is_quiet_on_the_next_boot(
+    structlog_capture: list[structlog.types.EventDict],
+) -> None:
+    """A boot whose stored pair already matches the declared literal emits no
+    retry-contract warning.
+
+    The columns are code-owned and rewritten on every boot, so after the
+    boot that observed a mismatch the stored values CONVERGE to the
+    declared ones: a warning that kept firing on every subsequent boot
+    would be noise about a change that already landed, and would bury the
+    one boot where the change is real. The cardinality is exactly once per
+    change."
+    """
+    fake_conn = FakeAsyncpgConnection()
+    # The stored row as boot 1's upsert left it: converged to the declared
+    # literal. Boot 2 reads exactly this row.
+    fake_conn.set_select_rows(
+        [_make_record("X", queue="default", max_attempts=50, retry_kind="indefinite")]
+    )
+
+    await sync_actor_config(
+        fake_conn,  # pyright: ignore[reportArgumentType] Why: FakeAsyncpgConnection is a unit-test double; real asyncpg.Connection subtyping would require protocol-level mocking
+        [
+            ActorConfig(
+                actor="X",
+                max_concurrent=None,
+                queue="default",
+                max_attempts=50,
+                retry_kind="indefinite",
+            )
+        ],
+        force=False,
+    )
+
+    assert len(fake_conn._execute_calls) == 1
+    change_events = [
+        e for e in structlog_capture if e["event"] == "actor-config-retry-contract-change"
+    ]
+    assert not change_events, (
+        "a converged stored pair must not warn: the change was announced by "
+        f"the boot that observed the mismatch, later boots are quiet. "
+        f"Got {change_events!r}"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
