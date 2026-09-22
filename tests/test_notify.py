@@ -15,6 +15,7 @@ import ast
 import asyncio
 import contextlib
 import inspect
+import random
 import uuid
 from collections.abc import Callable
 from datetime import timedelta
@@ -38,6 +39,7 @@ from taskq.worker.notify import (
     notify_listener_loop,
     reconnect_notify_conn,
 )
+from tests._ns_patch import module_ns_proxy
 
 # ---- Helpers ----------------------------------------------------------------------------------------------------------------------
 
@@ -502,9 +504,14 @@ class TestReconnectBackoff:
         import taskq.worker.notify as notify_mod
 
         monkeypatch.setattr(notify_mod, "logger", Mock())
-        monkeypatch.setattr(asyncio, "sleep", recording_sleep)
+        # Patch where the names are LOOKED UP - the notify module's own
+        # ``asyncio`` / ``random`` bindings - not through to the global
+        # modules (tests/_ns_patch.py).
+        monkeypatch.setattr(notify_mod, "asyncio", module_ns_proxy(asyncio, sleep=recording_sleep))
         if uniform_value is not None:
-            monkeypatch.setattr(notify_mod.random, "uniform", lambda a, b: uniform_value)
+            monkeypatch.setattr(
+                notify_mod, "random", module_ns_proxy(random, uniform=lambda a, b: uniform_value)
+            )
 
         async def _runner() -> None:
             await _health_check_loop(deps, backend, shutdown, channels)

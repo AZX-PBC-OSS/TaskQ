@@ -22,6 +22,9 @@ from taskq.context import CancelOrigin, JobContext
 from taskq.obs import bind_job_context
 from taskq.settings import WorkerSettings
 from taskq.testing.in_memory import PassthroughPayload
+from taskq.worker import (
+    shutdown as shutdown_mod,  # pyright: ignore[reportPrivateImportUsage]  # Why: the namespace the clock fakes must be bound in (patch where it is LOOKED UP); the symbols above are its public surface.
+)
 from taskq.worker._watchdog import (  # pyright: ignore[reportPrivateUsage]  # Why: the flush bound is half of the exit tail pinned above.
     _METRICS_FLUSH_TIMEOUT_SECS,
 )
@@ -32,6 +35,7 @@ from taskq.worker.shutdown import (  # pyright: ignore[reportPrivateUsage]  # Wh
     _watchdog_exit_tail,
     orchestrate_shutdown,
 )
+from tests._ns_patch import module_ns_proxy
 
 # ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -137,8 +141,14 @@ def _patch_clock(
     fake_loop: Mock,
 ) -> None:
     fake_loop.time = lambda: clock.time_val  # type: ignore[method-assign] # Why: Mock attribute shadowing for loop.time() callable; the test clock replaces the event loop's monotonic clock.
-    monkeypatch.setattr(asyncio, "get_running_loop", lambda: fake_loop)
-    monkeypatch.setattr(asyncio, "sleep", clock.sleep)
+    # Patch where the names are LOOKED UP - the shutdown module's own
+    # ``asyncio`` binding - not through to the global asyncio module
+    # (tests/_ns_patch.py).
+    monkeypatch.setattr(
+        shutdown_mod,
+        "asyncio",
+        module_ns_proxy(asyncio, get_running_loop=lambda: fake_loop, sleep=clock.sleep),
+    )
 
 
 def _make_deps(
@@ -762,10 +772,14 @@ async def test_race_winner_not_released(monkeypatch: pytest.MonkeyPatch) -> None
             registry.set_jobs([])
         await clock.sleep(delta)
 
-    # asyncio.sleep is resolved on the asyncio module at call time; patching
-    # it here is exactly what the orchestrator sees (and what the pre-rename
-    # suite did through the shutdown module's re-import).
-    monkeypatch.setattr(asyncio, "sleep", _sleep_with_deregister)
+    # asyncio.sleep is resolved on the shutdown module's own ``asyncio``
+    # binding at call time; binding the fake THERE is exactly what the
+    # orchestrator sees, without swinging the process-global module
+    # (the pre-rename suite did this through the shutdown module's
+    # re-import; tests/_ns_patch.py explains the hazard class).
+    monkeypatch.setattr(
+        shutdown_mod, "asyncio", module_ns_proxy(asyncio, sleep=_sleep_with_deregister)
+    )
 
     await orchestrate_shutdown(
         deps,

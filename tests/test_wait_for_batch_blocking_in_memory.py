@@ -24,10 +24,14 @@ import structlog.testing
 from taskq._ids import new_uuid
 from taskq.backend._protocol import BatchRow
 from taskq.exceptions import BatchAbortedError, Snooze
+from taskq.testing import (
+    _runner as runner_mod,  # pyright: ignore[reportPrivateImportUsage]  # Why: wait_for_batch is defined (and resolves asyncio) in _runner; in_memory only re-exports it.
+)
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.in_memory import wait_for_batch as in_memory_wait_for_batch
 from taskq.testing.jobs import make_job_row
+from tests._ns_patch import module_ns_proxy
 
 _CLOCK_START = datetime(2025, 1, 1, tzinfo=UTC)
 
@@ -97,7 +101,10 @@ class TestBlockingMode:
             await original_sleep(0)
 
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(asyncio, "sleep", fake_sleep)
+            # Patch where the name is LOOKED UP - taskq.testing._runner's own
+            # ``asyncio`` binding (the module whose wait_for_batch loop sleeps) -
+            # not through to the global asyncio module (tests/_ns_patch.py).
+            mp.setattr(runner_mod, "asyncio", module_ns_proxy(asyncio, sleep=fake_sleep))
             status = await in_memory_wait_for_batch(
                 backend,
                 batch_id,
@@ -129,7 +136,10 @@ class TestBlockingMode:
             structlog.testing.capture_logs() as logs,
             pytest.MonkeyPatch.context() as mp,
         ):
-            mp.setattr(asyncio, "sleep", fake_sleep)
+            # Patch where the name is LOOKED UP - taskq.testing._runner's own
+            # ``asyncio`` binding (the module whose wait_for_batch loop sleeps) -
+            # not through to the global asyncio module (tests/_ns_patch.py).
+            mp.setattr(runner_mod, "asyncio", module_ns_proxy(asyncio, sleep=fake_sleep))
             status = await in_memory_wait_for_batch(
                 backend,
                 batch_id,
@@ -164,7 +174,10 @@ class TestBlockingMode:
             await original_sleep(0)
 
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(asyncio, "sleep", fake_sleep)
+            # Patch where the name is LOOKED UP - taskq.testing._runner's own
+            # ``asyncio`` binding (the module whose wait_for_batch loop sleeps) -
+            # not through to the global asyncio module (tests/_ns_patch.py).
+            mp.setattr(runner_mod, "asyncio", module_ns_proxy(asyncio, sleep=fake_sleep))
             with pytest.raises(BatchAbortedError) as exc_info:
                 await in_memory_wait_for_batch(
                     backend,

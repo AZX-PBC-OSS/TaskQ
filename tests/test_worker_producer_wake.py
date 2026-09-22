@@ -54,6 +54,7 @@ from taskq.worker.run import (
     di_consumer_loop,
     producer_loop,
 )
+from tests._ns_patch import module_ns_proxy
 
 _PROMPT_WAKE_BOUND_S = 1.0
 _EPS = 1e-9
@@ -203,7 +204,9 @@ async def test_slot_release_wakes_the_saturated_producer_without_a_poll_sleep(
         return result
 
     monkeypatch.setattr(run_mod, "_SLOT_REFILL_POLL_SECONDS", 3600.0, raising=False)
-    monkeypatch.setattr(run_mod.asyncio, "sleep", _recording_sleep)
+    # Patch where the name is LOOKED UP - run.py's own ``asyncio`` binding -
+    # not through to the global asyncio module (tests/_ns_patch.py).
+    monkeypatch.setattr(run_mod, "asyncio", module_ns_proxy(asyncio, sleep=_recording_sleep))
 
     task = asyncio.create_task(
         producer_loop(
@@ -469,7 +472,7 @@ async def test_producer_loop_poll_waits_are_jittered_not_fixed(
             stop_event.set()
         return result
 
-    monkeypatch.setattr(run_mod.asyncio, "sleep", _recording_sleep)
+    monkeypatch.setattr(run_mod, "asyncio", module_ns_proxy(asyncio, sleep=_recording_sleep))
 
     await producer_loop(
         deps,  # type: ignore[arg-type]  # Why: SimpleNamespace stand-in, as above.
@@ -524,7 +527,7 @@ async def _run_producer_over_raising_backend(
         await real_sleep(0)
         return result
 
-    monkeypatch.setattr(run_mod.asyncio, "sleep", _round_counting_sleep)
+    monkeypatch.setattr(run_mod, "asyncio", module_ns_proxy(asyncio, sleep=_round_counting_sleep))
 
     with structlog.testing.capture_logs() as captured:
         await producer_loop(

@@ -15,6 +15,7 @@ from taskq.cli import _CONNECT_TIMEOUT_S, app
 from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.health import HealthServer
 from taskq.worker.shutdown import ShutdownPhase
+from tests._ns_patch import module_ns_proxy
 
 runner = CliRunner()
 
@@ -384,7 +385,13 @@ async def test_health_request_times_out_after_connect(monkeypatch: pytest.Monkey
     async def _mock_open_unix_connection(_path: str) -> tuple[AsyncMock, MagicMock]:
         return mock_reader, mock_writer
 
-    monkeypatch.setattr(asyncio, "open_unix_connection", _mock_open_unix_connection)
+    # Patch where the name is LOOKED UP - the cli module's own ``asyncio``
+    # binding - not through to the global asyncio module (tests/_ns_patch.py).
+    monkeypatch.setattr(
+        cli_mod,
+        "asyncio",
+        module_ns_proxy(asyncio, open_unix_connection=_mock_open_unix_connection),
+    )
 
     settings = SimpleNamespace(health_socket_path="fake.sock")
     code = await cli_mod._health_request(  # pyright: ignore[reportArgumentType]

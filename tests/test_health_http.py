@@ -20,6 +20,9 @@ from types import SimpleNamespace
 import pytest
 import structlog.testing
 
+from taskq.worker import (
+    health as health_mod,  # pyright: ignore[reportPrivateImportUsage]  # Why: the namespace whose os binding must carry the stat fake (patch where it is LOOKED UP).
+)
 from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.health import (
     HealthServer,
@@ -29,6 +32,7 @@ from taskq.worker.health import (
     unregister_readiness_check,
 )
 from taskq.worker.shutdown import ShutdownPhase
+from tests._ns_patch import module_ns_proxy
 
 # ── Stubs (mirroring tests/test_health.py) ─────────────────────────────
 
@@ -524,8 +528,14 @@ async def test_stop_when_the_stat_cannot_read_the_inode_never_unlinks(
     unlink). This is the sibling arm: the file is still there but
     ``os.stat`` cannot read it (a permission error on the directory
     chain), so the inode is unknown, the guard cannot prove this
-    server still owns the path, and the socket file must survive the
-    teardown untouched.
+    server still owns the path, and ``stop()`` itself must never
+    attempt the unlink - pinned by an unlink spy on the module's own
+    ``os`` binding. (An earlier form asserted the socket file survived
+    the teardown; that outcome was held up by the clock-fake reaching
+    asyncio's own unlink guard through the GLOBAL ``os`` module - once
+    the fake is scoped to the health module, asyncio's same-inode
+    cleanup legitimately removes the file on 3.13+, and survival is
+    not this test's subject.)
     """
     sock_path = _next_sock_path()
     settings = _make_settings(sock_path)
@@ -534,17 +544,35 @@ async def test_stop_when_the_stat_cannot_read_the_inode_never_unlinks(
     assert pathlib.Path(sock_path).exists(), "sanity: the server bound the path"  # noqa: ASYNC240  # Why: a single fast metadata read in a test assertion; matches this file's existing convention.
 
     real_stat = os.stat
+    real_unlink = os.unlink
+    stop_module_unlinks: list[object] = []
 
     def _stat_unreadable(path: object, **kwargs: object) -> os.stat_result:
         if path == sock_path:
             raise PermissionError(errno.EACCES, "Operation not permitted", sock_path)
         return real_stat(path, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(os, "stat", _stat_unreadable)
+    def _spy_unlink(path: object, **kwargs: object) -> None:
+        stop_module_unlinks.append(path)
+        real_unlink(path)  # type: ignore[arg-type]
+
+    # Patch where the names are LOOKED UP - the health module's own ``os``
+    # binding (HealthServer.stop's ownership probe and unlink) - NOT through
+    # to the global os module. The old global spelling also blinded
+    # asyncio's own same-inode socket cleanup (unix_events resolves ``os``
+    # globally too), which is what made the previous "file survives"
+    # assertion hold; the guard under test is HealthServer.stop's, and the
+    # unlink spy pins it directly without reaching into asyncio's namespace
+    # (tests/_ns_patch.py).
+    monkeypatch.setattr(
+        health_mod,
+        "os",
+        module_ns_proxy(os, stat=_stat_unreadable, unlink=_spy_unlink),  # pyright: ignore[reportPrivateImportUsage]
+    )
     try:
         with structlog.testing.capture_logs() as captured:
             await server.stop()
-        assert pathlib.Path(sock_path).exists(), (  # noqa: ASYNC240  # Why: the unlink guard is the behavior under test.
+        assert not stop_module_unlinks, (
             "stop() unlinked a socket whose ownership it could not prove"
         )
         assert any(e["event"] == "health-server-stop-skipped-unlink" for e in captured), (

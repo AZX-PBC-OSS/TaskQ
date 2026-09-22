@@ -61,6 +61,7 @@ from taskq.worker._transient import (
 )
 from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.run import producer_loop
+from tests._ns_patch import module_ns_proxy
 
 _LOOP_LABEL = "worker.producer"
 _UNEXPECTED_COUNTER = "taskq.worker.loop_unexpected_errors_total"
@@ -225,10 +226,11 @@ async def _run_producer(
         await real_sleep(0)
         return result
 
-    # Patch through monkeypatch (restored by the fixture even when the
-    # test aborts) - a leaked module-global asyncio.sleep poisons every
-    # later test in the process. run_mod.asyncio IS the asyncio module.
-    monkeypatch.setattr(run_mod.asyncio, "sleep", _round_clock)  # pyright: ignore[reportPrivateImportUsage]  # Why: the shipped budget pins use the same seam (tests/test_producer_loop_unexpected_budget.py).
+    # Patch where the name is LOOKED UP - run.py's own ``asyncio`` binding -
+    # so the fake never lands on the process-global asyncio module (the old
+    # spelling ``setattr(run_mod.asyncio, ...)`` patched the global module:
+    # every coroutine in the process resolved the fake during the window).
+    monkeypatch.setattr(run_mod, "asyncio", module_ns_proxy(asyncio, sleep=_round_clock))
 
     async def _drive() -> None:
         try:

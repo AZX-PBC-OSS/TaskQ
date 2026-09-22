@@ -25,12 +25,14 @@ from taskq._ids import new_uuid
 from taskq.backend._protocol import Backend, JobRow
 from taskq.testing.assertions import wait_for_condition
 from taskq.testing.jobs import make_job_row
+from taskq.worker import run as run_mod
 from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.run import (
     _CLAIM_COOLDOWN_SECONDS,
     _POLL_JITTER_FRACTION,
     producer_loop,
 )
+from tests._ns_patch import module_ns_proxy
 
 _COOLDOWN_MIN_S = _CLAIM_COOLDOWN_SECONDS * (1.0 - _POLL_JITTER_FRACTION)
 _SETTLE_S = 0.4
@@ -258,7 +260,9 @@ async def test_a_poll_timed_round_owes_no_cooldown(monkeypatch: object) -> None:
             stop_event.set()
         return result
 
-    monkeypatch.setattr(asyncio, "sleep", _recording_sleep)
+    # Patch where the name is LOOKED UP - run.py's own ``asyncio`` binding -
+    # not through to the global asyncio module (tests/_ns_patch.py).
+    monkeypatch.setattr(run_mod, "asyncio", module_ns_proxy(asyncio, sleep=_recording_sleep))
     deps = _deps(maxsize=4, notify_enabled=False)
     deps.settings.poll_interval = poll_interval
     local_queue: asyncio.Queue[JobRow] = asyncio.Queue(maxsize=4)

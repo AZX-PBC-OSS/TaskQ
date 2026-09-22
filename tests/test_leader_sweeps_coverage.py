@@ -38,6 +38,7 @@ from taskq.worker import _leader_sweeps
 from taskq.worker._leader_shared import SweepContext
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.leader import MaintenanceLeader
+from tests._ns_patch import module_ns_proxy
 
 pytestmark = pytest.mark.asyncio
 
@@ -1004,7 +1005,11 @@ async def test_stranded_jobs_loop_skips_when_not_leader(monkeypatch: Any) -> Non
 
     import taskq.worker._leader_sweeps as sweeps_mod
 
-    monkeypatch.setattr(sweeps_mod.asyncio, "sleep", _fast_sleep)
+    # Patch where the name is LOOKED UP - the sweeps module's own ``asyncio``
+    # binding - so the test's own real `asyncio.sleep(0.05)` quiescence wait
+    # below keeps its real timing instead of collapsing into the fake
+    # (tests/_ns_patch.py).
+    monkeypatch.setattr(sweeps_mod, "asyncio", module_ns_proxy(asyncio, sleep=_fast_sleep))
 
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._stranded_jobs_loop(shutdown))
