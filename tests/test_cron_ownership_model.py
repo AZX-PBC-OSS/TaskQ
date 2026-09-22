@@ -13,12 +13,24 @@ The model, as implemented:
 * ``cron_schedules.disabled_by``: ``'auto'`` (the cron loop's failure-count
   auto-disable, written alongside ``enabled=false``), ``'operator'`` (schedule
   handle disable, admin UI, actor deregistration), or NULL (enabled, or a row
-  disabled before the column existed: the safe reading of that ambiguity is
-  operator intent).
+  an old pod wrote during a mixed-version deploy; see below).
 * The startup registration pass re-enables ONLY rows with
-  ``disabled_by='auto'`` of code-owned, code-enabled specs: the boot is proof
-  the ``@cron`` declaration is live again, so the disable is stale. An
-  operator-disabled row is never reverted, whatever owns the spec.
+  ``disabled_by='auto'`` -- plus the mixed-version deploy's unmarked
+  fingerprint of one (NULL marker, ``consecutive_failures`` at or past the
+  threshold, ``last_fire_error`` set; issue #460) -- of code-owned,
+  code-enabled specs: the boot is proof the ``@cron`` declaration is live
+  again, so the disable is stale. An operator-disabled row is never
+  reverted, whatever owns the spec.
+
+The mixed-version window (issue #460): migration 01.00.19_02 is additive and
+applies while OLD pods run, but the previous release's failure UPDATE cannot
+name ``disabled_by``, so an old pod's auto-disable during a rolling deploy
+lands as ``enabled=false, disabled_by=NULL``. The backfill migration
+01.00.19_05 stamps every disabled row that predates it ``'operator'`` (the
+pre-ownership population), which is what makes the residual NULL reading
+sound: after it, a NULL-disabled row with the old failure arm's fingerprint
+can only be an old pod's auto-disable, and the boot recovers it; without the
+fingerprint it reads as an old pod's operator disable and survives.
 
 The pins: an auto-disabled row recovered by a restart (the bug), an
 operator-disabled row surviving a restart (the negative, and the exact trap
@@ -43,7 +55,9 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_base62, new_uuid
+from taskq.backend._records import parse_rowcount
 from taskq.cron import CronScheduleSpec
+from taskq.migrate import discover
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.worker.cron_loop import tick_cron
 from taskq.worker.deps import WorkerDeps
@@ -69,6 +83,16 @@ pytestmark = pytest.mark.integration
 
 _MISSING_ACTOR = "ownership_missing_actor"
 _LOOKUP_ERROR = f"Actor '{_MISSING_ACTOR}' not found in actor_config"
+
+
+def _backfill_sql(schema: str) -> str:
+    """Render the bundled 01.00.19_05 backfill migration against a schema,
+    so the pin exercises the shipped file, not a copy of its SQL."""
+    filename = "01.00.19_05_pre_cron_disabled_by_backfill.sql"
+    for migration in discover():
+        if migration.filename == filename:
+            return migration.render(schema)
+    raise AssertionError(f"{filename} is not bundled")
 
 
 def _spec(actor: str, name: str = "", **overrides: Any) -> CronScheduleSpec:
@@ -110,7 +134,7 @@ async def _seed_auto_disabled(
     *,
     actor: str,
     name: str,
-    disabled_by: str = "auto",
+    disabled_by: str | None = "auto",
 ) -> Any:
     """The exact row state the cron loop's auto-disable leaves behind
     (``enabled=false``, three strikes, the error, the ownership marker), with
@@ -438,9 +462,16 @@ class TestOperatorIntentIsNeverReverted:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """NULL ``disabled_by`` on a disabled row predates ownership tracking;
-        the safe reading of that ambiguity is operator intent, so the row is
-        not re-enabled (and does not crash the registration pass)."""
+        """NULL ``disabled_by`` on a disabled row with NO failure fingerprint
+        is not re-enabled (and does not crash the registration pass).
+
+        In a real database the pre-ownership population (rows disabled before
+        the column existed) was stamped ``'operator'`` by the backfill
+        migration 01.00.19_05, so it survives through that marker. The
+        residual NULL-disabled row this test seeds can only be an old pod's
+        write from a mixed-version window; without the old failure arm's
+        fingerprint (counter at the threshold, error set) it reads as an old
+        pod's operator disable, and the boot leaves it either way."""
         schema = module_pg_schema.schema_name
         schedule_id = await seed_schedule(
             clean_pg_conn,
@@ -457,6 +488,324 @@ class TestOperatorIntentIsNeverReverted:
 
         after = await schedule_row(clean_pg_conn, schema, schedule_id)
         assert after == before
+
+
+class TestMixedVersionRollingDeploy:
+    """Issue #460: the mixed-version deploy window.
+
+    Migration 01.00.19_02 is additive and applies while OLD pods run, but the
+    previous release's failure UPDATE writes ``enabled = false`` and cannot
+    name ``disabled_by``. An old pod's auto-disable during the roll therefore
+    lands as ``enabled=false, disabled_by=NULL`` -- a state the ownership
+    model's trichotomy read as operator intent, so the boot recovery
+    (``disabled_by = 'auto'``) never matched it and the schedule stayed
+    disabled until a human intervened. The pins, one per cell the fix
+    touches:
+
+    * the old pod's disable fingerprint (NULL marker, counter at the
+      threshold, error set) is recovered by a full restart -- the repro;
+    * the same fingerprint at the registration pass level;
+    * a NULL marker WITHOUT the fingerprint (an old pod's operator disable
+      during the window) survives, like an operator disable;
+    * the spec guards (``owner='operator'``, ``enabled=False``) hold for the
+      fingerprint row too;
+    * the backfill migration 01.00.19_05 stamps the pre-ownership disabled
+      population ``'operator'``, which is what makes the residual NULL
+      reading sound.
+
+    The old pod is simulated with the PREVIOUS release's failure UPDATE,
+    copied verbatim from the parent of 3f9641cd (the #412 commit): it is the
+    exact statement an old pod runs during the roll.
+    """
+
+    _OLD_FAILURE_UPDATE = (
+        'UPDATE "{schema}".cron_schedules s '  # Why: schema is a test-fixture identifier; values are $-bound.
+        "SET last_fire_error = f.err, consecutive_failures = f.consecutive, "
+        "enabled = CASE WHEN f.disable THEN false ELSE s.enabled END "
+        "FROM unnest($1::uuid[], $2::text[], $3::int[], $4::bool[]) "
+        "AS f(id, err, consecutive, disable) "
+        "WHERE s.id = f.id AND s.enabled = true"
+    )
+
+    async def _old_pod_strikes(
+        self,
+        conn: asyncpg.Connection,
+        schema: str,
+        schedule_id: Any,
+        error: str,
+    ) -> None:
+        """Three consecutive failing fires through the PREVIOUS release's
+        failure UPDATE: no strike names ``disabled_by``, the third reaches
+        the threshold and disables."""
+        for consecutive, disable in ((1, False), (2, False), (3, True)):
+            tag: str = await conn.execute(
+                self._OLD_FAILURE_UPDATE.replace("{schema}", schema),
+                [schedule_id],
+                [error],
+                [consecutive],
+                [disable],
+            )
+            assert parse_rowcount(tag) == 1
+
+    async def test_old_pod_auto_disable_during_roll_is_recovered_at_boot(
+        self,
+        pg_dsn: str,
+    ) -> None:
+        """The repro: an old pod's auto-disable during a rolling deploy
+        leaves ``enabled=false, disabled_by=NULL``; the new release's boot
+        re-declares the schedule and MUST return it to service.
+
+        On the pre-fix code the recovery predicate requires
+        ``disabled_by='auto'``, the row carries NULL, and the schedule stays
+        disabled until a human re-enables it -- the unrecoverable cell."""
+        schema = f"tcron_{new_base62()}".lower()
+        await _prepare_schema_for(pg_dsn, schema)
+
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            schedule_id = await seed_schedule(
+                conn,
+                schema,
+                actor=_MISSING_ACTOR,
+                name="roll-blip",
+                cron_expr=_HOURLY,
+                next_fire_at=await server_hour_floor(conn),
+            )
+            await self._old_pod_strikes(conn, schema, schedule_id, _LOOKUP_ERROR)
+
+            # The exact state the deploy produces, and the cell the pre-fix
+            # recovery cannot match: disabled, unmarked, evidence present.
+            row = await schedule_row(conn, schema, schedule_id)
+            assert row["enabled"] is False, "the old pod's third strike must disable"
+            assert row["disabled_by"] is None, (
+                "the previous release's failure UPDATE cannot name disabled_by, "
+                "so its auto-disable lands unmarked"
+            )
+            assert row["consecutive_failures"] == 3
+            assert row["last_fire_error"] == _LOOKUP_ERROR
+
+            # The failure UPDATE never advances next_fire_at; push the row
+            # out of due range so the boot's own cron loop cannot strike it
+            # while the test observes the restart.
+            await conn.execute(
+                f'UPDATE "{schema}".cron_schedules '  # noqa: S608  # Why: schema is a test-fixture identifier; values are $-bound.
+                "SET next_fire_at = $2 WHERE id = $1",
+                schedule_id,
+                await server_hour_floor(conn) + timedelta(hours=1),
+            )
+        finally:
+            await conn.close()
+
+        settings = _settings_for(pg_dsn, schema)
+        await _run_and_cancel(
+            lambda: _main(settings, _cron_registry=[_spec(_MISSING_ACTOR, "roll-blip")])
+        )
+
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            row = await schedule_row(conn, schema, schedule_id)
+        finally:
+            await conn.close()
+        assert row["enabled"] is True, (
+            "the rolling deploy's unmarked auto-disable of a code-owned "
+            "schedule is a state the new ownership model must recover: the "
+            "boot re-declares the schedule, so the disable's only cause (a "
+            "transient failure blip on the old pod) no longer exists"
+        )
+        assert row["consecutive_failures"] == 0
+        assert row["last_fire_error"] is None
+
+        await _cleanup_schema_for(pg_dsn, schema)
+
+    async def test_registration_pass_recovers_null_marker_with_failure_fingerprint(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """The unrecoverable cell, at the registration pass: a disabled row
+        with a NULL marker that carries the old release's disable fingerprint
+        (counter at the threshold, error set) is reverted like an 'auto'
+        row."""
+        schema = module_pg_schema.schema_name
+        schedule_id = await _seed_auto_disabled(
+            conn=clean_pg_conn,
+            schema=schema,
+            actor=_MISSING_ACTOR,
+            name="roll-fingerprint",
+            disabled_by=None,
+        )
+
+        await _registration_pass(module_pg_schema, _spec(_MISSING_ACTOR, "roll-fingerprint"))
+
+        row = await schedule_row(clean_pg_conn, schema, schedule_id)
+        assert row["enabled"] is True, (
+            "a NULL marker plus the old failure arm's fingerprint is an old "
+            "pod's auto-disable from the mixed-version window; the boot must "
+            "return the schedule to service"
+        )
+        assert row["consecutive_failures"] == 0
+        assert row["last_fire_error"] is None
+        assert row["disabled_by"] is None
+
+    async def test_registration_pass_leaves_null_marker_without_failure_fingerprint(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """A NULL marker WITHOUT the fingerprint (an old pod's operator
+        disable during the window, or a row the backfill has not reached):
+        no failure evidence, so the boot reads intent and leaves the row
+        alone."""
+        schema = module_pg_schema.schema_name
+        schedule_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_MISSING_ACTOR,
+            name="roll-operator",
+            cron_expr=_HOURLY,
+            next_fire_at=await server_hour_floor(clean_pg_conn) + timedelta(hours=1),
+            enabled=False,
+            disabled_by=None,
+        )
+        before = await schedule_row(clean_pg_conn, schema, schedule_id)
+
+        await _registration_pass(module_pg_schema, _spec(_MISSING_ACTOR, "roll-operator"))
+
+        after = await schedule_row(clean_pg_conn, schema, schedule_id)
+        assert after == before, (
+            "a NULL marker with no failure fingerprint is not the old "
+            "failure arm's write; the boot must not re-enable it"
+        )
+
+    async def test_operator_owned_spec_leaves_null_fingerprint_row_alone(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """The fingerprint row under an ``owner='operator'`` spec: the pass
+        owns nothing, the row stays put."""
+        schema = module_pg_schema.schema_name
+        schedule_id = await _seed_auto_disabled(
+            conn=clean_pg_conn,
+            schema=schema,
+            actor=_MISSING_ACTOR,
+            name="roll-operator-owned",
+            disabled_by=None,
+        )
+
+        await _registration_pass(
+            module_pg_schema,
+            _spec(_MISSING_ACTOR, "roll-operator-owned", owner="operator"),
+        )
+
+        after = await schedule_row(clean_pg_conn, schema, schedule_id)
+        assert after["enabled"] is False
+        assert after["disabled_by"] is None
+        assert after["consecutive_failures"] == 3
+
+    async def test_code_disabled_spec_leaves_null_fingerprint_row_alone(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """The fingerprint row under a spec declared ``enabled=False``: the
+        declaration does not assert the schedule should run, the pass does
+        not spend its revert on it."""
+        schema = module_pg_schema.schema_name
+        schedule_id = await _seed_auto_disabled(
+            conn=clean_pg_conn,
+            schema=schema,
+            actor=_MISSING_ACTOR,
+            name="roll-code-off",
+            disabled_by=None,
+        )
+
+        await _registration_pass(
+            module_pg_schema,
+            _spec(_MISSING_ACTOR, "roll-code-off", enabled=False),
+        )
+
+        after = await schedule_row(clean_pg_conn, schema, schedule_id)
+        assert after["enabled"] is False
+        assert after["disabled_by"] is None
+        assert after["consecutive_failures"] == 3
+
+    async def test_backfill_stamps_pre_ownership_disabled_rows_operator(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """Migration 01.00.19_05, executed from the bundled file itself: the
+        pre-ownership disabled population (NULL marker, whatever the counter)
+        is stamped ``'operator'``, enabled rows are left alone, and an
+        already-stamped row is untouched (idempotent)."""
+        schema = module_pg_schema.schema_name
+        next_fire = await server_hour_floor(clean_pg_conn) + timedelta(hours=1)
+        pre_ownership = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_MISSING_ACTOR,
+            name="backfill-pre-ownership",
+            cron_expr=_HOURLY,
+            next_fire_at=next_fire,
+            enabled=False,
+            disabled_by=None,
+        )
+        old_pod_blip = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_MISSING_ACTOR,
+            name="backfill-old-pod-blip",
+            cron_expr=_HOURLY,
+            next_fire_at=next_fire,
+            enabled=False,
+            consecutive_failures=3,
+            disabled_by=None,
+        )
+        torn_enabled = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_MISSING_ACTOR,
+            name="backfill-torn-enabled",
+            cron_expr=_HOURLY,
+            next_fire_at=next_fire,
+            enabled=True,
+            disabled_by="auto",
+        )
+        already_operator = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_MISSING_ACTOR,
+            name="backfill-already-operator",
+            cron_expr=_HOURLY,
+            next_fire_at=next_fire,
+            enabled=False,
+            disabled_by="operator",
+        )
+
+        await clean_pg_conn.execute(_backfill_sql(schema))
+
+        rows = await clean_pg_conn.fetch(
+            f'SELECT id, enabled, disabled_by FROM "{schema}".cron_schedules '  # noqa: S608  # Why: schema is a test-fixture identifier; values are $-bound.
+            "WHERE id = ANY($1::uuid[])",
+            [pre_ownership, old_pod_blip, torn_enabled, already_operator],
+        )
+        by_id = {row["id"]: row for row in rows}
+        assert len(by_id) == 4
+        assert by_id[pre_ownership]["disabled_by"] == "operator", (
+            "the pre-ownership population keeps the operator-intent reading "
+            "the 01.00.19_02 header declared for it"
+        )
+        assert by_id[old_pod_blip]["disabled_by"] == "operator", (
+            "a disabled row that exists when the backfill runs predates the "
+            "residual-NULL reading, whatever wrote it"
+        )
+        assert by_id[torn_enabled]["enabled"] is True
+        assert by_id[torn_enabled]["disabled_by"] == "auto", (
+            "a marker on an enabled row is inert; the backfill leaves it for "
+            "the next real disable to overwrite"
+        )
+        assert by_id[already_operator]["disabled_by"] == "operator"
 
 
 class TestCreatePathProvenance:
