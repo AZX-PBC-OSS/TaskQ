@@ -14,14 +14,18 @@ Pattern notes
   an asyncpg pool.
 - ``httpx.AsyncClient(transport=httpx.ASGITransport(app=app))`` for async
   HTTP requests.
-- ``client.stream("GET", url)`` + ``async for line in resp.aiter_lines()``
-  to read SSE lines incrementally; break on ``event: done`` to avoid hanging.
+- ``client.stream("GET", url)`` + ``async for line in resp.aiter_lines()`` to
+  read SSE lines to exhaustion (never ``break`` - an abandoned ``aiter_lines``
+  chain finalizes as loop tasks one wave per generator after the test ends;
+  under ``ASGITransport`` the body is buffered, so terminal streams reach EOF
+  on their own and non-terminating ones are bounded by ``overall_timeout``).
 - A ``_make_app(pool, redis_client)`` factory that calls
   ``create_router(pool, redis_client, schema=SCHEMA_LABEL)``, then mounts the
   router at prefix ``/jobs``, yielding a FastAPI ``app`` object.
 """
 
 import asyncio
+import gc
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -175,17 +179,126 @@ def _progress_event(
 # ── SSE stream consumer helpers ────────────────────────────────────────────
 
 
+async def _reap_stream_teardown_tasks(
+    baseline: frozenset[asyncio.Task[object]],
+    *,
+    reap_timeout: float = 5.0,
+) -> None:
+    """Reap every task the SSE interaction minted, INSIDE the call phase.
+
+    Streaming one SSE response over ``httpx.ASGITransport`` leaves loop
+    tasks the test cannot hold a reference to:
+
+    - sse-starlette's ``_shutdown_watcher``: minted by raw
+      ``loop.create_task`` the first time an ``EventSourceResponse``
+      streams and dropped (no reference survives), it parks until a
+      uvicorn shutdown flag that no in-process test ever sets. It only
+      finishes when cancelled. The autouse join in
+      ``tests/web_progress/conftest.py`` reaps it at FIXTURE teardown -
+      the module-loop guard's call-window snapshot correctly scores that
+      as too late, so the reap belongs in the call.
+    - the abandoned-``aiter_lines`` finalization cascade: ``break`` out
+      of ``resp.aiter_lines()`` leaves the httpx generator chain
+      (aiter_lines → aiter_text → aiter_bytes → aiter_raw → the response
+      stream) suspended; CPython finalizes each abandoned generator
+      through the loop's asyncgen hook, which mints an
+      ``async_generator_athrow`` task per generator. Closing one
+      generator releases the next, so the cascade lands as consecutive
+      waves - measured here: one wave per loop turn for four waves, and
+      a wave minted only after the previous one's unwind ran.
+
+    Neither kind can be awaited by reference, so the reap is a set diff
+    against *baseline* (everything pending when the interaction began:
+    fixture-owned tasks, the caller's TaskGroup workers) driven to
+    quiescence: ``gc.collect()`` forces each wave's finalization
+    deterministically, and every outcome is retrieved - a finalizer that
+    died with a real exception is a finding, never a silent give-up.
+
+    The two kinds are reaped DIFFERENTLY, and the difference is the
+    whole mechanism: a finalizer task is AWAITED, never cancelled. Its
+    coroutine throws ``GeneratorExit`` into the suspended generator and
+    the unwind is await-free, so the task completes within a loop turn -
+    but cancelling it aborts the unwind mid-way, the released generator
+    stays suspended, and the cascade re-mints one wave later (measured:
+    the cancelled variant left the fourth wave pending at pytest
+    teardown, exactly the residue the guard names). The watcher, by
+    contrast, parks forever and is cancelled by name - the same
+    identification the conftest join uses.
+    """
+    loop = asyncio.get_running_loop()
+    current = asyncio.current_task()
+    deadline = loop.time() + reap_timeout
+
+    def _is_shutdown_watcher(task: asyncio.Task[object]) -> bool:
+        return getattr(task.get_coro(), "__name__", None) == "_shutdown_watcher"
+
+    async def _reap_one_wave(wave: list[asyncio.Task[object]]) -> None:
+        """Await one cascade wave to completion, outcomes retrieved.
+
+        Lives one frame below the driver loop ON PURPOSE: every task
+        reference this function holds (including the completed finalizer
+        tasks, whose coroutine pins the generator it just closed) dies
+        when this frame returns, so the driver's next ``gc.collect()``
+        sees the chain's NEXT generator actually garbage.
+        """
+        # The shutdown watcher parks forever; it only finishes cancelled.
+        # The finalizer tasks are awaited, never cancelled (see above).
+        for task in wave:
+            if _is_shutdown_watcher(task):
+                task.cancel()
+        done, pending = await asyncio.wait(wave, timeout=max(deadline - loop.time(), 0.001))
+        crashes: list[str] = []
+        for task in done:
+            if task.cancelled():
+                continue  # the watcher's expected cancellation delivery
+            exc = task.exception()
+            if exc is not None:
+                crashes.append(f"  - task {task.get_name()!r} died with: {exc!r}")
+        if pending or crashes:
+            lines = [
+                f"SSE stream teardown left {len(pending)} task(s) pending after "
+                f"{reap_timeout:.0f}s - the module loop is not clean at the end of "
+                "the stream interaction. Live tasks:"
+            ]
+            lines.extend(f"  - task {t.get_name()!r} still pending: {t!r}" for t in pending)
+            lines.extend(crashes)
+            raise AssertionError("\n".join(lines))
+
+    while True:
+        # Release the PREVIOUS wave's task references first: a completed
+        # finalizer task still pins the generator it closed, and a
+        # generator still reachable cannot be finalized, so a collect run
+        # under it mints nothing and the loop would report a quiescence
+        # one wave short of the real cascade.
+        wave: list[asyncio.Task[object]] = []
+        # Deterministic asyncgen finalization for this wave: without it the
+        # abandoned generators are finalized whenever the next collection
+        # happens, which must be inside the call, not at some later test's
+        # gc pause.
+        gc.collect()
+        wave = [
+            task
+            for task in asyncio.all_tasks(loop) - baseline
+            if not task.done() and task is not current
+        ]
+        if not wave:
+            return
+        await _reap_one_wave(wave)
+
+
 async def _collect_sse_lines(
     app: FastAPI,
     path: str,
     *,
     headers: dict[str, str] | None = None,
-    break_on_done: bool = True,
     max_lines: int = 200,
     read_timeout: float = 10.0,
     overall_timeout: float = 30.0,
 ) -> list[str]:
     lines: list[str] = []
+    # Everything pending before the interaction is not this interaction's
+    # leak (the reap's own task is excluded by identity, not by the baseline).
+    baseline: frozenset[asyncio.Task[object]] = frozenset(asyncio.all_tasks())
 
     async def _read() -> None:
         nonlocal lines
@@ -196,14 +309,36 @@ async def _collect_sse_lines(
             ) as client,
             client.stream("GET", path, headers=headers, timeout=read_timeout) as resp,
         ):
+            # Read to EXHAUSTION, never ``break``: breaking out of
+            # ``aiter_lines()`` abandons the suspended httpx generator chain
+            # (aiter_lines → aiter_text → aiter_bytes → aiter_raw → the
+            # stream), which CPython then finalizes through the loop's
+            # asyncgen hook one wave per generator - a cascade of
+            # ``async_generator_athrow`` tasks that lands AFTER this helper
+            # returns and cannot be fully reaped from inside the call (the
+            # last waves mint only once the test's own frame dies). Consumed
+            # to exhaustion the chain closes ITSELF: aiter_raw's tail
+            # ``await self.aclose()`` runs, every generator ends closed, no
+            # finalization task is ever minted. Under ``ASGITransport`` the
+            # body is fully buffered before the response is returned, so a
+            # terminal stream always reaches EOF (immediately after
+            # ``event: done``) and a non-terminating one never does - that
+            # case is this function's ``overall_timeout``, whose
+            # cancellation IS the simulated client disconnect.
             async for line in resp.aiter_lines():
                 lines.append(line)
-                if break_on_done and line == "event: done":
-                    break
                 if len(lines) >= max_lines:
                     break
 
-    await asyncio.wait_for(_read(), timeout=overall_timeout)
+    try:
+        await asyncio.wait_for(_read(), timeout=overall_timeout)
+    finally:
+        # Every exit path owes the module loop a clean teardown. The
+        # exhausted-consumption path above mints nothing; the timeout path
+        # (cancellation mid-stream) leaves the watcher plus the abandoned
+        # chain's finalization cascade, reaped here - bounded, outcomes
+        # retrieved. See the helper.
+        await _reap_stream_teardown_tasks(baseline)
     return lines
 
 
@@ -272,7 +407,6 @@ async def test_full_round_trip(pool: asyncpg.Pool, redis_client: aioredis.Redis)
         lines = await _collect_sse_lines(
             app,
             f"/jobs/api/job/{job_id}/progress/stream?last_event_id=2",
-            break_on_done=True,
             overall_timeout=15.0,
         )
 
@@ -326,7 +460,6 @@ async def test_reconnect_replay_via_header(
         app,
         f"/jobs/api/job/{job_id}/progress/stream",
         headers={"Last-Event-ID": "5"},
-        break_on_done=True,
         overall_timeout=10.0,
     )
     frames = _parse_sse_frames(lines)
@@ -366,7 +499,6 @@ async def test_client_disconnect_cancels_subscription(
         await _collect_sse_lines(
             app,
             f"/jobs/api/job/{job_id}/progress/stream",
-            break_on_done=False,
             overall_timeout=2.0,
         )
 
@@ -404,7 +536,6 @@ async def test_terminal_stream_closes(pool: asyncpg.Pool, redis_client: aioredis
         lines = await _collect_sse_lines(
             app,
             f"/jobs/api/job/{job_id}/progress/stream",
-            break_on_done=True,
             overall_timeout=15.0,
         )
 
@@ -511,7 +642,6 @@ async def test_negative_last_event_id(pool: asyncpg.Pool, redis_client: aioredis
     lines = await _collect_sse_lines(
         app,
         f"/jobs/api/job/{job_id}/progress/stream?last_event_id=-1",
-        break_on_done=True,
         overall_timeout=10.0,
     )
     frames = _parse_sse_frames(lines)
