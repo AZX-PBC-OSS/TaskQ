@@ -662,6 +662,7 @@ markers = [
     "redis: marks tests requiring the [redis] extra and a Redis container",
     "examples: marks tests for the example app (excluded from default CI run)",
     "e2e: end-to-end tests with containerized workers (requires --e2e opt-in; CI job 'e2e')",
+    "system: system-e2e tier: stateful multi-process lifecycle simulations with worker subprocesses (requires --system-e2e opt-in; CI job 'system-e2e'); every test is also marked integration",
     "otel_validation: OTLP round-trip tests against a collector container (requires --otel-validation opt-in and Docker; see make test-otel)",
     "load_sensitive: wall-clock/timing guards whose assertions are load-fragile; CI runs them in one serial lane (skip with -m 'not load_sensitive')",
     "aad: tests for the [aad] extra (skip with -m 'not aad'); importorskip guards stay as the safety net",

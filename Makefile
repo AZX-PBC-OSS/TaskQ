@@ -1,4 +1,4 @@
-.PHONY: help install env test test-fast test-e2e test-otel clean-e2e test-cov lint format type-check clean build css security docs docs-serve bench bench-save bench-check bench-profile bench-matrix bench-stall test-contended soak-contended
+.PHONY: help install env test test-fast test-e2e test-system test-otel clean-e2e test-cov lint format type-check clean build css security docs docs-serve bench bench-save bench-check bench-profile bench-matrix bench-stall test-contended soak-contended
 
 help:
 	@echo "Available commands:"
@@ -6,6 +6,7 @@ help:
 	@echo "  make test         - Run all tests (parallel)"
 	@echo "  make test-fast    - Run non-integration tests (parallel)"
 	@echo "  make test-e2e      - Run e2e tests (containerized workers; serial)"
+	@echo "  make test-system   - Run the system-e2e tier (worker-subprocess lifecycles; -n 2)"
 	@echo "  make test-otel    - Run the OTLP round-trip validation lane (collector container; serial)"
 	@echo "  make clean-e2e    - Remove e2e strays (worker images, wheel cache, stale containers)"
 	@echo "  make lint         - Run ruff linter"
@@ -101,6 +102,16 @@ test-e2e: env
 # test-e2e: serial (one collector per module), opt-in only, Docker required.
 test-otel: env
 	$(UVRUN) pytest --otel-validation -m otel_validation tests/otel_validation
+
+# The system-e2e tier: stateful, multi-process lifecycle simulations
+# (rolling deploys, leader kills, broker outages, cancel storms,
+# misbehaving fleets, sustained load) driven through real worker
+# SUBPROCESSES against the shared PG + Dragonfly pair. Opt-in only
+# (collection is gated by --system-e2e in the root conftest), Docker
+# required for the containers; -n 2 like the slow lane, every scenario
+# xdist-safe by construction.
+test-system: env
+	$(UVRUN) pytest --system-e2e -m system tests/system_e2e
 
 # Manual cleanup of the e2e tier's machine-level strays: worker images the
 # tier built (pid-owned ones whose owner is dead, plus legacy
