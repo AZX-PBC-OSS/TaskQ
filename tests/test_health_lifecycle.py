@@ -11,9 +11,13 @@ import pytest
 from taskq._ids import new_uuid
 from taskq.connections import WorkerConnections
 from taskq.settings import WorkerSettings
+from taskq.worker import (
+    _bootstrap as _bootstrap_mod,  # pyright: ignore[reportPrivateImportUsage]  # Why: the namespace whose asyncio binding must carry the Event fake (patch where it is LOOKED UP).
+)
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.health import HealthUnixBindCollisionError
 from taskq.worker.run import _main
+from tests._ns_patch import module_ns_proxy
 from tests.conftest import _FakePool
 
 _FAKE_DSN = "postgresql://fake:fake@fake:5432/fake"
@@ -180,7 +184,12 @@ def _setup_lifecycle_stubs(
         )
 
     # ── Make shutdown_event.wait() return immediately ──────────────────
-    monkeypatch.setattr(asyncio, "Event", _ImmediateEvent)
+    # Patch where the name is LOOKED UP - the bootstrap module's own
+    # ``asyncio`` binding (it constructs shutdown_event/escalate_event at
+    # _bootstrap.py) - not through to the global asyncio module, which the
+    # old spelling swung for every namespace in the process
+    # (tests/_ns_patch.py).
+    monkeypatch.setattr(_bootstrap_mod, "asyncio", module_ns_proxy(asyncio, Event=_ImmediateEvent))
 
     return ws
 

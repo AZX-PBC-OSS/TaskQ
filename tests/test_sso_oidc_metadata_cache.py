@@ -10,6 +10,7 @@ end-to-end pin (one discovery fetch across login + callback) lives in
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import pytest
@@ -19,6 +20,7 @@ pytest.importorskip("fastapi")
 from taskq.web.admin.auth.oidc import (
     _OIDCMetadataCache,  # pyright: ignore[reportPrivateUsage]  # Why: the cache is the behaviour under test and is not re-exported.
 )
+from tests._ns_patch import module_ns_proxy
 
 
 def _run(coro: Any) -> Any:
@@ -71,7 +73,9 @@ def test_stale_entries_are_refetched(monkeypatch: pytest.MonkeyPatch) -> None:
     cache = _OIDCMetadataCache(ttl_seconds=300)
     fetch = _FetchCounter([{"fresh": True}, {"rotated": True}])
     now = {"t": 1000.0}
-    monkeypatch.setattr(oidc_module.time, "monotonic", lambda: now["t"])
+    # Patch where the name is LOOKED UP - the oidc module's own ``time``
+    # binding - not through to the global time module (tests/_ns_patch.py).
+    monkeypatch.setattr(oidc_module, "time", module_ns_proxy(time, monotonic=lambda: now["t"]))
 
     assert _run(cache.get_discovery("https://idp.invalid", fetch))["fresh"] is True
     now["t"] += 301.0  # past the TTL window
@@ -109,7 +113,9 @@ def test_a_failed_discovery_refresh_on_a_stale_entry_leaves_nothing_cached(
     fetch = _FetchCounter([{"stale": True}, {"rotated": True}])
     issuer = "https://idp.invalid"
     now = {"t": 1000.0}
-    monkeypatch.setattr(oidc_module.time, "monotonic", lambda: now["t"])
+    # Patch where the name is LOOKED UP - the oidc module's own ``time``
+    # binding - not through to the global time module (tests/_ns_patch.py).
+    monkeypatch.setattr(oidc_module, "time", module_ns_proxy(time, monotonic=lambda: now["t"]))
 
     assert _run(cache.get_discovery(issuer, fetch))["stale"] is True
     now["t"] += 301.0

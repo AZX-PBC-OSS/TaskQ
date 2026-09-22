@@ -7,6 +7,7 @@ the code must do, not what a PR comment said.
 
 import asyncio
 import contextlib
+import os
 import sys
 import threading
 import time
@@ -23,6 +24,7 @@ from taskq.worker._watchdog import (
 )
 from taskq.worker.deps import WorkerDeps
 from tests._leader_stub_deps import stub_deps
+from tests._ns_patch import module_ns_proxy
 
 
 class _ExitSentinelError(Exception):
@@ -299,7 +301,9 @@ async def test_trip_flushes_metrics_before_force_exit(
         events.append(f"exit:{code}")
         raise _ExitSentinelError(code)
 
-    monkeypatch.setattr(mod.os, "_exit", _fake_exit)
+    monkeypatch.setattr(
+        mod, "os", module_ns_proxy(os, _exit=_fake_exit)
+    )  # Why: patch where _watchdog LOOKS UP os, not the global module (tests/_ns_patch.py).
     monkeypatch.setattr(mod.otel_metrics, "get_meter_provider", lambda: _Provider())
 
     with pytest.raises(_ExitSentinelError):
@@ -322,7 +326,9 @@ async def test_trip_still_exits_when_meter_provider_cannot_flush(
         events.append(f"exit:{code}")
         raise _ExitSentinelError(code)
 
-    monkeypatch.setattr(mod.os, "_exit", _fake_exit)
+    monkeypatch.setattr(
+        mod, "os", module_ns_proxy(os, _exit=_fake_exit)
+    )  # Why: patch where _watchdog LOOKS UP os, not the global module (tests/_ns_patch.py).
     monkeypatch.setattr(mod.otel_metrics, "get_meter_provider", lambda: object())
 
     with pytest.raises(_ExitSentinelError):
@@ -359,7 +365,9 @@ async def test_trip_flush_is_bounded_against_a_hung_exporter(
         codes.append(code)
         raise _ExitSentinelError(code)
 
-    monkeypatch.setattr(mod.os, "_exit", _fake_exit)
+    monkeypatch.setattr(
+        mod, "os", module_ns_proxy(os, _exit=_fake_exit)
+    )  # Why: patch where _watchdog LOOKS UP os, not the global module (tests/_ns_patch.py).
 
     outcome: list[str] = []
 
@@ -412,7 +420,9 @@ async def test_lag_watchdog_flushes_metrics_before_force_exit(
         events.append(f"exit:{code}")
         raise _ExitSentinelError(code)
 
-    monkeypatch.setattr(mod.os, "_exit", _fake_exit)
+    monkeypatch.setattr(
+        mod, "os", module_ns_proxy(os, _exit=_fake_exit)
+    )  # Why: patch where _watchdog LOOKS UP os, not the global module (tests/_ns_patch.py).
     monkeypatch.setattr(mod.otel_metrics, "get_meter_provider", lambda: _Provider())
     monkeypatch.setattr(
         mod.faulthandler, "dump_traceback", lambda **_kwargs: None

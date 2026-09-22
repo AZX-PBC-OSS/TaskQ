@@ -13,6 +13,7 @@ from datetime import timedelta
 import asyncpg
 import pytest
 
+from taskq import batch as batch_mod
 from taskq._dsn import dsn_host
 from taskq._ids import new_uuid
 from taskq.batch import (
@@ -21,6 +22,7 @@ from taskq.batch import (
     wait_for_batch,
 )
 from taskq.exceptions import Snooze
+from tests._ns_patch import module_ns_proxy
 
 
 class FakeRecord:
@@ -198,7 +200,9 @@ async def test_wait_for_batch_polling_path_terminates() -> None:
         await original_sleep(0)
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(asyncio, "sleep", fake_sleep)
+        # Patch where the name is LOOKED UP - taskq.batch's own ``asyncio``
+        # binding - not through to the global asyncio module (tests/_ns_patch.py).
+        mp.setattr(batch_mod, "asyncio", module_ns_proxy(asyncio, sleep=fake_sleep))
         status = await wait_for_batch(
             conn,
             new_uuid(),
@@ -264,7 +268,9 @@ async def test_wait_for_batch_pool_polling_path_terminates() -> None:
         await original_sleep(0)
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(asyncio, "sleep", fake_sleep)
+        # Patch where the name is LOOKED UP - taskq.batch's own ``asyncio``
+        # binding - not through to the global asyncio module (tests/_ns_patch.py).
+        mp.setattr(batch_mod, "asyncio", module_ns_proxy(asyncio, sleep=fake_sleep))
         status = await wait_for_batch(
             pool,
             new_uuid(),

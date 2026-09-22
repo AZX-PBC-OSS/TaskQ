@@ -489,15 +489,17 @@ def _publish_run_isolation_token(  # pyright: ignore[reportUnusedFunction]  # Wh
     runs can never hold the same one.
     """
     token = os.environ.get("PYTEST_XDIST_WORKER") or tmp_path_factory.getbasetemp().name
-    previous = os.environ.get(RUN_TOKEN_ENV_VAR)
-    os.environ[RUN_TOKEN_ENV_VAR] = token
+    # A raw ``MonkeyPatch`` instance, not the function-scoped fixture (this is
+    # session-scoped): the sanctioned env seam with correct undo semantics -
+    # ``os.environ[...] =`` here would be the suite's one direct env write,
+    # and the suite-hygiene env pin (test_no_test_file_writes_os_environ)
+    # bans that class outright.
+    mp = pytest.MonkeyPatch()
+    mp.setenv(RUN_TOKEN_ENV_VAR, token)
     try:
         yield
     finally:
-        if previous is None:
-            os.environ.pop(RUN_TOKEN_ENV_VAR, None)
-        else:
-            os.environ[RUN_TOKEN_ENV_VAR] = previous
+        mp.undo()
 
 
 class _FakePool:

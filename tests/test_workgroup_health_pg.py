@@ -19,12 +19,16 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.settings import TaskQSettings
+from taskq.worker import (
+    workgroup as workgroup_mod,  # pyright: ignore[reportPrivateImportUsage]  # Why: the namespace whose time binding must carry the clock-skew tripwire (patch where it is LOOKED UP).
+)
 from taskq.worker.workgroup import (
     WorkerHealthConfig,
     WorkerSpec,
     _child_health_check,
     _ChildState,
 )
+from tests._ns_patch import module_ns_proxy
 
 pytestmark = pytest.mark.integration
 
@@ -62,7 +66,12 @@ async def _verdict(
     day ahead - pre-fix this inflates the age by 86400 s and kills a healthy
     child."""
     real_time = time.time
-    monkeypatch.setattr(time, "time", lambda: real_time() + 86_400)
+    # Patch where the name is LOOKED UP - the workgroup module's own ``time``
+    # binding (the supervisor clock a regression would read there) - not
+    # through to the global time module (tests/_ns_patch.py).
+    monkeypatch.setattr(
+        workgroup_mod, "time", module_ns_proxy(time, time=lambda: real_time() + 86_400)
+    )
     child = _ChildState(spec=WorkerSpec(name=label, queues=["q"]))
     # Why: _child_health_check reads child.process.pid for the identity check
     # (workgroup.py); a bare pid-carrying stub satisfies exactly that read.

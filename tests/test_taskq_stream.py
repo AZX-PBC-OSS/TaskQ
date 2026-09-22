@@ -44,6 +44,7 @@ from taskq.testing.assertions import wait_for
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.jobs import make_enqueue_args, make_job_row
+from tests._ns_patch import module_ns_proxy
 
 _RA = TypeAdapter(type(None))
 
@@ -362,7 +363,7 @@ async def test_stream_pg_poll_interval_is_floored_and_jittered(
         waits.append(delay)
         return result
 
-    monkeypatch.setattr(asyncio, "sleep", _recording_sleep)
+    monkeypatch.setattr(_transport, "asyncio", module_ns_proxy(asyncio, sleep=_recording_sleep))
     rows = [_row(status="running", progress_seq=n) for n in range(1, 40)]
     rows.append(_row(status="succeeded", progress_seq=40))
 

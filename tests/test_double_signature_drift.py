@@ -60,11 +60,6 @@ _NARROWER_BY_DESIGN: Final[dict[tuple[str, str], str]] = {
     "test asserts exactly which statement-cache kwargs the DSN-built slot pool "
     "forwards, and the factory passes every argument by keyword.",
     (
-        "test_cli_health.py",
-        "asyncio.open_unix_connection",
-    ): "Why: stdlib `limit` and **kwds are never passed by the CLI; the double takes "
-    "the single positional path actually exercised.",
-    (
         "test_cli_doctor.py",
         "taskq.cli.asyncpg.connect",
     ): "Why: asyncpg.connect declares 23 parameters. Every CLI call site builds its "
@@ -105,18 +100,6 @@ _NARROWER_BY_DESIGN: Final[dict[tuple[str, str], str]] = {
         "test_cli_worker.py",
         "taskq.cli.importlib.import_module",
     ): "Why: the CLI never passes `package`; the double takes the name it asserts on.",
-    (
-        "test_notify.py",
-        "asyncio.sleep",
-    ): "Why: stdlib `result` is never passed by TaskQ; the double takes the delay it asserts on.",
-    (
-        "test_leader_sweeps_coverage.py",
-        "taskq.worker._leader_sweeps.asyncio.sleep",
-    ): "Why: as above - a sleep accelerator only ever handed a delay.",
-    (
-        "test_shutdown_orchestrator.py",
-        "asyncio.sleep",
-    ): "Why: as above - a sleep accelerator only ever handed a delay.",
     (
         "test_otel_contract.py",
         "opentelemetry.trace.get_tracer",

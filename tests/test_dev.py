@@ -30,7 +30,9 @@ from typer.testing import CliRunner
 
 from taskq.cli import app
 from taskq.testing.assertions import plain_cli_output
+from taskq.worker import dev as dev_mod
 from taskq.worker.dev import _start_worker, _stop_worker, _validate_import, dev_watch_loop
+from tests._ns_patch import module_ns_proxy
 
 cli_runner = CliRunner()
 
@@ -82,7 +84,11 @@ class SpawnTracker:
 def spawn_tracker(monkeypatch: pytest.MonkeyPatch) -> SpawnTracker:
     """Patch ``asyncio.create_subprocess_exec`` to record spawns."""
     tracker = SpawnTracker()
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", tracker._spawn)
+    # Patch where the name is LOOKED UP - the dev module's own ``asyncio``
+    # binding - not through to the global asyncio module (tests/_ns_patch.py).
+    monkeypatch.setattr(
+        dev_mod, "asyncio", module_ns_proxy(asyncio, create_subprocess_exec=tracker._spawn)
+    )
     return tracker
 
 

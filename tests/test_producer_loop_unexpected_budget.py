@@ -35,6 +35,7 @@ from taskq.testing.otel import counter_data_points
 from taskq.worker import run as run_mod
 from taskq.worker._transient import DEFAULT_MAX_CONSECUTIVE_UNEXPECTED
 from taskq.worker.run import producer_loop
+from tests._ns_patch import module_ns_proxy
 
 _LOOP_LABEL = "worker.producer"
 _UNEXPECTED_COUNTER = "taskq.worker.loop_unexpected_errors_total"
@@ -128,7 +129,9 @@ async def _drive_until(
         await real_sleep(0)
         return result
 
-    monkeypatch.setattr(run_mod.asyncio, "sleep", _round_counting_sleep)
+    # Patch where the name is LOOKED UP - run.py's own ``asyncio`` binding -
+    # not through to the global asyncio module (tests/_ns_patch.py).
+    monkeypatch.setattr(run_mod, "asyncio", module_ns_proxy(asyncio, sleep=_round_counting_sleep))
 
     async def _drive() -> None:
         try:

@@ -202,6 +202,261 @@ def test_testing_pkg_no_module_level_schema_constant() -> None:
     )
 
 
+# ── Direct os.environ writes in the test tree ────────────────────────
+# The atk_iso incident: a test wrote ``os.environ["TASKQ_SCHEMA_NAME"] = ...``
+# directly (no restore on the failure path), and the value leaked into the
+# CLI's settings load in a LATER test - the schema name is read lazily, so
+# the write outlived the test that made it. ``monkeypatch.setenv`` is the
+# sanctioned seam: it restores on every exit path, including teardown
+# errors. For session-scoped fixtures, which have no ``monkeypatch``
+# fixture of their own, the file-level pattern is a raw
+# ``pytest.MonkeyPatch()`` instance + ``undo()`` (see ``DOTENV_DIR`` in
+# tests/conftest.py) - still the sanctioned seam, never a bare
+# ``os.environ`` subscript.
+#
+# Like every static scan here this has an honest limit: an alias
+# (``env = os.environ``) or a ``globals()``/``setattr`` smuggle is
+# invisible to a source scan. The suite's convention is direct spellings
+# only; anything else is a review finding, not a pin.
+
+
+def _all_test_tree_files() -> list[Path]:
+    """Every file under tests/ - conftest.py files INCLUDED (unlike
+    ``_test_files``): the env pin's whole point is that NO file in the
+    tree, fixtures included, mutates the process environment directly."""
+    return [p for p in _TESTS_DIR.rglob("*.py") if p != _SELF]
+
+
+def _dotted_name(node: ast.AST) -> str | None:
+    """The dotted name a Name/Attribute chain spells out, else ``None``
+    (calls, subscripts and other non-name bases cannot be resolved)."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+    return None
+
+
+_ENV_MUTATING_METHODS = frozenset({"pop", "popitem", "update", "setdefault", "clear"})
+
+
+def _os_environ_direct_writes(tree: ast.Module) -> list[str]:
+    """The source locations in *tree* that mutate ``os.environ`` directly.
+
+    Covers the subscript store/del form, whole-object assignment and
+    augmented assignment, the in-place dict methods, and the ``os.putenv``
+    / ``os.unsetenv`` escape hatches. Pure reads (``Load`` context) are not
+    writes and are ignored.
+    """
+    sites: list[str] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+            and _dotted_name(node.value) == "os.environ"
+        ):
+            sites.append(f"line {node.lineno}: os.environ subscript write/del")
+            continue
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.ctx, ast.Store)
+            and _dotted_name(node) == "os.environ"
+        ):
+            sites.append(f"line {node.lineno}: os.environ assignment")
+            continue
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            full = _dotted_name(node.func)
+            if full == "os.environ" and node.func.attr in _ENV_MUTATING_METHODS:
+                sites.append(f"line {node.lineno}: os.environ.{node.func.attr}()")
+            elif full in {"os.putenv", "os.unsetenv"}:
+                sites.append(f"line {node.lineno}: {full}()")
+    return sites
+
+
+def test_no_test_file_writes_os_environ_directly() -> None:
+    """No file under tests/ may mutate ``os.environ`` directly - env writes
+    go through ``monkeypatch.setenv`` / ``delenv`` (or, session-scoped, a
+    raw ``pytest.MonkeyPatch`` instance with ``undo()``).
+
+    A bare ``os.environ[...] = ...`` has no teardown: on the test's failure
+    path the value stays in the process environment and leaks into every
+    later reader - the atk_iso incident, where ``TASKQ_SCHEMA_NAME``
+    survived into the CLI's settings load.
+    """
+    offenders: list[str] = []
+    for path in _all_test_tree_files():
+        for site in _os_environ_direct_writes(ast.parse(path.read_text())):
+            offenders.append(f"{path.relative_to(_TESTS_DIR)}: {site}")
+    assert not offenders, (
+        "Found direct os.environ mutation(s) in the test tree:\n"
+        + "\n".join(f"  - {f}" for f in offenders)
+        + "\n\nUse monkeypatch.setenv/delenv (or, in a session fixture, a raw\n"
+        "pytest.MonkeyPatch() instance with undo()) so every exit path restores\n"
+        "the process environment. A bare os.environ write has no teardown and\n"
+        "leaks into later tests' settings loads (the atk_iso incident)."
+    )
+
+
+# ── Process-global stdlib-module patching ────────────────────────────
+# The asyncio.sleep incident: ``monkeypatch.setattr(run_mod.asyncio,
+# "sleep", fake)`` reads as if it scoped the fake to ``run_mod``, but
+# ``run_mod.asyncio`` IS the global ``asyncio`` module - the fake lands on
+# the process-global module, and every coroutine in the process that
+# resolves ``asyncio.sleep`` during the patched window gets it, including
+# module-scoped fixture machinery and any leftover task on the shared
+# module loop. The failure then shows up in a LATER test - an ordering
+# dependency, not a deterministic red.
+#
+# The fix this pin holds in place: patch the name where it is LOOKED UP -
+# rebind the owning module's own ``<stdlib>`` binding to a delegation
+# proxy with the fake shadowed (``tests/_ns_patch.py``), leaving the
+# global module untouched for every other namespace.
+#
+# Two measured exemptions, both with NO working module-local seam:
+# - ``setattr(sys, "path"/"argv", ...)``: the import system and the CLI
+#   argument vector are genuinely process-global state; there is nothing
+#   module-local to rebind.
+# - ``setattr(builtins, "__import__", ...)`` (the simulated-missing-extra
+#   fakes in test_aws.py / test_aad.py): rebinding the module under
+#   test's ``__builtins__`` to a copied dict does NOT scope the lookup on
+#   CPython 3.13 - measured: the fake never fires for that module. The
+#   fakes delegate to the real ``__import__`` for every name but the one
+#   extra's module, and pytest runs tests single-threaded, so the
+#   global-window hazard is not realized.
+
+
+_STDLIB_MODULE_NAMES = frozenset(
+    {"asyncio", "os", "time", "socket", "signal", "threading", "gc", "logging", "random"}
+)
+#: ``sys`` attributes with no module-local seam (see the section comment).
+_SYS_SEAMLESS_ATTRS = frozenset({"path", "argv"})
+
+
+def _global_stdlib_setattrs(tree: ast.Module) -> list[str]:
+    """``setattr`` calls whose FIRST argument resolves to (or reaches
+    through to) a stdlib module object - the two spellings of the incident:
+    ``setattr(asyncio, "sleep", ...)`` and the disguised
+    ``setattr(run_mod.asyncio, "sleep", ...)``."""
+    sites: list[str] = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and (
+                (isinstance(node.func, ast.Attribute) and node.func.attr == "setattr")
+                or (isinstance(node.func, ast.Name) and node.func.id == "setattr")
+            )
+            and node.args
+        ):
+            continue
+        first = node.args[0]
+        name = _dotted_name(first)
+        if name is None:
+            continue
+        parts = name.split(".")
+        last = parts[-1]
+        penult = parts[-2] if len(parts) > 1 else None
+        if last == "sys":
+            # Exempt only the no-seam attributes; any other sys attr is
+            # the incident's shape (the second arg is the attribute name).
+            second_arg = node.args[1] if len(node.args) > 1 else None
+            second = second_arg.value if isinstance(second_arg, ast.Constant) else None
+            if second not in _SYS_SEAMLESS_ATTRS:
+                sites.append(f"line {node.lineno}: setattr({name}, ...)")
+            continue
+        # ``builtins`` is exempt (see the section comment - no working
+        # module-local seam, measured); ``sys`` only for its no-seam attrs.
+        if last in _STDLIB_MODULE_NAMES or penult in _STDLIB_MODULE_NAMES:
+            sites.append(f"line {node.lineno}: setattr({name}, ...)")
+    return sites
+
+
+def test_no_test_file_setattrs_a_global_stdlib_module() -> None:
+    """No test may ``setattr`` a stdlib module OBJECT - neither bare
+    (``setattr(asyncio, "sleep", ...)``) nor disguised as if scoped
+    (``setattr(run_mod.asyncio, "sleep", ...)``: ``run_mod.asyncio`` IS the
+    global module).
+
+    The process-global patch is visible to every coroutine in the process
+    for the length of the test - including module-scoped fixture machinery
+    and leftover tasks on the shared module loop - so its failure mode is
+    an ordering dependency in a LATER test (the asyncio.sleep incident).
+    Patch where the name is LOOKED UP instead: rebind the owning module's
+    own ``<stdlib>`` binding to a delegation proxy with the fake shadowed
+    (``tests/_ns_patch.py``).
+    """
+    offenders: list[str] = []
+    for path in _all_test_tree_files():
+        for site in _global_stdlib_setattrs(ast.parse(path.read_text())):
+            offenders.append(f"{path.relative_to(_TESTS_DIR)}: {site}")
+    assert not offenders, (
+        "Found setattr() on a stdlib module object in the test tree:\n"
+        + "\n".join(f"  - {f}" for f in offenders)
+        + "\n\nThe first argument reaching a stdlib module object makes the patch\n"
+        "process-global for the length of the test (setattr(run_mod.asyncio, ...)\n"
+        "IS setattr(asyncio, ...)). Patch where the name is LOOKED UP instead:\n"
+        "rebind the owning module's own <stdlib> binding to a delegation proxy\n"
+        "with the fake shadowed - see tests/_ns_patch.py."
+    )
+
+
+# ── The per-module-database discipline (pg_container/pg_dsn) ─────────
+# Every PG touch in the suite is scoped to the requesting module's OWN
+# database: ``pg_dsn`` (tests/conftest.py) derives a per-module database
+# name from the module path + run-isolation token, creates it on the
+# invocation's ONE shared container, and ``DROP DATABASE ... WITH
+# (FORCE)``s it on module teardown - so schemas, tables and rows a test
+# leaves behind cannot outlive the module and cannot be observed by any
+# other module, worker, or invocation. ``module_pg_schema`` /
+# ``clean_pg_conn`` / ``clean_jobs_app`` layer per-module/per-test schema
+# isolation ON TOP of that database.
+#
+# The residue hazard is a test that reaches for the RAW container DSN
+# (the fixture ``pg_container``) without ``pg_dsn``: it would create
+# schemas/tables/rows in the container's DEFAULT database - shared with
+# every module and worker of the invocation - where a fixed schema name
+# collides across modules (the pre-per-module-database incident class)
+# and leftover rows are observable state for whoever runs later. The
+# ONLY sanctioned direct consumer is the ``pg_dsn`` fixture itself.
+
+
+def test_pg_container_is_only_consumed_through_pg_dsn() -> None:
+    """No test-tree function may request the ``pg_container`` fixture
+    without also requesting ``pg_dsn``.
+
+    A bare ``pg_container`` consumer drives connections at the container's
+    default database - shared state that survives the test (schemas, rows,
+    roles) into every later module on the worker. Everything else in the
+    tree connects through ``pg_dsn``'s per-module database, which module
+    teardown force-drops.
+    """
+    offenders: list[str] = []
+    for path in _all_test_tree_files():
+        if path.name == "conftest.py":
+            continue  # the pg_dsn fixture itself is the sanctioned consumer
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name == "pg_dsn":  # the fixture definition, wherever it lives
+                continue
+            args = [a.arg for a in node.args.args]
+            if "pg_container" in args and "pg_dsn" not in args:
+                offenders.append(
+                    f"{path.relative_to(_TESTS_DIR)}: {node.name} (line {node.lineno})"
+                )
+    assert not offenders, (
+        "Found pg_container consumer(s) without pg_dsn in the test tree:\n"
+        + "\n".join(f"  - {f}" for f in offenders)
+        + "\n\npg_container is the RAW container DSN - its default database is "
+        "shared by every module and xdist worker of the invocation, so schemas "
+        "and rows created there are cross-test residue. Take pg_dsn (the "
+        "per-module database, force-dropped at module teardown) instead."
+    )
+
+
 # ── pg_stat_activity database scoping ────────────────────────────────
 #
 # pg_stat_activity is CLUSTER-wide, and the invocation's ONE shared
