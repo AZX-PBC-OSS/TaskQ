@@ -848,7 +848,7 @@ class TestReservationCancelCronMetrics:
             )
             blocker = asyncio.Event()
             dummy_task = asyncio.create_task(blocker.wait(), name="cancel-test-dummy")
-            await deps.active_jobs.register(handle.job_id, dummy_task, ctx)
+            registered_entry = await deps.active_jobs.register(handle.job_id, dummy_task, ctx)
 
             controller = make_cancel_controller(deps, worker_id, backend)
             shutdown = asyncio.Event()
@@ -878,7 +878,7 @@ class TestReservationCancelCronMetrics:
                 dummy_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await dummy_task
-                await deps.active_jobs.deregister(handle.job_id)
+                await deps.active_jobs.deregister(handle.job_id, registered_entry)
                 shutdown.set()
                 hb_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):

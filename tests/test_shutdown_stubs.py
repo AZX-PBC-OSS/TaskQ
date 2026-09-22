@@ -144,8 +144,8 @@ def _install_call_tracker(
 
     original_dereg = deps.active_jobs.deregister
 
-    async def _tracked_dereg(entry_id: JobId) -> None:
-        await original_dereg(entry_id)
+    async def _tracked_dereg(entry_id: JobId, entry: object) -> None:
+        await original_dereg(entry_id, entry)
         call_seq.append("deregister")
 
     deps.active_jobs.deregister = _tracked_dereg  # type: ignore[method-assign] # Why: injecting tracking wrapper for call-order assertion.
