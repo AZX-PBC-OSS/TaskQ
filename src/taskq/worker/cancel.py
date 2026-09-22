@@ -320,16 +320,33 @@ class _CancelController:
                     "state_change",
                     detail,
                 )
-                # If both deadlines are already satisfied on this same tick,
-                # set the in-process phase-3 sentinel before task.cancel() so
-                # the consumer CancelledError path skips mark_cancelled.
+                # If both deadlines are already satisfied on this same
+                # tick, set the in-process phase-3 sentinel and queue the
+                # abandon WITHOUT delivering the cancellation here. The
+                # abandon's write is not durable until the post-commit
+                # drain lands it, and a cancellation delivered inside this
+                # transaction lets the consumer unwind and deregister
+                # (its finally is unconditional) while the escalation is
+                # still uncommitted: a rollback then leaves the row
+                # running at cancel_phase 1 with the entry gone from the
+                # registry, unreachable by the re-issue arm above (it
+                # iterates active_jobs.all()) and by every later tick's
+                # ladder, stuck for as long as this worker lives. The
+                # drain delivers the cancellation after mark_abandoned
+                # applies (see run_post_tx); a rollback leaves the entry
+                # registered, the handler still running, and the False
+                # arm re-arms the entry at FORCED for a later tick's
+                # re-issue, exactly the recovery the comment above
+                # describes. The consumer's ABANDON_PENDING guard still
+                # skips mark_cancelled: by the time the drain cancels the
+                # task, the abandon write owns the terminal state.
                 queue_for_abandon = elapsed >= self._cancel_grace + self._cleanup_grace
                 if queue_for_abandon:
                     active.cancel_phase = CancelPhase.ABANDON_PENDING
                     self._pending_abandons.append(active.job_id)
                 else:
                     active.cancel_phase = CancelPhase.FORCED
-                active.task.cancel()
+                    active.task.cancel()
                 log_cancel_phase_change(
                     _log,
                     from_phase=int(CancelPhase.COOPERATIVE),
@@ -391,6 +408,16 @@ class _CancelController:
         so dropping it here would strand the job between phases forever ,
         the re-queue hands it to the next tick's drain exactly as the
         not-applied path hands a False back for re-issue.
+
+        The drain also OWNS the cancellation for an abandon queued by
+        run_in_tx's same-tick fast path: that arm sets the ABANDON_PENDING
+        sentinel and queues the job without delivering task.cancel(), so a
+        heartbeat-transaction rollback after the arm cannot strand a
+        deregistered entry against a row still at cancel_phase 1 (the
+        consumer's unconditional finally would have removed the entry the
+        re-issue arm needs). The cancellation is delivered here, after
+        mark_abandoned has made the abandon durable - first delivery only
+        (a task already cancelling or done takes no second cancel).
         """
         worker_id = self._worker_id
         while self._pending_abandons:
@@ -433,6 +460,18 @@ class _CancelController:
                     worker_id=worker_id,
                 )
                 continue
+            # The same-tick fast path defers the cancellation to here (see
+            # run_in_tx's queue_for_abandon comment): the abandon write is
+            # durable, so the unwinding consumer's ABANDON_PENDING guard
+            # skips mark_cancelled, and a rollback has already been
+            # survived with the entry registered and re-armed. Deliver the
+            # cancellation now, but only as the FIRST delivery: a task
+            # already cancelling (the staggered path's phase-2 arm
+            # cancelled it a tick earlier) or already done must not take a
+            # second cancellation from the drain.
+            entry = self._deps.active_jobs.get(job_id)
+            if entry is not None and not entry.task.done() and entry.task.cancelling() == 0:
+                entry.task.cancel()
             await self._deps.active_jobs.deregister(job_id)
             log_cancel_phase_change(
                 _log,

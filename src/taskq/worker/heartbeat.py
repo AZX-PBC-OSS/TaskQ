@@ -928,6 +928,16 @@ async def isolate_self(
     schema = deps.settings.schema_name
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
+    # Stop the claim path FIRST, before any snapshot or join: this worker
+    # is walking away, so the producer must start no new claim rounds, and
+    # the producer's own exit pass (drain_local_queue_to_pending) hands
+    # back what it claimed but never dispatched. The stop event also
+    # closes the residual gap the late exclusion capture inside _inner
+    # cannot close (a claim committed to the jobs table but not yet marked
+    # in either map, one scheduler step wide): after it, a row a consumer
+    # has taken is never dispatched (run.py's stop guard), so a re-pend of
+    # such a row cannot double-run.
+    deps.producer_stop_event.set()
     select_running_jobs_sql = _SELECT_RUNNING_JOBS_SQL_TEMPLATE.format(schema=schema)
     isolate_job_sql = _ISOLATE_JOB_SQL_TEMPLATE.format(schema=schema)
     insert_attempt_sql = INSERT_ATTEMPT_SQL.format(schema=schema)
@@ -945,20 +955,15 @@ async def isolate_self(
     # arithmetic explainable (selected rows = pending + crashed +
     # cancelled + lost_race).
     jobs_lost_race_count = 0
-    # The re-pend's exclusion set: held_ids() covers BOTH maps, the
-    # registered consumers (executing now) AND the claim intents (taken
-    # off local_queue, not yet registered). The intents are the easy one
-    # to miss: a consumer parked in the take-to-register window has
-    # already claimed its row (running, locked, this worker) but owns no
-    # registry entry, so a snapshot of ``all()`` alone misses it and the
-    # re-pend would hand the row back to the fleet while the local body
-    # is about to execute it, a peer claims the re-pended row the moment
-    # its scheduled_at arrives and runs it concurrently with the local
-    # body, a double run, and the local terminal write then loses the
-    # attempt-epoch fence (silently discarded).
-    excluded_ids: list[JobId] = deps.active_jobs.held_ids()
-    # Actors still executing in THIS process: their rows are excluded
-    # above, and they take the same route the shutdown orchestrator's
+    # The re-pend's exclusion set is deliberately NOT captured here: the
+    # pre-join snapshot this spot used to take re-pended every row claimed
+    # during the join window below (the producer kept claiming for the
+    # window's whole bound), handing back rows whose local handlers were
+    # live. The capture lives inside _inner, after the join, immediately
+    # before the SELECT that binds it.
+    # Actors still executing in THIS process: their rows are excluded by
+    # that late capture, and they take the same route the shutdown
+    # orchestrator's
     # CANCELLING phase gives them: the SHUTDOWN origin stamp plus the cancel event
     # routes each consumer's unwinding through its mark_interrupted arm,
     # which earns the exit-proving hold and releases the row with the
@@ -981,9 +986,11 @@ async def isolate_self(
         # The interrupt writes run inside the consumers' own unwinding,
         # bounded by the terminal-write retry budget; the join here is the
         # outer bound (the grace periods the actor's own unwinding may
-        # take, plus close slack). Entries that outlive it keep their rows
-        # excluded from the re-pend (they are in held_ids(), captured
-        # before any await), lock-lease expiry is the backstop.
+        # take, plus close slack). Entries still alive when the join ends
+        # keep their rows excluded from the re-pend: the exclusion is
+        # captured AFTER this join (inside _inner), so both they and every
+        # claim this process took while it ran are in it. Lock-lease
+        # expiry is the backstop for rows whose unwinding never finishes.
         join_bound = (
             deps.settings.cancellation_grace_period
             + deps.settings.cleanup_grace_period
@@ -1030,6 +1037,41 @@ async def isolate_self(
                 # watermark protocol reads).
                 event_job_ids: list[JobId] = []
                 event_details: list[object] = []
+                # The re-pend's exclusion set, captured as LATE as the
+                # statement boundary allows: AFTER the actor join above,
+                # with no await between this capture and the SELECT below
+                # that binds it. held_ids() covers BOTH maps, the
+                # registered consumers (executing now) AND the claim
+                # intents (taken off local_queue, not yet registered). The
+                # intents are the easy one to miss: a consumer parked in
+                # the take-to-register window has already claimed its row
+                # (running, locked, this worker) but owns no registry
+                # entry, so a snapshot of ``all()`` alone misses it and the
+                # re-pend would hand the row back to the fleet while the
+                # local body is about to execute it, a peer claims the
+                # re-pended row the moment its scheduled_at arrives and
+                # runs it concurrently with the local body, a double run,
+                # and the local terminal write then loses the
+                # attempt-epoch fence (silently discarded).
+                # queued_ids() is included HERE even though the DRAINING
+                # exit hand-back excludes it on purpose (held_ids' own
+                # docstring): a row parked in local_queue during this
+                # window is still this process's to execute - the consumer
+                # loops are free to take and run it (only their NEXT
+                # iteration honours the stop events, and the
+                # shutdown_event-only fall-through runs a job taken on the
+                # final turn even after shutdown.set()) - so re-pending it
+                # hands it to a peer while the local body runs. If the
+                # process dies before the take, lock-lease expiry is the
+                # backstop, the same honest residual the interrupt arms
+                # carry. The residual one-scheduler-step gap (a claim
+                # committed but not yet marked in either map) is closed by
+                # the producer_stop_event set at entry, not by this
+                # capture: after it, a taken row is never dispatched.
+                excluded_ids: list[JobId] = [
+                    *deps.active_jobs.held_ids(),
+                    *deps.active_jobs.queued_ids(),
+                ]
                 async with conn.transaction():
                     rows = await conn.fetch(  # pyright: ignore[reportUnknownVariableType]  # Why: conn type suppressed above due to asyncpg-stubs limitation on connect().
                         select_running_jobs_sql,
