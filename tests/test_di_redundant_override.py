@@ -84,8 +84,13 @@ def test_redundant_override_at_validate_emits_dual_signal() -> None:
     with pytest.warns(LifecycleDetectionWarning) as record:
         registry.validate(actors=[ref])
 
-    assert len(record) == 1
-    msg = str(record[0].message)
+    # Why: pytest.warns records every warning category (its simplefilter("always")
+    # un-ignores ResourceWarning and re-enables registry-deduped RuntimeWarning), so
+    # GC-time strays from an unrelated test can land in ``record`` and would inflate a
+    # raw ``len(record)``. The contract is the lifecycle-signal count, so filter first.
+    lifecycle_warnings = [x for x in record if issubclass(x.category, LifecycleDetectionWarning)]
+    assert len(lifecycle_warnings) == 1
+    msg = str(lifecycle_warnings[0].message)
     assert "my_actor" in msg
     assert "settings" in msg
     assert "PROCESS" in msg
@@ -180,7 +185,32 @@ def test_multiple_redundant_overrides_on_one_actor() -> None:
     with pytest.warns(LifecycleDetectionWarning) as record:
         registry.validate(actors=[ref])
 
-    assert len(record) == 3
+    # Why: pytest.warns records every warning category (its simplefilter("always")
+    # un-ignores ResourceWarning and re-enables registry-deduped RuntimeWarning), so
+    # GC-time strays from an unrelated test can land in ``record`` and would inflate a
+    # raw ``len(record)``. The contract is one lifecycle signal per redundant param,
+    # so filter to the category and pin the exact per-param identity set. The filtered
+    # count plus the set comparison is strictly stronger than the old raw-length
+    # assert: it fails on a missing signal, a duplicate signal, or a mislabeled param.
+    lifecycle_warnings = [x for x in record if issubclass(x.category, LifecycleDetectionWarning)]
+    assert len(lifecycle_warnings) == 3
+    assert {str(w.message) for w in lifecycle_warnings} == {
+        (
+            f"redundant Scope override on multi_actor.a: "
+            f"Annotated[..., Scope.LOOP] matches the registered "
+            f"default for {_SvcA.__module__}._SvcA; the override has no effect."
+        ),
+        (
+            f"redundant Scope override on multi_actor.b: "
+            f"Annotated[..., Scope.LOOP] matches the registered "
+            f"default for {_SvcB.__module__}._SvcB; the override has no effect."
+        ),
+        (
+            f"redundant Scope override on multi_actor.c: "
+            f"Annotated[..., Scope.LOOP] matches the registered "
+            f"default for {_SvcC.__module__}._SvcC; the override has no effect."
+        ),
+    }
 
 
 # ── Two actors with the same redundant override ────────────────────
@@ -208,7 +238,25 @@ def test_two_actors_same_redundant_override() -> None:
     with pytest.warns(LifecycleDetectionWarning) as record:
         registry.validate(actors=[ref_alpha, ref_beta])
 
-    assert len(record) == 2
+    # Why: pytest.warns records every warning category (its simplefilter("always")
+    # un-ignores ResourceWarning and re-enables registry-deduped RuntimeWarning), so
+    # GC-time strays from an unrelated test can land in ``record`` and would inflate a
+    # raw ``len(record)``. The contract is one lifecycle signal per actor, so filter
+    # to the category and pin the exact per-actor message set.
+    lifecycle_warnings = [x for x in record if issubclass(x.category, LifecycleDetectionWarning)]
+    assert len(lifecycle_warnings) == 2
+    assert {str(w.message) for w in lifecycle_warnings} == {
+        (
+            f"redundant Scope override on actor_alpha.settings: "
+            f"Annotated[..., Scope.PROCESS] matches the registered "
+            f"default for {_Settings.__module__}._Settings; the override has no effect."
+        ),
+        (
+            f"redundant Scope override on actor_beta.settings: "
+            f"Annotated[..., Scope.PROCESS] matches the registered "
+            f"default for {_Settings.__module__}._Settings; the override has no effect."
+        ),
+    }
 
 
 # ── Idempotency: validate() called twice emits only once ──────────
