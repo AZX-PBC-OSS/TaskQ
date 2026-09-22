@@ -125,6 +125,7 @@ from taskq.testing._enqueue import (
     _enqueue_batch,
     _enqueue_batch_fast,
     _enqueue_with_conn,
+    _scan_singleton_preflight,
 )
 from taskq.testing._reads import (
     _count_pending_jobs,
@@ -492,6 +493,9 @@ class InMemoryBackend:
         )
 
     # ── Enqueue ────────────────────────────────────────────────────────
+
+    def _singleton_preflight_row(self, args: EnqueueArgs) -> JobRow | None:
+        return _scan_singleton_preflight(self, args)
 
     async def enqueue(self, args: EnqueueArgs) -> JobRow:
         return await _enqueue(self, args)

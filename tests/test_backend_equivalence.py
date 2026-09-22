@@ -6,6 +6,7 @@ through the ``backend_pair`` fixture which parametrises over ``["memory",
 "pg"]``.
 """
 
+import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -3115,3 +3116,75 @@ async def test_eq_finished_at_paging_covers_the_null_range(backend_pair: Backend
     assert unfinished, "seed must contain finished_at IS NULL rows"
     assert set(seen) == set(ids)
     assert set(unfinished) <= set(seen), "the NULL range was never paged into"
+
+
+# ── singleton Layer 2 (the jobs_singleton_uniq constraint twin) ──────
+
+
+async def test_eq_singleton_layer2_refuses_when_preflight_misses(
+    backend_pair: Backend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both backends refuse the second singleton INSERT when the Layer 1
+    preflight misses, with the SAME outcome shape: one enqueue wins, the
+    other raises SingletonCollisionError carrying blocking_job_id=None and
+    retry_after=None (the Layer 2 catch shape, not a dedup return and not
+    the preflight's blocking-id shape).
+
+    Layer 1 is neutralized per backend the way each backend exposes the
+    preflight seam: PG's ``_sql.singleton_preflight`` is rewritten to a
+    WHERE FALSE query (the race window the constraint exists for), the
+    memory twin's ``_singleton_preflight_row`` is patched to None. What
+    must survive the neutralization is Layer 2 - PG's jobs_singleton_uniq
+    partial unique index converting its UniqueViolationError at INSERT
+    time, and the memory backend's insert-time re-check of the same
+    predicate. A backend without the Layer 2 twin admits both inserts
+    here; this test is the cross-backend pin that neither does.
+    """
+    from taskq.exceptions import SingletonCollisionError
+
+    actor = "eq_singleton_layer2_actor"
+    if isinstance(backend_pair, InMemoryBackend):
+        backend_pair.register_actor_config(actor=actor)
+        monkeypatch.setattr(backend_pair, "_singleton_preflight_row", lambda args: None)
+    else:
+        schema: str = backend_pair._schema_name  # type: ignore[reportPrivateUsage] # Why: PG-path preflight seam, mirrors test_singleton's monkeypatch of the same template
+        monkeypatch.setattr(
+            backend_pair,
+            "_sql",
+            replace(
+                backend_pair._sql,  # type: ignore[reportPrivateUsage]
+                singleton_preflight=(
+                    f'SELECT id, schedule_to_close FROM "{schema}".jobs '
+                    f"WHERE actor = $1 AND FALSE LIMIT 1"
+                ),
+            ),
+        )
+
+    async def _enqueue() -> str:
+        try:
+            await backend_pair.enqueue(
+                EnqueueArgs(
+                    id=new_job_id(),
+                    actor=actor,
+                    queue="default",
+                    payload={},
+                    max_attempts=3,
+                    retry_kind="transient",
+                    # None = immediate: the backend stamps the clock and
+                    # decides status in the same statement, so the row is
+                    # live (the index predicate's statuses) on either
+                    # backend.
+                    scheduled_at=None,
+                    metadata={"singleton": True},
+                )
+            )
+            return "enqueued"
+        except SingletonCollisionError as exc:
+            assert exc.blocking_job_id is None
+            assert exc.retry_after is None
+            assert exc.actor == actor
+            return "refused"
+
+    results = await asyncio.gather(_enqueue(), _enqueue())
+    assert results.count("enqueued") == 1
+    assert results.count("refused") == 1
