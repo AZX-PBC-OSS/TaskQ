@@ -31,6 +31,7 @@ __all__ = [
     "wait_for_effects",
     "wait_for_handle_status",
     "wait_for_worker_ready",
+    "wait_terminal_with_diagnostics",
 ]
 
 _EFFECTS_COLUMNS = "seq, at, actor, job_id, attempt, kind, detail"
@@ -130,6 +131,43 @@ async def wait_all_ignoring_failures[R: BaseModel | None](
     async with asyncio.TaskGroup() as tg:
         for handle in handles:
             tg.create_task(_wait_or_swallow(handle))
+
+
+async def wait_terminal_with_diagnostics[R: BaseModel | None](
+    handle: JobHandle[R],
+    *,
+    timeout: float,  # noqa: ASYNC109  # Why: forwarded to handle.wait as a polling deadline, not an asyncio.timeout-style wrapper.
+    description: str,
+    failure_context: Callable[[], Awaitable[str]],
+) -> R:
+    """``handle.wait`` whose timeout carries the evidence the budget's
+    expiry hides.
+
+    A wait that expires says only "no terminal transition within budget":
+    whether the worker never reclaimed, reclaimed and starved mid-attempt,
+    or re-isolated (each implies a different owner and a different fix) is
+    invisible in the bare :class:`TimeoutError`. On expiry this attaches
+    what the poll loop last observed (the row's ``status`` and ``attempt``,
+    advanced by every successful fetch) and awaits *failure_context* for
+    the caller's own dump (container logs, effect counts), then re-raises
+    as ``RuntimeError`` in the e2e failure-reporting pattern. The happy
+    path is a bare ``handle.wait``: no wrapper behavior, and a diagnostics
+    failure can never mask the primary timeout.
+    """
+    try:
+        return await handle.wait(timeout=timeout)
+    except TimeoutError:
+        row = handle.row
+        try:
+            context = await failure_context()
+        except Exception as exc:  # Why: the diagnostics dump runs after a failure, against whatever state remains; any secondary error is content for the report, never a replacement for the timeout.
+            context = f"<failure context unavailable: {exc!r}>"
+        msg = (
+            f"timed out after {timeout}s waiting for {description}; the job "
+            f"never reached a terminal state - last observed row "
+            f"status={row.status!r} attempt={row.attempt}\n{context}"
+        )
+        raise RuntimeError(msg) from None
 
 
 async def fetch_effects(
