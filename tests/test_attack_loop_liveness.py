@@ -67,10 +67,24 @@ _LOOP_LABEL = "worker.producer"
 _UNEXPECTED_COUNTER = "taskq.worker.loop_unexpected_errors_total"
 _OLD_UNEXPECTED_NAME = "taskq.worker.leader_loop_unexpected_errors_total"
 
-# The real-pool differential's Postgres; overridable, skipped when absent.
-_PG_DSN = os.environ.get(
-    "TASKQ_ATTACK_PG_DSN", "postgres://postgres:postgres@127.0.0.1:45432/postgres"
-)
+# The real-pool differential's Postgres. By default it rides the SAME
+# testcontainers chain every green real-PG tier uses (the conftest
+# ``pg_dsn`` fixture), so the lane runs wherever the rest of the real-PG
+# suite runs - CI included. ``TASKQ_ATTACK_PG_DSN`` overrides that with an
+# explicit DSN (a dedicated hand-run Postgres); an unreachable override
+# SKIPS, naming the variable, instead of erroring. The original wiring
+# read only this override with a hard-coded 127.0.0.1:45432 default -
+# nothing in CI (or this repo's fixtures) ever served that port, so the
+# differential skipped on every CI run since it was written.
+_PG_DSN_ENV = "TASKQ_ATTACK_PG_DSN"
+
+# Whether the differential's fixture ran, skipped, or was never reached.
+# The dead-lane pin at the bottom of this module reads it: a skip while
+# the suite's own Postgres chain is reachable is a silently dead lane,
+# and fails. Same process as the fixture by construction: the
+# ``integration`` mark puts the differential tests and the pin in one
+# xdist loadgroup (see conftest's pytest_collection_modifyitems).
+_DIFFERENTIAL_LANE: dict[str, str] = {"state": "not-started"}
 # Per-process unique: the real_pg_pool fixture is module-scoped and xdist
 # may split this module's tests across workers, each instantiating the
 # fixture; a shared hard-coded name makes one worker's DROP ... CASCADE
@@ -1180,18 +1194,47 @@ async def test_body_cancellation_reaches_the_caller(
 # ─────────────────────────────────────────────────────────────────────────
 
 
+@pytest.fixture(scope="module")
+def real_pg_dsn(request: pytest.FixtureRequest) -> str:
+    """The real-pool differential's DSN: ``TASKQ_ATTACK_PG_DSN`` when set,
+    else the suite's own testcontainers Postgres (the conftest ``pg_dsn``
+    chain - the same wiring the green integration tiers use). The chain
+    fixture is pulled lazily via ``getfixturevalue`` so an operator's
+    explicit override never forces a container boot (and never inherits
+    the chain's Docker-less skip while their own DSN is reachable)."""
+    override = os.environ.get(_PG_DSN_ENV)
+    if override:
+        return override
+    return request.getfixturevalue("pg_dsn")
+
+
 @pytest_asyncio.fixture(scope="module")
-async def real_pg_pool() -> Any:
+async def real_pg_pool(real_pg_dsn: str) -> Any:
     """A migrated TaskQ schema and a real one-connection asyncpg pool.
 
     max_size=1 is the sharpest leak detector available: any checkout the
     round fails to release hangs every follow-up round and the test
-    times out. Skipped when no Postgres is reachable."""
+    times out. Skips ONLY when an explicit ``TASKQ_ATTACK_PG_DSN``
+    override is unreachable (the message names the variable); a failure
+    of the suite's own ``pg_dsn`` chain is an ERROR, not a skip - the
+    chain's Docker-less case skips upstream in ``pg_container``, and
+    anything else is broken infrastructure this lane must not paper
+    over. (The original fixture swallowed every connect failure with a
+    skip against a hard-coded 45432 default, which is how this
+    differential died silently on every CI run.)"""
+    override = os.environ.get(_PG_DSN_ENV)
     try:
-        conn = await asyncpg.connect(_PG_DSN)
+        conn = await asyncpg.connect(real_pg_dsn)
     except Exception:
-        pytest.skip(f"no Postgres reachable at {_PG_DSN} for the real-pool differential")
-        return  # unreachable
+        if override:
+            _DIFFERENTIAL_LANE["state"] = "skipped"
+            pytest.skip(
+                f"no Postgres reachable at {real_pg_dsn} for the real-pool "
+                f"differential ({_PG_DSN_ENV}={override!r}); unset {_PG_DSN_ENV} "
+                "to ride the suite's testcontainers Postgres, or point it at a "
+                "reachable DSN"
+            )
+        raise
     try:
         await conn.execute(f'DROP SCHEMA IF EXISTS "{_PG_SCHEMA}" CASCADE')
         from taskq.migrate import apply_pending
@@ -1201,7 +1244,8 @@ async def real_pg_pool() -> Any:
         await seed_actors(conn, _PG_SCHEMA)
     finally:
         await conn.close()
-    pool = await asyncpg.create_pool(_PG_DSN, min_size=1, max_size=1)
+    pool = await asyncpg.create_pool(real_pg_dsn, min_size=1, max_size=1)
+    _DIFFERENTIAL_LANE["state"] = "ran"
     try:
         yield pool
     finally:
@@ -1209,15 +1253,15 @@ async def real_pg_pool() -> Any:
             await asyncio.wait_for(pool.close(), timeout=10)
         except TimeoutError:
             pool.terminate()  # test-infra teardown; leak observables live in the tests
-    cleanup = await asyncpg.connect(_PG_DSN)
+    cleanup = await asyncpg.connect(real_pg_dsn)
     try:
         await cleanup.execute(f'DROP SCHEMA IF EXISTS "{_PG_SCHEMA}" CASCADE')
     finally:
         await cleanup.close()
 
 
-async def _rename_jobs_async(from_name: str, to_name: str) -> None:
-    conn = await asyncpg.connect(_PG_DSN)
+async def _rename_jobs_async(dsn: str, from_name: str, to_name: str) -> None:
+    conn = await asyncpg.connect(dsn)
     try:
         await conn.execute(f'ALTER TABLE "{_PG_SCHEMA}".{from_name} RENAME TO {to_name}')
     finally:
@@ -1239,7 +1283,9 @@ async def _run_round(pool: Any) -> list[Any]:
     )
 
 
+@pytest.mark.integration
 async def test_real_pool_failed_round_releases_and_next_rounds_serve(
+    real_pg_dsn: str,
     real_pg_pool: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1253,7 +1299,7 @@ async def test_real_pool_failed_round_releases_and_next_rounds_serve(
     baseline = pool.get_size()
 
     # Fault injection at the operator level: the jobs table vanishes.
-    await _rename_jobs_async("jobs", "jobs_shadow")
+    await _rename_jobs_async(real_pg_dsn, "jobs", "jobs_shadow")
     with pytest.raises(asyncpg.UndefinedTableError):
         await _run_round(pool)
     # Differential: the identical fault through a plain `async with` -
@@ -1270,7 +1316,7 @@ async def test_real_pool_failed_round_releases_and_next_rounds_serve(
             )
     # The fault is repaired: every follow-up round serves - with
     # max_size=1, a leaked checkout or wedged release hangs here.
-    await _rename_jobs_async("jobs_shadow", "jobs")
+    await _rename_jobs_async(real_pg_dsn, "jobs_shadow", "jobs")
     for _ in range(3):
         rows = await _run_round(pool)
         assert rows == []
@@ -1280,7 +1326,9 @@ async def test_real_pool_failed_round_releases_and_next_rounds_serve(
     assert counter_value(reader, "taskq.dispatch.failures") >= 1
 
 
+@pytest.mark.integration
 async def test_real_pool_cancelled_round_parked_on_exhausted_pool(
+    real_pg_dsn: str,
     real_pg_pool: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1316,7 +1364,9 @@ async def test_real_pool_cancelled_round_parked_on_exhausted_pool(
     assert rows == []
 
 
+@pytest.mark.integration
 async def test_real_pool_successful_round_leaves_pool_serviceable(
+    real_pg_dsn: str,
     real_pg_pool: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1338,6 +1388,81 @@ async def test_real_pool_successful_round_leaves_pool_serviceable(
     assert rows == []
     assert pool.get_size() == baseline
     assert counter_value(reader, "taskq.dispatch.failures") == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 6. The dead-lane pin: the real-pool differential may not skip while the
+#    suite's own Postgres chain is reachable. Its original wiring (a
+#    hard-coded 127.0.0.1:45432 default, any connect failure mapped to a
+#    skip) skipped on every CI run since the module was written - a
+#    whole verification tier dead behind a green checkmark.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.integration
+async def test_the_real_pool_differential_may_not_die_silently(
+    request: pytest.FixtureRequest,
+) -> None:
+    """The dead-lane guard: whenever the suite's own Postgres chain (the
+    conftest ``pg_dsn`` - the wiring every green real-PG tier uses) is
+    reachable, the differential's DSN must be reachable too, and the
+    differential's fixture must not have reported a skip.
+
+    This judgment is deliberately ORDER-INDEPENDENT (pytest-randomly
+    shuffles this module, and the original wiring died silently for every
+    CI run precisely because nothing judged it):
+
+    - the DSN checked is resolved THROUGH the differential's own fixture
+      (``real_pg_dsn``), so any wiring divergence the differential
+      experiences, this pin experiences identically - and fails on;
+    - the fast path (``state == "ran"``) costs nothing when the lane
+      demonstrably ran;
+    - a Docker-less context (``pg_container`` skips) is the one
+      legitimate skip, and the pin skips with it, naming the chain.
+
+    If the suite's chain serves a working Postgres while the
+    differential's DSN is dead, the lane is dead and this FAILS, naming
+    ``TASKQ_ATTACK_PG_DSN`` so the misconfiguration is diagnosable in
+    seconds. Shares the differential tests' xdist loadgroup via the
+    ``integration`` mark, so the lane state it reads is same-process."""
+    dsn = request.getfixturevalue("real_pg_dsn")
+    state = _DIFFERENTIAL_LANE["state"]
+    if state == "ran":
+        return
+    # May skip: the Docker-less context is exactly where a skip of the
+    # differential is legitimate, too.
+    chain_dsn = request.getfixturevalue("pg_dsn")
+    try:
+        conn = await asyncpg.connect(chain_dsn)
+    except Exception:
+        pytest.skip(
+            "no Postgres obtainable by the suite's own chain (pg_dsn); a "
+            "skip of the real-pool differential is legitimate here"
+        )
+        return  # unreachable
+    await conn.close()
+    try:
+        conn = await asyncpg.connect(dsn)
+    except Exception:
+        pytest.fail(
+            f"the real-pool differential's DSN ({dsn!r}) is unreachable while "
+            f"the suite's Postgres chain ({chain_dsn!r}) is up - a dead "
+            f"verification tier. {_PG_DSN_ENV} is "
+            f"{os.environ.get(_PG_DSN_ENV)!r}; unset {_PG_DSN_ENV} to ride the "
+            "suite's testcontainers Postgres, or point it at a reachable DSN."
+        )
+        return  # unreachable
+    await conn.close()
+    if state == "skipped":
+        pytest.fail(
+            f"the real-pool differential's fixture reported a SKIP while both "
+            f"its DSN and the suite's Postgres chain are reachable - a skip "
+            f"swallowed a healthy lane. {_PG_DSN_ENV} is "
+            f"{os.environ.get(_PG_DSN_ENV)!r}."
+        )
+    # state "not-started": the differential tests are deselected in this
+    # selection, or pytest-randomly placed this pin before them - either
+    # way the wiring checks above already proved the lane's DSN alive.
 
 
 # The default budget this suite's shrink-by-monkeypatch attacks relate to.
