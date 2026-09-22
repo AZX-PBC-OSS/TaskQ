@@ -11,14 +11,17 @@ per round, scanning and aggregating EVERY running row in the fleet
 actor``) whether or not any actor declared ``max_concurrent`` - the
 cost rode every claim round at O(fleet running rows).
 
-The shipped statement counts running rows per capped actor instead: a
-correlated count gated on ``ac.max_concurrent IS NOT NULL`` inside the
-CASE that computes the residual (and the same gate in
-``eligible_candidates``' post-lock re-check), so the count subplan is
-evaluated only for actors that declared a cap, reading only that
-actor's own ``jobs_actor_running_idx`` entries. An uncapped fleet - the
-default - does zero running-row work per round, and a capped fleet pays
-its own capped actors' running rows, never the fleet's.
+The shipped statement precomputes the running count per capped actor
+ONCE per round in the ``capped_running`` CTE (the #283 fix): its driver
+is the round's own live-actor population, its count subplan is gated on
+``ac.max_concurrent IS NOT NULL`` inside a CASE, and all three former
+count sites (both capacity CTEs' residuals and
+``eligible_candidates``' post-lock re-check) read the precomputed value,
+so the count subplan is evaluated only for actors that declared a cap,
+reading only that actor's own ``jobs_actor_running_idx`` entries. An
+uncapped fleet - the default - materializes an empty CTE and does zero
+running-row work per round, and a capped fleet pays its own capped
+actors' running rows once, never the fleet's and never per claimed row.
 
 Oracle: EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) of the production
 constants, executed once per seeded running-rows size; a node's
@@ -85,6 +88,19 @@ _RUNNING_SIZES = (0, 1_000)
 _NODE_ROW_BOUND = 600
 _RUNNING_RATIO_BOUND = 3
 
+# The cap axis for the #283 pin: the per-round running-count work must
+# be flat (linear) in the actor's declared cap, never the
+# O(oversample x cap^2) the correlated per-claimed-row recount paid
+# (measured 28/648/2550/10100 running-index rows at these caps on the
+# pre-CTE shape, work/cap^2 ~1.0). The precomputed capped_running CTE
+# evaluates the count ONCE per capped live actor per round: the actor's
+# own running-row scan, ~cap/2 rows at the sweep's own_running=cap // 2
+# seeding - so a LINEAR bound (work <= cap) is the pin, and the
+# cap=100/cap=5 ratio stays under the linear 25x with headroom while
+# the quadratic shape's 360x fails it.
+_CAPS = (5, 25, 50, 100)
+_CAP_LINEAR_RATIO_BOUND = 30
+
 
 @pytest.fixture(scope="module")
 async def running_schema(pg_dsn: str) -> Any:
@@ -112,6 +128,7 @@ async def _seed(
     running_rows: int,
     *,
     polled_actor_cap: int | None,
+    own_running: int = 0,
 ) -> UUID:
     """Re-seed the round's fixed due backlog and the running population.
 
@@ -120,7 +137,10 @@ async def _seed(
     live, no identity_key) - the fleet's running load. The polled
     actor's own cap is applied to its actor_config row so the caller can
     exercise the gated count's taken branch (a capped actor with its own
-    running rows) beside the untaken one. Returns the worker id the
+    running rows) beside the untaken one. ``own_running`` seeds that
+    many of the polled actor's OWN running rows (0 by default; the
+    capped-count test inserts its own two rows so it can hold them under
+    the worker id it asserts against). Returns the worker id the
     running rows are locked to.
     """
     await conn.execute(f'TRUNCATE TABLE "{schema}".jobs CASCADE')
@@ -159,6 +179,26 @@ async def _seed(
         _POLLED_QUEUE,
         _OWN_PENDING,
     )
+    if own_running:
+        # The polled actor's own running rows, live leases: the
+        # population the capped count subplan reads (the gate's taken
+        # branch).
+        await conn.execute(
+            f'INSERT INTO "{schema}".jobs '
+            "(id, actor, queue, payload, status, priority, scheduled_at, "
+            "max_attempts, retry_kind, attempt, locked_by_worker, "
+            "lock_expires_at, started_at, last_heartbeat_at) "
+            "SELECT gen_random_uuid(), $1, $2, '{\"v\": 1}'::jsonb, "
+            "'running', 0, clock_timestamp() - interval '1 minute', 3, "
+            "'transient', 1, $3, "
+            "clock_timestamp() + interval '5 minutes', "
+            "clock_timestamp(), clock_timestamp() "
+            "FROM generate_series(1, $4::int)",
+            _POLLED_ACTOR,
+            _POLLED_QUEUE,
+            worker_id,
+            own_running,
+        )
     if running_rows:
         # The running population: never-polled actors, live leases. On
         # the pre-fix statement this is the population the
@@ -200,6 +240,24 @@ def _plan_node_row_counts(plan: dict[str, Any]) -> list[tuple[float, str]]:
         stack.extend(node.get("Plans") or [])
     counted.sort(key=lambda entry: entry[0], reverse=True)
     return counted
+
+
+def _count_subplan_row_work(plan: dict[str, Any]) -> float:
+    """Total row work of the running-count subplans: every scan of jobs
+    under the statement's ``rj`` count alias, whether the planner served
+    it from a running partial index or a seq scan (at small fleet sizes
+    it picks either)."""
+    total = 0.0
+    stack: list[dict[str, Any]] = [plan]
+    while stack:
+        node = stack.pop()
+        alias = node.get("Alias")
+        if isinstance(alias, str) and alias.startswith("rj"):
+            rows = float(node.get("Actual Rows", 0) or 0)
+            loops = int(node.get("Actual Loops", 1) or 1)
+            total += rows * loops
+        stack.extend(node.get("Plans") or [])
+    return total
 
 
 async def _explain_row_work(
@@ -331,6 +389,74 @@ async def test_capped_round_pays_only_its_own_running_rows(
             f"{_RUNNING_SIZES[-1]} - the count is per capped actor and must "
             f"not move with the fleet's running rows (ratio bound "
             f"{_RUNNING_RATIO_BOUND}x)."
+        )
+    finally:
+        await conn.close()
+
+
+@pytest.mark.parametrize(("variant", "sql"), _VARIANTS, ids=[v for v, _ in _VARIANTS])
+async def test_capped_count_work_is_flat_in_cap(
+    pg_dsn: str, running_schema: str, variant: str, sql: str
+) -> None:
+    """A capped round's running-count work is LINEAR in the cap (the
+    #283 pin).
+
+    The correlated-count form this pin replaces re-evaluated the count
+    per CLAIMED row in eligible_candidates: a capped fleet paid
+    O(oversample x cap^2) running-index rows per round - measured
+    28/648/2550/10100 rows at caps 5/25/50/100 (work/cap^2 ~1.0,
+    crossover against the fleet-wide CTE at cap~30, the issue's red).
+    The precomputed capped_running CTE evaluates the count ONCE per
+    capped live actor: the sweep seeds the polled actor with half its
+    cap as own running rows, so the per-round count work is ~cap/2 -
+    every cap's work must stay under a LINEAR bound, and the cap=100 to
+    cap=5 ratio under the linear ratio with headroom (the quadratic
+    shape's ~360x fails both). The fleet axis rides at a thousand
+    unrelated running rows, the sweep must not move with it.
+    """
+    rendered = sql.format(schema=running_schema)
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        work_by_cap: dict[int, float] = {}
+        for cap in _CAPS:
+            # Re-seed per cap: EXPLAIN ANALYZE executes the claim for
+            # real (its writes are the statement's own side effects,
+            # only its output is discarded), so every sweep point needs
+            # an identical fresh fleet.
+            await _seed(
+                conn,
+                running_schema,
+                _RUNNING_SIZES[-1],
+                polled_actor_cap=cap,
+                own_running=cap // 2,
+            )
+            rows = await conn.fetch(
+                f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {rendered}",
+                [_POLLED_QUEUE],
+                _LIMIT_N,
+                new_uuid(),
+                _LOCK_LEASE,
+                _OVERSAMPLE,
+            )
+            raw = rows[0]["QUERY PLAN"]
+            document: Any = json.loads(raw) if isinstance(raw, str) else raw
+            work = _count_subplan_row_work(document[0]["Plan"])
+            work_by_cap[cap] = work
+            assert work <= cap, (
+                f"{variant}: at cap {cap} the round's running-count work "
+                f"was {work:.0f} rows (linear bound {cap}) - the count is "
+                "no longer evaluated once per capped actor (a "
+                "per-claimed-row recount, the #283 regression, scales it "
+                "by the claim batch)."
+            )
+        ratio = work_by_cap[_CAPS[-1]] / max(work_by_cap[_CAPS[0]], 1.0)
+        assert ratio <= _CAP_LINEAR_RATIO_BOUND, (
+            f"{variant}: the running-count work scales quadratically in "
+            f"the cap - {work_by_cap[_CAPS[0]]:.0f} rows at cap "
+            f"{_CAPS[0]} vs {work_by_cap[_CAPS[-1]]:.0f} at cap "
+            f"{_CAPS[-1]} (ratio {ratio:.0f}x, linear bound "
+            f"{_CAP_LINEAR_RATIO_BOUND}x) - the per-claimed-row recount "
+            "is back (the #283 regression)."
         )
     finally:
         await conn.close()
