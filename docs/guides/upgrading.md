@@ -1991,17 +1991,26 @@ changelog becomes the authoritative record and these notes age out.
   `cron_schedules` gains a nullable `disabled_by text` column recording WHO
   disabled a schedule: `'auto'` (the cron loop's failure-count auto-disable),
   `'operator'` (schedule handle `disable()`, the CLI, the admin UI, actor
-  deregistration), or NULL (enabled, or disabled before this column existed;
-  read as operator intent). A CHECK constraint enforces the two values. The
+  deregistration), or NULL (enabled, or a row an old pod wrote during a
+  mixed-version deploy; see below). A CHECK constraint enforces the two
+  values. The
   worker's startup registration pass now re-enables a schedule auto-disabled
   on a transient failure blip **only** when the re-declaring spec is
   code-owned (`CronScheduleSpec.owner="code"`, the default) and declares
   `enabled=True`; operator-disabled rows stay disabled across restarts, the
   guarantee the create-only registration design always intended but could not
-  express. Upgrades are safe by construction: existing rows all read
-  `disabled_by=NULL`, and NULL is never re-enabled, so every schedule a
-  human or auto-disable left disabled before the upgrade stays disabled until
-  the operator acts -- the old behavior, unchanged. Fresh installs get the
+  express. Upgrades are safe by construction: the follow-up backfill
+  (migration `01.00.19_05`) stamps every disabled row that predates it
+  `'operator'`, so every schedule a human or auto-disable left disabled
+  before the upgrade stays disabled until the operator acts -- the old
+  behavior, unchanged. The residual NULL reading after the backfill covers
+  the mixed-version deploy window: the previous release's failure UPDATE
+  cannot name the marker, so an old pod's auto-disable during a rolling
+  deploy lands `enabled=false, disabled_by=NULL`, and the boot revert also
+  recovers a NULL-marked row carrying that write's fingerprint
+  (`consecutive_failures` at or past the threshold, `last_fire_error` set) --
+  without the fix, such a row matched nothing and the schedule stayed
+  disabled until a human re-enabled it (issue #460). Fresh installs get the
   column from the migration chain. See
   [cron.md](cron.md#schedule-ownership).
 - **`name` and `identity_key` fields on `CronScheduleSpec`** for per-property

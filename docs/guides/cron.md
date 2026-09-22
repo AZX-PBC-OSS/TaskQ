@@ -502,7 +502,7 @@ disabled need opposite treatment at worker restart:
 |---|---|---|
 | `'auto'` | The cron loop's failure-count auto-disable (see [Failure handling](#failure-handling)) | **Reverted** for code-owned, code-enabled specs: the boot is proof the `@cron` declaration is live again, so the disable is stale |
 | `'operator'` | A deliberate disable: schedule handle `disable()`, the CLI, the admin UI, actor deregistration | **Never reverted**, whatever owns the spec |
-| NULL | Enabled, or disabled before this column existed (the safe reading of that ambiguity is operator intent) | Untouched |
+| NULL | Enabled, or a row an old pod wrote during a mixed-version deploy (the backfill migration `01.00.19_05` stamped every disabled row that predates it `'operator'`) | Reverted **only** when the row also carries the old failure arm's fingerprint (`consecutive_failures` at or past the threshold, `last_fire_error` set): that is an old pod's auto-disable from the deploy window. Without the fingerprint it reads as an old pod's operator disable and is untouched |
 
 The revert is narrow: it re-enables the row, resets `consecutive_failures` to 0,
 clears `last_fire_error` and the marker, and logs
@@ -515,8 +515,11 @@ until a human noticed. Code re-declaring the schedule is the recovery signal.
 
 The revert cannot oscillate on its own: it runs once per worker boot per
 schedule (the registration pass is a startup step), it only matches a row that
-is `enabled = false AND disabled_by = 'auto'` (a row another worker already
-reverted, or an operator-disabled row, matches nothing), and it resets
+is `enabled = false AND disabled_by = 'auto'`, or a NULL-marked row carrying
+the old failure arm's fingerprint (`consecutive_failures` at or past the
+threshold, `last_fire_error` set -- an old pod's auto-disable from a
+mixed-version deploy, whose failure UPDATE cannot name the marker; issue
+#460), and it resets
 `consecutive_failures` to 0, so re-disabling requires three fresh failing
 fires after every revert. A worker that is crash-looping therefore bounds the
 `TaskQCronScheduleDisabled` alert (a gauge, not a counter) to at most one

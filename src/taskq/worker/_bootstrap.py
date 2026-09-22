@@ -889,8 +889,20 @@ async def _revert_stale_auto_disable(
     permanently halt recurring work until a human intervenes. ``'operator'``
     is a deliberate disable (schedule handle, CLI, admin UI, actor
     deregistration) and is NEVER reverted by a boot, exactly the intent the
-    create-only registration design guards; NULL predates ownership tracking
-    and reads as operator intent (the safe side of the ambiguity).
+    create-only registration design guards.
+
+    A disabled row with a NULL marker is read in two populations (issue #460).
+    Rows disabled before the column existed were stamped ``'operator'`` by the
+    backfill migration (``01.00.19_05``), so they land in the operator case
+    above. A residual NULL-disabled row can then only come from an OLD pod
+    during a mixed-version rolling deploy: the previous release's failure
+    UPDATE writes ``enabled=false`` and cannot name this column. When such a
+    row also carries that arm's fingerprint (``consecutive_failures`` at or
+    past the auto-disable threshold, ``last_fire_error`` set), it IS an old
+    pod's auto-disable -- the deploy's own transient state -- and the boot
+    reverts it like an ``'auto'`` row. A NULL-disabled row without the
+    fingerprint reads as an old pod's operator disable during the window and
+    stays untouched.
 
     Only a code-owned, code-enabled spec may revert: an ``owner='operator'``
     spec merely ships the declaration, and a spec declared ``enabled=False``
@@ -904,9 +916,12 @@ async def _revert_stale_auto_disable(
             f'UPDATE "{settings.schema_name}".cron_schedules '  # noqa: S608  # Why: schema validated against _IDENT_RE at WorkerSettings load; asyncpg cannot bind identifiers, the values below are $-bound.
             f"SET enabled = true, consecutive_failures = 0, last_fire_error = NULL, "
             f"disabled_by = NULL "
-            f"WHERE actor = $1 AND name = $2 AND enabled = false AND disabled_by = 'auto'",
+            f"WHERE actor = $1 AND name = $2 AND enabled = false AND "
+            f"(disabled_by = 'auto' OR (disabled_by IS NULL AND "
+            f"consecutive_failures >= $3 AND last_fire_error IS NOT NULL))",
             spec.actor,
             spec.name,
+            settings.cron_auto_disable_threshold,
         )
     return parse_rowcount(tag) > 0
 
@@ -925,9 +940,10 @@ async def _register_cron_schedules(
     conflict the pass is otherwise write-free -- an operator's runtime change
     (disable, retime) must not be reverted by a redeploy -- except the one
     ownership-driven recovery in :func:`_revert_stale_auto_disable`: a stale
-    ``'auto'`` disable of a code-owned schedule. Structural drift (cron_expr,
-    timezone, dst_strategy the row kept despite a changed declaration) is
-    warned, never written, by :func:`_warn_on_cron_drift`.
+    auto-disable of a code-owned schedule (an ``'auto'`` marker, or the
+    mixed-version deploy's unmarked fingerprint of one). Structural drift
+    (cron_expr, timezone, dst_strategy the row kept despite a changed
+    declaration) is warned, never written, by :func:`_warn_on_cron_drift`.
     """
     async with deps.dispatcher_pool.acquire(
         timeout=settings.dispatcher_command_timeout
