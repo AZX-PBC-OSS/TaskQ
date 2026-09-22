@@ -110,6 +110,11 @@ _TRUNCATE_TABLES: tuple[str, ...] = (
     "workers",
     "actor_config",
     "queues",
+    # The admin audit trail is test data like any other: a suite that
+    # asserts "exactly one row" after one mutation must not see the
+    # previous test's rows. Truncating it is also the per-test story an
+    # audit-asserting suite needs; nothing else reads it.
+    "admin_audit",
 )
 
 

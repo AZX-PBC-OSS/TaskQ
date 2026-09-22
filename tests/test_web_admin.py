@@ -1,6 +1,8 @@
 """Unit tests for taskq.web.admin: create_router factory and route structure."""
 
 import asyncio
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -18,6 +20,15 @@ pytestmark = [pytest.mark.fastapi]
 
 
 class _FakeConn:
+    def transaction(self) -> Any:
+        # The schedule mutation routes wrap their write and its audit row
+        # in conn.transaction(); the fake only has to be enterable.
+        @asynccontextmanager
+        async def _tx() -> AsyncGenerator[None, None]:
+            yield
+
+        return _tx()
+
     async def fetch(self, query: str, *args: object) -> list[dict[str, object]]:
         # Return empty - web admin unit tests verify route registration, CSRF,
         # and template rendering structure, not data content. Shape-specific
@@ -180,8 +191,6 @@ def test_polling_badge_without_redis() -> None:
 def test_sse_returns_sentinel(monkeypatch: pytest.MonkeyPatch) -> None:
     """GET /sse/queues returns HTTP 200, Content-Type text/event-stream,
     body contains 'awaiting_progress_backend'."""
-    from collections.abc import AsyncIterator
-
     from taskq.web.admin import sse as sse_mod
 
     # Signature mirrors taskq.web.admin.sse._sse_generator exactly - a double
@@ -273,8 +282,6 @@ async def test_sse_429_on_concurrency_exhaustion(monkeypatch: pytest.MonkeyPatch
     """Verify SSE 429 on concurrency exhaustion. Set
     TASKQ_ADMIN_MAX_SSE_CONNECTIONS=1; make two concurrent requests to /sse/queues;
     one returns HTTP 200 and the other returns HTTP 429."""
-    from collections.abc import AsyncIterator
-
     from taskq.web.admin import sse as sse_mod
 
     # Signature mirrors taskq.web.admin.sse._sse_generator exactly - a double

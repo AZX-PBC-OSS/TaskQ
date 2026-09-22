@@ -281,6 +281,11 @@ ignore = [
 # Same rationale — schema name validated against _IDENT_RE; all
 # user-supplied values use $N parameter binding.
 "tests/e2e/**" = ["S608"]
+# Same rationale as tests/e2e and migrate.py: only the schema identifier is
+# interpolated, it is validated by the test fixtures upstream, and every
+# caller-controlled value uses $N parameter binding. The file's SQL is the
+# audit-trail red-team's own setup and assertion DDL (test-local triggers).
+"tests/test_audit_redteam.py" = ["S608"]
 "tests/test_workgroup.py" = ["S108", "ASYNC110"]
 # Exception class names follow the project glossary verbatim
 # (Snooze, RetryAfter, ResultTooLarge, ScopeViolation, etc.).
@@ -401,6 +406,9 @@ ignore = [
 # Same rationale — schema name validated against _IDENT_RE; all
 # user-supplied values use $N parameter binding.
 "tests/test_web_admin_actors.py" = ["S608"]
+# Same rationale — schema name comes from the module_pg_schema fixture;
+# all user-supplied values use $N parameter binding.
+"tests/test_admin_audit_trail.py" = ["S608"]
 # FastAPI Depends() in test route-handler defaults is the same idiomatic
 # declarative-injection pattern as web/admin — not a real mutable default.
 "tests/test_sso_session.py" = ["B008"]

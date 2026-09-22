@@ -18,6 +18,12 @@ from taskq.backend._cursor import CursorValue, JobOrdering, SortColumn
 from taskq.backend._protocol import Backend, JobId
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
+from taskq.web.admin._audit import (
+    ACTION_JOB_CANCEL,
+    TARGET_TYPE_JOB,
+    fold_principal_into_cancel_event,
+    record_admin_action_safe,
+)
 from taskq.web.admin._constants import (
     _ACTIVE_STATUSES,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
     _ALL_STATUSES,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
@@ -34,6 +40,7 @@ from taskq.web.admin._factory import (
     get_backend,
     get_base_path,
     get_csrf_token,
+    get_principal,
     get_realtime_ctx,
     get_schema,
     get_settings,
@@ -144,6 +151,16 @@ _ATTEMPTS_ARCHIVE_SQL = (
 )
 
 _EVENTS_SQL = 'SELECT * FROM "{schema}".job_events WHERE job_id = $1 ORDER BY occurred_at'
+
+# The per-job audit trail: admin-UI operator mutations targeting this job.
+# target_id is text (no FK to jobs on purpose: the trail outlives the
+# pruned/archived target), so the UUID binds as its canonical text form.
+_AUDIT_SQL = (
+    "SELECT occurred_at, principal_subject, action, reason, detail "
+    'FROM "{schema}".admin_audit '
+    "WHERE target_type = 'job' AND target_id = $1 "
+    "ORDER BY occurred_at, id"
+)
 
 # ── Jobs list page helpers ───────────────────────────────────────────────
 
@@ -683,6 +700,7 @@ def register(router: APIRouter) -> None:
         is_archived = False
         archived_at: datetime | None = None
 
+        audit_entries: list[dict[str, Any]] = []
         async with pool.acquire() as conn:
             job: asyncpg.Record | None = await conn.fetchrow(job_sql, job_id)
             if job is not None:
@@ -698,6 +716,19 @@ def register(router: APIRouter) -> None:
                 attempts_archive_sql = _ATTEMPTS_ARCHIVE_SQL.format(schema=schema)
                 attempts = await conn.fetch(attempts_archive_sql, job_id)
                 events: list[asyncpg.Record] = []
+            # The audit trail is queried for live AND archived jobs: the
+            # whole point of the no-FK design is that the record of who
+            # cancelled what outlives the row. A schema the migration has
+            # not reached yet renders the page without the section rather
+            # than 500ing (the same degrade the schedules page shows for a
+            # missing cron_schedules).
+            try:
+                audit_rows = await conn.fetch(_AUDIT_SQL.format(schema=schema), str(job_id))
+                audit_entries = [_normalize_row(dict(r)) for r in audit_rows]
+                for e in audit_entries:
+                    e["detail"] = _blob_display_text(decode_jsonb(e.get("detail")))
+            except asyncpg.exceptions.UndefinedTableError:
+                audit_entries = []
 
         job_dict = _normalize_row(dict(job))
         job_dict["error_traceback"] = _truncate_traceback(job_dict.get("error_traceback"))
@@ -724,6 +755,7 @@ def register(router: APIRouter) -> None:
             job=job_dict,
             attempts=attempts_list,
             events=events_list,
+            audit_entries=audit_entries,
             terminal_statuses=_TERMINAL_STATUSES,
             is_archived=is_archived,
             archived_at=archived_at,
@@ -736,11 +768,14 @@ def register(router: APIRouter) -> None:
     @router.post("/jobs/{job_id}/cancel")
     async def job_cancel(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
         job_id: uuid.UUID,
+        request: Request,
         _csrf: None = Depends(validate_csrf),
-        reason: str | None = Query(default=None),
+        pool: BoundedPool = Depends(get_admin_pool),
+        schema: str = Depends(get_schema),
         backend: Backend | None = Depends(get_backend),
         settings: TaskQSettings = Depends(get_settings),
         base_path: str = Depends(get_base_path),
+        principal: Any = Depends(get_principal),
     ) -> RedirectResponse:
         if not settings.admin_actions_enabled:
             raise HTTPException(
@@ -757,7 +792,14 @@ def register(router: APIRouter) -> None:
         # PostgreSQL rejects \u0000 in jsonb strings, the same
         # opaque-driver-error class the list filters reject with
         # parse_text_filter, so reason gets the same clean 400 here.
-        reason = parse_text_filter(reason, "reason")
+        #
+        # reason is a FORM field now, not a query parameter: the cancel
+        # form on the job detail page collects it (the operator is being
+        # asked why, the browser should show the box, not the URL bar),
+        # and the audit trail records what was submitted.
+        form = await request.form()
+        raw_reason = form.get("reason")
+        reason = parse_text_filter(raw_reason if isinstance(raw_reason, str) else None, "reason")
 
         job = await backend.get(JobId(job_id))
         if job is None:
@@ -765,7 +807,28 @@ def register(router: APIRouter) -> None:
         if job.status in _TERMINAL_STATUSES:
             raise HTTPException(status_code=409, detail="Job is already in a terminal state")
 
-        await backend.write_cancel_request(JobId(job_id), reason)
+        written = await backend.write_cancel_request(JobId(job_id), reason)
+
+        if written:
+            # The backend committed its own transaction (the cancel stamp
+            # plus the cancel_request/state_change event rows), so the
+            # audit row rides a separate bounded checkout: record it, and
+            # fold the operator principal into the cancel_request event's
+            # detail so the per-job event log on this page carries who
+            # acted, not only the admin_audit table. Both degrade loudly
+            # rather than failing a cancel that already landed.
+            await record_admin_action_safe(
+                pool,
+                schema=schema,
+                principal=principal,
+                action=ACTION_JOB_CANCEL,
+                target_type=TARGET_TYPE_JOB,
+                target_id=str(job_id),
+                reason=reason,
+            )
+            await fold_principal_into_cancel_event(
+                pool, schema=schema, job_id=job_id, principal=principal
+            )
 
         # The redirect must carry base_path: a relative ../../ URL only
         # resolves back to the job page when the router is mounted at the
