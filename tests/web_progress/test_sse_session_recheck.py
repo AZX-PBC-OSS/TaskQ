@@ -455,3 +455,115 @@ async def test_generator_recheck_pass_delivers_events() -> None:
     kinds = [getattr(e, "event", None) for e in events]
     assert kinds == ["progress", "terminal", "done"], f"got {kinds!r}"
     assert slot.locked() is False
+
+
+async def test_hung_verifier_is_bounded_and_fails_closed() -> None:
+    """A verifier that hangs -- a wedged IdP introspection endpoint -- must
+    not freeze the generator inside its own keepalive path: the check is
+    bounded by SESSION_RECHECK_TIMEOUT_SECS, the timeout is fail-closed
+    revocation, and the finally releases the slot and the subscription."""
+    pubsub = _KeepalivePubSub()
+    slot = asyncio.Semaphore(1)
+    await slot.acquire()
+
+    async def _hung() -> bool:
+        await asyncio.sleep(3600)
+        # Unreachable unless the re-check bound is gone: reaching this raise
+        # means the verifier was awaited to completion, i.e. the stream froze.
+        raise AssertionError("the hung verifier completed: the re-check is unbounded")
+
+    gen = _event_generator(
+        pubsub=pubsub,  # pyright: ignore[reportArgumentType]  # Why: duck-typed pubsub double.
+        channel="chan",
+        job_id=new_uuid(),
+        is_terminal=False,
+        progress_seq=5,
+        progress_data="{}",
+        resolved_last_event_id=None,
+        heartbeat_secs=0.02,
+        sse_slot_semaphore=slot,
+        session_verifier=_hung,
+    )
+    started = time.monotonic()
+    with structlog.testing.capture_logs() as logs:
+        events = await _drain_limited(gen, limit=1)
+    elapsed = time.monotonic() - started
+
+    assert events == [], "a hung verifier is revocation: no frame may be emitted"
+    assert elapsed < 60, f"the hung verifier must be bounded, took {elapsed:.1f}s"
+    assert pubsub.unsubscribed and pubsub.closed, (
+        "the wedged stream must still release its Redis subscription"
+    )
+    assert slot.locked() is False, "the wedged stream must still release its SSE slot"
+    timeouts = [e for e in logs if e.get("event") == "sse-session-recheck-timeout"]
+    assert timeouts, (
+        "the timeout must be visible as its own incident: logging it as a "
+        "plain revocation sends an operator chasing a logout that never happened"
+    )
+
+
+async def test_heartbeat_interval_above_the_cap_is_clamped_and_warned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A host configuring an hour between keepalives gets the 60 s
+    revocation bound anyway -- and the clamp itself must not be silent: the
+    bound is a security property (#316), so a host that asked for hours has
+    to be told the effective value differs."""
+    import taskq.web.progress as progress_mod
+
+    real_gen = progress_mod._event_generator
+    captured: dict[str, Any] = {}
+
+    async def _spy(**kwargs: Any) -> AsyncIterator[Any]:
+        # Runs when the route builds the generator, before streaming starts.
+        captured["heartbeat_secs"] = kwargs.get("heartbeat_secs")
+        async for event in real_gen(**kwargs):
+            yield event
+
+    monkeypatch.setattr(progress_mod, "_event_generator", _spy)
+
+    claims = IdentityClaims(subject="ops", email=None, groups=frozenset(), raw={})
+
+    async def _dependency(request: Request) -> IdentityClaims:  # pyright: ignore[reportUnusedFunction]  # Why: registered via Depends at router level.
+        return claims
+
+    _dependency.session_verifier = _dependency  # type: ignore[attr-defined]  # Why: never re-invoked; the request below disconnects before any tick.
+
+    with structlog.testing.capture_logs() as logs:
+        # The clamp warning fires inside create_router, so the capture must
+        # wrap the construction.
+        router = create_router(
+            _StubPool(),  # pyright: ignore[reportArgumentType]  # Why: duck-typed stub pool satisfies the asyncpg surface the route reads.
+            _StubRedis(_KeepalivePubSub()),
+            schema=_SCHEMA,
+            auth_dependency=_dependency,
+            sse_heartbeat_interval=timedelta(hours=1),
+            max_sse_connections=_MAX_SSE,
+        )
+        app = FastAPI()
+        app.include_router(router, prefix="/jobs")
+
+        # The generator object is constructed while the route builds the
+        # response; an immediate disconnect tears the stream down after.
+        await app(
+            _asgi_scope(new_uuid()),
+            _immediate_disconnect,
+            _noop_send,
+        )
+
+    assert captured.get("heartbeat_secs") == 60.0, (
+        f"the configured 3600 s interval must be clamped to the 60 s cap, "
+        f"got {captured.get('heartbeat_secs')!r}"
+    )
+    clamps = [e for e in logs if e.get("event") == "sse-heartbeat-interval-clamped"]
+    assert len(clamps) == 1, f"the clamp must warn exactly once per router, got {clamps!r}"
+    assert clamps[0].get("configured_seconds") == 3600.0
+    assert clamps[0].get("effective_seconds") == 60.0
+
+
+async def _immediate_disconnect() -> dict[str, Any]:
+    return {"type": "http.disconnect", "body": b"", "more_body": False}
+
+
+async def _noop_send(message: dict[str, Any]) -> None:
+    pass

@@ -473,3 +473,52 @@ async def test_clock_offset_probe_failure_is_reported_and_backed_off(
     assert entries[0]["log_level"] == "warning"
     assert entries[0]["error_type"] == "ConnectionError"
     assert factory._db_clock_offset.expires_at > 0
+
+
+# ── : SSE session re-check derivation (#316) ──────────────────────────
+
+
+def test_create_router_warns_once_when_auth_dependency_lacks_verifier(
+    stub_pool: _StubPool,
+    structlog_capture: list[dict[str, Any]],
+) -> None:
+    """A third-party auth dependency (one built outside taskq, carrying no
+    ``session_verifier`` attribute) cannot silently lose the SSE re-check.
+
+    The fallback is honest on both ends: ``bundle.session_verifier`` is None
+    (streams authenticate once -- we cannot safely re-invoke a dependency
+    that may need FastAPI DI) AND a one-per-router startup warning fires.
+    Cardinality pinned: exactly one warning per create_router call, not one
+    per request.
+    """
+
+    async def third_party_dep(request: Any) -> dict[str, str]:
+        # Realistic host shape: a plain closure over DI, no session_verifier.
+        return {"sub": "ops"}
+
+    bundle = create_router(stub_pool, auth_dependency=third_party_dep)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    warnings = [e for e in structlog_capture if e.get("event") == "admin-sse-no-session-verifier"]
+    assert len(warnings) == 1, (
+        f"expected exactly one per-router startup warning, got {len(warnings)}"
+    )
+    assert bundle.session_verifier is None, (
+        "the fallback must be NO verifier, never a best-effort call into a "
+        "dependency that was not built for re-invocation"
+    )
+
+
+def test_create_router_does_not_warn_for_taskq_auth_dependencies(
+    stub_pool: _StubPool,
+    structlog_capture: list[dict[str, Any]],
+) -> None:
+    """create_auth_dependency attaches the attribute; the factory derives the
+    verifier from it silently."""
+    pytest.importorskip("itsdangerous")
+
+    from taskq.web.admin.auth._session import SessionManager, create_auth_dependency
+
+    dep = create_auth_dependency(SessionManager(secret="test-secret-key-32bytes-long!!"))
+    bundle = create_router(stub_pool, auth_dependency=dep)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    warnings = [e for e in structlog_capture if e.get("event") == "admin-sse-no-session-verifier"]
+    assert warnings == []
+    assert bundle.session_verifier is not None

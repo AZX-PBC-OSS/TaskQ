@@ -21,13 +21,23 @@ from collections.abc import AsyncGenerator
 
 from fastapi import HTTPException
 
-__all__ = ["acquire_sse_slot", "release_after"]
+__all__ = ["SESSION_RECHECK_TIMEOUT_SECS", "acquire_sse_slot", "release_after"]
 
 _SEMAPHORES: dict[tuple[str, int], asyncio.Semaphore] = {}
 
 #: Non-blocking acquire. A waiting client would hold the request open while
 #: queueing for a slot, which is the resource exhaustion being prevented.
 _ACQUIRE_TIMEOUT: float = 0.001
+
+#: Bound on one SSE session re-check invocation (#316). The re-check is a
+#: host-supplied async callable; taskq's own verifiers are pure cookie/token
+#: comparisons that cannot suspend, but a host verifier that awaits a wedged
+#: IdP introspection endpoint would otherwise freeze the streaming generator
+#: inside its own keepalive path -- the stream never ends, and the SSE slot
+#: and the Redis subscription stay pinned for as long as the verifier hangs.
+#: A check that outlives this bound is treated as revocation (fail closed):
+#: unknown session state must not keep a privileged stream open.
+SESSION_RECHECK_TIMEOUT_SECS: float = 5.0
 
 
 def _semaphore(key: str, limit: int) -> asyncio.Semaphore:
