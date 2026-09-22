@@ -19,6 +19,8 @@ from taskq.backend._dispatch_sql import (
 def _cte_body(sql: str, cte_name: str) -> str:
     """Extract the body of a named CTE expression between the opening '(' and matching ')'."""
     marker = f"{cte_name} AS (\n"
+    if marker not in sql:
+        marker = f"{cte_name} AS MATERIALIZED (\n"
     start = sql.index(marker) + len(marker)
     depth = 1
     i = start
@@ -78,8 +80,8 @@ class TestDispatchStrictFifoSql:
         aggregate of the fleet's ENTIRE running population per round,
         paid whether or not any actor declared a cap - O(fleet running
         rows) on the hottest statement in the library. The count
-        is now a cap-gated correlated count per read (see
-        test_running_counts_are_cap_gated_correlated_counts), so an
+        is now precomputed once per round over CAPPED ACTORS ONLY (see
+        test_running_counts_precomputed_in_capped_running_cte), so an
         uncapped fleet pays zero running-row work.
         """
         for variant, sql in (
@@ -91,54 +93,96 @@ class TestDispatchStrictFifoSql:
                 f"{variant}: a fleet-wide running-count CTE is materialized "
                 "on every claim round (three references) at a cost "
                 "proportional to the fleet's total running rows - the "
-                "count must stay a cap-gated correlated count"
+                "count must stay scoped to the round's own capped actors"
             )
 
-    def test_running_counts_are_cap_gated_correlated_counts(self) -> None:
-        """All three per-actor running-count reads are CASE-gated on the
-        actor's own cap, so an uncapped actor's branch never executes its
-        count subquery.
+    def test_running_counts_precomputed_in_capped_running_cte(self) -> None:
+        """All three per-actor running-count reads read the ONE
+        per-round ``capped_running`` CTE, whose count subplan is
+        CASE-gated on the actor's own cap, so an uncapped actor's branch
+        never executes a count and an uncapped fleet materializes an
+        empty CTE.
 
-        A scalar subquery in a CASE branch is evaluated only when that
-        branch is taken, which is what makes the uncapped fleet's
-        running-row work zero; a LEFT JOIN against a count source could
-        not give that (the join is evaluated per row regardless), which
-        is why the gate must live inside the CASE. The count itself is
-        a scan over the actor's own running-row partial-index entries
-        (the planner picks jobs_actor_running_idx or the
-        jobs_locked_by_worker_running_idx partial at its own cost
-        discretion) - bounded by that actor's running rows, never the
-        fleet's.
+        History this shape replaces: the fleet-wide ``running_per_actor``
+        CTE (#226's complaint, O(fleet running rows) per round), then the
+        correlated per-read count (#282), whose per-claimed-row
+        re-evaluation in ``eligible_candidates`` made a capped fleet pay
+        O(oversample x cap^2) running-index rows per round (measured
+        28/648/2550/10100 rows at caps 5/25/50/100). The precomputed CTE
+        evaluates the count ONCE per capped live actor per round
+        (~cap/2 rows at the same caps), and every read site consumes it
+        in place of a count.
+
+        The count itself is a scan over the actor's own running-row
+        partial-index entries (the planner picks
+        jobs_actor_running_idx or the jobs_locked_by_worker_running_idx
+        partial at its own cost discretion) - bounded by that actor's
+        running rows, never the fleet's. The driver is the round's OWN
+        live-actor population (``pa_actors`` plus the re-pended arm's
+        ``rr_tail_keys`` actors), never a filtered scan of actor_config:
+        the registry is usually never analyzed, and the unanalyzed
+        estimate has been measured flipping the filtered-scan shape into
+        a fleet-wide running-row read.
         """
         for variant, sql in (
             ("strict_fifo", DISPATCH_STRICT_FIFO_SQL),
             ("round_robin", DISPATCH_ROUND_ROBIN_SQL),
         ):
             rendered = sql.format(schema="taskq")
+            # The CTE is MATERIALIZED: referenced three times, an
+            # inlined CTE would re-run the counts at every reference
+            # site and re-create the per-claimed-row multiplication.
+            assert "capped_running AS MATERIALIZED (" in rendered, (
+                f"{variant}: the capped_running CTE must stay materialized "
+                "- inlined, its counts re-run per reference site"
+            )
+            cte_body = _cte_body(rendered, "capped_running")
+            assert "WHEN live.max_concurrent IS NULL THEN 0" in cte_body, (
+                f"{variant}: the count must be CASE-gated on the actor's "
+                "own cap - an uncapped fleet must materialize an empty "
+                "CTE and pay zero running-row work"
+            )
+            assert "rj.actor = live.actor" in cte_body, (
+                f"{variant}: the count must be correlated to the driver's "
+                "own actor, not a fleet-wide aggregate"
+            )
+            assert "FROM pa_actors pa" in cte_body, (
+                f"{variant}: the label-routed driver must be the round's "
+                "own pa_actors population, not a scan of actor_config"
+            )
+            assert "(SELECT DISTINCT actor FROM rr_tail_keys) ta" in cte_body, (
+                f"{variant}: the re-pended arm's actors must ride the same precomputed count"
+            )
+            # ALL count work routes through the CTE: exactly one jobs
+            # scan under the count alias in the whole statement.
+            assert rendered.count(".jobs rj") == 1, (
+                f"{variant}: a running-count read escaped capped_running - "
+                "a second correlated count re-opens the per-claimed-row "
+                "quadratic (#283)"
+            )
             capacity_body = _cte_body(rendered, "per_actor_capacity")
             assert "WHEN ac.max_concurrent IS NULL" in capacity_body, (
-                f"{variant}: the residual's count must be gated on the actor's own cap"
+                f"{variant}: the residual must stay gated on the actor's own cap"
             )
-            assert "rj.actor = pa.actor" in capacity_body, (
-                f"{variant}: the residual's count must be correlated to "
-                "the round's own actor, not a fleet-wide aggregate"
+            assert "(SELECT crc.in_flight FROM capped_running crc" in capacity_body, (
+                f"{variant}: the residual must read the precomputed count, not re-count"
             )
             repend_body = _cte_body(rendered, "repend_capacity")
-            assert "rj.actor = ta.actor" in repend_body, (
-                f"{variant}: the re-pended arm's residual count must be correlated to its own actor"
+            assert "crc.actor = ta.actor" in repend_body, (
+                f"{variant}: the re-pended arm's residual must read the "
+                "precomputed count for its own actor"
             )
             eligible_body = _cte_body(rendered, "eligible_candidates")
             assert "WHEN ac.max_concurrent IS NULL THEN 0" in eligible_body, (
-                f"{variant}: the post-lock re-check's count must be cap-gated the same way"
+                f"{variant}: the post-lock re-check must stay cap-gated the same way"
             )
-            assert "rj.actor = l.actor" in eligible_body, (
-                f"{variant}: the post-lock re-check's count must be "
-                "correlated to the claimed row's actor"
+            assert "crc.actor = l.actor" in eligible_body, (
+                f"{variant}: the post-lock re-check must read the "
+                "precomputed count for the claimed row's actor"
             )
-            # The LIMIT 1 fence is what keeps the gated count at ONE
-            # evaluation per claimed row: without it the projection-only
-            # lateral can be pulled up and re-evaluated at every
-            # reference site.
+            # The LIMIT 1 fence is what keeps the read at ONE evaluation
+            # per claimed row: without it the projection-only lateral can
+            # be pulled up and re-evaluated at every reference site.
             assert "END AS in_flight" in eligible_body
             assert "r.in_flight < ac.max_concurrent" in eligible_body
 
