@@ -56,7 +56,7 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._cancel_bulk import _cancel_where
-from taskq.backend._protocol import JobFilter
+from taskq.backend._protocol import BulkCancelResult, JobFilter
 from taskq.backend._sql_templates import render
 from taskq.backend._sweeps import sweep_deadline_exceeded
 from taskq.constants import CANCEL_ORIGIN_PENDING
@@ -163,7 +163,14 @@ class _BatchBoundaryPool:
         self.gate_entered = asyncio.Event()
         self.gate_release = asyncio.Event()
 
-    async def _through(self, method: str, conn, query, args, kw):
+    async def _through(
+        self,
+        method: str,
+        conn: asyncpg.Connection,
+        query: str,
+        args: tuple[object, ...],
+        kw: dict[str, object],
+    ):
         if not self.gate_entered.is_set() and self._gate_sql in query:
             self._matches += 1
             if self._matches >= self._gate_on_match:
@@ -177,7 +184,7 @@ class _BatchBoundaryPool:
 
     async def release(
         self,
-        conn,
+        conn: _GatedConn,
         timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg.Pool.release's own keyword; the checkout forwards it verbatim.
     ) -> None:
         # The drain's checkout releases through THIS pool (the release is
@@ -200,19 +207,19 @@ class _GatedConn:
         self._conn = conn
         self._pool = pool
 
-    async def execute(self, query, *args, **kw):
+    async def execute(self, query: str, *args: object, **kw: object) -> str:
         return await self._pool._through("execute", self._conn, query, args, kw)
 
-    async def fetch(self, query, *args, **kw):
+    async def fetch(self, query: str, *args: object, **kw: object) -> list[asyncpg.Record]:
         return await self._pool._through("fetch", self._conn, query, args, kw)
 
-    async def fetchrow(self, query, *args, **kw):
+    async def fetchrow(self, query: str, *args: object, **kw: object) -> asyncpg.Record | None:
         return await self._pool._through("fetchrow", self._conn, query, args, kw)
 
-    async def fetchval(self, query, *args, **kw):
+    async def fetchval(self, query: str, *args: object, **kw: object) -> object:
         return await self._pool._through("fetchval", self._conn, query, args, kw)
 
-    def __getattr__(self, item):
+    def __getattr__(self, item: str) -> object:
         return getattr(self._conn, item)
 
 
@@ -221,7 +228,7 @@ async def _assert_conservation(
     schema: str,
     ids: list[UUID],
     swept: int,
-    result,
+    result: BulkCancelResult,
 ) -> None:
     """The contract both pins share: every row terminal exactly once,
     the counts reconcile, the event trail matches the winner."""
@@ -381,8 +388,8 @@ async def test_the_drain_releases_its_batch_locks_so_the_sweep_always_gets_a_win
 
 
 async def _pin_the_no_monopoly_property(
-    pool,
-    drain_task,
+    pool: _BatchBoundaryPool,
+    drain_task: asyncio.Task[tuple[BulkCancelResult, list[object]]],
     clean_pg_conn: asyncpg.Connection,
     schema: str,
     ids: list[UUID],
