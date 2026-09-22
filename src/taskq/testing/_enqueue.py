@@ -5,6 +5,7 @@
 ``self: InMemoryBackend`` as the first parameter.
 """
 
+from contextlib import suppress
 from dataclasses import replace
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -67,7 +68,16 @@ def _refuse_terminal_batch_members(self: "InMemoryBackend", args_list: list[Enqu
     seen: dict[str, UUID] = {}
     for args in args_list:
         raw = args.metadata.get("batch_id")
-        if raw is not None:
+        if raw is None:
+            continue
+        # A reserved-key value that does not parse as a UUID cannot name a
+        # batches row (the store's keys are UUID), so there is no row to
+        # read and no terminal refusal can apply: it rides as opaque
+        # metadata, the shape the batch_id read filter accepts as a plain
+        # containment key. Any spelling that DOES parse (braces, urn:)
+        # reads the parsed row, so the guard stays airtight for every id
+        # that can name one.
+        with suppress(ValueError):
             seen[str(raw)] = UUID(str(raw))
     for _batch_id_str, batch_id in seen.items():
         row = self._batches.get(batch_id)
@@ -263,12 +273,23 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
     # never reaches this store, so no refusal fires for it.
     raw_batch_id = args.metadata.get("batch_id")
     if raw_batch_id is not None:
-        batch_id = UUID(str(raw_batch_id))
-        batch_row = self._batches.get(batch_id)
-        if batch_row is not None and batch_row.status != "active":
-            from taskq.exceptions import BatchIdExistsError
+        try:
+            batch_id = UUID(str(raw_batch_id))
+        except ValueError:
+            # A reserved-key value that does not parse as a UUID cannot
+            # name a batches row (the store's keys are UUID), so there is
+            # no row to read and no terminal refusal can apply: it rides
+            # as opaque metadata, the shape the batch_id read filter
+            # accepts as a plain containment key. Any spelling that DOES
+            # parse (braces, urn:) reads the parsed row, so the guard
+            # stays airtight for every id that can name one.
+            batch_id = None
+        if batch_id is not None:
+            batch_row = self._batches.get(batch_id)
+            if batch_row is not None and batch_row.status != "active":
+                from taskq.exceptions import BatchIdExistsError
 
-            raise BatchIdExistsError(batch_id, reason="terminal")
+                raise BatchIdExistsError(batch_id, reason="terminal")
 
     if args.id in self._jobs:
         # Why a function-level import: the driver-free import-surface

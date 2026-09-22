@@ -8,7 +8,7 @@ wrappers that delegate.
 """
 
 from collections.abc import AsyncGenerator, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -853,6 +853,17 @@ async def _enqueue_on_conn(
     owns_transaction = owns_transaction or not conn.is_in_transaction()
     unique_for_single_flight = args.unique_for is not None and args.identity_key is not None
     raw_batch_id = args.metadata.get("batch_id")
+    # A reserved-key value that does not parse as a UUID cannot name a
+    # batches row (the column is uuid): it rides as opaque metadata, the
+    # shape the batch_id read filter accepts as a plain containment key
+    # (a direct-backend caller is below the client layer that strips and
+    # re-stamps this key as str(UUID)). Any spelling that DOES parse
+    # (braces, urn:) names the parsed row, so the guard below stays
+    # airtight for every id that can name one.
+    batch_uuid: UUID | None = None
+    if raw_batch_id is not None:
+        with suppress(ValueError):
+            batch_uuid = UUID(str(raw_batch_id))
     if (
         args.max_pending is not None
         or unique_for_single_flight
@@ -860,7 +871,7 @@ async def _enqueue_on_conn(
         # the membership lock below is only a guard against the completion
         # arbiters if it lives until the INSERT's commit, and on a bare
         # connection every statement is its own transaction.
-        or raw_batch_id is not None
+        or batch_uuid is not None
     ) and not conn.is_in_transaction():
         # Why a transaction here and not just the lock: pg_advisory_xact_lock
         # releases at transaction end, so on a bare caller connection (every
@@ -891,7 +902,7 @@ async def _enqueue_on_conn(
                 owns_transaction=True,
                 mark_wrote=mark_wrote,
             )
-    if raw_batch_id is not None:
+    if batch_uuid is not None:
         # The single arm's membership lock, GUARD parity with the bulk arms:
         # every member INSERT holds the batches-row lock with the status read
         # under FOR UPDATE, in the same transaction as the INSERT. The bulk
@@ -909,7 +920,7 @@ async def _enqueue_on_conn(
         # below, the bulk arms' own order, so no cycle can form with them
         # (they take no membership lock; this arm takes no advisory lock
         # before this one).
-        await _lock_batch_membership(conn, schema, [UUID(str(raw_batch_id))])
+        await _lock_batch_membership(conn, schema, [batch_uuid])
     if args.unique_for is not None and args.identity_key is not None:
         # Why a lock at all: what follows is a check-then-insert. Under READ
         # COMMITTED two dispatchers enqueuing the same (actor, identity_key)
