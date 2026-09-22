@@ -55,13 +55,19 @@ Timing budget (worst case):
       validated in settings.py but no runtime path enforces it, so the
       drain is only as prompt as the slowest loop.
   ~= 20 s to container exit in practice (120 s poll budget).
-After PG returns: leadership + 2 s sweep + 5 s retry backoff + 30 s actor
-~= 40 s; the 180 s ``handle.wait`` budget covers this with margin.
+After PG returns, each phase waits on its own observable completion event
+with a budget derived from the settings that bound it (see the per-phase
+budget derivation above the constants): replacement boot -> fresh
+heartbeat (running_worker's 30 s readiness gate), reclaim + re-dispatch
+-> the second 'started' effect (_RECLAIM_TIMEOUT), terminal write ->
+handle.wait (_TERMINAL_TIMEOUT). A phase that overruns its budget fails
+NAMING the phase, never as an anonymous wall-clock expiry.
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator, Iterator
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -74,6 +80,7 @@ from tests.conftest import free_host_port
 
 from ._assertions import (
     fetch_effects,
+    fetch_job_rows,
     poll_until,
     wait_for_effects,
     wait_terminal_with_diagnostics,
@@ -106,11 +113,46 @@ if TYPE_CHECKING:
 
 pytestmark = [pytest.mark.e2e, pytest.mark.timeout(900)]
 
-# isolate (~2 s) + bounded reconnect failure (~5 s) + sibling drain
-# (~15 s) ~= 22 s to container exit; leadership + sweep (2 s) + retry
-# backoff (5 s) + actor sleep (30 s) ~= 40 s after PG returns. The 180 s
-# handle.wait budget allows generous margin for Docker starvation.
-_RECOVERY_TIMEOUT = 180.0
+# The old single budget (handle.wait(timeout=180) across the whole
+# recovery) was a wall-clock guess about an unbounded environment: a CI
+# Docker-starvation run (35748283472) expired it with the row non-terminal
+# the whole time, and nothing could attribute the 180 s to a phase. The
+# worst case is bounded and narrow: leadership handover (up to ~72 s) +
+# reclaim + re-dispatch (~13 s) + the actor's 30 s sleep puts the
+# starved worst case AT ~180 s - the old wall guessed exactly the bound
+# it sat on, and the red tail (1/5 contended repeats locally, run
+# 35748283472 in CI) is what crossing it looks like. The wait is now
+# split into one poll per observable recovery event, each with its own
+# budget derived from the settings that bound that phase (so the test
+# cannot flake on green code) and a failure that names the phase (so a
+# red codebase cannot hide):
+#
+# * _RECLAIM_TIMEOUT covers replacement-ready -> claim observed (the
+#   second 'started' effect; the actor only executes after a claim):
+#   the leadership handover (the isolated worker held the leader lease;
+#   the replacement cannot win it until it lapses - leader.py's failover
+#   SLA: worker killed <= leader_lease + heartbeat_interval + one round
+#   trip, and the won-but-unassumable state adds one failing connection
+#   cycle bounded by reload_factory_timeout before the hand-back):
+#   TASKQ_LEADER_LEASE = 40 s + heartbeat_interval 0.5 s + one
+#   reload_factory_timeout cycle 30 s + one election retry 0.5 s
+#   ~= 72 s from the dead leader's last good renewal (which precedes
+#   the outage; measured idle, the claim lands at leader_lease + sweep
+#   + backoff ~= 47 s after enqueue, matching to the second)
+#   + one leader-sweep tick (TASKQ_SWEEP_INTERVAL = 2 s, the env below)
+#   + the reclaim hand-back delay (deterministic per-(job, attempt) draw
+#   on the actor's RetryPolicy - base 5 s, exponential, attempt 1,
+#   jitter 0.2 -> [4, 6] s; the 1 s MIN_DEFERRAL_INTERVAL floor is far
+#   below the draw) + the claim wake (NOTIFY is on by default, so
+#   near-instant; the notify_poll_interval fallback is 5 s)
+#   ~= 85 s worst case. 120 s is ~1.4x that; the lease lapse is
+#   wall-clock (not CPU-bound), so starvation does not stretch it.
+# * _TERMINAL_TIMEOUT covers claim observed -> terminal write: the
+#   actor's own bounded work (asyncio.sleep(30) in long_running_job)
+#   + the terminal write + the wait poll interval (0.5 s) ~= 31 s worst
+#   case; 60 s is ~2x that.
+_RECLAIM_TIMEOUT = 120.0
+_TERMINAL_TIMEOUT = 60.0
 
 # Worker exit poll after PG loss: ~22 s worst case, generously padded for
 # Docker starvation on constrained hosts.
@@ -126,6 +168,33 @@ _WORKER_EXIT_TIMEOUT = 120.0
 # network alias is preserved by Docker, so both DSNs stay valid across the
 # restart (see chaos_pg); 60 s covers slow restarts.
 _PG_RESTART_PROBE_TIMEOUT = 60.0
+
+
+class _PhaseClock:
+    """Recovery-choreography timestamp log: one mark per observable phase
+    event, in elapsed seconds from the test's start.
+
+    The flake family this module guards against expired a monolithic budget
+    with every poll succeeding, so knowing THAT it timed out said nothing
+    about WHICH phase ate the wall clock. Every state transition the test
+    waits on is marked here and the report is printed on completion (pytest
+    shows captured stdout on failure, and ``-rP`` shows it on pass), so any
+    future budget expiry - per-phase or module-level - carries its own
+    attribution: container restart -> worker exit observed -> PG accepting
+    -> replacement ready -> first claim observed -> terminal write.
+    """
+
+    def __init__(self) -> None:
+        self._start = time.monotonic()
+        self._marks: list[tuple[str, float]] = []
+
+    def mark(self, name: str) -> None:
+        """Record *name* as observed now."""
+        self._marks.append((name, time.monotonic() - self._start))
+
+    def report(self) -> str:
+        """One line per mark: the phase name and its elapsed time."""
+        return "\n".join(f"  {name}: +{elapsed:.2f}s" for name, elapsed in self._marks)
 
 
 class ChaosPg(NamedTuple):
@@ -387,14 +456,17 @@ async def test_pg_restart_isolates_worker_and_recovers_on_replacement(
     container state: every PG reader on the test side is blind.
 
     (b) With PG restarted, a replacement worker (identical env) starts.
-    Its leader sweep records attempt 1 as crashed and re-pends the job
-    with the 5 s retry backoff, then dispatches and completes it.
+    Once the isolated worker's leader lease lapses (TASKQ_LEADER_LEASE),
+    the replacement wins leadership: its leader sweep records attempt 1
+    as crashed and re-pends the job with the deterministic reclaim
+    backoff, then dispatches and completes it.
 
     (c) Two ``started`` effects prove the job ran once per attempt
     (isolated worker, then replacement); one ``finished`` effect proves
     exactly-once completion overall.
     """
     schema = chaos_schema.schema_name
+    clock = _PhaseClock()
 
     # -- Enqueue and wait for the job to start ------------------------------
     handle = await chaos_client.enqueue(
@@ -410,10 +482,12 @@ async def test_pg_restart_isolates_worker_and_recovers_on_replacement(
         min_count=1,
         timeout=30.0,
     )
+    clock.mark("attempt-1 started observed")
 
     # -- Stop PG: the worker loses its heartbeat ----------------------------
     wrapped_pg = chaos_pg.container.get_wrapped_container()
     await asyncio.to_thread(wrapped_pg.stop, timeout=2)
+    clock.mark("chaos PG stopped")
 
     # -- Wait for the worker to isolate and exit ----------------------------
     # 4 heartbeat failures at the 0.5 s interval (~2 s) trigger
@@ -437,8 +511,13 @@ async def test_pg_restart_isolates_worker_and_recovers_on_replacement(
         # stalled (heartbeat isolate, phase machine, scope close, bounded
         # pool teardown) - attach the worker's own tail so the failure is
         # diagnosable without a manual container reproduction.
-        msg = f"chaos worker did not exit within {_WORKER_EXIT_TIMEOUT}s\n{_container_logs(chaos_worker.container)}"
+        msg = (
+            f"chaos worker did not exit within {_WORKER_EXIT_TIMEOUT}s\n"
+            f"phase log so far:\n{clock.report()}\n"
+            f"{_container_logs(chaos_worker.container)}"
+        )
         raise RuntimeError(msg) from None
+    clock.mark("isolated worker container exited")
 
     # -- Restart PG and probe until it accepts connections ------------------
     await asyncio.to_thread(wrapped_pg.start)
@@ -461,6 +540,7 @@ async def test_pg_restart_isolates_worker_and_recovers_on_replacement(
         timeout=_PG_RESTART_PROBE_TIMEOUT,
         description="chaos PG to accept connections after restart",
     )
+    clock.mark("chaos PG accepting connections")
 
     # -- Start the replacement worker ---------------------------------------
     # Identical env to the first worker. The readiness gate snapshots the
@@ -477,34 +557,90 @@ async def test_pg_restart_isolates_worker_and_recovers_on_replacement(
         env=_worker_env(chaos_pg, e2e_dragonfly, chaos_schema),
         label="replacement chaos e2e worker",
     ) as replacement_worker:
-        # The wait-timeout dump: what the poll loop last observed plus both
-        # workers' own logs, so a budget expiry is attributable (reclaim
-        # never happened / attempt starved mid-run / replacement re-isolated)
-        # without a manual reproduction. Guarded by
-        # wait_terminal_with_diagnostics: a diagnostics failure is report
+        clock.mark("replacement worker ready (fresh heartbeat in DB)")
+
+        # The failure-context dump for BOTH phase waits below: what the
+        # poll loops last observed plus both workers' own logs, so a budget
+        # expiry is attributable (reclaim never happened / attempt starved
+        # mid-run / replacement re-isolated) without a manual reproduction.
+        # Guarded by the wait helpers: a diagnostics failure is report
         # content, never a replacement for the timeout.
         async def _replacement_failure_context() -> str:
             started = await fetch_effects(chaos_pool, schema, run_id, kind="started")
             finished = await fetch_effects(chaos_pool, schema, run_id, kind="finished")
+            job_rows = await fetch_job_rows(chaos_pool, schema, [handle.job_id])
+            job_state = (
+                (
+                    f"status={job_rows[0]['status']!r} "
+                    f"attempt={job_rows[0]['attempt']} "
+                    f"scheduled_at={job_rows[0]['scheduled_at']}"
+                )
+                if job_rows
+                else "<job row gone>"
+            )
             return (
+                f"job row: {job_state}\n"
                 f"effects so far: started={len(started)} finished={len(finished)}\n"
+                f"phase log so far:\n{clock.report()}\n"
                 f"--- replacement worker logs ---\n"
                 f"{_container_logs(replacement_worker.container)}\n"
                 f"--- isolated worker logs ---\n"
                 f"{_container_logs(chaos_worker.container)}"
             )
 
-        # The replacement's leader sweep (2 s interval) reclaims the
-        # expired lock, records attempt 1 as crashed, and re-pends with
-        # the 5 s retry backoff; the job re-dispatches and runs its 30 s
-        # actor to success. The pre-outage client pool reconnects via
-        # fresh acquires now that PG is back.
+        # -- Phase: reclaim + re-dispatch ------------------------------------
+        # The replacement's leader sweep (TASKQ_SWEEP_INTERVAL = 2 s)
+        # reclaims the expired lock, records attempt 1 as crashed, and
+        # re-pends with the deterministic [4, 6] s hand-back delay; the job
+        # re-dispatches and the actor runs. The observable completion event
+        # is the SECOND 'started' effect: the actor only executes after a
+        # claim, so its presence IS the first successful claim. This phase
+        # waits only for that event, on its own derived budget (_RECLAIM_
+        # TIMEOUT) - a claim that never lands fails HERE, naming the phase,
+        # instead of expiring an undifferentiated wall later.
+        async def _replacement_claimed() -> bool:
+            started = await fetch_effects(chaos_pool, schema, run_id, kind="started")
+            return len(started) >= 2
+
+        try:
+            await poll_until(
+                _replacement_claimed,
+                timeout=_RECLAIM_TIMEOUT,
+                description=(
+                    "replacement worker to win leadership (leader lease "
+                    "lapse, <= 40s), reclaim the expired lock (sweep 2s), "
+                    "and re-dispatch the job (reclaim backoff <= 6s + "
+                    f"claim wake <= 5s, budget {_RECLAIM_TIMEOUT}s)"
+                ),
+            )
+        except TimeoutError:
+            msg = (
+                f"RECLAIM phase: the replacement worker never claimed the "
+                f"re-pended job within {_RECLAIM_TIMEOUT}s\n"
+                f"{await _replacement_failure_context()}"
+            )
+            raise RuntimeError(msg) from None
+        clock.mark("replacement claim observed (2nd started effect)")
+
+        # -- Phase: terminal write -------------------------------------------
+        # The claim is observed; what remains is the actor's bounded work
+        # (the 30 s sleep) and the terminal write, on the derived
+        # _TERMINAL_TIMEOUT. The wait-timeout report carries the last
+        # observed row (status AND attempt) plus the context dump.
         await wait_terminal_with_diagnostics(
             handle,
-            timeout=_RECOVERY_TIMEOUT,
-            description="the replacement worker to complete the reclaimed job",
+            timeout=_TERMINAL_TIMEOUT,
+            description=(
+                f"the claimed attempt to reach a terminal state "
+                f"({_TERMINAL_TIMEOUT}s budget; the claim is already "
+                f"observed - this expiry means the terminal write stalled)"
+            ),
             failure_context=_replacement_failure_context,
         )
+        clock.mark("terminal state observed")
+
+    # -- Phase log -----------------------------------------------------------
+    print(f"pg-restart recovery phase log:\n{clock.report()}")
 
     # -- Assertions ----------------------------------------------------------
     started = await fetch_effects(chaos_pool, schema, run_id, kind="started")
