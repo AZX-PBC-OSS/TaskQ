@@ -105,6 +105,7 @@ global.EventSource = class {
     emit(name, data, lastEventId) {
         this.handlers[name]({ data: JSON.stringify(data), lastEventId });
     }
+    emitOpen() { this.handlers.open({}); }
     emitError() { this.handlers.error({}); }
 };
 
@@ -178,7 +179,7 @@ if (scenario === "realtime-empty-progress") {
     global.lastEventSource.emit("progress", { kind: "progress", percent: 50 }, "3");
     global.lastEventSource.emit(
         "terminal",
-        { kind: "state_change", percent: 50, detail: "retained", terminal: true },
+        { kind: "state_change", percent: 50, terminal: true },
         "4",
     );
 } else if (scenario === "sse-to-polling") {
@@ -193,6 +194,8 @@ if (scenario === "realtime-empty-progress") {
     global.lastEventSource.emit("terminal", { percent: 50, terminal: true }, "3");
 } else if (scenario === "transient-sse-error") {
     global.lastEventSource.emitError();
+    advance(1000);
+    global.lastEventSource.emitOpen();
 }
 advance(32000);
 log.push("mode:" + badge.attrs["data-mode"]);
@@ -300,5 +303,5 @@ def test_transient_sse_error_keeps_native_eventsource_reconnect() -> None:
     """A disconnect keeps native reconnect while polling durable state."""
     log = _drive("transient-sse-error")
     assert "sse-close" not in log
-    assert "fetch:/taskq/jobs/api/job/j1/state" in log
+    assert log.count("fetch:/taskq/jobs/api/job/j1/state") == 1
     assert log[-1] == "mode:realtime"

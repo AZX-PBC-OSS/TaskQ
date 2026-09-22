@@ -202,7 +202,9 @@
             }
             const seq = Number(rawEvent.lastEventId);
             if (render) {
-                acceptProgress(seq, evt, evt.kind === "progress");
+                // Redis envelopes are call-level deltas; initial PG snapshots
+                // have no kind and replace the accumulated client state.
+                acceptProgress(seq, evt, evt.kind != null);
             } else if (Number.isInteger(seq) && seq > lastSeenSeq) {
                 lastSeenSeq = seq;
             }
@@ -223,6 +225,10 @@
         es.addEventListener("done", function () {
             es.close();
             eventSource = null;
+            stopPolling();
+        });
+
+        es.addEventListener("open", function () {
             stopPolling();
         });
 
