@@ -483,6 +483,22 @@ def ten_min_floor(now: datetime) -> datetime:
     return now.replace(minute=now.minute - now.minute % 10, second=0, microsecond=0)
 
 
+async def server_ten_min_floor(conn: asyncpg.Connection) -> datetime:
+    """The current 10-minute boundary on the SERVER's clock.
+
+    Same clock domain as :func:`server_hour_floor`: the tick's due bound is
+    server-side ``statement_timestamp()``, so a seed computed from the test
+    process's own clock carries the runner↔DB skew into every tick decision.
+    At a 10-minute boundary crossing the skew is decisive: a runner clock a
+    dozen milliseconds behind the server floors to the PREVIOUS slot, the
+    suppressed tick's on-grid advance lands exactly on the boundary the
+    server has already crossed, and the strict-future assertion on
+    ``next_fire_at`` reds across the crossing (CI, 2026-09-21). Every
+    10-minutely seed goes through this, never ``datetime.now``.
+    """
+    return ten_min_floor(await server_now(conn))
+
+
 def next_ten_min_boundary(after: datetime) -> datetime:
     """The first 10-minute grid point strictly after *after*."""
     floored = ten_min_floor(after)

@@ -15,11 +15,13 @@ COOPERATIVE phase, so PG stayed at phase 1 forever and ``mark_abandoned``'s
 """
 
 import asyncio
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from uuid import UUID
 
 import asyncpg
 import pytest
+import pytest_asyncio
 import structlog
 from pydantic import BaseModel
 
@@ -99,6 +101,43 @@ class _FailingController:
         self.post_tx_calls += 1
 
 
+@pytest_asyncio.fixture
+async def unbudgeted_heartbeat_pool(clean_jobs_app: JobsApp) -> AsyncIterator[JobsApp]:
+    """``clean_jobs_app`` whose heartbeat pool carries no command budget.
+
+    Two of the tests here drive the cancel controller directly: they hold a
+    connection from ``deps.heartbeat_pool`` for the tick's transaction, the
+    row reads inside it, and the observation fetches after it. Those
+    connections carry ``heartbeat_command_timeout`` - 0.1s at the blitz
+    integration defaults this fixture chain builds with - a budget
+    calibrated for the heartbeat tick's own liveness statement sequence,
+    not for a test's choreography statements. On a loaded CI runner a
+    choreography read waits out a scheduling hiccup (a -n 4 runner's other
+    workers, the containers' own PG) and blows the budget at the asyncpg
+    protocol: a bare TimeoutError raised from the test's own fetchval
+    (``test_failed_abandon_keeps_the_job_registered_for_a_retry``'s status
+    observation, CI 2026-09-22) while the post-transaction contract under
+    test was perfectly healthy. The fixture swaps in a dedicated pool with
+    no command timeout; the suite-wide pytest-timeout bounds it. The
+    backend reads ``deps.heartbeat_pool`` through the live property, so the
+    swap covers every choreography consumer. What the tests assert - the
+    registry entry, the FORCED fallback, the unapplied abandon - is
+    untouched, and the one-tick tests that run the real loop keep the
+    loop's own pool, its documented contract. The same treatment is the one
+    ``test_postgres_missing_methods.py``'s ``clean_state_jobs_app`` and
+    ``test_heartbeat_chaos.py``'s dedicated observation connection already
+    established.
+    """
+    deps = clean_jobs_app.deps
+    assert deps.settings.pg_dsn_direct is not None
+    unbudgeted = await asyncpg.create_pool(deps.settings.pg_dsn_direct, min_size=1, max_size=2)
+    deps.heartbeat_pool = unbudgeted
+    try:
+        yield clean_jobs_app
+    finally:
+        await unbudgeted.close()
+
+
 class _HealthyController:
     """Control: a controller whose tick commits normally."""
 
@@ -148,7 +187,7 @@ async def test_run_post_tx_runs_on_a_healthy_tick(clean_jobs_app: JobsApp) -> No
 
 
 async def test_rolled_back_phase_2_write_is_reissued_on_the_next_tick(
-    clean_jobs_app: JobsApp,
+    unbudgeted_heartbeat_pool: JobsApp,
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """A phase-2 escalation lost to a rolled-back tick must be re-written.
@@ -158,7 +197,7 @@ async def test_rolled_back_phase_2_write_is_reissued_on_the_next_tick(
     transaction then fails, so the write and its audit event roll back.  The
     next tick must notice that PG is still at phase 1 and re-issue both.
     """
-    deps = clean_jobs_app.deps
+    deps = unbudgeted_heartbeat_pool.deps
     schema = module_pg_schema.schema_name
     loop = asyncio.get_running_loop()
 
@@ -181,7 +220,7 @@ async def test_rolled_back_phase_2_write_is_reissued_on_the_next_tick(
     deps.settings.cleanup_grace_period = 3600.0
     active.cancel_observed_at = loop.time() - 1.0
 
-    controller = make_cancel_controller(deps, worker_id, clean_jobs_app.backend)
+    controller = make_cancel_controller(deps, worker_id, unbudgeted_heartbeat_pool.backend)
 
     class _BoomError(Exception):
         """Raised to fail a later statement of the heartbeat tick's transaction."""
@@ -217,21 +256,31 @@ async def test_rolled_back_phase_2_write_is_reissued_on_the_next_tick(
 
 
 async def test_failed_abandon_keeps_the_job_registered_for_a_retry(
-    clean_jobs_app: JobsApp,
+    unbudgeted_heartbeat_pool: JobsApp,
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """``mark_abandoned`` that did not apply must not deregister the job.
 
-    ``mark_abandoned`` is guarded by ``cancel_phase = 2``; if that write was
-    rolled back the abandon is a no-op, and dropping the registry entry would
-    strand a still-running job with no path back to cancellation.
+    The drain's race window sits between the tick's poll (which queues the
+    abandon off a row it saw at ``cancel_phase = 2``) and ``run_post_tx``'s
+    write, after the tick's transaction commits. A writer in that window -
+    a reclaim re-dispatch resetting the row, or the rolled-back phase-2
+    write this module's docstring names - leaves the row short of
+    ``mark_abandoned``'s ``cancel_phase = 2`` guard. The abandon is then a
+    no-op, and dropping the registry entry would strand a still-running
+    job with no path back to cancellation.
     """
-    deps = clean_jobs_app.deps
+    deps = unbudgeted_heartbeat_pool.deps
     schema = module_pg_schema.schema_name
     loop = asyncio.get_running_loop()
 
     async with deps.worker_pool.acquire() as setup_conn:
-        worker_id, job_id = await create_workered_running_job(setup_conn, schema, cancel_phase=0)
+        worker_id, job_id = await create_workered_running_job(
+            setup_conn,
+            schema,
+            cancel_phase=2,
+            cancel_requested_at=datetime.now(UTC),
+        )
 
     task = _sleeper()
     await deps.active_jobs.register(JobId(job_id), task, _make_ctx(JobId(job_id), worker_id))
@@ -242,11 +291,17 @@ async def test_failed_abandon_keeps_the_job_registered_for_a_retry(
     deps.settings.cleanup_grace_period = 0.0
     active.cancel_observed_at = loop.time() - 1.0
 
-    controller = make_cancel_controller(deps, worker_id, clean_jobs_app.backend)
+    controller = make_cancel_controller(deps, worker_id, unbudgeted_heartbeat_pool.backend)
     try:
         async with deps.heartbeat_pool.acquire() as conn:
             async with conn.transaction():
                 await controller.run_in_tx(conn)
+            # The poll saw the row at cancel_phase = 2 and queued the
+            # abandon; the guard evaporates in the drain's race window.
+            await conn.execute(
+                f'UPDATE "{schema}".jobs SET cancel_phase = 0 WHERE id = $1',  # noqa: S608
+                job_id,
+            )
             await controller.run_post_tx()
 
             row_status = await conn.fetchval(

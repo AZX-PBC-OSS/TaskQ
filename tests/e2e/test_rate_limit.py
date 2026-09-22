@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from ._assertions import fetch_effects, fetch_job_rows, wait_all
-from .actors import DeliverWebhookPayload, deliver_webhook
+from .actors import DeliverWebhookPayload, deliver_webhook, persistence_probe
 
 if TYPE_CHECKING:
     import asyncpg
@@ -108,70 +108,72 @@ async def test_rate_limit_state_survives_in_dragonfly(
 
     The autouse ``clean_e2e_state`` reset FLUSHDBs the module's logical DB
     between tests, so cross-test bucket survival is unobservable by design -
-    this test drains the bucket with 5 jobs (``run_id + "-drain"``), waits
-    for them to complete, then enqueues 6 more (``run_id``). Waiting for
-    the drain to finish guarantees the bucket is fully depleted (0 tokens
-    remaining) before the measured batch is dispatched, making the denial
-    count deterministic rather than dependent on the scheduling-dependent
-    interleaving of drain and measured jobs in a concurrently-claimed
-    first batch.
+    this test drains the persistence bucket with 5 jobs (``run_id + "-drain"``),
+    waits for them to complete, then enqueues 6 more (``run_id``) and counts
+    how many carried the rate-limit denial marker.
 
-    The previous design enqueued both batches back-to-back without waiting,
-    relying on FIFO claiming to let drain jobs win the initial tokens.
-    That proved fragile: with a 5/s refill rate, 0.2 s of dispatch skew
-    (plausible in CI from DI resolution, Redis round-trips, and scheduling
-    overhead) refills one extra token, allowing an additional measured job
-    to win and reducing the denial count below the threshold.
+    The proof runs on the DEDICATED slow-refill bucket
+    (``e2e_persistence_bucket``, capacity 5, refill 0.25/s - see
+    ``persistence_probe`` in actors.py), and the refill rate is the point.
+    The previous design ran this choreography against the delivery bucket
+    (capacity 5, refill 5/s): refilling at 5 tokens/s, the uncontrolled
+    handoff between "drain batch observed complete" and "worker dispatches
+    the measured batch" refills one token per 0.2 s, so the denial count was
+    a continuous function of handoff latency - 0.5 s of handoff denies ~3 of
+    6, and 1.0 s refills the "drained" bucket back to capacity, denying 0-1
+    (CI red: ``0/6 measured jobs were rate-limit-denied`` with a limiter that
+    was perfectly healthy). No fixed threshold on that bucket can separate
+    the persisted branch from the lost branch, because the measured batch's
+    token supply is set by the handoff, not by the bucket's persisted state.
 
-    Two guards make the persistence proof airtight (F2), both asserted on
-    the MEASURED batch.
-    (1) At least 2 of the 6 measured jobs must carry the rate-limit denial
+    At 0.25 tokens/s the handoff is priced out: the drain drives the bucket
+    to ~0 tokens (the 5 drain acquires spread tens of ms, refilling
+    hundredths of a token), and any handoff under ~12 s refills fewer than 3
+    tokens, so at least 4 of the 6 measured jobs are denied on their first
+    dispatch - deterministically. The NOTIFY-driven handoff observed locally
+    is ~0.5 s; the worker's poll-only fallback cadence is 1.0 s, an order of
+    magnitude inside the headroom. A LOST bucket (fresh capacity 5) admits 5
+    of 6 immediately and denies at most 1, so the >= 4 threshold clears that
+    ceiling fourfold.
+
+    Two guards, both asserted on the MEASURED batch.
+    (1) At least 4 of the 6 measured jobs must carry the rate-limit denial
     marker: the reservation-denial handler is the only writer of
     ``metadata.awaiting = "rate_limit:<bucket>"`` (sticky through later
     success), so it proves denial-by-bucket specifically - not actor
     ``Snooze`` and not actor-not-found release - with no clocks involved.
-    After the drain completes, the bucket has 0 tokens and refills at 5/s
-    (1 token per 0.2 s). The test process enqueues 6 measured jobs
-    immediately after the drain's ``gather`` returns; the time between
-    drain completion and the worker dispatching the measured batch is
-    bounded by the producer's poll interval (well under 1 s), so at most
-    ~5 tokens have refilled - but the first 5 measured jobs that acquire
-    consume those refilled tokens, leaving the 6th (and possibly the 5th)
-    denied. A persisted-drained bucket typically denies ≥ 4; a LOST bucket
-    (fresh capacity-5) denies ≤ 1. The ≥ 2 threshold sits comfortably
-    above the lost-bucket ceiling with generous headroom for refill
-    trickle.
     (2) The measured-spread threshold is 0.5s - corroborating evidence
-    only: under a lost bucket the lone denied job is re-promoted on the
-    1.0s wake tick, so its phase-dependent spread ([0.2s, 1.2s]) can clear
-    0.5s by luck; guard (1) does the real discriminating.
+    only: denied jobs are re-dispatched on the leader's 1.0s wake tick at
+    the ~4s refill cadence, so the persisted branch spreads far wider than
+    an un-throttled baseline; guard (1) does the real discriminating.
     """
     drain_id = f"{run_id}-drain"
     drain_handles = [
         await e2e_client.enqueue(
-            deliver_webhook,
+            persistence_probe,
             DeliverWebhookPayload(run_id=drain_id, endpoint_id=f"drain-{i}"),
         )
         for i in range(_DRAIN_SIZE)
     ]
 
-    # Wait for the drain batch to complete so the bucket is fully
-    # depleted before the measured batch is enqueued. This makes the
-    # denial count deterministic: the measured batch faces a guaranteed
-    # 0-token bucket (refilling at 5/s) rather than competing with drain
-    # jobs for the initial capacity-5 tokens in a scheduling-dependent
-    # first batch.
+    # Wait for the drain batch to complete so the bucket is depleted before
+    # the measured batch is enqueued. The slow refill (0.25 tokens/s) keeps
+    # it depleted across the uncontrolled handoff to the measured dispatch -
+    # see the class docstring above for why the 5/s delivery bucket cannot.
     await wait_all(drain_handles, timeout=90)
 
     measured_handles = [
         await e2e_client.enqueue(
-            deliver_webhook,
+            persistence_probe,
             DeliverWebhookPayload(run_id=run_id, endpoint_id=f"measured-{i}"),
         )
         for i in range(_FOLLOWUP_SIZE)
     ]
 
-    await wait_all(measured_handles, timeout=90)
+    # Denied jobs return at the ~4s refill cadence, quantized up by the
+    # leader's 1.0s wake tick: ~6 re-dispatch rounds ≈ 30s tail. 300s bounds
+    # that with order-of-magnitude headroom (the module timeout is 900s).
+    await wait_all(measured_handles, timeout=300)
 
     # Exactly-once delivery of the drain batch (orthogonal to the denial
     # guard below).
@@ -180,36 +182,35 @@ async def test_rate_limit_state_survives_in_dragonfly(
     )
     assert len(drain_rows) == _DRAIN_SIZE
 
-    # Persistence proof (F2), asserted on the MEASURED batch: at least 2
+    # Persistence proof (F2), asserted on the MEASURED batch: at least 4
     # of the 6 measured jobs must carry the rate-limit denial marker. The
     # reservation-denial handler (_handlers.py) is the ONLY writer of
     # metadata.awaiting = "<class>:<bucket_name>" - sticky through
     # later success (mark_succeeded never touches metadata) - so it proves
     # denial-by-bucket specifically, not actor Snooze, not actor-not-found
     # release, and (unlike the max_attempts bump, which it accompanies)
-    # names the exact bucket. After the drain completes the bucket has 0
-    # tokens; the 6 measured jobs are enqueued immediately, so the worker
-    # dispatches them into a depleted bucket. At most ~5 tokens refill in
-    # the ~1s between drain completion and the first measured dispatch
-    # (producer poll + wake tick), so 5 measured jobs may win refilled
-    # tokens, but the 6th is denied - and typically ≥ 4 are denied because
-    # the refill trickle is sub-second. A LOST bucket (fresh capacity-5)
-    # denies ≤ 1; the ≥ 2 threshold clears that ceiling with headroom.
+    # names the exact bucket. The persistence bucket refills at 0.25
+    # tokens/s: the drain leaves it at ~0 tokens, and any drain-to-dispatch
+    # handoff under ~12 s refills fewer than 3 tokens, so at least 4 of the
+    # 6 measured jobs are denied on first dispatch - a property of the
+    # bucket's PERSISTED state, not of the handoff's duration. A LOST
+    # bucket (fresh capacity-5) admits 5 of 6 immediately, denying <= 1;
+    # the >= 4 threshold clears that ceiling fourfold.
     measured_job_rows = await fetch_job_rows(
         e2e_pg_pool, e2e_schema.schema_name, [h.job_id for h in measured_handles]
     )
     assert len(measured_job_rows) == _FOLLOWUP_SIZE
-    configured = deliver_webhook.retry.max_attempts
+    configured = persistence_probe.retry.max_attempts
     # Bucket name derived from the actor's declaration - the awaiting
     # prefix is an internal taxonomy string (e.g. "rate_limit:") the test
     # must not couple to (a prefix rename must not silently vacate the guard).
-    bucket = deliver_webhook.rate_limits[0]
+    bucket = persistence_probe.rate_limits[0]
     per_job = {
         row["id"]: (row["max_attempts"], json.loads(row["metadata"]).get("awaiting"))
         for row in measured_job_rows
     }
     denied = {j: (a, w) for j, (a, w) in per_job.items() if w is not None and w.endswith(bucket)}
-    assert len(denied) >= 2, (
+    assert len(denied) >= 4, (
         f"only {len(denied)}/{_FOLLOWUP_SIZE} measured jobs were "
         f"rate-limit-denied (persisted-drained-bucket ⇒ ≥4, lost bucket ⇒ ≤1); "
         f"per-job (max_attempts, awaiting) with configured={configured}: "
