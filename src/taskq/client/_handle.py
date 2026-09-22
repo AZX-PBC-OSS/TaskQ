@@ -13,7 +13,8 @@ one.
 """
 
 import asyncio
-from collections.abc import AsyncIterator
+import contextlib
+from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -393,13 +394,24 @@ class JobHandle[R: BaseModel | None]:
             )
 
         if self._redis_client is not None and self._handle_settings is not None:
-            async for event in self._progress_stream_redis():
-                yield event
+            # aclosing: closed FROM UPSTREAM on every exit that is not the
+            # transport's own exhaustion - a consumer's ``break`` on the
+            # terminal event closes it via GeneratorExit inside the
+            # consumer's aclosing, never by draining to StopAsyncIteration.
+            # A bare ``async for`` would abandon it suspended at its yield
+            # for the GC's asyncgen finalizer to close later, one
+            # ``async_generator_athrow`` task per abandoned generator - the
+            # residue the loop-leak guard names.
+            async with contextlib.aclosing(self._progress_stream_redis()) as feed:
+                async for event in feed:
+                    yield event
         else:
-            async for event in self._progress_stream_pg():
-                yield event
+            # aclosing: same upstream-close contract as the Redis path above.
+            async with contextlib.aclosing(self._progress_stream_pg()) as feed:
+                async for event in feed:
+                    yield event
 
-    async def _progress_stream_redis(self) -> AsyncIterator[ProgressEvent]:
+    async def _progress_stream_redis(self) -> AsyncGenerator[ProgressEvent, None]:
         """Redis pub/sub path for progress_stream."""
         assert self._redis_client is not None
         assert self._handle_settings is not None
@@ -416,15 +428,24 @@ class JobHandle[R: BaseModel | None]:
             last_seq = event.seq
             return event
 
-        async for event in redis_event_stream(
-            self._redis_client,
-            channel,
-            poll_timeout=30.0,
-            decode_message=decode,
-        ):
-            yield event
+        # aclosing: closed FROM UPSTREAM on every exit that is not the
+        # transport's own exhaustion (progress_stream's GeneratorExit); a
+        # bare ``async for`` would abandon redis_event_stream suspended
+        # mid-iteration, deferring the pubsub unsubscribe/close to the GC's
+        # asyncgen finalizer - an ``async_generator_athrow`` task the
+        # loop-leak guard names, and an unbounded delay on the cleanup.
+        async with contextlib.aclosing(
+            redis_event_stream(
+                self._redis_client,
+                channel,
+                poll_timeout=30.0,
+                decode_message=decode,
+            )
+        ) as stream:
+            async for event in stream:
+                yield event
 
-    async def _progress_stream_pg(self) -> AsyncIterator[ProgressEvent]:
+    async def _progress_stream_pg(self) -> AsyncGenerator[ProgressEvent, None]:
         """PG polling fallback path for progress_stream."""
 
         def row_to_event(row: JobRow, status_changed: bool) -> ProgressEvent:
@@ -444,10 +465,18 @@ class JobHandle[R: BaseModel | None]:
                 terminal=terminal,
             )
 
-        async for event in pg_poll_event_stream(
-            lambda: self._backend.get(self.job_id),
-            row_to_event,
-            job_id=self.job_id,
-            poll_interval=_WAIT_POLL_INTERVAL,
-        ):
-            yield event
+        # aclosing: closed FROM UPSTREAM on every exit that is not the
+        # transport's own exhaustion (progress_stream's GeneratorExit); a
+        # bare ``async for`` would abandon pg_poll_event_stream suspended
+        # mid-iteration for the GC's asyncgen finalizer to close later -
+        # an ``async_generator_athrow`` task the loop-leak guard names.
+        async with contextlib.aclosing(
+            pg_poll_event_stream(
+                lambda: self._backend.get(self.job_id),
+                row_to_event,
+                job_id=self.job_id,
+                poll_interval=_WAIT_POLL_INTERVAL,
+            )
+        ) as stream:
+            async for event in stream:
+                yield event

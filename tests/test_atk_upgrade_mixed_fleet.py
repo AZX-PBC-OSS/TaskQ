@@ -32,7 +32,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, aclosing
 from datetime import UTC, datetime, timedelta
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
@@ -400,10 +400,17 @@ async def test_new_consumer_survives_old_repeated_head_wire() -> None:
     )
 
     seen: list[tuple[str, int, bool]] = []
-    async for event in handle.progress_stream():
-        seen.append((event.kind, event.seq, event.terminal))
-        if event.terminal:
-            break
+    # aclosing: the consumer ``break``s on the terminal event, and a bare
+    # ``async for`` would leave the generator chain (progress_stream →
+    # _progress_stream_redis → redis_event_stream) suspended for the GC's
+    # asyncgen finalizer to close one wave per generator after the call -
+    # ``async_generator_athrow`` tasks the loop-leak guard names. One
+    # deterministic close here drains the whole chain inside the call.
+    async with aclosing(handle.progress_stream()) as stream:
+        async for event in stream:
+            seen.append((event.kind, event.seq, event.terminal))
+            if event.terminal:
+                break
 
     kinds = [k for k, _, _ in seen]
     seqs = [s for _, s, _ in seen]
@@ -481,10 +488,15 @@ async def test_new_consumer_drops_true_progress_duplicates() -> None:
     )
 
     seen: list[tuple[str, int]] = []
-    async for event in handle.progress_stream():
-        seen.append((event.kind, event.seq))
-        if event.terminal:
-            break
+    # aclosing: same upstream-close contract as the repeated-head test
+    # above - the ``break`` on the terminal event must close the generator
+    # chain deterministically inside the call, never leave it suspended
+    # for the GC's asyncgen finalizer waves the loop-leak guard names.
+    async with aclosing(handle.progress_stream()) as stream:
+        async for event in stream:
+            seen.append((event.kind, event.seq))
+            if event.terminal:
+                break
 
     assert seen == [
         ("progress", 5),
