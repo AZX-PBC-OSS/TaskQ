@@ -410,6 +410,40 @@ jobs:
       - name: Run e2e tests
         run: uv run --no-sync pytest --e2e -m e2e tests/e2e --timeout=900 -q
 
+  system-e2e:
+    # System-e2e tier: stateful, multi-process lifecycle simulations
+    # (rolling deploys, leader kills, broker outages, cancel storms, mixed
+    # misbehaving fleets, sustained load) driven through real worker
+    # SUBPROCESSES against testcontainers Postgres + Dragonfly. Its own
+    # lane for the same reason the e2e and slow lanes exist: the
+    # scenarios are wall-clock-bound minutes each, so a failure here must
+    # not tax another lane's rerun economics. Modeled on the slow-suite
+    # lane (-n 2: every scenario is xdist-safe by construction, each test
+    # module owns a module-scoped database on the shared pair, unique
+    # health sockets and per-module schemas keep subprocess workers
+    # isolated) with the e2e lane's per-test timeout headroom.
+    # ubuntu-latest provides Docker; the dev group already carries
+    # testcontainers, so no e2e group is needed here.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-uv-env
+
+      # The workflow-level pin (test_ci_workflow.py) requires Node on every
+      # job whose pytest invocation can reach tests/web_admin; this job's
+      # marker selection does not, but the pin's substring scan cannot tell,
+      # so Node is installed unconditionally (same precedent as the
+      # load-sensitive lane).
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Run the system-e2e tier
+        run: uv run --no-sync pytest --system-e2e -m system tests/system_e2e --timeout=900 -n 2 -q
+
+
   security:
     runs-on: ubuntu-latest
     steps:

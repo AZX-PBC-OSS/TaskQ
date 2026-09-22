@@ -38,6 +38,17 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "default; requires Docker and a collector container image."
         ),
     )
+    parser.addoption(
+        "--system-e2e",
+        action="store_true",
+        default=False,
+        help=(
+            "Collect the system-e2e tier (tests/system_e2e): stateful, "
+            "multi-process lifecycle simulations against real PG + Dragonfly "
+            "with worker subprocesses. Off by default; requires Docker and "
+            "several minutes of wall clock."
+        ),
+    )
 
 
 #: Directory names of the opt-in containerized tiers, each gated the way the
@@ -45,6 +56,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 _OPT_IN_TIERS: tuple[tuple[str, str], ...] = (
     ("e2e", "--e2e"),
     ("otel_validation", "--otel-validation"),
+    ("system_e2e", "--system-e2e"),
 )
 
 
