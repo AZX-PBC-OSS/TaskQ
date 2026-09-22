@@ -9,6 +9,7 @@ Importing this module requires the ``taskq[fastapi]`` optional extra.
 """
 
 import asyncio
+import contextlib
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any
 
@@ -17,6 +18,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from taskq._close import CLOSE_TIMEOUT_SECS
 from taskq.constants import events_channel
 from taskq.settings import TaskQSettings
 from taskq.web._sse_limit import SESSION_RECHECK_TIMEOUT_SECS
@@ -121,24 +123,49 @@ async def _sse_generator(
                 assert current is not None, "the admin pool was unset under a live SSE stream"
                 return current
 
-            async for payload in listen_with_reconnect(
+            feed = listen_with_reconnect(
                 _live_pool,
                 channel,
                 keepalive_interval=_KEEPALIVE_INTERVAL,
                 backoff_initial=_RECONNECT_BACKOFF_INITIAL,
                 backoff_max=_RECONNECT_BACKOFF_MAX,
-            ):
-                # Once per iteration: bounds post-revocation staleness at one
-                # keepalive interval (payload None) and gates every event.
-                if not await _session_still_valid():
-                    logger.warning(
-                        "admin-sse-session-revoked", topic=schema, stream_phase="streaming"
-                    )
-                    return
-                if payload is None:
-                    yield ": keepalive\n\n"
-                else:
-                    yield f"event: state_change\ndata: {payload}\n\n"
+            feed = listen_with_reconnect(
+                _live_pool,
+                channel,
+                keepalive_interval=_KEEPALIVE_INTERVAL,
+                backoff_initial=_RECONNECT_BACKOFF_INITIAL,
+                backoff_max=_RECONNECT_BACKOFF_MAX,
+            )
+            try:
+                async for payload in feed:
+                    # Once per iteration: bounds post-revocation staleness at one
+                    # keepalive interval (payload None) and gates every event.
+                    if not await _session_still_valid():
+                        logger.warning(
+                            "admin-sse-session-revoked", topic=schema, stream_phase="streaming"
+                        )
+                        return
+                    if payload is None:
+                        yield ": keepalive\n\n"
+                    else:
+                        yield f"event: state_change\ndata: {payload}\n\n"
+            finally:
+                # Deterministic, bounded release of the LISTEN connection.
+                # An ``async for`` never closes its iterator, and every
+                # exit that is not the feed's own exhaustion - a client
+                # disconnect closes THIS generator, never the inner one -
+                # abandons *feed* mid-iteration. Without this close, the
+                # feed's finally (remove_listener, UNLISTEN,
+                # pool.release) runs only when the GC finalizes the
+                # abandoned generator: an unbounded delay pinning a
+                # session-scoped LISTEN connection against the pool's
+                # cap. Bounded by the same close timeout every
+                # TaskQ-initiated close uses (read at call time, so tests
+                # can shrink it); a close that outlives the bound gives
+                # up loudly-suppressed, no worse than the GC-driven
+                # status quo it replaces.
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(feed.aclose(), timeout=CLOSE_TIMEOUT_SECS)
         else:
             while True:
                 if not await _session_still_valid():
