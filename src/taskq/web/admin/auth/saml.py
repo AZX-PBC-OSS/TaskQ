@@ -7,13 +7,18 @@ when :func:`create_saml_auth` is called without the extra.
 """
 
 import time
-from typing import Any, Literal
+from datetime import UTC, datetime
+from typing import Any, Literal, Protocol
 
+import asyncpg
 import structlog
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
+from taskq.constants import (
+    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex for the schema name interpolated into the store's SQL, exactly as migrate.py does.
+)
 from taskq.web.admin.auth._session import (
     AuthBundle,
     IdentityClaims,
@@ -36,6 +41,10 @@ _REPLAY_CACHE_MAX_ENTRIES: int = 10_000
 _REPLAY_FALLBACK_TTL_SECONDS: int = 3600
 _PENDING_REQUEST_MAX_ENTRIES: int = 10_000
 _ANSWERED_REQUEST_MAX_ENTRIES: int = 10_000
+# Row kinds in the shared ``saml_replay_store`` table (one table, one (kind,
+# id) key space, two gates).
+_ASSERTION_REPLAY_KIND: str = "assertion_replay"
+_ANSWERED_REQUEST_KIND: str = "answered_request"
 
 
 class SAMLAuthConfig(BaseModel):
@@ -186,18 +195,18 @@ def _clear_request_cookie(response: Response, secure: bool, path: str) -> None:
 
 
 class _ExpiringIdSet:
-    """Process-local set of SAML correlation IDs, each with its own expiry.
+    """Bounded in-process set of SAML correlation IDs, each with its own expiry.
 
-    Every SAML ID gate needs the same store: a bounded set of IDs that ages
-    out on its own. Entries past their expiry are dropped on every touch (an
-    ID past its window is already refused on the assertion's own timestamps,
-    so pruning it loses nothing), and the set is capped, evicting the
+    Backs exactly one structure now: the pending AuthnRequest map (see
+    :class:`_PendingAuthnRequests`), whose process-locality is deliberate.
+    The other two ID gates, assertion replay and answered requests, moved to
+    the shared store (:class:`_PostgresSamlReplayStore`) that every replica
+    reads and writes; their former in-process classes are gone.
+
+    Entries past their expiry are dropped on every touch (an ID past its
+    window is already refused on the assertion's own timestamps, so pruning
+    it loses nothing), and the set is capped, evicting the
     soonest-to-expire entry, so a flood of IDs cannot grow it without bound.
-
-    Process-local: a multi-process deployment runs one set per process, so a
-    presentation routed to a sibling process is not seen here. That is why
-    these gates sit alongside, not instead of, the signature and timestamp
-    validation that holds in every process.
     """
 
     def __init__(self, max_entries: int) -> None:
@@ -224,36 +233,170 @@ class _ExpiringIdSet:
             del self._expiry_by_id[key]
 
 
-class _AssertionReplayCache:
-    """Record of consumed assertion IDs, one instance per bundle.
+class _SamlReplayStore(Protocol):
+    """The two shared ID gates: assertion replay + answered AuthnRequests.
 
-    A SAML assertion is single-use: once one has minted a session, a second
-    presentation of the same ID is a replay. Entries expire with their
-    assertion's NotOnOrAfter.
+    ``consume`` is the replay gate: an atomic first-wins claim of an
+    assertion ID whose second presentation raises. ``already_answered`` /
+    ``record_answered`` are the read and write halves of the
+    answered-AuthnRequest gate. Both carry their own expiry; rows past
+    theirs neither block nor are required (the assertion's own timestamp
+    validation, and the correlation cookie's signature window, refuse what
+    an expired record no longer can).
+    """
 
-    Process-local, like every store in this module: a second presentation of
-    the same response to a *sibling* process or replica is not seen here.
-    On the cookie-less fallback path that replay is still refused by the
-    pending-set spend; on the cookie path the browser's copy of the
-    single-use cookie is cleared on first use, so what remains exposed is a
-    network-level party who captured both the cookie and the response
-    body re-POSTing them to a sibling within the cookie's 300 s TTL.
-    Closing that needs a replay record in a store every replica shares
-    (Postgres/Redis) -- a deliberate follow-up, not something this
-    stateless auth layer can grow on its own.
+    async def consume(self, assertion_id: str, expires_at: float, *, now: float) -> None:
+        """Claim *assertion_id* until *expires_at*; a second claim raises."""
+        ...
+
+    async def already_answered(self, request_id: str, *, now: float) -> bool:
+        """True when *request_id* has an unexpired answered-record."""
+        ...
+
+    async def record_answered(self, request_id: str, ttl: int, *, now: float) -> None:
+        """Record *request_id* as answered for *ttl* seconds from *now*."""
+        ...
+
+
+class _InProcessSamlReplayStore:
+    """Process-local fallback for the two shared gates.
+
+    Used only when the request's app carries no admin pool (``app.state``
+    without both ``pg_pool`` and ``schema``): an embedder mounting this
+    router on a bare FastAPI app of its own, and the test suite's bare
+    fixtures. The shipped wiring (``taskq ui serve``, through
+    ``setup_admin_state``) always sets both keys, so every deployment that
+    serves SAML through the admin app runs :class:`_PostgresSamlReplayStore`
+    instead, and this class keeps exactly the limits its predecessors
+    documented: one set of records per process, capped and evictable, a
+    sibling replica seeing nothing here.
     """
 
     def __init__(self) -> None:
         self._consumed = _ExpiringIdSet(_REPLAY_CACHE_MAX_ENTRIES)
+        self._answered = _ExpiringIdSet(_ANSWERED_REQUEST_MAX_ENTRIES)
 
-    def consume(self, assertion_id: str, not_on_or_after: float | None, *, now: float) -> None:
+    async def consume(self, assertion_id: str, expires_at: float, *, now: float) -> None:
         """Record an assertion ID as consumed; a second consume of the same ID raises."""
         if self._consumed.contains(assertion_id, now=now):
             raise ValueError("SAML assertion replayed")
-        expiry = (
-            not_on_or_after if not_on_or_after is not None else now + _REPLAY_FALLBACK_TTL_SECONDS
-        )
-        self._consumed.add(assertion_id, expiry, now=now)
+        self._consumed.add(assertion_id, expires_at, now=now)
+
+    async def already_answered(self, request_id: str, *, now: float) -> bool:
+        return self._answered.contains(request_id, now=now)
+
+    async def record_answered(self, request_id: str, ttl: int, *, now: float) -> None:
+        self._answered.add(request_id, now + ttl, now=now)
+
+
+class _PostgresSamlReplayStore:
+    """The two ID gates in Postgres: a store every replica shares.
+
+    Closes the cross-replica replay the process-local records could not see:
+    a captured, correctly-signed response re-POSTed to a SIBLING process now
+    hits the same rows the accepting process wrote. The pool and schema come
+    from the admin app's per-request state (``app.state.pg_pool`` /
+    ``app.state.schema``, the same keys every admin route resolves
+    dependencies from), so a credential rotation that swaps the pool is
+    picked up on the next request and nothing here outlives a request.
+
+    Atomicity: the consume and the answered-record write are one statement,
+    ``INSERT ... ON CONFLICT (kind, id) DO UPDATE ... WHERE <row expired>
+    RETURNING 1``. A live row for the same key returns no row (first-wins:
+    the loser of the race is a replay), an expired row is reclaimed in place,
+    and a fresh key inserts. Two replicas claiming the same assertion ID
+    concurrently resolve to exactly one winner at the primary key, whatever
+    the interleaving.
+
+    Expiry uses the APPLICATION clock end to end: the caller passes ``now``
+    and the expiry instants are application-clock values (NotOnOrAfter read
+    off the assertion, TTLs counted from ``time.time()``), so both sides of
+    every comparison share one clock and an application/database skew cannot
+    stretch or shrink a TTL.
+
+    Cost: only an ACCEPTED login reaches these statements (signature and
+    timestamp validation run first), each claim also sweeps expired rows,
+    and rows live at most one NotOnOrAfter window, so the table stays at
+    roughly the accepted logins of one window and the sweep's scan of it is
+    cheap. A DB outage fails closed: the exception is the callback's own
+    error redirect, no session is minted.
+    """
+
+    # First-wins claim. The WHERE on the conflict branch reclaims an expired
+    # row instead of being blocked by it; a live row returns no row.
+    _CLAIM_SQL = (
+        'INSERT INTO "{schema}".saml_replay_store (kind, id, expires_at) '
+        "VALUES ($1, $2, $3) "
+        "ON CONFLICT (kind, id) DO UPDATE SET expires_at = EXCLUDED.expires_at "
+        "WHERE saml_replay_store.expires_at <= $4 "
+        "RETURNING 1"
+    )
+    # Expiry-predicated read: a record past its window answers nothing.
+    _HOLDS_SQL = (
+        'SELECT 1 FROM "{schema}".saml_replay_store WHERE kind = $1 AND id = $2 AND expires_at > $3'
+    )
+    # Opportunistic sweep: rows no claim ever touches again must not linger.
+    _PURGE_SQL = 'DELETE FROM "{schema}".saml_replay_store WHERE expires_at <= $1'
+
+    def __init__(self, pool: asyncpg.Pool, schema: str) -> None:
+        # The schema is interpolated into SQL (asyncpg cannot bind
+        # identifiers); validate rather than trust app.state. The admin
+        # factory already validated it, this repeats at the last writer.
+        if not _IDENT_RE.match(schema):
+            raise ValueError(f"invalid schema identifier: {schema!r}")
+        self._pool = pool
+        self._schema = schema
+
+    @staticmethod
+    def _ts(seconds: float) -> datetime:
+        """Float epoch seconds to the aware UTC datetime asyncpg binds to timestamptz."""
+        return datetime.fromtimestamp(seconds, tz=UTC)
+
+    async def _claim(self, kind: str, identifier: str, expires_at: float, *, now: float) -> bool:
+        """Atomic first-wins insert; False when a live row already holds the key."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(self._PURGE_SQL.format(schema=self._schema), self._ts(now))
+            claimed = await conn.fetchrow(
+                self._CLAIM_SQL.format(schema=self._schema),
+                kind,
+                identifier,
+                self._ts(expires_at),
+                self._ts(now),
+            )
+        return claimed is not None
+
+    async def consume(self, assertion_id: str, expires_at: float, *, now: float) -> None:
+        if not await self._claim(_ASSERTION_REPLAY_KIND, assertion_id, expires_at, now=now):
+            raise ValueError("SAML assertion replayed")
+
+    async def already_answered(self, request_id: str, *, now: float) -> bool:
+        async with self._pool.acquire() as conn:
+            answered = await conn.fetchval(
+                self._HOLDS_SQL.format(schema=self._schema),
+                _ANSWERED_REQUEST_KIND,
+                request_id,
+                self._ts(now),
+            )
+        return answered is not None
+
+    async def record_answered(self, request_id: str, ttl: int, *, now: float) -> None:
+        await self._claim(_ANSWERED_REQUEST_KIND, request_id, now + ttl, now=now)
+
+
+def _replay_store_for(request: Request, fallback: _SamlReplayStore) -> _SamlReplayStore:
+    """The shared Postgres store when the app carries the admin pool, else *fallback*.
+
+    The admin app always populates ``app.state.pg_pool`` and
+    ``app.state.schema`` (``setup_admin_state``) before its first request, so
+    every SAML callback served through it shares one store. Bare apps --
+    embedders and the test fixtures -- carry neither key and keep the
+    bundle's in-process store.
+    """
+    pool = getattr(request.app.state, "pg_pool", None)
+    schema = getattr(request.app.state, "schema", None)
+    if pool is not None and isinstance(schema, str):
+        return _PostgresSamlReplayStore(pool, schema)
+    return fallback
 
 
 class _PendingAuthnRequests:
@@ -281,7 +424,25 @@ class _PendingAuthnRequests:
     assertion that answers it, so the window is a single login attempt wide.
     The cookie path does not consult this set for admission -- the login may
     have been issued by a sibling process -- so the ID's single-use property
-    there is enforced by :class:`_AnsweredAuthnRequests` instead.
+    there is enforced by the shared answered-request store instead.
+
+    Deliberately STILL in-process when the replay and answered gates moved to
+    Postgres, for three reasons. First, locality here fails CLOSED: the set
+    is consulted only on the opt-in cookie-less fallback, where a missing ID
+    REFUSES, so a sibling process that never saw the /login rejects more,
+    never less -- no replay window opens (the cookie path, the default, never
+    reads this set at all; its ID comes back inside the same browser's
+    correlation cookie). Second, /login is unauthenticated: moving this map
+    into the shared database would convert unauthenticated /login spam into
+    unbounded database writes against the very store the real gates need
+    cheap, while the bounded set caps the flood in process. Third, the
+    flood-eviction behavior is pinned by
+    test_pending_set_flood_eviction_cannot_break_the_cookie_bound_login. The
+    cost is a documented deployment limit, not a replay hazard: a
+    cookie-blocked browser behind a multi-replica deployment needs the
+    callback served by the same process that issued the login (sticky
+    sessions), because the fallback is a weaker, opt-in binding whose
+    remaining gate is exactly "one process, one live spend".
     """
 
     def __init__(self) -> None:
@@ -308,42 +469,6 @@ class _PendingAuthnRequests:
         record below).
         """
         self._issued.discard(request_id)
-
-
-class _AnsweredAuthnRequests:
-    """Record of AuthnRequest IDs an accepted assertion has already answered.
-
-    The server-side half of the AuthnRequest ID's single-use property on the
-    cookie path. The browser's half -- clearing the correlation cookie on
-    every callback outcome -- binds the honest browser; a party that
-    captured the POST holds a copy of the cookie that clearing cannot reach,
-    and on the issuing process the pending-set drop is deliberately not a
-    gate. This record refuses a second DISTINCT assertion answering the same
-    request ID -- the shape the replay cache cannot refuse, because the
-    replaying party's second response carries a fresh assertion ID.
-
-    Entries live for the correlation cookie's own window (``_REQUEST_MAX_AGE``):
-    after that the cookie can no longer authenticate a presentation on the
-    cookie path, and the fallback path's pending-set spend has aged out too,
-    so an answered-ID record has nothing left to refuse.
-
-    Process-local like every store in this module, and capped/evictable like
-    every other (eviction requires a flood of *accepted* logins, since only
-    an accepted presentation writes here) -- a sibling process or an
-    eviction under flood pressure is not covered. That needs a replay
-    record in a store every replica shares, which is tracked separately as
-    a follow-up.
-    """
-
-    def __init__(self) -> None:
-        self._answered = _ExpiringIdSet(_ANSWERED_REQUEST_MAX_ENTRIES)
-
-    def already_answered(self, request_id: str, *, now: float) -> bool:
-        return self._answered.contains(request_id, now=now)
-
-    def record(self, request_id: str, *, now: float) -> None:
-        """Mark *request_id* as answered; a later presentation of it is refused."""
-        self._answered.add(request_id, now + _REQUEST_MAX_AGE, now=now)
 
 
 def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBundle:
@@ -373,9 +498,12 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
     # one.
     callback_path = f"{base_path}/callback"
     settings_dict = _build_settings(config)
-    replay_cache = _AssertionReplayCache()
+    # The replay + answered gates are shared through Postgres on every app
+    # that carries the admin pool (resolved per request, see
+    # _replay_store_for); this bundle-local instance is the fallback for bare
+    # apps without one. The pending map below is in-process by design.
+    in_process_replay_store = _InProcessSamlReplayStore()
     pending_requests = _PendingAuthnRequests()
-    answered_requests = _AnsweredAuthnRequests()
     router = APIRouter(tags=["sso-saml"])
 
     @router.get("/login")
@@ -434,6 +562,10 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
                 if request_cookie
                 else None
             )
+            # Shared when the app carries the admin pool (every replica then
+            # reads and writes the same rows), the bundle-local in-process
+            # store otherwise.
+            replay_store = _replay_store_for(request, in_process_replay_store)
 
             form = await request.form()
             post_data: dict[str, str] = {}
@@ -471,7 +603,7 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
                 # a re-presentation of the same assertion.
                 if in_response_to != request_id:
                     raise ValueError("SAML response does not answer this browser's AuthnRequest")
-                if answered_requests.already_answered(in_response_to, now=time.time()):
+                if await replay_store.already_answered(in_response_to, now=time.time()):
                     raise ValueError("SAML response answers an already-answered AuthnRequest")
                 pending_requests.discard(in_response_to)
             elif config.allow_cookieless_fallback:
@@ -502,7 +634,9 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
             # second fallback presentation; the record additionally closes
             # the cross-path replay -- fallback acceptance, then a cookie-
             # path replay of a fresh assertion with the captured cookie.
-            answered_requests.record(in_response_to, now=time.time())
+            await replay_store.record_answered(
+                in_response_to, ttl=_REQUEST_MAX_AGE, now=time.time()
+            )
 
             # An assertion whose InResponseTo is absent (or otherwise valid but
             # captured) can be re-POSTed while its window is live; only a
@@ -510,9 +644,14 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
             assertion_id = auth.get_last_assertion_id()
             if not isinstance(assertion_id, str) or not assertion_id:
                 raise ValueError("SAML response carries no assertion ID")
-            replay_cache.consume(
-                assertion_id, auth.get_last_assertion_not_on_or_after(), now=time.time()
+            now = time.time()
+            not_on_or_after = auth.get_last_assertion_not_on_or_after()
+            assertion_expires_at = (
+                not_on_or_after
+                if not_on_or_after is not None
+                else now + _REPLAY_FALLBACK_TTL_SECONDS
             )
+            await replay_store.consume(assertion_id, assertion_expires_at, now=now)
 
             nameid = auth.get_nameid()
             if not isinstance(nameid, str) or not nameid:
