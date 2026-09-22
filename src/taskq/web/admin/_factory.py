@@ -9,7 +9,7 @@ import importlib
 import pkgutil
 import secrets
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -256,6 +256,35 @@ async def _refresh_clock_offset(pool: BoundedPool = Depends(get_admin_pool)) -> 
 def get_backend(request: Request) -> Backend | None:
     """Dependency: yields the Backend from ``app.state`` if configured."""
     return getattr(request.app.state, "backend", None)
+
+
+class ActorFirePolicyLike(Protocol):
+    """Structural twin of ``worker.cron_loop.ActorFirePolicy``.
+
+    The admin package must stay importable without the worker
+    (``test_no_worker_import``), so the run-now handler cannot name the
+    cron loop's class at module level; this Protocol pins the two
+    attributes the fire path needs. The cron loop's frozen dataclass
+    satisfies it structurally, and so does any host-supplied mapping
+    value with the same shape.
+    """
+
+    @property
+    def singleton(self) -> bool: ...
+
+    @property
+    def max_pending(self) -> int | None: ...
+
+
+def get_actor_fire_policies(request: Request) -> Mapping[str, ActorFirePolicyLike] | None:
+    """Dependency: the host's actor fire policies, if it supplied any.
+
+    ``setup_admin_state`` always sets the key when the bundle carried a
+    mapping; the ``getattr`` fallback keeps hand-assembled ``app.state``
+    setups (which never set the key) working exactly as before: no
+    policies, no stamping, the documented residual.
+    """
+    return getattr(request.app.state, "actor_fire_policies", None)
 
 
 def get_rl_registry(request: Request) -> RateLimitRegistry:
@@ -516,6 +545,11 @@ class AdminBundle:
     base_path: str
     backend: Backend | None = None
     rate_limit_registry: RateLimitRegistry | None = None
+    # The actor fire policies (cron_loop.ActorFirePolicy, structurally
+    # typed) the run-now fire path consults for the singleton / max_pending
+    # registry flags the stored actor_config row cannot carry. ``None``
+    # keeps the documented residual: no policies, no stamping.
+    actor_fire_policies: Mapping[str, ActorFirePolicyLike] | None = None
     # The SSE session re-check (#316), derived from auth_dependency when the
     # factory was not given one explicitly; setup_admin_state copies it onto
     # app.state where the /sse/{topic} endpoint resolves it per request.
@@ -538,6 +572,7 @@ def setup_admin_state(app: _AppLike, bundle: AdminBundle) -> None:
     app.state.rate_limit_registry = (
         bundle.rate_limit_registry if bundle.rate_limit_registry is not None else _rl_singleton
     )
+    app.state.actor_fire_policies = bundle.actor_fire_policies
     app.state.taskq_session_verifier = bundle.session_verifier
 
 
@@ -597,6 +632,7 @@ def create_router(
     base_path: str = "",
     backend: Backend | None = None,
     rate_limit_registry: RateLimitRegistry | None = None,
+    actor_fire_policies: Mapping[str, ActorFirePolicyLike] | None = None,
     session_verifier: Callable[[Request], Awaitable[bool]] | None = None,
 ) -> AdminBundle:
     """Create the admin UI FastAPI router.
@@ -615,6 +651,19 @@ def create_router(
     the admin pages read configured primitives from (e.g. the API-process
     instance in a multi-process deployment).  Default ``None`` resolves to
     the module singleton, same-process behavior is unchanged.
+
+    ``actor_fire_policies`` is an optional mapping from actor name to the
+    fire policy that actor's ``ActorRef`` declares (singleton, max_pending),
+    the same mapping the worker bootstrap hands the cron tick. The run-now
+    fire path consults it because the stored ``actor_config`` row cannot
+    carry code-declared flags: without it a run-now fire for a singleton
+    actor lands WITHOUT ``metadata["singleton"]`` -- invisible to the
+    ``jobs_singleton_uniq`` index and to every later singleton preflight,
+    the "at most one active job" contract silently gone from the admin
+    surface. Pass the worker's mapping when the admin app is mounted in a
+    process that has the registry (the worker itself); ``None`` keeps the
+    residual: a standalone admin process cannot know, and the run-now fire
+    stamps nothing (disclosed here and in ops.py, not silent).
 
     ``session_verifier`` is the optional async re-check long-lived SSE streams
     re-invoke (#316) -- ``Callable[[Request], Awaitable[bool]]`` returning
@@ -770,6 +819,7 @@ def create_router(
         base_path=base_path,
         backend=backend,
         rate_limit_registry=rate_limit_registry,
+        actor_fire_policies=actor_fire_policies,
         session_verifier=session_verifier,
     )
 
