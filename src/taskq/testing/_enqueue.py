@@ -5,6 +5,7 @@
 ``self: InMemoryBackend`` as the first parameter.
 """
 
+from contextlib import suppress
 from dataclasses import replace
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -43,6 +44,45 @@ __all__ = [
 ]
 
 logger = structlog.get_logger("taskq.testing.in_memory")
+
+
+def _refuse_terminal_batch_members(self: "InMemoryBackend", args_list: list[EnqueueArgs]) -> None:
+    """Refuse a member write whose batch row is terminal.
+
+    Mirror of the PG membership lock's status check
+    (``_lock_batch_membership`` in ``taskq.backend._enqueue``): a member
+    INSERT against a batches row whose status is ``'complete'`` or
+    ``'aborted'`` raises :class:`~taskq.exceptions.BatchIdExistsError`,
+    the same typed refusal the create_batch arms give a batch_id
+    collision. Without it a chunked arm (an explicit ``batch_id`` is
+    forwarded verbatim) silently commits pending members under a
+    terminal row, where every counter write guards ``status = 'active'``
+    so the batch's failure policy is dead and the sweep (active rows
+    only) can never reconcile. An ACTIVE row keeps appending
+    (resumption), only a terminal one refuses. Rows that do not exist
+    (the atomic arm inserts members before create_batch, the bulk-import
+    paths never create one) refuse nothing.
+    """
+    from taskq.exceptions import BatchIdExistsError
+
+    seen: dict[str, UUID] = {}
+    for args in args_list:
+        raw = args.metadata.get("batch_id")
+        if raw is None:
+            continue
+        # A reserved-key value that does not parse as a UUID cannot name a
+        # batches row (the store's keys are UUID), so there is no row to
+        # read and no terminal refusal can apply: it rides as opaque
+        # metadata, the shape the batch_id read filter accepts as a plain
+        # containment key. Any spelling that DOES parse (braces, urn:)
+        # reads the parsed row, so the guard stays airtight for every id
+        # that can name one.
+        with suppress(ValueError):
+            seen[str(raw)] = UUID(str(raw))
+    for _batch_id_str, batch_id in seen.items():
+        row = self._batches.get(batch_id)
+        if row is not None and row.status != "active":
+            raise BatchIdExistsError(batch_id, reason="terminal")
 
 
 async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
@@ -220,6 +260,37 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         retry_jitter=args.retry_jitter,
     )
 
+    # The single arm's terminal-batch guard, GUARD parity with the PG
+    # single path's membership lock (which covers this write site for the
+    # sub-job enqueuer's fallback arm and the buffer flush, whose
+    # client-level get_batch preflights are check-then-act with awaits
+    # between the check and each write). There is no await between this
+    # read and the store below, so on the twin the check-then-write is
+    # atomic per event-loop step, the mirror of PG's lock-held-to-commit.
+    # A missing batch row (the bulk-import shape) refuses nothing, an
+    # ACTIVE row appends (resumption), a terminal row raises the bulk
+    # arms' typed refusal; a batch-stamped row that dedup-hits above
+    # never reaches this store, so no refusal fires for it.
+    raw_batch_id = args.metadata.get("batch_id")
+    if raw_batch_id is not None:
+        try:
+            batch_id = UUID(str(raw_batch_id))
+        except ValueError:
+            # A reserved-key value that does not parse as a UUID cannot
+            # name a batches row (the store's keys are UUID), so there is
+            # no row to read and no terminal refusal can apply: it rides
+            # as opaque metadata, the shape the batch_id read filter
+            # accepts as a plain containment key. Any spelling that DOES
+            # parse (braces, urn:) reads the parsed row, so the guard
+            # stays airtight for every id that can name one.
+            batch_id = None
+        if batch_id is not None:
+            batch_row = self._batches.get(batch_id)
+            if batch_row is not None and batch_row.status != "active":
+                from taskq.exceptions import BatchIdExistsError
+
+                raise BatchIdExistsError(batch_id, reason="terminal")
+
     if args.id in self._jobs:
         # Why a function-level import: the driver-free import-surface
         # convention (see the _log_enqueue_dedup import above); this path
@@ -347,6 +418,9 @@ async def _enqueue_batch(
     # attribution and admission. Runs before the cap preflight to match
     # the PG statement order (build loop precedes the cap count).
     _check_batch_jsonb(args_list)
+    # Membership check before the cap preflight, the PG chunk wrapper's
+    # statement order (the membership lock runs first).
+    _refuse_terminal_batch_members(self, args_list)
     refusals: list[MaxPendingExceededError] = []
     refused_indices: dict[str, list[int]] = {}
     admitted_args = args_list
@@ -721,6 +795,7 @@ async def _enqueue_batch_fast(
     # batch raise DuplicateIdempotencyKeyError in memory while PG raised
     # PayloadValidationError.
     _check_batch_jsonb(args_list)
+    _refuse_terminal_batch_members(self, args_list)
     refusals: list[MaxPendingExceededError] = []
     refused_indices: dict[str, list[int]] = {}
     admitted_args = args_list
