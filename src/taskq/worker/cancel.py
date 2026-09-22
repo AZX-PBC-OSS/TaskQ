@@ -402,6 +402,18 @@ class _CancelController:
         the escalation and re-queue the abandon.  Deregistering there would
         strand a still-running job with no route back to cancellation.
 
+        A False is also the shape of a budget cut whose detached write
+        landed: the shield hands the cut to the caller while the inner
+        write detaches and commits, the except arm re-queues the entry,
+        and the next tick's re-issued abandon cannot match (the row is no
+        longer ``running``, and the cancel-poll filters ``status =
+        'running'``, so no ladder arm can ever fire again). The False arm
+        therefore re-reads the row before re-arming: an ``abandoned`` row
+        means the escalation IS durable and the delivery completes there,
+        with the same first-delivery-only shape as the applied arm - a
+        write this drain landed is never left with its cancellation
+        silently undelivered.
+
         An abandon whose write RAISES is re-queued at the head of the deque
         and the exception still propagates: the write did not land, and the
         entry's ABANDON_PENDING sentinel matches no phase arm in run_in_tx,
@@ -430,13 +442,32 @@ class _CancelController:
             # instead of asyncio reporting "Task exception was never retrieved".
             try:
                 abandoned = await shield_with_retrieval(self._backend.mark_abandoned(job_id))
+                if not abandoned:
+                    # A False is ambiguous: the guard no-ops for a job
+                    # that finished naturally, for an escalation another
+                    # writer moved, and for an abandon that is ALREADY
+                    # durable. Only the row tells them apart, and the
+                    # durable case still owes its delivery (see the
+                    # False arm below). The read joins the try: a cut
+                    # read re-queues the entry exactly as a cut write
+                    # does, the next tick retries, nothing is half-
+                    # handled.
+                    row = await self._backend.get(job_id)
+                else:
+                    row = None
             except BaseException:
                 # Why the broad catch: whatever failed, a pool-acquire
                 # TimeoutError, a PostgresError, a socket death, or the
                 # heartbeat tick's command-budget cut, delivered as a
-                # CancelledError through the shield), the
-                # write did not land and the abandon must stay pending
-                # for the next tick. CancelledError is caught for the
+                # CancelledError through the shield), the write's fate
+                # is not observable here: a cut write DETACHES under the
+                # shield and can still commit after this re-queue, a
+                # failed write did not land. Re-queueing is correct
+                # either way: a write that did not land is re-issued by
+                # the next tick's drain, and one that did lands on the
+                # not-applied guard, which re-reads the row and
+                # completes the delivery the durable abandon still
+                # owes. CancelledError is caught for the
                 # SAME re-queue reason and re-raised unchanged: at real
                 # task teardown the queue dies with the controller
                 # (nothing drains later, exactly as the old pop-and-lose
@@ -444,11 +475,33 @@ class _CancelController:
                 # the re-queued entry, the old pop-and-lose would have
                 # stranded the job between phases forever. The detached
                 # inner write's outcome is retrieved by the shield's
-                # callback, and a late-landing duplicate is absorbed by
-                # the not-applied guard below.
+                # callback, and a late-landing duplicate write is
+                # absorbed by the not-applied guard below.
                 self._pending_abandons.appendleft(job_id)
                 raise
             if not abandoned:
+                if row is not None and row.status == "abandoned":
+                    # The False was the durability of an earlier drain's
+                    # write (detached by a budget cut and committed
+                    # afterwards), not a guard miss on a live escalation:
+                    # the abandon owns the terminal state, the guard
+                    # absorbed the duplicate WRITE, and the delivery the
+                    # cut dropped completes here. Same first-delivery-
+                    # only shape as the applied arm below, and no second
+                    # write: the attempt row is the first one's.
+                    entry = self._deps.active_jobs.get(job_id)
+                    if entry is not None and not entry.task.done() and entry.task.cancelling() == 0:
+                        entry.task.cancel()
+                    await self._deps.active_jobs.deregister(job_id)
+                    log_cancel_phase_change(
+                        _log,
+                        from_phase=int(CancelPhase.FORCED),
+                        to_phase=int(CancelPhase.ABANDON_PENDING),
+                        job_id=str(job_id),
+                        worker_id=worker_id,
+                    )
+                    _record_phase_transition(CancelPhase.FORCED, CancelPhase.ABANDON_PENDING)
+                    continue
                 entry = self._deps.active_jobs.get(job_id)
                 if entry is not None:
                     entry.cancel_phase = CancelPhase.FORCED
