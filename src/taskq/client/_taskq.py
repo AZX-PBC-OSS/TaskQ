@@ -1443,15 +1443,25 @@ async def _stream_pg(
             raise KeyError(job_id)
         return row
 
-    async for event in pg_poll_event_stream(
-        _fetch_row,
-        lambda row, _status_changed: _row_to_event(row),
-        job_id=job_id,
-        poll_interval=min(poll_timeout, _PG_STREAM_POLL_INTERVAL_S),
-        last_seq=last_seq,
-        last_status=last_status,
-    ):
-        yield event
+    # aclosing: this generator is closed FROM UPSTREAM on every exit that
+    # is not the transport's own exhaustion - TaskQ.stream's terminal
+    # ``return`` closes it via GeneratorExit inside its aclosing, never by
+    # draining to StopAsyncIteration. A bare ``async for`` would abandon
+    # the poll generator suspended at its yield for the GC's asyncgen
+    # finalizer to close later, one ``async_generator_athrow`` task per
+    # abandoned generator - the residue the loop-leak guard names.
+    async with contextlib.aclosing(
+        pg_poll_event_stream(
+            _fetch_row,
+            lambda row, _status_changed: _row_to_event(row),
+            job_id=job_id,
+            poll_interval=min(poll_timeout, _PG_STREAM_POLL_INTERVAL_S),
+            last_seq=last_seq,
+            last_status=last_status,
+        )
+    ) as poll:
+        async for event in poll:
+            yield event
 
 
 async def _stream_redis(
@@ -1492,14 +1502,23 @@ async def _stream_redis(
             return None
         return await _refetch()
 
-    async for event in redis_event_stream(
-        redis_client,
-        channel,
-        poll_timeout=poll_timeout,
-        decode_message=decode,
-        on_timeout=_refetch,
-    ):
-        yield event
+    # aclosing: closed FROM UPSTREAM on every exit that is not the
+    # transport's own exhaustion (TaskQ.stream's terminal ``return`` via
+    # GeneratorExit); a bare ``async for`` would abandon redis_event_stream
+    # suspended mid-iteration, deferring the pubsub unsubscribe/close to the
+    # GC's asyncgen finalizer - an ``async_generator_athrow`` task the
+    # loop-leak guard names, and an unbounded delay on the cleanup.
+    async with contextlib.aclosing(
+        redis_event_stream(
+            redis_client,
+            channel,
+            poll_timeout=poll_timeout,
+            decode_message=decode,
+            on_timeout=_refetch,
+        )
+    ) as feed:
+        async for event in feed:
+            yield event
 
 
 async def _watch_reclaims_poll(
@@ -1719,8 +1738,15 @@ async def _watch_reclaims_pg(
     per *poll_timeout* (a minute for 250 events at the 30s default).
     """
     if listen_conn is None and pg_conn_factory is None and dsn is None:
-        async for evt in _watch_reclaims_poll(client, poll_timeout, after_id=after_id):
-            yield evt
+        # aclosing: closed FROM UPSTREAM on every exit that is not the poll
+        # transport's own exhaustion (the caller's break / cancellation); a
+        # bare ``async for`` would abandon _watch_reclaims_poll suspended at
+        # its yield for the GC's asyncgen finalizer.
+        async with contextlib.aclosing(
+            _watch_reclaims_poll(client, poll_timeout, after_id=after_id)
+        ) as poll:
+            async for evt in poll:
+                yield evt
         return
 
     import asyncpg
@@ -1886,11 +1912,18 @@ async def _watch_reclaims_pg(
                 # otherwise the low-latency wakeup this LISTEN
                 # transport exists for would be silently defeated by
                 # that margin.
-                async for evt in _catch_up_after_notify(
-                    client, cursor, visibility_delay=visibility_delay
-                ):
-                    cursor = evt.event_id
-                    yield evt
+                # aclosing: this generator can be closed FROM UPSTREAM while
+                # suspended in this delegation (the caller's break lands
+                # here whenever the reclaim event surfaced through the
+                # catch-up path, not the direct poll above); a bare
+                # ``async for`` would abandon the catch-up generator
+                # suspended at its yield for the GC's asyncgen finalizer.
+                async with contextlib.aclosing(
+                    _catch_up_after_notify(client, cursor, visibility_delay=visibility_delay)
+                ) as catch_up:
+                    async for evt in catch_up:
+                        cursor = evt.event_id
+                        yield evt
     finally:
         # Separate suppress blocks, termination listener first: it is
         # synchronous (cannot fail on the wire), while remove_listener

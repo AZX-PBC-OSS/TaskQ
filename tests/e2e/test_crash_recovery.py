@@ -262,12 +262,22 @@ async def test_sigkill_crash_recovery(
     # by the time the job succeeds, so following from after_id=0 surfaces
     # it without needing a watcher running concurrently with the crash.
     reclaim_event: EventRow | None = None
+    # aclosing around the generator the test itself abandons: the loop exits
+    # by ``break`` when the reclaim event surfaces and by cancellation when
+    # the timeout fires - neither is the stream's own exhaustion, and a bare
+    # ``async for`` leaves the suspended watch_reclaims generator to the GC's
+    # asyncgen finalizer, an ``async_generator_athrow`` task the loop-leak
+    # guard names. TaskQ.watch_reclaims closes its own transport
+    # deterministically once closed from here (bounded conn close in its
+    # finally), so one deterministic aclose drains the whole chain.
     with contextlib.suppress(TimeoutError):
         async with asyncio.timeout(30):
-            async for event in e2e_client.watch_reclaims(after_id=0, poll_timeout=2.0):
-                if event.job_id == handle.job_id:
-                    reclaim_event = event
-                    break
+            agen = e2e_client.watch_reclaims(after_id=0, poll_timeout=2.0)
+            async with contextlib.aclosing(agen):
+                async for event in agen:
+                    if event.job_id == handle.job_id:
+                        reclaim_event = event
+                        break
     assert reclaim_event is not None, (
         f"no lock_expired reclaim event for job {handle.job_id} surfaced via watch_reclaims"
     )
