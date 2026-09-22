@@ -40,8 +40,8 @@ __all__ = [
 _SCHEDULE_CREATE_SQL = """\
 INSERT INTO "{schema}".cron_schedules
 (id, actor, name, cron_expr, timezone, dst_strategy, payload_factory, enabled,
- next_fire_at, identity_key, metadata)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+ next_fire_at, identity_key, metadata, disabled_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12)
 RETURNING *"""
 
 _SCHEDULE_LIST_SQL = """\
@@ -112,11 +112,19 @@ async def create_schedule(
     Does NOT suppress ``UniqueViolationError``, callers handle it
     (the ``(actor, name)`` UNIQUE constraint).  ``next_fire_at`` is provided by the
     caller (computed client-side via ``compute_next_fire_after``).
+
+    A fresh row starts with ``disabled_by = NULL``. An operator-owned
+    schedule created disabled (``owner='operator'``, ``enabled=False``)
+    carries ``disabled_by='operator'`` from birth: an operator's creation
+    intent is provenance, not a stale auto-disable, so no boot reverts it.
     """
     from taskq._ids import new_uuid
 
     sid = new_uuid()
     metadata_json = jsonb_param(args.metadata) or "{}"
+    disabled_by: str | None = None
+    if not args.enabled and args.owner == "operator":
+        disabled_by = "operator"
     async with _bounded_checkout(pool, "create_schedule") as conn:
         row = await conn.fetchrow(
             sql.create,
@@ -131,6 +139,7 @@ async def create_schedule(
             args.next_fire_at,
             args.identity_key,
             metadata_json,
+            disabled_by,
         )
     assert row is not None
     return schedule_record_from_record(row)
@@ -165,7 +174,14 @@ async def update_schedule(
     """Update a cron schedule row.  Returns the updated row.
 
     When ``enabled=True``: the UPDATE also sets
-    ``consecutive_failures = 0`` and ``last_fire_error = NULL``.
+    ``consecutive_failures = 0``, ``last_fire_error = NULL`` and
+    ``disabled_by = NULL`` (a re-enable is a fresh start).
+    When ``enabled=False``: the UPDATE also sets ``disabled_by = 'operator'``.
+    Every disable that flows through the backend API is operator-driven
+    (schedule handle, CLI, admin actions); the cron loop's auto-disable is a
+    raw statement in ``worker/cron_loop.py`` and stamps ``'auto'`` itself,
+    which is what makes a stale auto-disable recoverable at registration
+    while operator intent is not.
     When ``cron_expr`` is provided: caller must also provide
     ``next_fire_at`` (recomputed via ``compute_next_fire_after``).
     """
@@ -188,6 +204,9 @@ async def update_schedule(
         if args.enabled:
             sets.append("consecutive_failures = 0")
             sets.append("last_fire_error = NULL")
+            sets.append("disabled_by = NULL")
+        else:
+            sets.append("disabled_by = 'operator'")
     if args.payload_factory is not None:
         idx += 1
         sets.append(f"payload_factory = ${idx}")

@@ -714,9 +714,13 @@ SELECT
     (SELECT array_agg(prev_status ORDER BY id) FROM cancelled) AS cancelled_prev_statuses
 """.strip().replace("{actor_deregistered_class}", ERROR_CLASS_ACTOR_DEREGISTERED)
 
+# A deregistration disable is operator intent (the CLI/admin action), so the
+# rows carry disabled_by='operator': the ownership marker the worker's startup
+# registration pass reads to never revert a deliberate disable. See
+# worker/_bootstrap.py for the re-enable rules.
 _DEREGISTER_DISABLE_SCHEDULES_SQL = """
 UPDATE "{schema}".cron_schedules
-   SET enabled = false
+   SET enabled = false, disabled_by = 'operator'
  WHERE actor = $1 AND enabled = true
 """.strip()
 

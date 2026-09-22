@@ -9,6 +9,7 @@ import asyncpg
 import pytest
 
 from taskq import migrate as migrate_mod
+from taskq._ids import new_uuid
 from taskq.backend._sql_templates import COPY_FROM_COLUMNS
 from taskq.settings import TaskQSettings
 
@@ -329,6 +330,51 @@ async def test_cron_schedules_has_consecutive_failures_column(
     assert col["data_type"] == "integer"
     assert col["is_nullable"] == "NO"
     assert col["column_default"] == "0"
+
+
+async def test_cron_schedules_has_disabled_by_column(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """The ``01.00.19_01_pre_cron_disabled_by`` migration adds a nullable
+    ``disabled_by text`` column to ``cron_schedules``: the ownership model's
+    who-disabled-it marker ('auto' = the cron loop's failure-count
+    auto-disable, 'operator' = a deliberate disable, NULL = enabled or
+    disabled before ownership was tracked)."""
+    await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
+
+    rows = await pg_conn.fetch(
+        """
+        SELECT column_name, data_type, is_nullable, column_default
+        FROM information_schema.columns
+        WHERE table_schema = $1
+            AND table_name = 'cron_schedules'
+            AND column_name = 'disabled_by'
+        """,
+        settings.schema_name,
+    )
+    assert len(rows) == 1, "disabled_by column missing from cron_schedules"
+    col = rows[0]
+    assert col["data_type"] == "text"
+    assert col["is_nullable"] == "YES"
+    assert col["column_default"] is None
+
+    # The allowed values are enforced: NULL (enabled / pre-ownership) passes,
+    # the two ownership markers pass, anything else is rejected.
+    await pg_conn.execute(
+        f'INSERT INTO "{settings.schema_name}".cron_schedules'  # noqa: S608  # Why: schema is a fixture-provided identifier.
+        "(id, actor, cron_expr, next_fire_at, enabled, disabled_by) "
+        "VALUES ($1, $2, '0 * * * *', statement_timestamp(), false, 'operator')",
+        new_uuid(),
+        "disabled_by_check_probe",
+    )
+    with pytest.raises(asyncpg.CheckViolationError):
+        await pg_conn.execute(
+            f'INSERT INTO "{settings.schema_name}".cron_schedules'  # noqa: S608
+            "(id, actor, cron_expr, next_fire_at, enabled, disabled_by) "
+            "VALUES ($1, $2, '0 * * * *', statement_timestamp(), false, 'nobody')",
+            new_uuid(),
+            "disabled_by_check_probe_bad",
+        )
 
 
 async def test_queues_has_max_concurrent_column(
