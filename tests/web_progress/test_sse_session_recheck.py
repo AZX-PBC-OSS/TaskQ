@@ -35,13 +35,13 @@ from fastapi import FastAPI, HTTPException, Request
 
 import taskq.web._sse_limit as sse_limit
 from taskq._ids import new_uuid
-from tests.web_progress.test_integration import (
-    _reap_stream_teardown_tasks,  # pyright: ignore[reportPrivateUsage]  # Why: the wave-1 stream-teardown reap, shared across the SSE test modules the same way tests/test_saml_shared_replay_store.py imports the sso fixture helpers.
-)
 from taskq.web.admin.auth._session import IdentityClaims
 from taskq.web.progress import (
     _event_generator,  # pyright: ignore[reportPrivateUsage]  # Why: unit tests exercise the production generator directly.
     create_router,
+)
+from tests.web_progress.test_integration import (
+    _reap_stream_teardown_tasks,  # pyright: ignore[reportPrivateUsage]  # Why: the wave-1 stream-teardown reap, shared across the SSE test modules the same way tests/test_saml_shared_replay_store.py imports the sso fixture helpers.
 )
 
 pytestmark = [pytest.mark.fastapi]
