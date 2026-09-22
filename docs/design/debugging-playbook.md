@@ -486,7 +486,7 @@ assert found_at is not None, (
     f"lone job starved across 5 batches of {_BATCH_LIMIT} behind "
     f"{_FLOOD_COUNT} flooded jobs - fairness sampling lost to FIFO-by-id"
 )
-assert found_at < _STARVATION_BOUND_BATCHES, (...)
+assert found_at < _STARVATION_BOUND_BATCHES, ...
 ```
 
 The first assert is the pin's honesty clause: a test about fairness
