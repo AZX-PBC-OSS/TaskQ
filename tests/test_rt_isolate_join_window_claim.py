@@ -54,6 +54,7 @@ from pydantic import BaseModel
 
 from taskq._ids import new_base62, new_uuid
 from taskq.client._enqueuer import SubJobEnqueuer
+from taskq.constants import ERROR_CLASS_HEARTBEAT_LOST
 from taskq.context import JobContext
 from taskq.migrate import apply_pending
 from taskq.obs import bind_job_context
@@ -265,3 +266,92 @@ async def test_claim_landing_in_join_window_is_not_repended(
     # is not yet marked cannot double-run, because a taken row is never
     # dispatched after this event is set.
     assert deps.producer_stop_event.is_set()
+
+
+async def test_unmarked_inflight_claim_residual_is_handed_back_not_double_run(
+    rt_schema: tuple[str, str],
+) -> None:
+    """The residual's exact bound and disposition: a claim that committed
+    to the jobs table but is not yet marked in either map at the
+    exclusion-capture instant (the producer suspended inside
+    ``dispatch_batch``, one scheduler step wide) is NOT excluded - the
+    capture cannot see it - so the re-pend takes it.
+
+    That disposition is the safe one, and this pins it: after
+    ``producer_stop_event`` (set at isolate entry, before the capture),
+    no consumer loop dispatches a row taken after the stop (run.py's
+    post-take guard, pinned by
+    ``test_di_consumer_loop_stops_dequeuing_once_draining_starts``), and
+    the producer's own exit pass releases what it claimed unmarked. The
+    re-pended row is therefore handed back exactly once - pending,
+    unlocked, with the reclaim delay - and no local handler can race a
+    peer's claim of it. The old pre-join snapshot had the SAME blind spot
+    for this shape (it also could not see an unmarked claim); what the
+    fix changes is the verdict for the rows it CAN see, and the stop that
+    makes the blind spot harmless.
+
+    The ledger records the never-dispatched attempt as
+    ``crashed``/``HeartbeatLost`` rather than refunding it (the exit
+    pass's ATTEMPT_REFUND doctrine covers the queue-resident shape, this
+    shape predates the claim's actor hand-off and reads as a worker death
+    to the fleet): one attempt of budget per unmarked claim, the honest
+    fleet-side record for a worker that walked away mid-claim.
+    """
+    schema, dsn = rt_schema
+    worker_id = new_uuid()
+    conn = await asyncpg.connect(dsn)
+    try:
+        await create_worker(conn, schema, worker_id)
+        r_id = await create_running_job(conn, schema, worker_id)
+    finally:
+        await conn.close()
+
+    deps = _isolate_deps(dsn, schema)
+    # The residual state itself: the row is running and locked to this
+    # worker, and NEITHER map covers it - the producer is suspended inside
+    # its claim round's dispatch_batch, the consumer cannot have taken a
+    # row that was never put. Nothing is registered, so the actor join is
+    # skipped entirely and the capture runs with the maps empty.
+    assert deps.active_jobs.held_ids() == []
+    assert deps.active_jobs.queued_ids() == []
+
+    shutdown = asyncio.Event()
+    await isolate_self(deps, worker_id, shutdown)
+    assert shutdown.is_set()
+    assert deps.producer_stop_event.is_set()
+
+    conn = await asyncpg.connect(dsn)
+    try:
+        states = await _row_states(conn, schema, [r_id])
+        attempts = await conn.fetch(
+            f'SELECT outcome, error_class FROM "{schema}".job_attempts WHERE job_id = $1',
+            r_id,
+        )
+        scheduled = await conn.fetchval(
+            f'SELECT scheduled_at FROM "{schema}".jobs WHERE id = $1', r_id
+        )
+    finally:
+        await conn.close()
+
+    # The disposition: handed back to the fleet exactly once - pending,
+    # unlocked, no longer this worker's to run. The local_queue copy this
+    # worker may still mint (dispatch_batch resuming, mark_enqueued, the
+    # put) can never execute: every consumer loop's post-take stop guard
+    # returns without dispatching, and the exit pass's own UPDATE matches
+    # no running row of this worker anymore.
+    status, holder = states[r_id]
+    assert (status, holder) == ("pending", None), (
+        f"the unmarked in-flight claim must be handed back pending and "
+        f"unlocked, got ({status!r}, {holder!r}): still locked means the "
+        f"residual is stranded on a worker that walked away, and a "
+        f"'running' verdict here means the re-pend missed the row the "
+        f"capture could not see"
+    )
+    assert scheduled is not None, (
+        "the handed-back row must be rescheduled by the re-pend arm "
+        "(assignment_routed + the reclaim delay), not left for the "
+        "immediate-claim path"
+    )
+    assert len(attempts) == 1
+    assert attempts[0]["outcome"] == "crashed"
+    assert attempts[0]["error_class"] == ERROR_CLASS_HEARTBEAT_LOST
