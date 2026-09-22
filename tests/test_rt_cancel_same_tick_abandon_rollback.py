@@ -218,7 +218,7 @@ async def test_same_tick_abandon_rollback_leaves_job_recoverable(
         except asyncio.CancelledError:
             entry = deps.active_jobs.get(job_id)
             if entry is not None and entry.cancel_phase >= CancelPhase.ABANDON_PENDING:
-                await deps.active_jobs.deregister(job_id)
+                await deps.active_jobs.deregister(job_id, entry)
             raise
 
     consumer_task = asyncio.get_running_loop().create_task(_consumer_body())
@@ -620,7 +620,7 @@ async def test_abandon_raise_requeue_then_landing_is_idempotent(
         except asyncio.CancelledError:
             entry = deps.active_jobs.get(job_id)
             if entry is not None and entry.cancel_phase >= CancelPhase.ABANDON_PENDING:
-                await deps.active_jobs.deregister(job_id)
+                await deps.active_jobs.deregister(job_id, entry)
             raise
 
     consumer_task = asyncio.get_running_loop().create_task(_consumer_body())
@@ -929,7 +929,7 @@ async def test_ladder_survives_repeated_rollbacks_and_lands_on_the_good_tick(
         except asyncio.CancelledError:
             entry = deps.active_jobs.get(job_id)
             if entry is not None and entry.cancel_phase >= CancelPhase.ABANDON_PENDING:
-                await deps.active_jobs.deregister(job_id)
+                await deps.active_jobs.deregister(job_id, entry)
             raise
 
     consumer_task = asyncio.get_running_loop().create_task(_consumer_body())

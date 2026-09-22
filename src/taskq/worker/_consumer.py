@@ -112,7 +112,7 @@ from taskq.worker._handlers import (
 from taskq.worker._watchdog import (  # pyright: ignore[reportPrivateUsage]  # Why: the tracked-handle registry registration for a detached tx unwind: the designated-writer contract mirrors the ctx stash beside it; no cycle (_watchdog imports nothing from the consumer side).
     register_tracked_actor_handle,
 )
-from taskq.worker.cancel import ActiveJobRegistry
+from taskq.worker.cancel import ActiveJobRegistry, _ActiveJob
 from taskq.worker.deps import POOL_INFRA_EXCEPTIONS, WorkerDeps
 from taskq.worker.shutdown import (  # pyright: ignore[reportPrivateUsage]  # Why: the consumer's release arm and the RELEASING phase are the two writers of the same interruption release; they must share the one hold computation rather than drift (see _interrupted_actor_hold).
     _release_hold,
@@ -773,6 +773,15 @@ async def consume_one_job(
 
     _parent_tags_token = _parent_tags_var.set(tuple(job.tags))
 
+    # This attempt's own registration, captured for the exit path below
+    # (issue 461): the lease can lapse mid-run, the same worker can
+    # re-claim the job, and the re-claimed attempt overwrites the
+    # registry key with ITS entry. The finally must deregister the entry
+    # this attempt registered, never a bare-id pop of whatever the key
+    # holds by then, or the stale exit evicts the live attempt's
+    # registration and every held_ids() reader misreads the map.
+    _active_entry: _ActiveJob | None = None
+
     try:
         live_enqueuer = (
             enqueuer
@@ -805,7 +814,7 @@ async def consume_one_job(
         if active_jobs is not None:
             task = asyncio.current_task()
             assert task is not None
-            await active_jobs.register(job.id, task, ctx)
+            _active_entry = await active_jobs.register(job.id, task, ctx)
 
         _completion: object = None
 
@@ -1225,8 +1234,8 @@ async def consume_one_job(
             elif _progress_buffers is not None:
                 _progress_buffers.pop(job.id, None)
 
-            if active_jobs is not None:
-                await active_jobs.deregister(job.id)
+            if active_jobs is not None and _active_entry is not None:
+                await active_jobs.deregister(job.id, _active_entry)
 
     finally:
         _parent_tags_var.reset(_parent_tags_token)

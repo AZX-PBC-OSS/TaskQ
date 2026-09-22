@@ -188,7 +188,14 @@ class _CancelController:
         # that no phase arm in run_in_tx matches, wiping the queue here
         # would strand the job permanently between phases while its
         # heartbeat keeps renewing the lease.
-        self._pending_abandons: deque[JobId] = deque()
+        #
+        # The queue carries the entry object alongside the job id (issue
+        # 461): between the queueing tick and the post-commit drain, the
+        # same worker can re-claim the lapsed lease and re-register the
+        # key with the new attempt's entry. The drain's cancellation
+        # delivery and deregister belong to the attempt it queued, never
+        # to whatever the key holds by then.
+        self._pending_abandons: deque[tuple[JobId, _ActiveJob]] = deque()
 
     def _tick_liveness(self) -> None:
         """Renew the heartbeat loop's detector-2 stamp between round trips.
@@ -343,7 +350,7 @@ class _CancelController:
                 queue_for_abandon = elapsed >= self._cancel_grace + self._cleanup_grace
                 if queue_for_abandon:
                     active.cancel_phase = CancelPhase.ABANDON_PENDING
-                    self._pending_abandons.append(active.job_id)
+                    self._pending_abandons.append((active.job_id, active))
                 else:
                     active.cancel_phase = CancelPhase.FORCED
                     active.task.cancel()
@@ -383,7 +390,7 @@ class _CancelController:
             ):
                 # ABANDON_PENDING is in-process only; never persisted.
                 active.cancel_phase = CancelPhase.ABANDON_PENDING
-                self._pending_abandons.append(active.job_id)
+                self._pending_abandons.append((active.job_id, active))
 
     async def run_post_tx(self) -> None:
         """Drain phase-3 abandonment queue after the heartbeat transaction commits.
@@ -433,7 +440,7 @@ class _CancelController:
         """
         worker_id = self._worker_id
         while self._pending_abandons:
-            job_id = self._pending_abandons.popleft()
+            job_id, queued_entry = self._pending_abandons.popleft()
             self._tick_liveness()
             # shield_with_retrieval, not plain asyncio.shield: a second
             # CancelledError landing while this abandon write is detached
@@ -477,7 +484,7 @@ class _CancelController:
                 # inner write's outcome is retrieved by the shield's
                 # callback, and a late-landing duplicate write is
                 # absorbed by the not-applied guard below.
-                self._pending_abandons.appendleft(job_id)
+                self._pending_abandons.appendleft((job_id, queued_entry))
                 raise
             if not abandoned:
                 if row is not None and row.status == "abandoned":
@@ -522,10 +529,21 @@ class _CancelController:
             # already cancelling (the staggered path's phase-2 arm
             # cancelled it a tick earlier) or already done must not take a
             # second cancellation from the drain.
-            entry = self._deps.active_jobs.get(job_id)
-            if entry is not None and not entry.task.done() and entry.task.cancelling() == 0:
-                entry.task.cancel()
-            await self._deps.active_jobs.deregister(job_id)
+            #
+            # Both the delivery and the deregister are scoped to the
+            # entry the tick queued (issue 461), not to a fresh bare-id
+            # get(): between the queueing tick and this drain, the same
+            # worker can re-claim the lapsed lease and re-register the
+            # key with the live attempt's entry. The bare-id shape would
+            # cancel the live attempt's task and evict its registration,
+            # leaving the reconcile, the shutdown hand-back, and the
+            # isolate re-pend blind to a row a live handler owns. The
+            # queued entry is the abandoned attempt's; if it already
+            # exited, the delivery is a no-op and the deregister is
+            # idempotent.
+            if not queued_entry.task.done() and queued_entry.task.cancelling() == 0:
+                queued_entry.task.cancel()
+            await self._deps.active_jobs.deregister(job_id, queued_entry)
             log_cancel_phase_change(
                 _log,
                 from_phase=int(CancelPhase.FORCED),
@@ -598,8 +616,8 @@ class ActiveJobRegistry:
     also running.
 
     Public surface per :
-      - ``register(job_id, task, ctx) -> None`` (async)
-      - ``deregister(job_id) -> None`` (async)
+      - ``register(job_id, task, ctx) -> _ActiveJob`` (async)
+      - ``deregister(job_id, entry) -> None`` (async, identity-scoped)
       - ``get(job_id) -> _ActiveJob | None`` (sync)
       - ``all() -> list[_ActiveJob]`` (sync snapshot copy)
       - ``count() -> int`` (sync)
@@ -674,21 +692,42 @@ class ActiveJobRegistry:
         job_id: JobId,
         task: asyncio.Task[object],
         ctx: JobContext[BaseModel],
-    ) -> None:
+    ) -> _ActiveJob:
         """Register a job as in-flight.
 
         The lock ensures no concurrent ``deregister`` sees an inconsistent state.
         The claim intent (if any) is absorbed: the registry now owns the row.
+
+        Returns the entry it installed. The caller must hand that entry back
+        to ``deregister`` at exit: the same key can be re-registered by a
+        later attempt of the same job (a lapsed lease re-claimed on this
+        worker), and the return value is the only identity that tells the
+        caller's own registration from the live attempt's.
         """
         entry = _ActiveJob(job_id=job_id, task=task, ctx=ctx)
         async with self._lock:
             self._claim_intents.discard(job_id)
             self._by_id[job_id] = entry
+        return entry
 
-    async def deregister(self, job_id: JobId) -> None:
-        """Remove a job from the registry (idempotent, ignores missing keys)."""
+    async def deregister(self, job_id: JobId, entry: _ActiveJob) -> None:
+        """Remove a job from the registry (idempotent, ignores missing keys).
+
+        Identity-scoped: the pop happens only when the map's current entry
+        IS the ``entry`` this caller registered (or holds from ``get()``).
+        A same-worker re-claim re-registers the same key with a NEW entry
+        (the later attempt's), so a stale attempt's exit removes only its
+        own registration and the live attempt's survives. The bare-id pop
+        this replaces evicted the live attempt's registration behind every
+        defence that reads ``held_ids()`` (issue 461). This is the same
+        fence ``taskq.progress._flush._drop_fenced_out_buffer`` applies to
+        the progress buffers, the one other same-keyed map whose entries
+        are per-attempt.
+        """
         async with self._lock:
-            self._by_id.pop(job_id, None)
+            if self._by_id.get(job_id) is not entry:
+                return
+            del self._by_id[job_id]
 
     def get(self, job_id: JobId) -> _ActiveJob | None:
         """Return the registry entry for ``job_id``, or ``None`` if absent.
