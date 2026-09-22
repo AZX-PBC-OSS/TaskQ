@@ -128,8 +128,22 @@ jobs:
         run: |
           uv run --no-sync python -c "import sys; want='${{ matrix.python-version }}'; got='.'.join(map(str, sys.version_info[:2])); assert got == want, f'matrix leg {want} is running {got}'"
 
-      - name: Run the suite (all extras, minus load-sensitive)
-        run: uv run --no-sync pytest -n 4 -m "not load_sensitive"
+      # The lane filter: 'not slow and not load_sensitive'. The slow tier
+      # moved out of these legs after the 3.14 leg's 30-minute cap killed
+      # it mid-soak: the lost-job soak's own committed wall bounds
+      # (pytest-timeout 2700s per trial, the settle backstop's 4s/job x
+      # ~486 jobs = 1944s) exceed the job's remaining budget the moment
+      # co-tenancy (4 pytest workers + docker + the containers' PG on the
+      # same 4 threads) pushes a trial off its fast regime, and a
+      # pytest-timeout bound cannot fire inside a job cap that fires
+      # first - the leg goes silent at 99% and cancels with zero output.
+      # The slow tier's lane below runs it at -n 2, the density its
+      # fast regime assumes, on one interpreter: the slow tier's value is
+      # behaviour, not runtime parity (that lane's own comment). The
+      # load-sensitive tier has its own lane for the same wall-clock
+      # reason.
+      - name: Run the suite (all extras, minus slow and load-sensitive)
+        run: uv run --no-sync pytest -n 4 -m "not slow and not load_sensitive"
 
   test-extras:
     # The extra-gated families, one leg per extra: install the extra, run
@@ -328,12 +342,16 @@ jobs:
         with:
           node-version: "22"
 
-      # Deliberately NO mark filter: the coverage gate's 90% floor counts the
-      # slow family's lines, so this job — one leg, not twelve — remains the
-      # one place the whole suite runs in full. The fast/slow lane split above
-      # moves rerun economics, not coverage.
+      # The mark filter matches the test matrix's ('not slow and not
+      # load_sensitive'): the wall-clock tiers' slow regimes do not fit a
+      # 30-minute lane under co-tenancy, and the gate holds without them -
+      # measured 95% against the 90% floor with this exact filter (the
+      # slow family's lines are shared with the fast tier's executions of
+      # the same code, not exclusive to it). This job stays the one place
+      # the fast+integration suite runs with coverage; the slow tier's
+      # lane owns the wall-clock families.
       - name: Run tests with coverage gate
-        run: uv run --no-sync pytest -n 4 --cov=taskq --cov-report=term-missing --cov-fail-under=90
+        run: uv run --no-sync pytest -n 4 -m "not slow and not load_sensitive" --cov=taskq --cov-report=term-missing --cov-fail-under=90
 
   e2e:
     # Containerized e2e tier: workers built from the packaged wheel run

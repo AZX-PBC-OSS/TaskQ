@@ -278,8 +278,16 @@ async def run_e2e(backend: PostgresBackend, n_jobs: int, batch: int) -> dict[str
             result = handle_job(row.payload)
             splits.split("handler_cpu(sync)").time(t2)
             t3 = time.perf_counter()
-            await backend.mark_succeeded(row.id, worker_id, result)
+            ok = await backend.mark_succeeded(
+                row.id,
+                worker_id,
+                result,
+                attempt=row.attempt,
+                claim_epoch=row.claim_epoch,
+            )
             splits.split("mark_succeeded").time(t3)
+            if not ok:
+                raise RuntimeError("terminal write fenced out - bench fence binds drifted")
 
     # 3) A couple of list_jobs pages (admin/inspection shape), cursor-paginated.
     page_rows: list[Any] = []
@@ -407,12 +415,17 @@ async def run_explain(backend: PostgresBackend, n_seed: int) -> list[str]:
         # The EXPLAIN really claimed 50 jobs; reclaim them so the terminal
         # write has a running job and the backlog is intact for later modes.
         running = await conn.fetch(
-            f"SELECT id FROM \"{schema}\".jobs WHERE status = 'running' LIMIT 1"  # noqa: S608  # Why: benchmark-controlled identifier
+            f"SELECT id, attempt, claim_epoch FROM \"{schema}\".jobs WHERE status = 'running' LIMIT 1"  # noqa: S608  # Why: benchmark-controlled identifier
         )
         claimed_id: JobId = JobId(running[0]["id"])
+        claimed_attempt: int = running[0]["attempt"]
+        claimed_claim_epoch: int = running[0]["claim_epoch"]
         result = json.dumps({"status": "ok", "checksum": 0})
 
-        # 2) One terminal UPDATE (mark_succeeded).
+        # 2) One terminal UPDATE (mark_succeeded). attempt/claim_epoch bind
+        # the production fence: a NULL bind never matches (the
+        # cannot-prove-which-attempt doctrine), so the bench must present
+        # the claimed row's own epochs or it silently measures a no-op.
         out += await explain_conn(
             conn,
             "mark_succeeded terminal UPDATE",
@@ -424,6 +437,8 @@ async def run_explain(backend: PostgresBackend, n_seed: int) -> list[str]:
             0,
             None,
             None,
+            claimed_attempt,
+            claimed_claim_epoch,
         )
 
         # 3) Sweep 3 (scheduled -> pending): seed due scheduled rows first.
