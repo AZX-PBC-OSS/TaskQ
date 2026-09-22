@@ -329,6 +329,43 @@ async def deliver_webhook(
     )
 
 
+# Import-time registration, mirroring the delivery bucket above. The
+# persistence test (test_rate_limit.py) needs a drained bucket to STAY
+# drained across the uncontrolled drain-to-dispatch handoff: at 0.25
+# tokens/s the handoff refills under 1 token per 4 s, so the test's denial
+# count is a property of the bucket's persisted state, not of the handoff's
+# duration. The 5/s delivery bucket above cannot serve that proof: it
+# refills a full capacity within 1 s, so the denial count becomes a
+# continuous function of handoff latency (CI red: 0/6 denied after a slow
+# handoff refilled the "drained" bucket to capacity).
+registry.register(
+    TokenBucket(
+        name="e2e_persistence_bucket",
+        capacity=5,
+        refill_per_second=0.25,
+        backend="redis",
+    )
+)
+
+
+@actor(name="persistence_probe", queue="e2e", rate_limits=["e2e_persistence_bucket"])
+async def persistence_probe(
+    payload: DeliverWebhookPayload,
+    ctx: JobContext[DeliverWebhookPayload],
+    *,
+    pool: asyncpg.Pool,
+) -> None:
+    """Simulates a webhook POST gated by a SLOW-refill Redis token bucket
+    (cap 5, refill 0.25/s) - the persistence test's pinned-state bucket."""
+    await asyncio.sleep(0.03)
+    await _record_effect(
+        pool,
+        ctx,
+        "delivered",
+        {"run_id": payload.run_id, "endpoint_id": payload.endpoint_id},
+    )
+
+
 class RebuildSearchIndexPayload(BaseModel):
     run_id: str
     index_name: str
