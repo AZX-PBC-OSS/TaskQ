@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import random
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any, Final
 
 import structlog
@@ -97,13 +97,18 @@ async def redis_event_stream[EventT](
     poll_timeout: float,
     decode_message: Callable[[str], Awaitable[EventT | None]],
     on_timeout: Callable[[], Awaitable[EventT | None]] | None = None,
-) -> AsyncIterator[EventT]:
+) -> AsyncGenerator[EventT, None]:
     """Subscribe to a Redis channel and yield decoded events.
 
     Handles subscribe, the get_message loop, malformed message skipping,
     and cleanup (unsubscribe + close). *decode_message* is called for each
     valid message; *on_timeout* is called when get_message returns None
     (poll timeout). Both may return None to skip yielding.
+
+    The return type is the async-generator type, not the iterator protocol:
+    consumers close this generator FROM UPSTREAM (contextlib.aclosing) on
+    every exit that is not exhaustion, and aclosing needs the aclose
+    surface.
     """
     pubsub = redis_client.pubsub()
     try:
@@ -165,7 +170,7 @@ async def pg_poll_event_stream[EventT](
     last_status: JobStatus | None = None,
     failure_budget: float = POLL_FAILURE_BUDGET_SECS,
     clock: Callable[[], float] = time.monotonic,
-) -> AsyncIterator[EventT]:
+) -> AsyncGenerator[EventT, None]:
     """Poll for row changes and yield events on seq/status change.
 
     *row_to_event* receives the row and a ``status_changed`` flag so the

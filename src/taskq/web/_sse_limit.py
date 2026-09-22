@@ -17,6 +17,7 @@ semantics the admin endpoint already had.
 """
 
 import asyncio
+import contextlib
 from collections.abc import AsyncGenerator
 
 from fastapi import HTTPException
@@ -72,7 +73,15 @@ async def release_after(
     iteration rather than after it.
     """
     try:
-        async for chunk in gen:
-            yield chunk
+        # Deterministic close of the wrapped generator on EVERY exit: a
+        # disconnect closes THIS generator (CancelledError at the yield /
+        # an explicit aclose), never the inner one, and without the
+        # aclosing the ``async for`` abandons *gen* suspended mid-iteration.
+        # The inner generator's cleanup then waits on the GC's asyncgen
+        # finalizer, which mints an ``async_generator_athrow`` task per
+        # abandoned generator - the residue the loop-leak guard names.
+        async with contextlib.aclosing(gen):
+            async for chunk in gen:
+                yield chunk
     finally:
         semaphore.release()
