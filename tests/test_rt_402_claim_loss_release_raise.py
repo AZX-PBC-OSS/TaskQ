@@ -81,6 +81,10 @@ class _InjectionState:
     def __init__(self) -> None:
         self.claimed = False
         self.raised = False
+        # The job ids the claim round actually returned: the canary that
+        # ties the injected raise to THIS test's jobs, not to some other
+        # row the dispatch CTE happened to return.
+        self.claimed_ids: list[str] = []
 
 
 class _ConnProxy:
@@ -98,6 +102,8 @@ class _ConnProxy:
         rows = await self._inner.fetch(sql, *args)
         if rows and "RETURNING j.*" in sql:
             self._state.claimed = True
+            for row in rows:
+                self._state.claimed_ids.append(str(row["id"]))
         return rows
 
     def __getattr__(self, name: str) -> Any:
@@ -242,6 +248,14 @@ async def test_dispatch_round_that_raises_after_its_claim_commit_recovers(
                 "the injected round never ran: no claim landed within 20s"
             )
         assert state.claimed, "the raise must land after a committed claim"
+        # The canary, inside the patched path: the claim the injection
+        # raised on returned THIS test's jobs. An injection that fired on
+        # some other round's rows would strand nothing this test tracks,
+        # and every phase-1 assertion below would be vacuous.
+        assert set(ids) <= set(state.claimed_ids), (
+            "the injected round must have claimed the tracked jobs: the "
+            f"injection saw {state.claimed_ids}, the test enqueued {ids}"
+        )
 
         # ── Phase 1: the stranded shape, exactly as the issue measured ──
         await asyncio.sleep(_STRANDED_OBSERVE_SECS)
