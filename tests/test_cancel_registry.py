@@ -374,3 +374,60 @@ async def test_mark_enqueued_is_idempotent_per_take_cycle() -> None:
     task.cancel()
     with pytest.raises((asyncio.CancelledError, Exception)):
         await task
+
+
+# ── Issue 461: stale attempt's exit must not evict the live attempt ───────
+
+
+async def test_stale_attempt_exit_evicts_live_attempt() -> None:
+    """Issue 461 repro: a stale attempt's exit deregisters the live attempt's entry.
+
+    Deterministic interleaving (no timing needed):
+
+    1. Job J is claimed and registered by attempt A (the consumer's
+       register at the top of the attempt).
+    2. A's lease lapses, J is re-pended, and the SAME worker re-claims
+       it as attempt B. register() overwrites the J key with B's entry.
+    3. A's finally (``_consumer.py``'s unconditional deregister, reached
+       by every exit path: cancel delivery, timeout, reconnect) calls
+       ``deregister(J)`` - a bare job id.
+
+    The registry pops by bare id with no check that the popped entry is
+    the caller's, so B's live entry is gone: ``held_ids()`` no longer
+    contains J, so the claim-loss reconcile excludes nothing, the
+    shutdown hand-back re-pends a row a live handler owns, and the
+    isolate re-pend does the same. An operator cancel is never
+    delivered. J must still be held, and the entry must be B's.
+    """
+    registry = ActiveJobRegistry()
+    job_id = new_job_id()
+
+    task_a = _make_task()
+    task_b = _make_task()
+    try:
+        # Attempt A registers.
+        await registry.register(job_id, task_a, _make_ctx(job_id))
+        entry_a = registry.get(job_id)
+        assert entry_a is not None
+
+        # Lease lapse + same-worker re-claim: attempt B overwrites the key.
+        await registry.register(job_id, task_b, _make_ctx(job_id))
+        assert registry.get(job_id) is not entry_a  # B holds the key now
+
+        # Attempt A's exit path: the consumer's finally calls deregister(J).
+        await registry.deregister(job_id)
+
+        # Live attempt B must survive in the registry.
+        assert job_id in registry.held_ids(), (
+            "the stale attempt's exit evicted the live attempt's registration; "
+            "the reconcile, shutdown hand-back, and isolate re-pend all read "
+            "held_ids() and would now act on a live claim"
+        )
+        live = registry.get(job_id)
+        assert live is not None
+        assert live.task is task_b
+    finally:
+        for t in (task_a, task_b):
+            t.cancel()
+            with pytest.raises((asyncio.CancelledError, Exception)):
+                await t
