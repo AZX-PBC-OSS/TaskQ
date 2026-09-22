@@ -1086,15 +1086,18 @@ class JobRow:
     01.00.18_02_pre_claim_epoch.sql.
     """
     archived: bool = False
-    """The row was read from ``jobs_archive``, not the hot ``jobs`` table.
+    """The row was read from the archive tier, not the hot ``jobs`` table.
 
     Set only by a read that fell back to the archive tier (issue #314):
-    the hot table's rows always read ``False``, and so does every row any
-    other backend hands back (the in-memory backend has no archive).
-    A terminal job's row outlives its prune only here, so without the
-    marker a caller cannot tell "this job finished and was archived" from
-    a fabricated row. Trailing default: rows materialised before the
-    marker existed read hot.
+    the hot table's rows always read ``False``, and so does every row
+    from a read that did not probe the archive. Both backends' ``get``
+    applies the fallback (PG probes ``jobs_archive``, the twin probes
+    its prune simulation's archive), so an archived id answers with the
+    marker on both instead of reading as missing. A terminal job's row
+    outlives its prune only here, so without the marker a caller cannot
+    tell "this job finished and was archived" from a fabricated row.
+    Trailing default: rows materialised before the marker existed read
+    hot.
     """
 
 
@@ -2429,13 +2432,14 @@ class Backend(Protocol):
     async def get(self, job_id: JobId) -> JobRow | None:
         """One job row by id, ``None`` when it exists in neither tier.
 
-        The PG backend reads the hot ``jobs`` table first and falls back
-        to ``jobs_archive`` (an archive hit is marked ``archived=True``),
+        Both backends read the hot ``jobs`` table first and fall back to
+        the archive tier (an archive hit is marked ``archived=True``),
         the same jobs-then-archive probe the CLI applies, so an id whose
         row a prune archived still answers instead of reading as missing
-        (issue #314). The in-memory backend's ``get`` reads its hot table
-        only (its archive answers through ``get_archived``, an explicitly
-        pinned contract), so its rows always read ``archived=False``.
+        (issue #314): PG probes ``jobs_archive``, the twin probes its
+        prune simulation's ``_archive`` via ``get_archived``'s storage.
+        The result-TTL sweep touches only the hot tier on both backends,
+        so an archive hit reads the result columns it was archived with.
         """
         ...
 

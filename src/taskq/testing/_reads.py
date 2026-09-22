@@ -160,9 +160,27 @@ def _post_sweep_result_view(row: JobRow, now: datetime) -> JobRow:
 
 
 async def _get(self: "InMemoryBackend", job_id: JobId) -> JobRow | None:
+    """One job row by id, hot table first, archive tier on a hot miss.
+
+    The twin of ``taskq.backend._reads._get`` (the #314 parity fix): a
+    row the prune simulation moved to ``_archive`` answers from there
+    with ``archived=True`` on the row, the same jobs-then-archive probe
+    the PG backend and the CLI apply. The result-TTL view does NOT
+    compose on an archive hit, mirroring production: the result-TTL
+    sweep updates only the hot ``jobs`` table, so a ``jobs_archive`` row
+    reads the result columns it was archived with, whatever their
+    expiry. An id in neither tier keeps the documented missing behavior
+    (``None``).
+    """
     row = self._jobs.get(job_id)
     if row is None:
-        return None
+        archived = self._archive.get(job_id)
+        if archived is None:
+            return None
+        # _read_copy first, then the marker: dataclasses.replace copies
+        # the already-isolated field containers by reference, so the
+        # archive's stored row still cannot alias the returned one.
+        return replace(_read_copy(archived.row), archived=True)
     # Every read returns a copy (see _read_copy); the sweep view composes
     # on top of it for both branches rather than duplicating its own copy
     # on the expired branch.
@@ -232,10 +250,19 @@ async def _get_actor_max_pending(self: "InMemoryBackend") -> dict[str, int | Non
 
 
 async def _get_attempts(self: "InMemoryBackend", job_id: JobId) -> list[AttemptRow]:
-    return [
-        _attempt_read_copy(a)
-        for a in sorted(self._attempts.get(job_id, []), key=lambda a: a.attempt)
-    ]
+    """One job's attempt history, hot first, archive tier on an empty hot read.
+
+    The twin of ``taskq.backend._reads._get_attempts`` (the #314 parity
+    fix): the prune simulation moves the job's attempts to
+    ``_archive_attempts`` in the same call that moves the row to
+    ``_archive``, so an archived job's history answers from there instead
+    of reading as never-happened while the same job's ``get`` answers its
+    archived row.
+    """
+    attempts = self._attempts.get(job_id)
+    if not attempts:
+        attempts = self._archive_attempts.get(job_id, [])
+    return [_attempt_read_copy(a) for a in sorted(attempts, key=lambda a: a.attempt)]
 
 
 async def _get_events(self: "InMemoryBackend", job_id: JobId) -> list[EventRow]:
