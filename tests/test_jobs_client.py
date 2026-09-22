@@ -39,7 +39,7 @@ from taskq.client import CancelResult, JobHandle, JobsClient
 from taskq.client._args import build_enqueue_args
 from taskq.constants import MAX_IDEMPOTENCY_KEY_BYTES
 from taskq.cron import ScheduleHandle
-from taskq.exceptions import PayloadValidationError
+from taskq.exceptions import PayloadValidationError, SingletonCollisionError
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.jobs import make_enqueue_args, make_job_row
@@ -1012,24 +1012,55 @@ async def test_unique_for_no_identity_no_dedup_fresh_jobs() -> None:
     assert handle1.job_id != handle2.job_id
 
 
-# ── constraint-name disambiguation (SKIPPED) ────────────────────────────
+# ── constraint-name disambiguation (Layer 2, the jobs_singleton_uniq twin) ──
 
 
-@pytest.mark.skip(
-    reason=(
-        "InMemoryBackend has no Layer 2 unique constraint equivalent for singleton; "
-        "monkeypatching the singleton preflight to return None results in both "
-        "inserts succeeding with no error raised. Integration test covers "
-        "this against PG."
-    )
-)
-async def test_singleton_constraint_disambiguation() -> None:
+async def test_singleton_constraint_disambiguation(monkeypatch: pytest.MonkeyPatch) -> None:
     """Constraint-name disambiguation - a singleton actor's preflight
-    is monkey-patched to None; in the PG backend the second INSERT raises
-    UniqueViolationError on jobs_singleton_uniq, caught as
-    SingletonCollisionError (not a dedup return). InMemoryBackend lacks this
-    Layer 2 and is skipped. Equivalent integration test covers this
-    against PG."""
+    is monkey-patched to None; the Layer 2 insert-time re-check (the
+    jobs_singleton_uniq twin) refuses the second INSERT with
+    SingletonCollisionError carrying blocking_job_id=None and
+    retry_after=None, the exact outcome shape a PG deployment sees when
+    the constraint's UniqueViolationError is converted
+    (detection_path="unique_violation_catch") - not a dedup return.
+    Two concurrent enqueues race the same singleton key: exactly one
+    wins, exactly one row is stored."""
+    clock = FakeClock(_START)
+    backend = InMemoryBackend(clock=clock)
+    client = JobsClient(backend)
+
+    actor_name = "_singleton_layer2_actor"
+
+    @actor(name=actor_name, singleton=True)
+    async def _singleton_layer2_actor(payload: _SingletonPayload) -> None:
+        pass
+
+    # Neutralize Layer 1 (the preflight) per instance, the mirror of the
+    # PG integration test rewriting _sql.singleton_preflight to a
+    # WHERE FALSE query: the preflight can no longer see a blocker, so
+    # any refusal must come from Layer 2, the insert-time constraint twin.
+    monkeypatch.setattr(backend, "_singleton_preflight_row", lambda args: None)
+
+    async def _enqueue() -> str:
+        try:
+            await client.enqueue(_singleton_layer2_actor, _SingletonPayload(value=1))
+            return "enqueued"
+        except SingletonCollisionError as exc:
+            assert exc.blocking_job_id is None
+            assert exc.retry_after is None
+            assert exc.actor == actor_name
+            return "refused"
+
+    results = await asyncio.gather(_enqueue(), _enqueue())
+    assert results.count("enqueued") == 1
+    assert results.count("refused") == 1
+
+    live = [
+        row
+        for row in backend._jobs.values()  # type: ignore[reportPrivateUsage] # Why: the assertion is the stored state itself
+        if row.actor == actor_name
+    ]
+    assert len(live) == 1
 
 
 # ── max_pending: EnqueueArgs round-trip ─────────────────────────────────

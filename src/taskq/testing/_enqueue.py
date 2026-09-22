@@ -41,6 +41,7 @@ __all__ = [
     "_enqueue_batch",
     "_enqueue_batch_fast",
     "_enqueue_with_conn",
+    "_scan_singleton_preflight",
 ]
 
 logger = structlog.get_logger("taskq.testing.in_memory")
@@ -85,6 +86,28 @@ def _refuse_terminal_batch_members(self: "InMemoryBackend", args_list: list[Enqu
             raise BatchIdExistsError(batch_id, reason="terminal")
 
 
+def _scan_singleton_preflight(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow | None:
+    """The Layer 1 singleton preflight: the live blocking row, or None.
+
+    The predicate scan mirrors the PG ``singleton_preflight`` query and the
+    ``jobs_singleton_uniq`` index predicate exactly (``actor`` over live
+    statuses with ``metadata @> '{"singleton": true}'``). It lives on the
+    backend as a METHOD so a test can neutralize Layer 1 per instance the
+    way the PG integration test rewrites ``_sql.singleton_preflight`` --
+    the Layer 2 check below deliberately does NOT route through this seam
+    (a DB constraint is not patchable from the client), so neutralizing
+    the preflight leaves the insert-time enforcement armed.
+    """
+    for row in self._jobs.values():
+        if (
+            row.actor == args.actor
+            and row.status in ("pending", "scheduled", "running")
+            and row.metadata.get("singleton") is True
+        ):
+            return row
+    return None
+
+
 async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
     # Why a function-level import: the shared dedup-log helper lives with
     # the PG enqueue path (taskq.backend._enqueue), whose module scope
@@ -119,27 +142,23 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
     if args.metadata.get("singleton") is True:
         from datetime import timedelta
 
-        for row in self._jobs.values():
-            if (
-                row.actor == args.actor
-                and row.status in ("pending", "scheduled", "running")
-                and row.metadata.get("singleton") is True
-            ):
-                now = self._clock.now()
-                retry_after: timedelta | None = None
-                if row.schedule_to_close is not None and row.schedule_to_close > now:
-                    retry_after = row.schedule_to_close - now
-                logger.info(
-                    "singleton-collision",
-                    actor=args.actor,
-                    blocking_job_id=str(row.id),
-                    detection_path="preflight_check",
-                )
-                raise SingletonCollisionError(
-                    actor=args.actor,
-                    blocking_job_id=row.id,
-                    retry_after=retry_after,
-                )
+        blocking_row = self._singleton_preflight_row(args)
+        if blocking_row is not None:
+            now = self._clock.now()
+            retry_after: timedelta | None = None
+            if blocking_row.schedule_to_close is not None and blocking_row.schedule_to_close > now:
+                retry_after = blocking_row.schedule_to_close - now
+            logger.info(
+                "singleton-collision",
+                actor=args.actor,
+                blocking_job_id=str(blocking_row.id),
+                detection_path="preflight_check",
+            )
+            raise SingletonCollisionError(
+                actor=args.actor,
+                blocking_job_id=blocking_row.id,
+                retry_after=retry_after,
+            )
 
     if args.max_pending is not None:
         current_count = sum(
@@ -290,6 +309,40 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
                 from taskq.exceptions import BatchIdExistsError
 
                 raise BatchIdExistsError(batch_id, reason="terminal")
+
+    # Layer 2, the jobs_singleton_uniq twin: the INSERT-time re-check of
+    # the same predicate the preflight scanned. PG's partial unique index
+    # fires when the preflight missed a live singleton row (the race
+    # window between the preflight SELECT and the INSERT, or a preflight
+    # absent on a path) - the statement raises UniqueViolationError on
+    # jobs_singleton_uniq, caught and converted to a typed refusal with
+    # blocking_job_id=None and retry_after=None (backend/_enqueue.py's
+    # unique_violation_catch arm; the savepoint keeps the caller's
+    # transaction alive). This mirror is the twin of that conversion: an
+    # insert-time scan that does NOT pass through the patchable preflight
+    # method, so bypassing Layer 1 cannot bypass Layer 2. Without it the
+    # twin admits every insert the preflight failed to see, a divergence
+    # a PG deployment refuses at the constraint. The Layer 2 outcome
+    # shape matches PG's conversion exactly (no blocking id, no retry
+    # hint): the constraint names the violation, never the blocker.
+    if args.metadata.get("singleton") is True:
+        for live_row in self._jobs.values():
+            if (
+                live_row.actor == args.actor
+                and live_row.status in ("pending", "scheduled", "running")
+                and live_row.metadata.get("singleton") is True
+            ):
+                logger.info(
+                    "singleton-collision",
+                    actor=args.actor,
+                    blocking_job_id=None,
+                    detection_path="unique_violation_catch",
+                )
+                raise SingletonCollisionError(
+                    actor=args.actor,
+                    blocking_job_id=None,
+                    retry_after=None,
+                )
 
     if args.id in self._jobs:
         # Why a function-level import: the driver-free import-surface
