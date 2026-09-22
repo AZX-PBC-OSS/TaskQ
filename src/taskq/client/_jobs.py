@@ -1520,7 +1520,13 @@ class JobsClient:
         """Look up a job by id.
 
         Returns ``None`` when the job does not exist; otherwise wraps
-        the row in a :class:`JobHandle[R]`. The caller may supply
+        the row in a :class:`JobHandle[R]`. The lookup reads the hot
+        ``jobs`` table first and falls back to ``jobs_archive`` (the
+        same jobs-then-archive probe ``taskq job show`` applies), so an
+        id whose row a prune moved to the archive returns that row's
+        handle with :attr:`JobHandle.archived` ``True`` instead of
+        reading as missing; ``None`` still means "in neither tier".
+        The caller may supply
         ``result_adapter`` because lookups by id do not carry actor
         identity, typical sources are
         ``my_actor.result_adapter`` (when reuniting with an actor) or
@@ -1548,8 +1554,10 @@ class JobsClient:
     async def get_row(self, job_id: JobId) -> JobRow | None:
         """Look up a job by id and return the raw :class:`JobRow`.
 
-        Mirrors :meth:`get`'s contract, one ``backend.get``, ``None``
-        when the job does not exist, without the handle machinery or
+        Mirrors :meth:`get`'s contract, one ``backend.get`` (hot table
+        first, ``jobs_archive`` fallback, an archive hit marked
+        ``archived=True``), ``None`` when the job exists in neither
+        tier, without the handle machinery or
         result adapter. For callers that never need a
         :class:`JobHandle`, this is the direct form; for the fresh-read
         case that does want a handle, prefer ``get`` plus the handle's

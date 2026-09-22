@@ -2605,3 +2605,112 @@ async def test_commit_gate_hooks_termination_once_per_connection(
     await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
 
     assert len(conn.termination_listeners) == 1
+
+
+class _PoolAcquireProxy:
+    """A per-acquire proxy over one underlying connection, modeling
+    asyncpg's pool: ``PoolConnectionHolder.acquire`` builds a FRESH
+    ``PoolConnectionProxy`` on every acquire (asyncpg/pool.py, 0.31.0)
+    and detaches it on release, while ``add_termination_listener``
+    resolves through ``__getattr__`` onto the WRAPPED connection, the
+    object that owns the listener registry and dies with the session."""
+
+    def __init__(self, con: _GateSession) -> None:
+        self._con = con
+
+    def __getattr__(self, name: str):  # type: ignore[no-untyped-def]  # Why: asyncpg's proxy delegates by __getattr__ the same way; the fake mirrors the shape the suppression must survive.
+        return getattr(self._con, name)
+
+
+async def test_commit_gate_suppression_survives_a_fresh_proxy_per_acquire(
+    _commit_gate_maps: None,
+) -> None:
+    """One underlying connection acquired N times must carry exactly one
+    termination hook and leave exactly one suppression entry.
+
+    The suppression is keyed by the connection the hook is attached to:
+    the pool hands each acquire a fresh proxy object, so keying by the
+    object an acquire hands back (``id`` of a per-acquire proxy) never
+    suppresses - every tick stacks another termination listener on the
+    underlying connection and another entry in ``_termination_hooked``
+    until the session dies, one per second in the shipped leader, and a
+    recycled proxy id can suppress a hook a NEW connection never got.
+    """
+    underlying = _GateSession(pid=2**30 + 350)
+    ticks = 25
+
+    for _ in range(ticks):
+        conn = _PoolAcquireProxy(underlying)  # a fresh proxy per acquire
+        await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
+
+    assert len(underlying.termination_listeners) == 1, (
+        f"{len(underlying.termination_listeners)} termination listeners "
+        f"stacked on one underlying connection over {ticks} acquires: the "
+        "suppression keyed the per-acquire proxy object, not the "
+        "connection the hook attaches to - unbounded growth on a "
+        "long-lived pool (one entry per tick, forever)"
+    )
+    assert len(cron_loop._termination_hooked) == 1, (
+        "the suppression set grew one entry per acquire on a stable "
+        "connection: it tracks connections, not acquires"
+    )
+
+    # The one hook still retires the session state at death, and the
+    # suppression entry goes with it.
+    underlying.die()
+    assert cron_loop._armed_commit_emits == {}
+    assert cron_loop._confirmed_listening == set()
+    assert cron_loop._termination_hooked == set()
+
+
+async def test_commit_gate_hooks_each_connection_sharing_a_pid(
+    _commit_gate_maps: None,
+) -> None:
+    """Two sessions reporting the SAME backend pid each get their own
+    termination hook.
+
+    The hook guards a connection's lifetime, and the pid does not
+    identify one: two Postgres servers in one process hand out the same
+    pid independently (testcontainers restarts pids per container; a PG
+    restart under a long-lived worker does the same to a live session).
+    Keying the suppression by pid alone left the second connection
+    unhooked, so its close retired nothing: its confirmed-listening
+    entry outlived it and a later session on the recycled pid would
+    inherit the dead session's proof.
+    """
+    pid = 2**30 + 500
+    first = _GateSession(pid=pid)
+    second = _GateSession(pid=pid)
+
+    await cron_loop._emit_on_commit(first, lambda: None, schema="taskq")
+    await cron_loop._emit_on_commit(second, lambda: None, schema="taskq")
+    assert len(first.termination_listeners) == 1
+    assert len(second.termination_listeners) == 1, (
+        "the second connection sharing the pid got no termination hook - "
+        "its close can never retire its own gate state (issue #292)"
+    )
+
+    first.deliver_commit_notify()
+    second.deliver_commit_notify()
+    assert pid in cron_loop._confirmed_listening
+
+    first.die()
+    assert cron_loop._confirmed_listening == set(), (
+        "the first close must retire the shared pid's entries"
+    )
+
+    # The second session keeps answering after its twin died: its own
+    # NOTIFY re-confirms the pid (its LISTEN is genuinely live).
+    second.deliver_commit_notify()
+    assert pid in cron_loop._confirmed_listening
+
+    second.die()
+    assert cron_loop._armed_commit_emits == {}, (
+        "the second connection's close leaked its armed emission"
+    )
+    assert cron_loop._confirmed_listening == set(), (
+        "the second connection's close leaked its confirmed-listening "
+        "entry - the hook suppression was keyed by pid, so this "
+        "connection never carried the hook that would retire it"
+    )
+    assert cron_loop._termination_hooked == set()

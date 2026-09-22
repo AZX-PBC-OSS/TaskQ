@@ -876,6 +876,7 @@ class DiffSide:
             "retry_backoff": row.retry_backoff,
             "retry_jitter": row.retry_jitter,
             "assignment_routed": row.assignment_routed,
+            "archived": row.archived,
             "attempts": [
                 {
                     "attempt": a.attempt,
@@ -1247,6 +1248,7 @@ async def test_job_observable_projects_every_jobrow_field() -> None:
         interrupt_count=4,
         claim_epoch=7,
         assignment_routed=True,
+        archived=True,
     )
     memory._jobs[JobId(planted.id)] = planted  # pyright: ignore[reportPrivateUsage]  # Why: test-only private seeding, the established same-module pattern (DiffSide.plant).
     side.register_job_id("j1", JobId(planted.id))

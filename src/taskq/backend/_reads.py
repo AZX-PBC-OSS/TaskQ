@@ -5,6 +5,7 @@
 ``(pool, sql: SqlTemplates, ...)`` parameters.
 """
 
+from dataclasses import replace
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
@@ -49,11 +50,25 @@ __all__ = [
 
 
 async def _get(pool: "asyncpg.Pool", sql: SqlTemplates, job_id: JobId) -> JobRow | None:
+    """One job row by id, hot table first, archive tier on a hot miss.
+
+    The same jobs-then-archive fallback ``taskq job show`` applies
+    (issue #314): a terminal row survives its prune only in
+    ``jobs_archive``, so answering the hot table alone reported an
+    archived job as if it never existed -- ``None`` to ``JobsClient.get``
+    and a bare ``KeyError`` from every ``JobHandle`` read-back, while the
+    CLI answered from the same row. The tier a hit came from rides on the
+    row: an archive hit is marked ``archived=True``, a hot hit (and every
+    never-existed id, ``None`` either way) is not.
+    """
     async with _bounded_checkout(pool, "get") as conn:
         rec = await conn.fetchrow(sql.get_job, job_id)
-    if rec is None:
+        if rec is not None:
+            return _job_row_from_record(rec)
+        archived_rec = await conn.fetchrow(sql.get_archived_job, job_id)
+    if archived_rec is None:
         return None
-    return _job_row_from_record(rec)
+    return replace(_job_row_from_record(archived_rec), archived=True)
 
 
 async def _list_jobs(
@@ -150,8 +165,23 @@ async def _get_attempts(
     sql: SqlTemplates,
     job_id: JobId,
 ) -> list[AttemptRow]:
+    """One job's attempt history, hot table first, archive tier on an
+    empty hot read.
+
+    The prune moves the job's attempt rows to ``job_attempts_archive``
+    in the same statement that moves the job row to ``jobs_archive``
+    (issue #314's tier pair): answering the hot table alone reported an
+    archived job's history as empty while the same job's ``get`` answered
+    its archived row -- the row claimed an attempt happened, the history
+    claimed nothing did. An empty hot read for a LIVE job (never started,
+    no attempts yet) pays one extra archive probe, the same shape ``_get``
+    pays on its hot miss; ``get_attempts`` is a read-back path, not a
+    dispatch-loop hot path.
+    """
     async with _bounded_checkout(pool, "get_attempts") as conn:
         records = await conn.fetch(sql.get_attempts, job_id)
+        if not records:
+            records = await conn.fetch(sql.get_archived_attempts, job_id)
     return [
         AttemptRow(
             job_id=JobId(rec["job_id"]),

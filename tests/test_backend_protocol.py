@@ -645,8 +645,10 @@ class TestJobRowRoundTrip:
         # the four retry-curve scalars read back off
         # the jobs row (retry_base/retry_cap/retry_backoff/retry_jitter -
         # the reclaim sweep's policy source) + the assignment-routed
-        # marker (re-pend routing by the actor's stored assignment).
-        expected = 47
+        # marker (re-pend routing by the actor's stored assignment) +
+        # the archive-tier marker (archived, issue #314's jobs-then-
+        # archive read fallback).
+        expected = 48
         assert len(fields(JobRow)) == expected
 
     def test_frozen(self) -> None:

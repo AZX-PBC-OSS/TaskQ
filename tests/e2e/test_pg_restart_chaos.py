@@ -72,7 +72,12 @@ from taskq._ids import new_uuid
 from taskq.testing._shared_containers import creator_labels, skip_test_without_docker
 from tests.conftest import free_host_port
 
-from ._assertions import fetch_effects, poll_until, wait_for_effects
+from ._assertions import (
+    fetch_effects,
+    poll_until,
+    wait_for_effects,
+    wait_terminal_with_diagnostics,
+)
 from .actors import LongRunningPayload, long_running_job
 from .conftest import (
     _E2E_EFFECTS_DDL,
@@ -471,13 +476,35 @@ async def test_pg_restart_isolates_worker_and_recovers_on_replacement(
         alias=f"worker-pgr2-{schema}",
         env=_worker_env(chaos_pg, e2e_dragonfly, chaos_schema),
         label="replacement chaos e2e worker",
-    ):
+    ) as replacement_worker:
+        # The wait-timeout dump: what the poll loop last observed plus both
+        # workers' own logs, so a budget expiry is attributable (reclaim
+        # never happened / attempt starved mid-run / replacement re-isolated)
+        # without a manual reproduction. Guarded by
+        # wait_terminal_with_diagnostics: a diagnostics failure is report
+        # content, never a replacement for the timeout.
+        async def _replacement_failure_context() -> str:
+            started = await fetch_effects(chaos_pool, schema, run_id, kind="started")
+            finished = await fetch_effects(chaos_pool, schema, run_id, kind="finished")
+            return (
+                f"effects so far: started={len(started)} finished={len(finished)}\n"
+                f"--- replacement worker logs ---\n"
+                f"{_container_logs(replacement_worker.container)}\n"
+                f"--- isolated worker logs ---\n"
+                f"{_container_logs(chaos_worker.container)}"
+            )
+
         # The replacement's leader sweep (2 s interval) reclaims the
         # expired lock, records attempt 1 as crashed, and re-pends with
         # the 5 s retry backoff; the job re-dispatches and runs its 30 s
         # actor to success. The pre-outage client pool reconnects via
         # fresh acquires now that PG is back.
-        await handle.wait(timeout=_RECOVERY_TIMEOUT)
+        await wait_terminal_with_diagnostics(
+            handle,
+            timeout=_RECOVERY_TIMEOUT,
+            description="the replacement worker to complete the reclaimed job",
+            failure_context=_replacement_failure_context,
+        )
 
     # -- Assertions ----------------------------------------------------------
     started = await fetch_effects(chaos_pool, schema, run_id, kind="started")
