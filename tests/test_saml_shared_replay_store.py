@@ -51,9 +51,14 @@ pytestmark = [pytest.mark.saml]
 
 _SSO_URL = "https://idp.test.invalid/sso"
 _SESSION_SECRET = "s" * 32
-# This module gets its OWN database on the shared container (the module-scoped
-# pg_dsn fixture), so one fixed schema name cannot collide with anything.
-_SCHEMA = "taskq_saml_replay"
+
+
+@pytest.fixture(scope="module")
+def saml_schema() -> str:
+    # This module gets its OWN database on the shared container (the
+    # module-scoped pg_dsn fixture), so one fixed schema name cannot collide
+    # with anything.
+    return "taskq_saml_replay"
 
 
 def _config(**overrides: Any) -> SAMLAuthConfig:
@@ -70,7 +75,7 @@ def _config(**overrides: Any) -> SAMLAuthConfig:
 
 
 @pytest.fixture(scope="module")
-def migrated_dsn(pg_dsn: str) -> Iterator[str]:
+def migrated_dsn(pg_dsn: str, saml_schema: str) -> Iterator[str]:
     """The module's PG database with the bundled migrations applied.
 
     The real migration path is exercised, not a hand-written CREATE TABLE: if
@@ -81,7 +86,7 @@ def migrated_dsn(pg_dsn: str) -> Iterator[str]:
     async def _apply() -> None:
         conn = await asyncpg.connect(pg_dsn)
         try:
-            await apply_pending(conn, schema=_SCHEMA)
+            await apply_pending(conn, schema=saml_schema)
         finally:
             await conn.close()
 
@@ -89,7 +94,7 @@ def migrated_dsn(pg_dsn: str) -> Iterator[str]:
     yield pg_dsn
 
 
-def _replica(config: SAMLAuthConfig, dsn: str) -> FastAPI:
+def _replica(config: SAMLAuthConfig, dsn: str, schema: str) -> FastAPI:
     """One replica: its own pool over the SAME database and schema.
 
     The lifespan wires exactly the keys the admin app's ``setup_admin_state``
@@ -103,7 +108,7 @@ def _replica(config: SAMLAuthConfig, dsn: str) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
         app.state.pg_pool = pool
-        app.state.schema = _SCHEMA
+        app.state.schema = schema
         try:
             yield
         finally:
@@ -135,6 +140,7 @@ def _post_response(client: TestClient, response_b64: str) -> Any:
 
 def test_a_second_replica_cannot_accept_an_assertion_the_first_consumed(
     migrated_dsn: str,
+    saml_schema: str,
 ) -> None:
     """The confirmed defect, as a test: bundle A consumes an assertion,
     bundle B must NOT succeed on the same assertion.
@@ -148,8 +154,8 @@ def test_a_second_replica_cannot_accept_an_assertion_the_first_consumed(
     """
     config = _config()
     with (
-        TestClient(_replica(config, migrated_dsn), base_url=_TEST_BASE_URL) as client_a,
-        TestClient(_replica(config, migrated_dsn), base_url=_TEST_BASE_URL) as client_b,
+        TestClient(_replica(config, migrated_dsn, saml_schema), base_url=_TEST_BASE_URL) as client_a,
+        TestClient(_replica(config, migrated_dsn, saml_schema), base_url=_TEST_BASE_URL) as client_b,
     ):
         request_id = _do_login(client_a)
         correlation_cookie = _correlation_cookie(client_a)
@@ -175,6 +181,7 @@ def test_a_second_replica_cannot_accept_an_assertion_the_first_consumed(
 
 def test_a_fresh_assertion_answering_an_answered_request_is_refused_on_the_sibling(
     migrated_dsn: str,
+    saml_schema: str,
 ) -> None:
     """The answered-request gate is shared too, separately from the replay gate.
 
@@ -186,8 +193,8 @@ def test_a_fresh_assertion_answering_an_answered_request_is_refused_on_the_sibli
     """
     config = _config()
     with (
-        TestClient(_replica(config, migrated_dsn), base_url=_TEST_BASE_URL) as client_a,
-        TestClient(_replica(config, migrated_dsn), base_url=_TEST_BASE_URL) as client_b,
+        TestClient(_replica(config, migrated_dsn, saml_schema), base_url=_TEST_BASE_URL) as client_a,
+        TestClient(_replica(config, migrated_dsn, saml_schema), base_url=_TEST_BASE_URL) as client_b,
     ):
         request_id = _do_login(client_a)
         correlation_cookie = _correlation_cookie(client_a)
@@ -218,6 +225,7 @@ def test_a_fresh_assertion_answering_an_answered_request_is_refused_on_the_sibli
 
 def test_a_flood_of_accepted_logins_cannot_evict_a_consumed_assertion(
     migrated_dsn: str,
+    saml_schema: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The 10k-entry flood that evicted a consumed record cannot recur.
@@ -236,7 +244,7 @@ def test_a_flood_of_accepted_logins_cannot_evict_a_consumed_assertion(
     # makes the same eviction reachable at test scale).
     monkeypatch.setattr(saml_module, "_REPLAY_CACHE_MAX_ENTRIES", 2)
     monkeypatch.setattr(saml_module, "_ANSWERED_REQUEST_MAX_ENTRIES", 2)
-    with TestClient(_replica(_config(), migrated_dsn), base_url=_TEST_BASE_URL) as client:
+    with TestClient(_replica(_config(), migrated_dsn, saml_schema), base_url=_TEST_BASE_URL) as client:
         request_id = _do_login(client)
         first_cookie = _correlation_cookie(client)
         first = build_saml_response(nameid="user-saml-1", in_response_to=request_id)
@@ -271,7 +279,9 @@ def test_a_flood_of_accepted_logins_cannot_evict_a_consumed_assertion(
 # ── Expiry: a past-NotOnOrAfter row neither blocks nor lingers ────────────
 
 
-def test_an_expired_replay_row_neither_blocks_nor_lingers(migrated_dsn: str) -> None:
+def test_an_expired_replay_row_neither_blocks_nor_lingers(
+    migrated_dsn: str, saml_schema: str
+) -> None:
     """Expiry semantics of the shared store, driven against the real table.
 
     A replay record whose NotOnOrAfter has passed must not block a later
@@ -287,14 +297,14 @@ def test_an_expired_replay_row_neither_blocks_nor_lingers(migrated_dsn: str) -> 
                 _PostgresSamlReplayStore,
             )
 
-            store = _PostgresSamlReplayStore(pool, _SCHEMA)
+            store = _PostgresSamlReplayStore(pool, saml_schema)
             # The count assertion below is only meaningful on a table this
             # test owns: the module's other tests write rows (fresh IDs each,
             # no cross-test reads), so start from a clean slate whatever the
             # random order.
             async with pool.acquire() as conn:
                 # Schema is this module's own fixed name on its own database.
-                await conn.execute(f'TRUNCATE "{_SCHEMA}".saml_replay_store')
+                await conn.execute(f'TRUNCATE "{saml_schema}".saml_replay_store')
             now = time.time()
             # Two rows that are already expired the moment they are written:
             # one assertion record past its NotOnOrAfter, one answered
@@ -317,7 +327,7 @@ def test_an_expired_replay_row_neither_blocks_nor_lingers(migrated_dsn: str) -> 
             # stale answered record, any superseded assertion record) is gone.
             async with pool.acquire() as conn:
                 count = await conn.fetchval(
-                    f'SELECT count(*) FROM "{_SCHEMA}".saml_replay_store'  # noqa: S608  # Why: schema is this module's own fixed name on its own database; no user input.
+                    f'SELECT count(*) FROM "{saml_schema}".saml_replay_store'  # noqa: S608  # Why: schema is this module's own fixed name on its own database; no user input.
                 )
             assert count == 1, f"expected exactly the one live row, found {count}"
         finally:
@@ -329,7 +339,9 @@ def test_an_expired_replay_row_neither_blocks_nor_lingers(migrated_dsn: str) -> 
 # ── Store selection: shared Postgres when the admin pool is present ───────
 
 
-def test_store_selection_wires_postgres_only_when_the_admin_pool_is_present() -> None:
+def test_store_selection_wires_postgres_only_when_the_admin_pool_is_present(
+    saml_schema: str,
+) -> None:
     """Pins the wiring decision.
 
     The admin app always populates ``app.state.pg_pool`` and
@@ -353,7 +365,7 @@ def test_store_selection_wires_postgres_only_when_the_admin_pool_is_present() ->
         "a bare app (no admin state) must keep the in-process store"
     )
 
-    wired = _request_with_state(pg_pool=object(), schema=_SCHEMA)
+    wired = _request_with_state(pg_pool=object(), schema=saml_schema)
     store = _replay_store_for(wired, fallback)
     assert isinstance(store, _PostgresSamlReplayStore), (
         "the admin app's state shape must select the shared Postgres store"
