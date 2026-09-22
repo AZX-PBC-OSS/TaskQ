@@ -291,8 +291,46 @@ async def _lock_bounded_transaction(
         yield
 
 
+def _refuse_duplicate_ledger_keys(migrations: list[Migration]) -> None:
+    """Refuse a bundled set in which two files map to one ledger identity.
+
+    A migration's ledger identity is :attr:`Migration.key` (``{version}:{phase}``),
+    ``schema_migrations``' primary key, so two files sharing a version-sequence
+    pair AND a phase are one row as far as the ledger is concerned. The apply
+    loop reads the ledger once up front, so both files count as pending, the
+    first records the key, and the second's INSERT dies on
+    ``schema_migrations_pkey`` mid-run. On a fresh schema that failure is
+    deterministic, every CI leg that applies migrations to a throwaway schema
+    goes red at once, and the report blames whichever file sorted second
+    while the real defect is the bundle itself. Raised at discovery, before
+    any consumer (apply, status, the worker's boot currency check) touches
+    the database, naming both files. A version may carry one pre and one
+    post file (one identity each); it may not carry two of either.
+    """
+    seen: dict[str, str] = {}
+    for migration in migrations:
+        first = seen.get(migration.key)
+        if first is not None:
+            raise ValueError(
+                f"bundled migrations collide on the ledger identity "
+                f"{migration.key!r}: {first!r} and {migration.filename!r} both "
+                f"parse to version {migration.version!r}, phase "
+                f"{migration.phase!r}. schema_migrations' primary key is that "
+                "identity, so the second file's apply violates it (duplicate "
+                'key value violates unique constraint "schema_migrations_pkey") '
+                "on every fresh-schema run. Renumber one file's "
+                "version-sequence pair: a version may carry one pre and one "
+                "post file, never two of either."
+            )
+        seen[migration.key] = migration.filename
+
+
 def discover() -> list[Migration]:
-    """Return all bundled migrations sorted by version, then ``pre`` before ``post``."""
+    """Return all bundled migrations sorted by version, then ``pre`` before ``post``.
+
+    Raises :class:`ValueError` when two bundled files map to one ledger
+    identity (see :func:`_refuse_duplicate_ledger_keys`).
+    """
     found: list[Migration] = []
     package = resources.files("taskq.migrations")
     for entry in package.iterdir():
@@ -317,6 +355,7 @@ def discover() -> list[Migration]:
             )
         )
     found.sort(key=lambda m: (m.version, 0 if m.phase == "pre" else 1))
+    _refuse_duplicate_ledger_keys(found)
     return found
 
 

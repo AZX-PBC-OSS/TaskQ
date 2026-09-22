@@ -210,6 +210,69 @@ def test_discover_skips_non_sql_files(monkeypatch: pytest.MonkeyPatch) -> None:
     assert migrate.discover() == []
 
 
+# ── ledger-identity uniqueness (schema_migrations' primary key) ────────────
+
+
+def test_discover_refuses_two_files_on_one_ledger_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two bundled files sharing version-sequence AND phase are one ledger row.
+
+    The runner reads the ledger once up front, so both files count as pending,
+    the first records the shared key, and the second's INSERT dies on
+    ``schema_migrations_pkey`` mid-run: deterministic red on every fresh-schema
+    apply (every CI leg that migrates a throwaway schema). discover() must
+    refuse the bundle instead, naming both files, before any consumer touches
+    the database. Reproduced from PR #429's board: it added
+    ``01.00.19_01_pre_admin_audit.sql`` while main had just landed
+    ``01.00.19_01_pre_fence_probe_index.sql``, and both legs that apply
+    migrations failed with the pkey violation.
+    """
+    files = {
+        "01.00.19_01_pre_fence_probe_index.sql": "SELECT 1;",
+        "01.00.19_01_pre_admin_audit.sql": "SELECT 2;",
+    }
+    monkeypatch.setattr(migrate.resources, "files", lambda _pkg: _fake_package(files)())
+
+    with pytest.raises(ValueError, match=r"01\.00\.19_01:pre.*fence_probe_index.*admin_audit"):
+        migrate.discover()
+
+
+def test_discover_allows_pre_and_post_at_one_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The legitimate pair shape: one version, one pre file, one post file.
+
+    The ledger identity is ``{version}:{phase}``, so a pre/post pair at the
+    same version is two distinct identities, not a collision. Refusing this
+    shape would false-positive every phased migration the runner exists to
+    support.
+    """
+    files = {
+        "01.00.03_01_pre_idempotency_scope.sql": "SELECT 1;",
+        "01.00.03_01_post_idempotency_scope_drop_old_index.sql": "SELECT 2;",
+    }
+    monkeypatch.setattr(migrate.resources, "files", lambda _pkg: _fake_package(files)())
+
+    found = migrate.discover()
+
+    assert [m.key for m in found] == ["01.00.03_01:pre", "01.00.03_01:post"]
+
+
+def test_bundled_migrations_have_unique_ledger_keys() -> None:
+    """The shipped tree's invariant: no two bundled files share a ledger identity.
+
+    This is the pin that fails a PR adding a file whose version-sequence pair
+    and phase duplicate an already-bundled file, in the fast matrix with a
+    message naming both files, instead of red every migration-applying CI leg
+    with a bare pkey violation from whichever file sorted second.
+    """
+    keys = [m.key for m in migrate.discover()]
+    duplicates = sorted({key for key in keys if keys.count(key) > 1})
+    assert not duplicates, (
+        f"bundled migrations collide on ledger identity {duplicates}: "
+        "schema_migrations' primary key is {version}:{phase}, so the second "
+        "file of a collision violates it on every fresh-schema apply. "
+        "Renumber one file's version-sequence pair."
+    )
+
+
 # ── use_transaction / no-transaction directive ─────────────────────────────
 
 
