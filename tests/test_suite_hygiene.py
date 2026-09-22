@@ -79,14 +79,17 @@ import ast
 import asyncio
 import contextlib
 import hashlib
+import inspect
 import os
 import re
+from collections.abc import AsyncIterator, Awaitable, Callable, Generator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
 import pytest
 
+from taskq.settings import WorkerSettings
 from taskq.testing.fixtures import (
     RUN_TOKEN_ENV_VAR,
     _schema_name_from_module,  # pyright: ignore[reportPrivateUsage]  # Why: shared test-infra naming helper under test; private prefix scopes it to the testing package (same pattern as _create_worker).
@@ -95,8 +98,23 @@ from taskq.testing.fixtures import (
 )
 from tests.conftest import (
     _call_window_leak_report,  # pyright: ignore[reportPrivateUsage]  # Why: shared test-infra helper under test; mirrors the conftest imports above.
+    _fail_on_leaked_asyncio_tasks,  # pyright: ignore[reportPrivateUsage]  # Why: the autouse guard fixture under test; its raw async-gen function is driven manually below (a fixture cannot be re-entered through the real request).
     _leaked_pending_task_report,  # pyright: ignore[reportPrivateUsage]  # Why: shared test-infra helper under test; mirrors the conftest imports above.
     _module_db_name,  # pyright: ignore[reportPrivateUsage]  # Why: shared test-infra naming helper under test; mirrors tests/e2e's imports of conftest helpers.
+    pytest_runtest_call,  # pyright: ignore[reportPrivateUsage]  # Why: the call-end snapshot hook under test; driven manually below.
+)
+from tests.test_rt_lost_job_soak import (
+    _HANDBACK_BOUND_SECS,  # pyright: ignore[reportPrivateUsage]  # Why: soak budget constant under test; mirrors the conftest imports above.
+    _ROUNDS,  # pyright: ignore[reportPrivateUsage]  # Why: same.
+    _SETTLE_CAP_FLOOR_SECS,  # pyright: ignore[reportPrivateUsage]  # Why: same.
+    _SETTLE_CAP_SECS_PER_JOB,  # pyright: ignore[reportPrivateUsage]  # Why: same.
+    _STEP_BOUND_SECS,  # pyright: ignore[reportPrivateUsage]  # Why: same.
+    _TERMINATE_RECONNECT_POLL_SECS,  # pyright: ignore[reportPrivateUsage]  # Why: same.
+    _TERMINATE_RECONNECT_WINDOW_SECS,  # pyright: ignore[reportPrivateUsage]  # Why: same.
+    stop_worker_and_reap_bootstrap,  # pyright: ignore[reportPrivateUsage]  # Why: same.
+)
+from tests.test_rt_lost_job_soak import (
+    test_lost_job_soak_grand_mixin as _soak_grand_mixin,  # pyright: ignore[reportPrivateUsage]  # Why: aliased with the underscore so importing it does not COLLECT the soak trial into this module's suite - only its timeout mark is read.
 )
 
 _TESTS_DIR = Path(__file__).parent
@@ -663,3 +681,339 @@ async def test_call_window_leak_report_names_test_end_residue() -> None:
         with contextlib.suppress(asyncio.CancelledError):
             await still
     assert _call_window_leak_report([]) is None
+
+
+# ── Guard wiring, end to end ────────────────────────────────────────
+#
+# The pins above drive the CLASSIFIERS with hand-fed sets: deleting the
+# pytest_runtest_call hook (or the guard's window wiring) leaves them
+# green.  These pins drive the REAL hook and the REAL guard fixture
+# through one simulated item lifecycle, so the WIRING is under test: the
+# hook must capture the call-end residue, and the guard's teardown must
+# turn it into a failure on the leaking test.
+
+
+class _GuardStubItem:
+    """The minimal item the guard and the snapshot hook touch: only the
+    stash (the loop key at setup, the call-window key at call end)."""
+
+    def __init__(self) -> None:
+        self.stash = pytest.Stash()
+
+
+class _GuardStubRequest:
+    """The minimal request the guard fixture touches: ``node`` (whose
+    stash carries the keys) and its own (unused) ``stash``."""
+
+    def __init__(self) -> None:
+        self.stash = pytest.Stash()
+        self.node = _GuardStubItem()
+
+
+_GUARD_RAW_FIXTURE = cast(
+    "Callable[[_GuardStubRequest], AsyncIterator[None]]",
+    _fail_on_leaked_asyncio_tasks._fixture_function,  # pyright: ignore[reportAttributeAccessIssue]  # Why: pytest 8+ wraps fixture functions in FixtureFunctionDefinition; the raw async-gen function is the only way to drive the fixture's setup/teardown by hand.
+)
+
+
+async def _drive_guarded_call(
+    during_call: Callable[[], Awaitable[None]],
+    during_teardown_window: Callable[[], Awaitable[None]] | None = None,
+) -> None:
+    """Run the REAL guard fixture and the REAL call-end snapshot hook
+    through one simulated item lifecycle:
+
+    guard setup (baseline) → call-start snapshot → *during_call* (the
+    test body) → call-end snapshot → *during_teardown_window* (the OTHER
+    fixtures' teardowns, which run the loop and can reap residue) →
+    guard teardown (raises the guard's failure on a leak, ends the async
+    generator cleanly otherwise).
+
+    Raises whatever the guard's teardown raises (``pytest.fail.Exception``
+    on a leak; ``StopAsyncIteration`` on a clean loop) so each pin asserts
+    the outcome itself."""
+    request = _GuardStubRequest()
+    item = request.node
+    guard = _GUARD_RAW_FIXTURE(request)
+    await guard.__anext__()  # setup: stash the loop, snapshot the baseline
+    hook = cast(
+        "Generator[object, None, object]",
+        pytest_runtest_call(cast(pytest.Item, item)),
+    )
+    next(hook)  # the call phase's call-start snapshot
+    await during_call()
+    with contextlib.suppress(StopIteration):
+        hook.send(None)  # the call phase ends: the call-end snapshot lands
+    if during_teardown_window is not None:
+        await during_teardown_window()
+    with contextlib.suppress(StopAsyncIteration):
+        await guard.__anext__()  # teardown: the guard's check and verdict
+
+
+async def test_guard_catches_residue_reaped_in_the_teardown_window() -> None:
+    """The wiring pin for the call-window snapshot: a task minted by the
+    test body, still pending when the body finished, and REAPED by a
+    later fixture's teardown (the loop ran during teardown) must fail THE
+    LEAKING test - the live diff alone scores it green (done tasks are
+    filtered), so deleting the snapshot hook or the guard's window wiring
+    turns this pin red."""
+    minted: list[asyncio.Task[object]] = []
+
+    async def body() -> None:
+        # Left pending on purpose: the simulated teardown window reaps it.
+        minted.append(
+            asyncio.create_task(_hygiene_window_probe_coro(), name="hygiene-wiring-residue")
+        )
+
+    async def teardown_window() -> None:
+        residue = minted[0]
+        residue.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await residue
+
+    with pytest.raises(pytest.fail.Exception) as exc_info:
+        await _drive_guarded_call(body, teardown_window)
+    message = str(exc_info.value)
+    assert "hygiene-wiring-residue" in message, (
+        f"the teardown-window reap escaped the guard: {message}"
+    )
+    assert "pending at test end" in message
+
+
+async def test_guard_catches_a_fixture_looking_task_name_smuggled_by_the_body() -> None:
+    """The exemption is SET MEMBERSHIP (pending when the call phase
+    started), never the task's NAME: a test body that mints a task with a
+    fixture-looking name and abandons it is named by the guard like any
+    other leak.  A name-based exemption would let a real leak sail past
+    wearing a trustworthy label."""
+    minted: list[asyncio.Task[object]] = []
+
+    async def body() -> None:
+        minted.append(asyncio.create_task(_hygiene_leak_probe_coro(), name="fixture-owned-fake"))
+
+    try:
+        with pytest.raises(pytest.fail.Exception) as exc_info:
+            await _drive_guarded_call(body)
+    finally:
+        smuggled = minted[0]
+        smuggled.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await smuggled
+    message = str(exc_info.value)
+    assert "fixture-owned-fake" in message, (
+        f"a fixture-looking name smuggled a real leak past the guard: {message}"
+    )
+
+
+async def test_guard_passes_a_genuinely_fixture_owned_task() -> None:
+    """The exemption's non-leak direction, through the real machinery: a
+    task pending BEFORE the call phase (a function fixture's long-lived
+    worker, minted at setup) is in the guard's baseline and the hook's
+    call-start snapshot, so the guard scores the test green even though
+    the task is still pending at teardown - its owner reaps it.  Without
+    this direction the call-window snapshot would red every test that
+    inherits a task from an async fixture."""
+    fixture_owned = asyncio.create_task(
+        _hygiene_leak_probe_coro(), name="hygiene-wiring-fixture-owned"
+    )
+    try:
+
+        async def body() -> None:
+            return None
+
+        # No failure: the guard teardown ends the generator cleanly
+        # (StopAsyncIteration), never pytest.fail.
+        await _drive_guarded_call(body)
+    finally:
+        fixture_owned.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await fixture_owned
+
+
+# ── The soak's teardown budget arithmetic ───────────────────────────
+#
+# The soak's outer 2700s pytest-timeout mark must cover the legitimate
+# worst case INCLUDING the two-stage teardown, and stage 1's stop bound
+# must exceed the worker's own exit bound - the invariant that keeps the
+# shutdown watchdog's os._exit (if it trips at all) INSIDE stage 1's
+# wait, so stage 2's reaping never feeds an armed watchdog.
+
+
+def test_soak_stage1_stop_bound_exceeds_the_worker_exit_bound() -> None:
+    """Stage 1's stop_timeout (120s) must exceed the worker's own exit
+    bound: ``termination_grace_period`` (85s, counted from the shutdown's
+    start) plus the exit tail (the dump-interval lag before the deadline
+    trip is observed and the bounded metrics flush before os._exit, 8s as
+    the settings property models it).  The bound is what makes the
+    disarm-skip shape unreachable: a drain parked at the tracked-actor
+    reap gate is bounded by the worker's OWN watchdog trip (whose
+    ``os._exit`` lands inside stage 1's wait, killing a wedged process
+    loudly); stage 2's awaits only run once the worker task is done and
+    the watchdog disarmed.  If stage 1's bound ever dips below the
+    worker's, a stage-1 timeout delivers a second cancellation INTO
+    _main's cleanup finally - skipping ``shutdown_watchdog.cancel()`` and
+    ``lag_watchdog.stop()`` (they sit after the gate await) - and stage 2
+    runs with the watchdog armed: the os._exit lands mid-reaping, the CI
+    EXIT=2 shape."""
+    defaults = inspect.signature(stop_worker_and_reap_bootstrap).parameters
+    stop_timeout = defaults["stop_timeout"].default
+    reap_timeout = defaults["reap_timeout"].default
+    settings = WorkerSettings.load_from_dict(
+        {"pg_dsn": "postgresql://soak-budget.invalid/db", "schema_name": "soak_budget"}
+    )
+    worker_exit_bound = settings.termination_grace_period + settings.release_exit_tail_seconds
+    assert stop_timeout > worker_exit_bound, (
+        f"stage 1's stop bound ({stop_timeout}s) no longer exceeds the "
+        f"worker's own exit bound ({worker_exit_bound}s = termination grace "
+        f"{settings.termination_grace_period}s + exit tail "
+        f"{settings.release_exit_tail_seconds}s): a wedged drain can now "
+        "outlive stage 1, the timeout's second cancellation skips the "
+        "watchdog disarm, and stage 2 reaps under an armed os._exit"
+    )
+    assert 0 < reap_timeout < stop_timeout, (
+        "the residue reap must be bounded and strictly inside the stop "
+        f"bound, got stop={stop_timeout}s reap={reap_timeout}s"
+    )
+
+
+def test_soak_worst_case_fits_the_timeout_mark() -> None:
+    """The per-trial budget: the 2700s mark is PER ITEM (three trials are
+    three items, each with its own budget), and each item's legitimate
+    worst case - the body's bounds plus the finally's two-stage teardown
+    (120s stop + 30s reap) - must fit inside it.  Bumping any constant
+    that feeds this sum (the settle cap's per-job rate, the round count,
+    a teardown bound) without re-checking the mark turns a worst-case
+    failure into a pytest-timeout kill mid-teardown: the exact unbounded
+    teardown this branch exists to prevent."""
+    defaults = inspect.signature(stop_worker_and_reap_bootstrap).parameters
+    stop_timeout = defaults["stop_timeout"].default
+    reap_timeout = defaults["reap_timeout"].default
+
+    slow_rounds = [r for r in range(_ROUNDS) if r % 40 == 11]
+    kill_rounds = [r for r in range(_ROUNDS) if r % 33 == 5]
+    job_count = 2 * _ROUNDS + len(slow_rounds)
+    settle_cap = max(_SETTLE_CAP_FLOOR_SECS, _SETTLE_CAP_SECS_PER_JOB * job_count)
+    body_worst = (
+        2.0  # the bootstrap wait
+        + _ROUNDS * 0.1  # the per-round pace sleep
+        + len(kill_rounds) * (_TERMINATE_RECONNECT_WINDOW_SECS + _TERMINATE_RECONNECT_POLL_SECS)
+        + settle_cap  # quiescence normally ends the settle far sooner
+        + _STEP_BOUND_SECS  # the trial's worker-shutdown step (the outer bound)
+        + _HANDBACK_BOUND_SECS
+    )
+    teardown_worst = stop_timeout + reap_timeout
+    marks = {m.name: m for m in getattr(_soak_grand_mixin, "pytestmark", [])}
+    mark_budget = marks["timeout"].args[0]
+    total_worst = body_worst + teardown_worst
+    assert total_worst < mark_budget, (
+        f"the soak's worst case ({total_worst:.0f}s = body {body_worst:.0f}s "
+        f"+ teardown {teardown_worst:.0f}s) no longer fits the "
+        f"{mark_budget}s timeout mark: a worst-case trial now dies under "
+        "pytest-timeout mid-teardown instead of through its own bounded "
+        "watchdogs"
+    )
+
+
+# ── The soak's stage-2 residue reap, against its contract ───────────
+#
+# stop_worker_and_reap_bootstrap's stage 2 must hold its bound, name any
+# survivor, surface a reaped task's real crash (a swallowed crash is a
+# silent give-up: the doctrine is that a teardown that cannot finish is a
+# finding), and stay silent when every reaped task honoured its
+# cancellation.  The baseline is snapshotted immediately before minting,
+# so the reap's residue is exactly what these pins mint.
+
+_SOAK_REAP_PROBE_BOUND = 5.0
+"""Wall-clock slack the stage-2 pin allows on top of its 0.5s reap bound."""
+
+
+async def _soak_reap_swallower(release: asyncio.Event) -> None:
+    """A residue task that absorbs one cancellation and re-parks: the
+    shape the reap's loud failure exists for (a sibling that survives
+    cancel+await).  Released by the pin's finally so it ends cleanly."""
+    try:
+        await asyncio.Event().wait()
+    except asyncio.CancelledError:
+        await release.wait()
+
+
+async def _soak_reap_crasher() -> None:
+    """A residue task that catches its cancellation and dies with a REAL
+    exception instead - a bootstrap cleanup that raised."""
+    try:
+        await asyncio.Event().wait()
+    except asyncio.CancelledError:
+        raise ValueError("soak-reap-crasher boom") from None
+
+
+async def test_soak_stage2_names_a_survivor_within_its_bound() -> None:
+    """A residue task that swallows the cancellation survives the bounded
+    await: stage 2 must fail LOUDLY, naming the survivor, and the bound
+    must HOLD (the reap returns within reap_timeout + slack, not after
+    some unbounded wait)."""
+    baseline = frozenset(asyncio.all_tasks())
+    worker_task = asyncio.create_task(_hygiene_noop(), name="soak-reap-done-worker")
+    await worker_task
+    release = asyncio.Event()
+    swallower = asyncio.create_task(_soak_reap_swallower(release), name="soak-reap-swallower")
+    # The residue stage's cancels land MID-AWAIT in the real bootstrap (a
+    # wedged sibling is always mid-run): let the swallower reach its park
+    # point, because a cancel delivered before a task's FIRST step throws
+    # into the coroutine at position 0 - before its try is entered - and
+    # the task dies cancelled instead of swallowing.
+    await asyncio.sleep(0)
+    started = asyncio.get_running_loop().time()
+    try:
+        with pytest.raises(AssertionError) as exc_info:
+            await stop_worker_and_reap_bootstrap(worker_task, baseline, reap_timeout=0.5)
+        elapsed = asyncio.get_running_loop().time() - started
+        assert elapsed < 0.5 + _SOAK_REAP_PROBE_BOUND, (
+            f"the reap's bound did not hold: {elapsed:.1f}s"
+        )
+        message = str(exc_info.value)
+        assert "TEARDOWN LEAK" in message
+        assert "soak-reap-swallower" in message, f"the survivor was not named: {message}"
+    finally:
+        release.set()
+        swallower.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await swallower
+
+
+async def test_soak_stage2_surfaces_a_reaped_task_crash() -> None:
+    """A residue task that dies with a REAL exception instead of the
+    delivered cancellation is a bootstrap finding, not silence: stage 2
+    must name the task and its exception.  The pre-fix shape retrieved
+    the exception and suppressed it - a crashing cleanup scored green."""
+    baseline = frozenset(asyncio.all_tasks())
+    worker_task = asyncio.create_task(_hygiene_noop(), name="soak-reap-done-worker")
+    await worker_task
+    crasher = asyncio.create_task(_soak_reap_crasher(), name="soak-reap-crasher")
+    # Same mid-await discipline: the crasher must be parked in its try when
+    # the reap's cancel arrives, so it can die with its real exception.
+    await asyncio.sleep(0)
+    try:
+        with pytest.raises(AssertionError) as exc_info:
+            await stop_worker_and_reap_bootstrap(worker_task, baseline, reap_timeout=0.5)
+        message = str(exc_info.value)
+        assert "TEARDOWN CRASH" in message
+        assert "soak-reap-crasher" in message, f"the crashed task was not named: {message}"
+        assert "soak-reap-crasher boom" in message, (
+            f"the crash's exception was not surfaced: {message}"
+        )
+    finally:
+        # The crasher is already done; nothing to reap. The assert above
+        # re-raised if stage 2 stayed silent.
+        _ = crasher.done()
+
+
+async def test_soak_stage2_stays_silent_when_residue_honours_cancel() -> None:
+    """The quiet direction: residue that honours its cancellation is
+    reaped without a raise - the reap's red is for survivors and
+    crashes, not for cancellation working as delivered."""
+    baseline = frozenset(asyncio.all_tasks())
+    worker_task = asyncio.create_task(_hygiene_noop(), name="soak-reap-done-worker")
+    await worker_task
+    honest = asyncio.create_task(_hygiene_leak_probe_coro(), name="soak-reap-honest")
+    await stop_worker_and_reap_bootstrap(worker_task, baseline, reap_timeout=5.0)
+    assert honest.cancelled() or honest.done()
