@@ -133,6 +133,9 @@ nav:
       - HashiCorp Vault: api-reference/vault.md
       - CLI: api-reference/cli.md
   - Architecture: architecture.md
+  - Design:
+      - SQL Hot-Path Follow-Ups: design/sql-hotpath-followups.md
+      - Debugging Playbook: design/debugging-playbook.md
   - Changelog: changelog.md
 
 extra:
