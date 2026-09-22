@@ -38,6 +38,8 @@ from typing import Any
 
 import pytest
 
+from taskq import actor
+from taskq.backend._enqueue import _batch_cap_refusals as _pg_batch_cap_refusals
 from taskq.backend._protocol import (
     Container,
     EnqueueArgs,
@@ -45,10 +47,15 @@ from taskq.backend._protocol import (
     batch_cap_groups,
     batch_cap_refusal_kernel,
 )
+from taskq.backend._sql_templates import render as render_sql
 from taskq.client._args import build_enqueue_args
 from taskq.exceptions import MaxPendingExceededError
+from taskq.testing._enqueue import _batch_cap_refusals as _memory_batch_cap_refusals
+from taskq.testing.clock import FakeClock
+from taskq.testing.in_memory import InMemoryBackend
 
 from .test_batch_cap_refusals_parity import (
+    _START,
     _capped_ref,
     _healthy_ref,
     _memory_refusals,
@@ -56,6 +63,39 @@ from .test_batch_cap_refusals_parity import (
     _pg_refusals,
     _refusal_facts,
 )
+from .test_enqueue_coverage import _FakeEnqueueConn, _Record
+
+
+async def _memory_world(
+    args_list: list[EnqueueArgs],
+    *,
+    existing_counts: dict[str, int],
+    stored_pairs: set[tuple[str, str]],
+    override_caps: dict[str, int | None] | None = None,
+) -> list[Any]:
+    """``_memory_refusals`` with arbitrary actor names, including unicode
+    ones: the parity module's seeding helper hardwires the ref choice to
+    its own two actors (any other name silently lands on the uncapped
+    ref), which would make a unicode actor's seeded counts vanish - the
+    mirror world here seeds each NAMED actor's rows under that name."""
+    backend = InMemoryBackend(clock=FakeClock(start=_START))
+    for actor_name, cap in (override_caps or {}).items():
+        backend.register_actor_config(actor=actor_name, max_pending=cap)
+    for actor_name, cnt in existing_counts.items():
+        for i in range(cnt):
+            ref = _capped_ref if actor_name == _capped_ref.name else _healthy_ref
+            base = build_enqueue_args(ref, _Payload(seed=i))
+            await backend.enqueue(replace(base, max_pending=None, actor=actor_name))
+    for scope, key in stored_pairs:
+        base = build_enqueue_args(
+            _capped_ref,
+            _Payload(seed="dedupe-seed"),
+            idempotency_key=key,
+            idempotency_scope=scope,
+        )
+        await backend.enqueue(replace(base, max_pending=None))
+    return await _memory_batch_cap_refusals(backend, args_list)
+
 
 # The sweep's seed is part of the pin: the grid below is randomized to
 # cover combinations no hand-written scenario list would think to pair,
@@ -65,6 +105,34 @@ _SWEEP_SEED = 165
 _SWEEP_SCENARIOS = 64
 
 _CAPPED = _capped_ref.name
+
+
+_NFC_NAME = "cap_parity_caf\u00e9"
+"""NFC: the e-acute as ONE codepoint (U+00E9)."""
+
+_NFD_NAME = "cap_parity_cafe\u0301"
+"""NFD: plain e + COMBINING ACUTE (U+0301), visually identical to NFC,
+a different codepoint sequence, a different actor."""
+
+
+@actor(name=_NFC_NAME, max_pending=2)
+async def _capped_unicode_ref(_payload: _Payload) -> None:
+    pass
+
+
+@actor(name=_NFD_NAME, max_pending=2)
+async def _capped_unicode_nfd_ref(_payload: _Payload) -> None:
+    pass
+
+
+# Actor names are free-form text (no _IDENT_RE gate on them), so NFC/NFD
+# twins are reachable in production data. Python dict keys and PG text
+# equality under a deterministic collation are both codepoint-exact, so
+# the two names are distinct actors on BOTH sides; the sweep pins that
+# neither side's grouping folds them together.
+_UNICODE_CAPPED = _capped_unicode_ref.name
+_UNICODE_NFD_CAPPED = _capped_unicode_nfd_ref.name
+assert _UNICODE_NFD_CAPPED != _UNICODE_CAPPED
 
 
 def _args_for(
@@ -214,15 +282,34 @@ class TestDifferentialSweep:
             "uncapped_item": False,
             "override_present": False,
             "override_absent": False,
+            "override_cleared_null": False,
             "duplicate_key_in_batch": False,
             "key_collides_with_stored_pair": False,
             "uncapped_actor_item_mixed_in": False,
         }
         for scenario in range(_SWEEP_SCENARIOS):
-            # Stored operator override for the capped actor: absent, or
-            # tighter/equal/looser than the carried literal (2).
-            override = rng.choice([None, 0, 1, 2, 3, 10])
-            override_caps = {_CAPPED: override} if override is not None else None
+            # Stored operator override for the capped actor: absent (no
+            # actor_config row), CLEARED (a row whose max_pending is NULL -
+            # the operator ran `actor-config clear` - which must resolve to
+            # the carried literal exactly like absent, never to 0), or a
+            # tighter/equal/looser stored value (2 is the carried literal).
+            override_roll: str | int = rng.choice(["absent", "cleared", 0, 1, 2, 3, 10])
+            override: int | None
+            if override_roll == "absent":
+                override_caps: dict[str, int | None] | None = None
+                override = None
+            elif override_roll == "cleared":
+                override_caps = {_CAPPED: None}
+                override = None
+                seen_axes["override_cleared_null"] = True
+            else:
+                stored_value = int(override_roll)
+                override_caps = {_CAPPED: stored_value}
+                override = stored_value
+            if override is not None:
+                seen_axes["override_present"] = True
+            else:
+                seen_axes["override_absent"] = True
             # Stored idempotency pairs: some may collide with batch keys,
             # some are unrelated. Sorted where iterated so the grid is
             # deterministic regardless of set hashing.
@@ -298,4 +385,232 @@ class TestDifferentialSweep:
         assert all(seen_axes.values()), (
             f"seed={_SWEEP_SEED} grid missed axes: "
             f"{[axis for axis, hit in seen_axes.items() if not hit]}"
+        )
+
+
+class TestAxesTheGridMissed:
+    """The seeded grid's actor world is one ASCII capped actor plus one
+    uncapped neighbour; these scenarios cover what that world cannot
+    express: a CLEARED override row, a cross-actor duplicate pair with
+    different caps, and unicode actor names (including NFC/NFD twins)."""
+
+    @staticmethod
+    async def _both_worlds(
+        args_list: list[EnqueueArgs],
+        *,
+        existing_counts: dict[str, int],
+        stored_pairs: set[tuple[str, str]],
+        override_caps: dict[str, int | None] | None = None,
+    ) -> tuple[list[Any], list[Any]]:
+        """Run one world through both backends; returns (pg, mem) facts."""
+        pg = await _pg_refusals(
+            args_list,
+            existing_counts=existing_counts,
+            stored_pairs=stored_pairs,
+            override_caps=override_caps,
+        )
+        mem = await _memory_world(
+            args_list,
+            existing_counts=existing_counts,
+            stored_pairs=stored_pairs,
+            override_caps=override_caps,
+        )
+        return _refusal_facts(pg), _refusal_facts(mem)
+
+    async def test_cleared_override_row_resolves_to_the_carried_literal(
+        self,
+    ) -> None:
+        """A stored actor_config row with max_pending NULL (the operator
+        cleared the override) must resolve to the carried literal exactly
+        like an absent row - on both backends.
+
+        The failure this pins: an I/O mapping that coerces the cleared
+        column instead of passing it through (``rec['max_pending'] or 0``
+        or ``cfg.max_pending or 0``) turns 'no override' into a ZERO cap
+        and refuses every batch for that actor. The seeded sweep cannot
+        see this axis: its 'absent' roll builds no row at all."""
+        args_list = [_args_for(_capped_ref, 0), _args_for(_capped_ref, 1)]
+
+        cleared_pg, cleared_mem = await self._both_worlds(
+            args_list,
+            existing_counts={_CAPPED: 2},
+            stored_pairs=set(),
+            override_caps={_CAPPED: None},  # a row exists, its cap is NULL
+        )
+        absent_pg, absent_mem = await self._both_worlds(
+            args_list,
+            existing_counts={_CAPPED: 2},
+            stored_pairs=set(),
+            override_caps=None,  # no row at all
+        )
+
+        assert cleared_pg == absent_pg, (
+            "a cleared (NULL) override row and an absent row resolved to "
+            f"different caps: cleared={cleared_pg}, absent={absent_pg}"
+        )
+        assert cleared_pg == cleared_mem
+        assert absent_pg == absent_mem
+        # Carried literal 2, existing 2, batch 2 -> 4 > 2: refused at 2.
+        assert cleared_pg == [(_CAPPED, 2, 2)], (
+            "a cleared override must leave the carried literal standing "
+            "(a 0-cap coercion would refuse with max_pending=0)"
+        )
+
+    async def test_cleared_override_for_a_registry_uncapped_actor_stays_uncapped(
+        self,
+    ) -> None:
+        """A cleared row for an actor whose carried literal is None must
+        not invent a cap (0 or otherwise) on either backend."""
+        args_list = [_args_for(_healthy_ref, 0, cap=None)]
+        pg, mem = await self._both_worlds(
+            args_list,
+            existing_counts={_healthy_ref.name: 50},
+            stored_pairs=set(),
+            override_caps={_healthy_ref.name: None},
+        )
+        assert pg == [] == mem, (
+            f"a cleared override on an uncapped actor manufactured a cap: pg={pg}, mem={mem}"
+        )
+
+    async def test_cross_actor_duplicate_pair_discounts_the_second_carrier(
+        self,
+    ) -> None:
+        """A (scope, key) pair carried by items of two DIFFERENT capped
+        actors with DIFFERENT carried caps: the pair dedupes globally
+        (the INSERT's arbiter is (idempotency_scope, idempotency_key),
+        not per-actor), so the second carrier's item writes no row and
+        consumes none of ITS actor's capacity. Both backends must make
+        that identical call. (At write time such a batch aborts with the
+        typed actor-mismatch refusal - the preflight's job is to answer
+        identically BEFORE that, whatever the caller does with it.)"""
+        first = _args_for(_capped_ref, 0, cap=2, key="shared-k")
+        # The same pair, a different actor, a different carried cap.
+        second = _args_for(_capped_unicode_ref, 0, cap=3, key="shared-k")
+        args_list = [first, second]
+
+        pg, mem = await self._both_worlds(
+            args_list,
+            existing_counts={_CAPPED: 0, _UNICODE_CAPPED: 0},
+            stored_pairs=set(),
+        )
+        assert pg == mem
+        # batch 1 discounted to 0 net for the second carrier: its actor
+        # must NOT be refused for the pair it dedupes onto.
+        assert all(actor_ != _UNICODE_CAPPED for actor_, _, _ in pg), (
+            f"the second carrier of a duplicate pair was refused for "
+            f"capacity it does not consume: {pg}"
+        )
+
+    async def test_unicode_actor_names_group_distinctly_on_both_backends(
+        self,
+    ) -> None:
+        """NFC and NFD spellings of the SAME visible name are two actors
+        everywhere: no normalization, casefold, or strip may enter either
+        backend's grouping, and one actor's over-cap refusal must not
+        drag its lookalike in."""
+        nfc_item = _args_for(_capped_unicode_ref, 0, cap=2, key=None)
+        nfd_item = _args_for(_capped_unicode_nfd_ref, 0, cap=2, key=None)
+        args_list = [nfc_item, nfd_item]
+        # Both lookalikes are over-cap on their own counts...
+        existing = {_UNICODE_CAPPED: 2, _UNICODE_NFD_CAPPED: 2}
+
+        pg, mem = await self._both_worlds(args_list, existing_counts=existing, stored_pairs=set())
+        assert pg == mem
+        assert {a for a, _, _ in pg} == {_UNICODE_CAPPED, _UNICODE_NFD_CAPPED}, (
+            f"lookalike unicode actor names collapsed in the grouping: {pg}"
+        )
+
+        # ...and a cap breach on ONE of them leaves the other alone.
+        pg_one, mem_one = await self._both_worlds(
+            args_list,
+            existing_counts={_UNICODE_CAPPED: 5, _UNICODE_NFD_CAPPED: 0},
+            stored_pairs=set(),
+        )
+        assert pg_one == mem_one
+        assert [a for a, _, _ in pg_one] == [_UNICODE_CAPPED], (
+            f"one lookalike's refusal leaked into its twin: {pg_one}"
+        )
+
+
+class TestPgPreflightStatementShape:
+    """The kernel extraction must not have changed the PG preflight's
+    statement shape: the same fetches in the same order as the pre-extraction
+    code (actor-config snapshot, then the grouped count, then the
+    stored-pair probe when the batch carries keyed items), and no
+    advisory-lock statement - the bulk tier's count-then-insert race is a
+    DOCUMENTED residual (the single path takes the lock; bulk paths
+    deliberately do not, for throughput). A silent new fetch, a reordered
+    fetch, or a quietly added lock is exactly the atomicity drift this
+    pin exists to catch."""
+
+    _SQL = render_sql("taskq")
+
+    @staticmethod
+    def _recorded_conn(override_rows: list[_Record]) -> tuple[_FakeEnqueueConn, list[str]]:
+        conn = _FakeEnqueueConn(
+            fetch_map={
+                "GROUP BY actor": [],
+                "actor_config": override_rows,
+                "JOIN unnest": [],
+            }
+        )
+        fetch_sqls: list[str] = []
+        inner_fetch = conn.fetch
+
+        async def _recording_fetch(sql: str, *args: object) -> list[_Record]:
+            fetch_sqls.append(sql)
+            return await inner_fetch(sql, *args)
+
+        conn.fetch = _recording_fetch  # type: ignore[method-assign]
+        return conn, fetch_sqls
+
+    async def test_three_fetches_in_documented_order_with_keyed_items(self) -> None:
+        conn, fetch_sqls = self._recorded_conn([])
+        args_list = [_args_for(_capped_ref, 0, key="k1")]
+
+        refusals = await _pg_batch_cap_refusals(conn, self._SQL, args_list)
+
+        assert refusals == []
+        assert len(fetch_sqls) == 3, (
+            f"the PG cap preflight ran {len(fetch_sqls)} fetches (pre-extraction "
+            "shape: 3): a fetch was added or lost by the kernel extraction"
+        )
+        assert "actor_config" in fetch_sqls[0], "the override snapshot must come first"
+        assert "GROUP BY actor" in fetch_sqls[1], "the pending count comes second"
+        assert "JOIN unnest" in fetch_sqls[2], "the stored-pair probe comes last (keyed items)"
+        assert not any("advisory" in sql.lower() for sql in fetch_sqls), (
+            "the bulk preflight acquired an advisory lock: the documented "
+            "no-lock residual changed shape"
+        )
+        assert not any("advisory" in sql.lower() for sql in conn.execute_calls), (
+            "the preflight executed a lock statement outside the fetches"
+        )
+
+    async def test_two_fetches_without_keyed_items(self) -> None:
+        conn, fetch_sqls = self._recorded_conn([])
+        args_list = [_args_for(_capped_ref, 0)]  # no idempotency key
+
+        await _pg_batch_cap_refusals(conn, self._SQL, args_list)
+
+        assert len(fetch_sqls) == 2
+        assert not any("JOIN unnest" in sql for sql in fetch_sqls), (
+            "the stored-pair probe ran for a batch with no keyed items"
+        )
+
+    async def test_kernel_inputs_are_the_fetched_rows_not_re_fetched(self) -> None:
+        """The three fetched record sets are the kernel's ONLY store view:
+        the preflight must not issue extra round trips for data the kernel
+        consumes (the override rows here are non-NULL and flow straight
+        through, an int() coercion or a re-read would show up as shape
+        drift above, the pass-through itself is pinned by the sweep's
+        cleared-NULL axis)."""
+        conn, fetch_sqls = self._recorded_conn([_Record({"actor": _CAPPED, "max_pending": 1})])
+        args_list = [_args_for(_capped_ref, 0, key="k1"), _args_for(_capped_ref, 1)]
+
+        refusals = await _pg_batch_cap_refusals(conn, self._SQL, args_list)
+
+        assert len(fetch_sqls) == 3
+        assert _refusal_facts(refusals) == [(_CAPPED, 0, 1)], (
+            "the stored override (1) did not govern the refusal: the "
+            "fetched rows are not the kernel's cap source"
         )
