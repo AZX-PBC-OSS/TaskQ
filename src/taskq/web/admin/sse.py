@@ -129,12 +129,6 @@ async def _sse_generator(
                 keepalive_interval=_KEEPALIVE_INTERVAL,
                 backoff_initial=_RECONNECT_BACKOFF_INITIAL,
                 backoff_max=_RECONNECT_BACKOFF_MAX,
-            feed = listen_with_reconnect(
-                _live_pool,
-                channel,
-                keepalive_interval=_KEEPALIVE_INTERVAL,
-                backoff_initial=_RECONNECT_BACKOFF_INITIAL,
-                backoff_max=_RECONNECT_BACKOFF_MAX,
             )
             try:
                 async for payload in feed:
