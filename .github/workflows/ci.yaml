@@ -317,14 +317,51 @@ jobs:
 
   coverage:
     # The coverage lane is the single longest CI job (the whole suite, one
-    # leg, at -n 2 on a 4-core runner: ~19 min). The 8-core larger runner at
-    # -n 4 keeps the per-worker core density identical to -n 2 on 4 cores
-    # (the timing-sensitive tests' flake exposure is a per-core-density
-    # property, not a parallelism-count property) and roughly halves the
-    # wall time; the larger runner's cost is linear per core, so this is
-    # the cheapest wall-clock minute CI sells.
+    # leg). The 8-core larger runner at -n 4 keeps the per-worker core
+    # density identical to -n 2 on 4 cores (the timing-sensitive tests'
+    # flake exposure is a per-core-density property, not a
+    # parallelism-count property) and roughly halves the wall time; the
+    # larger runner's cost is linear per core, so this is the cheapest
+    # wall-clock minute CI sells.
+    #
+    # The larger-runner label does not exist yet (the same stand-in note
+    # lives on the `test` matrix above), so this leg runs on the standard
+    # runner, and the density it advertises has to come from the worker
+    # count instead: -n 2 on 4 cores is 2 cores per worker, the density
+    # this lane was calibrated for. Measured on 2026-09-22, the -n 4
+    # stand-in (1 core per worker) stacked the coverage tracer's CPU tax
+    # on an already-saturated runner, and the instrumented leg became a
+    # harsher environment than the uninstrumented legs it shadows:
+    #
+    # - Wall tax (same commit, same filter, same -n 4, same runner type,
+    #   per-run pairs): the coverage leg's pytest wall ran 1123-1187s
+    #   (median 1123) against the plain test legs' 651-979s, +22-55%.
+    #   Locally, matched A/B (3 runs per config): heartbeat-chaos 22.6 ->
+    #   30.1s (+33%), cancel-sweep2 8.1 -> 13.8s (+69%), cron-integration
+    #   13.7 -> 16.9s (+23%); peak worker RSS +15% (489 -> 565MB tree,
+    #   110 -> 127MB per process) -- a wall tax, not a memory trap.
+    # - Board tally, same day (118 CI runs, 43 red): 11 instances of a
+    #   test failing on the coverage leg while green on ALL THREE plain
+    #   legs of the same run, against 9 instances in the other direction
+    #   across three times the leg-opportunities (the matrix runs three
+    #   legs per run, coverage one). Per leg-run that is ~9% (11/118) on
+    #   coverage vs ~2.5% (9/354) on a plain leg, ~3.7x. Every one of
+    #   the 11 was a wall-clock pin firing on starvation artifacts (the
+    #   heartbeat-chaos janitorial exit wait, sweep-trial starvation,
+    #   clock-smear on measured deltas, equal clock_timestamp() stamps,
+    #   a 5s LISTEN delivery wait), not a defect the uninstrumented legs
+    #   agreed with.
+    #
+    # Halving the worker count hands the tracer the spare core instead
+    # of the pins' headroom: at -n 2 the instrumented leg's per-worker
+    # demand (~1.3-1.7x traced CPU) fits the 2 cores it gets, which is
+    # milder than the plain legs' own 4-on-4 packing, so the coverage
+    # leg stops being the suite's harshest timing environment. The lane
+    # is the same test set with the same gate (--cov-fail-under=90 is
+    # untouched and the measured 95% has room); the price is wall time,
+    # ~2x the -n 4 median (est. ~37min), priced into the timeout below.
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       # fetch-depth 0: the breaking-change marker guard reads the branch's
       # own commits against the base (git log <base>..HEAD). A shallow PR
@@ -351,7 +388,7 @@ jobs:
       # the fast+integration suite runs with coverage; the slow tier's
       # lane owns the wall-clock families.
       - name: Run tests with coverage gate
-        run: uv run --no-sync pytest -n 4 -m "not slow and not load_sensitive" --cov=taskq --cov-report=term-missing --cov-fail-under=90
+        run: uv run --no-sync pytest -n 2 -m "not slow and not load_sensitive" --cov=taskq --cov-report=term-missing --cov-fail-under=90
 
   e2e:
     # Containerized e2e tier: workers built from the packaged wheel run
