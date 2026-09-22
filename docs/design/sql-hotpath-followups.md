@@ -228,6 +228,27 @@ avoided by structure, not by estimates.
   native skip scan), one bounded seek per distinct cohort; the
   superseded `jobs_actor_fairness_dispatch_idx` is dropped by
   01.00.09_01_post.
+
+  Correction to that migration's header and to 01.00.00_01's index
+  comment (issue #200, item 6): the pre-09 round-robin window never
+  read `jobs_actor_fairness_dispatch_idx` for its pre-sorted
+  per-partition input. The window partitions on
+  `COALESCE(j2.fairness_key, '__null__')` (unchanged since v0.1.0,
+  d599d029's `_ROUND_ROBIN_CANDIDATES_LATERAL`), and the index keys
+  the bare `fairness_key` column, so no column position matches the
+  partition expression and the window sorts its own input either way.
+  EXPLAIN on the pre-merge schema confirms it: with seq and bitmap
+  scans off and the competing indexes dropped, the old query still
+  sorts; partitioning on the raw column does use the index. The
+  header's fleet-rollout caution therefore rested on a plan dependency
+  that does not exist; what remains true is that the drop is
+  forward-only and the runner refuses a post migration before its
+  same-version pre counterpart. The shipped file cannot be corrected
+  in place: the runner hashes the rendered file (comments included)
+  into the `schema_migrations` ledger, and
+  `tests/data/released_migrations.sha256` freezes its bytes, so any
+  edit would log `migration-checksum-drift` on every deployment that
+  applied it. This note is the correction of record.
 - `per_actor_capacity`'s idle-actor prefilter moved from `EXISTS` to a
   correlated per-queue LATERAL probe: the EXISTS is a semi-join the
   planner executes as a hash over a whole-backlog Seq Scan whenever
