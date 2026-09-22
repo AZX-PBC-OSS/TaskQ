@@ -154,8 +154,12 @@ def test_a_second_replica_cannot_accept_an_assertion_the_first_consumed(
     """
     config = _config()
     with (
-        TestClient(_replica(config, migrated_dsn, saml_schema), base_url=_TEST_BASE_URL) as client_a,
-        TestClient(_replica(config, migrated_dsn, saml_schema), base_url=_TEST_BASE_URL) as client_b,
+        TestClient(
+            _replica(config, migrated_dsn, saml_schema), base_url=_TEST_BASE_URL
+        ) as client_a,
+        TestClient(
+            _replica(config, migrated_dsn, saml_schema), base_url=_TEST_BASE_URL
+        ) as client_b,
     ):
         request_id = _do_login(client_a)
         correlation_cookie = _correlation_cookie(client_a)
@@ -193,8 +197,12 @@ def test_a_fresh_assertion_answering_an_answered_request_is_refused_on_the_sibli
     """
     config = _config()
     with (
-        TestClient(_replica(config, migrated_dsn, saml_schema), base_url=_TEST_BASE_URL) as client_a,
-        TestClient(_replica(config, migrated_dsn, saml_schema), base_url=_TEST_BASE_URL) as client_b,
+        TestClient(
+            _replica(config, migrated_dsn, saml_schema), base_url=_TEST_BASE_URL
+        ) as client_a,
+        TestClient(
+            _replica(config, migrated_dsn, saml_schema), base_url=_TEST_BASE_URL
+        ) as client_b,
     ):
         request_id = _do_login(client_a)
         correlation_cookie = _correlation_cookie(client_a)
@@ -244,7 +252,9 @@ def test_a_flood_of_accepted_logins_cannot_evict_a_consumed_assertion(
     # makes the same eviction reachable at test scale).
     monkeypatch.setattr(saml_module, "_REPLAY_CACHE_MAX_ENTRIES", 2)
     monkeypatch.setattr(saml_module, "_ANSWERED_REQUEST_MAX_ENTRIES", 2)
-    with TestClient(_replica(_config(), migrated_dsn, saml_schema), base_url=_TEST_BASE_URL) as client:
+    with TestClient(
+        _replica(_config(), migrated_dsn, saml_schema), base_url=_TEST_BASE_URL
+    ) as client:
         request_id = _do_login(client)
         first_cookie = _correlation_cookie(client)
         first = build_saml_response(nameid="user-saml-1", in_response_to=request_id)
