@@ -714,6 +714,191 @@ async def test_abandon_raise_requeue_then_landing_is_idempotent(
         await pool.close()
 
 
+async def test_budget_cut_drain_whose_detached_write_lands_still_delivers(
+    rt_schema: tuple[str, str],
+) -> None:
+    """A tick's leftover command budget cutting the drain mid-write must
+    not leave the cancellation undelivered.
+
+    ``run_post_tx`` awaits ``mark_abandoned`` under
+    ``shield_with_retrieval``, so the heartbeat's ``asyncio.timeout`` cut
+    detaches the inner write instead of killing it: the write lands
+    anyway, while the drain's except arm re-queues the entry on the
+    assumption the write did not land. The next tick's drain then reads
+    ``False`` (the row is no longer ``running``), and the not-applied arm
+    re-arms at FORCED without delivering the cancellation: every later
+    tick's poll filters ``status = 'running'``, so ``db_phase`` reads
+    NONE forever and no ladder arm can match again. The handler keeps
+    running and its slot is gone until the worker isolates itself or
+    exits.
+
+    The contract: a cut drain's False must be disambiguated against the
+    row. An abandon that is already durable owns the terminal state, so
+    the drain completes the delivery (the same first-delivery-only shape
+    as the applied arm) instead of leaving the cancellation silently
+    undelivered; every other False cause keeps the re-arm semantics."""
+    schema, dsn = rt_schema
+    worker_id = new_uuid()
+    job_id = new_job_id()
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=4)
+    assert pool is not None
+    deps = _deps_for(dsn, schema)
+
+    class _ParkedWriteBackend(PostgresBackend):
+        """The budget cut racing the abandon write: the drain's outer
+        await is cut while ``mark_abandoned`` is parked mid-flight, and
+        the shield detaches the write, which then commits."""
+
+        def __init__(self) -> None:
+            super().__init__(
+                _BackendDepsShim(deps.settings, pool),  # type: ignore[arg-type]
+                SystemClock(),
+                _CANCEL_GRACE,
+                _CLEANUP_GRACE,
+            )
+            self.write_started = asyncio.Event()
+            self.release_write = asyncio.Event()
+
+        async def mark_abandoned(  # type: ignore[override]  # Why: signature narrowing is not introduced; only the first call's timing changes.
+            self,
+            job_id: JobId,
+            progress_seq: int = 0,
+            progress_state: dict[str, object] | None = None,
+        ) -> bool:
+            self.write_started.set()
+            await self.release_write.wait()
+            return await super().mark_abandoned(job_id, progress_seq, progress_state)
+
+    backend = _ParkedWriteBackend()
+    controller = make_cancel_controller(deps, worker_id, backend)  # type: ignore[arg-type]
+
+    stopped = asyncio.Event()
+
+    async def _consumer_body() -> None:
+        try:
+            await stopped.wait()
+        except asyncio.CancelledError:
+            entry = deps.active_jobs.get(job_id)
+            if entry is not None and entry.cancel_phase >= CancelPhase.ABANDON_PENDING:
+                await deps.active_jobs.deregister(job_id)
+            raise
+
+    consumer_task = asyncio.get_running_loop().create_task(_consumer_body())
+
+    conn = await asyncpg.connect(dsn)
+    try:
+        await seed_actors(conn, schema)
+        await create_worker(conn, schema, worker_id)
+        await create_running_job(
+            conn,
+            schema,
+            worker_id,
+            job_id,
+            cancel_phase=1,
+            cancel_requested_at=datetime.now(UTC),
+        )
+    finally:
+        await conn.close()
+
+    try:
+        await deps.active_jobs.register(job_id, consumer_task, _make_ctx(job_id, worker_id))
+
+        # Tick 1: the same-tick arm escalates the row to phase 2, queues
+        # the abandon WITHOUT cancelling (the deferred delivery), and the
+        # tick commits. The drain is then cut by the tick's leftover
+        # budget while the shielded write is parked mid-flight.
+        conn1 = await asyncpg.connect(dsn)
+        try:
+            async with conn1.transaction():
+                await controller.run_in_tx(conn1)  # type: ignore[arg-type]
+        finally:
+            await conn1.close()
+
+        cut_finished = asyncio.Event()
+
+        async def _cut_tick() -> None:
+            # The heartbeat's post-tx shape: the drain runs under the
+            # tick budget's leftover asyncio.timeout, and an expiry
+            # surfaces as TimeoutError at the async-with.
+            try:
+                async with asyncio.timeout(0.2):
+                    await controller.run_post_tx()
+            except TimeoutError:
+                pass
+            finally:
+                cut_finished.set()
+
+        asyncio.get_running_loop().create_task(_cut_tick())
+        await asyncio.wait_for(backend.write_started.wait(), _WAIT)
+        await cut_finished.wait()
+        # The cut re-queued the entry on the assumption the write did not
+        # land; the shield's detached write is still parked. Release it
+        # and watch the abandon commit anyway.
+        backend.release_write.set()
+        conn = await asyncpg.connect(dsn)
+        try:
+            row = await _wait_row_status(conn, schema, job_id, "abandoned")
+        finally:
+            await conn.close()
+        assert row["cancel_phase"] == 2
+        entry_after_cut = deps.active_jobs.get(job_id)
+        assert entry_after_cut is not None, (
+            "fixture broken: the cut must leave the entry registered "
+            "(the except arm re-queues it for the next tick's drain)"
+        )
+        assert consumer_task.cancelling() == 0, (
+            "fixture broken: the cut itself delivers no cancellation"
+        )
+
+        # Tick 2: the poll no longer returns the row (status = 'running'
+        # is gone), so no ladder arm fires; the drain re-issues the
+        # re-queued abandon, mark_abandoned reads False, and the
+        # not-applied arm runs.
+        conn2 = await asyncpg.connect(dsn)
+        try:
+            async with conn2.transaction():
+                await controller.run_in_tx(conn2)  # type: ignore[arg-type]
+        finally:
+            await conn2.close()
+        await controller.run_post_tx()
+
+        conn = await asyncpg.connect(dsn)
+        try:
+            row = await _row(conn, schema, job_id)
+            attempts = await _attempt_rows(conn, schema, job_id)
+        finally:
+            await conn.close()
+        assert row["status"] == "abandoned"
+        assert row["cancel_phase"] == 2
+        assert len(attempts) == 1, (
+            f"completing the delivery must not write a second abandon, got "
+            f"{len(attempts)} attempt rows: {[dict(r) for r in attempts]}"
+        )
+        assert attempts[0]["error_class"] == CANCEL_ORIGIN_ABANDONED
+        assert consumer_task.cancelling() == 1, (
+            f"the cut drain's detached write landed, so its cancellation "
+            f"must be delivered on the next drain, got cancelling() == "
+            f"{consumer_task.cancelling()}"
+        )
+        deadline = asyncio.get_running_loop().time() + _WAIT
+        while not consumer_task.done():
+            if asyncio.get_running_loop().time() > deadline:
+                raise AssertionError(
+                    "the cancellation was never delivered: the handler is "
+                    "still running with its row already abandoned"
+                )
+            await asyncio.sleep(0.01)
+        assert consumer_task.cancelled()
+        assert deps.active_jobs.get(job_id) is None
+    finally:
+        stopped.set()
+        if not consumer_task.done():
+            consumer_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await consumer_task
+        await pool.close()
+
+
 async def test_ladder_survives_repeated_rollbacks_and_lands_on_the_good_tick(
     rt_schema: tuple[str, str],
 ) -> None:
