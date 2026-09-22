@@ -17,12 +17,43 @@ from types import SimpleNamespace
 
 import pytest
 import structlog
+from pydantic import BaseModel
 
 from taskq._ids import new_uuid
 from taskq._shield import shield_with_retrieval
 from taskq.backend._protocol import JobId
+from taskq.client._enqueuer import SubJobEnqueuer
+from taskq.context import JobContext
 from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.cancel import ActiveJobRegistry, _CancelController
+
+
+class _SeedPayload(BaseModel):
+    """Minimal payload model for the abandon seed's JobContext."""
+
+
+def _abandon_seed_ctx(job_id: JobId) -> JobContext[_SeedPayload]:
+    """Mint a minimal JobContext for a seeded abandon-queue entry."""
+    from datetime import UTC, datetime
+
+    from taskq.testing.clock import FakeClock
+    from taskq.testing.in_memory import InMemoryBackend
+
+    return JobContext(
+        job_id=job_id,
+        actor="abandon-seed",
+        queue="default",
+        attempt=1,
+        claim_epoch=0,
+        worker_id=new_uuid(),
+        payload=_SeedPayload(),
+        jobs=SubJobEnqueuer(
+            loop_scope_resolved=None,
+            worker_pool=None,
+            backend=InMemoryBackend(clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC))),
+        ),
+        log=structlog.get_logger("taskq.test"),
+    )
 
 
 def _install_capture_handler() -> tuple[list[dict[str, object]], object]:
@@ -243,7 +274,17 @@ class TestCancelAbandonSite:
             new_uuid(),
             _FailingBackend(),  # pyright: ignore[reportArgumentType]  # Why: only mark_abandoned is called on the abandon path
         )
-        controller._pending_abandons.append(JobId(new_uuid()))  # pyright: ignore[reportPrivateUsage]  # Why: run_in_tx queues abandons from a PG tick; the unit test seeds the queue directly
+        # The queue carries (job_id, entry) pairs (issue 461): the drain's
+        # delivery and deregister are scoped to the attempt the tick
+        # queued. The seed mirrors the production shape: the entry is
+        # registered in the live registry, exactly as a queued tick's
+        # phase-3 arm leaves it.
+        seeded_job_id = JobId(new_uuid())
+        seeded_dummy = asyncio.create_task(asyncio.sleep(3600), name="abandon-seed-dummy")
+        seeded_entry = await deps.active_jobs.register(
+            seeded_job_id, seeded_dummy, _abandon_seed_ctx(seeded_job_id)
+        )
+        controller._pending_abandons.append((seeded_job_id, seeded_entry))  # pyright: ignore[reportPrivateUsage]  # Why: run_in_tx queues abandons from a PG tick; the unit test seeds the queue directly
 
         async def heartbeat_finally_site() -> None:
             try:
@@ -284,4 +325,8 @@ class TestCancelAbandonSite:
                 f"unretrieved-task report reached the loop handler: {calls}"
             )
         finally:
+            seeded_dummy.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await seeded_dummy
+            asyncio.get_running_loop().set_exception_handler(prev_handler)
             asyncio.get_running_loop().set_exception_handler(prev_handler)
