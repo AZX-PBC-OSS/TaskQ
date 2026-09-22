@@ -23,6 +23,7 @@ from taskq.web.admin.auth._session import (
     IdentityClaims,
     SessionManager,
     create_auth_dependency,
+    create_session_verifier,
     logout_csrf_token,
 )
 from taskq.web.admin.auth.oidc import OIDCAuthConfig, OIDCTokenContext, create_oidc_auth
@@ -39,6 +40,7 @@ __all__ = [
     "create_auth_dependency",
     "create_oidc_auth",
     "create_saml_auth",
+    "create_session_verifier",
     "logout_csrf_token",
     "token_auth",
 ]

@@ -272,7 +272,8 @@ yourself at a different prefix. Without Redis configured, the stream endpoint re
 | `redis_client` | `redis.asyncio.Redis \| None` | required | Redis client. Pass `None` to disable streaming (SSE returns 503). |
 | `schema` | `str` | `"taskq"` | PostgreSQL schema; must match the backend. |
 | `auth_dependency` | `Callable \| None` | `None` | FastAPI `Depends`-compatible callable applied to all routes. Outside dev (`TASKQ_ENVIRONMENT` not `dev`/`development`) the factory raises `RuntimeError` when omitted: the default is not usable in non-dev unless `TASKQ_PROGRESS_REQUIRE_AUTH=false` suppresses the check (only for mounts behind an authenticating ingress). Serving without auth always logs a `progress-router-no-auth` warning. |
-| `sse_heartbeat_interval` | `timedelta` | `timedelta(seconds=15)` | Interval for keepalive SSE comments. |
+| `session_verifier` | `Callable[[Request], Awaitable[bool]] \| None` | `None` | Async re-check for long-lived streams (#316): invoked before every streamed event and at every keepalive tick, a `False` (or raising) result ends the stream, so a session revoked mid-stream stops receiving frames within one keepalive interval, capped at 60 s. When omitted, the router derives it from the `session_verifier` attribute taskq's `create_auth_dependency`/`token_auth` attach to the callable they return; a custom `auth_dependency` without that attribute logs a `progress-stream-no-session-verifier` warning and streams authenticate once, at subscribe only. |
+| `sse_heartbeat_interval` | `timedelta` | `timedelta(seconds=15)` | Interval for keepalive SSE comments. The keepalive tick is also the session re-check cadence, so the effective interval is capped at 60 s: a revoked session ends a quiet stream within at most 60 s, whatever this is set to. |
 
 ---
 

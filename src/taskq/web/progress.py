@@ -30,11 +30,27 @@ Design notes
 - On client disconnect, ``try/finally`` in the generator calls
   ``pubsub.unsubscribe()`` and ``pubsub.aclose()`` to prevent stale Redis
   subscriptions.
+- Session re-check (#316): the router-level ``Depends(auth_dependency)`` runs
+  once at request acceptance; a stream that authenticated once would otherwise
+  keep delivering frames long after its session was revoked. The generator
+  therefore re-invokes an optional ``session_verifier`` -- the re-check the
+  auth dependency itself exposes (``create_auth_dependency`` attaches one) --
+  before every yielded event and at every keepalive tick, and ends the stream
+  on failure. The finally releases the SSE slot and the Redis subscription.
+  Bounded staleness: at most one keepalive interval between the revocation and
+  the stream ending; the effective keepalive interval is capped at
+  ``_SSE_HEARTBEAT_CAP_SECS`` so the bound holds no matter how a host
+  configures ``sse_heartbeat_interval`` (the clamp is logged at startup).
+  The re-check itself is bounded too (``SESSION_RECHECK_TIMEOUT_SECS``): a
+  verifier that hangs is fail-closed revocation, never a frozen generator.
+  The check is cookie-only -- no session store, no DB round trip -- so
+  server-side revocation of a still-validly-signed cookie is impossible by
+  construction (docs/guides/sso.md states the same limits).
 """
 
 import asyncio
 import contextlib
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import timedelta
 from typing import Any, cast
 from uuid import UUID
@@ -56,7 +72,7 @@ from taskq.constants import (
 )
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
-from taskq.web._sse_limit import acquire_sse_slot
+from taskq.web._sse_limit import SESSION_RECHECK_TIMEOUT_SECS, acquire_sse_slot
 
 logger = structlog.get_logger("taskq.web.progress")
 
@@ -89,6 +105,15 @@ _REDIS_503_BODY: dict[str, str] = {"error": "redis_not_configured"}
 # the read gets the same treatment, one heartbeat window for the read
 # itself, plus the same grace the health ping allows.
 _BROKER_READ_GRACE_SECS: float = 0.5
+
+# Cap on the effective keepalive/re-check cadence of a live stream. The
+# keepalive tick is what bounds post-revocation staleness (#316): the
+# generator re-checks the session once per tick, so a host configuring
+# ``sse_heartbeat_interval`` to hours would silently move the revocation
+# bound to hours. Whatever the configured interval, a quiet stream re-checks
+# at least every 60 seconds; the same cap governs sse-starlette's fallback
+# ping below.
+_SSE_HEARTBEAT_CAP_SECS: float = 60.0
 
 # JSON responses render through orjson (taskq._json), never stdlib json ,
 # byte-identical bodies to starlette's stdlib JSONResponse for these payloads.
@@ -183,14 +208,68 @@ async def _event_generator(
     resolved_last_event_id: int | None,
     heartbeat_secs: float,
     sse_slot_semaphore: asyncio.Semaphore | None = None,
+    session_verifier: Callable[[], Awaitable[bool]] | None = None,
 ) -> AsyncGenerator[ServerSentEvent, None]:
     """Yield SSE events from Redis pub/sub after the initial PG snapshot.
 
     This is the core streaming loop extracted from ``progress_stream`` so that
     unit tests can exercise the real production generator directly rather than
     reimplementing it.
+
+    ``session_verifier`` is a request-scoped re-check (zero-argument here; the
+    route binds the request) returning whether the session that opened the
+    stream is still valid. When given, it runs before the initial snapshot and
+    once per streaming-loop iteration -- before every yielded event and at
+    every keepalive tick -- and a failure ends the stream: the finally below
+    releases the SSE slot and unsubscribes/closes the Redis subscription. Any
+    exception out of the verifier is treated as revocation (fail closed); the
+    browser's EventSource reconnects and is refused at the door.
     """
+
+    _recheck_count = {"n": 0}
+
+    async def _session_still_valid() -> bool:
+        if session_verifier is None:
+            return True
+        first_check = _recheck_count["n"] == 0
+        try:
+            _recheck_count["n"] += 1
+            return bool(
+                await asyncio.wait_for(
+                    session_verifier(),
+                    timeout=SESSION_RECHECK_TIMEOUT_SECS,
+                )
+            )
+        except TimeoutError:
+            # A verifier that outlives its bound is an unknown session
+            # state, not a pass: fail closed, but say WHY -- a hung verifier
+            # (wedged IdP introspection call) wedging the stream is a
+            # different incident from a revoked session, and the revocation
+            # warning below would misname it.
+            logger.warning(
+                "sse-session-recheck-timeout",
+                job_id=str(job_id),
+                channel=channel,
+                timeout_secs=SESSION_RECHECK_TIMEOUT_SECS,
+                stream_phase="initial" if first_check else "streaming",
+            )
+            return False
+        except Exception:
+            # Fail closed: an unknown session state must not keep a
+            # privileged stream open. Logged below via the shared
+            # revocation path's caller.
+            return False
+
     try:
+        if not await _session_still_valid():
+            logger.warning(
+                "sse-session-revoked",
+                job_id=str(job_id),
+                channel=channel,
+                stream_phase="initial",
+            )
+            return
+
         last_emitted_seq: int
         if resolved_last_event_id is None:
             event_type = "terminal" if is_terminal else "progress"
@@ -236,6 +315,20 @@ async def _event_generator(
                     read_bound_secs=heartbeat_secs + _BROKER_READ_GRACE_SECS,
                 )
                 raise
+
+            # Session re-check (#316): once per streaming-loop iteration --
+            # this point is both the keepalive tick and "before each yielded
+            # event" -- and the read above suspends at most one heartbeat, so
+            # a revoked session ends the stream within one keepalive
+            # interval, never delivering another frame.
+            if not await _session_still_valid():
+                logger.warning(
+                    "sse-session-revoked",
+                    job_id=str(job_id),
+                    channel=channel,
+                    stream_phase="streaming",
+                )
+                return
 
             if raw_msg is None:
                 yield _make_keepalive()
@@ -344,6 +437,7 @@ def create_router(
     max_sse_connections: int | None = None,
     resolve_pg_pool: Callable[[Request], asyncpg.Pool] | None = None,
     resolve_redis_client: Callable[[Request], Any] | None = None,
+    session_verifier: Callable[[Request], Awaitable[bool]] | None = None,
 ) -> APIRouter:
     """Return a FastAPI ``APIRouter`` exposing the SSE progress bridge.
 
@@ -388,6 +482,25 @@ def create_router(
         every request rather than serving from the pool this router was
         constructed with, which that rotation has closed. Each is a
         FastAPI dependency: it may declare ``request: Request``.
+    session_verifier:
+        Optional async re-check for long-lived SSE streams
+        (#316): ``Callable[[Request], Awaitable[bool]]`` returning whether the
+        session that opened the stream is still valid. Live streams re-invoke
+        it before every yielded event and at every keepalive tick and end on
+        failure, so a session revoked mid-stream (secret rotation, expiry, an
+        allowlist change) stops receiving frames within one keepalive
+        interval, capped at 60 s. Each invocation is bounded by
+        ``SESSION_RECHECK_TIMEOUT_SECS`` (5 s): a verifier that hangs or
+        outlives the bound is treated as failure -- fail closed -- so a wedged
+        host verifier cannot freeze the generator inside its keepalive path.
+        When omitted, the router derives it from the ``session_verifier``
+        attribute the taskq auth dependencies (``create_auth_dependency``,
+        ``token_auth``) attach to the callable they return. A host supplying
+        its own ``auth_dependency`` MUST pass ``session_verifier`` explicitly
+        to keep the re-check: without the attribute the router logs a
+        one-per-router ``progress-stream-no-session-verifier`` warning and
+        the streams authenticate once, exactly as the router-level ``Depends``
+        did before #316.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
@@ -431,8 +544,51 @@ def create_router(
 
     router = APIRouter(**router_kwargs)
 
+    # Session re-check derivation (#316): prefer the explicit parameter, fall
+    # back to the attribute the taskq auth dependencies attach to the callable
+    # they return. An auth dependency without a re-check cannot be safely
+    # re-invoked by us (it may need FastAPI dependency injection), so the
+    # honest fallback is a loud warning, not a silent best-effort call.
+    if session_verifier is None and auth_dependency is not None:
+        derived: Any = getattr(auth_dependency, "session_verifier", None)
+        session_verifier = cast("Callable[[Request], Awaitable[bool]] | None", derived)
+    if auth_dependency is not None and session_verifier is None:
+        logger.warning(
+            "progress-stream-no-session-verifier",
+            detail=(
+                "auth_dependency exposes no session_verifier re-check, so SSE "
+                "streams authenticate once at subscribe and will keep "
+                "delivering frames after a session is revoked. Pass a "
+                "session_verifier to create_router, or build the dependency "
+                "with taskq's create_auth_dependency/token_auth, which attach "
+                "one."
+            ),
+        )
+
     _schema = schema
     _heartbeat_secs = sse_heartbeat_interval.total_seconds()
+    # Why the cap: the keepalive tick is the revocation bound (#316) -- the
+    # generator re-checks the session once per tick -- so a host-configured
+    # interval of hours would silently move that bound to hours. The loop and
+    # the fallback ping below are both capped at _SSE_HEARTBEAT_CAP_SECS.
+    _effective_heartbeat_secs = min(_heartbeat_secs, _SSE_HEARTBEAT_CAP_SECS)
+    if _heartbeat_secs > _SSE_HEARTBEAT_CAP_SECS:
+        # The clamp itself must not be silent: a host that asked for an hour
+        # between keepalives otherwise discovers the 60 s floor only by
+        # reading the source. Once per router (this runs in create_router).
+        logger.warning(
+            "sse-heartbeat-interval-clamped",
+            configured_seconds=_heartbeat_secs,
+            effective_seconds=_effective_heartbeat_secs,
+            detail=(
+                "sse_heartbeat_interval exceeds the "
+                f"{_SSE_HEARTBEAT_CAP_SECS:g} s cap and is clamped: the "
+                "keepalive tick is also the session re-check cadence "
+                "(#316), so a longer interval would silently loosen the "
+                "bound on how long a revoked session keeps receiving "
+                "frames."
+            ),
+        )
     _acquire_timeout = settings.admin_acquire_timeout
 
     def _constructed_pool() -> asyncpg.Pool:
@@ -520,6 +676,7 @@ def create_router(
                 release_slot=_release_slot,
                 pg_pool=pg_pool,
                 redis_client=redis_client,
+                session_verifier=session_verifier,
             )
         except BaseException:
             _release_slot()
@@ -534,6 +691,7 @@ def create_router(
         release_slot: Callable[[], None],
         pg_pool: BoundedPool,
         redis_client: Any,
+        session_verifier: Callable[[Request], Awaitable[bool]] | None,
     ) -> Response:
         resolved_last_event_id = _resolve_last_event_id(request, last_event_id)
         channel = progress_channel(_schema, job_id)
@@ -605,6 +763,14 @@ def create_router(
         # (CancelledError).
         # ------------------------------------------------------------------
 
+        # Bind the request into the re-check once: the verifier reads the
+        # same cookie (or bearer token) the request arrived with, and a
+        # session revoked mid-stream -- secret rotation, expiry, an allowlist
+        # change -- fails the re-check even though those bytes are unchanged.
+        _session_verifier: Callable[[], Awaitable[bool]] | None = (
+            (lambda: session_verifier(request)) if session_verifier is not None else None
+        )
+
         return EventSourceResponse(
             content=_event_generator(
                 pubsub=pubsub,
@@ -615,14 +781,17 @@ def create_router(
                 progress_data=progress_data,
                 resolved_last_event_id=resolved_last_event_id,
                 sse_slot_semaphore=sse_slot_semaphore,
-                heartbeat_secs=_heartbeat_secs,
+                heartbeat_secs=_effective_heartbeat_secs,
+                session_verifier=_session_verifier,
             ),
             headers=_SSE_HEADERS,
-            # Effectively disable sse-starlette's built-in ping; we emit our own
-            # keepalive comments via the get_message timeout loop.  ping=0
-            # causes a tight loop (anyio.sleep(0) returns immediately), so we
-            # use a 24-hour interval that will never fire in practice.
-            ping=86_400,
+            # We emit our own keepalive comments via the get_message timeout
+            # loop; sse-starlette's ping is only a fallback. Bounded at twice
+            # the effective (capped) heartbeat: the old 24-hour value was a
+            # no-lifetime-cap stream -- exactly the property the #316 fix
+            # removes -- while ping=0 causes a tight loop (anyio.sleep(0)
+            # returns immediately).
+            ping=_effective_heartbeat_secs * 2,
             sep=_SSE_SEPARATOR,
         )
 

@@ -9,7 +9,7 @@ Importing this module requires the ``taskq[fastapi]`` optional extra.
 """
 
 import asyncio
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any
 
 import asyncpg
@@ -19,11 +19,13 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from taskq.constants import events_channel
 from taskq.settings import TaskQSettings
+from taskq.web._sse_limit import SESSION_RECHECK_TIMEOUT_SECS
 from taskq.web.admin._factory import (
     get_pg_pool,
     get_realtime_mode,
     get_redis_client,
     get_schema,
+    get_session_verifier,
     get_settings,
 )
 from taskq.web.admin._listen import listen_with_reconnect
@@ -54,8 +56,56 @@ async def _sse_generator(
     semaphore: asyncio.Semaphore,
     resolve_pool: Callable[[], asyncpg.Pool | None],
     schema: str | None,
+    session_verifier: Callable[[], Awaitable[bool]] | None = None,
 ) -> AsyncGenerator[str, None]:
+    """Stream admin state_change events (or keepalives) as SSE strings.
+
+    ``session_verifier`` is the request-scoped re-check for post-revocation
+    auth (#316): it runs before the first frame and once per loop iteration --
+    before every yielded event and at every keepalive tick -- and a failure
+    ends the stream, the finally releasing the topic's semaphore slot. Any
+    exception out of the verifier is treated as revocation (fail closed), and
+    so is a check that outlives ``SESSION_RECHECK_TIMEOUT_SECS``: a hung
+    host verifier must not freeze the generator inside its own keepalive
+    path.
+    """
+
+    _recheck_count = {"n": 0}
+
+    async def _session_still_valid() -> bool:
+        if session_verifier is None:
+            return True
+        first_check = _recheck_count["n"] == 0
+        try:
+            _recheck_count["n"] += 1
+            return bool(
+                await asyncio.wait_for(
+                    session_verifier(),
+                    timeout=SESSION_RECHECK_TIMEOUT_SECS,
+                )
+            )
+        except TimeoutError:
+            # A verifier that outlives its bound is an unknown session
+            # state, not a pass: fail closed, and say WHY -- a hung verifier
+            # (wedged IdP introspection call) wedging the stream is a
+            # different incident from a revoked session.
+            logger.warning(
+                "admin-sse-session-recheck-timeout",
+                topic=schema,
+                timeout_secs=SESSION_RECHECK_TIMEOUT_SECS,
+                stream_phase="initial" if first_check else "streaming",
+            )
+            return False
+        except Exception:
+            # Fail closed: an unknown session state must not keep an
+            # admin stream open.
+            return False
+
     try:
+        if not await _session_still_valid():
+            logger.warning("admin-sse-session-revoked", topic=schema, stream_phase="initial")
+            return
+
         yield 'event: status\ndata: {"status":"awaiting_progress_backend"}\n\n'
 
         pool = resolve_pool()
@@ -78,12 +128,24 @@ async def _sse_generator(
                 backoff_initial=_RECONNECT_BACKOFF_INITIAL,
                 backoff_max=_RECONNECT_BACKOFF_MAX,
             ):
+                # Once per iteration: bounds post-revocation staleness at one
+                # keepalive interval (payload None) and gates every event.
+                if not await _session_still_valid():
+                    logger.warning(
+                        "admin-sse-session-revoked", topic=schema, stream_phase="streaming"
+                    )
+                    return
                 if payload is None:
                     yield ": keepalive\n\n"
                 else:
                     yield f"event: state_change\ndata: {payload}\n\n"
         else:
             while True:
+                if not await _session_still_valid():
+                    logger.warning(
+                        "admin-sse-session-revoked", topic=schema, stream_phase="streaming"
+                    )
+                    return
                 await asyncio.sleep(_KEEPALIVE_INTERVAL)
                 yield ": keepalive\n\n"
     finally:
@@ -120,6 +182,9 @@ def register(router: APIRouter) -> None:
         request: Request,
         settings: TaskQSettings = Depends(get_settings),
         schema: str | None = Depends(get_schema),
+        session_verifier: Callable[[Request], Awaitable[bool]] | None = Depends(
+            get_session_verifier
+        ),
     ) -> StreamingResponse:
         _valid_topics = frozenset({"queues", "jobs", "workers", "history"})
         if topic not in _valid_topics:
@@ -132,7 +197,15 @@ def register(router: APIRouter) -> None:
                 status_code=429,
                 detail="too many SSE connections for this topic",
             ) from None
-        gen = _sse_generator(semaphore, lambda: get_pg_pool(request), schema)
+        # Bind the request into the re-check once: the verifier reads the same
+        # session cookie the request arrived with, and a session revoked
+        # mid-stream fails the re-check even though those bytes are unchanged
+        # (#316). None when the host wired no verifier: the stream then
+        # authenticates once, the pre-#316 behavior.
+        _session_verifier: Callable[[], Awaitable[bool]] | None = (
+            (lambda: session_verifier(request)) if session_verifier is not None else None
+        )
+        gen = _sse_generator(semaphore, lambda: get_pg_pool(request), schema, _session_verifier)
         return StreamingResponse(
             content=gen,
             media_type="text/event-stream; charset=utf-8",

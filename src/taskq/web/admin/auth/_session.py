@@ -17,7 +17,7 @@ imported lazily inside :class:`SessionManager` so that ``AuthBundle`` and
 extra installed.
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from hashlib import sha256
@@ -35,6 +35,7 @@ __all__ = [
     "IdentityClaims",
     "SessionManager",
     "create_auth_dependency",
+    "create_session_verifier",
     "current_sso_logout_token",
     "logout_csrf_token",
     "require_logout_csrf",
@@ -172,6 +173,13 @@ class SessionManager:
     # cookie is only ever sent where it is actually read.
     cookie_path: str = "/"
     _serializer: Any = field(default=None, repr=False)
+    # The secret the current _serializer was built with; verify_session_cookie
+    # compares it against self.secret per verification so a rotated secret
+    # (``manager.secret = ...``) is picked up without rebuilding the manager
+    # or the router -- the long-lived SSE re-check (#316) holds the manager
+    # object a live stream captured at router construction, so a lazy rebuild
+    # here is the only path a rotation has to the already-streaming session.
+    _serializer_secret: str = field(default="", repr=False)
 
     def __post_init__(self) -> None:
         if not self.secret:
@@ -186,6 +194,7 @@ class SessionManager:
         object.__setattr__(
             self, "_serializer", URLSafeTimedSerializer(self.secret, salt="taskq-session")
         )
+        object.__setattr__(self, "_serializer_secret", self.secret)
 
     def create_session_cookie(self, claims: IdentityClaims) -> str:
         """Sign and return the cookie value for *claims*."""
@@ -198,10 +207,25 @@ class SessionManager:
 
     def verify_session_cookie(self, cookie: str) -> IdentityClaims | None:
         """Verify signature + expiry; return claims or ``None`` on any failure."""
-        from itsdangerous import BadSignature, SignatureExpired
+        from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
+        # Rotation-aware: a live SSE stream's re-check (#316) runs THIS method
+        # on the manager object it captured at router construction. If the
+        # operator rotated the secret by assigning ``manager.secret``, the
+        # serializer built at construction still holds the old key, and the
+        # old cookies keep verifying forever -- the rotation invalidates
+        # nothing that is already streaming. Rebuilding lazily when the
+        # secret drifted makes the next tick fail the stale cookie, which is
+        # exactly the "rotating session_secret invalidates all sessions at
+        # once" contract. Comparing the two operator-supplied secrets is not
+        # a timing oracle: an attacker controls neither value.
+        serializer = self._serializer
+        if serializer is None or self._serializer_secret != self.secret:
+            serializer = URLSafeTimedSerializer(self.secret, salt="taskq-session")
+            object.__setattr__(self, "_serializer", serializer)
+            object.__setattr__(self, "_serializer_secret", self.secret)
         try:
-            payload = self._serializer.loads(cookie, max_age=self.max_age_seconds)
+            payload = serializer.loads(cookie, max_age=self.max_age_seconds)
         except (BadSignature, SignatureExpired):
             return None
         if not isinstance(payload, dict):
@@ -261,6 +285,50 @@ def _unauthorized(request: Request, login_path: str) -> NoReturn:
     raise HTTPException(status_code=401, detail="not authenticated")
 
 
+def create_session_verifier(
+    session_manager: SessionManager,
+    allowed_groups: frozenset[str] = frozenset(),
+) -> Callable[[Request], Awaitable[bool]]:
+    """Build the session re-check that long-lived SSE streams re-invoke (#316).
+
+    A stream that authenticates only at request acceptance keeps delivering
+    frames after its session is invalidated. The routers that own such streams
+    (the per-job progress SSE bridge and the admin ``/sse/{topic}`` endpoint)
+    re-invoke this callable before every yielded event and at every keepalive
+    tick, and close the stream when it answers ``False``.
+
+    The check is the same one the auth dependency runs per request -- cookie
+    signature, ``max_age_seconds`` expiry, and the group allowlist -- so all
+    three invalidation paths end a live stream: rotating ``session_secret``,
+    the session ageing out, and ``allowed_groups`` no longer intersecting the
+    identity's groups. A stateless signed-cookie session has no server-side
+    revocation list; this re-check covers exactly what the per-request check
+    covers, at the stream's tick cadence.
+
+    Cost and reach, stated exactly: the check consults NOTHING but the
+    request's cookie bytes -- no session store, no database, no IdP round
+    trip -- so server-side revocation of a still-validly-signed,
+    still-unexpired cookie is impossible by construction, and a tick costs
+    one signature verification (microseconds), not a query. Rotation is read
+    per call from ``session_manager.secret``: assigning a new secret ends
+    every live stream within one tick, but a secret restored to its old
+    value within one tick re-validates the streams it briefly ended -- that
+    one-tick re-validation window is inherent to a stateless cookie design
+    and is not closed by a store the code does not consult.
+    """
+
+    async def _verify(request: Request) -> bool:
+        cookie = request.cookies.get(session_manager.cookie_name)
+        if cookie is None:
+            return False
+        claims = session_manager.verify_session_cookie(cookie)
+        if claims is None:
+            return False
+        return not (allowed_groups and allowed_groups.isdisjoint(claims.groups))
+
+    return _verify
+
+
 def create_auth_dependency(
     session_manager: SessionManager,
     allowed_groups: frozenset[str] = frozenset(),
@@ -291,4 +359,10 @@ def create_auth_dependency(
         _sso_logout_token.set(logout_csrf_token(session_manager.secret, cookie))
         return claims
 
+    # The re-check long-lived SSE streams re-invoke (#316): same session
+    # inputs as this dependency, exposed as an attribute so
+    # create_router(auth_dependency=...) can derive it without a second
+    # parameter every host must remember to pass.
+    cast_to_any: Any = _dependency
+    cast_to_any.session_verifier = create_session_verifier(session_manager, allowed_groups)
     return _dependency
