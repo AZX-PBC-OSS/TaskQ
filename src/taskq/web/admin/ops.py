@@ -1,7 +1,7 @@
 """Schedules, rate-limits, and reservations admin pages."""
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote_plus
@@ -28,7 +28,7 @@ from taskq.cron import (
     compute_next_fire_after,
     resolve_payload,
 )
-from taskq.exceptions import BackpressureError
+from taskq.exceptions import BackpressureError, SingletonCollisionError
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
@@ -50,6 +50,7 @@ from taskq.web.admin._constants import (
     parse_text_filter,
 )
 from taskq.web.admin._factory import (
+    get_actor_fire_policies,
     get_admin_pool,
     get_backend,
     get_base_path,
@@ -440,6 +441,7 @@ def register(router: APIRouter) -> None:
         backend: Backend | None = Depends(get_backend),
         settings: TaskQSettings = Depends(get_settings),
         principal: Any = Depends(get_principal),
+        fire_policies: Mapping[str, Any] | None = Depends(get_actor_fire_policies),
     ) -> RedirectResponse:
         if not settings.admin_actions_enabled:
             raise HTTPException(status_code=403, detail="Admin actions are disabled")
@@ -511,9 +513,34 @@ def register(router: APIRouter) -> None:
             # curve helper is cron_loop's by convention.
             from taskq.worker.cron_loop import (
                 _fire_default_curve,  # pyright: ignore[reportPrivateUsage]
+                _resolve_max_pending,  # pyright: ignore[reportPrivateUsage]
             )
 
             defaults = _fire_default_curve()
+            # Singleton / max_pending parity with the other two fire paths:
+            # the client path stamps the ActorRef's flags at build time and
+            # the cron tick carries them via ActorFirePolicy; the stored
+            # actor_config row this handler reads cannot carry a
+            # code-declared flag. Without the registry's mapping (a
+            # standalone admin process) the residual is real and disclosed:
+            # no policies, no stamping, the same residual the max_pending
+            # registry literal documents below.
+            policy = fire_policies.get(actor) if fire_policies else None
+            metadata: dict[str, object] = {
+                # Provenance parity with every other fire of a schedule
+                # (the tick stamps the same key in _plan_fire): per-schedule
+                # attribution and the allof twin-coverage walk scope jobs
+                # by this key; an empty metadata dict makes a run-now job
+                # invisible to both.
+                "cron_schedule_id": str(schedule_id),
+            }
+            if policy is not None and getattr(policy, "singleton", False):
+                # The flag the jobs_singleton_uniq partial index and the
+                # singleton preflights key on: without it this row is
+                # invisible to the singleton contract in BOTH directions
+                # (it can run concurrently with other jobs of the actor,
+                # and no later singleton enqueue sees it as a blocker).
+                metadata["singleton"] = True
             args = EnqueueArgs(
                 id=JobId(new_uuid()),
                 actor=actor,
@@ -548,21 +575,31 @@ def register(router: APIRouter) -> None:
                 # literal on those paths (it tightens or loosens it), so
                 # carrying the stored value alone makes run-now answer the
                 # same question they answer whenever a stored cap exists.
-                # The residual: no stored cap and a registry literal - the
-                # literal lives in the worker's actor_registry, not the
-                # database, so this path cannot know it and enforces
-                # nothing; the tick and client paths still do.
-                max_pending=ac_row["max_pending"],
-                # Provenance parity with every other fire of a schedule
-                # (the tick stamps the same key in _plan_fire): per-schedule
-                # attribution and the allof twin-coverage walk scope jobs
-                # by this key; an empty metadata dict makes a run-now job
-                # invisible to both.
-                metadata={"cron_schedule_id": str(schedule_id)},
+                # With the host's fire policies, the registry literal is
+                # reachable and the residual closes: the same pure rule the
+                # tick applies resolves stored-vs-literal here too.
+                max_pending=_resolve_max_pending(
+                    ac_row["max_pending"],
+                    getattr(policy, "max_pending", None) if policy is not None else None,
+                ),
+                # The stamped metadata replaces the bare dict the handler
+                # used to build: singleton parity (above) rides the same
+                # provenance key.
+                metadata=metadata,
             )
 
         try:
             await backend.enqueue(args)
+        except SingletonCollisionError:
+            # BEFORE the BackpressureError arm: SingletonCollisionError is
+            # its SUBCLASS, so the catch-all answered a live singleton job
+            # with "actor X at max_pending cap" -- a factually wrong reason
+            # shown to the operator deciding what to do next. The fire
+            # refused nothing was written; name the real reason.
+            return RedirectResponse(
+                url=f"{base_path}/schedules?error=actor+{quote_plus(actor)}+has+an+active+singleton+job",
+                status_code=303,
+            )
         except BackpressureError:
             # The stored max_pending cap refused the fire: redirect with
             # the reason like the other preflight refusals above. The
