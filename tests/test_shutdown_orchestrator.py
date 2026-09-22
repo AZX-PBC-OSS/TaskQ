@@ -1402,11 +1402,15 @@ _valid_grace_settings = st.tuples(
     lambda t: (
         t[0] + t[1] < t[2] - 5.0
         and t[0] + t[1] < t[3]
-        # The cascade floor: max(heartbeat_interval,
-        # heartbeat_command_timeout) + (max_heartbeat_failures + 1) *
-        # (heartbeat_interval + heartbeat_command_timeout) at the defaults
-        # (F=3, c=2) is 4 * hb + 18.
-        and t[3] >= 4 * t[4] + 18
+        # The ENFORCED cascade floor (settings.py's post_load):
+        # max(hb, c) + (F+1) * (hb + c), at the defaults this tuple
+        # family loads with (F=3, c=2.0). The old arm encoded it as
+        # 4 * hb + 18 - the replaced (F+1) * (interval + 2 * command_
+        # timeout) shape plus a fudge - which disagrees with the
+        # enforced floor in a band (hb=10.5: old arm admits lock_lease
+        # 60; the enforced floor is 10.5 + 4 * 12.5 = 60.5, so 60
+        # raises) that hypothesis eventually draws.
+        and t[3] >= max(t[4], 2.0) + 4 * (t[4] + 2.0)
     )
 )
 
@@ -1450,9 +1454,16 @@ _invalid_grace_settings = st.tuples(
     lambda t: (
         t[0] + t[1] >= t[2] - 5.0
         or t[0] + t[1] >= t[3]
-        # The cascade floor at the defaults (F=3, c=2): 4 * hb + 18,
-        # its violation alone is enough for the rejection under test.
-        or t[3] < 4 * t[4] + 18
+        # The ENFORCED cascade floor (settings.py's post_load): max(hb, c)
+        # + (F+1) * (hb + c), at the factory defaults this tuple family
+        # loads with (F=3, command timeout c=2.0, unoverridden here).
+        # The old arm encoded the REPLACED rule - 4 * hb + 18, the banned
+        # (F+1) * (interval + 2 * command_timeout) shape plus a fudge -
+        # whose band disagrees with the enforced floor (e.g. hb=4.5: the
+        # old arm called lock_lease 35 invalid; the enforced floor is
+        # 4.5 + 4 * 6.5 = 30.5, so 35 loads) and hypothesis eventually
+        # draws that narrow band, reding a correct load.
+        or t[3] < max(t[4], 2.0) + 4 * (t[4] + 2.0)
     )
 )
 
