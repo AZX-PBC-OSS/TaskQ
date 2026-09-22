@@ -134,6 +134,10 @@ class _FakeTransaction:
 def _stored_row(
     actor: str, *, queue: str, metadata: dict[str, object] | None = None
 ) -> _FakeRecord:
+    # The columns sync_actor_config's SELECT reads: the pre-retry-contract
+    # shape plus the code-owned max_attempts/retry_kind pair. The pair here
+    # matches the registered defaults (3, 'transient') so these boots stay
+    # quiet and each pin keeps its focus on the queue-assignment semantics.
     return _FakeRecord(
         {
             "actor": actor,
@@ -142,6 +146,8 @@ def _stored_row(
             "queue": queue,
             "result_ttl": None,
             "metadata": json.dumps(metadata if metadata is not None else {}),
+            "max_attempts": 3,
+            "retry_kind": "transient",
         }
     )
 
