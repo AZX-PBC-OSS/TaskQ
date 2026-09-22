@@ -535,10 +535,14 @@ class TaskQSettings(DotEnvConfig):
     health_token: SecretStr | None = Field(
         default="",
         description="TASKQ_HEALTH_TOKEN. Bearer token for machine-to-machine "
-        "access to health/metrics endpoints. When set, health and metrics "
-        "routes require a matching 'Authorization: Bearer <token>' header. "
-        "Leave empty for unauthenticated cluster-internal access - but see "
-        "health_require_token, which fails closed on an empty token outside dev.",
+        "access to the health/metrics endpoints that `taskq ui serve` "
+        "exposes: when set, those routes require a matching 'Authorization: "
+        "Bearer <token>' header. The worker's own health listeners never "
+        "check it - the unix socket is guarded by filesystem permissions, "
+        "and the TASKQ_HEALTH_PORT TCP listener (/live, /ready) answers "
+        "without a credential, so keep that port pod-network-only. Leave "
+        "empty for unauthenticated access - but see health_require_token, "
+        "which fails closed on an empty token outside dev.",
     )
     health_require_token: bool = Field(
         default=True,

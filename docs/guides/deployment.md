@@ -210,7 +210,7 @@ The admin UI (`taskq ui serve`) is a FastAPI + Jinja2 dashboard on `TASKQ_ADMIN_
 | `TASKQ_PROGRESS_REQUIRE_AUTH` | `true` | Raises `RuntimeError` at startup if the progress router has no `auth_dependency` in non-dev (the admin UI forwards its own `auth_dependency`, so this only bites standalone mounts and fully unauthenticated `taskq ui serve`) |
 | `TASKQ_ADMIN_ACTIONS_ENABLED` | `false` | When `false`, cancel/retry/run-now return `403` |
 | `TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET` | `false` | Gates the rate-limit reset endpoint |
-| `TASKQ_HEALTH_TOKEN` | _(none)_ | Bearer token for machine-to-machine health/metrics |
+| `TASKQ_HEALTH_TOKEN` | _(none)_ | Bearer token for the health/metrics endpoints `taskq ui serve` exposes; the worker's TCP health listener and scrape endpoint never check it |
 | `TASKQ_HEALTH_REQUIRE_TOKEN` | `true` | Fails closed if `TASKQ_HEALTH_TOKEN` empty in non-dev |
 
 ### Reverse proxy authentication
@@ -343,6 +343,21 @@ reliably fails a probe on either.
 me*. `/ready` additionally pings Postgres, checks for stale worker loops, fails during shutdown,
 and runs any checks you registered (see below); a failing readiness probe means *stop sending me
 work*, not *restart me*.
+
+!!! note "What authenticates where: the token is a `taskq ui serve` feature, not a worker one"
+    `TASKQ_HEALTH_TOKEN` protects only the health/metrics routes that `taskq ui serve` exposes;
+    the worker's listeners below never check it. What guards each transport instead:
+
+    | Surface | Endpoints | Auth |
+    | --- | --- | --- |
+    | Unix socket | `/live`, `/ready`, `/metrics`, opt-in `/tasks` | filesystem permissions on the socket (`0600` when `TASKQ_HEALTH_TASKS_ENABLED=true`), so same-pod only |
+    | TCP listener (`TASKQ_HEALTH_PORT`) | `/live`, `/ready` | none: keep the port pod-network-only |
+    | Scrape listener (`TASKQ_METRICS_PORT`) | `/metrics` | none: keep it pod-network, security-group-scoped, or loopback |
+
+    Both TCP listeners bind nothing until you set their port, so the port setting is the opt-in
+    (see [Listener deployment recipes](#listener-deployment-recipes) for the full matrix and the
+    fail-closed bind semantics). If your probes or scraper must traverse an untrusted network,
+    put the auth in front (proxy, network policy); no header check exists at the endpoint.
 
 !!! warning "A unix-socket collision does not stop the boot: the WARN does"
     If the Unix socket path cannot be bound, almost always a path a still-live peer (or a
@@ -852,7 +867,7 @@ The slot pool exists only when a LOOP-scope `asyncpg.Connection` is registered a
 1. **Embed in your FastAPI app** with an `auth_dependency` callable (HTTPBearer, OIDC, session middleware). See [admin-ui.md](admin-ui.md#protecting-the-router-with-fastapi-authentication).
 2. **Or run behind a reverse proxy** with auth (nginx basic auth, OAuth2 proxy, mTLS) and set `TASKQ_ADMIN_UI_REQUIRE_AUTH=false`.
 3. **Keep `TASKQ_ADMIN_ACTIONS_ENABLED=false`** unless operators need cancel/retry/run-now: these are write operations that modify job state.
-4. **Set `TASKQ_HEALTH_TOKEN`** for machine-to-machine health/metrics, or explicitly set `TASKQ_HEALTH_REQUIRE_TOKEN=false` if relying on network policy.
+4. **Set `TASKQ_HEALTH_TOKEN`** for machine-to-machine auth on the health/metrics endpoints `taskq ui serve` exposes (the worker's own TCP health and scrape listeners do not check it), or explicitly set `TASKQ_HEALTH_REQUIRE_TOKEN=false` if relying on network policy.
 
 ### Network policies
 

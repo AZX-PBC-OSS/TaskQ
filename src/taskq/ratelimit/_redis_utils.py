@@ -42,7 +42,20 @@ async def with_pg_fallback(
     settings: "WorkerSettings | None",
     style: str | None = None,
 ) -> RateLimitDecision:
-    """Try a Redis acquire; on ConnectionError/TimeoutError, fall back to PG.
+    """Try a Redis acquire; on ConnectionError/TimeoutError and the
+    ResponseError siblings that mean "this server cannot serve right now",
+    fall back to PG.
+
+    The extra siblings are pinned exactly (checked against redis-py 8.1.0's
+    exception hierarchy): :class:`redis.ReadOnlyError` (a replica promoted
+    mid-flight answers writes with READONLY) and
+    :class:`redis.OutOfMemoryError` (a maxmemory breach) are both direct
+    ``ResponseError`` subclasses and both mean the store cannot serve - the
+    same outage class as a connection failure. They must be named
+    individually rather than catching the parent ``ResponseError``:
+    :class:`redis.exceptions.NoScriptError` is also a ``ResponseError``
+    sibling, and redis-py handles it client-side (``Script.__call__``
+    re-EVALs after a fresh SCRIPT LOAD), so it never signals a store outage.
 
     The WARNING log is emitted **before** delegating to the PG path so that
     if the PG path also emits an INFO denial log, the WARNING precedes the
@@ -55,6 +68,8 @@ async def with_pg_fallback(
     """
     try:
         import redis as _redis_mod
+        from redis.exceptions import OutOfMemoryError as _RedisOutOfMemoryError
+        from redis.exceptions import ReadOnlyError as _RedisReadOnlyError
     except ImportError as exc:
         raise ImportError(
             "taskq[redis] is required to use a Redis-backed rate limiter. "
@@ -63,7 +78,12 @@ async def with_pg_fallback(
 
     try:
         return await redis_call
-    except (_redis_mod.ConnectionError, _redis_mod.TimeoutError) as exc:
+    except (
+        _redis_mod.ConnectionError,
+        _redis_mod.TimeoutError,
+        _RedisReadOnlyError,
+        _RedisOutOfMemoryError,
+    ) as exc:
         if settings is None or not settings.rate_limit_pg_fallback_enabled:
             raise
         log_kwargs: dict[str, object] = {

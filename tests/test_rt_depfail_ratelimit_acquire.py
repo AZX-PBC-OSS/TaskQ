@@ -84,18 +84,22 @@ class _RaisingScript:
 
     def __init__(self, error: Exception) -> None:
         self._error = error
+        self.calls = 0
 
     async def __call__(self, **kwargs: object) -> object:
+        self.calls += 1
         raise self._error
 
 
-def _dead_redis_client(error: Exception) -> redis_async.Redis:
+def _dead_redis_client(error: Exception) -> tuple[redis_async.Redis, _RaisingScript]:
     """A REAL ``redis.asyncio.Redis`` instance (dispatch resolves the client
     via ``isinstance(raw_redis, Redis)``) whose Lua script call fails with
-    *error* - no container, no socket: the command surface is duck-typed."""
+    *error* - no container, no socket: the command surface is duck-typed.
+    The registered double is handed back so tests can count invocations."""
     client = redis_async.Redis(host="127.0.0.1", port=1, decode_responses=False)
-    client.register_script = lambda script: _RaisingScript(error)  # type: ignore[method-assign]  # Why: injecting the failure at the script-call seam redis-py would use; no connection exists
-    return client
+    script = _RaisingScript(error)
+    client.register_script = lambda script_arg: script  # type: ignore[method-assign]  # Why: injecting the failure at the script-call seam redis-py would use; no connection exists
+    return client, script
 
 
 class _FakeTx:
@@ -161,7 +165,7 @@ async def _dispatch_with_dead_redis(
     error: Exception,
     fallback_enabled: bool,
     pg_pool: Any = None,
-) -> tuple[FakeBackend, int]:
+) -> tuple[FakeBackend, int, _RaisingScript]:
     from taskq.ratelimit._provider import register_rate_limit_registry
     from taskq.ratelimit.registry import RateLimitRegistry
     from taskq.ratelimit.token_bucket import TokenBucket
@@ -172,7 +176,7 @@ async def _dispatch_with_dead_redis(
 
     di_registry = ProviderRegistry()
     register_rate_limit_registry(di_registry, rl_registry)
-    client = _dead_redis_client(error)
+    client, script = _dead_redis_client(error)
     di_registry.register_value(redis_async.Redis, Scope.LOOP, client)
 
     actor_ref = ActorRef(
@@ -214,7 +218,7 @@ async def _dispatch_with_dead_redis(
             )
     finally:
         await client.aclose()
-    return fake_backend, _ACTOR_RUNS[0]
+    return fake_backend, _ACTOR_RUNS[0], script
 
 
 @pytest.mark.parametrize(
@@ -241,7 +245,7 @@ async def test_redis_outage_acquire_does_not_burn_retry_budget(
     """
     _ACTOR_RUNS[0] = 0
     with structlog.testing.capture_logs() as captured:
-        fake_backend, actor_runs = await _dispatch_with_dead_redis(
+        fake_backend, actor_runs, _script = await _dispatch_with_dead_redis(
             error=error, fallback_enabled=fallback_enabled
         )
 
@@ -291,7 +295,7 @@ async def test_redis_outage_fallback_composition_runs_actor_via_pg() -> None:
     _ACTOR_RUNS[0] = 0
     pool = _FakePgPool()
     with structlog.testing.capture_logs() as captured:
-        fake_backend, actor_runs = await _dispatch_with_dead_redis(
+        fake_backend, actor_runs, script = await _dispatch_with_dead_redis(
             error=redis.ConnectionError("redis unreachable"), fallback_enabled=True, pg_pool=pool
         )
 
@@ -317,4 +321,80 @@ async def test_redis_outage_fallback_composition_runs_actor_via_pg() -> None:
     ), (
         "the fallback acquire must have run the token-bucket PG statements, "
         "the fused acquire is one fetchrow"
+    )
+    assert script.calls == 1, (
+        f"the Redis acquire ran {script.calls} times: the fallback must be an "
+        "INDEPENDENT Postgres decision, never a replay of the Redis acquire - "
+        "a replay would spend the bucket twice for one admission (and a "
+        "half-applied script state would be spent a third time)"
+    )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(
+            redis.ReadOnlyError("READONLY You can't write against a read only replica."),
+            id="readonly-error-replica-promotion",
+        ),
+        pytest.param(
+            redis.OutOfMemoryError("OOM command not allowed when used memory > 'maxmemory'."),
+            id="oom-error-maxmemory-breach",
+        ),
+    ],
+)
+async def test_redis_store_rejection_fallback_composition_runs_actor_via_pg(
+    error: Exception,
+) -> None:
+    """Redis ``ResponseError`` siblings that mean "this server cannot serve
+    right now" must degrade through the PG fallback exactly like a connection
+    failure: a replica promoted mid-flight answers writes with
+    ``ReadOnlyError``, and a maxmemory breach answers commands with
+    ``OutOfMemoryError``. Both escape a catch that names only
+    ``ConnectionError``/``TimeoutError`` - the worker then snoozes in a ~5s
+    loop for the whole promotion/maxmemory window the PG fallback was
+    designed to absorb. ``NoScriptError`` (the other ``ResponseError``
+    sibling) stays excluded on purpose: redis-py 8.x handles it client-side
+    in ``Script.__call__`` (re-EVAL after re-SCRIPT LOAD), so it never
+    signals a store outage.
+
+    Verdict asserted: DEGRADE-AND-REPORT, identical to the
+    ``ConnectionError`` composition test above.
+    """
+    _ACTOR_RUNS[0] = 0
+    pool = _FakePgPool()
+    with structlog.testing.capture_logs() as captured:
+        fake_backend, actor_runs, script = await _dispatch_with_dead_redis(
+            error=error, fallback_enabled=True, pg_pool=pool
+        )
+
+    assert actor_runs == 1, (
+        f"a {type(error).__name__} from the store substrate must enter the "
+        "PG fallback cleanly: the actor runs on the fallback store's "
+        "admission, exactly as it does for ConnectionError"
+    )
+    assert fake_backend.mark_failed_or_retry_calls == [], (
+        "a cleanly-entered fallback must not touch the job's failure accounting"
+    )
+    fallback_warnings = [e for e in captured if e.get("event") == "rate-limit-redis-fallback"]
+    assert len(fallback_warnings) == 1, (
+        "the degraded acquire must be distinguishable - exactly one "
+        f"rate-limit-redis-fallback warning, same as ConnectionError; "
+        f"got {[e.get('event') for e in captured]}"
+    )
+    assert fallback_warnings[0].get("backend") == "redis"
+    assert fallback_warnings[0].get("fallback") == "postgres"
+    assert pool.conns, "the fallback must actually have gone to Postgres"
+    assert any(
+        "rate_limit_buckets" in sql for sql in pool.conns[0].executed + pool.conns[0].fetched
+    ), (
+        "the fallback acquire must have run the token-bucket PG statements, "
+        "the fused acquire is one fetchrow"
+    )
+    assert script.calls == 1, (
+        f"the Redis acquire ran {script.calls} times on a "
+        f"{type(error).__name__}: the fallback must be an INDEPENDENT "
+        "Postgres decision, never a replay of the Redis acquire - a replay "
+        "would spend the bucket twice for one admission (and a half-applied "
+        "script state would be spent a third time)"
     )
