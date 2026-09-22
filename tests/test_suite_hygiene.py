@@ -402,6 +402,61 @@ def test_no_test_file_setattrs_a_global_stdlib_module() -> None:
     )
 
 
+# ── The per-module-database discipline (pg_container/pg_dsn) ─────────
+# Every PG touch in the suite is scoped to the requesting module's OWN
+# database: ``pg_dsn`` (tests/conftest.py) derives a per-module database
+# name from the module path + run-isolation token, creates it on the
+# invocation's ONE shared container, and ``DROP DATABASE ... WITH
+# (FORCE)``s it on module teardown - so schemas, tables and rows a test
+# leaves behind cannot outlive the module and cannot be observed by any
+# other module, worker, or invocation. ``module_pg_schema`` /
+# ``clean_pg_conn`` / ``clean_jobs_app`` layer per-module/per-test schema
+# isolation ON TOP of that database.
+#
+# The residue hazard is a test that reaches for the RAW container DSN
+# (the fixture ``pg_container``) without ``pg_dsn``: it would create
+# schemas/tables/rows in the container's DEFAULT database - shared with
+# every module and worker of the invocation - where a fixed schema name
+# collides across modules (the pre-per-module-database incident class)
+# and leftover rows are observable state for whoever runs later. The
+# ONLY sanctioned direct consumer is the ``pg_dsn`` fixture itself.
+
+
+def test_pg_container_is_only_consumed_through_pg_dsn() -> None:
+    """No test-tree function may request the ``pg_container`` fixture
+    without also requesting ``pg_dsn``.
+
+    A bare ``pg_container`` consumer drives connections at the container's
+    default database - shared state that survives the test (schemas, rows,
+    roles) into every later module on the worker. Everything else in the
+    tree connects through ``pg_dsn``'s per-module database, which module
+    teardown force-drops.
+    """
+    offenders: list[str] = []
+    for path in _all_test_tree_files():
+        if path.name == "conftest.py":
+            continue  # the pg_dsn fixture itself is the sanctioned consumer
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name == "pg_dsn":  # the fixture definition, wherever it lives
+                continue
+            args = [a.arg for a in node.args.args]
+            if "pg_container" in args and "pg_dsn" not in args:
+                offenders.append(
+                    f"{path.relative_to(_TESTS_DIR)}: {node.name} (line {node.lineno})"
+                )
+    assert not offenders, (
+        "Found pg_container consumer(s) without pg_dsn in the test tree:\n"
+        + "\n".join(f"  - {f}" for f in offenders)
+        + "\n\npg_container is the RAW container DSN - its default database is "
+        "shared by every module and xdist worker of the invocation, so schemas "
+        "and rows created there are cross-test residue. Take pg_dsn (the "
+        "per-module database, force-dropped at module teardown) instead."
+    )
+
+
 # ── pg_stat_activity database scoping ────────────────────────────────
 #
 # pg_stat_activity is CLUSTER-wide, and the invocation's ONE shared
