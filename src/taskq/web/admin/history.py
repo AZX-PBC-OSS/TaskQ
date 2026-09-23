@@ -48,8 +48,7 @@ _SELECT_COLS = (
     "  THEN extract(epoch from finished_at - started_at) * 1000 "
     "  ELSE NULL END AS duration_ms, "
     "attempt, max_attempts, retry_kind, "
-    "true AS is_archived, "
-    "CASE WHEN status IN ('pending', 'scheduled', 'running') THEN 0 ELSE 1 END AS status_priority"
+    "true AS is_archived"
 )
 _SELECT_COLS_LIVE = (
     "id, actor, queue, status, finished_at, created_at, started_at, "
@@ -57,43 +56,68 @@ _SELECT_COLS_LIVE = (
     "  THEN extract(epoch from finished_at - started_at) * 1000 "
     "  ELSE NULL END AS duration_ms, "
     "attempt, max_attempts, retry_kind, "
-    "false AS is_archived, "
-    "CASE WHEN status IN ('pending', 'scheduled', 'running') THEN 0 ELSE 1 END AS status_priority"
+    "false AS is_archived"
 )
 
-_HISTORY_SQL_FIRST = f"""\
-SELECT {_SELECT_COLS}
-FROM "{{schema}}".jobs_archive
-WHERE status = ANY($1)
-  AND ($2::text IS NULL OR actor ILIKE '%' || $2 || '%')
-  AND ($3::text IS NULL OR queue = $3)
-UNION ALL
-SELECT {_SELECT_COLS_LIVE}
-FROM "{{schema}}".jobs
-WHERE status = ANY($1)
-  AND ($2::text IS NULL OR actor ILIKE '%' || $2 || '%')
-  AND ($3::text IS NULL OR queue = $3)
-ORDER BY status_priority,
-  finished_at DESC NULLS LAST, created_at DESC, id DESC
-LIMIT {{limit}}"""
+# The walk's sort key, stated once: the ORDER BY and the keyset cursor
+# predicate must be the SAME tuple or the seam is not a seam -- the row-wise
+# comparison can only describe "strictly after the last row shown" when it
+# covers every column the ordering uses. The finished NULL range is pinned
+# to the walk's top by the same COALESCE ceiling the cursor compares, so a
+# NULL-finished row can never sit on the far side of a seam its cursor
+# cannot describe. The old shape ordered by a status_priority CASE the
+# cursor never carried and dropped created_at from the predicate entirely:
+# rows whose id order disagreed with their created_at order (id is the
+# ENQUEUING worker's UUIDv7 clock, created_at is the DATABASE clock --
+# skewed workers invert the two) replayed the previous page and skipped
+# rows no page ever served.
+#
+# The ordering cannot sit as a bare ORDER BY over the UNION ALL --
+# PostgreSQL rejects an ORDER BY that is not an output column of the set
+# operation ("invalid UNION/INTERSECT/EXCEPT ORDER BY clause") -- so the
+# union is wrapped and the sort applied to the wrapper, the same shape the
+# jobs list's reversed prev pages use.
+_HISTORY_SEAM_PREDICATE = (
+    "  AND (COALESCE(finished_at, '9999-12-31 23:59:59+00'::timestamptz), "
+    "created_at, id) < ($4, $5, $6)"
+)
 
-_HISTORY_SQL_CURSOR = f"""\
-SELECT {_SELECT_COLS}
-FROM "{{schema}}".jobs_archive
+_HISTORY_ORDER_BY = (
+    "ORDER BY COALESCE(finished_at, '9999-12-31 23:59:59+00'::timestamptz) DESC, "
+    "created_at DESC, id DESC"
+)
+
+_HISTORY_UNION_TEMPLATE = """\
+SELECT {cols}
+FROM "{schema}".jobs_archive
 WHERE status = ANY($1)
   AND ($2::text IS NULL OR actor ILIKE '%' || $2 || '%')
-  AND ($3::text IS NULL OR queue = $3)
-  AND (COALESCE(finished_at, '9999-12-31 23:59:59+00'::timestamptz), id) < ($4, $5)
+  AND ($3::text IS NULL OR queue = $3){seam}
 UNION ALL
-SELECT {_SELECT_COLS_LIVE}
-FROM "{{schema}}".jobs
+SELECT {cols_live}
+FROM "{schema}".jobs
 WHERE status = ANY($1)
   AND ($2::text IS NULL OR actor ILIKE '%' || $2 || '%')
-  AND ($3::text IS NULL OR queue = $3)
-  AND (COALESCE(finished_at, '9999-12-31 23:59:59+00'::timestamptz), id) < ($4, $5)
-ORDER BY status_priority,
-  finished_at DESC NULLS LAST, created_at DESC, id DESC
-LIMIT {{limit}}"""
+  AND ($3::text IS NULL OR queue = $3){seam}"""
+
+
+def _history_list_sql(schema: str, *, cursor: bool, limit: int) -> str:
+    """Return the history list SELECT for *schema*, paged or not.
+
+    ``cursor=True`` binds the keyset seam ($4 finished-or-ceiling, $5
+    created_at, $6 id) into both sides' WHERE; the wrapper's ORDER BY is
+    exactly the tuple that predicate compares, so the seam can neither
+    replay nor skip a row the ordering places on one side of it.
+    """
+    seam = f"\n{_HISTORY_SEAM_PREDICATE}" if cursor else ""
+    union = _HISTORY_UNION_TEMPLATE.format(
+        schema=schema,
+        seam=seam,
+        cols=_SELECT_COLS,
+        cols_live=_SELECT_COLS_LIVE,
+    )
+    return f"SELECT * FROM ({union}) sub {_HISTORY_ORDER_BY} LIMIT {limit}"
+
 
 _SUMMARY_SQL = (
     f"SELECT status, count(*) AS cnt "
@@ -137,6 +161,7 @@ def register(router: APIRouter) -> None:
         queue: str | None = Query(default=None),
         cursor_at: str | None = Query(default=None),
         cursor_id: str | None = Query(default=None),
+        cursor_created: str | None = Query(default=None),
     ) -> HTMLResponse:
         if actor == "":
             actor = None
@@ -146,6 +171,8 @@ def register(router: APIRouter) -> None:
             cursor_at = None
         if cursor_id == "":
             cursor_id = None
+        if cursor_created == "":
+            cursor_created = None
 
         # NUL guard before the text binds ($2/$3): asyncpg rejects a NUL in
         # a text parameter with an opaque 22021, the same class the jobs
@@ -157,11 +184,19 @@ def register(router: APIRouter) -> None:
 
         parsed_at: datetime | None = None
         parsed_id: uuid.UUID | None = None
-        if cursor_at is not None or cursor_id is not None:
-            if cursor_at is None or cursor_id is None:
+        parsed_created: datetime | None = None
+        if cursor_at is not None or cursor_id is not None or cursor_created is not None:
+            # All three keys of the walk's sort tuple travel together: a
+            # cursor carrying any two of them cannot describe a seam (the
+            # missing key would silently re-admit rows the ordering puts
+            # before it), so a partial cursor is the same clean 400 the
+            # page's malformed-cursor contract already answers with.
+            if cursor_at is None or cursor_id is None or cursor_created is None:
                 raise HTTPException(
                     status_code=400,
-                    detail="both cursor_at and cursor_id must be provided together",
+                    detail=(
+                        "cursor_at, cursor_created and cursor_id must all be provided together"
+                    ),
                 )
             if cursor_at == _CURSOR_NULL_SENTINEL:
                 parsed_at = _CURSOR_FAR_FUTURE
@@ -174,6 +209,15 @@ def register(router: APIRouter) -> None:
                         detail=f"cursor_at is not a valid ISO 8601 timestamp: {cursor_at!r}",
                     ) from None
             try:
+                parsed_created = datetime.fromisoformat(cursor_created)
+            except (ValueError, TypeError):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"cursor_created is not a valid ISO 8601 timestamp: {cursor_created!r}"
+                    ),
+                ) from None
+            try:
                 parsed_id = uuid.UUID(cursor_id)
             except (ValueError, TypeError):
                 raise HTTPException(
@@ -181,18 +225,19 @@ def register(router: APIRouter) -> None:
                     detail=f"cursor_id is not a valid UUID: {cursor_id!r}",
                 ) from None
 
-        list_first_sql = _HISTORY_SQL_FIRST.format(schema=schema, limit=_FETCH_SIZE)
-        list_cursor_sql = _HISTORY_SQL_CURSOR.format(schema=schema, limit=_FETCH_SIZE)
+        list_first_sql = _history_list_sql(schema, cursor=False, limit=_FETCH_SIZE)
+        list_cursor_sql = _history_list_sql(schema, cursor=True, limit=_FETCH_SIZE)
         summary_sql = _SUMMARY_SQL.format(schema=schema)
 
         async with pool.acquire() as conn:
-            if parsed_at is not None and parsed_id is not None:
+            if parsed_at is not None and parsed_id is not None and parsed_created is not None:
                 rows = await conn.fetch(
                     list_cursor_sql,
                     statuses,
                     actor,
                     queue,
                     parsed_at,
+                    parsed_created,
                     parsed_id,
                 )
             else:
@@ -204,6 +249,7 @@ def register(router: APIRouter) -> None:
 
         next_cursor_at: str | None = None
         next_cursor_id: str | None = None
+        next_cursor_created: str | None = None
         if has_next and display_rows:
             last = display_rows[-1]
             next_cursor_at = (
@@ -211,6 +257,7 @@ def register(router: APIRouter) -> None:
                 if last["finished_at"] is None
                 else last["finished_at"].isoformat()
             )
+            next_cursor_created = last["created_at"].isoformat()
             next_cursor_id = str(last["id"])
 
         summary: dict[str, int] = {r["status"]: r["cnt"] for r in summary_rows}
@@ -232,6 +279,7 @@ def register(router: APIRouter) -> None:
             queue_filter=queue,
             has_next=has_next,
             next_cursor_at=next_cursor_at,
+            next_cursor_created=next_cursor_created,
             next_cursor_id=next_cursor_id,
             summary=summary,
             total_display=total_display,

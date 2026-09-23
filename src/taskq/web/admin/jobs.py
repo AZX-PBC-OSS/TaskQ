@@ -140,6 +140,18 @@ _ARCHIVE_COLS = (
 
 _TRACEBACK_DISPLAY_LIMIT: int = 2000
 
+# The refusal banners the mutation redirects key to. A refused op must be
+# NAMED where the operator lands (the refused-op contract): the message
+# says what the write refused and what state the row is actually in, so
+# the operator re-reads the page's DB truth instead of guessing.
+_ERROR_MESSAGES: dict[str, str] = {
+    "cancel-not-applied": (
+        "Cancel was not applied: the job left its cancellable state before the "
+        "request landed (it finished, or a cancel is already in flight). "
+        "The status below is the database's."
+    ),
+}
+
 _JOB_SQL = 'SELECT * FROM "{schema}".jobs WHERE id = $1'
 
 _JOB_ARCHIVE_SQL = 'SELECT * FROM "{schema}".jobs_archive WHERE id = $1'
@@ -687,6 +699,7 @@ def register(router: APIRouter) -> None:
     async def job_detail(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator; pyright cannot see the route registration.
         job_id: uuid.UUID,
         request: Request,
+        error: str | None = None,
         csrf_token: str = Depends(get_csrf_token),
         pool: BoundedPool = Depends(get_admin_pool),
         schema: str = Depends(get_schema),
@@ -751,6 +764,11 @@ def register(router: APIRouter) -> None:
 
         realtime_mode, mode_label = realtime_ctx
 
+        # The mutation-refusal banner: keyed to the mutation redirects'
+        # error codes, an unknown or absent code renders nothing (the
+        # banner must never call a clean page a refusal).
+        error_text: str | None = _ERROR_MESSAGES.get(error) if error else None
+
         html = tmpl.get_template("job_detail.html").render(
             job=job_dict,
             attempts=attempts_list,
@@ -762,6 +780,7 @@ def register(router: APIRouter) -> None:
             realtime_mode=realtime_mode,
             mode_label=mode_label,
             csrf_token=csrf_token,
+            error_text=error_text,
         )
         return HTMLResponse(content=html)
 
@@ -808,6 +827,18 @@ def register(router: APIRouter) -> None:
             raise HTTPException(status_code=409, detail="Job is already in a terminal state")
 
         written = await backend.write_cancel_request(JobId(job_id), reason)
+
+        if not written:
+            # The write REFUSED: the row left its cancellable state between
+            # the pre-check above and the write (a worker terminalised it),
+            # or a cancel is already in flight (cancel_phase >= 1). The
+            # refused-op contract: the operator must hear the refusal where
+            # they land, not read a bare redirect as a landed cancel. The
+            # job page renders the banner keyed to this redirect.
+            return RedirectResponse(
+                url=f"{base_path}/jobs/{job_id}?error=cancel-not-applied",
+                status_code=303,
+            )
 
         if written:
             # The backend committed its own transaction (the cancel stamp
