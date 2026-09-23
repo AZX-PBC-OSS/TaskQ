@@ -12,6 +12,9 @@
     let eventSource = null;
     let pollingActive = false;
     let pollingInterval = null;
+    let lastSeenSeq = 0;
+    let accumulatedProgress = {};
+    let lastRenderedProgress = null;
 
     function getBadgeEl() {
         return document.querySelector(".taskq-badge");
@@ -36,6 +39,58 @@
     // ---------------------------------------------------------------------------
     // Progress timeline rendering
     // ---------------------------------------------------------------------------
+
+    const PROGRESS_FIELDS = ["step", "percent", "detail", "data", "ts"];
+    const PROGRESS_FINGERPRINT_FIELDS = ["step", "percent", "detail", "data"];
+
+    function progressState(evt) {
+        const state = {};
+        for (const field of PROGRESS_FIELDS) {
+            if (Object.prototype.hasOwnProperty.call(evt, field) && evt[field] != null) {
+                state[field] = evt[field];
+            }
+        }
+        return state;
+    }
+
+    function progressFingerprint(state) {
+        const progress = Object.fromEntries(
+            PROGRESS_FINGERPRINT_FIELDS
+                .filter((field) => Object.prototype.hasOwnProperty.call(state, field))
+                .map((field) => [field, state[field]]),
+        );
+        if (Object.keys(progress).length === 0) return null;
+
+        function canonicalize(value) {
+            if (Array.isArray(value)) return value.map(canonicalize);
+            if (value !== null && typeof value === "object") {
+                return Object.fromEntries(
+                    Object.keys(value)
+                        .sort()
+                        .map((key) => [key, canonicalize(value[key])]),
+                );
+            }
+            return value;
+        }
+
+        return JSON.stringify(canonicalize(progress));
+    }
+
+    function acceptProgress(seq, rawState, merge) {
+        if (!Number.isInteger(seq) || seq <= lastSeenSeq) return;
+        lastSeenSeq = seq;
+
+        const state = progressState(rawState);
+        accumulatedProgress = merge
+            ? { ...accumulatedProgress, ...state }
+            : state;
+        const fingerprint = progressFingerprint(accumulatedProgress);
+        const actorProgress = rawState.kind === "progress";
+        if (fingerprint === null || (fingerprint === lastRenderedProgress && !actorProgress)) return;
+
+        lastRenderedProgress = fingerprint;
+        renderProgressEvent(state);
+    }
 
     function renderProgressEvent(evt) {
         const timeline = document.getElementById("progress-timeline");
@@ -107,20 +162,19 @@
         const jobId = section.getAttribute("data-job-id");
         if (!jobId) return;
 
-        let lastRenderedSeq = -1;
-
         pollingInterval = setInterval(function () {
             if (!pollingActive) return;
             fetch(`${BASE}/jobs/api/job/${jobId}/state`)
                 .then(function (res) { return res.json(); })
                 .then(function (body) {
                     if (!pollingActive) return;
-                    if (body.progress_state && body.progress_seq > lastRenderedSeq) {
-                        lastRenderedSeq = body.progress_seq;
-                        renderProgressEvent(body.progress_state);
-                    }
+                    acceptProgress(body.progress_seq, body.progress_state ?? {}, false);
                     if (TERMINAL_STATUSES.has(body.status)) {
                         stopPolling();
+                        if (eventSource) {
+                            eventSource.close();
+                            eventSource = null;
+                        }
                     }
                 })
                 .catch(function () {});
@@ -150,23 +204,34 @@
         const es = new EventSource(`${BASE}/jobs/api/job/${jobId}/progress/stream`);
         eventSource = es;
 
-        function handleProgressMessage(rawEvent) {
+        function handleProgressMessage(rawEvent, render, terminalEvent) {
             let evt;
             try {
                 evt = JSON.parse(rawEvent.data);
             } catch {
                 return;
             }
-            renderProgressEvent(evt);
-            if (evt.terminal) {
+            const seq = Number(rawEvent.lastEventId);
+            if (render) {
+                // Redis envelopes are call-level deltas; initial PG snapshots
+                // have no kind and replace the accumulated client state.
+                acceptProgress(seq, evt, evt.kind != null);
+            } else if (Number.isInteger(seq) && seq > lastSeenSeq) {
+                lastSeenSeq = seq;
+            }
+            stopPolling();
+            if (terminalEvent || evt.terminal) {
                 es.close();
                 eventSource = null;
-                stopPolling();
             }
         }
 
-        es.addEventListener("progress", handleProgressMessage);
-        es.addEventListener("terminal", handleProgressMessage);
+        es.addEventListener("progress", function (event) {
+            handleProgressMessage(event, true, false);
+        });
+        es.addEventListener("terminal", function (event) {
+            handleProgressMessage(event, true, true);
+        });
 
         es.addEventListener("done", function () {
             es.close();
@@ -174,10 +239,14 @@
             stopPolling();
         });
 
+        es.addEventListener("open", function () {
+            stopPolling();
+        });
+
         es.addEventListener("error", function () {
-            es.close();
-            eventSource = null;
-            setModeBadge("polling-degraded");
+            // EventSource reconnects with Last-Event-ID. The periodic Redis
+            // health probe still owns the mode badge, while polling provides
+            // durable progress if the stream endpoint itself stays broken.
             startPolling();
         });
     }
@@ -234,6 +303,18 @@
 
         const mode = badge.getAttribute("data-mode");
         const jobId = section.getAttribute("data-job-id");
+        const initialSeq = Number(section.getAttribute("data-progress-seq"));
+        if (Number.isInteger(initialSeq) && initialSeq >= 0) {
+            lastSeenSeq = initialSeq;
+        }
+        try {
+            const initialState = JSON.parse(section.getAttribute("data-progress-state") ?? "{}");
+            accumulatedProgress = progressState(initialState);
+            lastRenderedProgress = progressFingerprint(accumulatedProgress);
+        } catch {
+            accumulatedProgress = {};
+            lastRenderedProgress = null;
+        }
 
         if (mode === "realtime" && jobId) {
             openEventSource(jobId);
