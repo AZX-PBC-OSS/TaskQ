@@ -1283,9 +1283,13 @@ SIGQUIT is not registered; it produces a core dump on Linux. Use `tini` or
 
 `drain_local_queue_to_pending` issues a single bounded-timeout `UPDATE` that
 clears the lock on rows where `locked_by_worker = $worker_id AND status =
-'running' AND started_at IS NULL`: jobs the worker locked in its local queue
-but never started executing. On pool exhaustion or connection error, it logs a
-warning and returns 0 so the recovery sweep acts as the backstop.
+'running' AND cancel_phase = 0`, excluding the ids the active-jobs registry
+still holds (registered consumers and claim intents) and the disowned ids: a
+disowned row's attempt was in flight when its terminal write was lost, so the
+drain must not re-pend it under the refund's "never reached an actor" premise.
+Its lease lapses and the reclaim sweep owns the recovery. On pool exhaustion
+or connection error, it logs a warning and returns 0 so the recovery sweep
+acts as the backstop.
 
 ### Orchestration
 

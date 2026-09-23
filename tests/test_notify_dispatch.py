@@ -456,8 +456,9 @@ class _NoopDrainPool:
 
 def _drain_capable(deps: Mock) -> None:
     """Give a Mock deps the reads the producer makes: the exit
-    hand-back's two (``active_jobs`` / ``dispatcher_pool``) and the
-    availability accounting's ``active_jobs.count()``."""
+    hand-back's three (``active_jobs`` / ``disowned_jobs`` /
+    ``dispatcher_pool``) and the availability accounting's
+    ``active_jobs.count()``."""
     deps.active_jobs = Mock(
         all=list,
         count=lambda: 0,
@@ -465,6 +466,7 @@ def _drain_capable(deps: Mock) -> None:
         mark_claimed=lambda jid: None,
         resolve_claim=lambda jid: None,
     )
+    deps.disowned_jobs = set()
     deps.dispatcher_pool = _NoopDrainPool()
 
 

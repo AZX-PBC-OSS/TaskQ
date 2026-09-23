@@ -122,10 +122,15 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
        where ``locked_by_worker = $worker_id AND status = 'running'``,
        excluding the jobs with live consumers (``deps.active_jobs``):
        CANCELLING owns those, and re-pending one would unlock a row
-       another worker can claim while its consumer still executes it. On
-       pool exhaustion or connection error the helper logs a warning and
-       returns 0 so the recovery sweep acts as the backstop rather than a
-       deadlocked shutdown.
+       another worker can claim while its consumer still executes it.
+       The disowned ids (``deps.disowned_jobs``) are excluded for the
+       opposite reason: a disowned row's consumer already exited, but it
+       exited through a terminal write that never landed, which is
+       positive evidence the attempt was IN FLIGHT - the exact shape the
+       refund below is not for. See the exclusion block at the bind site.
+       On pool exhaustion or connection error the helper logs a warning
+       and returns 0 so the recovery sweep acts as the backstop rather
+       than a deadlocked shutdown.
 
        Two callers, one pass each, both on this worker's way out: the
        orchestrator's DRAINING phase, and the producer loop's own exit (a
@@ -160,13 +165,20 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
 
-    # Why the explicit list[UUID] annotation: JobId is NewType(UUID), so
-    # the bare comprehension infers list[JobId], and list invariance
-    # would refuse the uuid[] bind parameter's declared type below.
-    # held_ids() covers BOTH maps: registered consumers (executing now)
-    # and claim intents (taken off local_queue, not yet registered, the
-    # window the registry's comment documents).
-    active_ids: list[JobId] = deps.active_jobs.held_ids()
+    # Why the explicit list[JobId] annotation: JobId is NewType(UUID), so
+    # a bare literal of mixed iterables would infer list[UUID], and list
+    # invariance would refuse the uuid[] bind parameter's declared type
+    # below. held_ids() covers BOTH maps: registered consumers (executing
+    # now) and claim intents (taken off local_queue, not yet registered,
+    # the window the registry's comment documents). The disowned set is
+    # folded in below, at the exclusion block that owns the rationale.
+    active_ids: list[JobId] = [
+        *deps.active_jobs.held_ids(),
+        # JobId() is the identity on a UUID value (a NewType); the
+        # constructor call only satisfies the list's declared element
+        # type, the disowned set is stored as plain UUIDs.
+        *(JobId(job_id) for job_id in deps.disowned_jobs),
+    ]
     # The attempt refund: the claim stamped attempt + 1 for an execution
     # this hand-back says never happened, so the increment goes back ,
     # the same non-consuming-release idiom the snooze/unavailable and
@@ -197,6 +209,28 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
     # The exclusion clause is only bound when there is something to
     # exclude: an empty registry (the common drained-worker case) keeps
     # the single-parameter statement shape the helper has always issued.
+    #
+    # The disowned ids join the exclusion, and they are the load-bearing
+    # half for the ledger. Every disown call site records a consumer whose
+    # terminal write spent its retry budget without landing (the
+    # success, failure, cancel and interrupt paths in worker/_consumer.py
+    # and worker/_handlers.py) - the attempt was dispatched, entered the
+    # actor machinery, and its outcome was lost with the write. The
+    # refund's meaning is "this claim never reached an actor"; applying
+    # it here would charge back an execution that DID happen, and no
+    # job_attempts row exists to contradict it (the write that would have
+    # recorded the attempt is the one that failed), so the reconciliation
+    # of the ledger against reality would show an execution that never
+    # was - the fabricated-absence mirror of the claim-loss charge.
+    # Re-pending such a row also pre-empts the recovery the disown
+    # contract promises (worker/_handlers.py's _disown_job: the
+    # heartbeat stops renewing the row so lock-lease expiry reclaims
+    # it), replacing sweep-1's evidence-gated crashed attempt row - the
+    # truthful "in flight, outcome lost" record - with a silent re-pend.
+    # Leaving the row alone costs one lease of latency and buys the
+    # honest ledger: the row stays running and locked, its lease lapses,
+    # and sweep 1 owns the reclaim with its own attempt rows, reclaim
+    # events and budget predicates.
     params: list[UUID | list[JobId]] = [worker_id]
     if active_ids:
         sql += " AND id <> ALL($2::uuid[])"
@@ -210,7 +244,7 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
                 "drain-local-queue-completed",
                 worker_id=worker_id,
                 rows_re_pended=rowcount,
-                active_jobs_excluded=len(active_ids),
+                excluded_from_handback=len(active_ids),
             )
             return rowcount
     except TRANSIENT_PG_ERRORS as exc:
