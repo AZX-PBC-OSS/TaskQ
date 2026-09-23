@@ -46,6 +46,9 @@ let wantRealtime = [
     "realtime-progress",
     "initial-progress",
     "transient-sse-error",
+    "terminal-poll-recovery",
+    "repeated-progress",
+    "timestamped-progress",
 ].includes(scenario);
 
 global.window = { TASKQ_BASE_PATH: "/taskq" };
@@ -74,7 +77,13 @@ const section = {
     },
     getAttribute(k) { return this.attrs[k]; },
 };
-const timeline = { appendChild() { log.push("append-progress"); } };
+const timeline = {
+    appendChild(entry) {
+        log.push("append-progress");
+        const meta = entry.children.find((child) => child.className === "progress-meta");
+        if (meta) log.push("progress-meta:" + meta.textContent);
+    },
+};
 const elements = {
     "progress-section": section,
     "progress-timeline": timeline,
@@ -86,8 +95,11 @@ global.document = {
     querySelector(sel) { return sel === ".taskq-badge" ? badge : null; },
     createElement() {
         return {
+            children: [],
+            className: "",
+            textContent: "",
             style: {},
-            appendChild() {},
+            appendChild(child) { this.children.push(child); },
             scrollIntoView() {},
         };
     },
@@ -146,6 +158,14 @@ const routes = [
             };
         },
     },
+    {
+        condition: ({ scenario }) => scenario === "terminal-poll-recovery",
+        handler: () => ({
+            status: "succeeded",
+            progress_state: { percent: 100 },
+            progress_seq: 2,
+        }),
+    },
 ];
 
 function resolveBody(context) {
@@ -196,6 +216,18 @@ if (scenario === "realtime-empty-progress") {
     global.lastEventSource.emitError();
     advance(1000);
     global.lastEventSource.emitOpen();
+} else if (scenario === "terminal-poll-recovery") {
+    global.lastEventSource.emitError();
+    advance(1000);
+} else if (scenario === "repeated-progress") {
+    global.lastEventSource.emit("progress", { kind: "progress", percent: 50 }, "2");
+    global.lastEventSource.emit("progress", { kind: "progress", percent: 50 }, "3");
+} else if (scenario === "timestamped-progress") {
+    global.lastEventSource.emit(
+        "progress",
+        { kind: "progress", percent: 50, ts: "2026-01-01T00:00:00Z" },
+        "2",
+    );
 }
 advance(32000);
 log.push("mode:" + badge.attrs["data-mode"]);
@@ -305,3 +337,25 @@ def test_transient_sse_error_keeps_native_eventsource_reconnect() -> None:
     assert "sse-close" not in log
     assert log.count("fetch:/taskq/jobs/api/job/j1/state") == 1
     assert log[-1] == "mode:realtime"
+
+
+@requires_node
+def test_terminal_poll_closes_recovering_eventsource() -> None:
+    """Durable terminal state stops both polling and native SSE recovery."""
+    log = _drive("terminal-poll-recovery")
+    assert log.count("fetch:/taskq/jobs/api/job/j1/state") == 1
+    assert log.count("sse-close") == 1
+
+
+@requires_node
+def test_repeated_actor_progress_calls_render_at_distinct_sequences() -> None:
+    """Equal actor updates are events, unlike duplicate lifecycle snapshots."""
+    log = _drive("repeated-progress")
+    assert log.count("append-progress") == 2
+
+
+@requires_node
+def test_realtime_progress_retains_its_timestamp() -> None:
+    """The progress renderer receives timestamps from Redis envelopes."""
+    log = _drive("timestamped-progress")
+    assert any(entry.startswith("progress-meta:50% · ") for entry in log)

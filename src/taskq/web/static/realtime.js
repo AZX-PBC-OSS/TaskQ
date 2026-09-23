@@ -40,7 +40,8 @@
     // Progress timeline rendering
     // ---------------------------------------------------------------------------
 
-    const PROGRESS_FIELDS = ["step", "percent", "detail", "data"];
+    const PROGRESS_FIELDS = ["step", "percent", "detail", "data", "ts"];
+    const PROGRESS_FINGERPRINT_FIELDS = ["step", "percent", "detail", "data"];
 
     function progressState(evt) {
         const state = {};
@@ -53,7 +54,12 @@
     }
 
     function progressFingerprint(state) {
-        if (Object.keys(state).length === 0) return null;
+        const progress = Object.fromEntries(
+            PROGRESS_FINGERPRINT_FIELDS
+                .filter((field) => Object.prototype.hasOwnProperty.call(state, field))
+                .map((field) => [field, state[field]]),
+        );
+        if (Object.keys(progress).length === 0) return null;
 
         function canonicalize(value) {
             if (Array.isArray(value)) return value.map(canonicalize);
@@ -67,7 +73,7 @@
             return value;
         }
 
-        return JSON.stringify(canonicalize(state));
+        return JSON.stringify(canonicalize(progress));
     }
 
     function acceptProgress(seq, rawState, merge) {
@@ -79,7 +85,8 @@
             ? { ...accumulatedProgress, ...state }
             : state;
         const fingerprint = progressFingerprint(accumulatedProgress);
-        if (fingerprint === null || fingerprint === lastRenderedProgress) return;
+        const actorProgress = rawState.kind === "progress";
+        if (fingerprint === null || (fingerprint === lastRenderedProgress && !actorProgress)) return;
 
         lastRenderedProgress = fingerprint;
         renderProgressEvent(state);
@@ -164,6 +171,10 @@
                     acceptProgress(body.progress_seq, body.progress_state ?? {}, false);
                     if (TERMINAL_STATUSES.has(body.status)) {
                         stopPolling();
+                        if (eventSource) {
+                            eventSource.close();
+                            eventSource = null;
+                        }
                     }
                 })
                 .catch(function () {});

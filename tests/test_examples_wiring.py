@@ -57,6 +57,7 @@ def test_root_dockerignore_keeps_examples_and_excludes_local_env_files() -> None
     assert ".env" in patterns
     assert ".env.*" in patterns
 
+
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
