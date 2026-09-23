@@ -194,8 +194,22 @@ class _CancelController:
         # same worker can re-claim the lapsed lease and re-register the
         # key with the new attempt's entry. The drain's cancellation
         # delivery and deregister belong to the attempt it queued, never
-        # to whatever the key holds by then.
-        self._pending_abandons: deque[tuple[JobId, _ActiveJob]] = deque()
+        # to whatever the key holds by then. The entry is None for the
+        # UNHELD class (see run_in_tx's unheld walk): the row carries no
+        # registry entry, so the drain's mark_abandoned is the whole
+        # job - there is no task to cancel and nothing to deregister;
+        # the drain still delivers to a late-registering entry (the
+        # claim->register handoff completed between the queueing tick
+        # and the drain).
+        self._pending_abandons: deque[tuple[JobId, _ActiveJob | None]] = deque()
+
+        # First-sight stamps for the unheld class: polled rows carrying a
+        # cancel flag that no registry entry holds. The graces measure
+        # THIS worker's observation of the flag exactly as
+        # ``_ActiveJob.cancel_observed_at`` does for held rows; a row the
+        # poll stops returning (terminalised, reclaimed) drops its stamp,
+        # so a reappearance re-observes with fresh graces.
+        self._unheld_observed_at: dict[JobId, float] = {}
 
     def _tick_liveness(self) -> None:
         """Renew the heartbeat loop's detector-2 stamp between round trips.
@@ -392,6 +406,109 @@ class _CancelController:
                 active.cancel_phase = CancelPhase.ABANDON_PENDING
                 self._pending_abandons.append((active.job_id, active))
 
+        # ── Unheld rows: the poll's orphan class ─────────────────────
+        # A polled row whose registry entry is GONE: the body exited and
+        # its outcome write was cancel-fenced (mark_retry's header: a
+        # phase-carrying row matches NO arm, the write no-ops, the
+        # consumer's unconditional finally deregisters, and "the row
+        # stays 'running' carrying its phase for the cancel ladder to
+        # terminalise"). Until this walk existed the ladder iterated
+        # active_jobs.all() only, so such a row matched NO writer: the
+        # heartbeat kept renewing its lease, and once its claim-stamped
+        # started_at aged past the lock lease the claim-loss reconcile
+        # read it as "a claim that never reached an actor" and REFUNDED
+        # the attempt whose body had already run - the executed attempt
+        # lost its ledger row and the row terminalised at the refunded
+        # attempt number with no attempt row anywhere (the system tier's
+        # effects ledger surfaced it: a body run with no claim row behind
+        # it). The poll's own predicate is the ownership contract
+        # mark_retry's header already grants this ladder; the walk gives
+        # every polled row the ladder, entry or not, on the SAME grace
+        # schedule the held walk uses, keyed by this controller's
+        # observation map.
+        #
+        # Terminal-state arithmetic (why the reconcile can never win the
+        # race this walk closes): the row strands at the fenced outcome
+        # write, the walk first observes it within one heartbeat
+        # interval, and the abandon lands by interval +
+        # cancellation_grace + cleanup_grace + 2 intervals of tick
+        # cadence (each stage fires within one tick after its deadline).
+        # At the fleet's pinned settings that is 0.5 + 1.0 + 1.0 + 1.0 =
+        # 3.5s, inside the lock lease of 8.0s that bounds the reconcile's
+        # started_at age test - the same lease the e2e conftest cascade
+        # pins, so the ordering holds wherever that cascade's premises
+        # hold.
+        unheld_ids = [row["id"] for row in rows if self._deps.active_jobs.get(row["id"]) is None]
+        if unheld_ids or self._unheld_observed_at:
+            now = loop.time()
+            polled = set(unheld_ids)
+            # A row the poll stopped returning left this class: drop its
+            # stamp so a reappearance re-observes with fresh graces (a
+            # reclaimed-then-re-dispatched row must not inherit stale
+            # elapsed).
+            for stale_id in set(self._unheld_observed_at) - polled:
+                del self._unheld_observed_at[stale_id]
+            for unheld_id in unheld_ids:
+                observed = self._unheld_observed_at.setdefault(unheld_id, now)
+                unheld_elapsed = now - observed
+                unheld_db_phase = db_phases[unheld_id]
+                if (
+                    unheld_db_phase == CancelPhase.FORCED
+                    and unheld_elapsed >= self._cancel_grace + self._cleanup_grace
+                ):
+                    # The escalation is already durable in PG (this
+                    # walk's own earlier tick): queue the abandon with no
+                    # entry. The stamp goes with it: an abandon whose
+                    # write raises is re-queued by the drain; a row still
+                    # polled re-observes here with fresh graces, and
+                    # mark_abandoned's phase-2 guard absorbs any
+                    # duplicate write.
+                    del self._unheld_observed_at[unheld_id]
+                    self._pending_abandons.append((unheld_id, None))
+                    log_cancel_phase_change(
+                        _log,
+                        from_phase=int(CancelPhase.FORCED),
+                        to_phase=int(CancelPhase.ABANDON_PENDING),
+                        job_id=str(unheld_id),
+                        worker_id=worker_id,
+                    )
+                    _record_phase_transition(CancelPhase.FORCED, CancelPhase.ABANDON_PENDING)
+                    continue
+                if (
+                    unheld_db_phase == CancelPhase.COOPERATIVE
+                    and unheld_elapsed >= self._cancel_grace
+                ):
+                    self._tick_liveness()
+                    tag = await conn.execute(self._escalation_sql, unheld_id, worker_id)
+                    if parse_rowcount(tag) != 1:
+                        # The row moved under the fence (reclaimed,
+                        # terminalised): the poll's next tick drops the
+                        # stamp if it is really gone.
+                        continue
+                    detail = dumps_str(
+                        {
+                            "from_state": "running",
+                            "to_state": "running",
+                            "cancel_phase_from": int(CancelPhase.COOPERATIVE),
+                            "cancel_phase_to": int(CancelPhase.FORCED),
+                            "worker_id": str(worker_id),
+                        }
+                    )
+                    await conn.execute(
+                        self._event_sql,
+                        unheld_id,
+                        "state_change",
+                        detail,
+                    )
+                    log_cancel_phase_change(
+                        _log,
+                        from_phase=int(CancelPhase.NONE),
+                        to_phase=int(CancelPhase.FORCED),
+                        job_id=str(unheld_id),
+                        worker_id=worker_id,
+                    )
+                    _record_phase_transition(CancelPhase.NONE, CancelPhase.FORCED)
+
     async def run_post_tx(self) -> None:
         """Drain phase-3 abandonment queue after the heartbeat transaction commits.
 
@@ -501,17 +618,7 @@ class _CancelController:
                     # applied arm applies: a bare-id get() here could
                     # hand back a live attempt's re-registered entry and
                     # cancel it for an abandon this attempt never queued.
-                    if not queued_entry.task.done() and queued_entry.task.cancelling() == 0:
-                        queued_entry.task.cancel()
-                    await self._deps.active_jobs.deregister(job_id, queued_entry)
-                    log_cancel_phase_change(
-                        _log,
-                        from_phase=int(CancelPhase.FORCED),
-                        to_phase=int(CancelPhase.ABANDON_PENDING),
-                        job_id=str(job_id),
-                        worker_id=worker_id,
-                    )
-                    _record_phase_transition(CancelPhase.FORCED, CancelPhase.ABANDON_PENDING)
+                    await _deliver_abandon(self._deps, job_id, queued_entry, worker_id)
                     continue
                 entry = self._deps.active_jobs.get(job_id)
                 if entry is not None:
@@ -545,17 +652,51 @@ class _CancelController:
             # queued entry is the abandoned attempt's; if it already
             # exited, the delivery is a no-op and the deregister is
             # idempotent.
-            if not queued_entry.task.done() and queued_entry.task.cancelling() == 0:
-                queued_entry.task.cancel()
-            await self._deps.active_jobs.deregister(job_id, queued_entry)
-            log_cancel_phase_change(
-                _log,
-                from_phase=int(CancelPhase.FORCED),
-                to_phase=int(CancelPhase.ABANDON_PENDING),
-                job_id=str(job_id),
-                worker_id=worker_id,
-            )
-            _record_phase_transition(CancelPhase.FORCED, CancelPhase.ABANDON_PENDING)
+            await _deliver_abandon(self._deps, job_id, queued_entry, worker_id)
+
+
+async def _deliver_abandon(
+    deps: "WorkerDeps",
+    job_id: JobId,
+    queued_entry: "_ActiveJob | None",
+    worker_id: UUID,
+) -> None:
+    """Deliver an applied abandon's cancellation and drop the entry.
+
+    First delivery only: a task already cancelling (the staggered path's
+    phase-2 arm cancelled it a tick earlier) or already done takes no
+    second cancellation. The delivery and the deregister are scoped to
+    the queued entry (issue 461), not to a fresh bare-id get(): between
+    the queueing tick and this drain, the same worker can re-claim the
+    lapsed lease and re-register the key with the live attempt's entry.
+    The bare-id shape would cancel the live attempt's task and evict its
+    registration, leaving the reconcile, the shutdown hand-back, and the
+    isolate re-pend blind to a row a live handler owns. The queued entry
+    is the abandoned attempt's; if it already exited, the delivery is a
+    no-op and the deregister is idempotent.
+
+    A None queued entry is the UNHELD class (run_in_tx's unheld walk):
+    the row carried no registry entry when it was queued. The delivery
+    then resolves the REGISTRY's current entry, so a claim->register
+    handoff that completed between the queueing tick and the drain still
+    takes its cancellation (identity-scoped: the entry the registry holds
+    IS the live attempt's, exactly what the issue-461 fence wants). Still
+    None, there is nothing to deliver and nothing registered to drop -
+    mark_abandoned was the whole job.
+    """
+    entry = queued_entry if queued_entry is not None else deps.active_jobs.get(job_id)
+    if entry is not None:
+        if not entry.task.done() and entry.task.cancelling() == 0:
+            entry.task.cancel()
+        await deps.active_jobs.deregister(job_id, entry)
+    log_cancel_phase_change(
+        _log,
+        from_phase=int(CancelPhase.FORCED),
+        to_phase=int(CancelPhase.ABANDON_PENDING),
+        job_id=str(job_id),
+        worker_id=worker_id,
+    )
+    _record_phase_transition(CancelPhase.FORCED, CancelPhase.ABANDON_PENDING)
 
 
 def make_cancel_controller(
