@@ -82,7 +82,7 @@ class _CronFactorySystemExitError(Exception):
         super().__init__(f"cron payload factory raised SystemExit: {original.code!r}")
 
 
-def _unwrap_cron_factory_system_exit(exc: BaseException) -> BaseException:
+def _unwrap_cron_factory_system_exit(exc: BaseException) -> BaseException:  # pyright: ignore[reportUnusedFunction]  # Why: the tick's failure choke point (worker/cron_loop.py) imports this as the single unwrapping point; pyright's unused-function check cannot see the cross-module use.
     """Return the factory's own exception for a
     ``_CronFactorySystemExitError`` carrier, *exc* unchanged otherwise.
 
