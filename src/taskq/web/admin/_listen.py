@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 import asyncpg
 import structlog
 
+from taskq._shield import shield_with_retrieval
+
 if TYPE_CHECKING:
     from asyncpg.pool import PoolConnectionProxy
 
@@ -46,6 +48,50 @@ def _make_notify_callback(
         q.put_nowait(payload)
 
     return _on_notify
+
+
+async def _release_listen_connection(
+    conn: _Conn,
+    pool: asyncpg.Pool,
+    channel: str,
+    cb: Callable[[_Conn, int, str, str], None],
+) -> None:
+    """Tear down one LISTEN connection: remove_listener, UNLISTEN, release.
+
+    Every step below is exception-suppressed, but ``suppress(Exception)``
+    does NOT hold ``CancelledError`` (a BaseException since 3.8): a
+    cancellation delivered while the cleanup runs dies at whatever step it
+    lands on and skips ``pool.release`` -- and a generator abandoned inside
+    its own finally is terminated and can never be closed again, so the
+    connection strands against the pool cap for the life of the process
+    (no GC revival: the generator is already closed). This cancellation is
+    not hypothetical: the consumer bounds its close with
+    ``asyncio.wait_for`` (sse.py), whose timeout cancels the close
+    mid-flight -- exactly this shape.
+
+    The whole cleanup therefore runs under a shield: if THIS await is
+    cancelled, the cleanup detaches and runs to completion -- the release
+    happens -- while the CancelledError still propagates to the closer.
+    ``shield_with_retrieval`` retrieves the detached cleanup's outcome, so
+    a late failure is a structured warning rather than asyncio's "Task
+    exception was never retrieved" noise.
+
+    Defense boundary: the detached cleanup itself is not re-shielded
+    against a cancellation delivered INTO it -- no source reaches it in the
+    shapes the consumers produce (the consumer's bound cancels the close
+    task once; the stream's own cancellation stays behind the consumer's
+    shield).
+    """
+
+    async def _cleanup() -> None:
+        with suppress(Exception):
+            await conn.remove_listener(channel, cb)  # pyright: ignore[reportArgumentType]  # Why: carried over from the inline cleanup this replaces; stubs over-narrow callback type; runtime asyncpg accepts sync callbacks
+        with suppress(Exception):
+            await conn.execute(f'UNLISTEN "{channel}"')
+        with suppress(Exception):
+            await pool.release(conn)  # pyright: ignore[reportArgumentType]  # Why: carried over from the inline cleanup this replaces; asyncpg's release accepts both connection types it hands out
+
+    await shield_with_retrieval(_cleanup())
 
 
 async def listen_with_reconnect(
@@ -115,9 +161,4 @@ async def listen_with_reconnect(
             backoff = min(backoff * 2, backoff_max)
         finally:
             if conn is not None and pool is not None:
-                with suppress(Exception):
-                    await conn.remove_listener(channel, cb)  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow callback type; runtime accepts sync callbacks
-                with suppress(Exception):
-                    await conn.execute(f'UNLISTEN "{channel}"')
-                with suppress(Exception):
-                    await pool.release(conn)
+                await _release_listen_connection(conn, pool, channel, cb)

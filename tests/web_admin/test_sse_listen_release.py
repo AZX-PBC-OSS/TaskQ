@@ -22,10 +22,12 @@ cancelled, while the cancellation still propagates out of the stream.
 """
 
 import asyncio
+import gc
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import pytest
+import structlog.testing
 
 pytest.importorskip("fastapi")
 
@@ -97,6 +99,53 @@ class _StubFeed:
             await self.release_gate.wait()
             await self._pool.release(conn)
             self.released.set()
+
+
+class _StubConn:
+    """Connection double for the REAL ``listen_with_reconnect``: every
+    cleanup step is an immediate no-op except the release, which the pool
+    below gates."""
+
+    def is_closed(self) -> bool:
+        return False
+
+    async def execute(self, sql: str) -> None:
+        return None
+
+    async def add_listener(self, channel: str, cb: object) -> None:
+        return None
+
+    async def remove_listener(self, channel: str, cb: object) -> None:
+        return None
+
+
+class _GatedReleasePool:
+    """Duck-typed pool driving the REAL ``listen_with_reconnect``: acquire
+    hands out a ``_StubConn``, release parks on a gate so a test can cancel
+    the close mid-cleanup (the shape the consumer's bounded close produces
+    when its ``wait_for`` times out) and demand the release still happen."""
+
+    def __init__(self) -> None:
+        self.conn = _StubConn()
+        self.acquired_n = 0
+        self.released_n = 0
+        self.cleanup_started = asyncio.Event()
+        self.release_gate = asyncio.Event()
+        self.released = asyncio.Event()
+
+    async def acquire(self, timeout: float | None = None) -> _StubConn:
+        self.acquired_n += 1
+        return self.conn
+
+    async def release(self, conn: _StubConn) -> None:
+        self.cleanup_started.set()
+        await self.release_gate.wait()
+        self.released_n += 1
+        self.released.set()
+
+    @property
+    def in_use(self) -> int:
+        return self.acquired_n - self.released_n
 
 
 class _ParkedVerifier:
@@ -207,6 +256,130 @@ async def test_a_cancelled_exit_cannot_defeat_the_listen_release(
     await _await_released(feed)
     assert pool.in_use == 0
     assert sem._value == 1  # pyright: ignore[reportPrivateUsage]  # Why: as above.
+
+
+async def test_a_third_cancellation_during_the_shielded_close_still_releases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A THIRD cancellation - delivered after the shield has already detached
+    the close - must not disturb the release either: each re-delivery
+    re-raises at the shield (the stream still ends cancelled) while the
+    detached close is a different task nothing can reach."""
+    pool = _CountingPool()
+    feed = _StubFeed(pool)
+    feed.release_gate.clear()
+    monkeypatch.setattr(_sse_mod, "listen_with_reconnect", feed)
+    verifier = _ParkedVerifier()
+    sem = asyncio.Semaphore(1)
+    await sem.acquire()
+    gen = _sse_generator(sem, lambda: pool, "taskq", verifier)
+
+    await _run_to_first_payload(gen)
+    stream = asyncio.create_task(gen.__anext__())
+    await verifier.parked.wait()
+    stream.cancel()  # first cancel: the stream's exit begins
+    await feed.aclose_started.wait()  # the close is now in flight
+    stream.cancel()  # second cancel: re-delivery at the shield
+    await asyncio.sleep(0)  # let the second delivery land at the shield
+    stream.cancel()  # third cancel: while the detached close still runs
+    feed.release_gate.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await stream
+    await _await_released(feed)
+    assert pool.in_use == 0
+    assert sem._value == 1  # pyright: ignore[reportPrivateUsage]  # Why: as above.
+
+
+async def test_the_close_that_outlives_its_bound_still_releases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bound's own teeth: a close that outlives CLOSE_TIMEOUT_SECS is
+    cancelled by its wait_for MID-CLEANUP - the one cancellation the
+    consumer's shield cannot keep off the close. Unshielded at the feed,
+    the cleanup dies before pool.release and the connection strands past
+    any GC revival. The REAL feed's cleanup is cancellation-tolerant: the
+    release must complete anyway (detached), and the bound must give up
+    LOUDLY (a structured warning, not silence)."""
+    monkeypatch.setattr(_sse_mod, "CLOSE_TIMEOUT_SECS", 0.1)
+    monkeypatch.setattr(_sse_mod, "_KEEPALIVE_INTERVAL", 0.05)
+    pool = _GatedReleasePool()
+    pool.release_gate.clear()  # hold the cleanup mid-flight
+    verifier = _ParkedVerifier()
+    sem = asyncio.Semaphore(1)
+    await sem.acquire()
+    # The REAL feed: no listen_with_reconnect monkeypatch here.
+    gen = _sse_generator(sem, lambda: pool, "taskq", verifier)
+
+    with structlog.testing.capture_logs() as logs:
+        await gen.__anext__()  # sentinel
+        keepalive = await gen.__anext__()  # the feed's first keepalive frame
+        assert "keepalive" in keepalive
+        stream = asyncio.create_task(gen.__anext__())
+        await verifier.parked.wait()
+        stream.cancel()  # the stream's exit begins
+        await pool.cleanup_started.wait()  # the feed's cleanup is mid-flight
+        await asyncio.sleep(0.25)  # past the 0.1s bound: it fires mid-cleanup
+        with pytest.raises(asyncio.CancelledError):
+            await stream
+        pool.release_gate.set()
+        await asyncio.wait_for(pool.released.wait(), timeout=3.0)
+
+    assert pool.in_use == 0
+    loud = [log for log in logs if log["event"] == "admin-sse-listen-close-failed"]
+    assert loud, "a close that outlived its bound must give up loudly, not silently"
+
+
+async def test_the_detached_close_does_not_lose_its_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The detached close must be RETRIEVED, not just launched: when the
+    outer exit is cancelled, nobody awaits the shielded close, so a close
+    that fails while detached (here: it outlives its bound and its
+    wait_for raises TimeoutError) must be picked up by the retrieval
+    callback and logged - not buried as asyncio's "Task exception was
+    never retrieved" loop noise, and not silently lost either."""
+    monkeypatch.setattr(_sse_mod, "CLOSE_TIMEOUT_SECS", 0.1)
+    pool = _CountingPool()
+    feed = _StubFeed(pool)
+    feed.release_gate.clear()  # the close wedges past its bound
+    monkeypatch.setattr(_sse_mod, "listen_with_reconnect", feed)
+    verifier = _ParkedVerifier()
+    sem = asyncio.Semaphore(1)
+    await sem.acquire()
+    gen = _sse_generator(sem, lambda: pool, "taskq", verifier)
+
+    handler_records: list[BaseException] = []
+
+    def _capture_loop_exception(loop: object, context: dict[str, object]) -> None:
+        exc = context.get("exception")
+        if exc is not None:
+            handler_records.append(exc)  # type: ignore[arg-type]
+
+    loop = asyncio.get_running_loop()
+    old_handler = loop.get_exception_handler()
+    loop.set_exception_handler(_capture_loop_exception)
+    try:
+        with structlog.testing.capture_logs() as logs:
+            await _run_to_first_payload(gen)
+            stream = asyncio.create_task(gen.__anext__())
+            await verifier.parked.wait()
+            stream.cancel()  # first cancel: the stream's exit begins
+            await feed.aclose_started.wait()  # the close is in flight
+            stream.cancel()  # second cancel: the close is now DETACHED
+            with pytest.raises(asyncio.CancelledError):
+                await stream
+            await asyncio.sleep(0.3)  # the 0.1s bound fires in the detached close
+            gc.collect()  # the un-retrieved warning fires from __del__ at GC
+            await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(old_handler)
+
+    retrieved = [log for log in logs if log["event"] == "shield-detached-task-failed"]
+    assert retrieved, "the detached close's failure must be retrieved and logged"
+    assert handler_records == [], (
+        "the detached close's failure leaked to the loop's un-retrieved-exception path"
+    )
 
 
 async def test_an_event_generator_exception_returns_the_listen_connection(
