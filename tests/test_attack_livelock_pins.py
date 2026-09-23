@@ -53,6 +53,7 @@ from taskq.testing.clock import FakeClock
 from taskq.testing.fixtures import ModulePgSchema, _create_worker
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.worker.leader import build_leader_lease_sql
+from tests._ns_patch import patch_ns
 
 # ruff: noqa: S608  # Why: every interpolated identifier is the module fixture's schema name, fixture-derived, not user input; all values are $-bound.
 
@@ -394,7 +395,7 @@ async def test_reconnect_backoff_grows_to_the_cap_and_the_wake_fires_on_success(
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(random_mod, "uniform", fake_uniform)
-        mp.setattr(asyncio, "sleep", fake_sleep)
+        patch_ns(mp, notify_mod, "asyncio", sleep=fake_sleep)
         mp.setattr(notify_mod, "logger", Mock())
         recovered = await asyncio.wait_for(
             notify_mod._recover_notify_conn(
@@ -442,7 +443,7 @@ async def test_reconnect_loop_observes_shutdown_without_a_hot_spin() -> None:
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(random_mod, "uniform", fake_uniform)
-        mp.setattr(asyncio, "sleep", fake_sleep)
+        patch_ns(mp, notify_mod, "asyncio", sleep=fake_sleep)
         mp.setattr(notify_mod, "logger", Mock())
         recovered = await asyncio.wait_for(
             notify_mod._recover_notify_conn(
