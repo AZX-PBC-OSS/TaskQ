@@ -617,6 +617,24 @@ def archive_terminal_jobs(
         )
         if attempts:
             backend._archive_attempts[job_id] = attempts  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+        if row.idempotency_key is not None:
+            # The archive mirror of the PG prune's archive-move DELETE: the
+            # live row is gone, so the pair is gone from the live unique
+            # index and the key is FREE again (the documented horizon,
+            # "dedupes until pruned"). The twin's index must drop the entry
+            # with the row, the same guard _withdraw_inserted's rollback pop
+            # applies: only when the entry still points at THIS row. A
+            # single enqueue reusing the pair between the pop candidates and
+            # here has rewritten the index to ITS row (PG: the new row holds
+            # the pair, the archive never touched it), and its dedup must
+            # survive. Without the pop a phantom entry pins the pair FOREVER
+            # in the bulk tiers: enqueue_batch_fast refuses the freed key
+            # with a DuplicateIdempotencyKeyError Postgres' COPY never
+            # raises, and _batch_cap_refusals discounts a real item against
+            # a row that does not exist, over-admitting past max_pending.
+            pair = (row.idempotency_scope, row.idempotency_key)
+            if backend._idempotency_index.get(pair) == job_id:  # pyright: ignore[reportAttributeAccessIssue, reportPrivateUsage]
+                backend._idempotency_index.pop(pair)  # pyright: ignore[reportAttributeAccessIssue, reportPrivateUsage]
         by_actor[row.actor] = by_actor.get(row.actor, 0) + 1
         by_status[row.status] = by_status.get(row.status, 0) + 1
         archived_count += 1
