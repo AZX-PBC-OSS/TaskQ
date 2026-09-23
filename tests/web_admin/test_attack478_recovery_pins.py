@@ -28,9 +28,9 @@ renders and teardown, never on source text):
    close.
 
 Mutations (literal patches applied to a scratch copy of realtime.js)
-prove each pin is sharp: the hot-spin re-poll, the skip that swallows the
-terminal check, the empty-counter give-up, and the catch-up drop each
-turn at least one pin red.
+prove each pin is sharp: the hot-spin re-poll, the cursor-gated terminal
+teardown, the empty-counter give-up, and the catch-up drop each turn at
+least one pin red.
 """
 
 from __future__ import annotations
@@ -559,70 +559,50 @@ def _mutated_poll_hot_spin() -> Path:
 
 
 def _mutated_skip_swallows_terminal() -> Path:
-    """The lost-wake regression: the empty-snapshot skip's early-continue
-    also skips the tick's terminal check - a skipped snapshot consumes the
-    observation, the poller runs past the terminal forever."""
+    """The terminal-suppression regression against the ASSEMBLED client: the
+    poll's terminal teardown becomes cursor-gated - lifecycle frames that
+    inflate the cursor past the durable row (flushes lag the fanout) leave
+    the durable terminal seq TRAILING the cursor, so the observation never
+    fires and the poller runs past the terminal forever."""
     return _mutated(
         "skip_terminal",
         (
-            "if (fingerprint === null || (fingerprint === lastRenderedProgress"
-            " && !actorProgress)) return;",
-            "if (fingerprint === null || (fingerprint === lastRenderedProgress"
-            " && !actorProgress)) return false;",
-        ),
-        (
-            "lastRenderedProgress = fingerprint;\n        renderProgressEvent(state);",
-            "lastRenderedProgress = fingerprint;\n        renderProgressEvent(state);\n"
-            "        return true;",
-        ),
-        (
-            "if (!Number.isInteger(seq) || seq <= lastSeenSeq) return;",
-            "if (!Number.isInteger(seq) || seq <= lastSeenSeq) return false;",
-        ),
-        (
-            "acceptProgress(body.progress_seq, body.progress_state ?? {}, false);",
-            "if (acceptProgress(body.progress_seq, body.progress_state ?? {}, false)"
-            " === false) return;",
+            "if (TERMINAL_STATUSES.has(body.status)) {",
+            "if (TERMINAL_STATUSES.has(body.status)"
+            " && Number.isInteger(body.progress_seq)"
+            " && body.progress_seq > lastSeenSeq) {",
         ),
     )
 
 
 def _mutated_empty_giveup() -> Path:
-    """The premature give-up: three consecutive empty snapshots close the
-    stream and stand everything down - the stream dies on an idle broker."""
+    """The premature give-up: three consecutive empty snapshots stand the
+    stream and poller down - the machinery dies on an idle broker."""
     return _mutated(
         "empty_giveup",
         (
-            "function acceptProgress(seq, rawState, merge) {\n"
-            "        if (!Number.isInteger(seq) || seq <= lastSeenSeq) return;",
-            "let emptySkips = 0;\n"
-            "    function acceptProgress(seq, rawState, merge) {\n"
-            "        if (!Number.isInteger(seq) || seq <= lastSeenSeq) return;\n"
-            "        const isEmpty = rawState && rawState.step == null"
-            " && rawState.percent == null && rawState.detail == null"
-            " && rawState.data == null;\n"
-            "        if (isEmpty) {\n"
-            "            emptySkips += 1;\n"
-            "            if (emptySkips >= 3 && eventSource) { eventSource.close();"
-            " eventSource = null; stopPolling(); }\n"
-            "        } else {\n"
-            "            emptySkips = 0;\n"
-            "        }",
+            "if (snapshotFingerprint === null) return;",
+            "if (snapshotFingerprint === null) {"
+            " window.__emptySkips = (window.__emptySkips || 0) + 1;"
+            " if (window.__emptySkips >= 3) {"
+            " if (eventSource) { eventSource.close(); eventSource = null; }"
+            " stopPolling(); }"
+            " return; }",
         ),
     )
 
 
 def _mutated_catchup_drop() -> Path:
-    """The catch-up drop: a reconnect snapshot that jumps the cursor by
-    more than one seq is discarded without rendering - the reconciled
-    state never reaches the timeline."""
+    """The catch-up drop: an absolute snapshot that JUMPS the cursor (a
+    multi-seq reconnect catch-up) is discarded without rendering - and the
+    cursor is left where it was, so the poll's reconciled snapshot, the
+    reconnect catch-up, and every snapshot after them are dropped too."""
     return _mutated(
         "catchup_drop",
         (
-            "if (!Number.isInteger(seq) || seq <= lastSeenSeq) return;\n        lastSeenSeq = seq;",
-            "if (!Number.isInteger(seq) || seq <= lastSeenSeq) return;\n"
-            "        if (!merge && seq > lastSeenSeq + 1) { lastSeenSeq = seq; return; }\n"
-            "        lastSeenSeq = seq;",
+            "if (snapshotFingerprint === null) return;",
+            "if (snapshotFingerprint === null) return;"
+            " if (!merge && Number.isInteger(seq) && seq > lastSeenSeq + 1) return;",
         ),
     )
 
@@ -648,7 +628,7 @@ def test_mutation_skip_swallows_terminal_is_caught_by_the_teardown_pin() -> None
     stats = _drive(
         {
             "badgeMode": "polling-degraded",
-            "sectionAttrs": {"data-job-id": "j1"},
+            "sectionAttrs": {"data-job-id": "j1", "data-progress-seq": "5"},
             "fetchRules": [
                 {
                     "suffix": "/state",
