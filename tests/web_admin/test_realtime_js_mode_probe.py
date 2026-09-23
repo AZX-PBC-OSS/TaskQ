@@ -49,6 +49,10 @@ let wantRealtime = [
     "terminal-poll-recovery",
     "repeated-progress",
     "timestamped-progress",
+    "redispatch-terminal-envelope",
+    "reconnect-terminal-snapshot",
+    "terminal-poll-behind-cursor",
+    "empty-terminal-behind-cursor",
 ].includes(scenario);
 
 global.window = { TASKQ_BASE_PATH: "/taskq" };
@@ -68,7 +72,12 @@ const badge = {
 };
 const initialProgress = scenario === "initial-progress"
     ? { seq: 2, state: { percent: 50 } }
-    : { seq: 1, state: {} };
+    : scenario === "redispatch-terminal-envelope"
+        || scenario === "reconnect-terminal-snapshot"
+        || scenario === "terminal-poll-behind-cursor"
+        || scenario === "empty-terminal-behind-cursor"
+        ? { seq: 5, state: { percent: 90 } }
+        : { seq: 1, state: {} };
 const section = {
     attrs: {
         "data-job-id": "j1",
@@ -166,6 +175,14 @@ const routes = [
             progress_seq: 2,
         }),
     },
+    {
+        condition: ({ scenario }) => scenario === "terminal-poll-behind-cursor",
+        handler: () => ({
+            status: "failed",
+            progress_state: { percent: 25, detail: "attempt 2 failed" },
+            progress_seq: 2,
+        }),
+    },
 ];
 
 function resolveBody(context) {
@@ -228,6 +245,32 @@ if (scenario === "realtime-empty-progress") {
         { kind: "progress", percent: 50, ts: "2026-01-01T00:00:00Z" },
         "2",
     );
+} else if (scenario === "redispatch-terminal-envelope") {
+    // The redispatch shape: the page consumed attempt 1's wire seqs (the
+    // hydrated cursor sits at 5), the crash ate the flush, and attempt 2's
+    // terminal envelope carries a re-seeded seq BELOW that cursor. The
+    // stream's terminal exemption exists to deliver exactly this frame.
+    global.lastEventSource.emit(
+        "terminal",
+        { kind: "state_change", percent: 25, detail: "attempt 2 failed", terminal: true },
+        "2",
+    );
+} else if (scenario === "reconnect-terminal-snapshot") {
+    // The reconnect shape: the durable row is terminal at a seq below the
+    // cursor, so the snapshot replayed from the row (no kind, the PG state
+    // shape) arrives behind it and the stream closes on delivery.
+    global.lastEventSource.emit(
+        "terminal",
+        { percent: 25, detail: "attempt 2 failed" },
+        "2",
+    );
+} else if (scenario === "terminal-poll-behind-cursor") {
+    global.lastEventSource.emitError();
+    advance(1000);
+} else if (scenario === "empty-terminal-behind-cursor") {
+    // The lifecycle-only terminal (no progress content) delivered behind
+    // the cursor: the exemption must not turn it into a synthetic entry.
+    global.lastEventSource.emit("terminal", { kind: "state_change", terminal: true }, "2");
 }
 advance(32000);
 log.push("mode:" + badge.attrs["data-mode"]);
@@ -359,3 +402,70 @@ def test_realtime_progress_retains_its_timestamp() -> None:
     """The progress renderer receives timestamps from Redis envelopes."""
     log = _drive("timestamped-progress")
     assert any(entry.startswith("progress-meta:50% · ") for entry in log)
+
+
+# ── The terminal exemption: a terminal behind the client cursor lands ──
+
+
+@requires_node
+def test_redispatched_attempt_terminal_envelope_renders_behind_the_cursor() -> None:
+    """A terminal envelope below the client cursor is rendered, never dropped.
+
+    The cursor can legitimately sit ABOVE a terminal's seq: publishes ride
+    Redis out as progress calls land while the coalesced flush lands the
+    seq up to half a second later, so a crash in between leaves the durable
+    row (and the redispatched attempt's re-seeded seqs) behind what the page
+    already consumed. The hydrated cursor here is 5 (attempt 1's wire seqs);
+    attempt 2's terminal envelope carries the re-seeded seq 2 with attempt
+    2's own state. Dropping it freezes the page on attempt 1's stale 90%
+    forever - the job is durably over, no later seq recovers the page.
+    """
+    log = _drive("redispatch-terminal-envelope")
+    assert log.count("append-progress") == 1
+    assert "progress-meta:25%" in log
+    assert "sse-close" in log
+
+
+@requires_node
+def test_reconnect_terminal_snapshot_renders_behind_the_cursor() -> None:
+    """A terminal snapshot replayed from the durable row lands behind the cursor.
+
+    The reconnect delivers the row's state (no kind - the PG snapshot shape)
+    with the stream's close signal. The cursor must not discard it: this is
+    the delivery the stream exists to make when the row went terminal while
+    the page's cursor was inflated by unflushed wire seqs.
+    """
+    log = _drive("reconnect-terminal-snapshot")
+    assert log.count("append-progress") == 1
+    assert "progress-meta:25%" in log
+    assert "sse-close" in log
+
+
+@requires_node
+def test_poll_delivers_the_durable_terminal_row_behind_the_cursor() -> None:
+    """A poll body whose durable terminal seq sits below the cursor still lands.
+
+    The polling driver is the recovery surface for exactly the cut that
+    inflates the cursor: Redis delivered the pre-crash seqs, the flush was
+    lost, the redispatched attempt's terminal write landed the row at a seq
+    below them. The old poll-local cursor (-1) rendered this body; the
+    shared cursor must not un-render it.
+    """
+    log = _drive("terminal-poll-behind-cursor")
+    assert "fetch:/taskq/jobs/api/job/j1/state" in log
+    assert log.count("append-progress") == 1
+    assert "progress-meta:25%" in log
+    assert log.count("sse-close") == 1
+
+
+@requires_node
+def test_empty_terminal_behind_the_cursor_stays_unrendered() -> None:
+    """The terminal exemption does not resurrect the synthetic empty entry.
+
+    A lifecycle-only terminal (no progress content) delivered behind the
+    cursor renders nothing - the empty-snapshot skip this module exists for
+    holds on the exemption path - and the stream still closes on it.
+    """
+    log = _drive("empty-terminal-behind-cursor")
+    assert "append-progress" not in log
+    assert "sse-close" in log

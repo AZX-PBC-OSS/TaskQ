@@ -92,6 +92,37 @@
         renderProgressEvent(state);
     }
 
+    function acceptTerminal(rawState, merge) {
+        // A terminal delivery is exempt from the seq discard, the client
+        // mirror of the stream's own terminal rule. The cursor can
+        // legitimately sit ABOVE the terminal's seq: publishes ride Redis
+        // out as progress calls land while the coalesced flush lands the
+        // seq up to half a second later, so a crash in between leaves the
+        // durable row (and the redispatched attempt's re-seeded seqs)
+        // behind what this page already consumed. Skipping the terminal on
+        // that cursor discards the one frame that ends the job - the job
+        // is durably over, no later seq ever recovers the page, and both
+        // drivers then stop on the very delivery they dropped. Render it
+        // whatever the cursor says, still fingerprint-deduped so a
+        // redundant re-delivery of already-shown state adds no entry -
+        // unless it is empty, which is the empty-snapshot skip this module
+        // exists for.
+        const state = progressState(rawState);
+        // The empty-snapshot skip comes first: a lifecycle-only terminal
+        // carries no progress content and must not become a synthetic
+        // entry, even merged into state that has some.
+        if (progressFingerprint(state) === null) return;
+        accumulatedProgress = merge
+            ? { ...accumulatedProgress, ...state }
+            : state;
+        // Deduped on the accumulated state the timeline actually reflects,
+        // so a terminal replaying already-shown content adds no entry.
+        const fingerprint = progressFingerprint(accumulatedProgress);
+        if (fingerprint === lastRenderedProgress) return;
+        lastRenderedProgress = fingerprint;
+        renderProgressEvent(state);
+    }
+
     function renderProgressEvent(evt) {
         const timeline = document.getElementById("progress-timeline");
         if (!timeline) return;
@@ -170,6 +201,12 @@
                     if (!pollingActive) return;
                     acceptProgress(body.progress_seq, body.progress_state ?? {}, false);
                     if (TERMINAL_STATUSES.has(body.status)) {
+                        // The durable terminal row is the delivery: accept it
+                        // exempt from the cursor, the same rule the terminal
+                        // SSE envelope follows. A cursor inflated by wire
+                        // seqs whose flush a crash ate must not discard the
+                        // row that ends the job.
+                        acceptTerminal(body.progress_state ?? {}, false);
                         stopPolling();
                         if (eventSource) {
                             eventSource.close();
@@ -212,7 +249,14 @@
                 return;
             }
             const seq = Number(rawEvent.lastEventId);
-            if (render) {
+            if (terminalEvent) {
+                // The terminal envelope is exempt from the seq cursor (and
+                // from the fingerprint's actor carve-out): the stream's own
+                // close signal must land even when a lost flush left its seq
+                // below what this page already consumed, and even when a
+                // reconnect snapshot replays state the page has seen.
+                acceptTerminal(evt, evt.kind != null);
+            } else if (render) {
                 // Redis envelopes are call-level deltas; initial PG snapshots
                 // have no kind and replace the accumulated client state.
                 acceptProgress(seq, evt, evt.kind != null);
