@@ -20,6 +20,9 @@ from collections.abc import Generator
 from typing import Any
 
 import pytest
+
+pytest.importorskip("fastapi")
+pytest.importorskip("jinja2")
 import structlog
 
 from taskq.web.admin._audit import ANONYMOUS_SUBJECT, record_admin_action_safe

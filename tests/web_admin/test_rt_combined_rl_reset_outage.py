@@ -21,6 +21,9 @@ unwritten.
 from typing import Any
 
 import pytest
+
+pytest.importorskip("fastapi")
+pytest.importorskip("jinja2")
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
