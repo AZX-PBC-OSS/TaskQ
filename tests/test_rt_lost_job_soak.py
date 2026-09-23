@@ -579,15 +579,123 @@ async def _trial(
     _ = operator_retries
 
 
+async def stop_worker_and_reap_bootstrap(
+    worker_task: asyncio.Task[object],
+    baseline: frozenset[asyncio.Task[object]],
+    *,
+    stop_timeout: float = 120.0,
+    reap_timeout: float = 30.0,
+) -> None:
+    """Stop the soak's worker and reap EVERY task its bootstrap minted.
+
+    This is the teardown guarantee the soak owes the module's event loop
+    on EVERY exit path - the settle-assertion failure path (pytest.fail
+    unwinding through the ``finally``), a hang-watchdog red, and the
+    happy path alike.  The module's event loop is module-scoped (the
+    suite's pytest-asyncio config), so a bootstrap task left pending here
+    advances at every later test's await points - the exact shape that
+    starved the following tests in run 35648058316.
+
+    Two stages, both non-raising except where marked:
+
+    1. GRACEFUL STOP: cancel the worker task and await it, bounded by
+       *stop_timeout*.  The bound MUST exceed the worker's own exit bound
+       (``termination_grace_period`` 85s + its 8s exit tail - hence 120s):
+       the old teardown's 60s ``wait_for`` gave up INSIDE the worker's
+       own cleanup window, and its timeout-delivered second cancellation
+       then interrupted ``_main``'s cleanup ``finally`` mid-way - the
+       reap gate abandoned, ``lag_watchdog.stop()`` skipped, the loop-lag
+       watchdog's poller thread left ARMED over a loop that was about to
+       close (measured: it force-``os._exit``ed a whole pytest process a
+       module later, run 3 of the combined soak->heartbeat proof).  The
+       same arithmetic keeps the shutdown watchdog's own trip contained:
+       with the watchdog enabled, a drain parked past the deadline is
+       force-``os._exit``ed by the worker's OWN watchdog
+       (``worker.shutdown_watchdog``) within ``termination_grace_period``
+       + the exit tail - INSIDE this stage's wait, never during stage 2's
+       reaping, whose awaits would otherwise feed an armed watchdog.  A
+       drain that outlasts even this bound raises TimeoutError into
+       *this* frame while the bootstrap is still mid-teardown - reachable
+       only with the watchdog disabled (no trip exists to fire first);
+       reproduced here with a sync actor mid-run at cancel time: its
+       executor thread cannot be cancelled, so the drain parks in the
+       bootstrap's own tracked-actor reap gate (``await_tracked_actor_reap``)
+       for as long as the body runs.
+    2. RESIDUE REAP: every still-pending task the test minted (not in
+       *baseline*, not this frame) is cancelled and awaited, bounded by
+       *reap_timeout*.  A task that survives even this - a sibling that
+       absorbs cancellation and re-parks, the loop wedged - fails LOUDLY
+       with the dump, per the suite's doctrine that a teardown that
+       cannot finish is a finding, never a silent give-up.
+    """
+    # Stage 1: the graceful stop.  Swallow what the stop itself raises
+    # (the give-up TimeoutError, a worker crash, the external-cancel
+    # CancelledError) so the TEST's own failure stays the headline -
+    # but never KeyboardInterrupt/SystemExit, which must propagate.
+    if not worker_task.done():
+        worker_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await asyncio.wait_for(worker_task, timeout=stop_timeout)
+
+    # Stage 2: the residue reap.  Cancel first (all of them, so a task
+    # whose cancellation awakens another does not restart the clock),
+    # then await them as a set.
+    current = asyncio.current_task()
+    residue = [
+        task for task in asyncio.all_tasks() - baseline if not task.done() and task is not current
+    ]
+    if not residue:
+        return
+    for task in residue:
+        task.cancel()
+    _done, pending = await asyncio.wait(residue, timeout=reap_timeout)
+    # Retrieve EVERY completed task's outcome before any raise: a cancel()
+    # delivery is expected here, but a task that died with a REAL exception
+    # is a bootstrap finding, and the raise below must never abandon the
+    # remaining outcomes un-retrieved (an un-retrieved exception rots into
+    # a later "exception was never retrieved" warning on a DIFFERENT test).
+    crashes: list[str] = []
+    for task in _done:
+        if task.cancelled():
+            continue
+        exc = task.exception()
+        if exc is not None:
+            crashes.append(f"  - task {task.get_name()!r} died with: {exc!r}")
+    if pending or crashes:
+        lines = []
+        if pending:
+            live = [f"  - task {t.get_name()!r} still pending: {t!r}" for t in pending]
+            lines.append(
+                f"TEARDOWN LEAK: {len(pending)} worker-bootstrap task(s) survived "
+                f"cancel+await for {reap_timeout:.0f}s - the module loop is not "
+                "clean at test end. Live tasks:"
+            )
+            lines.extend(live)
+        if crashes:
+            lines.append(
+                f"TEARDOWN CRASH: {len(crashes)} reaped bootstrap task(s) died "
+                "with a real exception instead of the delivered cancellation - "
+                "the bootstrap's own cleanup raised. Crashes:"
+            )
+            lines.extend(crashes)
+        raise AssertionError("\n".join(lines))
+
+
 # The soak's legitimate worst case exceeds the global 300s pytest-timeout:
 # 240 paced rounds under a coverage-instrumented, -n 4-starved runner, the
 # settle wall cap (scaled to the job count at the cooldown-throttled
 # rate), the worker's own shutdown grace periods (termination grace 85s),
-# and the handback bound. The outer budget bounds only that legitimate
-# total - a livelock reds from the test's OWN inner watchdogs long before
-# it fires (30s per blocking step, 30s completion-stall, the settle's
-# quiescence detection and wall cap, 60s shutdown, 30s handback). Same
-# shape as the e2e suite's long-legitimate marks.
+# and the handback bound. The outer 2700s mark is PER ITEM - the three
+# trials are three items, each with its own budget - and bounds only the
+# legitimate total: a livelock reds from the test's OWN inner watchdogs
+# long before it fires (30s per blocking step, 30s completion-stall, the
+# settle's quiescence detection and wall cap, the 30s-capped worker
+# shutdown step, 30s handback) AND the finally's two-stage teardown must
+# fit inside the same item: stage 1's 120s graceful-stop bound (above the
+# worker's own 85s + 8s exit bound) plus stage 2's 30s residue reap.
+# test_suite_hygiene.py pins this arithmetic against drift
+# (test_soak_worst_case_fits_the_timeout_mark and
+# test_soak_stage1_stop_bound_exceeds_the_worker_exit_bound).
 @pytest.mark.timeout(2700)
 @pytest.mark.parametrize("trial", range(3))
 async def test_lost_job_soak_grand_mixin(
@@ -609,6 +717,11 @@ async def test_lost_job_soak_grand_mixin(
             return await _main(settings, actor_registry=_REGISTRY)
         return 0
 
+    # The reap's baseline: every task pending BEFORE the bootstrap mints
+    # any.  Everything still pending at teardown that is not in this set
+    # (and not this frame) is the bootstrap's residue, whatever exit path
+    # reached the finally.
+    baseline = frozenset(asyncio.all_tasks())
     worker_task = asyncio.create_task(_runner(), name=f"soak-worker-{trial}")
     try:
         await _bounded(asyncio.sleep(2.0), "worker bootstrap")
@@ -621,10 +734,7 @@ async def test_lost_job_soak_grand_mixin(
         finally:
             await soak_conn.close()
     finally:
-        if not worker_task.done():
-            worker_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, BaseException):
-                await asyncio.wait_for(worker_task, timeout=60.0)
+        await stop_worker_and_reap_bootstrap(worker_task, baseline)
 
 
 async def test_settle_quiescence_has_teeth(

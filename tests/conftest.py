@@ -322,6 +322,81 @@ def _leaked_pending_task_report(
     return "\n".join(lines)
 
 
+def _call_window_leak_report(window: list[asyncio.Task[object]]) -> str | None:
+    """The loud failure text for tasks that were pending at CALL END - the
+    instant the test's own body finished - but that are no longer pending
+    by the time the guard's teardown runs.
+
+    The guard's live diff (``_leaked_pending_task_report`` above) checks
+    the loop at guard-teardown time.  Between the test's last statement
+    and that check, pytest tears the test's OTHER function fixtures down -
+    and every teardown await runs the loop, giving residue a chance to
+    finish (or be finished by its reaper) BEFORE the guard looks.  A
+    worker bootstrap left mid-drain at test end is exactly that shape:
+    it kept writing shared state into the teardown window - and would
+    have kept going into the next test had the drain been slower - yet
+    the live diff scores it green (probed pre-fix on this repo: a task
+    minted by a test body and reaped by an awaiting teardown fixture
+    passed the guard untouched). The call-window snapshot is the guard's
+    memory of test-end state; anything captured there is named, so a
+    leak fails THE LEAKING TEST even when it dies before the guard's
+    check instant.
+    """
+    if not window:
+        return None
+    lines = [
+        f"  - task {t.get_name()!r} pending at test end (finished or reaped "
+        f"during teardown without the test awaiting it); coroutine: {t.get_coro()!r}"
+        if t.done()
+        else f"  - task {t.get_name()!r} still pending; coroutine: {t.get_coro()!r}"
+        for t in window
+    ]
+    return "\n".join(lines)
+
+
+#: The module event loop the guard's baseline was taken on - stashed by
+#: the guard fixture at setup, read by the call-phase snapshot hook below
+#: (a sync hook, off the loop: the loop is idle between pytest phases, so
+#: :func:`asyncio.all_tasks` with an explicit loop is the safe read).
+_GUARD_LOOP_KEY: pytest.StashKey[asyncio.AbstractEventLoop] = pytest.StashKey()
+
+#: Tasks minted during the call phase and still pending at call end - the
+#: test-end residue snapshot (see ``_call_window_leak_report``).
+_GUARD_CALL_WINDOW_KEY: pytest.StashKey[list[asyncio.Task[object]]] = pytest.StashKey()
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_call(item: pytest.Item) -> object:
+    """Snapshot the test-end residue: tasks minted during THIS call and
+    still pending when the call phase ends (before any fixture teardown
+    can reap them).
+
+    Bounded and cheap: two :func:`asyncio.all_tasks` set diffs per async
+    item, the same primitive the guard's baseline diff uses.  The window
+    is read only when the guard stashed a loop for this item (async items
+    on the module loop); sync tests mint no loop tasks and skip.  The
+    snapshot is captured even when the call raises - a settle-assertion
+    failure unwinding through ``finally`` blocks is exactly the path
+    whose residue must be remembered.
+    """
+    loop = item.stash.get(_GUARD_LOOP_KEY, None)
+    if loop is None:
+        result = yield
+        return result
+    pending_at_call_start = asyncio.all_tasks(loop)
+    try:
+        result = yield
+    finally:
+        with contextlib.suppress(RuntimeError):  # a loop torn down mid-call cannot be snapshotted
+            pending_at_call_end = asyncio.all_tasks(loop)
+            # Minted during the call = pending now but not at call start.
+            # Tasks that completed inside the call are absent (done tasks
+            # are filtered); fixture-owned tasks pending since setup are
+            # in both sets and exempt - their owner reaps them.
+            item.stash[_GUARD_CALL_WINDOW_KEY] = list(pending_at_call_end - pending_at_call_start)
+    return result
+
+
 @pytest.fixture(autouse=True)
 async def _fail_on_leaked_asyncio_tasks(request: pytest.FixtureRequest) -> AsyncIterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
     """Fail loudly when a test leaves an asyncio task still pending.
@@ -353,6 +428,7 @@ async def _fail_on_leaked_asyncio_tasks(request: pytest.FixtureRequest) -> Async
         # scheduled on a loop is alive to leak.
         yield
         return
+    request.node.stash[_GUARD_LOOP_KEY] = loop
     before = asyncio.all_tasks(loop)
     try:
         yield
@@ -367,6 +443,17 @@ async def _fail_on_leaked_asyncio_tasks(request: pytest.FixtureRequest) -> Async
         if current is not None:
             after.discard(current)
         report = _leaked_pending_task_report(before, after)
+        # The test-end residue: tasks minted during the call phase and
+        # still pending when the test's body finished.  A task still
+        # pending NOW is already named by the live diff above; the window
+        # adds the ones whose teardown-window finish would otherwise hide
+        # them (see ``_call_window_leak_report``).  Both land on the
+        # LEAKING test - never on the next one.
+        window_report = _call_window_leak_report(
+            [t for t in request.node.stash.get(_GUARD_CALL_WINDOW_KEY, []) if t.done()]
+        )
+        if window_report is not None:
+            report = report + "\n" + window_report if report is not None else window_report
         if report is not None:
             pytest.fail(
                 "test left asyncio task(s) still pending on the module event loop - "

@@ -48,6 +48,7 @@ import httpx
 import pytest
 
 from ._assertions import poll_until, wait_for_effects
+from ._stream_reap import _reap_stream_teardown_tasks
 from .actors import (
     SlowDeliverPayload,
     WelcomeEmailPayload,
@@ -275,8 +276,9 @@ async def test_admin_sse_realtime_events(
     """
     from .actors import SlowDeliverPayload, slow_deliver_webhook
 
-    events: list[str] = []
-    state_change_seen = False
+    # Everything pending before the interaction is not this interaction's
+    # leak (the reap's own task is excluded by identity, not by the baseline).
+    baseline: frozenset[asyncio.Task[object]] = frozenset(asyncio.all_tasks())
 
     # Use a dedicated client with no read timeout for SSE streaming.
     sse_client = httpx.AsyncClient(
@@ -284,49 +286,74 @@ async def test_admin_sse_realtime_events(
         headers=admin_server.headers,
         timeout=httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0),
     )
+
+    async def _collect_events_until_state_change() -> list[str]:
+        """Read the SSE stream until the first ``state_change`` event.
+
+        This frame is the ONE that breaks out of ``aiter_lines()``: the
+        stream never terminates on its own (the endpoint keepsalive loops
+        forever), so consumption to exhaustion - the pattern that closes
+        the httpx generator chain by itself - is impossible here, and the
+        break is the simulated client disconnect. The break abandons the
+        suspended chain (aiter_lines -> aiter_text -> aiter_bytes ->
+        aiter_raw -> the stream), which stays referenced by THIS frame
+        until it returns: the caller reaps the finalization cascade only
+        after this frame is gone, the order the reap's quiescence loop
+        depends on.
+        """
+        events: list[str] = []
+        async with sse_client.stream("GET", "/admin/sse/jobs") as resp:
+            assert resp.status_code == 200, f"SSE endpoint returned {resp.status_code}"
+
+            # Read the initial status ack first, then wait for the
+            # PG LISTEN to register before enqueuing the job.
+            aiter = resp.aiter_lines().__aiter__()
+            first_line = await anext(aiter)
+            if first_line.startswith("event: "):
+                events.append(first_line[len("event: ") :])
+
+            # Give the LISTEN connection time to register.
+            await asyncio.sleep(1.0)
+
+            handle = await e2e_client.enqueue(
+                slow_deliver_webhook,
+                SlowDeliverPayload(run_id=run_id, endpoint_id="ep-sse"),
+            )
+
+            # Wait for the job to start running, then cancel it.
+            # The cancel triggers pg_notify on the events_channel.
+            from ._assertions import wait_for_effects
+
+            await wait_for_effects(
+                e2e_pg_pool,
+                e2e_schema.schema_name,
+                run_id,
+                kind="started",
+                min_count=1,
+                timeout=30.0,
+            )
+            await handle.cancel()
+
+            async for line in aiter:
+                if line.startswith("event: "):
+                    events.append(line[len("event: ") :])
+                if "state_change" in events:
+                    break
+        return events
+
     try:
         async with asyncio.timeout(60):
-            async with sse_client.stream("GET", "/admin/sse/jobs") as resp:
-                assert resp.status_code == 200, f"SSE endpoint returned {resp.status_code}"
-
-                # Read the initial status ack first, then wait for the
-                # PG LISTEN to register before enqueuing the job.
-                aiter = resp.aiter_lines().__aiter__()
-                first_line = await anext(aiter)
-                if first_line.startswith("event: "):
-                    events.append(first_line[len("event: ") :])
-
-                # Give the LISTEN connection time to register.
-                await asyncio.sleep(1.0)
-
-                handle = await e2e_client.enqueue(
-                    slow_deliver_webhook,
-                    SlowDeliverPayload(run_id=run_id, endpoint_id="ep-sse"),
-                )
-
-                # Wait for the job to start running, then cancel it.
-                # The cancel triggers pg_notify on the events_channel.
-                from ._assertions import wait_for_effects
-
-                await wait_for_effects(
-                    e2e_pg_pool,
-                    e2e_schema.schema_name,
-                    run_id,
-                    kind="started",
-                    min_count=1,
-                    timeout=30.0,
-                )
-                await handle.cancel()
-
-                async for line in aiter:
-                    if line.startswith("event: "):
-                        events.append(line[len("event: ") :])
-                    if "state_change" in events:
-                        state_change_seen = True
-                        break
+            events = await _collect_events_until_state_change()
     finally:
+        # Every exit path owes the module loop a clean teardown: the
+        # abandoned chain's finalization cascade is reaped here - bounded,
+        # outcomes retrieved, finalizers awaited never cancelled. See
+        # _collect_events_until_state_change for why the stream is broken
+        # rather than exhausted.
         await sse_client.aclose()
+        await _reap_stream_teardown_tasks(baseline)
 
+    state_change_seen = "state_change" in events
     assert state_change_seen, (
         f"expected at least one 'state_change' SSE event; events seen: {events}"
     )

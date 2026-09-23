@@ -40,6 +40,9 @@ from taskq.web.progress import (
     _event_generator,  # pyright: ignore[reportPrivateUsage]  # Why: unit tests exercise the production generator directly.
     create_router,
 )
+from tests.web_progress.test_integration import (
+    _reap_stream_teardown_tasks,  # pyright: ignore[reportPrivateUsage]  # Why: the wave-1 stream-teardown reap, shared across the SSE test modules the same way tests/test_saml_shared_replay_store.py imports the sso fixture helpers.
+)
 
 pytestmark = [pytest.mark.fastapi]
 
@@ -200,6 +203,12 @@ async def test_stream_opened_before_revocation_ends_after_recheck() -> None:
 
     received: list[bytes] = []
 
+    # The SSE interaction mints loop tasks the test cannot hold references
+    # to (sse-starlette's _shutdown_watcher parks until a shutdown flag no
+    # in-process server ever sets); the reap belongs in the call, before
+    # the module-loop guard's snapshot.
+    baseline: frozenset[asyncio.Task[object]] = frozenset(asyncio.all_tasks())
+
     # Why this blocks: a real ASGI server's receive() parks until the client
     # sends something or disconnects. A receive() that returns instantly makes
     # sse-starlette's _listen_for_disconnect loop spin the event loop without
@@ -266,6 +275,7 @@ async def test_stream_opened_before_revocation_ends_after_recheck() -> None:
             task.cancel()
             with contextlib.suppress(BaseException):
                 await task
+        await _reap_stream_teardown_tasks(baseline)
 
 
 async def _get_state(app: FastAPI, job_id: UUID) -> int:
@@ -564,13 +574,17 @@ async def test_heartbeat_interval_above_the_cap_is_clamped_and_warned(
         app = FastAPI()
         app.include_router(router, prefix="/jobs")
 
-        # The generator object is constructed while the route builds the
-        # response; an immediate disconnect tears the stream down after.
-        await app(
-            _asgi_scope(new_uuid()),
-            _immediate_disconnect,
-            _noop_send,
-        )
+        baseline: frozenset[asyncio.Task[object]] = frozenset(asyncio.all_tasks())
+        try:
+            # The generator object is constructed while the route builds the
+            # response; an immediate disconnect tears the stream down after.
+            await app(
+                _asgi_scope(new_uuid()),
+                _immediate_disconnect,
+                _noop_send,
+            )
+        finally:
+            await _reap_stream_teardown_tasks(baseline)
 
     assert captured.get("heartbeat_secs") == 60.0, (
         f"the configured 3600 s interval must be clamped to the 60 s cap, "
