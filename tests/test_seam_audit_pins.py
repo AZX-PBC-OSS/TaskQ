@@ -366,8 +366,8 @@ async def test_the_abandon_drain_renews_detector2_liveness_per_entry() -> None:
         for jid in job_ids:
             task = _make_task()
             tasks.append(task)
-            await deps.active_jobs.register(jid, task, _make_ctx(jid))
-            cast("Any", controller)._pending_abandons.append(jid)  # pyright: ignore[reportAttributeAccessIssue]  # Why: the deque is the concrete controller's own queue state; the test seeds it directly to isolate the drain's contract from the ladder's.
+            entry = await deps.active_jobs.register(jid, task, _make_ctx(jid))
+            cast("Any", controller)._pending_abandons.append((jid, entry))  # pyright: ignore[reportAttributeAccessIssue]  # Why: the deque is the concrete controller's own queue state; the test seeds it directly to isolate the drain's contract from the ladder's. The queue carries (job_id, entry) pairs since the registry's identity-scoped deregister (#461).
 
         await controller.run_post_tx()
 
