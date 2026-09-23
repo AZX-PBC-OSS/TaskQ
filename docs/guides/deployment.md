@@ -27,7 +27,7 @@ TaskQ is an async-native, Postgres-backed background job library for Python 3.12
 - [ ] **Admin actions**: `TASKQ_ADMIN_ACTIONS_ENABLED` left at `false` unless operators need cancel/retry/run-now
 - [ ] **OTel exporter**: `OTEL_EXPORTER_OTLP_ENDPOINT` pointed at a collector or OTLP-compatible backend
 - [ ] **Log format**: `TASKQ_LOG_FORMAT=json` for structured log aggregation
-- [ ] **Redis** (optional): provisioned if you need real-time progress fanout or Redis-backed rate limiters
+- [ ] **Redis** (optional): provisioned if you need real-time progress fanout or Redis-backed rate limiters; when set, the admin router must also receive the client (`create_router(redis_client=...)`, see [Redis (Optional)](#redis-optional))
 - [ ] **Resource limits**: CPU and memory limits on worker containers
 - [ ] **Backups**: Postgres backup or PITR window confirmed; forward-only migrations have no `down` path
 
@@ -190,6 +190,25 @@ Redis is optional. TaskQ degrades gracefully without it:
 ```bash
 TASKQ_REDIS_URL=redis://redis.internal:6379/0
 ```
+
+### The admin portal's Redis client requirement
+
+`TASKQ_REDIS_URL` alone does not give the portal live progress: the admin router must receive
+the Redis client itself, as `create_router(redis_client=...)`, so `setup_admin_state` puts it on
+`app.state` for the progress stream to subscribe with. `taskq ui serve` wires both from the same
+setting; a host application mounting the router itself must pass both halves. The two failure
+shapes, and the log lines that name them:
+
+- **Redis configured, client not wired** (the misconfiguration): the portal boots with one
+  `admin-ui-no-redis-client` warning; live SSE progress is unavailable, the dashboard falls back
+  to polling, and the job pages show the `polling mode` badge. Fix: pass the client to
+  `create_router`.
+- **No TaskQ Redis configured at all** (legitimate polling mode): no warning. The job pages show
+  the `polling mode` badge, and the first refused progress stream logs
+  `progress-stream-polling-degraded` once, naming the `503 redis_not_configured` answer and the
+  polling fallback. Polling pages are first-class: an unchanged poll tick downloads nothing
+  (conditional `If-None-Match` on the progress sequence, answered `304`) and writes nothing to
+  the DOM; see [the polling UX contract](admin-ui.md#the-polling-ux-contract).
 
 !!! tip "When to provision Redis"
     Provision Redis if you use Redis-backed rate limiters across multiple

@@ -591,6 +591,12 @@ def create_router(
         )
     _acquire_timeout = settings.admin_acquire_timeout
 
+    # The degraded-mode log fires once per router, not per request: the
+    # first stream a misconfigured portal refuses names the condition,
+    # every later 503 is the same fact (a per-request warning is a log
+    # flood that gets filtered out, which is the same as being silent).
+    _degraded_mode_logged = False
+
     def _constructed_pool() -> asyncpg.Pool:
         return pg_pool
 
@@ -642,7 +648,24 @@ def create_router(
         HTTP 404, job not found.
         HTTP 503, Redis not configured or unavailable.
         """
+        nonlocal _degraded_mode_logged
         if redis_client is None:
+            # One-time degraded-mode log (the operator-side companion of
+            # the factory's ``admin-ui-no-redis-client`` startup warning):
+            # this 503 is what puts the browser into polling mode, so the
+            # log names it. Once per router; see the flag above.
+            if not _degraded_mode_logged:
+                _degraded_mode_logged = True
+                logger.warning(
+                    "progress-stream-polling-degraded",
+                    detail=(
+                        "the admin portal answered a progress stream with "
+                        "no Redis client (503 redis_not_configured): the "
+                        "dashboard falls back to polling the per-job state "
+                        "endpoint. Set TASKQ_REDIS_URL and pass the client "
+                        "to create_router to restore live SSE progress"
+                    ),
+                )
             return _OrjsonJSONResponse(  # pyright: ignore[reportReturnType]  # Why: FastAPI accepts any Response subclass here; the JSON response is returned for the 503 before SSE upgrade.
                 status_code=503,
                 content=_REDIS_503_BODY,
@@ -802,14 +825,24 @@ def create_router(
     @router.get("/api/job/{job_id}/state")
     async def job_state(  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator.
         job_id: UUID,
+        request: Request,
         pg_pool: BoundedPool = Depends(_get_pool),
-    ) -> JSONResponse:
+    ) -> Response:
         """Return the current progress state for a job (polling fallback).
+
+        Polling is a first-class mode of the admin UI, so the poll is
+        conditional: a client that already rendered the current state
+        sends ``If-None-Match`` with the progress sequence it has (the
+        seq doubles as the ETag), and an unchanged tick is answered
+        ``304`` with no body at all - the poll cadence never re-downloads
+        data the client already has.
 
         Response body::
 
             {"status": <str>, "progress_state": <dict | null>, "progress_seq": <int>}
 
+        HTTP 304, ``If-None-Match`` matches the current progress_seq: the
+        client's rendered state is current, nothing to download.
         HTTP 404, job not found.
         """
         async with pg_pool.acquire() as conn:
@@ -817,6 +850,14 @@ def create_router(
 
         if row is None:
             raise HTTPException(status_code=404, detail="job not found")
+
+        # The progress sequence is a monotonically increasing write cursor
+        # on exactly the bytes this endpoint returns, so it IS the ETag:
+        # a seq the client already rendered means every field (including
+        # the fingerprint the client derives from it) is unchanged.
+        etag = f'"{row["progress_seq"]}"'
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers={"ETag": etag})
 
         raw_ps: Any = row["progress_state"]
         progress_state: dict[str, object] | None
@@ -834,7 +875,8 @@ def create_router(
                 "status": row["status"],
                 "progress_state": progress_state,
                 "progress_seq": row["progress_seq"],
-            }
+            },
+            headers={"ETag": etag},
         )
 
     return router
