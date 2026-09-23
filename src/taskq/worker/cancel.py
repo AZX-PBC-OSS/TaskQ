@@ -495,11 +495,15 @@ class _CancelController:
                     # absorbed the duplicate WRITE, and the delivery the
                     # cut dropped completes here. Same first-delivery-
                     # only shape as the applied arm below, and no second
-                    # write: the attempt row is the first one's.
-                    entry = self._deps.active_jobs.get(job_id)
-                    if entry is not None and not entry.task.done() and entry.task.cancelling() == 0:
-                        entry.task.cancel()
-                    await self._deps.active_jobs.deregister(job_id)
+                    # write: the attempt row is the first one's. The
+                    # delivery and the deregister are scoped to the
+                    # queued entry (issue 461), the same fence the
+                    # applied arm applies: a bare-id get() here could
+                    # hand back a live attempt's re-registered entry and
+                    # cancel it for an abandon this attempt never queued.
+                    if not queued_entry.task.done() and queued_entry.task.cancelling() == 0:
+                        queued_entry.task.cancel()
+                    await self._deps.active_jobs.deregister(job_id, queued_entry)
                     log_cancel_phase_change(
                         _log,
                         from_phase=int(CancelPhase.FORCED),
