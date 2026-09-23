@@ -755,6 +755,14 @@ async def consume_one_job(
     _pending_publish_tasks = getattr(deps, "pending_publish_tasks", None)
     _disowned_jobs = deps.disowned_jobs if deps is not None else None
 
+    # This attempt's own buffer, captured for the exit paths below (the
+    # issue-461 class): the buffer is installed eagerly here and the same
+    # key can be overwritten by a later attempt's buffer when the lease
+    # lapses mid-run and the same worker re-claims the job, so the exits
+    # must remove and flush the entry THIS attempt installed, never a
+    # bare-id pop of whatever the key holds by then.
+    _buf: _ProgressBuffer | None = None
+
     if _progress_buffers is not None:
         # attempt seeds the buffer's flush-fence epoch: a stale flush
         # landing after a same-worker redispatch to a later attempt
@@ -939,9 +947,16 @@ async def consume_one_job(
             entry = active_jobs.get(job.id) if active_jobs is not None else None
             if entry is not None and entry.cancel_phase >= CancelPhase.ABANDON_PENDING:
                 raise
-            _cancel_buf = (
-                _progress_buffers.pop(job.id, None) if _progress_buffers is not None else None
-            )
+            # Identity-scoped (the issue-461 class, the same fence the
+            # deregister below applies): the terminal override reads and
+            # removes THIS attempt's buffer, never a bare-id pop of the
+            # key. A same-worker re-claim overwrote the key with the live
+            # attempt's buffer; a stale attempt must neither consume the
+            # live attempt's seq as its terminal override nor evict the
+            # live buffer from the flush loop's dirty snapshots.
+            _cancel_buf = _buf
+            if _progress_buffers is not None and _progress_buffers.get(job.id) is _buf:
+                del _progress_buffers[job.id]
             _cancel_seq, _cancel_state = _terminal_seq_and_state(_cancel_buf)
             _cancel_state_for_write = (
                 _cancel_state if _cancel_buf is not None and _cancel_buf.dirty else None
@@ -1214,25 +1229,32 @@ async def consume_one_job(
         finally:
             # Best-effort crash flush: ensures partial progress_state reaches PG
             # even when the actor raises unexpectedly ().
-            if (
-                _progress_buffers is not None
-                and _effective_pool is not None
-                and _effective_settings is not None
-            ):
-                _crash_buf = _progress_buffers.pop(job.id, None)
-                if _crash_buf is not None and _crash_buf.dirty:
+            if _progress_buffers is not None and _buf is not None:
+                # Identity-scoped crash flush (the issue-461 class): the
+                # buffer leaves the map only when the key still holds THIS
+                # attempt's buffer, and the flushed buffer is the one this
+                # attempt installed. A stale attempt whose key a re-claim
+                # overwrote must not evict the live attempt's buffer (the
+                # flush loop would stop draining the live attempt's
+                # progress) nor crash-flush it as its own; the stale
+                # buffer's own flush, when it happens, is fenced per-row by
+                # its attempt epoch and no-ops against the row.
+                if _progress_buffers.get(job.id) is _buf:
+                    del _progress_buffers[job.id]
+                if _effective_pool is not None and _effective_settings is not None and _buf.dirty:
                     await shield_with_retrieval(
                         _flush_buffer(
                             _effective_pool,
                             _effective_settings.schema_name,
                             job.id,
                             worker_id,
-                            _crash_buf,
+                            _buf,
                             _progress_buffers,
                         )
                     )
-            elif _progress_buffers is not None:
-                _progress_buffers.pop(job.id, None)
+            elif _progress_buffers is not None and _buf is not None:
+                if _progress_buffers.get(job.id) is _buf:
+                    del _progress_buffers[job.id]
 
             if active_jobs is not None and _active_entry is not None:
                 await active_jobs.deregister(job.id, _active_entry)

@@ -335,16 +335,23 @@ def cron_due_sql(schema: str) -> str:
 # pid) without this session's LISTEN ever having survived a commit.
 
 
-_armed_commit_emits: dict[int, tuple[str, Callable[[], None]]] = {}
+_armed_commit_emits: dict[int, tuple[str, int | None, Callable[[], None]]] = {}
 """The emission waiting on each cron session's commit, keyed by that
-session's backend pid and tagged with the arming tick's nonce.
+session's backend pid, tagged with the arming tick's nonce and the
+arming connection's hook identity (see :func:`_hook_target`).
 
 One entry per live cron session, one in the shipped worker, because
 each tick replaces its own session's entry.  The pid keys the map rather
 than the connection object because a pooled connection is a proxy that
 cannot be weak-referenced, and a strong key would pin it past its
 checkout; the nonce distinguishes the current tick's notification from
-one a rolled-back tick left unanswered.
+one a rolled-back tick left unanswered. The hook identity rides in the
+value because a pid does not identify a session (issue #292: two
+Postgres servers in one process, or a server restarted under a
+long-lived worker, hand different connections the same pid): the
+connection-death retirement below must remove only the dead session's
+own armed emission, never a live session's, so a retired session's exit
+is scoped to the entry its own connection armed.
 """
 
 _confirmed_listening: set[int] = set()
@@ -433,9 +440,14 @@ def _forget_commit_gate_session(hook_key: int, pid: int) -> None:
     stand as state for a later session that reuses the pid. The armed and
     confirmed maps stay pid-keyed (a pooled connection is a proxy that
     cannot be weak-referenced); only the hook suppression is per
-    connection.
+    connection. The armed removal is hook-scoped (the entry carries the
+    hook identity of the connection that armed it): a pid reused by a
+    LIVE session on another connection must keep its own armed emission,
+    the dead session's exit removes only the entry its connection armed.
     """
-    _armed_commit_emits.pop(pid, None)
+    armed = _armed_commit_emits.get(pid)
+    if armed is not None and armed[1] == hook_key:
+        del _armed_commit_emits[pid]
     _confirmed_listening.discard(pid)
     _termination_hooked.discard(hook_key)
 
@@ -476,7 +488,7 @@ def _dispatch_commit_gate(_conn: object, pid: int, _channel: str, payload: str) 
     if armed is None or armed[0] != payload:
         return
     del _armed_commit_emits[pid]
-    armed[1]()
+    armed[2]()
 
 
 async def _emit_on_commit(
@@ -512,6 +524,7 @@ async def _emit_on_commit(
     nonce = str(new_uuid())
     channel = cron_commit_gate_channel(schema)
     pid: int | None = None
+    hook_key: int | None = None
     try:
         pid = conn.get_server_pid()
         if pid not in _confirmed_listening:
@@ -535,11 +548,18 @@ async def _emit_on_commit(
             _termination_hooked.add(hook_key)
         # Replaces this session's previous entry: a tick whose transaction
         # rolled back left an emission no notification can ever answer.
-        _armed_commit_emits[pid] = (nonce, emit)
+        # The hook identity rides in the entry so this session's death
+        # (and this session's own arm-failure fallback below) can retire
+        # exactly its own generation of the entry.
+        _armed_commit_emits[pid] = (nonce, hook_key, emit)
         await conn.execute("SELECT pg_notify($1, $2)", channel, nonce)
     except (AttributeError, asyncpg.PostgresError, asyncpg.InterfaceError) as exc:
         if pid is not None:
-            _armed_commit_emits.pop(pid, None)
+            # Hook-scoped: remove this session's own armed entry, never a
+            # live session's that a recycled pid parked at the same key.
+            armed = _armed_commit_emits.get(pid)
+            if armed is not None and armed[1] == hook_key:
+                del _armed_commit_emits[pid]
             _confirmed_listening.discard(pid)
         # The fallback trades the commit gate away: the emission below can
         # describe a transaction still in flight. A degraded outcome must

@@ -49,7 +49,7 @@ async def test_ctx_progress_marks_dirty_with_all_fields() -> None:
     """ctx.progress(step, percent, detail, data) marks buffer dirty, delta=1,
     and all four fields appear in pending_state."""
     backend = _make_backend()
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0, attempt=1)
     buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf}
     ctx = make_progress_context(buffers, _JOB_ID, backend=backend)
 
@@ -86,7 +86,7 @@ async def test_ctx_progress_seq_sequence_and_flush_drains_delta() -> None:
     )
 
     backend = _make_backend()
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0, attempt=1)
     buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf}
     ctx = make_progress_context(
         buffers, _JOB_ID, backend=backend, settings=settings, redis_client=redis_client
@@ -118,7 +118,7 @@ async def test_ctx_progress_too_large_does_not_update_buffer() -> None:
     buffer completely unchanged (delta=0, dirty=False)."""
     settings = WorkerSettings.load_from_dict({"TASKQ_PROGRESS_DATA_MAX_BYTES": "16384"})
     backend = _make_backend()
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0, attempt=1)
     buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf}
     ctx = make_progress_context(buffers, _JOB_ID, backend=backend, settings=settings)
 
@@ -137,7 +137,7 @@ async def test_ctx_progress_too_large_no_redis_publish() -> None:
     redis_client = AsyncMock()
     settings = WorkerSettings.load_from_dict({"TASKQ_PROGRESS_DATA_MAX_BYTES": "16384"})
     backend = _make_backend()
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0, attempt=1)
     buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf}
     ctx = make_progress_context(
         buffers, _JOB_ID, backend=backend, settings=settings, redis_client=redis_client
@@ -160,7 +160,7 @@ async def test_ctx_progress_coalesced_merge_last_writer_wins() -> None:
 
     pool = _make_pool_mock(returning_row={"progress_seq": 2})
     backend = _make_backend()
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0, attempt=1)
     buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf}
     ctx = make_progress_context(buffers, _JOB_ID, backend=backend)
 
@@ -224,7 +224,7 @@ async def test_ctx_progress_snooze_preserves_seq_and_redispatch_continues() -> N
     )
     assert len(jobs) == 1
 
-    buf = _ProgressBuffer(job_id=job_id, base_seq=0)
+    buf = _ProgressBuffer(job_id=job_id, base_seq=0, attempt=1)
     buffers: dict[UUID, _ProgressBuffer] = {job_id: buf}
     ctx = make_progress_context(buffers, job_id, backend=backend)
 
@@ -272,10 +272,15 @@ async def test_ctx_progress_snooze_preserves_seq_and_redispatch_continues() -> N
         }
     )
 
-    buf2 = _ProgressBuffer(job_id=job_id, base_seq=row.progress_seq)
+    buf2 = _ProgressBuffer(job_id=job_id, base_seq=row.progress_seq, attempt=row.attempt)
     buffers2: dict[UUID, _ProgressBuffer] = {job_id: buf2}
     ctx2 = make_progress_context(
-        buffers2, job_id, backend=backend, settings=settings, redis_client=redis_client
+        buffers2,
+        job_id,
+        backend=backend,
+        settings=settings,
+        redis_client=redis_client,
+        attempt=row.attempt,
     )
     await ctx2.progress(step=4)
     assert published_seqs == [4]
@@ -306,8 +311,8 @@ async def test_ctx_progress_seq_isolated_per_job_id() -> None:
     )
 
     backend = _make_backend()
-    buf_a = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
-    buf_b = _ProgressBuffer(job_id=_JOB_ID_B, base_seq=0)
+    buf_a = _ProgressBuffer(job_id=_JOB_ID, base_seq=0, attempt=1)
+    buf_b = _ProgressBuffer(job_id=_JOB_ID_B, base_seq=0, attempt=1)
     buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf_a, _JOB_ID_B: buf_b}
 
     ctx_a = make_progress_context(

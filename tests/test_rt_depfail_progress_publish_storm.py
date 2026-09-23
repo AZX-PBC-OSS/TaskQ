@@ -157,7 +157,9 @@ async def test_publish_task_lifetime_bounded_under_hanging_redis(
 
     clock = FakeClock(datetime(2026, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
-    buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: _ProgressBuffer(job_id=_JOB_ID, base_seq=0)}
+    buffers: dict[UUID, _ProgressBuffer] = {
+        _JOB_ID: _ProgressBuffer(job_id=_JOB_ID, base_seq=0, attempt=1)
+    }
     pending: set[asyncio.Task[None]] = set()
 
     ctx = make_progress_context(

@@ -99,7 +99,7 @@ def _ctx(
     buffers: dict[UUID, _ProgressBuffer],
     job_id: UUID,
 ) -> JobContext[PassthroughPayload]:
-    buffers[job_id] = _ProgressBuffer(job_id=job_id, base_seq=0)
+    buffers[job_id] = _ProgressBuffer(job_id=job_id, base_seq=0, attempt=1)
     return make_progress_context(
         buffers,
         job_id,

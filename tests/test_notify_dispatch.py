@@ -320,7 +320,7 @@ class TestPollFallback:
             count=lambda: 0,
             held_ids=lambda: [],
             mark_claimed=lambda jid: None,
-            resolve_claim=lambda jid: None,
+            resolve_claim=lambda jid, tok=None: None,
         )
 
         mock_clock = Mock(spec=Clock)
@@ -388,7 +388,7 @@ class TestPollFallback:
             count=lambda: 0,
             held_ids=lambda: [],
             mark_claimed=lambda jid: None,
-            resolve_claim=lambda jid: None,
+            resolve_claim=lambda jid, tok=None: None,
         )
 
         mock_clock = Mock(spec=Clock)
@@ -463,7 +463,7 @@ def _drain_capable(deps: Mock) -> None:
         count=lambda: 0,
         held_ids=lambda: [],
         mark_claimed=lambda jid: None,
-        resolve_claim=lambda jid: None,
+        resolve_claim=lambda jid, tok=None: None,
     )
     deps.dispatcher_pool = _NoopDrainPool()
 
@@ -574,7 +574,7 @@ class TestEagerRecheck:
             count=lambda: 0,
             held_ids=lambda: [],
             mark_claimed=lambda jid: None,
-            resolve_claim=lambda jid: None,
+            resolve_claim=lambda jid, tok=None: None,
         )
 
         mock_clock = Mock(spec=Clock)
@@ -655,7 +655,7 @@ class TestNotifyDisabled:
             count=lambda: 0,
             held_ids=lambda: [],
             mark_claimed=lambda jid: None,
-            resolve_claim=lambda jid: None,
+            resolve_claim=lambda jid, tok=None: None,
         )
 
         mock_clock = Mock(spec=Clock)
@@ -809,7 +809,7 @@ def mock_deps() -> tuple[Mock, PostgresBackend]:
         count=lambda: 0,
         held_ids=lambda: [],
         mark_claimed=lambda jid: None,
-        resolve_claim=lambda jid: None,
+        resolve_claim=lambda jid, tok=None: None,
     )
 
     mock_clock = Mock(spec=Clock)

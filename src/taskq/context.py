@@ -291,7 +291,17 @@ class JobContext[P: BaseModel]:
             return
 
         buffer = self._progress_buffers.get(self.job_id)
-        if buffer is None:
+        if buffer is None or buffer.attempt != self.attempt:
+            # Epoch-fenced read (the issue-461 class): the buffer at the
+            # key is per-attempt, and a same-worker re-claim of the job
+            # seeds a NEW buffer at the same key while this stale
+            # attempt's context still exists. A stale ctx must neither
+            # mix its progress state into the live attempt's buffer nor
+            # consume the live attempt's seq: the epoch conjunct no-ops
+            # the call instead, the same fail-closed shape the flush
+            # gate's per-row attempt fence applies. An unseeded buffer
+            # (attempt 0) matches only an attempt-0 context, the direct
+            # test-construction pair.
             return
 
         buffer.pending_seq_delta += 1
