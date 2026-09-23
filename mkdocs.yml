@@ -136,6 +136,7 @@ nav:
   - Design:
       - SQL Hot-Path Follow-Ups: design/sql-hotpath-followups.md
       - Debugging Playbook: design/debugging-playbook.md
+      - The System-E2E Tier: design/system-e2e-tier.md
   - Changelog: changelog.md
 
 extra:
