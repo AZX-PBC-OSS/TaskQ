@@ -429,6 +429,23 @@ Advances `next_fire_at` to the next computed fire time after the current one. Re
 
 Enqueues a job for the schedule's actor immediately, using the schedule's `payload_factory` and the actor's stored `actor_config` row for queue, `max_attempts`, and `retry_kind`. Returns `403` if `admin_actions_enabled` is `false`, `404` if the schedule does not exist, `303` redirect with an error query parameter if the payload factory fails or the actor is not configured. A per-process 10-second cooldown prevents rapid re-triggering of the same schedule.
 
+!!! warning "Singleton parity needs the actor registry in the admin process"
+    The stored `actor_config` row cannot carry code-declared actor flags, so
+    the run-now fire path cannot know from the database alone that an actor
+    declares `singleton=True`. Pass the worker's fire-policy mapping to
+    `create_router(..., actor_fire_policies=...)` (the same mapping the cron
+    tick uses) whenever the admin app is mounted in a process that has the
+    actor registry: with it, run-now stamps `metadata["singleton"]` exactly
+    like client and cron fires, resolves the stored-vs-registry
+    `max_pending` cap by the same rule, and a fire that collides with a live
+    singleton job redirects naming the collision. Without it (a standalone
+    admin process with no registry), a run-now fire stamps no singleton
+    flag: the row is invisible to the `jobs_singleton_uniq` index and to
+    later singleton preflights for the actor's lifetime, so the
+    "at most one active job" contract is not enforced on that fire. Prefer
+    disabling run-now in a standalone admin process when any scheduled actor
+    is singleton.
+
 !!! warning "Per-process cooldown, not distributed"
     The run-now cooldown is tracked in-process (`asyncio` loop time), not in
     Postgres or Redis. In multi-replica deployments, each process has its own
