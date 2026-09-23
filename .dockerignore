@@ -1,8 +1,10 @@
-# Keep build context small: the image needs only pyproject.toml, uv.lock and
-# the package source (src/).
+# Keep both the production and examples build contexts small. The example
+# Compose stack builds from the repository root, so examples/ must remain.
 .git
 .venv
 venv
+.env
+.env.*
 __pycache__
 *.pyc
 .pytest_cache
@@ -15,7 +17,6 @@ docs
 tests
 benchmarks
 validation
-examples
 scripts
 node_modules
 perf-evidence-*.md
