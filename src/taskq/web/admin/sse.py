@@ -166,8 +166,27 @@ async def _sse_generator(
                 # can shrink it); a close that outlives the bound gives
                 # up loudly-suppressed, no worse than the GC-driven
                 # status quo it replaces.
+                #
+                # The close must also survive the very cancellation that
+                # interrupts the stream. wait_for cancels the task it is
+                # waiting on when the WAIT itself is cancelled, and a
+                # cancelled stream re-delivers cancellation at every
+                # checkpoint (an anyio cancel scope does; that is the
+                # shape every ASGI server streams under). Unshielded, the
+                # second delivery kills the close mid-flight, the feed's
+                # finally dies before pool.release, and the connection
+                # strands against the pool cap for the life of the
+                # process: a generator abandoned inside its own finally
+                # is terminated and can never be closed again. shield
+                # detaches the close into its own task that runs to
+                # completion - the release happens even when this exit is
+                # cancelled - while the CancelledError shield re-raises
+                # here is deliberately left uncaught (suppress(Exception)
+                # passes it through) so the stream still ends cancelled.
                 with contextlib.suppress(Exception):
-                    await asyncio.wait_for(feed.aclose(), timeout=CLOSE_TIMEOUT_SECS)
+                    await asyncio.shield(
+                        asyncio.wait_for(feed.aclose(), timeout=CLOSE_TIMEOUT_SECS)
+                    )
         else:
             while True:
                 if not await _session_still_valid():
