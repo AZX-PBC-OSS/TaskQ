@@ -40,7 +40,6 @@ import pytest
 import structlog.testing
 from pydantic import BaseModel, ConfigDict
 
-from taskq._scope import LifecycleDetectionWarning
 from taskq._di.registry import ProviderRegistry
 from taskq._di.scope import Scope
 from taskq._di.scopes import (
@@ -50,6 +49,7 @@ from taskq._di.scopes import (
     make_resolver,
 )
 from taskq._ids import new_uuid
+from taskq._scope import LifecycleDetectionWarning
 from taskq.actor import ActorRef
 from taskq.cron import resolve_payload
 from taskq.retry import (
@@ -71,9 +71,9 @@ from taskq.worker.notify import _recover_notify_conn
 from tests._di_scopes import bootstrap_scopes, make_scopes
 from tests.test_cron_loop import (
     _NOW,
-    _FakeCronConn,
     _cron_settings,
     _failure_updates,
+    _FakeCronConn,
     _make_actor_config_row,
     _make_schedule_row,
     _tick,
@@ -85,16 +85,16 @@ _WORKER_ID = new_uuid()
 # ── Factory bodies the cron dotted-path resolver imports ──────────────
 
 
-def _sync_exit_factory() -> dict[str, object]:
+def _sync_exit_factory() -> dict[str, object]:  # pyright: ignore[reportUnusedFunction]  # Why: resolved at runtime via its dotted path (payload_factory), never imported; pyright cannot see the string reference.
     """A sync payload factory whose own bug is ``sys.exit()``."""
     raise SystemExit("boom")
 
 
-async def _async_exit_factory() -> dict[str, object]:
+async def _async_exit_factory() -> dict[str, object]:  # pyright: ignore[reportUnusedFunction]  # Why: resolved at runtime via its dotted path (payload_factory), never imported; pyright cannot see the string reference.
     raise SystemExit("boom")
 
 
-def _sync_keyboardinterrupt_factory() -> dict[str, object]:
+def _sync_keyboardinterrupt_factory() -> dict[str, object]:  # pyright: ignore[reportUnusedFunction]  # Why: resolved at runtime via its dotted path (payload_factory), never imported; pyright cannot see the string reference.
     raise KeyboardInterrupt
 
 
@@ -232,8 +232,8 @@ def _mock_conn() -> Mock:
 def _make_channels() -> list[tuple[str, object]]:
     from taskq.constants import events_channel, wake_channel, worker_channel
 
-    def _cb(*args: object) -> None:  # noqa: ARG001  # Why: asyncpg's callback signature, never invoked in these pins.
-        return None
+    def _cb(conn: object, *rest: object) -> None:
+        del conn, rest  # Why: asyncpg's callback signature, never invoked in these pins.
 
     return [
         (wake_channel("taskq_test"), _cb),
