@@ -137,3 +137,50 @@ def test_record_phase_transition_abandonment_sentinel(
     assert series_1_2[0].value == 1
     assert len(series_2_3) == 1
     assert series_2_3[0].value == 1
+
+
+def test_phase_transition_pair_set_is_exactly_the_documented_four(
+    otel_reader: InMemoryMetricReader,
+) -> None:
+    """The counter's timeseries set is EXACTLY the four documented pairs.
+
+    The seam-audit matrix marks the pair set "documented, not pinned
+    exhaustively": the per-pair pins above each drive ONE transition and
+    assert one timeseries, so a fifth transition call site (a new ladder
+    arm, a replayed phase) would grow the cardinality past the documented
+    bound of 4 timeseries and no existing pin would notice. This pin
+    drives all four documented pairs and asserts the counter's WHOLE
+    exported set: exactly four data points, exactly the documented
+    attribute dicts, one increment each. A new pair emitted anywhere in
+    the ladder fails here on arrival, forcing the cardinality bound and
+    the docstring's pair list to be reviewed together.
+    """
+    from taskq.worker.cancel import _record_phase_transition
+
+    documented_pairs = [
+        (CancelPhase.NONE, CancelPhase.COOPERATIVE),
+        (CancelPhase.COOPERATIVE, CancelPhase.FORCED),
+        (CancelPhase.FORCED, CancelPhase.ABANDON_PENDING),
+        (CancelPhase.NONE, CancelPhase.FORCED),
+    ]
+    for from_phase, to_phase in documented_pairs:
+        _record_phase_transition(from_phase, to_phase)
+
+    dps = _data_points(otel_reader, "taskq.cancellation.phase_transitions")
+    pairs = sorted(
+        (dp.attributes["from_phase"], dp.attributes["to_phase"])  # type: ignore[index] # Why: every point this counter writes carries both attributes; the Optional in the SDK's type is for foreign data points.
+        for dp in dps
+    )
+    assert pairs == [
+        (0, 1),
+        (0, 2),
+        (1, 2),
+        (2, 3),
+    ], (
+        "the phase-transitions counter exported a pair outside the four "
+        "documented ones (or lost one): the cardinality bound of 4 "
+        "timeseries and _record_phase_transition's docstring are the "
+        "contract, review them together before widening"
+    )
+    assert len(dps) == 4
+    assert all(dp.value == 1 for dp in dps)

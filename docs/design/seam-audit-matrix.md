@@ -11,15 +11,15 @@ pin is a standing invitation to the next #457.
 Method: for each seam, grep every caller; for each caller, the failures that
 can interleave (exception mid-call, concurrent exit, restart overlap, clock
 skew, resource outage); for each (seam, invariant), grep the tests. Pins are
-marked EXISTS (a named test holds it, green on `cf15fb29`), MISSING (no pin),
+marked EXISTS (a named test holds it, green on `cf15fb29` and re-verified
+on `6eb0d1ff`), MISSING (no pin),
 or ADDED (a pin this audit wrote, green on `cf15fb29`, mutation-verified).
 Rows the five live regressions own are marked with their owner branch.
 
-The audit ran on main at `cf15fb29`; the five fix branches
-(`fix/457-abandon-drain-cut`, `fix/458-claim-loss-attempt-charge`,
-`fix/459-sync-actor-systemexit`, `fix/460-rolling-deploy-cron-recovery`,
-`fix/461-registry-attempt-scoped-deregister`) own the live fixes and their
-repros. This audit fixes no source.
+The audit ran on main at `cf15fb29` and was re-run on `6eb0d1ff` after the
+owner branches merged: the four merged rows now name their pins on main,
+and `tests/test_seam_audit_pins.py` plus this document ride the
+`docs/hardening-review` branch (see the tally).
 
 ## 1. Registries (in-process state shared across loops)
 
@@ -33,7 +33,7 @@ Shared by: `_consumer.py` (register, the unconditional-finally deregister),
 
 | seam / caller | interleaving | invariant | pin | status |
 |---|---|---|---|---|
-| `deregister(job_id)` on bare id, stale attempt exiting after a same-worker re-claim | attempt A's finally runs after attempt B overwrote the key | the popped entry must be the CALLER's; a live attempt's registration survives a stale exit; `held_ids()` still names the row | (repro: `f7256661`, `tests/test_cancel_registry.py` on the fix branch) | MISSING on main - owner `fix/461` |
+| `deregister(job_id)` on bare id, stale attempt exiting after a same-worker re-claim | attempt A's finally runs after attempt B overwrote the key | the popped entry must be the CALLER's; a live attempt's registration survives a stale exit; `held_ids()` still names the row | `test_cancel_registry.py::test_stale_attempt_exit_evicts_live_attempt` (identity-scoped deregister, #471) | EXISTS (was MISSING; fixed on main) |
 | `resolve_claim(job_id)` / `mark_claimed(job_id)` on bare id, same re-claim overlap | A's `resolve_claim` lands inside B's take-to-register window; the intent map (the only fence over that window) loses the id before B's `register` covers it | every window of the claim-to-register chain is fenced by exactly one map; a stale attempt's exit cannot unfence a live attempt's row against the hand-back and reconcile passes | none | MISSING - unowned, same fix shape as #461 (identity-scoped hand-back) |
 | `register` absorbing the intent, the queued-to-intent transition | take lands between the drain's snapshot and its UPDATE | `mark_claimed` moves coverage queued to intents with no gap; `queued_ids()` and `held_ids()` partition the two windows | `test_cancel_registry.py::test_mark_enqueued_parks_the_id_until_the_take`, `::test_mark_enqueued_is_idempotent_per_take_cycle` | EXISTS |
 | snapshot atomicity of `all()` | register/deregister concurrent with an iterate | `all()` returns an independent copy; no await inside; concurrent register/deregister leaves the map consistent | `test_cancel_registry.py::test_all_returns_snapshot`, `::test_concurrent_register_deregister_atomicity` | EXISTS |
@@ -51,7 +51,7 @@ reclaim the disown hands the row to).
 | re-own on re-claim | the sweep re-pended a disowned row and this worker claimed it back | `disowned_jobs.discard` at the claim, renewal resumes | `test_disowned_jobs.py::test_producer_reowns_a_disowned_job_it_claims_again` | EXISTS |
 | disowned row's lease lapse | heartbeat stopped renewing, worker alive | the sweep reclaims it; no stuck running row | `test_disowned_jobs.py::test_disowned_row_lease_lapses_and_the_sweep_reclaims_it` | EXISTS |
 | reconcile probe exclusions and grace | any of the three maps holds the row; a row younger than its lease is an in-flight handoff | held + queued + disowned are ALL excluded from the lost-claims probe; anything else is disowned under a one-lease grace on `started_at` | `test_heartbeat.py::test_heartbeat_tick_reconcile_excludes_held_queued_disowned`, `::test_heartbeat_tick_disowns_the_lost_claim` | EXISTS |
-| claim-loss reconcile's outcome recording | a round committed its claim and lost the response (#402 shape) | the disown must release without charging (see 4.2) | `test_rt_402_claim_loss_release_raise.py` covers the release-raise; the attempt charge is #458's gap | MISSING on main - owner `fix/458` |
+| claim-loss reconcile's outcome recording | a round committed its claim and lost the response (#402 shape) | the disown must release without charging (see 4.2) | `test_rt_402_claim_loss_release_raise.py` covers the release-raise; the attempt charge is #458's gap | MISSING on main - the fix (`fix/458-claim-loss-attempt-charge`, rebased as `7c75835a` with its bounded-writes registration `76207569`) is still UNMERGED |
 
 ## 2. Pool and connection ownership
 
@@ -84,7 +84,7 @@ separate phases).
 
 | seam / caller | interleaving | invariant | pin | status |
 |---|---|---|---|---|
-| the drain's re-queue after a raised write; the budget cut detaching the write under the shield | the abandon DETACHES, commits server-side, and the except arm re-queues it; the next tick's re-issued abandon reads False (row no longer running), the not-applied arm re-arms at FORCED without delivering the cancellation; the poll's `status = 'running'` filter then reads NONE forever | a budget cut that detaches the drain's write STILL delivers the cancellation: the re-queue path may not bypass the delivery the applied arm owns | none on main (repro rides the fix branch) | MISSING on main - owner `fix/457` |
+| the drain's re-queue after a raised write; the budget cut detaching the write under the shield | the abandon DETACHES, commits server-side, and the except arm re-queues it; the next tick's re-issued abandon reads False (row no longer running), the not-applied arm re-arms at FORCED without delivering the cancellation; the poll's `status = 'running'` filter then reads NONE forever | a budget cut that detaches the drain's write STILL delivers the cancellation: the re-queue path may not bypass the delivery the applied arm owns | none on main (repro rides the fix branch) | EXISTS - fixed on main (#472); pin `test_rt_cancel_same_tick_abandon_rollback.py` |
 | not-applied abandon leaves the entry registered and re-armed | `mark_abandoned`'s `cancel_phase = 2` guard misses | phase back to FORCED, a later tick re-issues; no deregister on the False path | `test_rt_cancelwatch_abandon_drain.py::test_abandon_write_failure_does_not_strand_job_at_abandon_pending` | EXISTS |
 | the abandon's worker fence | a reclaim moved the row to another holder | the abandon is issued only for a row the worker's own poll returned | `test_rt_cancelwatch_cross_worker_abandon.py`, `::test_phase3_abandon_not_issued_for_job_absent_from_own_poll` | EXISTS |
 | same-tick fast path vs heartbeat rollback | both deadlines met in one tick, then the tx rolls back | the cancellation is delivered by the drain AFTER the abandon is durable, first delivery only; a rollback leaves the entry registered and re-armed | `test_rt_cancel_same_tick_abandon_rollback.py` | EXISTS |
@@ -118,7 +118,7 @@ separate phases).
 | the claim-time attempt increment vs the reconcile's disown (#458) | a round commits its claim, loses the response, the reconcile disowns, the lease lapses, sweep 1's budget predicate sees the charged attempt | a claim that never reached an actor buys nothing: the reconcile refunds the increment while leaving the row for sweep 1; no phantom `job_attempts` row, no never-executed `crashed` | none on main (repro rides `fix/458`) | MISSING on main - owner `fix/458` |
 | the attempt ceiling | `attempt = LEAST(attempt + 1, 32767)` at claim | the ceiling holds through the full cycle | `test_attempt_ceiling_full_cycle_pg.py` | EXISTS |
 | per-attempt BaseException capture | an actor raises a non-Exception BaseException | truthful attempt outcome, the worker survives; KeyboardInterrupt propagates | `test_attempt_baseexception_capture.py` | EXISTS |
-| SystemExit crossing a TASK boundary (#459) | a sync actor's `asyncio.to_thread` task (or the tx path's actor task) ends with SystemExit; `Task.__step` re-raises the pair past the loop's handler | the task boundaries wrap the actor's SystemExit in a carrier the dispatcher unwraps: the attempt records `SystemExit`, the loop survives | none on main (repro rides `fix/459`) | MISSING on main - owner `fix/459` |
+| SystemExit crossing a TASK boundary (#459) | a sync actor's `asyncio.to_thread` task (or the tx path's actor task) ends with SystemExit; `Task.__step` re-raises the pair past the loop's handler | the task boundaries wrap the actor's SystemExit in a carrier the dispatcher unwraps: the attempt records `SystemExit`, the loop survives | none on main (repro rides `fix/459`) | EXISTS - fixed on main (#470); pin `test_sync_actor_systemexit_attempt_outcome.py` plus `test_seam_audit_pins.py::test_async_actor_system_exit_is_an_attempt_outcome_not_worker_death` |
 | SystemExit on the plain async path | the actor is awaited inside the consumer's own task | the boundary `except BaseException` captures it: truthful `failed` row, loop alive | `test_seam_audit_pins.py::test_async_actor_system_exit_is_an_attempt_outcome_not_worker_death` | ADDED |
 | fencing on terminal writes | a reclaim moved the row mid-attempt | fenced writes lose loudly; the loser never relabels the new holder's work | `test_rt_terminal_write_fencing.py`, `test_typed_outcomes_attacks.py` | EXISTS |
 
@@ -133,7 +133,7 @@ above.
 | seam / caller | interleaving | invariant | pin | status |
 |---|---|---|---|---|
 | boot revert vs operator intent | a code-owned schedule disabled by whom | an `auto` disable of a code-owned schedule reverts; an `operator` disable never does | `test_cron_ownership_model.py` | EXISTS |
-| the mixed-version rolling deploy's unmarked disable (#460) | an old pod's failure UPDATE writes `enabled=false` before `disabled_by` existed: NULL marker, auto-disable fingerprint | a NULL-disabled row WITH the fingerprint (failures at threshold, `last_fire_error` set) reverts like an `auto` row; without the fingerprint it stays (operator intent) | none on main (fix rides `fix/460` with the backfill migration) | MISSING on main - owner `fix/460` |
+| the mixed-version rolling deploy's unmarked disable (#460) | an old pod's failure UPDATE writes `enabled=false` before `disabled_by` existed: NULL marker, auto-disable fingerprint | a NULL-disabled row WITH the fingerprint (failures at threshold, `last_fire_error` set) reverts like an `auto` row; without the fingerprint it stays (operator intent) | none on main (fix rides `fix/460` with the backfill migration) | EXISTS - fixed on main (#467); pins in `test_cron_ownership_model.py` and the backfill migration `01.00.19_05_pre_cron_disabled_by_backfill.sql` |
 | the fire's singleton race | two workers fire the same schedule | only the racer strikes; the singleton guard decides in one statement | `test_rt_cron_singleton_parity.py`, `test_cron_loop.py::test_singleton_race_between_preflight_and_insert_strikes_only_the_racer` | EXISTS |
 | disable vs fire ordering | the disable write races an in-flight fire | the disable-fire race pins the resolution | `test_rt_cron_disable_fire_race.py` | EXISTS |
 | the catch-up window | missed fires across restarts | within the window, catch up; beyond it, skip (never stampede) | `test_cron_loop.py::test_cron_fire_miss_within_catch_up_window_not_skipped`, `::test_cron_fire_miss_beyond_catch_up_window_skipped` | EXISTS |
@@ -178,13 +178,17 @@ above.
   tick, cancel ladder, drains and sweeps, state machines, thread/sync
   boundaries, Redis fallback, audit/telemetry, clock anchors); 43 audited
   (seam, invariant) rows in the tables above.
-- EXISTS: 30. MISSING: 8. ADDED: 5.
-- The MISSING rows split two ways:
-  - Owned by the live fix branches (5): #457 (the drain's re-queue
-    bypassing the cancellation delivery), #458 (the reconcile's unrefunded
-    claim-time attempt charge), #459 (SystemExit across a task boundary),
-    #460 (the rolling deploy's NULL-disabled cron row), #461 (the bare-id
-    deregister; repro committed red on `cf15fb29`).
+- EXISTS: 34. MISSING: 4. ADDED: 5. (Status as of the re-run on
+  `6eb0d1ff`: four of the five owner-branch rows merged with their pins -
+  #457 as PR #472, #459 as #470, #460 as #467, #461 as #471. #458's fix is
+  still unmerged; its row stays MISSING and its pin red on main by
+  construction, since the reconcile still does not refund.)
+- The remaining MISSING rows split two ways:
+  - Owned by the live fix branch (1): #458 (the reconcile's unrefunded
+    claim-time attempt charge). The fix exists on
+    `fix/458-claim-loss-attempt-charge` and is NOT on main: until it
+    merges, every claim whose response round dies charges a retry budget
+    the actor never saw.
   - Unowned (1 honest remainder): the `resolve_claim`/`mark_claimed` bare-id
     intent mutation (section 1.1). Same class as #461, reachable through the
     same re-claim overlap: a stale attempt's `resolve_claim` inside the live
@@ -200,8 +204,11 @@ above.
   the drain is gated on tick success or when the drain's error is allowed to
   displace the tick's, the liveness pin fails when the drain skips its
   per-entry `tick`, and the SystemExit pin fails when the escape reaches the
-  consumer's task boundary uncaught. All green on `cf15fb29`; no sleeps, no
-  real PG required.
+  consumer's task boundary uncaught. All green on `6eb0d1ff` (re-verified
+  after the rebase onto the merged fixes; the liveness pin's seed shape
+  moved with #471's `(job_id, entry)` deque, one line); the liveness pin's
+  mutation was re-run: removing the drain's `self._tick_liveness()` call
+  fails exactly that pin, 4/5 stay green. No sleeps, no real PG required.
 - Honest limits: the matrix's EXISTS verdicts are grep-and-read verdicts
   over the named test files, not re-runs of every cited suite on this
   commit. The cited names were verified to exist with the asserted shape;

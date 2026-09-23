@@ -70,6 +70,9 @@ from taskq.testing.in_memory import InMemoryBackend
 _SEMANTIC_SEAMS: dict[str, str] = {
     "dispatch_batch": "tests/test_in_memory_dispatch_parity.py",
     "cancel_where": "tests/test_in_memory_dispatch_parity.py",
+    "retry_job": "tests/test_retry_job_source_states_parity.py",
+    "scheduled_to_pending": "tests/test_sweep_backend_parity.py",
+    "reclaim_expired_locks": "tests/test_rt_sweeps_parity.py",
 }
 
 #: Seams that SELECT or ORDER rows and are NOT yet pinned by a parity test.
@@ -88,9 +91,7 @@ _SEMANTIC_SEAMS_UNPINNED: dict[str, str] = {
     "get_events": "per-job ordering (ORDER BY occurred_at)",
     "poll_reclaim_events": "watermark predicate + ORDER BY id + LIMIT",
     "poll_cancel_flags": "selection over cancel-requested rows",
-    "reclaim_expired_locks": "sweep predicate + LIMIT + retry/exhausted split",
     "deadline_sweep": "sweep predicate + LIMIT",
-    "scheduled_to_pending": "sweep predicate + LIMIT",
     "prune_old_batches": "retention predicate + LIMIT",
     "enqueue_batch": "per-item dedup decisions across a batch",
     "enqueue_batch_atomic": "per-item dedup decisions across a batch",
@@ -100,7 +101,6 @@ _SEMANTIC_SEAMS_UNPINNED: dict[str, str] = {
     "count_batch_non_terminal": "aggregate over a selected set",
     "extend_reservation_leases": "selection of the worker's held slots",
     "heartbeat_jobs": "selection of the worker's running jobs",
-    "retry_job": "eligibility predicate",
     "abort_batch": "selection of the batch's non-terminal members",
 }
 
