@@ -274,8 +274,37 @@ async def effect_ledger_violations(conn: asyncpg.Connection, schema: str, tag: s
             "a double-run against one attempt"
         )
     if orphans:
+        detail = await conn.fetch(
+            f"""
+            SELECT e.job_id, e.attempt, e.actor, e.kind,
+                   j.status::text AS live_status, j.attempt AS live_attempt,
+                   a2.archived_attempt
+            FROM "{schema}".sys_effects e
+            LEFT JOIN "{schema}".jobs j ON j.id = e.job_id
+            LEFT JOIN LATERAL (
+                SELECT count(*)::int AS archived_attempt
+                FROM "{schema}".job_attempts_archive a
+                WHERE a.job_id = e.job_id
+            ) a2 ON TRUE
+            WHERE e.job_id IN (
+                SELECT id FROM "{schema}".jobs WHERE tags @> ARRAY[$1::text]
+                UNION ALL
+                SELECT id FROM "{schema}".jobs_archive WHERE tags @> ARRAY[$1::text]
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM "{schema}".job_attempts a
+                WHERE a.job_id = e.job_id AND a.attempt = e.attempt
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM "{schema}".job_attempts_archive a
+                WHERE a.job_id = e.job_id AND a.attempt = e.attempt
+            )
+            """,
+            tag,
+        )
         violations.append(
-            f"{orphans} effects rows have no claim row behind them - a body run with no dispatch"
+            f"{orphans} effects rows have no claim row behind them - a body run with no "
+            f"dispatch: {[dict(r) for r in detail]}"
         )
     return violations
 
