@@ -120,7 +120,7 @@ async def _wait_set_empty(tasks: set[asyncio.Task[None]], drain_bound_s: float) 
             raise AssertionError(
                 f"pending_publish_tasks did not drain within {drain_bound_s}s: "
                 f"{len(still)} task(s) still referenced after completion "
-                "window — the done-callback discard is not firing (or the "
+                "window - the done-callback discard is not firing (or the "
                 "publish itself is unbounded), so every progress call leaks "
                 "one task reference for the life of the worker."
             )

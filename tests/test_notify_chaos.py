@@ -359,7 +359,7 @@ async def test_tc3_shutdown_mid_reconnect() -> None:
     async def blocking_factory() -> Mock:
         open_conn_called.set()
         await open_conn_gate.wait()
-        raise asyncpg.InterfaceError("cancelled by shutdown mid-open — teardown must survive")
+        raise asyncpg.InterfaceError("cancelled by shutdown mid-open - teardown must survive")
 
     deps.notify_conn_factory = blocking_factory
 

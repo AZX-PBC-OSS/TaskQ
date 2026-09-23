@@ -126,7 +126,7 @@ from taskq.obs import _otel as obs
 
 from taskq.contrib.prometheus import create_metrics_router
 
-# Exactly the ui-serve call in src/taskq/cli.py — create_metrics_router(None),
+# Exactly the ui-serve call in src/taskq/cli.py - create_metrics_router(None),
 # no registry override. Router creation is PROCESS START on the shipped
 # serve path (the FastAPI lifespan), before any request is served or any
 # taskq activity records; the provider auto-wiring happens here.
@@ -135,7 +135,7 @@ app = FastAPI()
 app.include_router(router, prefix="/jobs/health")
 client = TestClient(app)
 
-# Real worker activity, recorded the way the worker records it — after
+# Real worker activity, recorded the way the worker records it - after
 # startup, the only window a scrape can ever contain (pre-provider proxy
 # measurements are dropped by OTel, by design).
 obs.record_published_message("compile_digest", "digests")

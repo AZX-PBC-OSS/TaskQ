@@ -52,7 +52,7 @@ _DOUBLE_EXEC_MSG = (
     "re-pends this worker's local_queue rows back to 'pending' (claimable by "
     "another worker), THIS worker's di_consumer_loop must stop dequeuing "
     "them. VIOLATION: di_consumer_loop's outer guard is only "
-    "`while not shutdown_event.is_set()` (src/taskq/worker/run.py) — it never "
+    "`while not shutdown_event.is_set()` (src/taskq/worker/run.py) - it never "
     "checks deps.producer_stop_event or deps.shutdown_phase, and "
     "shutdown_event is set only after the full 4-phase sequence completes "
     "(shutdown.py:313). The re-pended job was dispatched here too, "

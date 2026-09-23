@@ -55,7 +55,7 @@ def _recv(signum, frame):
 
 signal.signal(signal.SIGTERM, _recv)
 signal.signal(signal.SIGINT, _recv)
-# Handshake: only after this write are the traps armed — the test waits
+# Handshake: only after this write are the traps armed - the test waits
 # for it so the supervisor's forwarded SIGTERM can never race the child's
 # handler installation (an early SIGTERM would kill the child with the
 # default disposition and prove nothing about escalation).

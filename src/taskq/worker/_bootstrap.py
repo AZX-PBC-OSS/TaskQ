@@ -2660,3 +2660,7 @@ async def worker_main_async(
         idle_poll_interval=idle_poll_interval,
         idle_max_runtime=idle_max_runtime,
     )
+
+
+def _zzz_probe_symbol() -> None:
+    return None
