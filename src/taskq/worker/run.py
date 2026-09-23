@@ -646,7 +646,10 @@ async def consumer_loop_stub(
         # register() the DB row is running, locked here, and invisible to
         # active_jobs, and a hand-back pass running in that window would
         # re-pend it to the fleet while this loop is about to execute it.
-        deps.active_jobs.mark_claimed(job.id)
+        # The token is what scopes this iteration's resolve_claim below
+        # to ITS OWN claim (the issue-461 class): a same-worker re-claim
+        # can re-mark the key before this iteration unwinds.
+        _claim = deps.active_jobs.mark_claimed(job.id)
 
         # Slot-release point #1 of 2: the get() above dropped
         # qsize by one, so a producer held up on queue capacity can
@@ -730,7 +733,7 @@ async def consumer_loop_stub(
                 _consumer_log.exception("consumer-stub-error", job_id=str(job.id))
 
             finally:
-                deps.active_jobs.resolve_claim(job.id)
+                deps.active_jobs.resolve_claim(job.id, _claim)
                 await deps.active_jobs.deregister(job.id, _stub_entry)
                 # Slot-release point #2: the producer's
                 # availability subtracts active jobs, so this slot
@@ -823,7 +826,10 @@ async def di_consumer_loop(
         # register() the DB row is running, locked here, and invisible to
         # active_jobs, and a hand-back pass running in that window would
         # re-pend it to the fleet while this loop is about to execute it.
-        deps.active_jobs.mark_claimed(job.id)
+        # The token scopes this iteration's resolve_claim below to ITS
+        # OWN claim (the issue-461 class): a same-worker re-claim's take
+        # can re-mark the key while this iteration's attempt unwinds.
+        _claim = deps.active_jobs.mark_claimed(job.id)
 
         # Slot-release point #1 of 2: the get() above dropped
         # qsize by one, so a producer held up on queue capacity can
@@ -899,7 +905,7 @@ async def di_consumer_loop(
             # This exit path bypasses the dispatch finally below: drop the
             # claim intent here, or a stale id would fence a future claim
             # of the same row out of every hand-back pass.
-            deps.active_jobs.resolve_claim(job.id)
+            deps.active_jobs.resolve_claim(job.id, _claim)
             continue
 
         actor_ref = actor_registry[job.actor]
@@ -1002,8 +1008,12 @@ async def di_consumer_loop(
             # (skip, release, acquire failure, error) is past the window
             # the intent exists to fence. Resolving in the loop's own
             # finally cannot straddle a drain: the row is no longer
-            # running-and-unowned by the time this runs.
-            deps.active_jobs.resolve_claim(job.id)
+            # running-and-unowned by the time this runs. Identity-scoped
+            # to THIS iteration's token (the issue-461 class): a
+            # same-worker re-claim's take can have re-marked the key
+            # while this iteration's attempt was unwinding, and this
+            # resolve must not erase the live claim's intent.
+            deps.active_jobs.resolve_claim(job.id, _claim)
             # Slot-release point #2: the producer's availability
             # subtracts active jobs, so the slot this job held frees at
             # the deregister dispatch_one_job's own finally has run by

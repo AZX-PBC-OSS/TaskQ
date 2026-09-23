@@ -268,8 +268,12 @@ async def test_admin_sse_stream_opened_before_revocation_ends_after_recheck(
         )
 
         await asyncio.sleep(0.05)
-        # The topic semaphore ("jobs") must have its permit back.
-        semaphore = _TOPIC_SEMAPHORES["jobs"]
+        # The topic semaphore ("jobs") must have its permit back. The map
+        # is keyed (topic, limit) - one budget per mount's own cap - so
+        # the lookup scans by topic, agnostic to the configured limit.
+        semaphore = next(
+            sem for (topic, _limit), sem in _TOPIC_SEMAPHORES.items() if topic == "jobs"
+        )
         assert semaphore.locked() is False, (
             "CONTRACT: the ended stream's semaphore slot must be released, or "
             "every revocation leaks one slot from the topic cap"

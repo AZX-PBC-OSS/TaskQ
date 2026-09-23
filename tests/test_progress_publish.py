@@ -162,7 +162,7 @@ async def test_terminal_flush_before_mark_succeeded_drains_buffer() -> None:
         == 1
     )
 
-    buf = _ProgressBuffer(job_id=job_id, base_seq=0)
+    buf = _ProgressBuffer(job_id=job_id, base_seq=0, attempt=1)
     buffers = {job_id: buf}
 
     # Build a pool mock that returns progress_seq=1 after flush
@@ -229,7 +229,7 @@ async def test_ctx_progress_publishes_to_schema_scoped_channel() -> None:
 
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0, attempt=1)
     buffers = {_JOB_ID: buf}
 
     ctx = make_progress_context(
@@ -284,7 +284,7 @@ async def test_rapid_progress_calls_coalesce_in_flight_publishes() -> None:
             "TASKQ_PROGRESS_PUBLISH_GLOBAL": "false",
         }
     )
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0, attempt=1)
     buffers = {_JOB_ID: buf}
     publish_tasks: set[asyncio.Task[None]] = set()
 
@@ -322,7 +322,7 @@ async def test_progress_call_after_gate_releases_publishes_directly() -> None:
             "TASKQ_PROGRESS_PUBLISH_GLOBAL": "false",
         }
     )
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0, attempt=1)
     buffers = {_JOB_ID: buf}
     publish_tasks: set[asyncio.Task[None]] = set()
 
@@ -396,7 +396,7 @@ async def test_ctx_progress_no_publish_when_redis_client_none() -> None:
     settings = WorkerSettings.load_from_dict({"TASKQ_SCHEMA_NAME": "taskq_test"})
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0, attempt=1)
     buffers = {_JOB_ID: buf}
 
     ctx = make_progress_context(buffers, _JOB_ID, backend=backend, settings=settings)
@@ -628,7 +628,7 @@ async def test_terminal_transition_publishes_terminal_state_change() -> None:
     redis_client = _make_redis_mock()
     _rc, settings, buffers = _make_publish_args(redis_client=redis_client, publish_global=False)
 
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=2)
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=2, attempt=1)
     buffers[_JOB_ID] = buf
 
     await _publish_state_change_event(
@@ -739,7 +739,7 @@ async def test_ctx_progress_event_has_kind_progress_and_status_running() -> None
     )
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0)
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0, attempt=1)
     buffers = {_JOB_ID: buf}
 
     ctx = make_progress_context(
@@ -806,7 +806,7 @@ async def test_cancel_discards_buffer_no_flush_terminal_state_change() -> None:
     assert len(jobs) == 1
 
     redis_client = _make_redis_mock()
-    buf = _ProgressBuffer(job_id=job_id, base_seq=0)
+    buf = _ProgressBuffer(job_id=job_id, base_seq=0, attempt=1)
     buffers = {job_id: buf}
 
     # Simulate two ctx.progress() calls (no flush)
@@ -1077,7 +1077,7 @@ async def test_state_change_publish_failure_warning_carries_job_fields() -> None
     )
     client = _RecordingRedisClient()
     client.execute_error = ConnectionError("redis down")
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=3)
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=3, attempt=1)
     buf.pending_state["step"] = 2
 
     with structlog.testing.capture_logs() as captured:
@@ -1142,7 +1142,7 @@ async def test_successful_publish_binds_no_logger(monkeypatch: pytest.MonkeyPatc
         s,
         _JOB_ID,
         "my_actor",
-        {_JOB_ID: _ProgressBuffer(job_id=_JOB_ID, base_seq=0)},
+        {_JOB_ID: _ProgressBuffer(job_id=_JOB_ID, base_seq=0, attempt=1)},
         status="succeeded",
         terminal=True,
     )

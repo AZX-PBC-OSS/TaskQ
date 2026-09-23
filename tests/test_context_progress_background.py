@@ -42,7 +42,7 @@ def _make_ctx(
             "TASKQ_PROGRESS_PUBLISH_GLOBAL": "false",
         }
     )
-    buf = _ProgressBuffer(job_id=job_id, base_seq=0)
+    buf = _ProgressBuffer(job_id=job_id, base_seq=0, attempt=1)
     buffers = {job_id: buf}
 
     ctx = make_progress_context(

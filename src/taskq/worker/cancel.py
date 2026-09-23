@@ -607,6 +607,19 @@ class _ActiveJob:
     cancel_origin: CancelOrigin = CancelOrigin.NONE
 
 
+@dataclass(frozen=True)
+class ClaimIntent:
+    """The token a claim take hands back to the taker.
+
+    Pure identity: one instance per ``mark_claimed`` call, held by the
+    loop iteration that took the row and returned to ``resolve_claim`` at
+    exit, so the resolver drops only ITS OWN claim (the issue-461 class:
+    the same key can be re-marked by a later generation's take before the
+    stale generation unwinds). Deliberately empty, the value is the
+    object identity alone.
+    """
+
+
 class ActiveJobRegistry:
     """Loop-scoped in-process map of running jobs on this worker.
 
@@ -636,9 +649,17 @@ class ActiveJobRegistry:
         # carries no "a consumer took it" mark. Any hand-back pass that
         # ran inside the window would re-pend a row this process is about
         # to execute, and the fleet would run it concurrently. The intent
-        # set closes that window: the mark lands with no await after the
-        # take, and every hand-back pass excludes both maps.
-        self._claim_intents: set[JobId] = set()
+        # map closes that window: the mark lands with no await after the
+        # take, and every hand-back pass excludes both maps. Keyed by id
+        # to a CLAIM TOKEN, not a bare set: the token is what makes
+        # ``resolve_claim`` identity-scoped (the issue-461 class). A
+        # stale attempt's loop iteration can unwind AFTER a same-worker
+        # re-claim took the row again (the re-claim's own
+        # ``mark_claimed`` overwrote the key); a bare-id discard would
+        # erase the LIVE claim's intent and the hand-back passes would
+        # re-pend a row this process is about to execute. The resolver
+        # drops only the claim it holds.
+        self._claim_intents: dict[JobId, ClaimIntent] = {}
         # Claimed-but-not-yet-taken ids: the window between the
         # producer's claim commit and the consumer's queue take. A row
         # parked in local_queue (all consumers busy on long jobs) is
@@ -663,7 +684,7 @@ class ActiveJobRegistry:
         """Snapshot of the rows parked in local_queue, not yet taken."""
         return list(self._queued)
 
-    def mark_claimed(self, job_id: JobId) -> None:
+    def mark_claimed(self, job_id: JobId) -> ClaimIntent:
         """Record a queue take before any await can let a drain observe the gap.
 
         Must be called with no intervening await after the take: the
@@ -671,13 +692,29 @@ class ActiveJobRegistry:
         is the whole guarantee. The take also moves the row's coverage
         from the queued map to the intent map, so the claim-to-register
         chain never has an unfenced window.
-        """
-        self._claim_intents.add(job_id)
-        self._queued.discard(job_id)
 
-    def resolve_claim(self, job_id: JobId) -> None:
-        """Drop the claim intent once ``register`` covers it or the row is released."""
-        self._claim_intents.discard(job_id)
+        Returns the claim token the caller must hand back to
+        ``resolve_claim`` at exit: the same key can be re-marked by a
+        later generation's take (a same-worker re-claim) before this
+        caller unwinds, and the token is the only identity that scopes
+        the resolve to this caller's own claim.
+        """
+        token = ClaimIntent()
+        self._claim_intents[job_id] = token
+        self._queued.discard(job_id)
+        return token
+
+    def resolve_claim(self, job_id: JobId, token: ClaimIntent) -> None:
+        """Drop the claim intent once ``register`` covers it or the row is released.
+
+        Identity-scoped: the entry is removed only when the map's current
+        token IS the caller's. A stale generation's resolve (its take
+        superseded by a same-worker re-claim's new ``mark_claimed``)
+        removes nothing, and the live claim's intent survives to fence
+        the hand-back passes for the window it exists to cover.
+        """
+        if self._claim_intents.get(job_id) is token:
+            del self._claim_intents[job_id]
 
     def held_ids(self) -> list[JobId]:
         """Snapshot of every row this process may still execute: registered and intent.
@@ -710,7 +747,13 @@ class ActiveJobRegistry:
         """
         entry = _ActiveJob(job_id=job_id, task=task, ctx=ctx)
         async with self._lock:
-            self._claim_intents.discard(job_id)
+            # The absorb is deliberately key-scoped, not token-scoped: the
+            # registering attempt's chain created the intent at its own
+            # take, and the intent's whole purpose is the pre-registration
+            # window this call closes. Any registration of the key covers
+            # whatever intent stands (a re-claim's registry overwrite
+            # makes a stale claim's intent moot the same way).
+            self._claim_intents.pop(job_id, None)
             self._by_id[job_id] = entry
         return entry
 

@@ -32,7 +32,7 @@ from taskq.web.admin._listen import listen_with_reconnect
 
 logger = structlog.get_logger("taskq.web.admin.sse")
 
-_TOPIC_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
+_TOPIC_SEMAPHORES: dict[tuple[str, int], asyncio.Semaphore] = {}
 
 _KEEPALIVE_INTERVAL: float = 30.0
 
@@ -47,9 +47,17 @@ _SSE_HEADERS: dict[str, str] = {
 
 
 def _get_semaphore(topic: str, max_connections: int) -> asyncio.Semaphore:
-    if topic not in _TOPIC_SEMAPHORES:
-        _TOPIC_SEMAPHORES[topic] = asyncio.Semaphore(max_connections)
-    return _TOPIC_SEMAPHORES[topic]
+    # The limit is part of the key, the same mechanism
+    # taskq.web._sse_limit applies: the map is module-global and outlives
+    # any one mount, so keying by topic alone let the FIRST mount's limit
+    # silently govern every later mount of the same topic at a different
+    # ``admin_max_sse_connections`` (the test suite mounts the admin
+    # router repeatedly with different settings). A mount that disagrees
+    # on the limit gets its own budget; mounts that agree share one.
+    scoped = (topic, max_connections)
+    if scoped not in _TOPIC_SEMAPHORES:
+        _TOPIC_SEMAPHORES[scoped] = asyncio.Semaphore(max_connections)
+    return _TOPIC_SEMAPHORES[scoped]
 
 
 async def _sse_generator(

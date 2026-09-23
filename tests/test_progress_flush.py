@@ -94,7 +94,7 @@ def _make_pool_with_conn(
 
 
 def _make_dirty_buffer(*, base_seq: int = 0, delta: int = 2) -> _ProgressBuffer:
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=base_seq)
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=base_seq, attempt=1)
     buf.pending_seq_delta = delta
     buf.pending_state["step"] = 1
     buf.dirty = True
@@ -115,7 +115,7 @@ async def test_flush_preserves_monotone_seq(base_seq: int, delta: int) -> None:
     returned_seq = base_seq + delta
     pool = _make_pool_mock(returning_row={"progress_seq": returned_seq})
 
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=base_seq)
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=base_seq, attempt=1)
     buf.pending_seq_delta = delta
     buf.pending_state["step"] = 1
     buf.dirty = True
@@ -145,7 +145,7 @@ async def test_progress_too_large_at_exactly_max_plus_one_byte() -> None:
     settings = WorkerSettings.load_from_dict({"TASKQ_PROGRESS_DATA_MAX_BYTES": "16384"})
     backend = InMemoryBackend(clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)))
     job_id = UUID("00000000-0000-0000-0000-aabbccddeeff")
-    buf = _ProgressBuffer(job_id=job_id, base_seq=0)
+    buf = _ProgressBuffer(job_id=job_id, base_seq=0, attempt=1)
     buffers: dict[UUID, _ProgressBuffer] = {job_id: buf}
 
     # Build data whose JSON serialisation is exactly 16385 bytes.
@@ -205,7 +205,7 @@ async def test_ctx_progress_out_of_range_percent_not_rejected() -> None:
 
     backend = InMemoryBackend(clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)))
     job_id = UUID("00000000-0000-0000-0000-aabbccddee01")
-    buf = _ProgressBuffer(job_id=job_id, base_seq=0)
+    buf = _ProgressBuffer(job_id=job_id, base_seq=0, attempt=1)
     buffers: dict[UUID, _ProgressBuffer] = {job_id: buf}
 
     ctx: JobContext[PassthroughPayload] = JobContext(
@@ -252,7 +252,7 @@ async def test_ctx_progress_unserializable_data_raises_type_error() -> None:
     settings = WorkerSettings.load_from_dict({"TASKQ_PROGRESS_DATA_MAX_BYTES": "16384"})
     backend = InMemoryBackend(clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)))
     job_id = UUID("00000000-0000-0000-0000-aabbccddee02")
-    buf = _ProgressBuffer(job_id=job_id, base_seq=0)
+    buf = _ProgressBuffer(job_id=job_id, base_seq=0, attempt=1)
     buffers: dict[UUID, _ProgressBuffer] = {job_id: buf}
 
     ctx: JobContext[PassthroughPayload] = JobContext(
@@ -357,7 +357,7 @@ async def test_flush_binds_the_data_bytes_ctx_progress_already_encoded(
     monkeypatch.setattr(orjson, "dumps", recording_dumps)
 
     job_id = UUID("00000000-0000-0000-0000-aabbccddee02")
-    buf = _ProgressBuffer(job_id=job_id, base_seq=0)
+    buf = _ProgressBuffer(job_id=job_id, base_seq=0, attempt=1)
     buffers: dict[UUID, _ProgressBuffer] = {job_id: buf}
     ctx = make_progress_context(buffers, job_id, settings=WorkerSettings.load_from_dict({}))
     data: dict[str, object] = {
@@ -402,7 +402,7 @@ async def test_flush_rejects_a_nul_inside_pre_encoded_data(surface: str) -> None
     encoded them itself or reused ``ctx.progress``'s: the statement never
     reaches the connection and the buffer stays dirty."""
     job_id = UUID("00000000-0000-0000-0000-aabbccddee03")
-    buf = _ProgressBuffer(job_id=job_id, base_seq=0)
+    buf = _ProgressBuffer(job_id=job_id, base_seq=0, attempt=1)
     buffers: dict[UUID, _ProgressBuffer] = {job_id: buf}
     ctx = make_progress_context(buffers, job_id, settings=WorkerSettings.load_from_dict({}))
 
@@ -423,7 +423,7 @@ async def test_flush_rejects_a_nul_inside_pre_encoded_data(surface: str) -> None
 
 async def test_flush_immediate_noop_on_clean_buffer() -> None:
     pool = _make_pool_mock()
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=5)
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=5, attempt=1)
     buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf}
 
     await _flush_buffer_immediate(pool, "taskq_test", _JOB_ID, _WORKER_ID, buffers)
@@ -528,7 +528,7 @@ async def test_flush_loop_flushes_dirty_buffer_on_tick() -> None:
 
 async def test_flush_loop_skips_clean_buffers() -> None:
     pool = _make_pool_mock()
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=7)
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=7, attempt=1)
     buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf}
     shutdown = asyncio.Event()
 
@@ -594,11 +594,11 @@ async def test_flush_loop_fenced_out_row_dropped_while_sibling_flushes() -> None
 
     pool.acquire = _acquire
 
-    reclaimed_buf = _ProgressBuffer(job_id=reclaimed_id, base_seq=0)
+    reclaimed_buf = _ProgressBuffer(job_id=reclaimed_id, base_seq=0, attempt=1)
     reclaimed_buf.pending_seq_delta = 1
     reclaimed_buf.pending_state["step"] = 1
     reclaimed_buf.dirty = True
-    live_buf = _ProgressBuffer(job_id=live_id, base_seq=0)
+    live_buf = _ProgressBuffer(job_id=live_id, base_seq=0, attempt=1)
     live_buf.pending_seq_delta = 1
     live_buf.pending_state["step"] = 1
     live_buf.dirty = True
@@ -654,7 +654,7 @@ async def test_flush_tick_batches_all_dirty_buffers_into_one_statement() -> None
 
     buf_a = _make_dirty_buffer()
     buf_a.attempt = 3
-    buf_b = _ProgressBuffer(job_id=_JOB_ID_B, base_seq=0)
+    buf_b = _ProgressBuffer(job_id=_JOB_ID_B, base_seq=0, attempt=1)
     buf_b.pending_seq_delta = 2
     buf_b.pending_state["step"] = 1
     buf_b.attempt = 5
@@ -747,7 +747,7 @@ async def test_flush_tick_drains_in_bounded_batches_with_a_tick_cap() -> None:
         out: dict[UUID, _ProgressBuffer] = {}
         for _ in range(n):
             job_id = new_uuid()
-            buf = _ProgressBuffer(job_id=job_id, base_seq=0)
+            buf = _ProgressBuffer(job_id=job_id, base_seq=0, attempt=1)
             buf.pending_seq_delta = 1
             buf.pending_state["step"] = 1
             buf.attempt = 2
@@ -857,7 +857,7 @@ async def test_flush_tick_cost_is_flat_up_to_the_batch_bound() -> None:
         buffers: dict[UUID, _ProgressBuffer] = {}
         for _ in range(dirty_count):
             job_id = new_uuid()
-            buf = _ProgressBuffer(job_id=job_id, base_seq=0)
+            buf = _ProgressBuffer(job_id=job_id, base_seq=0, attempt=1)
             buf.pending_seq_delta = 1
             buf.pending_state["step"] = 1
             buf.attempt = 2
@@ -930,7 +930,7 @@ async def test_flush_failing_batch_leaves_only_its_own_buffers_dirty() -> None:
     buffers: dict[UUID, _ProgressBuffer] = {}
     for _ in range(70):
         job_id = new_uuid()
-        buf = _ProgressBuffer(job_id=job_id, base_seq=0)
+        buf = _ProgressBuffer(job_id=job_id, base_seq=0, attempt=1)
         buf.pending_seq_delta = 1
         buf.pending_state["step"] = 1
         buf.attempt = 2
@@ -1000,11 +1000,11 @@ async def test_flush_loop_failing_statement_leaves_both_buffers_dirty_and_surviv
 
     pool.acquire = _acquire
 
-    bad_buf = _ProgressBuffer(job_id=bad_id, base_seq=0)
+    bad_buf = _ProgressBuffer(job_id=bad_id, base_seq=0, attempt=1)
     bad_buf.pending_seq_delta = 1
     bad_buf.pending_state["step"] = 1
     bad_buf.dirty = True
-    good_buf = _ProgressBuffer(job_id=good_id, base_seq=0)
+    good_buf = _ProgressBuffer(job_id=good_id, base_seq=0, attempt=1)
     good_buf.pending_seq_delta = 1
     good_buf.pending_state["step"] = 1
     good_buf.dirty = True
@@ -1067,11 +1067,11 @@ async def test_flush_loop_pool_acquire_failure_keeps_buffers_dirty_with_pool_kin
 
     pool.acquire = _acquire
 
-    bad_buf = _ProgressBuffer(job_id=bad_id, base_seq=0)
+    bad_buf = _ProgressBuffer(job_id=bad_id, base_seq=0, attempt=1)
     bad_buf.pending_seq_delta = 1
     bad_buf.pending_state["step"] = 1
     bad_buf.dirty = True
-    good_buf = _ProgressBuffer(job_id=good_id, base_seq=0)
+    good_buf = _ProgressBuffer(job_id=good_id, base_seq=0, attempt=1)
     good_buf.pending_seq_delta = 1
     good_buf.pending_state["step"] = 1
     good_buf.dirty = True
@@ -1103,7 +1103,7 @@ async def test_flush_loop_pool_acquire_failure_keeps_buffers_dirty_with_pool_kin
 
 
 async def test_progress_after_flush_returns_base_seq_for_clean_buffer() -> None:
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=5)
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=5, attempt=1)
     buf.pending_state["step"] = 3
     seq, state = _progress_after_flush(buf)
     assert seq == 5
@@ -1111,7 +1111,7 @@ async def test_progress_after_flush_returns_base_seq_for_clean_buffer() -> None:
 
 
 async def test_progress_after_flush_returns_base_seq_for_dirty_buffer() -> None:
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=5)
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=5, attempt=1)
     buf.pending_seq_delta = 3
     buf.pending_state["step"] = 3
     buf.dirty = True
@@ -1127,7 +1127,7 @@ async def test_progress_after_flush_returns_zero_empty_for_none() -> None:
 
 
 async def test_progress_after_flush_returns_copy_of_pending_state() -> None:
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=10)
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=10, attempt=1)
     buf.pending_state["step"] = 1
     _, state = _progress_after_flush(buf)
     state["extra"] = True
@@ -1198,7 +1198,7 @@ async def test_immediate_flush_skips_a_tick_flush_in_flight() -> None:
 
     pool.acquire = _acquire
 
-    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=10)
+    buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=10, attempt=1)
     buf.pending_seq_delta = 5
     buf.pending_state["step"] = 1
     buf.dirty = True

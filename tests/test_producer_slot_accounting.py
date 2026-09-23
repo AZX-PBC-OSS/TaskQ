@@ -66,7 +66,7 @@ class _Active:
     def mark_claimed(self, job_id: object) -> None:
         return None
 
-    def resolve_claim(self, job_id: object) -> None:
+    def resolve_claim(self, job_id: object, token: object = None) -> None:
         return None
 
 
@@ -256,7 +256,7 @@ class _RegistrySpy:
         self.registered.append(("intent", job_id))
         return None
 
-    def resolve_claim(self, job_id: object) -> None:
+    def resolve_claim(self, job_id: object, token: object = None) -> None:
         return None
 
 
