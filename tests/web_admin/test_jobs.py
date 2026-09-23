@@ -205,6 +205,25 @@ def test_job_detail_template_renders_all_job_columns(
     assert "user@example.com" in html
 
 
+def test_job_detail_exposes_and_renders_persisted_progress(
+    monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
+) -> None:
+    """The client cursor starts at the progress snapshot already in HTML."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    bundle = create_router(stub_pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    template = bundle.templates.get_template("job_detail.html")
+
+    html = template.render(
+        job=_detail_job_data(progress_seq=2, progress_state={"percent": 50}),
+        attempts=[],
+        events=[],
+    )
+
+    assert 'data-progress-seq="2"' in html
+    assert "data-progress-state='{" in html
+    assert "50%" in html
+
+
 def test_job_detail_template_renders_attempt_history(
     monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
 ) -> None:
