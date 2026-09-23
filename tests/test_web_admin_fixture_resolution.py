@@ -14,16 +14,15 @@ first instance are invisible to items collected under the second).
 Fix: the web_admin fixtures live in :mod:`tests.web_admin._fixtures` and are
 registered from ``tests/conftest.py`` (loaded for every test regardless of
 argument order), so resolution no longer depends on conftest adjacency. The
-guards here pin BOTH orderings, plus a probe of the upstream pytest behavior
-that activates once the installed pytest carries the upstream fix.
+guards here pin BOTH orderings, plus a probe of pytest's own fixture
+resolution under interleaving that avoids the upstream bug's trigger (a
+nested conftest) and therefore runs unconditionally.
 """
 
 import os
 import subprocess
 import sys
 from pathlib import Path
-
-import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -45,11 +44,11 @@ _CONTROL_ARGS = (
 )
 
 
-def _run_pytest(*args: str) -> subprocess.CompletedProcess[str]:
-    """Run the repo's own pytest on *args* from the repo root."""
+def _run_pytest(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """Run this interpreter's pytest on *args* from *cwd*."""
     return subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; the subprocess IS the system under test.
         [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *args],
-        cwd=_REPO_ROOT,
+        cwd=cwd,
         env=os.environ.copy(),
         capture_output=True,
         text=True,
@@ -74,7 +73,7 @@ def test_web_admin_fixtures_survive_interleaved_arguments() -> None:
     found". Registration from tests/conftest.py makes resolution independent
     of argument order.
     """
-    _assert_no_fixture_errors(_run_pytest(*_INTERLEAVED_ARGS))
+    _assert_no_fixture_errors(_run_pytest(_REPO_ROOT, *_INTERLEAVED_ARGS))
 
 
 def test_web_admin_fixtures_root_file_first_control() -> None:
@@ -83,71 +82,63 @@ def test_web_admin_fixtures_root_file_first_control() -> None:
     Passed before the fix too; pinned so the guard covers both shapes and an
     over-eager "fix" cannot trade one ordering for the other.
     """
-    _assert_no_fixture_errors(_run_pytest(*_CONTROL_ARGS))
+    _assert_no_fixture_errors(_run_pytest(_REPO_ROOT, *_CONTROL_ARGS))
 
 
-# Upstream behavior (pytest-dev/pytest#14971): the fix landed on pytest main
-# after 9.1.1 and was backported to the 9.1.x branch (pytest-dev/pytest#14968,
-# merged 2026-09-06), but no released pytest carried it when this guard was
-# written. Bump this once the repo's pin moves to a release that ships the
-# backport (the next 9.1.x patch or 9.2.0), and the probe below starts
-# asserting instead of skipping.
-_UPSTREAM_FIXED = (9, 2, 0)
+# The upstream bug is specific to fixtures defined in a NESTED conftest.py:
+# re-collection of the revisited directory builds a second ``Directory`` node
+# and fixture registration matches by node identity, so the nested conftest's
+# registrations vanish. Fixtures that do not ride a re-collected Directory
+# node - the root conftest.py and each test module's own fixtures - resolve
+# under the same interleaving on every pytest this suite pins (verified
+# against 9.1.1 and 8.4.2). The probe below pins that scenario; it cannot
+# skip. Once the pin moves past the release that ships the 9.1.x backport
+# (pytest-dev/pytest#14968, merged 2026-09-06 but unreleased as of 9.1.1), a
+# nested-conftest variant of this scenario can be added to probe the upstream
+# fix itself.
+def test_pytest_interleaved_arguments_resolve_fixtures(tmp_path: Path) -> None:
+    """Pin order-independent fixture resolution WITHOUT a nested conftest.
 
-
-def _pytest_version_tuple() -> tuple[int, ...]:
-    return tuple(int(part) for part in pytest.__version__.split(".")[:2])
-
-
-def test_upstream_pytest_interleaved_conftest_behavior(tmp_path: Path) -> None:
-    """Probe the minimal upstream scenario against the installed pytest.
-
-    Once pytest carries the upstream fix the probe asserts collection is
-    order-independent WITHOUT our restructuring; while the installed pytest is
-    known-affected it skips (the repo-level guards above prove our suite is
-    order-independent anyway).
+    Mirrors the upstream issue's layout minus the nested conftest: the root
+    ``conftest.py`` defines a fixture and each nested test file defines its
+    own module-level fixture. A file REVISITED non-adjacently in the argument
+    list must resolve both, in both orderings.
     """
-    if _pytest_version_tuple() < _UPSTREAM_FIXED:
-        pytest.skip(
-            f"pytest {pytest.__version__} predates the pytest-dev/pytest#14971 fix "
-            "(backport pytest-dev/pytest#14968); nested conftest fixtures are "
-            "expected to drop under interleaved file arguments. _UPSTREAM_FIXED "
-            "must be bumped when the pin moves past it."
-        )
-
     (tmp_path / "tests" / "services").mkdir(parents=True)
     (tmp_path / "tests" / "conftest.py").write_text(
         'import pytest\n\n\n@pytest.fixture\ndef root_fixture():\n    return "root"\n'
     )
-    (tmp_path / "tests" / "services" / "conftest.py").write_text(
-        'import pytest\n\n\n@pytest.fixture\ndef nested_fixture():\n    return "nested"\n'
-    )
     (tmp_path / "tests" / "services" / "test_a.py").write_text(
-        "def test_a(nested_fixture):\n    assert nested_fixture == 'nested'\n"
+        "import pytest\n\n\n"
+        '@pytest.fixture\ndef module_fixture_a():\n    return "mod-a"\n\n\n'
+        "def test_a(module_fixture_a, root_fixture):\n"
+        "    assert module_fixture_a == 'mod-a'\n"
+        "    assert root_fixture == 'root'\n"
     )
     (tmp_path / "tests" / "services" / "test_b.py").write_text(
-        "def test_b(nested_fixture):\n    assert nested_fixture == 'nested'\n"
+        "import pytest\n\n\n"
+        '@pytest.fixture\ndef module_fixture_b():\n    return "mod-b"\n\n\n'
+        "def test_b(module_fixture_b, root_fixture):\n"
+        "    assert module_fixture_b == 'mod-b'\n"
+        "    assert root_fixture == 'root'\n"
     )
     (tmp_path / "tests" / "test_top.py").write_text(
         "def test_top(root_fixture):\n    assert root_fixture == 'root'\n"
     )
 
-    result = subprocess.run(  # Why: fixed argv, no shell; the probe IS the system under test.
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-q",
-            "-p",
-            "no:cacheprovider",
+    _assert_no_fixture_errors(
+        _run_pytest(
+            tmp_path,
             "tests/services/test_a.py",
             "tests/test_top.py",
             "tests/services/test_b.py",
-        ],
-        cwd=tmp_path,
-        env=os.environ.copy(),
-        capture_output=True,
-        text=True,
-        timeout=600,
+        )
     )
-    _assert_no_fixture_errors(result)
+    _assert_no_fixture_errors(
+        _run_pytest(
+            tmp_path,
+            "tests/test_top.py",
+            "tests/services/test_a.py",
+            "tests/services/test_b.py",
+        )
+    )
