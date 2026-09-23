@@ -559,6 +559,78 @@ def test_redis_unavailable_returns_503() -> None:
     assert body == {"error": "redis_not_configured"}
 
 
+def test_redis_unavailable_logs_degraded_mode_once_per_router() -> None:
+    """The 503 arm is the moment the browser is put into polling mode, so
+    the FIRST refused stream logs the degraded mode once (the operator-side
+    companion of the factory's ``admin-ui-no-redis-client`` startup
+    warning). A per-request warning would be a log flood that gets
+    filtered out, which is the same as being silent: later 503s log
+    nothing."""
+    pg_row = _pg_row()
+    _, client = _make_app(pg_row, None)
+
+    with structlog.testing.capture_logs() as logs:
+        first = client.get(f"/jobs/api/job/{_JOB_ID}/progress/stream")
+        second = client.get(f"/jobs/api/job/{_JOB_ID}/progress/stream")
+
+    assert first.status_code == 503
+    assert second.status_code == 503
+    matches = [e for e in logs if e["event"] == "progress-stream-polling-degraded"]
+    assert len(matches) == 1, f"exactly one degraded-mode log for the router's lifetime: {logs}"
+    assert matches[0]["log_level"] == "warning"
+    detail = matches[0].get("detail", "")
+    assert "503" in detail and "polling" in detail, (
+        "the log must name what happened (the 503) and what the dashboard "
+        "does about it (polls the state endpoint)"
+    )
+    assert "TASKQ_REDIS_URL" in detail, (
+        "the log must name the setting that restores live SSE progress"
+    )
+
+
+# ── Conditional poll: the state endpoint's ETag is the progress seq ──
+
+
+def test_poll_state_answers_304_when_the_client_state_is_current() -> None:
+    """Polling is a first-class mode, so the poll is conditional: a client
+    that already rendered progress_seq N sends ``If-None-Match`` and an
+    unchanged tick is answered 304 with no body at all - the poll cadence
+    never re-downloads data the client already has."""
+    pg_row = _pg_row(progress_seq=7)
+    _, client = _make_app(pg_row, None)
+
+    fresh = client.get(f"/jobs/api/job/{_JOB_ID}/state")
+    assert fresh.status_code == 200
+    assert fresh.headers.get("etag") == '"7"', (
+        "the progress sequence doubles as the ETag: it is a monotone "
+        "cursor on exactly the bytes this endpoint returns"
+    )
+
+    current = client.get(f"/jobs/api/job/{_JOB_ID}/state", headers={"If-None-Match": '"7"'})
+    assert current.status_code == 304
+    assert current.headers.get("etag") == '"7"'
+    assert current.content == b"", "a 304 must carry no state bytes"
+
+    stale = client.get(f"/jobs/api/job/{_JOB_ID}/state", headers={"If-None-Match": '"6"'})
+    assert stale.status_code == 200, (
+        "a cursor behind the row's seq means the state moved: full answer"
+    )
+
+
+def test_poll_state_200_carries_the_conditional_headers_and_body() -> None:
+    """The unconditional answer keeps its body and states the ETag, so a
+    client can start conditional polling from its very next tick."""
+    pg_row = _pg_row(progress_seq=9, progress_state={"step": 2})
+    _, client = _make_app(pg_row, None)
+
+    resp = client.get(f"/jobs/api/job/{_JOB_ID}/state")
+    assert resp.status_code == 200
+    assert resp.headers.get("etag") == '"9"'
+    body = resp.json()
+    assert body["progress_seq"] == 9
+    assert body["progress_state"] == {"step": 2}
+
+
 # ── Subscribe-before-query ordering ─────────────────────────────
 
 

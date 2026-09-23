@@ -681,6 +681,35 @@ def create_router(
 
     settings = TaskQSettings.load()
 
+    # Why this warning exists (the #424 pattern, admin side) and why it is
+    # conditioned on the settings: TaskQ Redis configured but this router
+    # created without the client is a WIRING GAP - the pages render
+    # polling mode and the progress stream answers 503
+    # ``redis_not_configured``, so live SSE progress is simply absent
+    # while the dashboard keeps working, a degradation the operator
+    # otherwise discovers only by staring at the mode badge. A deployment
+    # with NO TaskQ Redis configured at all is the legitimate polling
+    # mode: the badge says so accurately and no warning fires. Only the
+    # gap (settings expect Redis, app state lacks the client) is loud.
+    # Once per admin app: create_router runs once per router.
+    if settings.redis_url is not None and redis_client is None:
+        logger.warning(
+            "admin-ui-no-redis-client",
+            detail=(
+                "the admin portal has no Redis client: live SSE progress "
+                "is unavailable, the dashboard falls back to polling"
+            ),
+            remedy=(
+                "TaskQ has Redis configured (TASKQ_REDIS_URL is set) but "
+                "this admin router was created without the client: pass "
+                "it as create_router(redis_client=...) so it reaches "
+                "app.state via setup_admin_state (taskq ui serve wires it "
+                "automatically); without it the per-job progress stream "
+                "answers 503 redis_not_configured and every job page "
+                "polls Postgres instead of streaming"
+            ),
+        )
+
     # Session re-check derivation (#316): prefer the explicit parameter, fall
     # back to the attribute the taskq auth dependencies attach. An auth
     # dependency without a re-check cannot be safely re-invoked by us (it may

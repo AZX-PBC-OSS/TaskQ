@@ -616,6 +616,49 @@ a Redis outage upgrades itself without a manual reload. The job-detail progress 
 all three modes: in real-time mode it opens the SSE stream, in the two polling modes it polls the
 per-job state endpoint (`GET /admin/jobs/api/job/{job_id}/state`) directly.
 
+### The polling UX contract
+
+Polling is a first-class mode of the portal, not a degraded apology: a polling page is fully
+functional, merely less fresh. The job-detail progress driver owes every polling page this
+contract, and the Node harnesses pin each clause as a user-visible behavior:
+
+- **A poll tick that changes nothing touches nothing.** The driver keeps a fingerprint of the
+  progress the timeline already renders (canonical JSON of `step`, `percent`, `detail`, `data`;
+  the flush timestamp is excluded, because the worker re-flushes unchanged snapshots with a
+  bumped sequence and a fresh timestamp). A snapshot whose fingerprint matches performs zero DOM
+  writes and therefore triggers zero layout. The page boot seeds the fingerprint from the
+  server-rendered snapshot (`data-progress-seq` / `data-progress-state` on the progress section),
+  so an idle job's polls write nothing at all, not even once.
+- **Changed progress patches in place; the entry is never rebuilt.** The timeline entry's nodes
+  are built once on the first render; every later render patches only the nodes whose value
+  changed (the bar's width, the detail line, the meta line). A rebuild per tick is what made a
+  polling page flicker; none exists now.
+- **The driver never steals the viewport.** No `scrollIntoView` on append or patch: a poll tick
+  landing while the operator reads the page never jumps the scroll position.
+- **The poll cadence does not re-download unchanged data.** Once the page has rendered a
+  progress sequence, every poll sends `If-None-Match` with it (the sequence doubles as the
+  endpoint's ETag), and an unchanged tick is answered `304` with no body at all: no state bytes
+  to parse, nothing to render.
+- **The badge states the mode calmly.** A dropped stream does not flip the badge to
+  `polling-degraded`: the browser's `EventSource` reconnects on its own while polling bridges
+  the gap, and the periodic probe (the only authority on Redis health) owns every badge
+  transition. A page reading `polling mode` is working as designed, not broken.
+
+### Serving the portal without a Redis client
+
+The Redis client is what turns on live SSE progress: `TASKQ_REDIS_URL` builds it, and the admin
+router must receive it as `create_router(redis_client=...)` so `setup_admin_state` puts it on
+`app.state` (`taskq ui serve` wires both automatically). Two log lines tell you where a
+deployment stands:
+
+| Log line | When | Meaning |
+|---|---|---|
+| `admin-ui-no-redis-client` | startup, once | TaskQ has Redis configured (`TASKQ_REDIS_URL` is set) but the router was created without the client: the wiring gap. Set the client through `create_router` to close it. |
+| `progress-stream-polling-degraded` | first refused progress stream, once per router | The progress stream answered `503 redis_not_configured` and the dashboard polls the state endpoint instead. Fires with or without `TASKQ_REDIS_URL`; it names what actually happened. |
+
+A deployment with no TaskQ Redis configured at all is the legitimate polling mode: the badge
+reads `polling mode` accurately and no startup warning fires.
+
 ### Real-time mode (Redis configured)
 
 When Redis is available, the page JS opens an `EventSource` connection to
