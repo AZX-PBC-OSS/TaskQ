@@ -947,12 +947,28 @@ async def _revert_stale_auto_disable(
     above. A residual NULL-disabled row can then only come from an OLD pod
     during a mixed-version rolling deploy: the previous release's failure
     UPDATE writes ``enabled=false`` and cannot name this column. When such a
-    row also carries that arm's fingerprint (``consecutive_failures`` at or
-    past the auto-disable threshold, ``last_fire_error`` set), it IS an old
-    pod's auto-disable -- the deploy's own transient state -- and the boot
-    reverts it like an ``'auto'`` row. A NULL-disabled row without the
-    fingerprint reads as an old pod's operator disable during the window and
-    stays untouched.
+    row also carries that arm's fingerprint (an unamnestied strike count with
+    ``last_fire_error`` set, the two columns that failure arm alone writes and
+    always writes together: a strike bumps the count to at least 1 and stamps
+    the error, a success clears both), it IS an old pod's auto-disable -- the
+    deploy's own transient state -- and the boot reverts it like an ``'auto'``
+    row. A NULL-disabled row without that fingerprint (no error, count 0)
+    reads as an old pod's operator disable during the window and stays
+    untouched.
+
+    The fingerprint's strike-count bound is deliberately ``>= 1``, NOT the
+    booting pod's own ``cron_auto_disable_threshold``: the disable happened on
+    the OLD pod, whose threshold the row does not record, so an old pod's
+    auto-disable can carry any count at or above ITS threshold -- a roll that
+    raises the setting (or a release that bumps the default) leaves every
+    count below the NEW threshold. Gating on the boot's own threshold re-opened
+    exactly the unrecoverable cell #460 closed (the row matches no recovery,
+    no sweep touches a disabled schedule, and the schedule stays disabled
+    until a human); the only cost of the wider bound is reverting an old pod's
+    operator disable of a schedule that carried 1..T-1 unamnestied strikes,
+    a subset of the same ambiguity the ``'auto'`` arm already adjudicates,
+    and an operator disable re-applied after this boot carries the
+    ``'operator'`` marker and is never reverted again.
 
     Only a code-owned, code-enabled spec may revert: an ``owner='operator'``
     spec merely ships the declaration, and a spec declared ``enabled=False``
@@ -968,10 +984,9 @@ async def _revert_stale_auto_disable(
             f"disabled_by = NULL "
             f"WHERE actor = $1 AND name = $2 AND enabled = false AND "
             f"(disabled_by = 'auto' OR (disabled_by IS NULL AND "
-            f"consecutive_failures >= $3 AND last_fire_error IS NOT NULL))",
+            f"consecutive_failures >= 1 AND last_fire_error IS NOT NULL))",
             spec.actor,
             spec.name,
-            settings.cron_auto_disable_threshold,
         )
     return parse_rowcount(tag) > 0
 

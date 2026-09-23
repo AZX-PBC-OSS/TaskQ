@@ -135,11 +135,13 @@ async def _seed_auto_disabled(
     actor: str,
     name: str,
     disabled_by: str | None = "auto",
+    consecutive_failures: int = 3,
 ) -> Any:
     """The exact row state the cron loop's auto-disable leaves behind
-    (``enabled=false``, three strikes, the error, the ownership marker), with
-    ``next_fire_at`` pushed out of due range so a boot's own cron loop cannot
-    strike the row while the test observes the restart."""
+    (``enabled=false``, ``consecutive_failures`` strikes, the error, the
+    ownership marker), with ``next_fire_at`` pushed out of due range so a
+    boot's own cron loop cannot strike the row while the test observes the
+    restart."""
     schedule_id = await seed_schedule(
         conn,
         schema,
@@ -147,7 +149,7 @@ async def _seed_auto_disabled(
         name=name,
         cron_expr=_HOURLY,
         next_fire_at=await server_hour_floor(conn) + timedelta(hours=1),
-        consecutive_failures=3,
+        consecutive_failures=consecutive_failures,
         enabled=False,
         disabled_by=disabled_by,
     )
@@ -162,6 +164,7 @@ async def _seed_auto_disabled(
 async def _registration_pass(
     module_pg_schema: ModulePgSchema,
     spec: CronScheduleSpec,
+    settings_overrides: dict[str, str] | None = None,
 ) -> None:
     """One worker registration pass against the module schema -- the restart's
     registration step, extracted verbatim from ``_main`` -- over a shell
@@ -169,7 +172,9 @@ async def _registration_pass(
     the clock seed and the re-enable UPDATE)."""
     from taskq.worker._bootstrap import _register_cron_schedules
 
-    settings = _settings_for(module_pg_schema.pg_dsn, module_pg_schema.schema_name)
+    settings = _settings_for(
+        module_pg_schema.pg_dsn, module_pg_schema.schema_name, **(settings_overrides or {})
+    )
     pool = await asyncpg.create_pool(module_pg_schema.pg_dsn, min_size=1, max_size=2)
     try:
         deps = WorkerDeps(
@@ -327,6 +332,55 @@ class TestAutoDisableRecovery:
             "the worker restart must re-enable the auto-disabled schedule the "
             "code re-declares; a transient failure blip must not halt "
             "recurring work until a human intervenes"
+        )
+        assert row["consecutive_failures"] == 0
+        assert row["last_fire_error"] is None
+        assert row["disabled_by"] is None
+
+        await _cleanup_schema_for(pg_dsn, schema)
+
+    async def test_end_to_end_restart_reenables_below_raised_threshold(
+        self,
+        pg_dsn: str,
+    ) -> None:
+        """The full restart path through ``_main`` with the boot's own
+        ``cron_auto_disable_threshold`` RAISED past what the old pod struck:
+        the mixed-version window's auto-disable lands with a count bounded by
+        the OLD pod's threshold, and the recovery must not consult the new
+        one. On the threshold-relative recovery this is the unrecoverable
+        cell again: no automated act matches the row, and the schedule stays
+        disabled until a human."""
+        schema = f"tcron_{new_base62()}".lower()
+        await _prepare_schema_for(pg_dsn, schema)
+
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            schedule_id = await _seed_auto_disabled(
+                conn,
+                schema,
+                actor=_MISSING_ACTOR,
+                name="e2e-raised",
+                disabled_by=None,
+                consecutive_failures=3,
+            )
+        finally:
+            await conn.close()
+
+        settings = _settings_for(pg_dsn, schema, cron_auto_disable_threshold="5")
+        await _run_and_cancel(
+            lambda: _main(settings, _cron_registry=[_spec(_MISSING_ACTOR, "e2e-raised")])
+        )
+
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            row = await schedule_row(conn, schema, schedule_id)
+        finally:
+            await conn.close()
+        assert row["enabled"] is True, (
+            "an old pod's auto-disable during a roll that raised the "
+            "threshold is the deploy's own transient state; the boot must "
+            "return the schedule to service, the count it struck to is "
+            "evidence, never a gate"
         )
         assert row["consecutive_failures"] == 0
         assert row["last_fire_error"] is None
@@ -642,6 +696,46 @@ class TestMixedVersionRollingDeploy:
             "a NULL marker plus the old failure arm's fingerprint is an old "
             "pod's auto-disable from the mixed-version window; the boot must "
             "return the schedule to service"
+        )
+        assert row["consecutive_failures"] == 0
+        assert row["last_fire_error"] is None
+        assert row["disabled_by"] is None
+
+    async def test_registration_pass_recovers_null_marker_below_raised_threshold(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """The threshold-relative variant of the unrecoverable cell: an old
+        pod's auto-disable count is bounded by the OLD pod's threshold, which
+        the row does not record, so a roll that RAISES
+        ``cron_auto_disable_threshold`` (operator raise, or a default bump
+        shipped with the new release) lands counts below the NEW threshold.
+        The boot's recovery must not consult the boot's own threshold: the
+        fingerprint of the old failure arm is the strike count (>= 1) plus the
+        error it stamped, whatever the count, and the row must come back."""
+        schema = module_pg_schema.schema_name
+        schedule_id = await _seed_auto_disabled(
+            conn=clean_pg_conn,
+            schema=schema,
+            actor=_MISSING_ACTOR,
+            name="roll-raised-threshold",
+            disabled_by=None,
+            consecutive_failures=1,
+        )
+
+        await _registration_pass(
+            module_pg_schema,
+            _spec(_MISSING_ACTOR, "roll-raised-threshold"),
+            settings_overrides={"cron_auto_disable_threshold": "5"},
+        )
+
+        row = await schedule_row(clean_pg_conn, schema, schedule_id)
+        assert row["enabled"] is True, (
+            "an old pod's auto-disable below the boot's own threshold is "
+            "still an old pod's auto-disable: no sweep touches a disabled "
+            "schedule and no tick reads one, so a threshold-relative "
+            "fingerprint strands the row disabled until a human"
         )
         assert row["consecutive_failures"] == 0
         assert row["last_fire_error"] is None
