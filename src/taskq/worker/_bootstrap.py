@@ -1926,6 +1926,8 @@ async def _main(
                     retry_cap=ref.retry.cap,
                     retry_backoff=ref.retry.backoff,
                     retry_jitter=ref.retry.jitter,
+                    max_attempts=ref.retry.max_attempts,
+                    retry_kind=ref.retry.kind,
                 )
                 for ref in actor_registry.values()
             ]

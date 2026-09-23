@@ -9,6 +9,7 @@ from typing import Any
 
 import asyncpg
 import pytest
+import structlog.types
 
 from taskq._ids import new_base62
 from taskq._json import dumps_str, loads
@@ -79,6 +80,8 @@ def _make_record(
     queue: str = "default",
     result_ttl: float | None = None,
     metadata: dict[str, object] | None = None,
+    max_attempts: int = 3,
+    retry_kind: str = "transient",
 ) -> FakeRecord:
     md = metadata if metadata is not None else {}
     return FakeRecord(
@@ -89,6 +92,8 @@ def _make_record(
             "queue": queue,
             "result_ttl": result_ttl,
             "metadata": dumps_str(md),
+            "max_attempts": max_attempts,
+            "retry_kind": retry_kind,
         }
     )
 
@@ -123,6 +128,8 @@ async def _ensure_schema(conn: asyncpg.Connection, schema: str) -> None:
             max_concurrent int,
             max_pending    int,
             queue          text NOT NULL,
+            max_attempts   smallint NOT NULL DEFAULT 3,
+            retry_kind     text NOT NULL DEFAULT 'transient',
             result_ttl     float,
             metadata       jsonb NOT NULL DEFAULT '{{}}'::jsonb,
             updated_at     timestamptz NOT NULL DEFAULT now(),
@@ -136,7 +143,7 @@ async def _ensure_schema(conn: asyncpg.Connection, schema: str) -> None:
 
 async def _select_configs(conn: asyncpg.Connection, schema: str) -> list[dict[str, object]]:
     rows = await conn.fetch(
-        f'SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata FROM "{schema}".actor_config ORDER BY actor'
+        f'SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata, max_attempts, retry_kind FROM "{schema}".actor_config ORDER BY actor'
     )
     return [dict(row) for row in rows]
 
@@ -477,6 +484,175 @@ async def test_upsert_sql_preserves_operator_owned_columns_on_conflict() -> None
     assert "result_ttl" not in on_conflict
     assert "queue" not in on_conflict
     assert "metadata" in on_conflict
+    # The retry curve stays seed-only: present in the INSERT list so a first
+    # registration seeds it, absent from the conflict arm so a re-boot never
+    # overwrites what the seed (or a NULL left by a pre-curve row) holds.
+    assert "retry_base" not in on_conflict
+    assert "retry_cap" not in on_conflict
+    assert "retry_backoff" not in on_conflict
+    assert "retry_jitter" not in on_conflict
+
+
+@pytest.mark.asyncio
+async def test_upsert_sql_updates_retry_contract_on_conflict() -> None:
+    """The rendered UPSERT's ON CONFLICT clause assigns max_attempts and
+    retry_kind from EXCLUDED, the code-owned family.
+
+    These two columns decide how many attempts a server-side fire gets
+    and which retry family it belongs to: cron fires and the admin
+    run-now build their EnqueueArgs from the stored actor_config row
+    (cron_loop's fire reads max_attempts/retry_kind straight off the
+    row). If the conflict arm left them at the first-registration value,
+    an actor re-registering with a changed RetryPolicy would silently
+    serve every later server-side fire a stale retry contract, which is
+    exactly the bug this pin exists to keep dead.
+    """
+    fake_conn = FakeAsyncpgConnection()
+    fake_conn.set_select_rows([])
+
+    await sync_actor_config(
+        fake_conn,  # pyright: ignore[reportArgumentType] Why: FakeAsyncpgConnection is a unit-test double; real asyncpg.Connection subtyping would require protocol-level mocking
+        [_make_config("X")],
+    )
+
+    sql, _params = fake_conn._execute_calls[0]
+    on_conflict = sql.split("DO UPDATE SET", 1)[1]
+    assert "max_attempts   = EXCLUDED.max_attempts" in on_conflict
+    assert "retry_kind     = EXCLUDED.retry_kind" in on_conflict
+
+
+@pytest.mark.asyncio
+async def test_retry_contract_arrays_in_upsert_params() -> None:
+    """The declared max_attempts/retry_kind reach the UPSERT as the last
+    two parameter arrays ($11 smallint[], $12 text[]).
+
+    Appended after the curve arrays so the long-standing positional
+    assertions (params[0]..params[9]) keep their meaning.
+    """
+    fake_conn = FakeAsyncpgConnection()
+    fake_conn.set_select_rows([])
+
+    await sync_actor_config(
+        fake_conn,  # pyright: ignore[reportArgumentType] Why: FakeAsyncpgConnection is a unit-test double; real asyncpg.Connection subtyping would require protocol-level mocking
+        [
+            ActorConfig(
+                actor="X",
+                max_concurrent=None,
+                queue="default",
+                max_attempts=50,
+                retry_kind="indefinite",
+            )
+        ],
+    )
+
+    assert len(fake_conn._execute_calls) == 1
+    _sql, params = fake_conn._execute_calls[0]
+    assert params[10] == [50]
+    assert params[11] == ["indefinite"]
+
+
+@pytest.mark.asyncio
+async def test_retry_contract_divergence_warns_and_does_not_raise(
+    structlog_capture: list[structlog.types.EventDict],
+) -> None:
+    """A stored/registered retry-contract mismatch is a warning, never an
+    error, and the UPSERT still rewrites the stored pair.
+
+    Code owns these columns: the boot overwrites the stored value with
+    the registered literal on every sync. The warning is what makes the
+    overwrite visible (parity with the capacity/queue override events),
+    since server-side fires read the row this statement is about to
+    change.
+    """
+    fake_conn = FakeAsyncpgConnection()
+    fake_conn.set_select_rows(
+        [_make_record("X", queue="default", max_attempts=3, retry_kind="transient")]
+    )
+
+    await sync_actor_config(
+        fake_conn,  # pyright: ignore[reportArgumentType] Why: FakeAsyncpgConnection is a unit-test double; real asyncpg.Connection subtyping would require protocol-level mocking
+        [
+            ActorConfig(
+                actor="X",
+                max_concurrent=None,
+                queue="default",
+                max_attempts=50,
+                retry_kind="indefinite",
+            )
+        ],
+        force=False,
+    )
+
+    assert len(fake_conn._execute_calls) == 1
+
+    # The warning must actually fire: deleting the logger.warning call below
+    # must turn this pin red, the overwrite it announces would otherwise be
+    # silent. The event carries the PRE-write stored pair - it announces the
+    # mismatch the upsert is about to erase, not the converged values it
+    # just wrote (a warning describing a mismatch it already erased would be
+    # noise about nothing).
+    change_events = [
+        e for e in structlog_capture if e["event"] == "actor-config-retry-contract-change"
+    ]
+    assert len(change_events) == 1, (
+        "a stored/registered retry-contract mismatch must emit exactly one "
+        f"actor-config-retry-contract-change warning per changed actor per "
+        f"boot; got {len(change_events)}: {change_events!r}"
+    )
+    event = change_events[0]
+    assert event["actor"] == "X"
+    assert event["registered"] == {"max_attempts": 50, "retry_kind": "indefinite"}
+    assert event["stored"] == {"max_attempts": 3, "retry_kind": "transient"}, (
+        "the warning must describe the STORED pair it is about to overwrite "
+        "(the pre-write state server-side fires were reading), not the "
+        f"converged pair the upsert just wrote: {event['stored']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_retry_contract_convergence_is_quiet_on_the_next_boot(
+    structlog_capture: list[structlog.types.EventDict],
+) -> None:
+    """A boot whose stored pair already matches the declared literal emits no
+    retry-contract warning.
+
+    The columns are code-owned and rewritten on every boot, so after the
+    boot that observed a mismatch the stored values CONVERGE to the
+    declared ones: a warning that kept firing on every subsequent boot
+    would be noise about a change that already landed, and would bury the
+    one boot where the change is real. The cardinality is exactly once per
+    change."
+    """
+    fake_conn = FakeAsyncpgConnection()
+    # The stored row as boot 1's upsert left it: converged to the declared
+    # literal. Boot 2 reads exactly this row.
+    fake_conn.set_select_rows(
+        [_make_record("X", queue="default", max_attempts=50, retry_kind="indefinite")]
+    )
+
+    await sync_actor_config(
+        fake_conn,  # pyright: ignore[reportArgumentType] Why: FakeAsyncpgConnection is a unit-test double; real asyncpg.Connection subtyping would require protocol-level mocking
+        [
+            ActorConfig(
+                actor="X",
+                max_concurrent=None,
+                queue="default",
+                max_attempts=50,
+                retry_kind="indefinite",
+            )
+        ],
+        force=False,
+    )
+
+    assert len(fake_conn._execute_calls) == 1
+    change_events = [
+        e for e in structlog_capture if e["event"] == "actor-config-retry-contract-change"
+    ]
+    assert not change_events, (
+        "a converged stored pair must not warn: the change was announced by "
+        f"the boot that observed the mismatch, later boots are quiet. "
+        f"Got {change_events!r}"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

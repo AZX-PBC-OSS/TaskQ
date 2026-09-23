@@ -2390,3 +2390,36 @@ of terminal throughput, so 10M rows and a 3 s stall is reachable without
 being typical. Apply during a maintenance window, or when `jobs` is small
 or quiescent (e.g. right after a prune sweep), on any deployment where
 `jobs` is large.
+
+### Worker startup now rewrites `actor_config.max_attempts` and `retry_kind`
+
+> **Unreleased.** Correctness fix, no migration: both columns already exist
+> (`01.00.00_01_pre_initial.sql`) and are `NOT NULL` with defaults.
+
+Before this fix, `sync_actor_config`'s UPSERT wrote these two columns only
+in the `INSERT` arm, i.e. the first time a row was created. The conflict arm
+left them untouched, and nothing else in the codebase wrote them, so the row
+kept the DDL defaults (3, `'transient'`) or whatever the first registration
+had seeded, forever. Server-side fires build their enqueue arguments from the
+stored row (cron ticks and the admin run-now in the cron leader), so an actor
+whose code declared, say, `RetryPolicy(kind="indefinite", max_attempts=50)`
+was fired server-side with 3 `'transient'` attempts. Producer-side enqueues
+were never affected: they carry the `ActorRef`'s literal directly.
+
+The conflict arm now assigns both columns from the registered literal on
+every boot. These columns are **code-owned**, the opposite of the capacity
+family (`max_concurrent`, `max_pending`, `result_ttl`, `queue`), which stay
+operator-owned-once-created and untouched by boots: no operator surface can
+write the retry contract (`taskq actor-config set` moves capacity,
+`move-queue` moves the queue, neither touches these), so the code literal is
+the only declaration of record and a changed `@actor` retry literal must
+reach the next server-side fire.
+
+Operational consequence: if you have edited these columns out-of-band
+(direct SQL against `actor_config`), the next worker boot overwrites your
+edit with the code literal and logs
+`actor-config-retry-contract-change` (warning level, per actor, with both
+the registered and the stored pair). That warning means the stored retry
+contract changed at this boot; it is informational, never an error, and no
+`force` flag is involved. To make a hand edit durable, change the
+`@actor(...)` literal in code to match instead.
