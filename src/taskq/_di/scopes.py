@@ -30,6 +30,53 @@ from taskq.settings import WorkerSettings
 
 logger = structlog.get_logger("taskq._di.scopes")
 
+
+class _ProviderSystemExitError(Exception):
+    """Typed carrier for a provider factory's ``SystemExit``: a job-level
+    failure, not worker death.
+
+    A provider factory is user code, and it runs on every resolution
+    seam: a sync callable called on the loop, a sync generator's
+    ``__enter__`` on the pinned executor thread, an async factory
+    awaited in-frame. CPython's ``Task.__step`` special-cases exactly
+    ``(KeyboardInterrupt, SystemExit)``: after ``set_exception`` it
+    re-raises the exception bare, and ``Handle._run`` re-raises that pair
+    past the loop's generic exception handler. The worker's per-job
+    attempt already runs as its own child task, so a factory's
+    ``sys.exit()`` left raw ends THAT task's step with SystemExit - the
+    loop dies before ``dispatch_one_job``'s documented ``except
+    Exception`` (a failure before the actor runs is a terminal failure
+    like any other) or the consumer loop's own handler can see it: the
+    worker dies and the job's row strands ``running`` for lease expiry.
+
+    ``ScopeContainer.get_or_create`` - the single seam every factory
+    invocation crosses - raises this carrier instead, an ordinary
+    ``Exception`` whose ``.original`` is the factory's own
+    ``SystemExit``: the dispatch's failure handler records the factory's
+    own exception (``error_class`` is ``"SystemExit"``, the traceback
+    carries the factory's frame via the cause chain) and the worker
+    survives. ``KeyboardInterrupt`` is deliberately not converted:
+    interpreter/operator intent, never a factory outcome, it propagates
+    raw.
+    """
+
+    def __init__(self, original: SystemExit) -> None:
+        self.original = original
+        super().__init__(f"provider factory raised SystemExit: {original.code!r}")
+
+
+def _unwrap_provider_system_exit(exc: BaseException) -> BaseException:
+    """Return the factory's own exception for a ``_ProviderSystemExitError``
+    carrier, *exc* unchanged otherwise.
+
+    The single unwrapping point: the dispatch failure handler unwraps
+    before routing, so the attempt record never carries the carrier's
+    own name (a false audit trail).
+    """
+    if isinstance(exc, _ProviderSystemExitError):
+        return exc.original
+    return exc
+
 # Why: resolver accepts object (erasure boundary, entry.impl is object per
 # ) and returns Any (the kwargs dict shape depends
 # on the factory's signature, which the resolver inspects at runtime).
@@ -128,6 +175,23 @@ class ScopeContainer:
 
     async def get_or_create[T](self, type_: type[T], entry: ProviderEntry[T]) -> T:
         """Resolve *type_* via *entry*, creating and caching the instance if needed."""
+        try:
+            return await self._get_or_create_user_code(type_, entry)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            # The carve-out, exactly as the consumer's attempt boundary
+            # applies it: interpreter/operator intent (KeyboardInterrupt)
+            # and shutdown cancellation (CancelledError) are never a
+            # factory outcome; both propagate raw.
+            raise
+        except SystemExit as exc:
+            # The single conversion seam every provider factory crosses:
+            # see _ProviderSystemExitError for why the carrier, not the
+            # raw SystemExit, is what may leave this frame.
+            raise _ProviderSystemExitError(exc) from exc
+
+    async def _get_or_create_user_code[T](self, type_: type[T], entry: ProviderEntry[T]) -> T:
+        """The resolution body :meth:`get_or_create` wraps with the
+        SystemExit conversion (every factory invocation in one place)."""
         if self._scope is not Scope.TRANSIENT:
             cached = self._cache.get(type_)
             if cached is not None:
