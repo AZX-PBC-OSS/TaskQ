@@ -260,6 +260,49 @@ async def test_listen_cleanup_releases_connection(pg_dsn: str) -> None:
         await pool.close()
 
 
+async def test_a_cancelled_close_still_releases_the_connection() -> None:
+    """A cancellation delivered into ``aclose()`` mid-cleanup must not strand
+    the connection.
+
+    This is the shape the consumer's bounded close produces: its
+    ``asyncio.wait_for`` timeout cancels the close task while the feed's
+    cleanup is still running. Unshielded, the ``CancelledError`` lands at
+    whatever cleanup step is awaiting (``suppress(Exception)`` does not hold
+    it) and ``pool.release`` is skipped -- and the generator, abandoned
+    inside its own finally, can never be closed again: the connection
+    strands against the pool cap with no GC revival. The cleanup must
+    detach and finish, while the cancellation still propagates to the
+    closer.
+    """
+    pool = MagicMock()
+    conn = _open_conn()
+    pool.acquire = AsyncMock(return_value=conn)
+
+    cleanup_started = asyncio.Event()
+    release_gate = asyncio.Event()
+    released = asyncio.Event()
+
+    async def gated_release(c: object) -> None:
+        cleanup_started.set()
+        await release_gate.wait()
+        released.set()
+
+    pool.release = gated_release
+
+    gen = listen_with_reconnect(lambda: pool, "chan", keepalive_interval=0.05)
+    payload = await asyncio.wait_for(gen.__anext__(), timeout=3.0)
+    assert payload is None  # keepalive: the feed frame is parked at its yield
+
+    close_task = asyncio.create_task(gen.aclose())
+    await cleanup_started.wait()  # the cleanup is mid-flight
+    close_task.cancel()  # the wait_for-timeout shape: the CLOSE is cancelled
+    with pytest.raises(asyncio.CancelledError):
+        await close_task
+
+    release_gate.set()
+    await asyncio.wait_for(released.wait(), timeout=3.0)
+
+
 async def test_listen_reconnect_is_reported_with_its_cause() -> None:
     """An SSE feed that keeps failing to LISTEN (a pool that cannot connect,
     a bouncer that rejects session commands) degrades to keepalives only;
