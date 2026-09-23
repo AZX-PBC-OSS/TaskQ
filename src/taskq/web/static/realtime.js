@@ -77,16 +77,43 @@
     }
 
     function acceptProgress(seq, rawState, merge) {
+        const state = progressState(rawState);
+
+        if (!merge) {
+            // Absolute snapshots - the poll's durable row, the stream's
+            // initial/reconnect catch-up - are content-addressed, never
+            // gated by the delta cursor. A recovery snapshot whose seq
+            // TRAILS the deltas this page already merged is still the
+            // durable truth: flushes lag the fanout, and a reclaim that
+            // ends a crashed attempt writes its seq without carrying the
+            // dead attempt's unflushed deltas. Gating snapshots on the
+            // cursor loses exactly those states the cursor ran ahead of -
+            // and at terminal the poll then stops and closes the stream,
+            // so no later event can restore them. An empty snapshot skips
+            // wholly: nothing rendered, nothing wiped, nothing committed.
+            const snapshotFingerprint = progressFingerprint(state);
+            if (snapshotFingerprint === null) return;
+            if (snapshotFingerprint === lastRenderedProgress) {
+                if (Number.isInteger(seq) && seq > lastSeenSeq) lastSeenSeq = seq;
+                return;
+            }
+            if (Number.isInteger(seq) && seq > lastSeenSeq) lastSeenSeq = seq;
+            accumulatedProgress = state;
+            lastRenderedProgress = snapshotFingerprint;
+            renderProgressEvent(state);
+            return;
+        }
+
+        // Redis envelopes are call-level deltas; initial PG snapshots
+        // have no kind and replace the accumulated client state.
         if (!Number.isInteger(seq) || seq <= lastSeenSeq) return;
         lastSeenSeq = seq;
 
-        const state = progressState(rawState);
-        accumulatedProgress = merge
-            ? { ...accumulatedProgress, ...state }
-            : state;
+        accumulatedProgress = { ...accumulatedProgress, ...state };
         const fingerprint = progressFingerprint(accumulatedProgress);
+        if (fingerprint === null) return;
         const actorProgress = rawState.kind === "progress";
-        if (fingerprint === null || (fingerprint === lastRenderedProgress && !actorProgress)) return;
+        if (fingerprint === lastRenderedProgress && !actorProgress) return;
 
         lastRenderedProgress = fingerprint;
         renderProgressEvent(state);

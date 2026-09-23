@@ -49,6 +49,11 @@ let wantRealtime = [
     "terminal-poll-recovery",
     "repeated-progress",
     "timestamped-progress",
+    "terminal-trailing-seq",
+    "empty-recovery-wipe",
+    "catchup-rendered-once",
+    "cursor-advance",
+    "replayed-delta",
 ].includes(scenario);
 
 global.window = { TASKQ_BASE_PATH: "/taskq" };
@@ -166,6 +171,19 @@ const routes = [
             progress_seq: 2,
         }),
     },
+    {
+        // The durable row trails the fanout: the deltas this page merged
+        // were never flushed (paused broker), the attempt died, the
+        // reclaim consumed its seq without carrying the dead attempt's
+        // unflushed work. The poll's terminal snapshot arrives with a
+        // sequence BELOW the deltas already rendered.
+        condition: ({ scenario }) => scenario === "terminal-trailing-seq",
+        handler: () => ({
+            status: "crashed",
+            progress_state: { percent: 90, detail: "reclaimed" },
+            progress_seq: 4,
+        }),
+    },
 ];
 
 function resolveBody(context) {
@@ -228,6 +246,35 @@ if (scenario === "realtime-empty-progress") {
         { kind: "progress", percent: 50, ts: "2026-01-01T00:00:00Z" },
         "2",
     );
+} else if (scenario === "terminal-trailing-seq") {
+    global.lastEventSource.emit("progress", { kind: "progress", percent: 90 }, "5");
+    global.lastEventSource.emit("progress", { kind: "progress", detail: "step" }, "6");
+    global.lastEventSource.emitError();
+    advance(1000);
+} else if (scenario === "empty-recovery-wipe") {
+    global.lastEventSource.emit("progress", { kind: "progress", percent: 90 }, "2");
+    // The reconnect catch-up: the durable row had nothing (the deltas were
+    // never flushed), the server answers the recovery with an empty
+    // absolute snapshot.
+    global.lastEventSource.emit("progress", {}, "6");
+    global.lastEventSource.emit("progress", { kind: "progress", detail: "x" }, "7");
+    global.lastEventSource.emit("progress", { percent: 90, detail: "x" }, "8");
+} else if (scenario === "catchup-rendered-once") {
+    global.lastEventSource.emit("progress", { kind: "progress", percent: 50 }, "2");
+    // Reconnect catch-up: one absolute snapshot above the cursor...
+    global.lastEventSource.emit("progress", { percent: 75, detail: "catchup" }, "4");
+    // ...then the poll observes the same durable state by sequence.
+    advance(1000);
+} else if (scenario === "cursor-advance") {
+    global.lastEventSource.emit("progress", { kind: "progress", percent: 50 }, "2");
+    // A deduped absolute snapshot ABOVE the cursor still moves the cursor.
+    global.lastEventSource.emit("progress", { percent: 50 }, "5");
+    // A stale transport replay from below it must stay dropped.
+    global.lastEventSource.emit("progress", { kind: "progress", percent: 50 }, "3");
+} else if (scenario === "replayed-delta") {
+    global.lastEventSource.emit("progress", { kind: "progress", percent: 50 }, "2");
+    // The same sequence delivered a second time (transport replay).
+    global.lastEventSource.emit("progress", { kind: "progress", percent: 50 }, "2");
 }
 advance(32000);
 log.push("mode:" + badge.attrs["data-mode"]);
@@ -359,3 +406,77 @@ def test_realtime_progress_retains_its_timestamp() -> None:
     """The progress renderer receives timestamps from Redis envelopes."""
     log = _drive("timestamped-progress")
     assert any(entry.startswith("progress-meta:50% · ") for entry in log)
+
+
+# ── Conservation attacks on the recovery skip (the #478 surface) ──────────
+
+
+@requires_node
+def test_terminal_snapshot_with_a_trailing_sequence_is_never_suppressed() -> None:
+    """A terminal durable snapshot below the merged delta cursor still renders.
+
+    The deltas this page merged ride Redis ahead of the coalesced flush; a
+    reclaim that ends the attempt writes its seq without carrying the dead
+    attempt's unflushed deltas, so the poll's terminal snapshot arrives with
+    a progress_seq BELOW the cursor the deltas moved. Gating absolute
+    snapshots on that cursor loses the terminal state to the UI: the poll
+    then stops and closes the stream, so no later event can restore it.
+    """
+    log = _drive("terminal-trailing-seq")
+    # One entry per merged delta, then the terminal durable truth.
+    assert log.count("append-progress") == 3
+    # The terminal poll still stops both drivers.
+    assert log.count("sse-close") == 1
+
+
+@requires_node
+def test_empty_recovery_snapshot_leaves_the_accumulator_whole() -> None:
+    """An empty recovery snapshot skips wholly: no accumulator wipe.
+
+    The recovery's empty absolute snapshot must carry no side effects. With
+    the wipe, the accumulated percent is dropped and the later full
+    snapshot re-renders a state the page had already shown; with the
+    accumulator left whole, that snapshot dedupes against the accumulated
+    fingerprint - no lost percent, no duplicate entry.
+    """
+    log = _drive("empty-recovery-wipe")
+    # delta(90%) + delta(detail); the seq-8 snapshot dedupes against the
+    # accumulated fingerprint instead of re-rendering the combined state.
+    assert log.count("append-progress") == 2
+
+
+@requires_node
+def test_reconnect_catchup_snapshot_is_delivered_exactly_once() -> None:
+    """The catch-up snapshot and the poll's equal-seq state render once.
+
+    The double-delivery shape: the recovery's absolute snapshot at seq N,
+    then the poll's full path reading the same durable seq N. The content
+    dedupe (not the sequence gate) collapses the pair - the sequence gate
+    alone would let a BELOW-cursor terminal through instead.
+    """
+    log = _drive("catchup-rendered-once")
+    assert log.count("append-progress") == 2
+
+
+@requires_node
+def test_transport_replay_of_a_delivered_sequence_is_dropped() -> None:
+    """A delta sequence delivered twice renders once.
+
+    The exactly-once discipline of the delta fast path: the same seq can
+    reach the page twice (a pub/sub replay after reconnect, a duplicated
+    frame); the cursor drops the second copy.
+    """
+    log = _drive("replayed-delta")
+    assert log.count("append-progress") == 1
+
+
+@requires_node
+def test_deduped_snapshot_still_advances_the_cursor() -> None:
+    """A content-deduped snapshot above the cursor still moves the cursor.
+
+    Dedupe suppresses only the render; the cursor must still move, or a
+    stale transport replay from below the snapshot's sequence renders a
+    state the page had already passed.
+    """
+    log = _drive("cursor-advance")
+    assert log.count("append-progress") == 1
