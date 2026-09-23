@@ -266,11 +266,14 @@ def test_history_empty_cursor_params_normalized_to_none(
 def test_history_valid_cursor_returns_200(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A valid cursor_at/cursor_id pair selects the cursor SQL path (200)."""
+    """A valid cursor_at/cursor_created/cursor_id triple selects the cursor
+    SQL path (200)."""
     conn = _FetchConn(fetch_results=[[], []])
     client = _build_history_app(_FetchPool(conn), monkeypatch)
     response = client.get(  # pyright: ignore[reportUnknownMemberType]
-        "/history?cursor_at=2025-01-01T00:00:00&cursor_id=00000000-0000-0000-0000-000000000001"
+        "/history?cursor_at=2025-01-01T00:00:00"
+        "&cursor_created=2025-01-01T00:00:00"
+        "&cursor_id=00000000-0000-0000-0000-000000000001"
     )
     assert response.status_code == 200  # pyright: ignore[reportUnknownMemberType]
 
@@ -282,9 +285,30 @@ def test_history_null_sentinel_cursor_returns_200(
     conn = _FetchConn(fetch_results=[[], []])
     client = _build_history_app(_FetchPool(conn), monkeypatch)
     response = client.get(  # pyright: ignore[reportUnknownMemberType]
-        f"/history?cursor_at={_CURSOR_NULL_SENTINEL}&cursor_id=00000000-0000-0000-0000-000000000002"
+        f"/history?cursor_at={_CURSOR_NULL_SENTINEL}"
+        "&cursor_created=2025-01-01T00:00:00"
+        "&cursor_id=00000000-0000-0000-0000-000000000002"
     )
     assert response.status_code == 200  # pyright: ignore[reportUnknownMemberType]
+
+
+def test_history_partial_cursor_missing_created_returns_400(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cursor carrying cursor_at/cursor_id but NOT cursor_created is partial.
+
+    The seam predicate compares all three keys of the walk's sort tuple; a
+    two-key cursor cannot describe a page boundary (the missing created_at
+    key would re-admit rows the ordering places before the seam), so it
+    gets the same clean 400 the page's other partial cursors get -- never
+    a silently wrong page.
+    """
+    conn = _FetchConn(fetch_results=[[], []])
+    client = _build_history_app(_FetchPool(conn), monkeypatch)
+    response = client.get(  # pyright: ignore[reportUnknownMemberType]
+        "/history?cursor_at=2025-01-01T00:00:00&cursor_id=00000000-0000-0000-0000-000000000001"
+    )
+    assert response.status_code == 400  # pyright: ignore[reportUnknownMemberType]
 
 
 # ── GET /history: pagination (has_next + next cursor) ───────────────────

@@ -103,7 +103,7 @@
 
     {% if has_next %}
     <div class="flex justify-end">
-        <a href="{{ base_path }}/history?{% for s in statuses %}status={{ s|urlencode }}&{% endfor %}{% if actor_filter %}actor={{ actor_filter|urlencode }}&{% endif %}{% if queue_filter %}queue={{ queue_filter|urlencode }}&{% endif %}cursor_at={{ next_cursor_at|urlencode }}&cursor_id={{ next_cursor_id|urlencode }}"
+        <a href="{{ base_path }}/history?{% for s in statuses %}status={{ s|urlencode }}&{% endfor %}{% if actor_filter %}actor={{ actor_filter|urlencode }}&{% endif %}{% if queue_filter %}queue={{ queue_filter|urlencode }}&{% endif %}cursor_at={{ next_cursor_at|urlencode }}&cursor_created={{ next_cursor_created|urlencode }}&cursor_id={{ next_cursor_id|urlencode }}"
            class="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium border border-slate-300 dark:border-slate-600 rounded-md text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
             Next page <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
         </a>
