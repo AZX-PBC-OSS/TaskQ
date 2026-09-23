@@ -292,6 +292,29 @@ async def _event_generator(
                     return
             else:
                 last_emitted_seq = max(0, resolved_last_event_id)
+                if is_terminal:
+                    # The cursor is at or ahead of the durable seq, so the
+                    # catch-up above fired nothing and the live loop below
+                    # can only wait for events this job will never publish:
+                    # the durable row is terminal, the terminal write (the
+                    # mark_* absolute SET) already landed. The shape that
+                    # puts a consumer cursor AHEAD of a terminal row is the
+                    # lost-flush cut: publishes rode Redis out while the
+                    # worker died before the coalesced flush caught up, the
+                    # redispatched attempt re-seeded from the behind row,
+                    # and its terminal seq landed below the cursor. Reading
+                    # the cursor as "nothing to deliver" strands the stream
+                    # on keepalives forever - the durable state IS the
+                    # delivery, so the terminal snapshot is issued here
+                    # whatever the cursor says, the same delivery-on-read
+                    # shape the reconnect catch-up above serves.
+                    yield _make_sse_event(
+                        event="terminal",
+                        seq=progress_seq,
+                        data=progress_data,
+                    )
+                    yield _make_done_event()
+                    return
 
         while True:
             try:
@@ -382,8 +405,19 @@ async def _event_generator(
                 )
                 continue
 
-            # filter duplicates.
-            if seq <= last_emitted_seq:
+            # filter duplicates. A terminal event is exempt: the seq-discard
+            # discipline treats any event as replaceable by a later seq, and
+            # that holds for progress events, but a terminal is not
+            # replaceable, it is the stream's only close signal. A terminal
+            # envelope whose seq lands at or behind the cursor is the
+            # redispatch shape: the previous attempt's tail publishes rode
+            # Redis out, the crash ate the flush, the durable row re-seeded
+            # behind the cursor, and the new attempt's terminal write carries
+            # a seq below what the subscriber last saw. Discarding it strands
+            # the stream on keepalives for a job that is durably over - the
+            # durable terminal state is the delivery, so it is emitted from
+            # here whatever the cursor says, and the stream closes.
+            if seq <= last_emitted_seq and not terminal:
                 continue
 
             last_emitted_seq = seq
