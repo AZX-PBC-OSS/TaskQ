@@ -424,6 +424,9 @@ ignore = [
 "tests/web_progress/test_integration.py" = ["S608"]
 # Same rationale — schema name is a module constant; all user-supplied
 # values use $N parameter binding.
+"tests/web_progress/test_progress_cursor_recovery.py" = ["S608"]
+# Same rationale — schema name is a module constant; all user-supplied
+# values use $N parameter binding.
 "src/taskq/testing/fixtures.py" = ["S608", "E402"]
 # Same rationale — schema name validated against _IDENT_RE; all
 # user-supplied values use $N parameter binding.
