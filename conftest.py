@@ -9,7 +9,6 @@ tier from being collected on every invocation shape, and ``pytest_configure`` /
 
 import faulthandler
 import functools
-import importlib.util
 import ipaddress
 import os
 import socket
@@ -253,8 +252,10 @@ def _blocked_message(nodeid: str, address: object, via: str) -> str:
         "(testcontainers Postgres/Dragonfly, local stub servers, unix sockets), "
         "and nothing calls a live third-party service.\n"
         "Most likely cause: an HTTP mock stopped matching, so the call fell "
-        "through to the real endpoint. See `pytest_configure` in this file for "
-        "the httpx/httpx2 case that makes respx silently stop intercepting.\n"
+        "through to the real endpoint. Every HTTP mock in this suite goes "
+        "through tests/http_mock.py, whose router targets every installed "
+        "httpcore (httpx's and httpx2's); tests/test_suite_hygiene.py pins "
+        "that no test bypasses it.\n"
         "Second most likely cause: a test fake points at a routable domain "
         "(example.com, login.microsoftonline.com), so a mock miss reaches a real "
         "server instead of failing. Point fakes at an unroutable name "
@@ -272,11 +273,15 @@ def _no_outbound_network(request: pytest.FixtureRequest) -> Iterator[None]:
     Worked example of why this is structural rather than per-test hygiene.
     ``taskq[oidc]`` installs BOTH ``httpx`` and ``httpx2``:
     ``src/taskq/web/admin/auth/oidc.py`` does ``import httpx2 as httpx`` for the
-    discovery and JWKS fetches, while authlib's ``AsyncOAuth2Client`` subclasses
-    ``httpx.AsyncClient`` for the token exchange. ``respx`` patches ``httpx``
-    only, so ``tests/test_sso_oidc.py`` has to bridge the gap by monkeypatching
-    ``httpx2.AsyncClient`` to ``httpx.AsyncClient``. Drop, rename or narrow that
-    bridge and respx stops intercepting, with no error of its own.
+    discovery and JWKS fetches, while authlib's ``AsyncOAuth2Client`` uses
+    whichever stack its version binds to. There was a stretch when
+    ``tests/test_sso_oidc.py`` bridged the stacks by monkeypatching
+    ``httpx2.AsyncClient`` to ``httpx.AsyncClient`` so stock respx (which
+    patches ``httpcore`` only) would intercept both halves; drop, rename or
+    narrow that bridge and respx stopped intercepting, with no error of its
+    own. The bridge is gone - ``tests/http_mock.py`` aims respx at every
+    installed core instead - but the guard stays: a mock miss of any shape
+    must fail at the call site, not leave the machine.
 
     In a sibling repo the identical shape (authlib >= 1.8 prefers ``httpx2``
     whenever it is importable) sent unit-lane traffic to the real Microsoft
@@ -321,39 +326,24 @@ def _no_outbound_network(request: pytest.FixtureRequest) -> Iterator[None]:
         socket.socket.connect_ex = real_connect_ex  # type: ignore[method-assign]
 
 
-def _installed_http_stacks() -> list[str]:
-    """Which of the two mutually-invisible httpx stacks are importable."""
-    return [name for name in ("httpx", "httpx2") if importlib.util.find_spec(name) is not None]
-
-
 def pytest_configure(config: pytest.Config) -> None:
-    """Warn at session start when more than one HTTP stack is installed.
+    """Intercept ``os._exit`` in the pytest process (see ``_intercepted_force_exit``).
 
-    Two importable stacks is the precondition for a mock that silently stops
-    applying: stock respx patches ``httpcore`` (``httpx``'s transport) and
-    cannot see ``httpcore2`` (``httpx2``'s) at all, so any code path that
-    reaches for ``httpx2`` runs unmocked while the test still reads as mocked.
-    It is a warning and not a failure because ``taskq[oidc]`` legitimately
-    needs both — authlib is on ``httpx`` (or ``httpx2``, depending on version)
-    and ``taskq.web.admin.auth.oidc`` is on ``httpx2``. ``tests/http_mock.py``
-    registers a respx mocker aimed at every installed httpcore so both stacks
-    are covered through one route table; ``tests/test_suite_hygiene.py`` pins
-    that every test goes through it. The outbound-network guard in this file
-    is the backstop.
+    A config-time warning about multiple installed HTTP stacks used to live
+    here too: stock respx patches ``httpcore`` only, so with ``taskq[oidc]``'s
+    two stacks (``httpx`` for the dev group, ``httpx2`` for the OIDC extra)
+    an ``httpx2`` call could read as mocked while reaching out for real. That
+    condition is defeated at the mechanism, so the warning is retired rather
+    than fires forever: ``tests/http_mock.py`` registers a respx mocker whose
+    targets include every installed core (``httpcore`` AND ``httpcore2``)
+    behind one route table, and ``tests/test_suite_hygiene.py`` pins both the
+    entry point (no bare ``respx.mock``, no httpx/httpx2 client-class bridge)
+    and the interception itself (a request on each installed stack must reach
+    the mock, or the suite fails). The outbound-network guard in this file is
+    the backstop for anything the pins cannot see. Retiring the warning does
+    not weaken any of that; a warning that fired on every run of every leg
+    trained the reader to dismiss it.
     """
-    stacks = _installed_http_stacks()
-    if len(stacks) > 1:
-        config.issue_config_time_warning(
-            pytest.PytestConfigWarning(
-                f"Multiple HTTP stacks installed ({', '.join(stacks)}). Stock respx "
-                "patches httpcore only and cannot intercept httpx2, so a test can look "
-                "mocked while calling out for real. tests/http_mock.py mocks every "
-                "installed stack through one router; tests/test_suite_hygiene.py pins "
-                "that tests use it instead of bare respx or a client-class bridge. The "
-                "outbound-network guard in conftest.py is the backstop."
-            ),
-            stacklevel=2,
-        )
     os._exit = _intercepted_force_exit  # type: ignore[assignment]  # Why: the seam is deliberate (see _intercepted_force_exit); mypy/pyright see a module builtin reassigned.
 
 
