@@ -218,7 +218,7 @@ async def test_same_tick_abandon_rollback_leaves_job_recoverable(
         except asyncio.CancelledError:
             entry = deps.active_jobs.get(job_id)
             if entry is not None and entry.cancel_phase >= CancelPhase.ABANDON_PENDING:
-                await deps.active_jobs.deregister(job_id)
+                await deps.active_jobs.deregister(job_id, entry)
             raise
 
     consumer_task = asyncio.get_running_loop().create_task(_consumer_body())
@@ -620,7 +620,7 @@ async def test_abandon_raise_requeue_then_landing_is_idempotent(
         except asyncio.CancelledError:
             entry = deps.active_jobs.get(job_id)
             if entry is not None and entry.cancel_phase >= CancelPhase.ABANDON_PENDING:
-                await deps.active_jobs.deregister(job_id)
+                await deps.active_jobs.deregister(job_id, entry)
             raise
 
     consumer_task = asyncio.get_running_loop().create_task(_consumer_body())
@@ -780,7 +780,7 @@ async def test_budget_cut_drain_whose_detached_write_lands_still_delivers(
         except asyncio.CancelledError:
             entry = deps.active_jobs.get(job_id)
             if entry is not None and entry.cancel_phase >= CancelPhase.ABANDON_PENDING:
-                await deps.active_jobs.deregister(job_id)
+                await deps.active_jobs.deregister(job_id, registered_entry)
             raise
 
     consumer_task = asyncio.get_running_loop().create_task(_consumer_body())
@@ -801,7 +801,9 @@ async def test_budget_cut_drain_whose_detached_write_lands_still_delivers(
         await conn.close()
 
     try:
-        await deps.active_jobs.register(job_id, consumer_task, _make_ctx(job_id, worker_id))
+        registered_entry = await deps.active_jobs.register(
+            job_id, consumer_task, _make_ctx(job_id, worker_id)
+        )
 
         # Tick 1: the same-tick arm escalates the row to phase 2, queues
         # the abandon WITHOUT cancelling (the deferred delivery), and the
@@ -929,7 +931,7 @@ async def test_ladder_survives_repeated_rollbacks_and_lands_on_the_good_tick(
         except asyncio.CancelledError:
             entry = deps.active_jobs.get(job_id)
             if entry is not None and entry.cancel_phase >= CancelPhase.ABANDON_PENDING:
-                await deps.active_jobs.deregister(job_id)
+                await deps.active_jobs.deregister(job_id, entry)
             raise
 
     consumer_task = asyncio.get_running_loop().create_task(_consumer_body())

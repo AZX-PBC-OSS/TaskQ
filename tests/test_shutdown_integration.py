@@ -514,8 +514,9 @@ async def test_draining_hands_back_only_jobs_no_consumer_is_running(
     await _mark_jobs_running(deps, [backlog_id, executing_id], worker_id, cancel_phase=0)
 
     active = _fake_active_job(job_id=executing_id)
+    active_entry: _ActiveJob | None = None
     try:
-        await deps.active_jobs.register(active.job_id, active.task, active.ctx)
+        active_entry = await deps.active_jobs.register(active.job_id, active.task, active.ctx)
 
         drained = await drain_local_queue_to_pending(deps, worker_id)
 
@@ -558,7 +559,7 @@ async def test_draining_hands_back_only_jobs_no_consumer_is_running(
             f"claimed would strand or duplicate it; released {again} rows"
         )
     finally:
-        await deps.active_jobs.deregister(active.job_id)
+        await deps.active_jobs.deregister(active.job_id, active_entry)
         active.task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await active.task

@@ -686,7 +686,11 @@ async def consumer_loop_stub(
                 ),
             )
 
-            await deps.active_jobs.register(job.id, current_task, ctx)  # type: ignore[arg-type]  # Why: JobContext[_StubPayload] is a JobContext[BaseModel]; pyright cannot widen Generic[TChild] to Generic[TParent] without explicit covariance.
+            # The registration is captured for the exit path below (issue
+            # 461): deregister must pop THIS attempt's entry, not a
+            # bare-id pop of whatever the key holds if a re-claim
+            # overwrote it mid-run.
+            _stub_entry = await deps.active_jobs.register(job.id, current_task, ctx)  # type: ignore[arg-type]  # Why: JobContext[_StubPayload] is a JobContext[BaseModel]; pyright cannot widen Generic[TChild] to Generic[TParent] without explicit covariance.
 
             try:
                 try:
@@ -727,7 +731,7 @@ async def consumer_loop_stub(
 
             finally:
                 deps.active_jobs.resolve_claim(job.id)
-                await deps.active_jobs.deregister(job.id)
+                await deps.active_jobs.deregister(job.id, _stub_entry)
                 # Slot-release point #2: the producer's
                 # availability subtracts active jobs, so this slot
                 # frees at the deregister above, not at the get() that

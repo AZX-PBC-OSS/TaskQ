@@ -158,7 +158,9 @@ async def _run_with_foreign_registry_entry(
         task = asyncio.current_task()
         assert task is not None
         await active_jobs.register(sibling_id, task, ctx)
-        await active_jobs.deregister(running.id)
+        running_entry = active_jobs.get(running.id)
+        if running_entry is not None:
+            await active_jobs.deregister(running.id, running_entry)
         return {"ok": True}
 
     outcome = await consume_one_job(

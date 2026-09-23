@@ -238,8 +238,9 @@ class _RegistrySpy:
 
     async def register(self, job_id: object, task: object, ctx: object) -> None:
         self.registered.append(job_id)
+        return None
 
-    async def deregister(self, job_id: object) -> None:
+    async def deregister(self, job_id: object, entry: object) -> None:
         self.deregistered.append(job_id)
 
     def count(self) -> int:
@@ -300,8 +301,8 @@ async def test_stub_consumer_wakes_the_producer_after_the_deregister() -> None:
     registry.register = _recording_register  # type: ignore[method-assign]
     original_deregister = registry.deregister
 
-    async def _recording_deregister(job_id: object) -> None:
-        await original_deregister(job_id)
+    async def _recording_deregister(job_id: object, entry: object) -> None:
+        await original_deregister(job_id, entry)
         events.append("deregister")
 
     registry.deregister = _recording_deregister  # type: ignore[method-assign]
