@@ -252,14 +252,10 @@
     {# Progress #}
     <section>
         <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3 uppercase tracking-wider">Progress</h3>
-        {% set ps = job.progress_state or {} %}
-        <div id="progress-section"
-             data-job-id="{{ job.id }}"
-             data-progress-seq="{{ job.progress_seq or 0 }}"
-             data-progress-state='{{ ps | tojson }}'
-             class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4">
+        <div id="progress-section" data-job-id="{{ job.id }}" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4">
             <div id="progress-timeline" class="space-y-2">
-                {% if ps is mapping and (ps.get('step') is not none or ps.get('percent') is not none or ps.get('detail') is not none or ps.get('data') is not none) %}
+                {% set ps = job.progress_state or {} %}
+                {% if ps is mapping and ps.get('step') is not none %}
                 <div class="progress-event bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded p-3">
                     {% if ps.get('percent') is not none %}
                     <div class="flex items-center gap-2 mb-2">
@@ -270,7 +266,7 @@
                     </div>
                     {% endif %}
                     <div class="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
-                        {% if ps.get('step') is not none %}<span class="font-medium text-slate-700 dark:text-slate-300">{{ ps.step }}</span>{% endif %}
+                        <span class="font-medium text-slate-700 dark:text-slate-300">{{ ps.step }}</span>
                         {% if ps.detail %}<span>{{ ps.detail }}</span>{% endif %}
                         {% if ps.ts %}<span class="text-slate-400">{{ ps.ts }}</span>{% endif %}
                     </div>

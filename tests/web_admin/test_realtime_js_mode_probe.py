@@ -29,8 +29,8 @@ requires_node = pytest.mark.skipif(
 )
 
 # A minimal browser: the badge and progress section are the two elements the
-# module touches; fetch answers /sse/mode with the scripted verdict and the
-# poll with scenario-specific snapshots; timers are virtual.
+# module touches; fetch answers /sse/mode with the scripted verdict and every
+# other URL (the poll) with an empty body; timers are virtual.
 _HARNESS = r"""
 const fs = require("fs");
 const src = fs.readFileSync(process.argv[process.argv.length - 2], "utf8");
@@ -40,143 +40,41 @@ const log = [];
 let now = 0;
 let timers = [];
 let nextTimer = 1;
-let wantRealtime = [
-    "redis-returns",
-    "realtime-empty-progress",
-    "realtime-progress",
-    "initial-progress",
-    "transient-sse-error",
-    "terminal-poll-recovery",
-    "repeated-progress",
-    "timestamped-progress",
-].includes(scenario);
+let wantRealtime = scenario === "redis-returns";
 
 global.window = { TASKQ_BASE_PATH: "/taskq" };
 global.POLL_INTERVAL_MS = 1000;
 
 const badge = {
-    attrs: {
-        "data-mode": scenario === "redis-returns"
-            ? "polling-degraded"
-            : scenario.startsWith("polling-")
-                ? "polling"
-                : "realtime"
-    },
+    attrs: { "data-mode": scenario === "redis-returns" ? "polling-degraded" : "realtime" },
     textContent: "",
     setAttribute(k, v) { this.attrs[k] = v; },
     getAttribute(k) { return this.attrs[k]; },
 };
-const initialProgress = scenario === "initial-progress"
-    ? { seq: 2, state: { percent: 50 } }
-    : { seq: 1, state: {} };
-const section = {
-    attrs: {
-        "data-job-id": "j1",
-        "data-progress-seq": String(initialProgress.seq),
-        "data-progress-state": JSON.stringify(initialProgress.state),
-    },
-    getAttribute(k) { return this.attrs[k]; },
-};
-const timeline = {
-    appendChild(entry) {
-        log.push("append-progress");
-        const meta = entry.children.find((child) => child.className === "progress-meta");
-        if (meta) log.push("progress-meta:" + meta.textContent);
-    },
-};
-const elements = {
-    "progress-section": section,
-    "progress-timeline": timeline,
-};
+const section = { attrs: { "data-job-id": "j1" }, getAttribute(k) { return this.attrs[k]; } };
 
 global.document = {
     addEventListener(name, fn) { if (name === "DOMContentLoaded") fn(); },
-    getElementById(id) { return elements[id] ?? null; },
+    getElementById(id) { return id === "progress-section" ? section : null; },
     querySelector(sel) { return sel === ".taskq-badge" ? badge : null; },
-    createElement() {
-        return {
-            children: [],
-            className: "",
-            textContent: "",
-            style: {},
-            appendChild(child) { this.children.push(child); },
-            scrollIntoView() {},
-        };
-    },
+    createElement() { return {}; },
 };
 
 global.EventSource = class {
-    constructor(url) {
-        this.url = url;
-        this.handlers = {};
-        global.lastEventSource = this;
-        log.push("sse-open:" + url);
-    }
+    constructor(url) { this.url = url; this.handlers = {}; log.push("sse-open:" + url); }
     addEventListener(name, fn) { this.handlers[name] = fn; }
     close() { log.push("sse-close"); }
-    emit(name, data, lastEventId) {
-        this.handlers[name]({ data: JSON.stringify(data), lastEventId });
-    }
-    emitOpen() { this.handlers.open({}); }
-    emitError() { this.handlers.error({}); }
 };
 
 global.setInterval = (fn, ms) => { const id = nextTimer++; timers.push({ id, fn, ms, due: now + ms }); return id; };
 global.clearInterval = (id) => { timers = timers.filter((t) => t.id !== id); };
 
-let pollCount = 0;
-const routes = [
-    {
-        condition: ({ url }) => url.endsWith("/sse/mode"),
-        handler: () => ({ realtime: wantRealtime }),
-    },
-    {
-        condition: ({ scenario }) => scenario === "polling-empty-progress",
-        handler: () => ({
-            status: "succeeded",
-            progress_state: {},
-            progress_seq: 2,
-        }),
-    },
-    {
-        condition: ({ scenario }) => scenario === "polling-progress",
-        handler: () => {
-            pollCount += 1;
-            return pollCount === 1
-                ? { status: "running", progress_state: { percent: 50 }, progress_seq: 2 }
-                : { status: "succeeded", progress_state: { percent: 50 }, progress_seq: 3 };
-        },
-    },
-    {
-        condition: ({ scenario }) => scenario === "sse-to-polling",
-        handler: () => {
-            pollCount += 1;
-            return {
-                status: "succeeded",
-                progress_state: { detail: "phase", percent: 50, data: { a: 1, b: 2 } },
-                progress_seq: 4,
-            };
-        },
-    },
-    {
-        condition: ({ scenario }) => scenario === "terminal-poll-recovery",
-        handler: () => ({
-            status: "succeeded",
-            progress_state: { percent: 100 },
-            progress_seq: 2,
-        }),
-    },
-];
-
-function resolveBody(context) {
-    const route = routes.find(({ condition }) => condition(context));
-    return route?.handler(context) ?? {};
-}
-
 global.fetch = (url) => ({
     then(f1) {
         log.push("fetch:" + url.split("?")[0]);
-        const body = resolveBody({ url, scenario });
+        const body = url.endsWith("/sse/mode")
+            ? { realtime: wantRealtime }
+            : {};
         return { then(f2) { f2(f1({ json: () => body })); return { catch() {} }; } };
     },
 });
@@ -192,44 +90,7 @@ function advance(ms) {
 }
 
 new Function(src)();
-if (scenario === "realtime-empty-progress") {
-    global.lastEventSource.emit("terminal", {}, "2");
-} else if (scenario === "realtime-progress") {
-    global.lastEventSource.emit("progress", { kind: "progress", detail: "retained" }, "2");
-    global.lastEventSource.emit("progress", { kind: "progress", percent: 50 }, "3");
-    global.lastEventSource.emit(
-        "terminal",
-        { kind: "state_change", percent: 50, terminal: true },
-        "4",
-    );
-} else if (scenario === "sse-to-polling") {
-    global.lastEventSource.emit("progress", { kind: "progress", detail: "phase" }, "2");
-    global.lastEventSource.emit(
-        "progress",
-        { kind: "progress", data: { b: 2, a: 1 }, percent: 50 },
-        "3",
-    );
-} else if (scenario === "initial-progress") {
-    global.lastEventSource.emit("progress", { percent: 50 }, "2");
-    global.lastEventSource.emit("terminal", { percent: 50, terminal: true }, "3");
-} else if (scenario === "transient-sse-error") {
-    global.lastEventSource.emitError();
-    advance(1000);
-    global.lastEventSource.emitOpen();
-} else if (scenario === "terminal-poll-recovery") {
-    global.lastEventSource.emitError();
-    advance(1000);
-} else if (scenario === "repeated-progress") {
-    global.lastEventSource.emit("progress", { kind: "progress", percent: 50 }, "2");
-    global.lastEventSource.emit("progress", { kind: "progress", percent: 50 }, "3");
-} else if (scenario === "timestamped-progress") {
-    global.lastEventSource.emit(
-        "progress",
-        { kind: "progress", percent: 50, ts: "2026-01-01T00:00:00Z" },
-        "2",
-    );
-}
-advance(32000);
+advance(30000);
 log.push("mode:" + badge.attrs["data-mode"]);
 process.stdout.write(JSON.stringify(log));
 """
@@ -277,85 +138,3 @@ def test_redis_failing_degrades_a_realtime_page_to_polling() -> None:
     log = _drive("realtime-stays")
     assert "sse-close" in log
     assert log[-1] == "mode:polling-degraded"
-
-
-@requires_node
-def test_polling_does_not_render_the_empty_initial_progress_state() -> None:
-    """A terminal job that never reported progress keeps the empty-state UI.
-
-    Lifecycle transitions consume sequences even when no actor progress was
-    reported. The polling driver must not turn that empty state into a
-    synthetic 0% timeline entry.
-    """
-    log = _drive("polling-empty-progress")
-    assert "fetch:/taskq/jobs/api/job/j1/state" in log
-    assert "append-progress" not in log
-
-
-@requires_node
-def test_polling_renders_a_later_progress_update_once() -> None:
-    """A terminal sequence does not duplicate the last polled progress."""
-    log = _drive("polling-progress")
-    assert log.count("append-progress") == 1
-
-
-@requires_node
-def test_realtime_does_not_render_the_empty_initial_progress_state() -> None:
-    """A nonzero terminal lifecycle event without progress stays empty."""
-    log = _drive("realtime-empty-progress")
-    assert "sse-open:/taskq/jobs/api/job/j1/progress/stream" in log
-    assert "append-progress" not in log
-    assert "sse-close" in log
-    assert "fetch:/taskq/jobs/api/job/j1/state" not in log
-
-
-@requires_node
-def test_realtime_renders_a_later_progress_update_once() -> None:
-    """An accumulated terminal state does not duplicate a progress delta."""
-    log = _drive("realtime-progress")
-    assert log.count("append-progress") == 2
-
-
-@requires_node
-def test_sse_to_polling_deduplicates_the_last_realtime_progress_event() -> None:
-    """Polling deduplicates an accumulated snapshot after SSE deltas."""
-    log = _drive("sse-to-polling")
-    assert log.count("append-progress") == 2
-
-
-@requires_node
-def test_initial_sse_snapshot_does_not_duplicate_server_rendered_progress() -> None:
-    """The persisted sequence and state initialize the browser cursor."""
-    log = _drive("initial-progress")
-    assert log.count("append-progress") == 0
-
-
-@requires_node
-def test_transient_sse_error_keeps_native_eventsource_reconnect() -> None:
-    """A disconnect keeps native reconnect while polling durable state."""
-    log = _drive("transient-sse-error")
-    assert "sse-close" not in log
-    assert log.count("fetch:/taskq/jobs/api/job/j1/state") == 1
-    assert log[-1] == "mode:realtime"
-
-
-@requires_node
-def test_terminal_poll_closes_recovering_eventsource() -> None:
-    """Durable terminal state stops both polling and native SSE recovery."""
-    log = _drive("terminal-poll-recovery")
-    assert log.count("fetch:/taskq/jobs/api/job/j1/state") == 1
-    assert log.count("sse-close") == 1
-
-
-@requires_node
-def test_repeated_actor_progress_calls_render_at_distinct_sequences() -> None:
-    """Equal actor updates are events, unlike duplicate lifecycle snapshots."""
-    log = _drive("repeated-progress")
-    assert log.count("append-progress") == 2
-
-
-@requires_node
-def test_realtime_progress_retains_its_timestamp() -> None:
-    """The progress renderer receives timestamps from Redis envelopes."""
-    log = _drive("timestamped-progress")
-    assert any(entry.startswith("progress-meta:50% · ") for entry in log)
