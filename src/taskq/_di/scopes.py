@@ -65,7 +65,7 @@ class _ProviderSystemExitError(Exception):
         super().__init__(f"provider factory raised SystemExit: {original.code!r}")
 
 
-def _unwrap_provider_system_exit(exc: BaseException) -> BaseException:
+def _unwrap_provider_system_exit(exc: BaseException) -> BaseException:  # pyright: ignore[reportUnusedFunction]  # Why: the dispatch failure handler (worker/dispatch.py) imports this as the single unwrapping point; pyright's unused-function check cannot see the cross-module use.
     """Return the factory's own exception for a ``_ProviderSystemExitError``
     carrier, *exc* unchanged otherwise.
 
@@ -76,6 +76,7 @@ def _unwrap_provider_system_exit(exc: BaseException) -> BaseException:
     if isinstance(exc, _ProviderSystemExitError):
         return exc.original
     return exc
+
 
 # Why: resolver accepts object (erasure boundary, entry.impl is object per
 # ) and returns Any (the kwargs dict shape depends

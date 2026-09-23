@@ -88,6 +88,7 @@ def _unwrap_conn_factory_system_exit(exc: BaseException) -> BaseException:
         return exc.original
     return exc
 
+
 # -- OTel instruments --------------------------------------------
 
 _notify_received_counter = _meter.create_counter(
