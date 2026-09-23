@@ -85,6 +85,15 @@ _LIMIT_CLAUSE_RE = re.compile(r"\bLIMIT\b", re.IGNORECASE)
 # check fails until the entry is removed. Registering a new entry requires
 # writing the justification - that sentence is the review.
 _EXEMPT: dict[str, tuple[str, str]] = {
+    # ── Worker-scoped refunds: the predicate names the calling worker ──
+    "_RECONCILE_LOST_CLAIMS_SQL_TEMPLATE": (
+        "WHERE j.locked_by_worker = $1",
+        "the claim-loss reconcile's attempt refund (#458): its write set is "
+        "the CALLING WORKER's own orphaned rows (locked_by_worker = $1) "
+        "past the aged-start bound, re-checked inline at write time - the "
+        "sweep's SELECT found exactly these; no cross-worker rows are "
+        "reachable",
+    ),
     # ── Batch-bounded writes whose LIMIT lives in a sibling statement ──
     "_ARCHIVE_CTE_SQL": (
         "ANY($3::uuid[])",
