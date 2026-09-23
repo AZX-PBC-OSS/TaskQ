@@ -50,6 +50,44 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 _meter = get_meter()
 
+
+class _ConnFactorySystemExitError(Exception):
+    """Typed carrier for the notify connection factory's ``SystemExit``: a
+    reconnect failure, not worker death.
+
+    A ``notify_conn_factory`` is user code (the credential source, a
+    closure over AAD/AWS/Vault), and the reconnect loop's contract is to
+    survive ANY factory failure - logged attempt, backoff, retry. A
+    factory calling ``sys.exit()`` is the factory's own bug, but left raw
+    its ``SystemExit`` is delivered into the reconnect frame (a bare
+    await under ``asyncio.wait_for``, no task boundary to stop it),
+    escapes the retry loop's ``except Exception``, and the health-check
+    sibling task ends with it: CPython's ``Task.__step`` re-raises exactly
+    ``(KeyboardInterrupt, SystemExit)`` bare after ``set_exception``, the
+    loop dies, the TaskGroup tears the worker down.
+
+    The conversion at the factory await raises this carrier instead, an
+    ordinary ``Exception`` whose ``.original`` is the factory's own
+    ``SystemExit``: the retry loop catches it as an ordinary reconnect
+    failure, and its choke point unwraps, so the reconnect-attempt log
+    names the factory's own exception, never the carrier's name (a false
+    audit trail). ``KeyboardInterrupt`` is deliberately not converted:
+    interpreter/operator intent, never a factory outcome, it propagates
+    raw.
+    """
+
+    def __init__(self, original: SystemExit) -> None:
+        self.original = original
+        super().__init__(f"notify connection factory raised SystemExit: {original.code!r}")
+
+
+def _unwrap_conn_factory_system_exit(exc: BaseException) -> BaseException:
+    """Return the factory's own exception for a
+    ``_ConnFactorySystemExitError`` carrier, *exc* unchanged otherwise."""
+    if isinstance(exc, _ConnFactorySystemExitError):
+        return exc.original
+    return exc
+
 # -- OTel instruments --------------------------------------------
 
 _notify_received_counter = _meter.create_counter(
@@ -287,10 +325,21 @@ async def reconnect_notify_conn(
         # (deps.reload_credentials), not a second mechanism, and its
         # exhaustion here behaves like any factory failure: the retry
         # loop logs the attempt, backs off, and retries.
-        new_conn = await asyncio.wait_for(
-            factory(),
-            timeout=float(deps.settings.reload_factory_timeout),
-        )
+        try:
+            factory_coro = factory()
+            new_conn = await asyncio.wait_for(
+                factory_coro,
+                timeout=float(deps.settings.reload_factory_timeout),
+            )
+        except SystemExit as exc:
+            # The factory's own SystemExit, delivered into this frame by
+            # the bare await (no task boundary stops it, see
+            # _ConnFactorySystemExitError): converted here so the retry
+            # loop's ``except Exception`` treats it as the ordinary
+            # factory failure its contract promises to survive.
+            # KeyboardInterrupt is deliberately not converted (operator
+            # intent, propagates raw).
+            raise _ConnFactorySystemExitError(exc) from exc
         # The DSN path gets TCP keepalive via open_dedicated_conn; a conn
         # rebuilt through the factory must get the same policy - the worker
         # owns this policy, not the user's factory. Safe on fakes (returns
@@ -424,6 +473,11 @@ async def _recover_notify_conn(
             await reconnect_notify_conn(deps, backend, channels)
             return deps.notify_conn
         except Exception as recovery_exc:  # Why: the retry loop must survive ANY factory/reconnect failure - a credential provider raises non-asyncpg errors (azure ClientAuthenticationError, hvac VaultError, botocore ClientError) and a rejected fresh token raises asyncpg.InvalidPasswordError, which is a PostgresError, NOT a PostgresConnectionError. Catching only asyncpg connection errors here would crash the worker during exactly the IdP outage this loop exists to survive. asyncio.CancelledError is BaseException (3.8+), so shutdown cancellation still propagates.
+            # Unwrap the factory-SystemExit carrier first (notify.py's
+            # conversion at the factory await raises it): the log and the
+            # no-factory fallback check must observe the factory's own
+            # exception, never the carrier's name.
+            recovery_exc = _unwrap_conn_factory_system_exit(recovery_exc)
             if isinstance(recovery_exc, RuntimeError) and deps.notify_conn_factory is None:
                 # Caller-owned notify_conn dropped and there is no
                 # factory to rebuild through - retrying could never

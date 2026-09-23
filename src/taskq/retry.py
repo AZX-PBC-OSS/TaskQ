@@ -810,7 +810,23 @@ def decide_after_failure(
                     return_type=type(override).__name__,
                 )
                 override = None
-        except Exception as exc:
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            # The carve-out, exactly as the consumer's attempt boundary
+            # applies it: interpreter/operator intent (KeyboardInterrupt)
+            # and shutdown cancellation (CancelledError) are never a hook
+            # outcome; both propagate raw.
+            raise
+        except BaseException as exc:
+            # BaseException, not Exception: the hook is user code invoked
+            # in this frame, mid-dispatch, and the boundary's contract is
+            # that a buggy hook is logged and ignored, never propagated.
+            # A hook raising SystemExit (or a custom BaseException
+            # subclass) that escaped would blow out of the dispatch's
+            # exception handling itself: the in-flight attempt outcome is
+            # dropped, the row strands ``running`` for lease expiry, and
+            # the dispatch task ends with the bare re-raise that kills
+            # the loop. Logged with repr so the record names the hook's
+            # own exception.
             logger: structlog.stdlib.BoundLogger = (
                 log if log is not None else structlog.get_logger("taskq.retry")
             )
@@ -857,7 +873,23 @@ async def _invoke_hook(
 
     try:
         hook_result = call()
-    except Exception as exc:
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        # The carve-out, exactly as the consumer's attempt boundary
+        # applies it: interpreter/operator intent (KeyboardInterrupt) and
+        # shutdown cancellation (CancelledError) are never a hook
+        # outcome; both propagate raw.
+        raise
+    except BaseException as exc:
+        # BaseException, not Exception: the hook is user code invoked in
+        # this frame beside a terminal write that has already been
+        # decided. A hook raising SystemExit (or a custom BaseException
+        # subclass) that escaped would tear the terminal path down after
+        # the write landed - the success/failure row is already the
+        # truth, and an escapee either misroutes it into the failure
+        # dispatch (a succeeded job recorded failed, a re-execution
+        # risk) or ends the dispatch task with the bare re-raise that
+        # kills the loop. Logged with repr so the record names the
+        # hook's own exception.
         logger.warning(
             f"{name.replace('_', '-')}-hook-failed",
             job_id=str(job_row.id),
@@ -880,7 +912,12 @@ async def _invoke_hook(
             hook=name,
             timeout_seconds=timeout,
         )
-    except Exception as exc:
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        # Same carve-out as the sync arm: the await delivers the hook's
+        # exception into this frame, and operator intent / shutdown
+        # cancellation propagate raw.
+        raise
+    except BaseException as exc:
         logger.warning(
             f"{name.replace('_', '-')}-hook-failed",
             job_id=str(job_row.id),

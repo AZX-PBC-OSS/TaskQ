@@ -42,6 +42,7 @@ from taskq.cron import (
     repeated_range_bounds,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical bounds of a repeated wall range; redefining them here would let the tick's delivery hop and compute_next_fire_after drift on what "the repeated range" is.
 )
 from taskq.cron import (
+    _unwrap_cron_factory_system_exit,  # pyright: ignore[reportPrivateUsage]  # Why: the single unwrapping point for the factory-SystemExit carrier lives in taskq.cron beside the conversion; the tick's failure choke point is the only consumer.
     resolve_payload as resolve_cron_payload,
 )
 from taskq.obs import (
@@ -1398,6 +1399,13 @@ async def tick_cron(
                 # claim (ERROR status, auto-disable event) belongs to the
                 # emission span, which opens only once the transaction has
                 # committed, a rollback takes this failure with it.
+                #
+                # The unwrap first: a payload factory's SystemExit arrives
+                # as the _CronFactorySystemExitError carrier (resolve_payload
+                # converts it, see there), and the strike must record the
+                # factory's own exception, never the carrier's name (a
+                # false audit trail).
+                exc = _unwrap_cron_factory_system_exit(exc)
                 failure = _compute_fire_failure(row, exc, settings)
                 failures.append(failure)
                 failure_telemetry.append(

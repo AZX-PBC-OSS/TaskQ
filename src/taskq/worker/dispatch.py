@@ -29,7 +29,13 @@ from pydantic import BaseModel
 
 from taskq._di.registry import ProviderRegistry
 from taskq._di.scope import Scope
-from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, build_actor_scope
+from taskq._di.scopes import (
+    LoopScope,
+    ProcessScope,
+    ThreadScope,
+    _unwrap_provider_system_exit,  # pyright: ignore[reportPrivateUsage]  # Why: the single unwrapping point for the provider-SystemExit carrier lives beside the conversion in taskq._di.scopes; the dispatch failure handler is the only consumer.
+    build_actor_scope,
+)
 from taskq._shield import (
     _log_detached_failure,  # pyright: ignore[reportPrivateUsage]  # Why: the shared detached-shield-outcome retriever; _run_sync_actor_tracked's thread task is a detached inner exactly like a terminal write (see that helper's docstring).
 )
@@ -869,6 +875,12 @@ async def dispatch_one_job(
                 except Exception as exc:
                     outcome = "failed"
                     consumer_span.set_status(StatusCode.ERROR)
+                    # Unwrap the provider-SystemExit carrier first (the DI
+                    # scope's get_or_create seam raises it for a factory's
+                    # sys.exit): the failure handler must record the
+                    # factory's own exception, never the carrier's name (a
+                    # false audit trail).
+                    exc = _unwrap_provider_system_exit(exc)
                     handler_log = bind_job_context(
                         dispatch_log,
                         job_id=job.id,

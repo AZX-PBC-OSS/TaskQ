@@ -48,6 +48,54 @@ _factory_cache: dict[str, Callable[[], Any]] = {}
 # Why: factory return type is erased here; resolve_payload re-types the result
 
 
+class _CronFactorySystemExitError(Exception):
+    """Typed carrier for a payload factory's ``SystemExit``: a tick failure,
+    not worker death.
+
+    CPython's ``Task.__step`` special-cases exactly ``(KeyboardInterrupt,
+    SystemExit)``: after ``set_exception`` it re-raises the exception bare,
+    and ``Handle._run`` re-raises that pair past the loop's generic
+    exception handler, so a task whose coroutine ends with ``SystemExit``
+    kills the event loop before any queued wake-up can run. A payload
+    factory's ``sys.exit()`` is the FACTORY's bug, a schedule-level
+    failure: left raw, the SystemExit crosses the executor future (a sync
+    factory) or the factory coroutine's await (an async one) into the
+    tick task's frame, escapes the per-schedule ``except Exception``
+    boundary, and the cron sibling task dies with the bare re-raise - the
+    worker dies, every co-resident sibling is cancelled, and the schedule
+    records no strike, no failure, no telemetry.
+
+    The conversion sites (both awaits in :func:`resolve_payload`) raise
+    this carrier instead, an ordinary ``Exception`` whose ``.original``
+    is the factory's own ``SystemExit``: the carrier flows through the
+    tick's ``except Exception`` as an ordinary factory failure, and the
+    choke point unwraps it, so the strike, the failure UPDATE and the
+    exported span all record the factory's own exception (``error_text``
+    names ``SystemExit``, the traceback carries the factory's frame via
+    the cause chain). ``KeyboardInterrupt`` is deliberately not
+    converted: interpreter/operator intent, never a factory outcome, it
+    propagates raw.
+    """
+
+    def __init__(self, original: SystemExit) -> None:
+        self.original = original
+        super().__init__(f"cron payload factory raised SystemExit: {original.code!r}")
+
+
+def _unwrap_cron_factory_system_exit(exc: BaseException) -> BaseException:
+    """Return the factory's own exception for a
+    ``_CronFactorySystemExitError`` carrier, *exc* unchanged otherwise.
+
+    The single unwrapping point: every factory failure reaches the tick's
+    per-schedule ``except Exception`` branch, which unwraps before the
+    failure record and the buffered telemetry are built, so the strike
+    never carries the carrier's own name (a false audit trail).
+    """
+    if isinstance(exc, _CronFactorySystemExitError):
+        return exc.original
+    return exc
+
+
 def _resolve_factory(dotted_path: str) -> Callable[[], Any]:
     # pyright: ignore[reportReturnType]  # Why: factory return is erased; re-typed in resolve_payload
     """Resolve a dotted path string to a callable.
@@ -305,6 +353,18 @@ async def resolve_payload(
                     loop.run_in_executor(pool.executor, _run_factory_call, pool, call, factory),
                     timeout_s=timeout_s,
                 )
+            except SystemExit as exc:
+                # The factory's own SystemExit, delivered by the executor
+                # future's throw into this frame (the future is a bare
+                # Future, awaited in THIS task, so the conversion here
+                # catches it in-frame before the tick's except boundary
+                # has to). Left raw it escapes the per-schedule
+                # ``except Exception`` and the tick task dies with the
+                # bare re-raise; the carrier crosses as an ordinary
+                # factory failure instead. KeyboardInterrupt is
+                # deliberately not converted (operator intent, see
+                # _CronFactorySystemExitError).
+                raise _CronFactorySystemExitError(exc) from exc
             except (Exception, asyncio.CancelledError):
                 # The waiter is leaving (the per-factory deadline cut the
                 # call, the caller's own deadline cancelled it, or the
@@ -325,7 +385,15 @@ async def resolve_payload(
         if inspect.iscoroutine(result):
             # A coroutine-returning factory keeps loop affinity: its body
             # runs here, on the loop, under the same deadline.
-            result = await _await_factory_bounded(payload_factory, result, timeout_s=timeout_s)
+            try:
+                result = await _await_factory_bounded(payload_factory, result, timeout_s=timeout_s)
+            except SystemExit as exc:
+                # Same conversion as the sync shape: an async factory's
+                # sys.exit() is raised in this task's own frame, and left
+                # raw it would escape the tick's per-schedule
+                # ``except Exception`` and kill the loop at the tick
+                # task's step. KeyboardInterrupt stays raw.
+                raise _CronFactorySystemExitError(exc) from exc
         if isinstance(result, BaseModel):
             return result.model_dump()
         if isinstance(result, dict):
