@@ -7,6 +7,13 @@ per-phase work.  Value ``NONE (0)`` means the worker is running normally.
 Phase ordering invariant:
 NONE (0) → DRAINING (1) → CANCELLING (2) → FORCING (3) → RELEASING (4).
 
+The early handover: ``shutdown_start_event`` fires before phase 1
+touches any row, and the leader runtime's election loop obeys it (park,
+no attempts; a leader resigns at shutdown START, before the drain -
+leader.py's shutdown-ordering contract). The worker-wide
+``shutdown_event`` does not fire until the phases complete; nothing in
+the phases below reads leadership state.
+
 SIGQUIT is not registered; produces a core dump on Linux. Use tini or
 ``ulimit -c 0`` for containerised deployments.
 
@@ -350,6 +357,15 @@ async def orchestrate_shutdown(
 
     try:
         # ── Phase 1: DRAINING ──────────────────────────────────────────
+        # The early handover (leader.py's shutdown-ordering contract):
+        # the stop signal fires BEFORE any phase work, so the leader
+        # runtime's election loop parks (no attempts, no renewals) and a
+        # leading pod resigns the lease while this pod still drains its
+        # jobs - the successor elects into the drain window instead of
+        # waiting for it. Everything downstream of this line is written
+        # with no leadership premise: the drain's machinery is
+        # self-contained (dispatcher pool + backend writes).
+        deps.shutdown_start_event.set()
         if deps.shutdown_started_at is None:
             deps.shutdown_started_at = t0
         deps.shutdown_phase = ShutdownPhase.DRAINING
@@ -609,22 +625,23 @@ async def orchestrate_shutdown(
         # Why the owns_leader_conn guard: the ownership contract ("TaskQ
         # never closes caller-owned resources") forbids closing a
         # caller-provided leader_conn even during shutdown. The reference
-        # is also left in place for caller-owned conns: the leader
-        # election loop keeps running until shutdown_event fires (finally
-        # block below), and a None leader_conn would make it open a
-        # *fresh* conn and possibly re-acquire the advisory lock
-        # mid-shutdown. For TaskQ-owned conns, close+null frees the
-        # session (and with it the courtesy election lock) before the
-        # SIGTERM budget expires; the lease ROW is freed separately, the
-        # leader runtime's own teardown resigns it over a conn that
-        # survives this close (leader.py's resign), so the ordering here
-        # cannot strand it.
+        # is also left in place for caller-owned conns.
+        #
+        # By this point the election loop has long been parked: the
+        # shutdown-start event (set before DRAINING) is the signal it
+        # obeys, and a leader handed the lease over before the drain via
+        # its fenced resign. The leader runtime's TEARDOWN resign
+        # (leader.py's run() finally) stays as the backstop for exits
+        # that never run this orchestrator (a sibling crash, a bare
+        # cancel of _main); on this path it finds no row of ours and
+        # no-ops.
         #
         # Why set → null → close, in that order (two races, one ordering):
         # (a) the bounded close can park for seconds, so shutdown_event is
-        # set FIRST to stop the election loop, a still-live loop could
-        # otherwise drop the closing conn and swap in a fresh (possibly
-        # lock-holding) one mid-park. (b) the early set also releases
+        # set FIRST to stop the loops still reading this event; the
+        # election loop itself parked much earlier, on the shutdown-start
+        # event, and cannot swap in a fresh (possibly lock-holding) conn
+        # mid-park. (b) the early set also releases
         # _main's ``await shutdown_event.wait()`` INSIDE the
         # open_worker_deps context (the orchestrator is awaited only after
         # that context exits), so the deps exit-stack guard unwinds
