@@ -385,6 +385,30 @@ async def test_sliding_window_huge_retry_hint_routes_to_fallback() -> None:
         await client.aclose()
 
 
+async def test_sliding_window_gcra_non_utf8_tat_echo_routes_to_fallback() -> None:
+    """The type-valid 5-element acquire whose TAT echo bytes are invalid
+    UTF-8: ``pre.decode()`` raises ``UnicodeDecodeError`` (a ``ValueError``
+    sibling ``with_pg_fallback`` does NOT name), so before the decode guard
+    the lie escaped the wrapped boundary as a bare crash instead of the
+    PG fallback. The echo contract (see ``_validate_script_reply``'s
+    docstring) says a corrupt echo fails closed; here that is the
+    sentinel, which rides the same fallback an outage takes.
+    """
+    sw = SlidingWindow(
+        name="lie", limit=5, window=timedelta(seconds=60), backend="redis", style="gcra"
+    )
+    client, _script = _lying_redis_client([1, b"0", b"3", b"\xff\xfe", b"\xcd"])
+    pool = _FakePgPool()
+    decision = await sw.acquire(
+        redis_client=client, pg_pool=pool, clock=SystemClock(), settings=_settings()
+    )
+    assert decision.backend == "postgres", (
+        "a non-UTF-8 TAT echo must route to the PG fallback (the outage path), "
+        "never escape as a bare UnicodeDecodeError"
+    )
+    await client.aclose()
+
+
 async def test_sliding_window_honest_replies_pass() -> None:
     """Control: honest allow and deny replies of both styles decode
     unchanged.
@@ -459,6 +483,57 @@ async def test_sliding_window_peek_lies_raise_the_sentinel() -> None:
             redis_client=_PeekRedis(time_reply=[2000, 0], get_reply=10**400),
             settings=_settings(),
         )
+
+
+async def test_log_peek_score_conversion_lies_raise_the_sentinel() -> None:
+    """The log peek's oldest-score conversion sits outside every other
+    guard: the withscores pair's score element is converted by
+    ``float()`` before the finite/window checks run, so a lying reply
+    with an unconvertible score escapes the peek uncaught. The
+    reviewer's exact replies: the big int past float's range
+    (``OverflowError``) and the nested list (``TypeError``) - neither is
+    in the sentinel family unless the conversion itself is guarded.
+    """
+    for score in [
+        10**400,  # the big int past float's range: float() raises OverflowError
+        [b"1.0"],  # the nested list: float() raises TypeError
+    ]:
+        with pytest.raises(RateLimitStoreCorrupt, match="score"):
+            await _peek_redis_log(
+                SlidingWindow("l", limit=5, window=timedelta(seconds=10), style="log"),
+                redis_client=_PeekRedis(
+                    time_reply=[2000, 0],
+                    zcount_reply=10,
+                    zrangebyscore_reply=[(b"req1", score)],
+                ),
+                settings=_settings(),
+            )
+
+
+async def test_gcra_peek_huge_tat_hint_is_clamped_not_an_overflow() -> None:
+    """The GCRA peek's denial hint: the patched TAT conversion plus the
+    isfinite check admit ANY finite float, so a lying GET answering
+    ``b"1e300"`` passes every numeric check and then overflows
+    ``timedelta(milliseconds=round(allow_at - now_ms))`` at the denial
+    arm. The hint is advisory, so it is clamped the way
+    ``token_bucket._retry_after`` clamps its own: the lie still denies
+    (is_exhausted, the fail-closed direction) but the hint is bounded,
+    never an OverflowError out of the peek.
+    """
+    state = await _peek_redis_gcra(
+        SlidingWindow("g", limit=5, window=timedelta(seconds=10), style="gcra"),
+        redis_client=_PeekRedis(time_reply=[2000, 0], get_reply=b"1e300"),
+        settings=_settings(),
+    )
+    assert state.is_exhausted is True, "the huge-TAT lie must deny, not admit"
+    assert state.retry_after is not None
+    assert state.retry_after > timedelta(0)
+    # The bound token_bucket._retry_after clamps to: no honest denial
+    # waits longer than a year, and the clamp is what keeps the
+    # timedelta conversion representable.
+    assert state.retry_after <= timedelta(days=365), (
+        f"the denial hint must be clamped to the advisory bound, got {state.retry_after}"
+    )
 
 
 # ── SSE envelope: the cursor blackhole and the crossed wire ───────────
