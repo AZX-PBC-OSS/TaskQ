@@ -124,9 +124,15 @@ applied: 1
   [✔] 01.00.00_01_pre_initial.sql
 ```
 
+**Options:**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--pg-credential-provider` | `str \| None` | `None` | `module:attr` reference to a `PgCredentialProvider`. The connection is opened through it instead of the DSN's static password. Overrides `TASKQ_PG_CREDENTIAL_PROVIDER`. See [Managed identities](managed-identities.md). |
+
 A `✔` marker indicates the migration has been applied. An empty marker indicates it is pending. Migrations are discovered from the built-in migration directory in the package.
 
-**No options.** Uses `TASKQ_PG_DSN` and `TASKQ_SCHEMA_NAME` from the environment.
+Without the flag the command uses `TASKQ_PG_DSN` and `TASKQ_SCHEMA_NAME` from the environment.
 
 ---
 
@@ -146,6 +152,8 @@ taskq migrate up [OPTIONS]
 | `--target` | `str \| None` | `None` | Stop after applying this migration version (inclusive). Version format matches the filename prefix, e.g. `01.00.00_01`. |
 | `--max-steps` | `int \| None` | `None` | Maximum number of migrations to apply in this invocation. |
 | `--ddl-lock-timeout` | `float` | `30` | Seconds a transactional migration waits for a table lock before it fails and rolls back (`SET LOCAL lock_timeout`; see [Upgrading: the migration gave up waiting for a table lock](upgrading.md#the-migration-gave-up-waiting-for-a-table-lock)). `0` waits indefinitely, parking every statement on the table behind the queued DDL. |
+| `--allow-checksum-drift` | `bool` | `false` | Proceed past a drifted checksum ledger: an APPLIED migration's ledger checksum differs from the bundled file, which refuses the run by default. Verify the edit is safe first; the drift is still logged as a `migration-checksum-drift` warning on every run and the ledger keeps the stored checksum. See [Upgrading: the checksum ledger](upgrading.md). |
+| `--pg-credential-provider` | `str \| None` | `None` | `module:attr` reference to a `PgCredentialProvider`. The connection is opened through it instead of the DSN's static password. Overrides `TASKQ_PG_CREDENTIAL_PROVIDER`. See [Managed identities](managed-identities.md). |
 
 The command is idempotent: each migration is recorded in `{schema}.schema_migrations` and is skipped on subsequent runs. Running `taskq migrate up` with no options applies all pending migrations.
 
@@ -204,6 +212,8 @@ taskq worker --actors MODULE:ATTR [OPTIONS]
 | `--idle-settle-window` | `float` | `None` | `TASKQ_IDLE_SETTLE_WINDOW` | Seconds to wait after queues appear empty before declaring drained. Default 2.0. Only used with `--until-idle`. |
 | `--idle-poll-interval` | `float` | `None` | `TASKQ_IDLE_POLL_INTERVAL` | How often to check queue depth. Default 1.0. Only used with `--until-idle`. |
 | `--idle-max-runtime` | `float` | `None` | `TASKQ_IDLE_MAX_RUNTIME` | Maximum wall-clock seconds before forcing exit (code 4). Only used with `--until-idle`. |
+| `--pg-credential-provider` | `str` | `None` | `TASKQ_PG_CREDENTIAL_PROVIDER` | `module:attr` reference to a `PgCredentialProvider` (an instance, a zero-arg factory, or the provider class also work). Every Postgres pool and dedicated connection is then built through it, so SIGHUP / `TASKQ_RELOAD_INTERVAL` rotate real credentials. See [Managed identities](managed-identities.md). |
+| `--redis-credential-provider` | `str` | `None` | `TASKQ_REDIS_CREDENTIAL_PROVIDER` | `module:attr` reference to a `RedisCredentialProvider`, in the same shapes as `--pg-credential-provider`. Requires `TASKQ_REDIS_URL`. |
 
 All other worker settings are read from environment variables. See [workers.md](workers.md#workersettings-reference) for the full list.
 
@@ -788,6 +798,8 @@ taskq ui serve [OPTIONS]
 | `--host` | `str` | `TASKQ_ADMIN_HOST` | `0.0.0.0` | Bind address |
 | `--port` | `int` | `TASKQ_ADMIN_PORT` | `8080` | Bind port |
 | `--migrate` | `bool` | `TASKQ_MIGRATE_ON_START` | `false` | Apply pending migrations before starting. Aborts startup if migrations fail. |
+| `--pg-credential-provider` | `str` | `None` | `TASKQ_PG_CREDENTIAL_PROVIDER` | `module:attr` reference to a `PgCredentialProvider` for the admin UI's Postgres pool. See [Managed identities](managed-identities.md). |
+| `--redis-credential-provider` | `str` | `None` | `TASKQ_REDIS_CREDENTIAL_PROVIDER` | `module:attr` reference to a `RedisCredentialProvider`. Requires `TASKQ_REDIS_URL`. |
 
 **Relevant environment variables:**
 

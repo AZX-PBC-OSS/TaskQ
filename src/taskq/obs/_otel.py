@@ -1507,7 +1507,9 @@ def record_job_interrupted(actor: str, *, held: bool) -> None:
         "taskq.jobs.interrupted",
         description=(
             "Running attempts released back to the fleet by a worker "
-            "shutdown (the claim's attempt increment is refunded). "
+            "shutdown (the spent attempt stands: the attempt did start "
+            "executing, so its increment is not refunded and re-dispatch "
+            "advances the attempt epoch). "
             "Attributes: actor, hold ('0' | '>0')."
         ),
     ).add(1, {"actor": actor, "hold": ">0" if held else "0"})
