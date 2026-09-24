@@ -683,6 +683,19 @@ markers = [
     "fastapi: tests for the [fastapi] extra: the web admin/progress suites (skip with -m 'not fastapi')",
 ]
 
+[tool.pytest-gremlins]
+# The retention-loss fix's mutation surface: ResultUnavailable's reason
+# derivation and message (exceptions.py) and the in-memory twin's
+# post-sweep result view (testing/_reads.py). Reproducible run:
+#
+#   uv run pytest --gremlins tests/test_attack_retention_gap_events_twin.py \
+#       tests/test_in_memory_terminal_writes.py tests/test_exceptions.py
+#
+# (The PG sweep suite tests/test_postgres_sweep_expired_results.py also
+# covers these lines but spawns a container per mutant run, so it stays
+# out of the scoped command; its pins were verified separately.)
+paths = ["src/taskq/exceptions.py", "src/taskq/testing/_reads.py"]
+
 [tool.coverage.run]
 source = ["src/taskq"]
 branch = true

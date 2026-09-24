@@ -142,11 +142,15 @@ def _post_sweep_result_view(row: JobRow, now: datetime) -> JobRow:
     Predicate parity with ``_SWEEP_RESULT_TTL_SQL``, field for field: the
     comparison is strictly ``<`` (a read at exactly ``result_expires_at``
     still sees the result), and a row whose ``result`` is already ``None``
-    is untouched. Only ``result`` / ``result_size_bytes`` /
-    ``result_expires_at`` are nulled, the stored row is never mutated,
-    only the returned copy, so status and every other column (terminal
-    ones included) pass through unchanged, and an expired result can
-    neither revive nor alter a terminal state. ``get`` feeds this view
+    is untouched. Only ``result`` / ``result_size_bytes`` are nulled, the
+    expiry stamp is KEPT on the view (the expiry signal the client's
+    ``ResultUnavailable.reason='result_ttl_expired'`` reads, the same
+    stamp the PG sweep leaves in place; it proves the TTL elapsed, no
+    more, so the client message claims only that), the stored row is
+    never mutated, only the returned copy, so status and every other
+    column
+    (terminal ones included) pass through unchanged, and an expired result
+    can neither revive nor alter a terminal state. ``get`` feeds this view
     the already-isolated :func:`_read_copy` product, so the view's own
     ``replace`` composes on that copy instead of duplicating the copy
     semantics on the expired branch alone. Downstream code that
@@ -155,7 +159,14 @@ def _post_sweep_result_view(row: JobRow, now: datetime) -> JobRow:
     backends.
     """
     if row.result is not None and row.result_expires_at is not None and row.result_expires_at < now:
-        return replace(row, result=None, result_size_bytes=None, result_expires_at=None)
+        # result_expires_at is KEPT on the view, matching
+        # _SWEEP_RESULT_TTL_SQL: the past stamp is the expiry signal the
+        # client's ResultUnavailable.reason='result_ttl_expired' reads.
+        # Nulling it would erase even the TTL-elapsed fact; the stamp
+        # alone cannot distinguish a swept result from an actor that
+        # returned None, so the client message claims only the elapsed
+        # TTL and the absent result.
+        return replace(row, result=None, result_size_bytes=None)
     return row
 
 

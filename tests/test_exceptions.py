@@ -585,6 +585,18 @@ class _IntFieldPayload(BaseModel):
     count: int
 
 
+def test_payload_validation_error_validation_errors_round_trip() -> None:
+    """The ``validation_errors`` attribute stores the list the
+    constructor received verbatim (the machine-readable copy the docs
+    promise): an ``or []`` / ``and []`` default swap would silently
+    empty it and every ``for err in exc.validation_errors`` consumer
+    would read a canary-blind zero list."""
+    errors = [{"loc": ["count"], "msg": "bad"}]
+    exc = PayloadValidationError("the detail", validation_errors=errors)
+    assert exc.validation_errors == errors
+    assert exc.item_index is None
+
+
 def test_public_validate_actor_payload_does_not_embed_payload_values() -> None:
     """The top-level ``taskq.validate_actor_payload`` export is the
     sanitized ``taskq._validation`` implementation: neither the raised

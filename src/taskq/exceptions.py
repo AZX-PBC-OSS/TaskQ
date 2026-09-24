@@ -5,7 +5,7 @@ RetryAfter are not errors, they are signals the consumer translates into
 state transitions.
 """
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
@@ -47,12 +47,76 @@ class ResultUnavailable(TaskQError):
       (treated as schema mismatch, not a value);
     - row stored ``result=NULL`` for a non-success status.
 
+    ``reason`` distinguishes the two live-result causes at the instance:
+    ``"result_ttl_expired"`` when the row itself carries the expiry
+    evidence (``result_expires_at`` in the past, which the retention
+    sweep leaves in place on the rows it nulls). The stamp proves the
+    TTL elapsed, no more: the completion write stamps
+    ``result_expires_at`` even when the result itself is ``NULL`` (an
+    actor that returned ``None``) and the sweep only nulls rows whose
+    result was still stored, so a past stamp cannot distinguish a swept
+    result from a row that never stored one. The message asserts only
+    what the row proves. ``"not_stored"`` covers every other case.
     Carries the row for inspection.
     """
 
     def __init__(self, row: "JobRow") -> None:
         self.row = row
-        super().__init__(f"job {row.id} has no stored result")
+        expires_at = row.result_expires_at
+        expired = expires_at is not None and expires_at <= datetime.now(UTC)
+        self.reason: str = "result_ttl_expired" if expired else "not_stored"
+        if expires_at is not None and expired:
+            super().__init__(
+                f"job {row.id} succeeded but the result's TTL elapsed at "
+                f"{expires_at.isoformat()} before this read; no result is "
+                f"stored (swept after expiry, or the actor stored none)"
+            )
+        else:
+            super().__init__(f"job {row.id} has no stored result")
+
+
+class EventRetentionGapError(TaskQError):
+    """A ``watch_reclaims`` stream resumed a cursor the retention horizon passed.
+
+    The event-prune watermark (``job_events_prune_state.pruned_through_id``,
+    migration 01.00.20_02) records the highest ``job_events`` id any retention
+    deleter has committed a delete below-or-at. A resumed cursor strictly
+    below that bound means at least one event id the consumer never received
+    was deleted: the hole can never be refilled, so the stream ends here
+    instead of silently skipping to live and letting the consumer believe it
+    saw everything.
+
+    This is the fail-visible replacement for a loss that used to be silent:
+    no error was raised on either side, the poll simply returned the
+    surviving rows and the consumer's ``async for`` read like a quiet fleet.
+
+    The signal is conservative by design: the watermark is a union bound
+    across event kinds, so it proves the feed is incomplete without proving
+    which slice a consumer filters for lost a row. A cursor AT or above the
+    watermark never raises: every deleted id was at or below a position the
+    consumer had already been delivered.
+
+    Attributes:
+        cursor: the resumed cursor the poll rejected.
+        pruned_through_id: the watermark it sits behind.
+
+    Remediation: reposition the consumer past the watermark (accepting the
+    recorded loss) or size ``event_retention_period`` against the slowest
+    consumer's worst outage so the horizon cannot pass a live cursor.
+    """
+
+    def __init__(self, cursor: int, pruned_through_id: int) -> None:
+        self.cursor = cursor
+        self.pruned_through_id = pruned_through_id
+        super().__init__(
+            f"watch_reclaims cursor {cursor} sits behind the event-prune "
+            f"watermark {pruned_through_id}: event retention deleted events "
+            f"between the cursor and the horizon before they were delivered, "
+            f"the stream cannot refill the gap and will not silently skip to "
+            f"live. Reposition the consumer past the watermark (accepting the "
+            f"loss) or raise event_retention_period to keep the horizon ahead "
+            f"of your slowest consumer"
+        )
 
 
 class StreamUnavailable(TaskQError):

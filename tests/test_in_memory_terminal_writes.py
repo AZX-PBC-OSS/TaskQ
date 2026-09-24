@@ -2023,8 +2023,10 @@ class TestGetExpiredResults:
     fires, a read can still observe the result. The in-memory backend has no
     leader loop, so ``get`` applies the sweep's predicate directly against
     the injected Clock - a read past ``result_expires_at`` returns the exact
-    post-sweep row shape (``result`` / ``result_size_bytes`` /
-    ``result_expires_at`` all ``None``) while every other column, terminal
+    post-sweep row shape (``result`` / ``result_size_bytes`` nulled, the
+    expiry stamp KEPT in the past: it is the loss receipt
+    ``ResultUnavailable.reason='result_ttl_expired'`` reads, the same stamp
+    the PG sweep leaves in place) while every other column, terminal
     status included, is untouched.
 
     Write-side resolution (stored row → fallback literal → enqueue pin) is
@@ -2082,7 +2084,10 @@ class TestGetExpiredResults:
 
     async def test_result_expired_after_clock_passes_expiry(self) -> None:
         """Past result_expires_at, get reports the post-sweep row shape:
-        result, result_size_bytes, and result_expires_at all None."""
+        result and result_size_bytes nulled, the expiry stamp kept in the
+        past - the loss receipt the client's
+        ResultUnavailable.reason='result_ttl_expired' reads, never erased
+        into an indistinguishable from never-stored state."""
         clock = FakeClock(_START)
         backend = InMemoryBackend(clock=clock)
         job_id = await self._complete_ttl_job(backend, clock)
@@ -2092,7 +2097,7 @@ class TestGetExpiredResults:
         assert row is not None
         assert row.result is None
         assert row.result_size_bytes is None
-        assert row.result_expires_at is None
+        assert row.result_expires_at == _START + timedelta(seconds=60)
 
     async def test_expired_read_does_not_revive_or_mutate_terminal_state(
         self,
@@ -2191,7 +2196,10 @@ class TestGetExpiredResults:
         assert row is not None
         assert row.status == "succeeded"
         assert row.result is None
-        assert row.result_expires_at is None
+        assert row.result_expires_at == _START + timedelta(seconds=5), (
+            "the past expiry stamp is kept on the post-sweep view: the loss "
+            "receipt ResultUnavailable.reason reads, never erased"
+        )
 
     async def test_wait_returns_value_before_expiry_and_raises_after(self) -> None:
         """The downstream-facing contract: JobHandle.wait returns R before
@@ -2403,7 +2411,10 @@ class TestGetReturnsIsolatedRowCopies:
         assert expired.status == "succeeded"
         assert expired.result is None
         assert expired.result_size_bytes is None
-        assert expired.result_expires_at is None
+        assert expired.result_expires_at == _START + timedelta(seconds=60), (
+            "the expired view keeps the past stamp: it is the loss receipt "
+            "ResultUnavailable.reason reads, never erased"
+        )
 
         expired.progress_state["injected"] = True
         expired.metadata["injected"] = True

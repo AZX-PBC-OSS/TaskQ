@@ -1559,7 +1559,9 @@ message now names only the ref, matching the sanitization contract
 ### `job_events` rows past the retention period are deleted
 
 > **Unreleased.** Silent; event history older than the retention window
-> disappears.
+> disappears. A `watch_reclaims` consumer whose cursor the horizon passed
+> now fails visibly (`EventRetentionGapError`) instead of skipping
+> silently.
 
 `job_events` rows older than `TASKQ_EVENT_RETENTION_PERIOD` (default 7
 days) are now deleted by a leader sweep regardless of parent-job status;
@@ -1572,9 +1574,42 @@ once it is older than 100x the retention period
 `watch_reclaims` consumer would otherwise retain every `lock_expired` event
 forever. Shortening the retention period shortens that window
 proportionally: a `TaskQ.watch_reclaims` consumer lagging past 100x
-retention loses events silently, with no error on either side. Size the
-retention period against your slowest consumer's worst outage, not only
-against event volume.
+retention loses events - and since the event-prune watermark
+(`job_events_prune_state`, the same change) records the highest deleted
+event id, the resumed stream now ENDS LOUDLY with `EventRetentionGapError`
+naming the cursor and the watermark instead of silently skipping to live.
+Size the retention period against your slowest consumer's worst outage,
+not only against event volume; the gate turns an over-long outage into an
+actionable error, not into a recovered feed. Recovery from
+`EventRetentionGapError` after a crash-before-consume is to recreate the
+watcher fresh (`watch_reclaims(after_id=0)`), accepting the loss the error
+reported: the deleted events cannot be refilled.
+
+### An expired result reads as expired: `ResultUnavailable.reason` and the expiry stamp
+
+> **Unreleased.** Silent; a late poller's error is now distinguished, and
+> `result_expires_at` survives the sweep it stamps.
+
+Before this change, the result-TTL sweep nulled `result`, `result_size_bytes`
+AND `result_expires_at` together, so a client polling `JobHandle.wait` after
+the TTL got a `ResultUnavailable` that read exactly like a job whose actor
+had returned `None`: the loss was observable but not explainable, and at the
+instance level it was indistinguishable from a job that never stored a
+result. The sweep now nulls only `result` and `result_size_bytes` and KEEPS
+the past `result_expires_at` stamp, and `ResultUnavailable` grew a `reason`
+attribute: `"result_ttl_expired"` (with the expiry instant in the message)
+when the row carries the past stamp, `"not_stored"` when it carries no
+stamp or a future one. One honesty note: the stamp proves the result's TTL
+elapsed, no more. The completion write stamps `result_expires_at` even when
+the actor returned `None` for a non-`None` result type (the sweep's
+`AND result IS NOT NULL` guard never touches such a row), so a past stamp
+cannot distinguish a swept result from a row that never stored one, and the
+message asserts only that: the TTL elapsed at T and no result is stored
+(swept after expiry, or the actor stored none). The in-memory backend's
+read view applies the identical rule, so tests see the same failure mode on
+both backends. A retried job cannot inherit a
+stale receipt: `retry_job` re-pends with `result_expires_at = NULL` and the
+terminal write recomputes from the actor's TTL at the new completion.
 
 ### TaskQ-built client pools carry a 10 s per-query bound
 

@@ -299,6 +299,13 @@ class InMemoryBackend:
         self._jobs: _JobStore = _JobStore(clock)
         self._attempts: dict[JobId, list[AttemptRow]] = {}
         self._events: list[EventRow] = []
+        # The event-prune watermark twin (PG: job_events_prune_state,
+        # migration 01.00.20_02): the highest event id any deleter has
+        # committed a delete below-or-at. Advanced by the prune
+        # simulation (testing/_runner.archive_terminal_jobs, the mirror
+        # of the PG cascade) so _poll_reclaim_events' gap gate sees the
+        # same signal both backends raise.
+        self._events_pruned_through: int = 0
         self._idempotency_index: dict[tuple[str, str], JobId] = {}
         self._event_seq: int = 0
         self._cancel_observed_at: dict[JobId, datetime] = {}
@@ -399,6 +406,17 @@ class InMemoryBackend:
         visibility_delay: timedelta | None = None,
     ) -> list[EventRow]:
         return await _poll_reclaim_events(self, after_id, limit, visibility_delay=visibility_delay)
+
+    async def event_prune_watermark(self) -> int:
+        """The twin's event-prune watermark (PG:
+        ``job_events_prune_state``, migration 01.00.20_02). Advanced by
+        the prune simulation's cascade arm
+        (``testing._runner.archive_terminal_jobs``); no sweep on this
+        backend deletes events any other way, so no other writer exists.
+        watch_reclaims' gap gate reads this through the same
+        getattr-probe it applies to the PG backend.
+        """
+        return self._events_pruned_through
 
     def _append_attempt(
         self,

@@ -96,6 +96,7 @@ from taskq.constants import (
     wake_channel,
 )
 from taskq.cron import ScheduleHandle
+from taskq.exceptions import EventRetentionGapError
 from taskq.types import BulkCancelResult, CancelResult
 
 __all__ = ["ActorsClient", "EventRow", "JobEvent", "TaskQ", "orjson_response_class"]
@@ -1344,10 +1345,26 @@ class TaskQ:
         ordinary ``event_retention_period`` window but only up to
         :data:`~taskq.constants.RECLAIM_OUTBOX_RETENTION_MULTIPLIER`
         times it (100x), after which it is deleted like any other event.
-        A consumer lagging past that age loses events silently, no
-        error on either side, so a deployment with a short retention
-        period must size it against its slowest consumer's worst
-        outage, not only against event volume.
+        The terminal-job prune is a second deleter: its cascade removes
+        the archived jobs' events with them.  Both deleters record their
+        highest deleted event id in the event-prune watermark
+        (``job_events_prune_state``, migration 01.00.20_02) in the same
+        transaction as the delete, and every delivery path of this
+        generator opens on the gap gate: a resumed cursor (a persisted
+        cursor, ``after_id > 0``) strictly below the watermark ends the
+        stream with :class:`~taskq.exceptions.EventRetentionGapError`
+        before anything is delivered.  The signal is conservative (the
+        watermark is a union bound across event kinds: it proves the feed
+        is incomplete, not which slice lost a row), and it is what
+        replaced the old silence -- a consumer lagging past the horizon
+        used to skip to live with no error on either side, free to
+        believe it saw everything.  A fresh watcher (``after_id=0``) is a
+        new tail and never raises; a cursor at or above the watermark
+        never raises, every deleted id was at or below a position the
+        consumer had already been delivered.  Size the retention period
+        against your slowest consumer's worst outage all the same: the
+        gate turns an over-long outage into a loud, actionable end, not
+        into a recovered feed.
 
         Shutdown and backpressure
         -------------------------
@@ -1381,6 +1398,10 @@ class TaskQ:
         ------
         RuntimeError
             Called before ``tq.open()`` or outside an ``async with`` block.
+        EventRetentionGapError
+            The resumed cursor sits behind the event-prune watermark:
+            retention deleted undelivered events, the stream ends instead
+            of silently skipping to live.
         """
         client = self._require_open()
         timeout = poll_timeout if poll_timeout is not None else self._poll_timeout
@@ -1531,6 +1552,38 @@ async def _stream_redis(
             yield event
 
 
+async def _assert_no_retention_gap(client: JobsClient, cursor: int) -> None:
+    """Fail visible when a resumed cursor sits behind the event-prune horizon.
+
+    The event-prune watermark (``backend.event_prune_watermark``,
+    PostgresBackend-only, migration 01.00.20_02) is the highest ``job_events``
+    id any retention deleter has committed a delete below-or-at: the
+    event-retention sweep's ``watermark`` CTE and the terminal prune's
+    ``event_watermark`` CTE (the events its ``DELETE FROM jobs`` cascades
+    away) both advance it in the same transaction as their deletes. A cursor
+    strictly below it therefore means at least one undelivered event id was
+    deleted, a hole no poll can refill, so the caller ends the stream with
+    :class:`EventRetentionGapError` instead of silently skipping to live over
+    the hole (the loss this gate replaces had no signal on either side).
+
+    ``cursor <= 0`` never raises: a consumer that has persisted no cursor is
+    a new tail, nothing it was ever delivered is behind it. A cursor at or
+    above the watermark never raises: every deleted id was at or below a
+    position the consumer had already been delivered. Backends without the
+    capability (getattr-probed, the same pattern
+    ``_probe_visibility_risk`` applies to the visibility diagnostic) arm no
+    signal.
+    """
+    if cursor <= 0:
+        return
+    read = getattr(client.backend, "event_prune_watermark", None)
+    if read is None:
+        return
+    watermark = await read()
+    if cursor < watermark:
+        raise EventRetentionGapError(cursor, watermark)
+
+
 async def _watch_reclaims_poll(
     client: JobsClient,
     poll_timeout: float,
@@ -1544,10 +1597,16 @@ async def _watch_reclaims_poll(
     when no new events are available; a non-empty batch is drained
     immediately (no sleep between pages), so a consumer resuming far
     behind catches up at query speed.
+
+    Every iteration opens with the retention-gap gate
+    (:func:`_assert_no_retention_gap`): a cursor the event-prune watermark
+    has passed ends the stream with :class:`EventRetentionGapError` before
+    anything is delivered, never a silent skip to live.
     """
     cursor = after_id
     last_risk_probe = asyncio.get_running_loop().time()
     while True:
+        await _assert_no_retention_gap(client, cursor)
         events = await client.backend.poll_reclaim_events(cursor, limit=_WATCH_RECLAIMS_BATCH_LIMIT)
         if events:
             for evt in events:
@@ -1659,7 +1718,12 @@ async def _catch_up_after_notify(
     ``backend.poll_reclaim_events`` so the catch-up retries for exactly
     as long as the trailing watermark holds rows back. The default falls
     back to ``RECLAIM_EVENT_VISIBILITY_DELAY`` for standalone use.
+
+    Opens on the same retention-gap gate every other delivery path runs
+    (:func:`_assert_no_retention_gap`), so a NOTIFY wake cannot deliver
+    past a horizon the caller's own next iteration would have refused.
     """
+    await _assert_no_retention_gap(client, cursor)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + visibility_delay.total_seconds()
     while loop.time() < deadline:
@@ -1810,6 +1874,7 @@ async def _watch_reclaims_pg(
                         last_risk_probe = await _maybe_probe_visibility_risk(
                             client, last_risk_probe
                         )
+                        await _assert_no_retention_gap(client, cursor)
                         events = await client.backend.poll_reclaim_events(
                             cursor, _WATCH_RECLAIMS_BATCH_LIMIT
                         )
@@ -1827,6 +1892,7 @@ async def _watch_reclaims_pg(
                     if not full_batch:
                         await asyncio.sleep(poll_timeout)
                     last_risk_probe = await _maybe_probe_visibility_risk(client, last_risk_probe)
+                    await _assert_no_retention_gap(client, cursor)
                     events = await client.backend.poll_reclaim_events(
                         cursor, _WATCH_RECLAIMS_BATCH_LIMIT
                     )
@@ -1888,6 +1954,7 @@ async def _watch_reclaims_pg(
                     )
                     break
                 continue
+            await _assert_no_retention_gap(client, cursor)
             events = await client.backend.poll_reclaim_events(cursor, _WATCH_RECLAIMS_BATCH_LIMIT)
             if events:
                 for evt in events:

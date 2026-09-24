@@ -185,6 +185,10 @@ _NO_STORED_STATE_ESCAPES: dict[str, str] = {
     "create_batch": "returns None; builds its own metadata dict, scalar arguments",
     "deadline_sweep": "returns a count",
     "delete_schedule": "returns None",
+    "event_prune_watermark": (
+        "returns a scalar int watermark - a count of events pruned through, "
+        "no caller-held mutable argument"
+    ),
     "expire_archived_jobs": "returns ArchiveExpiryResult - freshly built counts",
     "extend_reservation_leases": "returns a count",
     "get_actor_max_pending": "returns a freshly built dict of scalars",

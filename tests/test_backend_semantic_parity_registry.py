@@ -132,6 +132,15 @@ _NO_SEMANTIC_SURFACE: dict[str, str] = {
     "create_schedule": "caller supplies the schedule row",
     "update_schedule": "keyed single schedule row",
     "delete_schedule": "keyed single schedule row",
+    "event_prune_watermark": (
+        "scalar watermark read: both backends return the int "
+        "pruned-through id - in memory from ``_events_pruned_through`` "
+        "(testing/in_memory.py), in PG from the ``job_events_prune_state`` "
+        "singleton row (``self._sql.event_prune_watermark``). No "
+        "selection or ordering decision either backend could make "
+        "differently; both read paths pinned in "
+        "tests/test_attack_retention_gap_events_pg.py"
+    ),
     "subscribe_wake": "notification plumbing; returns no rows",
     "subscribe_cancel_wake": "notification plumbing; returns no rows",
 }
