@@ -220,10 +220,26 @@ async def test_silent_leader_death_gaps_sweeps_for_at_most_lease_plus_heartbeat(
 
             # Phase 2: the takeability flip is bounded by lease + hb. The
             # flip is what a fleet-wide monitor (or an operator's probe)
-            # reads; it must not depend on any leader-side tick.
+            # reads; it must not depend on any leader-side tick. The
+            # takeable state is TRANSITORY: the phase-locked healthy
+            # follower legally re-elects within milliseconds of the flip
+            # and renews the row, so a poller sampling only the row would
+            # usually miss the very window it exists to prove. Either
+            # signal settles the same bound: the row reads takeable, or
+            # the follower HAS taken the role - which only a takeable row
+            # permits, so the flip is implied. (The frozen-follower pin
+            # below keeps the row-only shape honest for a fleet whose
+            # election loop is broken: there the flip must be visible
+            # with no follower election running at all.) The event is
+            # tested FIRST: a ``_row_takeable(fleet) or X`` lambda
+            # short-circuits on the coroutine object's truthiness and
+            # would never reach the event.
             await wait_for_condition(
-                lambda: _row_takeable(fleet),
-                description="the leader row's lease lapsed on the server clock",
+                lambda: follower.deps.is_leader.is_set() or _row_takeable(fleet),
+                description=(
+                    "the leader row's lease lapsed on the server clock, "
+                    "or the follower has taken the role"
+                ),
                 timeout=_LEASE_SECS + _HB_SECS + 1.0,
             )
 
