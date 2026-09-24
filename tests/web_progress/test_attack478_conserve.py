@@ -47,6 +47,8 @@ import pytest_asyncio
 import redis.asyncio as aioredis
 import uvicorn
 
+pytest.importorskip("uvicorn")
+
 from taskq.constants import progress_channel
 from taskq.migrate import apply_pending
 from tests.web_progress.test_integration import (  # pyright: ignore[reportPrivateUsage]  # Why: the conservation attacks reuse the integration suite's app/seed scaffolding verbatim rather than forking it.
