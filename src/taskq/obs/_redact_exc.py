@@ -661,11 +661,21 @@ def safe_str(exc: BaseException) -> str:
     (``render_exception`` is the single scrub) is not paid twice. The
     fallback marker mirrors CPython's own traceback rendering for the same
     condition (measured on 3.14: ``format_exception`` survives and prints
-    ``Boom: <exception str() failed>``), so a reader sees one idiom.
+    ``Boom: <exception str() failed>``), so a reader sees one idiom. The
+    catch is a BARE ``except BaseException`` for the same reason CPython's
+    ``traceback._safe_string`` uses one: a ``__str__`` may raise any
+    ``BaseException`` subclass, and ``except Exception`` would let it
+    convert inside the guard. Swallowing a ``CancelledError`` here is safe:
+    this is a string-rendering helper, never an await point, so there is no
+    suspension it could strand.
     """
     try:
         return str(exc)
-    except Exception:
+    # Why BaseException: CPython's traceback._safe_string idiom - a hostile
+    # __str__ may raise any BaseException subclass, and this helper is a
+    # pure string render, never an await point, so a swallowed
+    # CancelledError cannot strand anything.
+    except BaseException:
         return "<exception str() failed>"
 
 
@@ -675,12 +685,20 @@ def safe_repr(exc: BaseException) -> str:
     The ``except``-handler logs that render ``repr(exc)`` (hook failures,
     classifier failures) would otherwise have their own swallow converted
     into an escape by a ``__repr__`` that raises - the same defect shape as
-    :func:`safe_str`, one level deeper.
+    :func:`safe_str`, one level deeper. The fallback keeps the class name
+    because it is the one diagnostic that survives (pinned), but the NAME
+    ACCESS is guarded too: a metaclass can define ``__name__`` as a
+    property that raises, so even the interpolation is uncontrolled input
+    and degrades to ``<unknown>``.
     """
     try:
         return repr(exc)
     except Exception:
-        return f"<exception repr() failed: {type(exc).__name__}>"
+        try:
+            name = type(exc).__name__
+        except BaseException:
+            name = "<unknown>"
+        return f"<exception repr() failed: {name}>"
 
 
 #: A validated ``(cls, exc, tb)`` triple ready for ``traceback.format_exception``.
