@@ -42,6 +42,7 @@ from taskq._close import (
     close_provider_bounded,
     close_redis_bounded,
 )
+from taskq._forkguard import guarded_connection_class, guarded_redis_connection_class
 from taskq.actor import ActorRef
 from taskq.actor_config_ops import (
     UNSET,
@@ -2087,6 +2088,7 @@ def _ui_serve(
                     command_timeout=_UI_POOL_COMMAND_TIMEOUT_SECS,
                     statement_cache_size=stmt_kwargs["statement_cache_size"],
                     max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
+                    connection_class=guarded_connection_class(),
                 )
             assert pg_pool is not None, "asyncpg.create_pool returned None"
             # application.state.pg_pool is the one live pool: every admin
@@ -2136,7 +2138,10 @@ def _ui_serve(
                             "fails loudly instead of parking forever."
                         ) from exc
                 else:
-                    client = aioredis.from_url(redis_url)
+                    client = aioredis.from_url(
+                        redis_url,
+                        connection_class=guarded_redis_connection_class(),
+                    )
 
                 # Why not stack.enter_async_context(client): Redis.__aexit__
                 # calls aclose() UNBOUNDED (and shielded), a hung broker

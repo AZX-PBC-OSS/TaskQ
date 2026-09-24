@@ -36,6 +36,7 @@ from opentelemetry.metrics import CallbackOptions, Observation
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq._dsn import dsn_host
+from taskq._forkguard import assert_own_process
 from taskq._json import loads as json_loads
 from taskq.backend.postgres import PostgresBackend
 from taskq.constants import events_channel, wake_channel, worker_channel
@@ -527,6 +528,10 @@ async def notify_listener_loop(
     shutdown: asyncio.Event,
     worker_id: UUID,
 ) -> None:
+    # A forked child running this loop would LISTEN on the parent's socket
+    # and race the parent's own listener for the same notifications; the
+    # refusal is the contract, the child opens its own resources or dies.
+    assert_own_process("worker-notify-listener-loop")
     schema = deps.settings.schema_name
     worker_id_str = str(worker_id)
     channels: list[tuple[str, Callable[[asyncpg.Connection, int, str, str], None]]] = [
