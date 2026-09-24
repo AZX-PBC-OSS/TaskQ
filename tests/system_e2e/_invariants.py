@@ -230,8 +230,17 @@ async def effect_ledger_violations(conn: asyncpg.Connection, schema: str, tag: s
     One effects row per (job_id, attempt, actor, kind): a re-run is a
     NEW attempt, never a second run of the same one, and no effects row
     exists without the matching claim row (a body ran where nothing was
-    dispatched to it). Runs against the tagged population only; joins
-    live and archived attempt ledgers.
+    dispatched to it) - with ONE documented exception, the same shape
+    the ledger paragraph above records: an INTERRUPTED attempt (the
+    shutdown release arm, ``mark_interrupted``) writes no claim row, so
+    a body that recorded effects and was then interrupted by a drain
+    has effects whose attempt the ledger intentionally lacks. Each such
+    release bumps the row's ``interrupt_count`` (and writes one
+    ``interrupted`` state_change event), so the reconciliation allows a
+    job at most ``interrupt_count`` no-claim attempts and flags anything
+    beyond it: a body run with neither a claim row behind it nor
+    interruption evidence to cover it is still an orphan. Runs against
+    the tagged population only; joins live and archived attempt ledgers.
     """
     doubles = await conn.fetchval(
         f"""
@@ -250,20 +259,33 @@ async def effect_ledger_violations(conn: asyncpg.Connection, schema: str, tag: s
     )
     orphans = await conn.fetchval(
         f"""
-        SELECT count(*)::int FROM "{schema}".sys_effects e
-        WHERE e.job_id IN (
-            SELECT id FROM "{schema}".jobs WHERE tags @> ARRAY[$1::text]
+        WITH tagged AS (
+            SELECT id, interrupt_count FROM "{schema}".jobs
+            WHERE tags @> ARRAY[$1::text]
             UNION ALL
-            SELECT id FROM "{schema}".jobs_archive WHERE tags @> ARRAY[$1::text]
+            SELECT id, interrupt_count FROM "{schema}".jobs_archive
+            WHERE tags @> ARRAY[$1::text]
+        ),
+        no_claim AS (
+            SELECT e.job_id, e.attempt
+            FROM "{schema}".sys_effects e
+            WHERE e.job_id IN (SELECT id FROM tagged)
+            AND NOT EXISTS (
+                SELECT 1 FROM "{schema}".job_attempts a
+                WHERE a.job_id = e.job_id AND a.attempt = e.attempt
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM "{schema}".job_attempts_archive a
+                WHERE a.job_id = e.job_id AND a.attempt = e.attempt
+            )
+            GROUP BY e.job_id, e.attempt
         )
-        AND NOT EXISTS (
-            SELECT 1 FROM "{schema}".job_attempts a
-            WHERE a.job_id = e.job_id AND a.attempt = e.attempt
-        )
-        AND NOT EXISTS (
-            SELECT 1 FROM "{schema}".job_attempts_archive a
-            WHERE a.job_id = e.job_id AND a.attempt = e.attempt
-        )
+        SELECT count(*)::int FROM (
+            SELECT n.job_id
+            FROM no_claim n JOIN tagged t ON t.id = n.job_id
+            GROUP BY n.job_id, t.interrupt_count
+            HAVING count(*) > t.interrupt_count
+        ) o
         """,
         tag,
     )
@@ -276,35 +298,40 @@ async def effect_ledger_violations(conn: asyncpg.Connection, schema: str, tag: s
     if orphans:
         detail = await conn.fetch(
             f"""
-            SELECT e.job_id, e.attempt, e.actor, e.kind,
-                   j.status::text AS live_status, j.attempt AS live_attempt,
-                   a2.archived_attempt
-            FROM "{schema}".sys_effects e
-            LEFT JOIN "{schema}".jobs j ON j.id = e.job_id
-            LEFT JOIN LATERAL (
-                SELECT count(*)::int AS archived_attempt
-                FROM "{schema}".job_attempts_archive a
-                WHERE a.job_id = e.job_id
-            ) a2 ON TRUE
-            WHERE e.job_id IN (
-                SELECT id FROM "{schema}".jobs WHERE tags @> ARRAY[$1::text]
+            WITH tagged AS (
+                SELECT id, interrupt_count FROM "{schema}".jobs
+                WHERE tags @> ARRAY[$1::text]
                 UNION ALL
-                SELECT id FROM "{schema}".jobs_archive WHERE tags @> ARRAY[$1::text]
+                SELECT id, interrupt_count FROM "{schema}".jobs_archive
+                WHERE tags @> ARRAY[$1::text]
+            ),
+            no_claim AS (
+                SELECT e.job_id, e.attempt
+                FROM "{schema}".sys_effects e
+                WHERE e.job_id IN (SELECT id FROM tagged)
+                AND NOT EXISTS (
+                    SELECT 1 FROM "{schema}".job_attempts a
+                    WHERE a.job_id = e.job_id AND a.attempt = e.attempt
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM "{schema}".job_attempts_archive a
+                    WHERE a.job_id = e.job_id AND a.attempt = e.attempt
+                )
+                GROUP BY e.job_id, e.attempt
             )
-            AND NOT EXISTS (
-                SELECT 1 FROM "{schema}".job_attempts a
-                WHERE a.job_id = e.job_id AND a.attempt = e.attempt
-            )
-            AND NOT EXISTS (
-                SELECT 1 FROM "{schema}".job_attempts_archive a
-                WHERE a.job_id = e.job_id AND a.attempt = e.attempt
-            )
+            SELECT n.job_id, n.attempt, t.interrupt_count,
+                   j.status::text AS live_status, j.attempt AS live_attempt
+            FROM no_claim n
+            JOIN tagged t ON t.id = n.job_id
+            LEFT JOIN "{schema}".jobs j ON j.id = n.job_id
+            ORDER BY n.job_id, n.attempt
             """,
             tag,
         )
         violations.append(
-            f"{orphans} effects rows have no claim row behind them - a body run with no "
-            f"dispatch: {[dict(r) for r in detail]}"
+            f"{len(detail)} attempt(s) ran a body with neither a claim row behind them "
+            f"nor interruption evidence to cover it - a body run with no dispatch: "
+            f"{[dict(r) for r in detail[:10]]}"
         )
     return violations
 

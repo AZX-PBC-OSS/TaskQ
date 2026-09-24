@@ -32,6 +32,7 @@ import asyncpg
 from pydantic import BaseModel
 
 from taskq import ActorRef, JobContext, RetryPolicy, actor
+from taskq.ratelimit import KeyedReservationRef
 
 _QUEUE = "system_e2e"
 
@@ -195,6 +196,94 @@ def sys_sysexit(payload: SysPayload, ctx: JobContext[SysPayload]) -> None:
     raise SystemExit(3)
 
 
+# ── Rolling-release fleet workloads ──────────────────────────────────────
+# Used by the rolling-release churn suite (test_rolling_release_fleet.py):
+# a capped queue (the queue row carries max_concurrent, the workers'
+# bootstrap registers the queue-cap reservation), a per-tenant keyed cap,
+# and a body that defies cooperative cancel (the grace-edge drain shape).
+
+
+class RollPayload(SysPayload):
+    """Payload with a tenant id for the per-key cap."""
+
+    tenant: str = "t0"
+
+
+#: The per-tenant keyed cap: one slot per tenant, leased for the same
+#: span the workers' lock lease carries so the heartbeat's slot-lease
+#: extension keeps a live holder's slot alive exactly as it keeps job
+#: locks, and a dead holder's slot lapses on the same clock.
+_TENANT_SLOT_LEASE = timedelta(seconds=8.0)
+
+_TENANT_CAP = KeyedReservationRef.typed(
+    RollPayload,
+    base_name="roll-tenant",
+    key_fn=lambda p: p.tenant,
+    slots=1,
+    lease=_TENANT_SLOT_LEASE,
+)
+
+
+@actor(name="sys_capped", queue="roll_capped")
+async def sys_capped(payload: SysPayload, ctx: JobContext[SysPayload]) -> dict[str, float]:
+    await asyncio.sleep(payload.sleep)
+    await _record("done", "sys_capped", ctx.job_id, ctx.attempt)
+    return {"sleep": payload.sleep}
+
+
+@actor(name="sys_keyed", queue=_QUEUE, reservations=[_TENANT_CAP])
+async def sys_keyed(payload: RollPayload, ctx: JobContext[RollPayload]) -> dict[str, str]:
+    await asyncio.sleep(payload.sleep)
+    await _record("done", "sys_keyed", ctx.job_id, ctx.attempt)
+    return {"tenant": payload.tenant}
+
+
+@actor(name="sys_defiant", queue=_QUEUE, retry=_NO_RETRY)
+async def sys_defiant(payload: SysPayload, ctx: JobContext[SysPayload]) -> None:
+    """The grace-edge workload: records the start, then defies every
+    cooperative cancel until its own time is up. The shutdown ladder's
+    CANCELLING and FORCING cancels both land and are both absorbed, so
+    the drain reaches RELEASING while the body still runs - the shape a
+    pod killed at the grace edge leaves behind."""
+    import time as _time
+
+    await _record("start", "sys_defiant", ctx.job_id, ctx.attempt)
+    deadline = _time.monotonic() + payload.sleep
+    while _time.monotonic() < deadline:
+        try:
+            await asyncio.sleep(min(0.25, max(0.0, deadline - _time.monotonic())))
+        except asyncio.CancelledError:
+            # Absorb EVERY cancel the shutdown ladder delivers
+            # (CANCELLING's and FORCING's alike): the body outlasts the
+            # graces, so the pod lingers at its grace edge with the
+            # drain finished around it - the flap's premise.
+            await _record("defied", "sys_defiant", ctx.job_id, ctx.attempt)
+    await _record("done", "sys_defiant", ctx.job_id, ctx.attempt)
+
+
+@actor(name="sys_winc", queue=_QUEUE, retry=_FAST_RETRY)
+async def sys_winc(payload: SysPayload, ctx: JobContext[SysPayload]) -> dict[str, float]:
+    """The drain-window workload: absorbs the FIRST cooperative cancel
+    and spends a wind-down interval before unwinding, so a pod SIGTERMed
+    while holding one has a measurably long drain (the window the
+    no-stall pins are bracketed in). A pod killed mid-drain interrupts
+    it like any other body; its conservation is the fleet's, not the
+    succeeded floor's."""
+    import time as _time
+
+    await _record("start", "sys_winc", ctx.job_id, ctx.attempt)
+    try:
+        await asyncio.sleep(payload.sleep)
+    except asyncio.CancelledError:
+        await _record("winding", "sys_winc", ctx.job_id, ctx.attempt)
+        deadline = _time.monotonic() + payload.sleep
+        while _time.monotonic() < deadline:  # noqa: ASYNC110  # Why: the wind-down is a deadline the body deliberately overstays; an Event cannot express "sleep out the remaining budget".
+            await asyncio.sleep(0.1)
+        raise
+    await _record("done", "sys_winc", ctx.job_id, ctx.attempt)
+    return {"sleep": payload.sleep}
+
+
 # ── The registry the worker subprocess serves ────────────────────────────
 
 ACTORS: dict[str, ActorRef[Any, Any]] = {
@@ -207,4 +296,8 @@ ACTORS: dict[str, ActorRef[Any, Any]] = {
     "sys_panic": sys_panic,
     "sys_sync_ok": sys_sync_ok,
     "sys_sysexit": sys_sysexit,
+    "sys_capped": sys_capped,
+    "sys_keyed": sys_keyed,
+    "sys_defiant": sys_defiant,
+    "sys_winc": sys_winc,
 }
