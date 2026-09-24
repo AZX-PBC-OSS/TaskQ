@@ -9,7 +9,6 @@ Importing this module requires the ``taskq[fastapi]`` optional extra.
 """
 
 import asyncio
-import contextlib
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any
 
@@ -19,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from taskq._close import CLOSE_TIMEOUT_SECS
+from taskq._shield import shield_with_retrieval
 from taskq.constants import events_channel
 from taskq.settings import TaskQSettings
 from taskq.web._sse_limit import SESSION_RECHECK_TIMEOUT_SECS
@@ -166,8 +166,52 @@ async def _sse_generator(
                 # can shrink it); a close that outlives the bound gives
                 # up loudly-suppressed, no worse than the GC-driven
                 # status quo it replaces.
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(feed.aclose(), timeout=CLOSE_TIMEOUT_SECS)
+                #
+                # The close must also survive the very cancellation that
+                # interrupts the stream. wait_for cancels the task it is
+                # waiting on when the WAIT itself is cancelled, and a
+                # cancelled stream re-delivers cancellation at every
+                # checkpoint (an anyio cancel scope does; that is the
+                # shape every ASGI server streams under). Unshielded, the
+                # second delivery kills the close mid-flight, the feed's
+                # finally dies before pool.release, and the connection
+                # strands against the pool cap for the life of the
+                # process: a generator abandoned inside its own finally
+                # is terminated and can never be closed again. shield
+                # detaches the close into its own task that runs to
+                # completion - the release happens even when this exit is
+                # cancelled - while the CancelledError shield re-raises
+                # here is deliberately left uncaught (an except below
+                # re-raises it) so the stream still ends cancelled.
+                # shield_with_retrieval, not plain shield: the detached
+                # close's outcome must be retrieved, not lost as asyncio
+                # "Task exception was never retrieved" noise - a close
+                # that outlives its bound while detached raises
+                # TimeoutError into nobody (see taskq._shield).
+                #
+                # A close that outlives the bound gives up loudly (the
+                # wait_for TimeoutError is logged below, and the feed's
+                # own cleanup is cancellation-tolerant and finishes the
+                # release detached - see _listen._release_listen_connection),
+                # no worse than the GC-driven status quo it replaces.
+                try:
+                    await shield_with_retrieval(
+                        asyncio.wait_for(feed.aclose(), timeout=CLOSE_TIMEOUT_SECS)
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    # The close failed on THIS (observed) path - a
+                    # suppressed-in-the-feed infra error surfaced by the
+                    # closer. Silent suppression would hide a release that
+                    # never happened; the detached path is covered by
+                    # shield_with_retrieval above.
+                    logger.warning(
+                        "admin-sse-listen-close-failed",
+                        topic=schema,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
         else:
             while True:
                 if not await _session_still_valid():

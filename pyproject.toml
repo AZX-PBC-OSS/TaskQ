@@ -478,6 +478,10 @@ ignore = [
 "tests/test_ratelimit_reservation.py" = ["ASYNC109"]
 "tests/test_reservation_denial_retry_hint.py" = ["ASYNC109"]
 "tests/test_worker_bootstrap_reservation_slots.py" = ["ASYNC109"]
+# ASYNC109: the stub pool's acquire mirrors asyncpg.Pool.acquire's `timeout`
+# kwarg; the feed double passes it through wait_for exactly as
+# listen_with_reconnect does.
+"tests/web_admin/test_sse_listen_release.py" = ["ASYNC109"]
 # S311: random.Random used for timing jitter in backoff tests, not
 # cryptographic purposes.
 "tests/test_retry_backoff.py" = ["S311"]
