@@ -30,6 +30,7 @@ from taskq._close import (
     close_redis_bounded,
 )
 from taskq._dsn import dsn_host as _dsn_host
+from taskq._forkguard import guarded_connection_class, guarded_redis_connection_class
 from taskq.auth import credential_provider_of
 from taskq.connections import (
     ConnFactory,
@@ -238,9 +239,14 @@ async def open_dedicated_conn(
     hang the caller indefinitely.
     """
     if command_timeout is not None:
-        conn = await asyncpg.connect(dsn, command_timeout=command_timeout, timeout=command_timeout)
+        conn = await asyncpg.connect(
+            dsn,
+            command_timeout=command_timeout,
+            timeout=command_timeout,
+            connection_class=guarded_connection_class(),
+        )
     else:
-        conn = await asyncpg.connect(dsn)
+        conn = await asyncpg.connect(dsn, connection_class=guarded_connection_class())
     applied = apply_keepalive_to_conn(conn, label=label) if apply_keepalive else False
     logger.info(
         "dedicated-connection-opened",
@@ -685,6 +691,7 @@ async def open_worker_deps(
                     command_timeout=dispatcher_pool_command_timeout,
                     statement_cache_size=_stmt_kwargs["statement_cache_size"],
                     max_cached_statement_lifetime=_stmt_kwargs["max_cached_statement_lifetime"],
+                    connection_class=guarded_connection_class(),
                 )
                 assert pool is not None
                 return pool
@@ -698,6 +705,7 @@ async def open_worker_deps(
                     command_timeout=settings.heartbeat_command_timeout,
                     statement_cache_size=_stmt_kwargs["statement_cache_size"],
                     max_cached_statement_lifetime=_stmt_kwargs["max_cached_statement_lifetime"],
+                    connection_class=guarded_connection_class(),
                 )
                 assert pool is not None
                 return pool
@@ -716,6 +724,7 @@ async def open_worker_deps(
                     max_inactive_connection_lifetime=_lifetime,
                     statement_cache_size=_stmt_kwargs["statement_cache_size"],
                     max_cached_statement_lifetime=_stmt_kwargs["max_cached_statement_lifetime"],
+                    connection_class=guarded_connection_class(),
                 )
                 assert pool is not None
                 return pool
@@ -989,6 +998,7 @@ async def open_worker_deps(
             redis_client = redis_async.from_url(
                 str(settings.redis_url),
                 decode_responses=False,
+                connection_class=guarded_redis_connection_class(),
             )
             owns_redis = True
         deps.redis_client = redis_client

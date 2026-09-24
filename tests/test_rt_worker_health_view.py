@@ -45,7 +45,10 @@ def _patch_caches(
     batch: dict[str, int],
 ) -> None:
     # Replace, never mutate: the real dicts are process-wide singletons.
-    monkeypatch.setattr(_otel, "_sweep_success_cache", success)
+    # The success dict stamps the MONOTONIC ledger (maintenance_health is
+    # an elapsed-time comparison; the wall ledger feeds only the exported
+    # gauge, see tests/test_attack_clock_back_sweep_health.py).
+    monkeypatch.setattr(_otel, "_sweep_success_monotonic_cache", success)
     monkeypatch.setattr(_otel, "_sweep_batch_size_cache", batch)
 
 
@@ -64,7 +67,7 @@ def test_staleness_just_under_three_intervals_stays_healthy(
     import time
 
     settings = _settings(TASKQ_SWEEP_INTERVAL="100")
-    lagging = time.time() - 2.9 * settings.sweep_interval
+    lagging = time.monotonic() - 2.9 * settings.sweep_interval
     _patch_caches(monkeypatch, {"scheduled_to_pending": lagging}, {})
 
     view = maintenance_health(settings)
@@ -81,7 +84,7 @@ def test_staleness_just_over_three_intervals_degrades(
     import time
 
     settings = _settings(TASKQ_SWEEP_INTERVAL="100")
-    stalled = time.time() - 3.1 * settings.sweep_interval
+    stalled = time.monotonic() - 3.1 * settings.sweep_interval
     _patch_caches(monkeypatch, {"scheduled_to_pending": stalled}, {})
 
     view = maintenance_health(settings)
@@ -108,7 +111,7 @@ def test_reduced_tier_threshold_follows_the_configured_batch_size(
     assert settings.event_writer_batch_size == 250
     _patch_caches(
         monkeypatch,
-        {"scheduled_to_pending": time.time()},
+        {"scheduled_to_pending": time.monotonic()},
         {"scheduled_to_pending": 249},
     )
 
@@ -131,7 +134,7 @@ def test_batch_size_equal_to_configured_is_not_degraded(
     settings = _settings(TASKQ_EVENT_WRITER_BATCH_SIZE="250")
     _patch_caches(
         monkeypatch,
-        {"scheduled_to_pending": time.time()},
+        {"scheduled_to_pending": time.monotonic()},
         {"scheduled_to_pending": 250},
     )
 
@@ -155,14 +158,16 @@ def test_reader_sees_success_stamps(monkeypatch: pytest.MonkeyPatch) -> None:
     import time
 
     monkeypatch.setattr(_otel, "_sweep_success_cache", {})
+    monkeypatch.setattr(_otel, "_sweep_success_monotonic_cache", {})
     monkeypatch.setattr(_otel, "_sweep_batch_size_cache", {})
     settings = _settings(TASKQ_SWEEP_INTERVAL="1")
 
     # The emitter publishes through the CURRENT module cache; ageing the
-    # stamp it just wrote, exactly as elapsed time would.
+    # stamp it just wrote, exactly as elapsed time would (the health view
+    # reads the monotonic ledger).
     _otel.record_sweep_success("scheduled_to_pending")
-    _otel._sweep_success_cache["scheduled_to_pending"] = (  # pyright: ignore[reportPrivateUsage]  # Why: ageing the just-written stamp, exactly as elapsed time would.
-        time.time() - 10 * settings.sweep_interval
+    _otel._sweep_success_monotonic_cache["scheduled_to_pending"] = (  # pyright: ignore[reportPrivateUsage]  # Why: ageing the just-written stamp, exactly as elapsed time would.
+        time.monotonic() - 10 * settings.sweep_interval
     )
 
     view = maintenance_health(settings)
@@ -188,8 +193,11 @@ async def test_demotion_clears_sweep_health_stamps() -> None:
 
     from taskq.obs import update_queue_depth_cache
 
-    # Populate every leader-sampled cache the demotion path owns.
+    # Populate every leader-sampled cache the demotion path owns (the
+    # wall ledger AND its monotonic twin: the gauge series and the
+    # health view are two readers of the same authority).
     _otel._sweep_success_cache["scheduled_to_pending"] = time.time() - 9999.0  # pyright: ignore[reportPrivateUsage]  # Why: populating the process singleton the demotion path must clear; restored in the finally below.
+    _otel._sweep_success_monotonic_cache["scheduled_to_pending"] = time.monotonic() - 9999.0  # pyright: ignore[reportPrivateUsage]  # Why: the monotonic ledger maintenance_health reads must clear with it.
     _otel._sweep_batch_size_cache["scheduled_to_pending"] = 25  # pyright: ignore[reportPrivateUsage]  # Why: see above.
     update_queue_depth_cache({"default": 3})
     try:
@@ -218,9 +226,14 @@ async def test_demotion_clears_sweep_health_stamps() -> None:
             "has authority over - its health body reads degraded forever and "
             "its frozen last-success series pages promotion-stalled forever"
         )
+        assert _otel._sweep_success_monotonic_cache == {}, (  # pyright: ignore[reportPrivateUsage]  # Why: see above.
+            "a demoted process keeps frozen monotonic sweep-success stamps - "
+            "the ledger maintenance_health's stalled view reads"
+        )
         assert _otel._sweep_batch_size_cache == {}  # pyright: ignore[reportPrivateUsage]  # Why: see above.
     finally:
         _otel._sweep_success_cache.clear()  # pyright: ignore[reportPrivateUsage]  # Why: restoring the process singleton this test populated.
+        _otel._sweep_success_monotonic_cache.clear()  # pyright: ignore[reportPrivateUsage]  # Why: see above.
         _otel._sweep_batch_size_cache.clear()  # pyright: ignore[reportPrivateUsage]  # Why: see above.
         update_queue_depth_cache({})
 
@@ -232,7 +245,7 @@ async def test_demoted_process_health_is_not_degraded() -> None:
     was never its own to keep."""
     import time
 
-    _otel._sweep_success_cache["cron"] = time.time() - 9999.0  # pyright: ignore[reportPrivateUsage]  # Why: a frozen stamp from this process's leadership tenure; restored in the finally below.
+    _otel._sweep_success_monotonic_cache["cron"] = time.monotonic() - 9999.0  # pyright: ignore[reportPrivateUsage]  # Why: a frozen stamp from this process's leadership tenure, in the ledger the health view reads; restored in the finally below.
     try:
         deps = WorkerDeps(
             settings=_settings(),
@@ -260,7 +273,7 @@ async def test_demoted_process_health_is_not_degraded() -> None:
         )
         assert view["reasons"] == ["no sweep has completed yet"]
     finally:
-        _otel._sweep_success_cache.clear()  # pyright: ignore[reportPrivateUsage]  # Why: restoring the process singleton this test populated.
+        _otel._sweep_success_monotonic_cache.clear()  # pyright: ignore[reportPrivateUsage]  # Why: restoring the process singleton this test populated.
 
 
 # ── A leader process that IS stalled stays degraded (the pin that the
@@ -277,7 +290,7 @@ def test_stalled_leader_process_is_degraded(
     import time
 
     settings = _settings(TASKQ_SWEEP_INTERVAL="1")
-    stalled = time.time() - 5 * settings.sweep_interval
+    stalled = time.monotonic() - 5 * settings.sweep_interval
     _patch_caches(monkeypatch, {"scheduled_to_pending": stalled}, {})
 
     view = maintenance_health(settings)
