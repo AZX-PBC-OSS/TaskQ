@@ -205,6 +205,48 @@ class TestResultUnavailableReasonBoundary:
     def test_no_stamp_reads_not_stored(self) -> None:
         assert self._reason(None) == "not_stored"
 
+    def test_expired_message_claims_only_what_the_row_proves(self) -> None:
+        """The expired-branch message asserts only what the row proves:
+        the result's TTL elapsed at the stamp instant and no result is
+        stored (swept after expiry, or the actor stored none). It must
+        NOT claim the retention sweep removed anything - the completion
+        write stamps ``result_expires_at`` even when the actor stored
+        none and the sweep's ``AND result IS NOT NULL`` guard never
+        touches that row, so a past stamp cannot distinguish swept from
+        never-stored. (This fixture row IS that corner: ``result=None``
+        with a past stamp.)"""
+        from taskq.exceptions import ResultUnavailable
+
+        expired_at = datetime.now(UTC) - timedelta(seconds=1)
+        exc = ResultUnavailable(self._row(expired_at))
+        text = str(exc)
+        assert "TTL elapsed at" in text
+        assert expired_at.isoformat() in text
+        assert "swept after expiry, or the actor stored none" in text
+        # The false claims the old message made, pinned dead:
+        assert "the retention sweep removed it" not in text
+        assert "not a lost job" not in text
+
+    def test_not_stored_message_stays_non_committal(self) -> None:
+        """The no-stamp branch keeps its plain message: nothing about
+        sweeps, nothing about expiry. A future stamp keeps it too: the
+        expired-branch wording must not leak onto a stamp that has not
+        elapsed yet (one ``and`` -> ``or`` in the branch guard would
+        claim the TTL elapsed at a future instant)."""
+        from taskq.exceptions import ResultUnavailable
+
+        exc = ResultUnavailable(self._row(None))
+        text = str(exc)
+        assert "no stored result" in text
+        assert "expired" not in text
+        assert "sweep" not in text
+
+        future = ResultUnavailable(self._row(datetime.now(UTC) + timedelta(seconds=60)))
+        assert future.reason == "not_stored"
+        assert "TTL elapsed" not in str(future)
+        assert "expired" not in str(future)
+        assert "no stored result" in str(future)
+
 
 class TestRetentionGapFailVisible:
     async def test_prune_cascade_advances_watermark_and_gap_ends_stream(self) -> None:

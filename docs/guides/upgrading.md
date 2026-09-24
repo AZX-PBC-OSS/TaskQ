@@ -1555,9 +1555,12 @@ event id, the resumed stream now ENDS LOUDLY with `EventRetentionGapError`
 naming the cursor and the watermark instead of silently skipping to live.
 Size the retention period against your slowest consumer's worst outage,
 not only against event volume; the gate turns an over-long outage into an
-actionable error, not into a recovered feed.
+actionable error, not into a recovered feed. Recovery from
+`EventRetentionGapError` after a crash-before-consume is to recreate the
+watcher fresh (`watch_reclaims(after_id=0)`), accepting the loss the error
+reported: the deleted events cannot be refilled.
 
-### An expired result reads as expired: `ResultUnavailable.reason` and the loss receipt
+### An expired result reads as expired: `ResultUnavailable.reason` and the expiry stamp
 
 > **Unreleased.** Silent; a late poller's error is now distinguished, and
 > `result_expires_at` survives the sweep it stamps.
@@ -1568,12 +1571,18 @@ the TTL got a `ResultUnavailable` that read exactly like a job whose actor
 had returned `None`: the loss was observable but not explainable, and at the
 instance level it was indistinguishable from a job that never stored a
 result. The sweep now nulls only `result` and `result_size_bytes` and KEEPS
-the past `result_expires_at` stamp - the loss receipt - and
-`ResultUnavailable` grew a `reason` attribute: `"result_ttl_expired"` (with
-the expiry instant in the message) when the row carries the past stamp,
-`"not_stored"` when the actor returned `None` for a non-`None` result type.
-The in-memory backend's read view applies the identical rule, so tests see
-the same failure mode on both backends. A retried job cannot inherit a
+the past `result_expires_at` stamp, and `ResultUnavailable` grew a `reason`
+attribute: `"result_ttl_expired"` (with the expiry instant in the message)
+when the row carries the past stamp, `"not_stored"` when it carries no
+stamp or a future one. One honesty note: the stamp proves the result's TTL
+elapsed, no more. The completion write stamps `result_expires_at` even when
+the actor returned `None` for a non-`None` result type (the sweep's
+`AND result IS NOT NULL` guard never touches such a row), so a past stamp
+cannot distinguish a swept result from a row that never stored one, and the
+message asserts only that: the TTL elapsed at T and no result is stored
+(swept after expiry, or the actor stored none). The in-memory backend's
+read view applies the identical rule, so tests see the same failure mode on
+both backends. A retried job cannot inherit a
 stale receipt: `retry_job` re-pends with `result_expires_at = NULL` and the
 terminal write recomputes from the actor's TTL at the new completion.
 

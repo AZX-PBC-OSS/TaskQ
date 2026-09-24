@@ -143,10 +143,12 @@ def _post_sweep_result_view(row: JobRow, now: datetime) -> JobRow:
     comparison is strictly ``<`` (a read at exactly ``result_expires_at``
     still sees the result), and a row whose ``result`` is already ``None``
     is untouched. Only ``result`` / ``result_size_bytes`` are nulled, the
-    expiry stamp is KEPT on the view (the loss receipt the client's
+    expiry stamp is KEPT on the view (the expiry signal the client's
     ``ResultUnavailable.reason='result_ttl_expired'`` reads, the same
-    receipt the PG sweep leaves in place), the stored row is never
-    mutated, only the returned copy, so status and every other column
+    stamp the PG sweep leaves in place; it proves the TTL elapsed, no
+    more, so the client message claims only that), the stored row is
+    never mutated, only the returned copy, so status and every other
+    column
     (terminal ones included) pass through unchanged, and an expired result
     can neither revive nor alter a terminal state. ``get`` feeds this view
     the already-isolated :func:`_read_copy` product, so the view's own
@@ -158,10 +160,12 @@ def _post_sweep_result_view(row: JobRow, now: datetime) -> JobRow:
     """
     if row.result is not None and row.result_expires_at is not None and row.result_expires_at < now:
         # result_expires_at is KEPT on the view, matching
-        # _SWEEP_RESULT_TTL_SQL: the past stamp is the loss receipt the
+        # _SWEEP_RESULT_TTL_SQL: the past stamp is the expiry signal the
         # client's ResultUnavailable.reason='result_ttl_expired' reads.
-        # Nulling it would make an expired result read identical to an
-        # actor that returned None with no TTL configured.
+        # Nulling it would erase even the TTL-elapsed fact; the stamp
+        # alone cannot distinguish a swept result from an actor that
+        # returned None, so the client message claims only the elapsed
+        # TTL and the absent result.
         return replace(row, result=None, result_size_bytes=None)
     return row
 

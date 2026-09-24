@@ -50,9 +50,14 @@ class ResultUnavailable(TaskQError):
     ``reason`` distinguishes the two live-result causes at the instance:
     ``"result_ttl_expired"`` when the row itself carries the expiry
     evidence (``result_expires_at`` in the past, which the retention
-    sweep leaves in place exactly so the loss is explained, never
-    indistinguishable from a job that never stored one), and
-    ``"not_stored"`` otherwise. Carries the row for inspection.
+    sweep leaves in place on the rows it nulls). The stamp proves the
+    TTL elapsed, no more: the completion write stamps
+    ``result_expires_at`` even when the result itself is ``NULL`` (an
+    actor that returned ``None``) and the sweep only nulls rows whose
+    result was still stored, so a past stamp cannot distinguish a swept
+    result from a row that never stored one. The message asserts only
+    what the row proves. ``"not_stored"`` covers every other case.
+    Carries the row for inspection.
     """
 
     def __init__(self, row: "JobRow") -> None:
@@ -62,10 +67,9 @@ class ResultUnavailable(TaskQError):
         self.reason: str = "result_ttl_expired" if expired else "not_stored"
         if expires_at is not None and expired:
             super().__init__(
-                f"job {row.id} succeeded but its result expired at "
-                f"{expires_at.isoformat()} (result_ttl elapsed) "
-                f"before this read; the retention sweep removed it, this is "
-                f"not a lost job"
+                f"job {row.id} succeeded but the result's TTL elapsed at "
+                f"{expires_at.isoformat()} before this read; no result is "
+                f"stored (swept after expiry, or the actor stored none)"
             )
         else:
             super().__init__(f"job {row.id} has no stored result")

@@ -874,17 +874,20 @@ WITH expired AS MATERIALIZED (
 UPDATE "{schema}".jobs j
 SET result = NULL,
     result_size_bytes = NULL
-    -- result_expires_at is deliberately KEPT, not nulled: it is the loss
-    -- receipt. A late poller reading the post-sweep row sees
+    -- result_expires_at is deliberately KEPT, not nulled: it is the
+    -- expiry signal. A late poller reading the post-sweep row sees
     -- result NULL + result_expires_at in the past, which the client
     -- (ResultUnavailable.reason='result_ttl_expired') reports as "the
-    -- result expired at T", not as the indistinguishable-from-a-lost-job
-    -- "no stored result". Nulling it here would make an expired result
-    -- read identical to an actor that returned NULL with no TTL
-    -- configured, the conflation the receipt exists to prevent. The
-    -- sweep's own eligibility guard (result IS NOT NULL) keeps the
-    -- kept stamp from re-eligibility: a swept row never matches this
-    -- statement again. A retried job cannot inherit a stale receipt:
+    -- result's TTL elapsed at T", the expiry instant. The stamp proves
+    -- the TTL elapsed, no more: the completion write stamps
+    -- result_expires_at even when the result itself is NULL (an actor
+    -- that returned None), so a past stamp cannot distinguish a swept
+    -- result from a row that never stored one, and the client message
+    -- claims only what the row proves. Nulling the stamp here would
+    -- erase even the TTL-elapsed fact. The sweep's own eligibility
+    -- guard (result IS NOT NULL) keeps the kept stamp from
+    -- re-eligibility: a swept row never matches this statement again.
+    -- A retried job cannot inherit a stale receipt:
     -- retry_job re-pends with result_expires_at = NULL, and
     -- mark_succeeded recomputes from the actor's TTL at the new
     -- completion.
@@ -1820,11 +1823,12 @@ async def sweep_expired_results(
     argument.
 
     The sweep keeps ``result_expires_at`` on the rows it nulls: the past
-    stamp is the loss receipt a late poller's
-    ``ResultUnavailable.reason='result_ttl_expired'`` reads, the
-    difference between "the result expired at T" and the
-    indistinguishable-from-a-lost-job "no stored result". See
-    ``_SWEEP_RESULT_TTL_SQL``'s comment.
+    stamp is the expiry signal a late poller's
+    ``ResultUnavailable.reason='result_ttl_expired'`` reads. It proves
+    the TTL elapsed, no more (the completion write stamps it even when
+    the actor stored no result), so the client message asserts only the
+    elapsed TTL and the absent result. See ``_SWEEP_RESULT_TTL_SQL``'s
+    comment.
 
     Returns the count of results expired by this call.
     """

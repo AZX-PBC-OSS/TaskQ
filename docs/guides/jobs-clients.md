@@ -1004,7 +1004,7 @@ property to the fetched row; on return, `row` is the terminal row the result was
 | Exception | When |
 |---|---|
 | `JobFailed` | Terminal status is not `"succeeded"` (`"failed"`, `"cancelled"`, `"crashed"`, `"abandoned"`). The `row` attribute carries the full `JobRow` for inspection. |
-| `ResultUnavailable` | Status is `"succeeded"` but no result is stored (TTL expired, actor returned `None` while `R` is non-`None`). The `row` attribute is available; `reason` distinguishes `"result_ttl_expired"` (the row carries the past `result_expires_at` stamp the retention sweep leaves in place, the message names the expiry instant) from `"not_stored"`. |
+| `ResultUnavailable` | Status is `"succeeded"` but no result is stored (TTL expired, actor returned `None` while `R` is non-`None`). The `row` attribute is available; `reason` distinguishes `"result_ttl_expired"` (the row carries the past `result_expires_at` stamp; the message names the expiry instant and says only that no result is stored, swept after expiry or the actor stored none, the stamp cannot distinguish the two) from `"not_stored"`. |
 | `TimeoutError` | `timeout` elapsed before a terminal transition was observed. |
 
 #### `status()`
@@ -1549,7 +1549,7 @@ from taskq.exceptions import (
 | `SingletonCollisionError` | `enqueue()` called for a singleton actor that already has an active job. Fields: `actor` (str), `blocking_job_id` (UUID or None), `retry_after` (timedelta or None). |
 | `PayloadValidationError` | Pydantic validation of the payload fails at enqueue time or at dispatch time. Non-retryable regardless of retry policy. Fields: `actor`, `payload_schema_ver`, `validation_errors`. |
 | `JobFailed` | `JobHandle.wait()` observed a non-success terminal status. Field: `row` (JobRow) with `status`, `error_class`, `error_message`, `error_traceback`. |
-| `ResultUnavailable` | `JobHandle.wait()` observed `"succeeded"` but no usable result is stored (TTL expired, `None` returned where `R` is non-`None`). Fields: `row` (JobRow), `reason` (`"result_ttl_expired"` | `"not_stored"`). |
+| `ResultUnavailable` | `JobHandle.wait()` observed `"succeeded"` but no usable result is stored (TTL expired, `None` returned where `R` is non-`None`). Fields: `row` (JobRow), `reason` (`"result_ttl_expired"` | `"not_stored"`; the past stamp in the `"result_ttl_expired"` case proves the TTL elapsed, not whether a sweep removed the result). |
 
 **Catching backpressure generically.** `MaxPendingExceededError`, `SingletonCollisionError`, and
 `BatchMaxPendingExceededError` all subclass `BackpressureError`, so `except BackpressureError` is a
@@ -1557,6 +1557,11 @@ valid catch-all for enqueue-time backpressure, with one hazard: the batch varian
 the within-cap actors' items are stored**, so a generic handler that retries the whole batch
 duplicates them. Consult `admitted_count` / `refused_indices` before retrying (retry only the
 refused items, or rely on `idempotency_key`s to deduplicate a whole-batch retry).
+
+For the retention gap signal (`EventRetentionGapError`, raised by a resumed `watch_reclaims`
+stream whose cursor the event-prune watermark passed): recovery after a crash-before-consume is
+to recreate the watcher fresh (`watch_reclaims(after_id=0)`), accepting the loss the error
+reported, the deleted events cannot be refilled.
 
 ```python
 from taskq.exceptions import JobFailed, ResultUnavailable
