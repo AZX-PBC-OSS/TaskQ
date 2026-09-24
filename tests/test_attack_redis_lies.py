@@ -173,6 +173,11 @@ _LIES: list[Any] = [
     pytest.param([2, b"1.0", b"0"], id="verdict-2"),
     pytest.param([-1, b"1.0", b"0"], id="verdict-negative"),
     pytest.param([0, b"4.0", b"-3"], id="negative-retry-hint"),
+    # The overflow lie: float(10**400) raises OverflowError, a sibling of
+    # neither TypeError nor ValueError; a lying reply must route exactly
+    # like every other lie, not crash the acquire through the validator's
+    # own arithmetic.
+    pytest.param([1, 10**400, 0], id="big-int-tokens"),
 ]
 
 
@@ -303,6 +308,10 @@ async def test_token_bucket_peek_lies_raise_the_sentinel() -> None:
         ([b"999999", b"1767225600"], "huge tokens"),
         ([b"nan", b"1767225600"], "nan tokens"),
         (["garbage", 1767225600], "wrong-type element"),
+        # The overflow lie: float(10**400) raises OverflowError, a
+        # sibling of neither TypeError nor ValueError; the lie must
+        # raise the sentinel, not crash the peek.
+        ([10**400, b"1767225600"], "big-int tokens"),
     ]:
         tb = TokenBucket(name="lie", capacity=5, refill_per_second=1.0, backend="redis")
         with pytest.raises(RateLimitStoreCorrupt, match="peek"):
@@ -331,9 +340,10 @@ async def test_token_bucket_peek_honest_reads_pass() -> None:
 async def test_redis_time_lie_raises_the_sentinel() -> None:
     """The store-clock read (``TIME``) is a trust boundary of its own: the
     peek paths' elapsed math runs on it. A malformed tuple (wrong arity,
-    non-numeric, nan) raises the sentinel, not IndexError/ValueError.
+    non-numeric, nan, big-int overflow) raises the sentinel, not
+    IndexError/ValueError/OverflowError.
     """
-    for reply in ([1], [b"x", b"y"], "12", None, [1767225600, b"nan"]):
+    for reply in ([1], [b"x", b"y"], "12", None, [1767225600, b"nan"], [10**400, 0]):
         with pytest.raises(RateLimitStoreCorrupt, match="TIME"):
             from taskq.ratelimit._redis_utils import redis_time_seconds
 
@@ -357,6 +367,11 @@ async def test_sliding_window_huge_retry_hint_routes_to_fallback() -> None:
         ("gcra", [0, b"1", b"bogus"]),
         ("log", [0, b"-999", b"-5"]),  # the negative-count lie
         ("log", [0, b"5", b"-1"]),  # the negative-hint lie
+        # The overflow lie: int(float("inf")) raises OverflowError, a
+        # sibling of neither TypeError nor ValueError; the lie must ride
+        # the fallback, not crash the acquire.
+        ("log", [float("inf"), b"1", b"0"]),
+        ("gcra", [float("inf"), b"1", b"0"]),
     ]:
         sw = SlidingWindow(
             name="lie", limit=5, window=timedelta(seconds=60), backend="redis", style=style
@@ -407,6 +422,15 @@ async def test_sliding_window_peek_lies_raise_the_sentinel() -> None:
             redis_client=_PeekRedis(time_reply=[2000, 0], zcount_reply=b"garbage"),
             settings=_settings(),
         )
+    with pytest.raises(RateLimitStoreCorrupt, match="ZCARD"):
+        # The overflow lie: int(float("inf")) raises OverflowError, a
+        # sibling of neither TypeError nor ValueError; the lie must
+        # raise the sentinel, not crash the peek.
+        await _peek_redis_log(
+            SlidingWindow("l", limit=5, window=timedelta(seconds=10), style="log"),
+            redis_client=_PeekRedis(time_reply=[2000, 0], zcount_reply=float("inf")),
+            settings=_settings(),
+        )
     with pytest.raises(RateLimitStoreCorrupt, match="window"):
         # The score lie: the reply names a member OUTSIDE the window the
         # query itself filtered by; a huge one overflowed the timedelta
@@ -424,6 +448,15 @@ async def test_sliding_window_peek_lies_raise_the_sentinel() -> None:
         await _peek_redis_gcra(
             SlidingWindow("g", limit=5, window=timedelta(seconds=10), style="gcra"),
             redis_client=_PeekRedis(time_reply=[2000, 0], get_reply=b"garbage"),
+            settings=_settings(),
+        )
+    with pytest.raises(RateLimitStoreCorrupt, match="TAT"):
+        # The overflow lie: float(10**400) raises OverflowError, a
+        # sibling of neither TypeError nor ValueError; the lie must
+        # raise the sentinel, not crash the peek.
+        await _peek_redis_gcra(
+            SlidingWindow("g", limit=5, window=timedelta(seconds=10), style="gcra"),
+            redis_client=_PeekRedis(time_reply=[2000, 0], get_reply=10**400),
             settings=_settings(),
         )
 
