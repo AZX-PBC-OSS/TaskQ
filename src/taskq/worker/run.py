@@ -1084,13 +1084,24 @@ async def register_worker(pool: asyncpg.Pool, settings: WorkerSettings) -> UUID:
     return worker_id
 
 
-async def deregister_worker(pool: asyncpg.Pool, settings: WorkerSettings, worker_id: UUID) -> None:
+async def deregister_worker(pool: asyncpg.Pool, settings: WorkerSettings, worker_id: UUID) -> bool:
     """Remove the worker row from ``{schema}.workers`` (best-effort).
 
     Acquires from *pool* with a 2.0 s timeout.  On timeout or connection
     error, logs a structured warning ``deregister_worker_failed`` and
-    returns without raising, the recovery sweep is the backstop and
-    shutdown MUST NOT block on this cleanup.
+    reports the failure WITHOUT raising: shutdown MUST NOT block on this
+    cleanup, and the caller's backstop (the deps-teardown retry, then the
+    recovery sweep) decides what a still-unknown row fate means.
+
+    Returns the DELETE's outcome: ``True`` when the row is confirmed gone
+    (the DELETE executed and reported ``rowcount > 0``), ``False`` when the
+    delete is NOT confirmed, either because a transient failure was
+    swallowed here (the dominant class: pool-acquire timeout, conn loss;
+    the row's fate is unknown) or because the DELETE matched no row (the
+    sweep or a peer already removed it, so there was nothing to delete).
+    A non-transient failure still raises: it would reproduce identically
+    in any retry, so reporting it as transient-shaped ``False`` would
+    livelock the backstop while logging like a blip.
     """
     schema = settings.schema_name
     if not _IDENT_RE.match(schema):
@@ -1100,18 +1111,39 @@ async def deregister_worker(pool: asyncpg.Pool, settings: WorkerSettings, worker
 
     try:
         async with pool.acquire(timeout=2.0) as conn:
-            await conn.execute(sql, worker_id)
+            status: object = await conn.execute(sql, worker_id)
     except TRANSIENT_PG_ERRORS as e:
         _reg_log.warning(
             "deregister_worker_failed",
             worker_id=worker_id,
             error=str(e),
         )
+        return False
+    return _delete_status_confirmed(status)
 
 
 #: Sentinel reported for an actor-level cap the operator deliberately left
 #: unset. A blank field reads as missing data; this reads as configuration.
 _UNCAPPED = "uncapped"
+
+
+def _delete_status_confirmed(status: object) -> bool:
+    """Read asyncpg's DELETE status tag as "the row is confirmed gone".
+
+    asyncpg reports the statement as ``DELETE <n>``; a trailing count of
+    0 means the row was already gone (the sweep or a peer beat this
+    DELETE, nothing to remove). A non-str status is not a DELETE report
+    (a test-pool stub standing in for the driver); the statement executed
+    either way, so treat it as confirmed rather than guessing at a
+    failure the stub never raised.
+    """
+    if not isinstance(status, str):
+        return True
+    try:
+        rowcount = int(status.rpartition(" ")[2])
+    except ValueError:
+        return True
+    return rowcount > 0
 
 
 def _emit_resolved_capacity_startup_lines(

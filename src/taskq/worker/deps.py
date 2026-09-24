@@ -330,9 +330,16 @@ class WorkerDeps:
     heartbeated with no process behind it until the staleness sweep reaps
     it a whole ``worker_staleness`` later (the dramatiq #441
     orphaned-workers shape). The TaskGroup's shutdown finally clears this
-    after its own successful ``deregister_worker``, so on every path that
-    already cleaned up the backstop's DELETE is a no-op; on every path
-    that did not, the backstop is the cleanup."""
+    when its own ``deregister_worker`` reports the row gone (``True``) or
+    reports no outcome at all (``None``, the contract a caller override
+    predating the outcome report may still present); a TRANSIENT-failed
+    deregister is reported as ``False`` without raising, leaves this set,
+    and the backstop genuinely retries the delete at teardown when the
+    pool may be healthier. A non-transient failure raises in the finally,
+    is logged-and-suppressed there, and leaves this set too: that retry
+    reproduces identically in the backstop, which also logs-and-suppresses
+    it, so the teardown never crashes on either shape - the staleness
+    sweep is the final backstop for a row still not confirmed gone."""
     producer_stop_event: asyncio.Event = field(default_factory=asyncio.Event)
     active_jobs: ActiveJobRegistry = field(default_factory=ActiveJobRegistry)
     shutdown_phase: ShutdownPhase = ShutdownPhase.NONE

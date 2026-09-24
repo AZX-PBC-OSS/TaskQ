@@ -14,8 +14,8 @@ import asyncio
 import contextlib
 import json
 from collections.abc import Callable, Generator
-from contextlib import ExitStack, contextmanager
-from typing import cast
+from contextlib import AsyncExitStack, ExitStack, contextmanager
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
@@ -68,6 +68,11 @@ def _stub_deps(settings: WorkerSettings) -> WorkerDeps:
         worker_pool=pool,  # type: ignore[arg-type]
         notify_conn=None,
         leader_conn=None,
+        # The bootstrap asserts the incremental stack exists after
+        # open_worker_deps yields (it pushes the boot-failure deregister
+        # backstop onto it); the real open_worker_deps owns that stack,
+        # the harness fake below owns this one the same way.
+        _exit_stack=AsyncExitStack(),
     )
     return deps
 
@@ -190,6 +195,24 @@ def _fake_install_with_holder(
     holder.append(fut)  # type: ignore[arg-type]
 
 
+def _fake_open_worker_deps_exit(deps: WorkerDeps) -> Callable[[object, object, object], Any]:
+    """Build an ``open_worker_deps.__aexit__`` stand-in for a stub deps.
+
+    Mirrors open_worker_deps' real exit: unwind the incremental stack
+    (the boot-failure deregister backstop rides it) and null the attribute
+    so a late reload_credentials fails fast on a dead stack (see
+    open_worker_deps' own finally).
+    """
+
+    async def _exit(*args: object) -> None:
+        stack = deps._exit_stack
+        if stack is not None:
+            await stack.aclose()
+        deps._exit_stack = None
+
+    return _exit
+
+
 @contextmanager
 def _use_test_harness(
     settings: WorkerSettings,
@@ -270,10 +293,14 @@ def _use_test_harness(
             await h.consumer_side_effect(*args, **kwargs)  # pyright: ignore[reportGeneralTypeIssues] # Why: consumer_side_effect is Callable[..., object] (sync or async); runtime callable is async.
         await _park_until_shutdown()
 
-    async def _fake_dereg(pool: object, s: WorkerSettings, wid: UUID) -> None:
+    async def _fake_dereg(pool: object, s: WorkerSettings, wid: UUID) -> object:
         h.dereg_count += 1
         if h.dereg_side_effect is not None:
-            await h.dereg_side_effect(pool, s, wid)  # pyright: ignore[reportGeneralTypeIssues] # Why: dereg_side_effect is Callable[..., object] (sync or async); runtime callable is async.
+            # Propagate the outcome: the TaskGroup's finally gate reads
+            # deregister_worker's return (True / False / None), so an
+            # override that reports an outcome must reach the gate.
+            return await h.dereg_side_effect(pool, s, wid)  # pyright: ignore[reportGeneralTypeIssues] # Why: dereg_side_effect is Callable[..., object] (sync or async); runtime callable is async.
+        return None
 
     deps = _stub_deps(settings)
     h.deps = deps
@@ -285,7 +312,7 @@ def _use_test_harness(
 
         mock_open = stack.enter_context(patch("taskq.worker._bootstrap.open_worker_deps"))
         mock_open.return_value.__aenter__ = AsyncMock(return_value=deps)
-        mock_open.return_value.__aexit__ = AsyncMock(return_value=None)
+        mock_open.return_value.__aexit__ = _fake_open_worker_deps_exit(deps)
 
         stack.enter_context(patch("taskq.worker.run.register_worker", side_effect=_fake_register))
         stack.enter_context(
@@ -401,7 +428,7 @@ async def test_wiring_shape_backend_instance_identity(settings: WorkerSettings) 
         stack.enter_context(patch("taskq.worker._bootstrap.PostgresBackend", return_value=backend))
         mock_open = stack.enter_context(patch("taskq.worker._bootstrap.open_worker_deps"))
         mock_open.return_value.__aenter__ = AsyncMock(return_value=deps)
-        mock_open.return_value.__aexit__ = AsyncMock(return_value=None)
+        mock_open.return_value.__aexit__ = _fake_open_worker_deps_exit(deps)
         stack.enter_context(patch("taskq.worker.run.register_worker", side_effect=_fake_register))
         stack.enter_context(
             patch("taskq.worker._bootstrap.install_signal_handlers", side_effect=_capture_install)
@@ -689,6 +716,132 @@ async def test_deregister_worker_returns_on_oserror(settings: WorkerSettings) ->
     await deregister_worker(mock_pool, settings, new_uuid())
 
 
+# ── deregister outcome contract: the finally gate and the backstop retry ──
+
+
+class _DeleteReportingPool:
+    """Stub asyncpg.Pool that drives the REAL deregister_worker.
+
+    Every acquire hands out a conn whose DELETE reports ``DELETE 1``,
+    unless a transient outage is armed for the first execute (the
+    dominant transient class: pool-acquire timeout / conn loss, a
+    ``TimeoutError`` is a TRANSIENT_PG_ERRORS member).
+    """
+
+    def __init__(self, *, transient_first_execute: bool = False) -> None:
+        self.delete_calls = 0
+        self.transient_first_execute = transient_first_execute
+
+    def acquire(self, timeout: float | None = None) -> "_DeleteReportingAcquire":
+        return _DeleteReportingAcquire(self)
+
+
+class _DeleteReportingAcquire:
+    """``pool.acquire(timeout=...)`` stand-in: the async-conn context."""
+
+    def __init__(self, pool: _DeleteReportingPool) -> None:
+        self._pool = pool
+
+    async def __aenter__(self) -> "_DeleteReportingConn":
+        return _DeleteReportingConn(self._pool)
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+class _DeleteReportingConn:
+    """Stub asyncpg.Connection whose execute speaks asyncpg's DELETE status.
+
+    The dispatcher pool is read elsewhere in the bootstrap too (the
+    migration-ledger probe, the seed clock); those reads degrade on the
+    empty answers a duck-typed stub gives, so ``fetch``/``fetchval``
+    return them and only the DELETE status is crafted.
+    """
+
+    def __init__(self, pool: _DeleteReportingPool) -> None:
+        self._pool = pool
+
+    async def execute(self, *args: object, **kwargs: object) -> str:
+        sql = args[0] if args else ""
+        # Count only the workers DELETE; any other statement (the cron
+        # re-enable UPDATE, a seed clock read) is not a deregister
+        # attempt and answers with its own benign tag.
+        if not (isinstance(sql, str) and "DELETE FROM" in sql and ".workers" in sql):
+            return "UPDATE 0"
+        self._pool.delete_calls += 1
+        if self._pool.transient_first_execute and self._pool.delete_calls == 1:
+            raise TimeoutError("pool-acquire timeout simulated at the first deregister")
+        return "DELETE 1"
+
+    async def fetch(self, *args: object, **kwargs: object) -> list[object]:
+        return []
+
+    async def fetchval(self, *args: object, **kwargs: object) -> None:
+        return None
+
+
+async def _real_deregister(pool: object, s: WorkerSettings, wid: UUID) -> object:
+    """Route the harness's deregister seam through the REAL
+    deregister_worker (the test module's import is bound before the
+    harness patches ``taskq.worker.run.deregister_worker``), so the pins
+    below exercise the production swallow-and-report contract, not a
+    stand-in for it."""
+    return await deregister_worker(pool, s, wid)  # type: ignore[arg-type]
+
+
+async def test_clean_shutdown_deregisters_once_confirmed_and_clears_flag(
+    settings: WorkerSettings,
+) -> None:
+    """Full clean boot-then-shutdown: the row is deleted exactly once.
+
+    The finally's own deregister is the ONLY attempt on the clean path:
+    it reports the DELETE confirmed (``DELETE 1`` -> ``True``), the flag
+    clears in the finally, and the deps-teardown backstop must not fire
+    at all. A mutation that lets the backstop fire on top of a confirmed
+    delete doubles the DELETE for nothing; a mutation that leaves the
+    flag set on the clean path is caught by the same two asserts.
+    """
+    pool = _DeleteReportingPool()
+    with _use_test_harness(settings) as h:
+        assert h.deps is not None
+        h.deps.dispatcher_pool = pool  # type: ignore[assignment]
+        h.dereg_side_effect = _real_deregister
+        result = await _main(settings)
+
+    assert result == 0
+    assert pool.delete_calls == 1
+    assert h.deps is not None
+    assert h.deps.registered_worker_id is None
+
+
+async def test_transient_failed_deregister_is_retried_by_the_backstop(
+    settings: WorkerSettings,
+) -> None:
+    """A transient-failed finally-deregister leaves the delete to the backstop.
+
+    The finally's deregister hits a transient failure; the real
+    deregister_worker swallows it internally and reports ``False`` WITHOUT
+    raising (the dominant failure class would otherwise clear the flag in
+    the finally and strand the row until the staleness sweep). The flag
+    stays set, so the deps-teardown backstop genuinely retries the DELETE
+    against a pool that has recovered: the second execute is that retry's
+    delete, and the retry's confirmation clears the flag.
+    """
+    pool = _DeleteReportingPool(transient_first_execute=True)
+    with _use_test_harness(settings) as h:
+        assert h.deps is not None
+        h.deps.dispatcher_pool = pool  # type: ignore[assignment]
+        h.dereg_side_effect = _real_deregister
+        result = await _main(settings)
+
+    assert result == 0
+    # The finally's failed attempt, then the backstop's retry - not one
+    # attempt whose outcome was discarded, and not a third attempt.
+    assert pool.delete_calls == 2
+    assert h.deps is not None
+    assert h.deps.registered_worker_id is None
+
+
 # ── Test seam ───────────────────────────────────────────────────────
 
 
@@ -737,7 +890,15 @@ async def test_local_queue_seed_jobs_consumed(settings: WorkerSettings) -> None:
 async def test_cleanup_failure_does_not_mask_shutdown_outcome(
     settings: WorkerSettings,
 ) -> None:
-    """deregister_worker raises internally; _main still returns holder's exit code."""
+    """deregister_worker raising in the cleanup never masks the exit code.
+
+    The fake raises on EVERY attempt (it bypasses the real
+    deregister_worker's internal transient swallow), so this pins the
+    whole log-and-suppress chain: the TaskGroup's finally suppresses the
+    first raise, the flag stays set, and the deps-teardown backstop
+    retries - which suppresses the identical re-raise. Two attempts, no
+    crash, the holder's exit code untouched.
+    """
     with _use_test_harness(settings) as h:
 
         async def _failing_dereg(pool: object, s: WorkerSettings, wid: UUID) -> None:
@@ -747,7 +908,7 @@ async def test_cleanup_failure_does_not_mask_shutdown_outcome(
         result = await _main(settings)
 
     assert result == 0
-    assert h.dereg_count == 1
+    assert h.dereg_count == 2
 
 
 # ── worker_main process entry point ──────────────────────────────────

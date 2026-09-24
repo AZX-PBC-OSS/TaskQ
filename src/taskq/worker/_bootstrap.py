@@ -1872,15 +1872,29 @@ async def _main(
         # that reached the TaskGroup's finally, that finally already
         # deleted the row and cleared deps.registered_worker_id, so this
         # is a no-op there; the flag also stays set when the finally's
-        # own deregister FAILED, making this the retry.
+        # own deregister FAILED - a transient failure reported as False
+        # without raising, or a non-transient one that raised and was
+        # logged-and-suppressed - making this the retry. A permanent
+        # failure reproduces identically here (deregister_worker raises
+        # it again), so this logs-and-suppresses rather than crashing
+        # the unwind; the staleness sweep is the final backstop.
         deps.registered_worker_id = worker_id
 
         async def _deregister_on_boot_failure() -> None:
             if deps.registered_worker_id is None:
                 return
             deps.registered_worker_id = None
-            with contextlib.suppress(Exception):
+            try:
                 await deregister_worker(deps.dispatcher_pool, settings, worker_id)
+            except Exception:
+                # A permanent failure raises through deregister_worker
+                # (only transient ones are swallowed inside it); it must
+                # not crash the unwind, so log-and-suppress, the sweep
+                # is the final backstop.
+                _producer_log.warning(
+                    "deregister_worker_failed_in_boot_backstop",
+                    worker_id=worker_id,
+                )
 
         assert deps._exit_stack is not None  # open_worker_deps owns the stack while yielding
         deps._exit_stack.push_async_callback(_deregister_on_boot_failure)
@@ -2476,11 +2490,24 @@ async def _main(
                 # workers row behind makes the supervisor's staleness check ,
                 # the fleet-level backstop, start from a staler picture.
                 try:
-                    await deregister_worker(deps.dispatcher_pool, settings, worker_id)
-                    # Cleared only on success: a failed deregister leaves the
-                    # flag set so the deps-teardown backstop retries the
-                    # delete while the dispatcher pool is still open.
-                    deps.registered_worker_id = None
+                    outcome = await deregister_worker(deps.dispatcher_pool, settings, worker_id)
+                    # Cleared only when the DELETE is confirmed or
+                    # unreported: deregister_worker swallows a TRANSIENT
+                    # failure internally and reports it as False WITHOUT
+                    # raising, so on False the flag stays set and the
+                    # deps-teardown backstop genuinely retries the delete
+                    # while the dispatcher pool is still open - the pool
+                    # may be healthier by then. An UNREPORTED outcome (a
+                    # caller override still on the pre-outcome None
+                    # contract) keeps the old clear-on-return behaviour.
+                    # A non-transient failure RAISES here instead: it is
+                    # logged-and-suppressed just below, the flag stays
+                    # set, and the retry reproduces identically in the
+                    # backstop, which also logs-and-suppresses it - the
+                    # teardown never crashes either way, and the
+                    # staleness sweep is the final backstop.
+                    if outcome is not False:
+                        deps.registered_worker_id = None
                 except Exception:
                     _producer_log.warning(
                         "deregister_worker_failed_in_cleanup",
