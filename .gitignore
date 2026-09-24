@@ -84,3 +84,5 @@ vendor/
 .bench-matrix/
 
 coverage.json
+
+coverage/
