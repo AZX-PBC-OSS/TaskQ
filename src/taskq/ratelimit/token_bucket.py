@@ -50,7 +50,7 @@ import asyncio
 import math
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 
 import structlog
 
@@ -61,7 +61,7 @@ from taskq._advisory import (
 from taskq.backend._protocol import RateLimitBackend
 from taskq.backend._records import jsonb_param, jsonb_to_dict
 from taskq.backend.clock import Clock
-from taskq.exceptions import RateLimitDependencyUnavailable
+from taskq.exceptions import RateLimitDependencyUnavailable, RateLimitStoreCorrupt
 from taskq.ratelimit._decision_log import log_decision
 from taskq.ratelimit._lock_budget import resolve_token_bucket_lock_timeout_ms
 from taskq.ratelimit._redis_utils import ensure_redis_script, redis_time_seconds, with_pg_fallback
@@ -170,8 +170,9 @@ class _LuaResult:
     retry_after_seconds: float
 
 
-def _decode_lua_result(raw: list[object]) -> _LuaResult:
-    """Decode the raw Redis response from the token-bucket Lua script.
+def _decode_lua_result(raw: object, *, capacity: float) -> _LuaResult:
+    """Decode AND validate the raw Redis response from the token-bucket
+    Lua script at the trust boundary.
 
     This function is the **only** place where redis-py's untyped
     ``AsyncScript.__call__`` return touches our code. ``raw[0]`` is an
@@ -180,10 +181,66 @@ def _decode_lua_result(raw: list[object]) -> _LuaResult:
     ``tostring()``, this is required because Redis truncates Lua number
     returns to integers, losing fractional parts. ``int()`` / ``float()``
     accept bytes, int, and str at runtime.
+
+    The reply contract is enforced here, not assumed: a proxy between
+    TaskQ and the store can answer with semantically wrong values, and a
+    reply no honest script could produce must fail closed as a store
+    outage (:class:`RateLimitStoreCorrupt`), never crash the caller with
+    a ``ValueError``/``IndexError``/``TypeError`` no fallback handler
+    recognises and never be trusted into a decision:
+
+    * shape: exactly the three elements the script returns; a truncated
+      or extended reply is a lie;
+    * ``allowed``: exactly the integers 0 or 1 (any other decode, ``2``,
+      ``-1``, ``True``-as-int noise aside, is a lie, there is no
+      honest third verdict);
+    * ``tokens_remaining``: finite and inside ``[0, capacity]``, the
+      script's own arithmetic bounds the count both ways (the spend
+      floors at 0, the refill's ``min`` caps at capacity), so a negative
+      count (permanent-denial lie) or a huge one (phantom-balance lie)
+      cannot be trusted into the decision;
+    * ``retry_after_seconds``: never negative. The honest hint is
+      ``(req - tokens) / refill`` with ``req > tokens`` and
+      ``refill > 0``, strictly positive; a negative hint clamps to
+      ``timedelta(0)`` downstream, which is the ALLOWED decision's
+      sentinel value, so trusting it turns a denial into a zero-wait
+      retry (a spin). Non-finite hints stay tolerated: the module's
+      documented deviation (see the module docstring) substitutes
+      ``None``/``_MAX_TTL`` for them, the advisory hint is clamped by
+      :func:`_retry_after` and never corrupts admission state.
     """
-    allowed_int = int(raw[0])  # pyright: ignore[reportArgumentType]  # Why: raw[0] is int | bytes from Redis; int() accepts both at runtime but pyright cannot model AsyncScript's untyped return
-    tokens_remaining = float(raw[1])  # pyright: ignore[reportArgumentType]  # Why: raw[1] is bytes | str from Redis (Lua tostring); float() accepts both
-    retry_after_seconds = float(raw[2])  # pyright: ignore[reportArgumentType]  # Why: raw[2] is bytes | str from Redis (Lua tostring); float() accepts both
+    if not isinstance(raw, (list, tuple)):
+        raise RateLimitStoreCorrupt(
+            f"token-bucket script reply violates the 3-element contract: {raw!r}"
+        )
+    elements = cast("list[object]", raw)
+    if len(elements) != 3:
+        raise RateLimitStoreCorrupt(
+            f"token-bucket script reply violates the 3-element contract: {raw!r}"
+        )
+    try:
+        allowed_int = int(elements[0])  # pyright: ignore[reportArgumentType]  # Why: the element is object after the shape check; int() accepts int | str | bytes at runtime
+        tokens_remaining = float(elements[1])  # pyright: ignore[reportArgumentType]  # Why: same object element boundary
+        retry_after_seconds = float(elements[2])  # pyright: ignore[reportArgumentType]  # Why: same object element boundary
+    except (TypeError, ValueError, OverflowError) as exc:
+        # OverflowError joins the family: int(float("inf")) and
+        # float(10**400) raise it, a sibling of neither TypeError nor
+        # ValueError, and an uncaught one is the original crash class
+        # the boundary exists to kill.
+        raise RateLimitStoreCorrupt(f"token-bucket script reply is not numeric: {raw!r}") from exc
+    if allowed_int not in (0, 1):
+        raise RateLimitStoreCorrupt(f"token-bucket script reply has an impossible verdict: {raw!r}")
+    if not math.isfinite(tokens_remaining) or not (0.0 <= tokens_remaining <= capacity):
+        raise RateLimitStoreCorrupt(
+            f"token-bucket script reply reports tokens outside [0, capacity={capacity}]: {raw!r}"
+        )
+    if retry_after_seconds < 0.0:
+        # A negative hint is a spin lie: it clamps to the zero-wait
+        # sentinel downstream, which is the ALLOWED decision's value,
+        # so trusting it turns a denial into a zero-wait retry. nan/inf
+        # stay tolerated (the documented deviation: nan never reaches
+        # the hint on the fixed-quota arm, inf clamps to _MAX_TTL).
+        raise RateLimitStoreCorrupt(f"token-bucket script reply has a negative retry hint: {raw!r}")
     return _LuaResult(
         allowed=allowed_int == 1,
         tokens_remaining=tokens_remaining,
@@ -600,11 +657,55 @@ class TokenBucket:
 
         raw = await redis_client.hmget(key, ["tokens", "ts"])  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType, reportGeneralTypeIssues]  # Why: redis-py hmget return type is untyped in the stub; all operations reflect correct runtime behavior.
 
+        if raw is not None and not isinstance(raw, (list, tuple)):  # pyright: ignore[reportUnnecessaryIsInstance, reportUnnecessaryComparison]  # Why: the stub types hmget as a list of per-field values (never None), but the declared type is exactly what a lying reply violates at runtime - the RESP3 map and the set both arrive through this untyped boundary, so the runtime shape check is the defense, not a redundancy.
+            # Why the CONTAINER gets its own shape check before the
+            # element access: the guarded float conversion below
+            # validates the ELEMENT's value, but ``raw[0]``/``raw[1]``
+            # index the raw hmget reply itself - a dict-shaped map (the
+            # RESP3 reply, byte- or str-keyed) raises bare KeyError on
+            # the integer index and a set or bare int raises TypeError,
+            # and neither is in any guarded conversion family, so the
+            # lie escapes the peek as a bare crash. Worse, a bare
+            # string or bare bytes reply IS subscriptable, so the index
+            # silently yields garbage ("12" -> "1") and the peek builds
+            # a RateLimitState from the proxy's lie - the fail-open
+            # direction. The honest hmget reply is a list (one value
+            # per requested field), so any other container is the same
+            # verdict as every other reply lie: the store-corrupt
+            # sentinel, the family the conversion guard below already
+            # speaks. The bare None stays accepted: it is the pinned
+            # empty-hash default shape (the control pin
+            # ``test_token_bucket_peek_honest_reads_pass``), not a
+            # container lie. Mirrors the sibling withscores container
+            # check (6305615b) in ``_sliding_window_redis``.
+            raise RateLimitStoreCorrupt(f"token-bucket peek read a non-list hash reply: {raw!r}")
+
         tokens_raw = raw[0] if raw else None  # pyright: ignore[reportUnknownVariableType]  # Why: raw is untyped from redis-py hmget stub; validated at runtime.
         ts_raw = raw[1] if raw else None  # pyright: ignore[reportUnknownVariableType]  # Why: raw is untyped from redis-py hmget stub; validated at runtime.
 
-        tokens = self._capacity if tokens_raw is None else float(tokens_raw)  # pyright: ignore[reportUnknownArgumentType]  # Why: tokens_raw type is unknown due to untyped redis-py stub; validated at runtime.
-        ts = now_seconds if ts_raw is None else float(ts_raw)  # pyright: ignore[reportUnknownArgumentType]  # Why: ts_raw type is unknown due to untyped redis-py stub; validated at runtime.
+        try:
+            tokens = self._capacity if tokens_raw is None else float(tokens_raw)  # pyright: ignore[reportUnknownArgumentType]  # Why: tokens_raw type is unknown due to untyped redis-py stub; validated at runtime.
+            ts = now_seconds if ts_raw is None else float(ts_raw)  # pyright: ignore[reportUnknownArgumentType]  # Why: ts_raw type is unknown due to untyped redis-py stub; validated at runtime.
+        except (TypeError, ValueError, OverflowError) as exc:
+            # A peek is read-only, but the trust boundary is the same as
+            # the acquire's: a reply no honest hash could hold is a store
+            # lie, failed closed as the outage it is indistinguishable
+            # from, never a ValueError crash with no provenance.
+            # OverflowError joins the family: int(float("inf")) and
+            # float(10**400) raise it, a sibling of neither TypeError nor
+            # ValueError, and an uncaught one is the original crash class
+            # the boundary exists to kill.
+            raise RateLimitStoreCorrupt(
+                f"token-bucket peek read a non-numeric hash value: {raw!r}"
+            ) from exc
+        # The acquire script bounds the stored count to [0, capacity]
+        # (spend floors at 0, refill's min caps at capacity); anything
+        # else in the hash is a lie (a negative count would report a
+        # permanent denial, a huge one a phantom balance).
+        if not math.isfinite(tokens) or not (0.0 <= tokens <= self._capacity):
+            raise RateLimitStoreCorrupt(
+                f"token-bucket peek read tokens outside [0, capacity={self._capacity}]: {tokens!r}"
+            )
 
         elapsed = max(0.0, now_seconds - ts)
         tokens = min(self._capacity, tokens + elapsed * self._refill)
@@ -914,7 +1015,7 @@ class TokenBucket:
 
         raw: list[object] = await script(keys=[key], args=argv)  # pyright: ignore[reportAssignmentType, reportUnknownMemberType, reportUnknownVariableType]  # Why: redis-py AsyncScript.__call__ has no return-type annotation, pyright cannot model the return shape; the three-element list structure is guaranteed by the Lua script contract
 
-        lua = _decode_lua_result(raw)
+        lua = _decode_lua_result(raw, capacity=self._capacity)
 
         retry_after: timedelta | None
         if lua.allowed:

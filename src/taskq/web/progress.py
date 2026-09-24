@@ -122,6 +122,13 @@ _REDIS_503_BODY: dict[str, str] = {"error": "redis_not_configured"}
 # itself, plus the same grace the health ping allows.
 _BROKER_READ_GRACE_SECS: float = 0.5
 
+# Ceiling for a wire envelope's ``seq``: the durable cursor is the jobs
+# table's ``progress_seq int`` column (migration 01.00.00_01), so the int4
+# domain bounds every seq the healthy pipeline can issue. The SSE
+# generator discards out-of-domain envelopes as malformed rather than
+# advancing its dedup cursor into a range no future event can reach.
+_MAX_PROGRESS_SEQ: int = 2**31 - 1
+
 # Cap on the effective keepalive/re-check cadence of a live stream. The
 # keepalive tick is what bounds post-revocation staleness (#316): the
 # generator re-checks the session once per tick, so a host configuring
@@ -376,6 +383,24 @@ async def _event_generator(
                 seq = envelope["seq"]
                 if not isinstance(seq, int) or isinstance(seq, bool):
                     raise ValueError("seq must be an integer")
+                if not (0 <= seq <= _MAX_PROGRESS_SEQ):
+                    # The seq cursor is the durable row's int4
+                    # ``progress_seq`` (migration 01.00.00_01), so no
+                    # honest event can carry a value outside the int4
+                    # domain. A lie that passes the type check with a
+                    # huge value would advance ``last_emitted_seq`` past
+                    # every future event and starve this stream into a
+                    # blackhole; out-of-domain is malformed, discarded
+                    # like any other malformed message.
+                    raise ValueError("seq outside the int4 cursor domain")
+                if envelope["job_id"] != str(job_id):
+                    # The crossed-wire check: the channel is per-job, but
+                    # a lying proxy can deliver ANOTHER job's envelope on
+                    # it. Without this compare the foreign event would be
+                    # forwarded onto this stream (its seq could even gate
+                    # this job's future events). Off-wire deliverables
+                    # are malformed here, discarded like any other.
+                    raise ValueError("envelope is for a different job")
                 terminal = envelope.get("terminal", False)
                 if not isinstance(terminal, bool):
                     raise ValueError("terminal must be a boolean")
