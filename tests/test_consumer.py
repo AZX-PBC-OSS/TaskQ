@@ -1124,7 +1124,12 @@ async def test_generic_exception_logs_traceback(
 async def test_timeout_logs_actual_exception_details(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """_handle_timeout logs job_timeout with the actual TimeoutError, not hardcoded values."""
+    """A body-raised ``TimeoutError`` is the body's own failure since the
+    #791 de-conflation: the ``job_exception`` diagnostic (the generic
+    failure path) carries the ACTUAL exception details, not hardcoded
+    values. The machinery's own deadline logs ``job_timeout`` with its
+    ``start_to_close`` constant instead (pinned at
+    test_timeout_retry_path_logs_warning_only)."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise TimeoutError("database query took too long")
@@ -1161,7 +1166,7 @@ async def test_timeout_logs_actual_exception_details(
         )
 
     warning_calls = [
-        c for c in mock_log.warning.call_args_list if c.args and c.args[0] == "job_timeout"
+        c for c in mock_log.warning.call_args_list if c.args and c.args[0] == "job_exception"
     ]
     assert len(warning_calls) == 1, f"expected 1 job_timeout log, got {len(warning_calls)}"
     kwargs = warning_calls[0].kwargs
@@ -2006,9 +2011,11 @@ async def test_autonomous_explicit_params_override_deps() -> None:
 async def test_timeout_subclass_span_log_agree_on_retry_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A TimeoutError subclass on the retry path reports the concrete
-    class in both the lifecycle.scheduled span event and the job_timeout
-    warning - not a hardcoded 'TimeoutError'."""
+    """A TimeoutError subclass raised by the BODY is the body's own
+    failure since the #791 de-conflation: the generic path reports the
+    concrete class in both the lifecycle.scheduled span event and the
+    job_exception warning - not a hardcoded 'TimeoutError', and none of
+    the deadline machinery's signals."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise _SlowQueryTimeout("query exceeded deadline")
@@ -2051,9 +2058,9 @@ async def test_timeout_subclass_span_log_agree_on_retry_path(
     assert attrs["error_class"] == "_SlowQueryTimeout"
 
     warning_calls = [
-        c for c in mock_log.warning.call_args_list if c.args and c.args[0] == "job_timeout"
+        c for c in mock_log.warning.call_args_list if c.args and c.args[0] == "job_exception"
     ]
-    assert len(warning_calls) == 1, f"expected 1 job_timeout log, got {len(warning_calls)}"
+    assert len(warning_calls) == 1, f"expected 1 job_exception log, got {len(warning_calls)}"
     kwargs = warning_calls[0].kwargs
     assert kwargs["error_class"] == "_SlowQueryTimeout"
 
@@ -2167,10 +2174,12 @@ async def test_timeout_retry_path_logs_warning_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Retryable timeout logs job_timeout at WARNING and nothing at
-    ERROR."""
+    ERROR. The deadline must be the MACHINERY's (a real start_to_close
+    the actor runs past): a body-raised TimeoutError is the body's own
+    failure since the #791 de-conflation and logs job_exception."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
-        raise TimeoutError("db slow")
+        await asyncio.sleep(30)
 
     setup_tracer(monkeypatch)
     tracer = obs_mod.get_tracer()
@@ -2179,6 +2188,7 @@ async def test_timeout_retry_path_logs_warning_only(
         attempt=1,
         max_attempts=3,
         retry_kind="transient",
+        start_to_close=timedelta(milliseconds=100),
     )
     cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))
     backend = _FakeBackend()
@@ -2209,7 +2219,9 @@ async def test_timeout_retry_path_logs_warning_only(
     assert len(warning_calls) == 1, f"expected 1 job_timeout log, got {len(warning_calls)}"
     kwargs = warning_calls[0].kwargs
     assert kwargs["error_class"] == "TimeoutError"
-    assert kwargs["error_message"] == "db slow"
+    # The machinery's deadline message is its own constant: the actor was
+    # cancelled by the enforcement, it raised nothing.
+    assert kwargs["error_message"] == "start_to_close"
     mock_log.error.assert_not_called()
 
     assert len(backend.mark_failed_or_retry_calls) == 1
@@ -2304,10 +2316,12 @@ async def test_timeout_terminal_ownership_mismatch_logs_no_error(
 ) -> None:
     """Terminal timeout whose write loses the ownership race emits NO
     job-failed ERROR - the job is not dead by our hand. The per-attempt
-    job_timeout diagnostic and the ownership-mismatch WARNING still fire."""
+    job_timeout diagnostic and the ownership-mismatch WARNING still fire.
+    The deadline is the MACHINERY's (a real start_to_close the actor runs
+    past), the same arm the sweep-refused retries land in."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
-        raise TimeoutError("db slow")
+        await asyncio.sleep(30)
 
     setup_tracer(monkeypatch)
     tracer = obs_mod.get_tracer()
@@ -2316,6 +2330,7 @@ async def test_timeout_terminal_ownership_mismatch_logs_no_error(
         attempt=3,
         max_attempts=3,
         retry_kind="transient",
+        start_to_close=timedelta(milliseconds=100),
     )
     cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))
     backend = _OwnershipMismatchBackend()
@@ -2357,7 +2372,9 @@ async def test_timeout_terminal_ownership_mismatch_logs_no_error(
     assert len(warning_calls) == 1, f"expected 1 job_timeout log, got {len(warning_calls)}"
     kwargs = warning_calls[0].kwargs
     assert kwargs["error_class"] == "TimeoutError"
-    assert kwargs["error_message"] == "db slow"
+    # The machinery's deadline message is its own constant: the actor was
+    # cancelled by the enforcement, it raised nothing.
+    assert kwargs["error_message"] == "start_to_close"
 
 
 # ── Cancelled consumer must re-raise when the terminal write fails ─────────

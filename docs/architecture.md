@@ -1355,6 +1355,46 @@ window can still overlap a later re-claim of its retry. The enforced exit
 boundary (the watchdog gate) protects the interruption release; the timeout
 path's promise is exactly the park plus the deferral, and no more.
 
+The deadline itself is enforced against the BODY, not just the clock. The
+actor runs in its own task under a first-completed race with the deadline,
+and three properties hold that a bare `wait_for` does not give. First, the
+machinery's expiry raises its own marker (a private `TimeoutError` subclass),
+so an actor that raises its own `TimeoutError` (a nested wait, a socket
+read) is classified as the actor's failure, never as a deadline hit
+(dramatiq #791's conflation). Second, the deadline wins over the body: a
+body that catches the expiry's cancellation and returns does not succeed
+past its own time limit, the result is discarded and the attempt is a
+timeout. Third, the deadline is not deferrable: a body whose `finally`
+awaits (worse, awaits a shielded cleanup) cannot hold the attempt past the
+deadline on the autonomous path, and past the deadline plus a bounded
+exit-wait on the transactional path; the still-unwinding task is detached
+tracked, the shutdown watchdog accounts for it, and the re-pend's
+exit-proof park reads its handle. The unwind itself is never re-cancelled,
+and how far "a finally honouring the deadline's cancellation gets to
+finish" goes is path-scoped. On the autonomous path, unconditionally: the
+body's connections are its own, nothing the machinery does can touch
+them. On the transactional path the body runs inside
+`transaction_conn.transaction()`, whose `__aexit__` answers the deadline's
+marker with a ROLLBACK on the SHARED connection, so the transactional path
+first bound-waits the unwind (the exit-wait budget) before the marker
+propagates: the rollback runs on a quiesced connection instead of
+colliding with the unwind's own statement on asyncpg's
+one-operation-at-a-time guard, a collision that once replaced the marker
+and made the row record `InterfaceError` instead of the truthful
+`TimeoutError`. A hostile unwind outliving the budget proceeds detached --
+the deadline's win survives, bounded by the budget -- and past the budget
+the ROLLBACK can still collide with a hostile statement still in flight on
+the shared connection. That residual collision is translated back to the
+truthful timeout disposition at the capture boundary: the enforcement
+stamps a rollback-collision window on the ctx at the moment the marker
+starts propagating, and the transactional consumer re-labels an
+`InterfaceError` arriving under that stamp (only the enforcement's own
+rollback's collision can arrive under it, the body's own exceptions being
+confined to its detached task once the deadline has fired) to the
+`TimeoutError` the deadline path records, with its `job_timeout` log and
+its timeouts metric. A body-caused `InterfaceError` never arrives under
+the stamp and keeps its own class on the row.
+
 #### The interruption release contract
 
 TaskQ's interruption release rejects the at-least-once overlap other

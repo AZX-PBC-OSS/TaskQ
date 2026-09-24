@@ -42,6 +42,7 @@ def test_batch_size_degraded_is_reported_when_otel_disabled(
     """
     monkeypatch.setattr(otel_mod, "_otel_enabled", False)
     monkeypatch.setattr(otel_mod, "_sweep_success_cache", {})
+    monkeypatch.setattr(otel_mod, "_sweep_success_monotonic_cache", {})
     monkeypatch.setattr(otel_mod, "_sweep_batch_size_cache", {})
     settings = _settings()
 
@@ -70,6 +71,7 @@ def test_full_batch_size_not_degraded_when_otel_disabled(
     mere presence of a batch-size sample."""
     monkeypatch.setattr(otel_mod, "_otel_enabled", False)
     monkeypatch.setattr(otel_mod, "_sweep_success_cache", {})
+    monkeypatch.setattr(otel_mod, "_sweep_success_monotonic_cache", {})
     monkeypatch.setattr(otel_mod, "_sweep_batch_size_cache", {})
     settings = _settings()
 

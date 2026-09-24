@@ -293,28 +293,32 @@ _SELECT_STILL_HELD_SQL_TEMPLATE = (
 # fallback, and the next claim stamps it fresh), so no reader learns a
 # new shape - only the fabrication goes away.
 #
-# THE CANCEL EXCLUSION (``cancel_phase = 0``): a row carrying an operator
-# cancel is NEVER this statement's to refund. The flag is stamped only on
-# a ``status = 'running'`` row (cancel_running's guard), so a flagged row's
-# claim DID reach a holder, the premise "no registry entry means no actor
-# ever ran this claim" is structurally false for it, and the body may have
-# run to completion and exited through the cancel fence (mark_retry's
-# phase-carrying rows match no arm) before this probe ever sees the row -
-# its ``started_at`` age is then the BODY's duration, not the age of the
-# unheld state, so no grace arithmetic between this probe and the ladder's
-# abandon can order them (the fence signature's own comment in
-# worker/cancel.py assumed the abandon lands inside one lease of the
-# sighting; a body that outlived the lease makes the age test true on the
-# first tick after the exit). The flagged row's writers are the cancel
-# ladder's unheld walk while this worker lives (the poll returns every
-# flagged row it locks, entry or not) and Sweep 1's cancel arm when it
-# dies (its carve-out terminalises the row 'cancelled' with the operator's
-# audit intact); the refund here would erase the executed attempt's charge
-# and the abandon's ledger INSERT would then collide with the genuine
-# earlier attempt's row, leaving the attempt whose body ran with no
-# ``job_attempts`` row anywhere. The same fence every other never-started
-# hand-back carries (the shutdown drain's ``cancel_phase = 0``, the
-# deferral arms, mark_interrupted's release) applies here.
+# The reconcile NEVER touches a phase-carrying row (``cancel_phase <> 0``).
+# The cancel ladder's poll owns those rows - mark_retry's header grants
+# every phase-carrying row to the ladder ("a phase-carrying row matches no
+# arm ... for the cancel ladder to terminalise") - and the ladder's
+# unheld walk abandons them within the graces, its fused attempt INSERT
+# writing the ledger row of whatever attempt the row carries. The
+# reconcile's predicate cannot see that distinction: a cancel-fenced
+# outcome write (the body ran, the write matched no arm, the consumer's
+# finally deregistered) leaves the row running, locked here, carrying its
+# phase, held by NOTHING - every in-memory exclusion passes, and once the
+# claim-stamped started_at ages past the lease the reconcile reads the
+# EXECUTED attempt as "a claim that never reached an actor" and refunds
+# it. The refund steals the ledger row the abandon's INSERT is about to
+# write, and the un-stamp poisons that INSERT besides: job_attempts.
+# started_at is NOT NULL, the abandon's fused write raises
+# NotNullViolationError, the drain re-queues and re-raises, the heartbeat
+# burns its failure budget on the same poisoned row every tick, and the
+# isolate it finally declares fails the same way - one fenced row under a
+# tight lease wedges the worker's heartbeat loop AND strands the row
+# (running, attempt refunded, started_at NULL, no ledger, no owner). The
+# phase-carve-out hands the row back to the writer the header already
+# named: the walk escalates and abandons it, ledger and effects balance.
+# A phase-0 row carrying a bare cancel_requested_at (no real writer
+# produces that shape - the request-carrying writers stamp phase 1
+# together) stays reconcile-eligible on purpose: the walk's arms key on
+# the phase, so only a phase-carrying row is provably the ladder's.
 #
 # THE LEDGER GUARD (the NOT EXISTS): the registry is not the only proof
 # an attempt started - the attempt ledger is the durable one. The

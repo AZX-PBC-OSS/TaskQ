@@ -111,6 +111,8 @@ class JobContext[P: BaseModel]:
     _progress_dropped_notice: threading.Event = field(default_factory=threading.Event)
     _sync_actor_task: asyncio.Task[object] | None = None
     _tx_unwind_task: asyncio.Task[object] | None = None
+    _actor_body_task: asyncio.Task[object] | None = None
+    _tx_rollback_collision_window: bool = False
 
     @property
     def cancellation_requested(self) -> bool:
@@ -174,6 +176,66 @@ class JobContext[P: BaseModel]:
         after construction.
         """
         object.__setattr__(self, "_tx_unwind_task", task)
+
+    def _set_actor_body_task(self, task: asyncio.Task[object]) -> None:
+        """Record the deadline-enforced actor body task. Called by the
+        start_to_close enforcement (the consumer's deadline helper) when
+        the body runs in its own task, never by actor code.
+
+        The start_to_close machinery runs the body in a task so the
+        deadline can win over whatever the body does after expiry (a
+        cancellation-absorbing return, a hostile ``finally``). The task
+        then unwinds ASYNCHRONOUSLY, exactly like a sync actor's executor
+        thread: the consumer's cancel arm and the timeout handler's
+        re-pend park on this handle, bounded, before releasing the row,
+        and a body still unwinding at the window's expiry holds the
+        release behind the exit window. ``object.__setattr__`` because the
+        dataclass is frozen; the handle is consumer state that arrives
+        after construction, exactly as the other two handles do.
+        """
+        object.__setattr__(self, "_actor_body_task", task)
+
+    def _set_tx_rollback_collision_window(self) -> None:
+        """Stamp the tx path's rollback-collision window as OPEN. Called by
+        the start_to_close enforcement on the transactional path at the
+        moment the deadline's marker starts propagating toward the
+        transaction ``__aexit__``, never by actor code.
+
+        While the marker is the exception in flight through the
+        transaction ``__aexit__``, the ``__aexit__``'s own ROLLBACK is the
+        only statement the tx path issues on the SHARED connection: any
+        ``InterfaceError`` that reaches the transactional consumer's
+        capture boundary in this window is necessarily that ROLLBACK
+        colliding with a body-owned statement still in flight on the
+        connection (a hostile unwind holding it past the exit-wait
+        budget), never the body's own -- the body's exceptions are
+        confined to its detached task and cannot cross the boundary once
+        the deadline has fired. The boundary re-labels exactly that
+        collision to the truthful ``TimeoutError`` and clears the stamp,
+        so a genuine body-caused ``InterfaceError`` (the body finishing
+        before the deadline, its own exception surfacing through
+        ``body_task.result()``) never reaches a stamped window and is
+        never laundered. ``object.__setattr__`` because the dataclass is
+        frozen; the stamp is consumer state that arrives after
+        construction, exactly as the task handles do.
+        """
+        object.__setattr__(self, "_tx_rollback_collision_window", True)
+
+    def _take_tx_rollback_collision_window(self) -> bool:
+        """Return whether the rollback-collision window was open, closing
+        it as a side effect. Called by the transactional consumer's capture
+        boundary (see :meth:`_set_tx_rollback_collision_window`), never by
+        actor code.
+
+        Closing on read keeps the translation one-shot: a window stamp can
+        justify exactly one re-label, the one collision the stamping
+        enforcement could attest to, so nothing downstream of the boundary
+        can ever lean on a stale stamp.
+        """
+        was_open = self._tx_rollback_collision_window
+        if was_open:
+            object.__setattr__(self, "_tx_rollback_collision_window", False)
+        return was_open
 
     def check_cancelled(self) -> None:
         if self.cancel_event.is_set():
