@@ -43,6 +43,7 @@ from pydantic import BaseModel
 
 from taskq._di import ProviderRegistry
 from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope
+from taskq._forkguard import take_parent_fork_event
 from taskq._ids import new_uuid
 from taskq._shield import shield_with_retrieval
 from taskq.actor import ActorRef
@@ -778,6 +779,26 @@ async def di_consumer_loop(
     clock: Clock = clock_obj
 
     while not (shutdown_event.is_set() or deps.producer_stop_event.is_set()):
+        _fork_at = take_parent_fork_event()
+        if _fork_at is not None:
+            # The heartbeat loop carries the same report; this one gets the
+            # job's log context on a fork that landed mid-dispatch. Report
+            # and continue: the parent's connections were not written by
+            # the child unless the child also used them, and a protocol
+            # -dead pooled connection is discarded and rebuilt by the pool
+            # (the in-flight job sees a transient error, not silence).
+            _consumer_log.error(
+                "fork-detected-in-worker-process",
+                fork_age_secs=round(time.monotonic() - _fork_at, 3),
+                detail=(
+                    "a fork() happened in this worker process while its "
+                    "connections were live; the child inherits every socket "
+                    "(pools, LISTEN, redis, the loop's pipes). A job body or "
+                    "library must not fork: use subprocess.Popen (default "
+                    "close_fds=True drops the inherited descriptors), or "
+                    "open fresh resources in the child after the fork."
+                ),
+            )
         q_get = asyncio.create_task(local_queue.get())
         shut_wait = asyncio.create_task(shutdown_event.wait())
         stop_wait = asyncio.create_task(deps.producer_stop_event.wait())

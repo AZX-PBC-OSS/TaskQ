@@ -38,6 +38,7 @@ from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 from pydantic import BaseModel
 
+from taskq._forkguard import assert_own_process
 from taskq._json import dumps as _json_dumps
 from taskq._shield import shield_with_retrieval
 from taskq._validation import validate_actor_payload
@@ -301,6 +302,13 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
     The job row stays ``running``; it is disowned into *disowned_jobs* so
     the heartbeat stops renewing it and lock-lease expiry reclaims it.
     """
+    # The terminal double-write seam: every exception-routed terminal write
+    # funnels here. A forked child that resumed mid-body reaches the SAME
+    # write through the parent's sockets; the guard refuses it before the
+    # handler runs, so one job's ledger can never be written by two
+    # processes. (The guarded connection classes cover the wire itself;
+    # this check covers the outcome BEFORE the wire can be reached.)
+    assert_own_process(f"worker terminal write (job {job.id})")
     _pbuf = await _pre_terminal_flush(job, worker_id, progress_buffers, worker_pool, settings)
     _pseq, _pstate = _seq_and_state_after_flush_attempt(_pbuf)
     try:
@@ -574,6 +582,13 @@ async def consume_one_job(
     consumer_span = trace.get_current_span()
     if job_log is None:
         job_log = bind_job_log(logger if logger is not None else _log, job, span=consumer_span)
+
+    # The fork guard at the attempt boundary: a forked child that resumed
+    # the worker's loop and picked up its own job claims it here, through
+    # the parent's sockets. Fail loud before anything else - no claim
+    # write, no rate-limit token, no ledger entry, the child gets the
+    # refusal and the parent's job row is untouched by it.
+    assert_own_process(f"worker job attempt (job {job.id})")
 
     _rl_limits: Sequence[str | KeyedRateLimitRef | TokenBucket | SlidingWindow] = (
         rate_limits if rate_limits is not None else ()

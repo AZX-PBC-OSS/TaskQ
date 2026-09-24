@@ -35,6 +35,7 @@ from taskq._close import (
 from taskq._di import ProviderRegistry, Scope
 from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, make_resolver
 from taskq._dsn import dsn_host as _dsn_host
+from taskq._forkguard import guarded_connection_class, install_fork_guard
 from taskq.actor import ActorRef
 from taskq.actor_config import ActorConfig
 from taskq.actor_config_ops import list_actor_configs
@@ -458,6 +459,7 @@ def _slot_pool_factory(
             max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
             server_settings=inherited,
             init=init,  # pyright: ignore[reportArgumentType]  # Why: asyncpg-stubs types init as CoroutineType-returning (_InitCallback); the codebase-wide hook contract (make_pg_pool_factory, with_connection_init) is Awaitable-returning, and asyncpg awaits the result either way at runtime.
+            connection_class=guarded_connection_class(),
         )
         assert pool is not None
         return pool
@@ -1550,6 +1552,13 @@ async def _main(
         producer_loop,
         register_worker,
     )
+
+    # The fork guard goes in BEFORE any resource exists: every connection
+    # built after this point records this process as its owner, and a fork
+    # anywhere in the worker's lifetime is stamped for the loops to report.
+    # Idempotent, so an embedding that already installed it (TaskQ.open)
+    # keeps its original pin.
+    install_fork_guard()
 
     if actor_registry is not None:
         # Why: a mismapped entry (key != ref.name) surfaces deep in

@@ -31,6 +31,7 @@ import structlog
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq._dsn import dsn_host
+from taskq._forkguard import guarded_connection_class, take_parent_fork_event
 from taskq._shield import shield_with_retrieval
 from taskq.backend._protocol import CancelPhase, JobId
 from taskq.backend._records import jsonb_param
@@ -417,6 +418,27 @@ async def heartbeat_loop(
     # until the first renewal, there is nothing to measure before it.
     last_renewal_at: float | None = None
     while not shutdown.is_set():
+        _fork_at = take_parent_fork_event()
+        if _fork_at is not None:
+            # The loop's guaranteed cadence is what makes this the fork
+            # report's floor: even a worker idle between jobs learns of a
+            # fork within one interval. The parent keeps running - its
+            # connections were not written by the child unless the child
+            # used them too, and a protocol-dead pooled connection is
+            # discarded and rebuilt by the pool - but the operator now has
+            # the one line that says a fork happened and what it inherited.
+            logger.error(
+                "fork-detected-in-worker-process",
+                fork_age_secs=round(time.monotonic() - _fork_at, 3),
+                detail=(
+                    "a fork() happened in this worker process while its "
+                    "connections were live; the child inherits every socket "
+                    "(pools, LISTEN, redis, the loop's pipes). A job body or "
+                    "library must not fork: use subprocess.Popen (default "
+                    "close_fds=True drops the inherited descriptors), or "
+                    "open fresh resources in the child after the fork."
+                ),
+            )
         deps.liveness.tick("heartbeat", period=interval)
         _in_tx_failed = False
         _tick_failed = False
@@ -1057,6 +1079,7 @@ async def isolate_self(
             pg_dsn,
             timeout=5.0,  # pyright: ignore[reportCallIssue]  # Why: asyncpg-stubs does not declare timeout kwarg on connect(); the parameter exists at runtime at 0.31.0.
             command_timeout=deps.settings.dispatcher_command_timeout,
+            connection_class=guarded_connection_class(),
         )
         try:
 
