@@ -108,12 +108,24 @@ nothing in the SQL itself, not a property the query guarantees on its
 own. Known ways it can be violated: lock contention delaying commit
 after the ``FOR UPDATE SKIP LOCKED`` scan, a slow or overloaded database
 extending that scan itself, a stalled/GC-paused worker holding the
-transaction open, or an abnormally large batch inserted in one
-transaction. If a writer transaction does exceed the margin, the
-consequence is a **silently missed event**: a lower-``id`` row can commit
-after the cursor has already advanced past its position, with no error
-raised anywhere, the same failure mode this feature exists to prevent,
-just pushed to a rarer trigger.
+transaction open, an abnormally large batch inserted in one
+transaction, or a backward clock step (an NTP correction) between two
+of a writer's ``clock_timestamp()`` calls: a step-back stamps a
+higher-id row with an occurred_at far older than its true time, so its
+eligibility window is measured from a false origin and it can clear the
+margin while a lower-id sibling of the same commit is still held back.
+The per-row age filter alone would then serve the higher-id row, the
+consumer's cursor would advance past the lower-id row's position, and
+that row would be unreachable to ``id > after_id`` forever. The poll's
+held-back ceiling guards exactly this: the returned ids are capped
+strictly below the lowest still-held-back matching row above the
+cursor, so an inverted pair delays the higher-id row (delivered in a
+later poll, once the lower-id row's own margin clears) instead of
+losing it. If a writer transaction does exceed the margin, the
+consequence is a **silently missed event**: a lower-``id`` row can
+commit after the cursor has already advanced past its position, with
+no error raised anywhere, the same failure mode this feature exists to
+prevent, just pushed to a rarer trigger.
 
 ``PostgresBackend.check_reclaim_visibility_delay_risk`` turns this from a
 silent failure into an operator-visible one: it reports any transaction
