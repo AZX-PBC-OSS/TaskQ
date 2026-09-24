@@ -294,7 +294,7 @@ async def test_listener_teardown_unlisten_hang_is_bounded() -> None:
             "wedged notify conn stalls the listener's shutdown and the "
             "ShutdownWatchdog force-exits the process for it."
         )
-    assert len(remove_calls) == 3, (
+    assert len(remove_calls) == 4, (
         f"teardown must attempt UNLISTEN for every channel; got {remove_calls!r}"
     )
     assert not _active_listeners, "the teardown must complete its bookkeeping"

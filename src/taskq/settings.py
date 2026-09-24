@@ -1234,6 +1234,19 @@ class WorkerSettings(TaskQSettings):
         "never held to less than 4 of them.",
         validator=_finite_float,
     )
+    leader_wake_jitter: float = Field(
+        default=0.25,
+        ge=0.0,
+        description="TASKQ_LEADER_WAKE_JITTER (seconds). Upper bound of the "
+        "random delay a follower waits between hearing a leader's resign "
+        "broadcast on the leadership wake channel and re-running its fenced "
+        "elect, so a fleet of followers wakes in a spread and not in one "
+        "millisecond. A literal 0 disables the damping delay (the wake then "
+        "lands everyone on the row at once); the wake itself remains a hint "
+        "either way - a follower that never hears it elects on the next "
+        "heartbeat tick.",
+        validator=_finite_float,
+    )
     max_heartbeat_failures: int = Field(
         default=3,
         ge=1,

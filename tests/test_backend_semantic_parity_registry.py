@@ -134,6 +134,7 @@ _NO_SEMANTIC_SURFACE: dict[str, str] = {
     "delete_schedule": "keyed single schedule row",
     "subscribe_wake": "notification plumbing; returns no rows",
     "subscribe_cancel_wake": "notification plumbing; returns no rows",
+    "subscribe_leader_wake": "notification plumbing; returns no rows",
 }
 
 
