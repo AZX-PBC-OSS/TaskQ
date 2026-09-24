@@ -292,10 +292,34 @@ _SELECT_STILL_HELD_SQL_TEMPLATE = (
 # sweep's attempt INSERT coalesces a NULL stamp through the per-row clock
 # fallback, and the next claim stamps it fresh), so no reader learns a
 # new shape - only the fabrication goes away.
+#
+# THE CANCEL EXCLUSION (``cancel_phase = 0``): a row carrying an operator
+# cancel is NEVER this statement's to refund. The flag is stamped only on
+# a ``status = 'running'`` row (cancel_running's guard), so a flagged row's
+# claim DID reach a holder, the premise "no registry entry means no actor
+# ever ran this claim" is structurally false for it, and the body may have
+# run to completion and exited through the cancel fence (mark_retry's
+# phase-carrying rows match no arm) before this probe ever sees the row -
+# its ``started_at`` age is then the BODY's duration, not the age of the
+# unheld state, so no grace arithmetic between this probe and the ladder's
+# abandon can order them (the fence signature's own comment in
+# worker/cancel.py assumed the abandon lands inside one lease of the
+# sighting; a body that outlived the lease makes the age test true on the
+# first tick after the exit). The flagged row's writers are the cancel
+# ladder's unheld walk while this worker lives (the poll returns every
+# flagged row it locks, entry or not) and Sweep 1's cancel arm when it
+# dies (its carve-out terminalises the row 'cancelled' with the operator's
+# audit intact); the refund here would erase the executed attempt's charge
+# and the abandon's ledger INSERT would then collide with the genuine
+# earlier attempt's row, leaving the attempt whose body ran with no
+# ``job_attempts`` row anywhere. The same fence every other never-started
+# hand-back carries (the shutdown drain's ``cancel_phase = 0``, the
+# deferral arms, mark_interrupted's release) applies here.
 _RECONCILE_LOST_CLAIMS_SQL_TEMPLATE = (
     'UPDATE "{schema}".jobs j SET '  # noqa: S608  # Why: schema validated against _IDENT_RE before interpolation; asyncpg has no parameter binding for identifiers (the still-held template's same shape).
     f"attempt = {ATTEMPT_REFUND_SQL}, started_at = NULL "
     "WHERE j.locked_by_worker = $1 AND j.status = 'running' "
+    "AND j.cancel_phase = 0 "
     "AND NOT (j.id = ANY($2::uuid[])) "
     "AND j.started_at < clock_timestamp() - $3::interval "
     "RETURNING j.id"
