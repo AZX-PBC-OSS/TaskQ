@@ -183,7 +183,7 @@ def _batch_drain_gate(
     """
 
     def gate() -> bool:
-        if shutdown.is_set():
+        if shutdown.is_set() or not ctx.deps.leading():
             return False
         ctx.deps.liveness.tick(loop_name, period=period_secs)
         return True
