@@ -59,6 +59,12 @@ from taskq.testing.pg import create_worker
 from taskq.worker._transient import is_transient_pg_error
 from tests._fleet import FleetPayload, fleet_actor_config, open_fleet
 
+# Why S608: schema names come from new_base62()-generated test schemas and
+# are validated by the migration runner's _IDENT_RE; asyncpg has no
+# parameter binding for identifiers. Same suppression as
+# tests/test_pinned_invariants.py.
+# ruff: noqa: S608
+
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _ACTOR = "live_migration_actor"
@@ -132,9 +138,7 @@ async def test_add_column_not_null_default_rides_through_running_pool(
         )
 
         # The migration lands, from a second connection, under the warm pool.
-        await ddl.execute(
-            f"ALTER TABLE {jobs} ADD COLUMN attack_probe text NOT NULL DEFAULT 'x'"
-        )
+        await ddl.execute(f"ALTER TABLE {jobs} ADD COLUMN attack_probe text NOT NULL DEFAULT 'x'")
 
         # The old cached SELECT rides through on its stale plan.
         await pool.execute(f"SELECT id, status FROM {jobs} WHERE queue = $1", _QUEUE)
@@ -158,10 +162,12 @@ async def test_add_column_not_null_default_rides_through_running_pool(
 
         # A statement that starts and runs INSIDE a transaction, the shape
         # the per-slot pool and the terminal write use, rides through too.
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute(f"SELECT count(*) FROM {jobs}")
-                await conn.execute(f"SELECT id FROM {jobs} WHERE queue = $1", _QUEUE)
+        async with (
+            pool.acquire() as conn,
+            conn.transaction(),
+        ):
+            await conn.execute(f"SELECT count(*) FROM {jobs}")
+            await conn.execute(f"SELECT id FROM {jobs} WHERE queue = $1", _QUEUE)
     finally:
         await pool.close()
         await ddl.close()
@@ -198,12 +204,14 @@ async def test_result_type_change_in_txn_surfaces_transient_then_heals(
         # The in-transaction shape (no invisible asyncpg retry available):
         # the cached plan is rejected with 0A000 and the transaction aborts.
         raised: BaseException | None = None
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                try:
-                    await conn.execute(f"SELECT * FROM {jobs} WHERE queue = $1", _QUEUE)
-                except asyncpg.PostgresError as exc:
-                    raised = exc
+        async with (
+            pool.acquire() as conn,
+            conn.transaction(),
+        ):
+            try:
+                await conn.execute(f"SELECT * FROM {jobs} WHERE queue = $1", _QUEUE)
+            except asyncpg.PostgresError as exc:
+                raised = exc
         assert raised is not None, (
             "the in-transaction execution of a cached statement whose result "
             "type was just altered by live DDL did not fail: the attack shape "
@@ -267,9 +275,7 @@ async def test_drop_referenced_column_is_loud_and_never_transient(
             assert _sqlstate(exc_info.value) == "42703", (
                 f"attempt {attempt}: expected 42703, got {_sqlstate(exc_info.value)}"
             )
-        assert not is_transient_pg_error(
-            asyncpg.UndefinedColumnError("x"), pooled=False
-        ), (
+        assert not is_transient_pg_error(asyncpg.UndefinedColumnError("x"), pooled=False), (
             "UndefinedColumnError is classified transient: a migration that "
             "dropped a column old code still names would livelock the fleet "
             "retrying statements that can never succeed again"
@@ -320,9 +326,7 @@ async def test_fleet_works_through_a_live_schema_change(pg_dsn: str) -> None:
                 for _round in range(400):
                     claimed = await fleet.pod("mid-migration").claim([_QUEUE], 2)
                     for job in claimed:
-                        await fleet.pod("mid-migration").run(
-                            job, _work, actor_config=_ACTOR_CONFIG
-                        )
+                        await fleet.pod("mid-migration").run(job, _work, actor_config=_ACTOR_CONFIG)
                         completed += 1
                         remaining.discard(job.id)
                     if not remaining:
@@ -339,9 +343,7 @@ async def test_fleet_works_through_a_live_schema_change(pg_dsn: str) -> None:
                         f'ALTER TABLE "{schema}".jobs '
                         "ADD COLUMN attack_probe text NOT NULL DEFAULT 'x'"
                     )
-                    await ddl.execute(
-                        f'ALTER TABLE "{schema}".jobs DROP COLUMN attack_probe'
-                    )
+                    await ddl.execute(f'ALTER TABLE "{schema}".jobs DROP COLUMN attack_probe')
                 finally:
                     await ddl.close()
 
@@ -360,9 +362,7 @@ async def test_fleet_works_through_a_live_schema_change(pg_dsn: str) -> None:
                 for jid in job_ids
             ]
             flat = [str(r[0]["status"]) for r in statuses if r]
-            assert all(s == "succeeded" for s in flat), (
-                f"job statuses after the live DDL: {flat}"
-            )
+            assert all(s == "succeeded" for s in flat), f"job statuses after the live DDL: {flat}"
     finally:
         await _drop_schema(pg_dsn, schema)
 
