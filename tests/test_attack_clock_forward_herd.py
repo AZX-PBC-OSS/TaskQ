@@ -68,6 +68,7 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
+from taskq.backend._sql import WAKE_NOTIFY_SQL
 from taskq.backend._sweeps import sweep_expired_locks
 from taskq.backend.postgres import PostgresBackend
 from taskq.constants import wake_channel
@@ -425,8 +426,34 @@ async def test_reclaim_wake_is_one_notify_per_batch(
 
         await listener.add_listener(channel, _on_wake)
 
+        # A statement-counting proxy over the sweep's connection: the
+        # delivery count below is what consumers feel, but PostgreSQL
+        # collapses same-transaction same-payload NOTIFYs at commit, so a
+        # per-row storm of identical NOTIFY STATEMENTS would still deliver
+        # once. The statement count is the mechanism-level claim: the sweep
+        # fires exactly one pg_notify per batch, whatever the server does
+        # with duplicates.
+        notify_statements = 0
+
+        class _CountingConn:
+            def __init__(self, inner: asyncpg.Connection) -> None:
+                self._inner = inner
+
+            def transaction(self) -> object:
+                return self._inner.transaction()
+
+            async def fetch(self, query: str, *args: object) -> object:
+                return await self._inner.fetch(query, *args)  # type: ignore[arg-type]
+
+            async def execute(self, query: str, *args: object) -> object:
+                nonlocal notify_statements
+                if query == WAKE_NOTIFY_SQL:
+                    notify_statements += 1
+                result: object = await self._inner.execute(query, *args)  # type: ignore[arg-type]
+                return result
+
         rows = await sweep_expired_locks(
-            conn,
+            _CountingConn(conn),
             _CANCEL_GRACE,
             _CLEANUP_GRACE,
             schema=schema,
@@ -435,8 +462,12 @@ async def test_reclaim_wake_is_one_notify_per_batch(
         )
         assert rows == _BATCH
 
-        # Exactly one wake for the whole batch. A per-row NOTIFY would put
-        # 100 payloads on this queue; the batch's ONE pg_notify puts one.
+        # The mechanism: ONE wake statement for the whole batch.
+        assert notify_statements == 1
+
+        # The observable: exactly one wake for the whole batch. A per-row
+        # NOTIFY with distinct payloads would put 100 payloads on this
+        # queue; the batch's one pg_notify puts one.
         first = await asyncio.wait_for(woken.get(), timeout=2.0)
         assert first == ""
         await asyncio.sleep(0.3)
