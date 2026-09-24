@@ -344,8 +344,8 @@ async def test_token_bucket_peek_honest_reads_pass() -> None:
 
 
 _PEEK_HASH_CONTAINER_LIES: list[Any] = [
-    # The round-6 reviewer probes: _peek_redis INDEXES the hmget reply
-    # (raw[0]/raw[1]) before any container shape check. The crash shapes -
+    # The hmget reply is indexed before any shape check: these container
+    # lies must fail closed. The crash shapes -
     # the RESP3 dict map (byte- and str-keyed), a set, a bare int - raise
     # bare KeyError/TypeError on the integer index, a sibling of no guarded
     # conversion family, so the lie escapes the peek as a crash. The
@@ -536,7 +536,7 @@ async def test_log_peek_score_conversion_lies_raise_the_sentinel() -> None:
     guard: the withscores pair's score element is converted by
     ``float()`` before the finite/window checks run, so a lying reply
     with an unconvertible score escapes the peek uncaught. The
-    reviewer's exact replies: the big int past float's range
+    lie shapes: the big int past float's range
     (``OverflowError``) and the nested list (``TypeError``) - neither is
     in the sentinel family unless the conversion itself is guarded.
     """
@@ -582,12 +582,12 @@ async def test_gcra_peek_huge_tat_hint_is_clamped_not_an_overflow() -> None:
     )
 
 
-# ── round-3 pins: the truncated pair and the huge-finite clock ────────
+# ── pins: the truncated pair and the huge-finite clock ────────────────
 
 
 async def test_log_peek_truncated_withscores_pair_raises_the_sentinel() -> None:
-    """The round-2 fix guarded the score CONVERSION, but the element
-    access itself sat outside the guard: a truncated withscores "pair"
+    """The score CONVERSION is guarded, but the element access itself sat
+    outside the guard: a truncated withscores "pair"
     (a 1-tuple member with the score element missing, or the empty
     tuple) raises bare IndexError on ``oldest_entry[1]``. IndexError is
     a crash class the reply contract
@@ -614,7 +614,7 @@ async def test_log_peek_truncated_withscores_pair_raises_the_sentinel() -> None:
 
 
 async def test_log_peek_lying_withscores_container_raises_the_sentinel() -> None:
-    """The round-3 arity check validates the ELEMENT's shape, but the
+    """The pair arity check validates the ELEMENT's shape, but the
     CONTAINER access ``oldest[0]`` runs on the raw zrangebyscore reply
     unguarded: a RESP3-map lie (a dict, ``{b"req1": 2000.0}``) raises
     bare ``KeyError: 0`` on the integer index and a set lie raises
