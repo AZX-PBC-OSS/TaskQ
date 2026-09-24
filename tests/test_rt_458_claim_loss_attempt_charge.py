@@ -51,7 +51,7 @@ from taskq.backend.postgres import PostgresBackend
 from taskq.settings import WorkerSettings
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.worker.deps import WorkerDeps
-from taskq.worker.heartbeat import heartbeat_loop
+from taskq.worker.heartbeat import _RECONCILE_LOST_CLAIMS_SQL_TEMPLATE, heartbeat_loop
 from taskq.worker.shutdown import drain_local_queue_to_pending
 
 pytestmark = pytest.mark.integration
@@ -412,4 +412,147 @@ async def test_drain_refunds_the_same_never_started_row_shape(
         f"the drain refunds the claim-time increment ('a claim that never "
         f"reached an actor bought nothing, so it spends nothing'), got "
         f"attempt={row['attempt']}"
+    )
+
+
+# ── The exactly-once refund invariant ACROSS the two refund writers ─────
+
+
+async def _seed_spent_attempt(conn: asyncpg.Connection, schema: str, job_id: UUID) -> None:
+    """A genuine earlier execution's ledger row at attempt 1.
+
+    The shared refund fragment floors at 0 (``GREATEST(j.attempt - 1,
+    0)``), so a second refund of a fresh job's counter is invisible. The
+    spent row defeats the floor: the counter stands at 1 before the
+    claim, so the first refund lands on 1 and a SECOND refund drives the
+    counter below the epoch the genuine ledger row holds - an observable
+    counter corruption, not a floor absorption.
+    """
+    await conn.execute(
+        f'INSERT INTO "{schema}".job_attempts '  # noqa: S608
+        "(job_id, attempt, started_at, finished_at, outcome) "
+        "VALUES ($1, 1, clock_timestamp(), clock_timestamp(), 'succeeded')",
+        job_id,
+    )
+
+
+async def test_drain_never_re_refunds_a_row_the_reconcile_refunded(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """The refund is exactly-once per claim ACROSS the two writers.
+
+    The heartbeat's claim-loss reconcile refunds a lost claim and, by
+    design, leaves the row ``running`` and locked (Sweep 1 owns the
+    reclaim). The shutdown drain's exclusion folds only ``held_ids()``
+    (registered consumers + claim intents), so the reconciled row still
+    matches the drain's predicate: ``running``, locked to this worker,
+    held by nothing, ``cancel_phase = 0``. The drain re-pends the row AND
+    refunds the SAME claim a second time: the counter the reconcile
+    restored is driven one further down, past the epoch a genuine
+    execution's ``job_attempts`` row holds, and the row is yanked out of
+    the Sweep-1 reclaim the reconcile deliberately preserved.
+
+    Sequential form: the reconcile's tick completes, then the shutdown's
+    DRAINING pass runs. This is the common rolling-deploy shape - a
+    claim-loss window followed by a shutdown inside one lease.
+    """
+    schema = module_pg_schema.schema_name
+    worker_id = new_uuid()
+    await _seed_worker(clean_pg_conn, schema, worker_id)
+    job_id = await _seed_pending_job(clean_pg_conn, schema, max_attempts=5, attempt=1)
+    await _seed_spent_attempt(clean_pg_conn, schema, job_id)
+
+    # The claim charges attempt 2 (1 + 1) and stamps started_at.
+    claimed = await _claim_via_real_dispatch_cte(clean_pg_conn, schema, worker_id)
+    assert claimed["attempt"] == 2, "fixture broken: the claim must charge attempt 2"
+
+    # The reconcile refunds once: attempt 2 -> 1, started_at un-stamped,
+    # the row still running and locked, the id disowned.
+    await _age_started_at(clean_pg_conn, schema, job_id)
+    deps = _heartbeat_deps(module_pg_schema.pg_dsn, schema, module_pg_pool)
+    await _one_tick(deps, worker_id)
+    row = await _job_row(clean_pg_conn, schema, job_id)
+    assert row["attempt"] == 1 and row["status"] == "running", (
+        f"fixture broken: the reconcile must refund once and leave the row running, got {row}"
+    )
+
+    # The drain runs (the DRAINING pass, or the producer's exit pass).
+    # The row is already refunded: the drain must not touch it at all -
+    # no re-pend, no second refund. The row stays Sweep 1's.
+    drained = await drain_local_queue_to_pending(deps, worker_id)
+
+    row = await _job_row(clean_pg_conn, schema, job_id)
+    assert drained == 0, (
+        f"the drain must not re-pend a row the reconcile already refunded "
+        f"(Sweep 1 owns that reclaim), drained={drained}"
+    )
+    assert row["status"] == "running", (
+        f"the refund is exactly-once per claim across the two writers: the "
+        f"drain re-pended a row the reconcile had already refunded, got {row}"
+    )
+    assert row["attempt"] == 1, (
+        f"the drain re-refunded the reconcile's claim: attempt {row['attempt']} "
+        f"is below the epoch the genuine job_attempts row holds - the next "
+        f"claim re-creates a spent attempt epoch"
+    )
+
+
+async def test_drain_concurrent_with_the_reconcile_refunds_exactly_once(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """The race form: the drain's UPDATE blocks on the reconcile's row
+    lock and re-evaluates the row when the reconcile commits.
+
+    The reconcile's refund runs inside the heartbeat's open transaction;
+    the drain's UPDATE on a second connection takes the row lock behind
+    it. When the reconcile commits, PostgreSQL re-evaluates the blocked
+    row against the drain's predicate on the NEW row version
+    (EvalPlanQual): the new version is the refunded one, so the
+    exactly-once guard must hold on the re-evaluation too. An exclusion
+    set bound from process memory (a snapshot of ``disowned_jobs`` taken
+    before the reconcile committed) cannot see the refund; a row-version
+    conjunct can.
+    """
+    schema = module_pg_schema.schema_name
+    worker_id = new_uuid()
+    await _seed_worker(clean_pg_conn, schema, worker_id)
+    job_id = await _seed_pending_job(clean_pg_conn, schema, max_attempts=5, attempt=1)
+    await _seed_spent_attempt(clean_pg_conn, schema, job_id)
+
+    claimed = await _claim_via_real_dispatch_cte(clean_pg_conn, schema, worker_id)
+    assert claimed["attempt"] == 2, "fixture broken: the claim must charge attempt 2"
+    await _age_started_at(clean_pg_conn, schema, job_id)
+
+    reconcile_sql = _RECONCILE_LOST_CLAIMS_SQL_TEMPLATE.format(schema=schema)
+    deps = _heartbeat_deps(module_pg_schema.pg_dsn, schema, module_pg_pool)
+
+    # The reconcile's open transaction: the refund is written and holds
+    # the row lock, uncommitted. The exclusion array is empty - the
+    # in-memory coverage is exactly the post-claim-loss shape.
+    async with clean_pg_conn.transaction():
+        await clean_pg_conn.execute(reconcile_sql, worker_id, [], _LEASE)
+
+        # The drain races: its UPDATE blocks on the row lock the open
+        # reconcile transaction holds. The task is left running while the
+        # transaction commits underneath it.
+        drain_task = asyncio.create_task(drain_local_queue_to_pending(deps, worker_id))
+        await asyncio.sleep(0.5)
+
+    # The reconcile committed; the drain's blocked statement re-evaluates
+    # the refunded row version and completes.
+    drained = await asyncio.wait_for(drain_task, timeout=10.0)
+
+    row = await _job_row(clean_pg_conn, schema, job_id)
+    assert drained == 0, (
+        f"the drain must drop the row the committed reconcile just refunded, drained={drained}"
+    )
+    assert row["status"] == "running", f"the concurrent drain re-pended the refunded row, got {row}"
+    assert row["attempt"] == 1, (
+        f"the concurrent drain re-refunded the reconcile's claim after "
+        f"EvalPlanQual re-evaluation, got attempt={row['attempt']} - the "
+        f"exactly-once guard must hold on the re-checked row version"
     )

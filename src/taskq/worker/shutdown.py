@@ -140,12 +140,26 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
        exactly-once). ``mark_interrupted`` is the deliberate exception: its
     attempt DID start executing, so it keeps the increment.
 
-       Why no ``started_at IS NULL`` conjunct: the dispatch claim CTE
+       Why the ``started_at IS NOT NULL`` conjunct: the dispatch claim CTE
        stamps ``started_at = clock_timestamp()`` AT CLAIM
-       (backend/_dispatch_sql.py), so every local_queue row is running +
-       locked + ``started_at IS NOT NULL``, an ``IS NULL`` predicate
-       matched nothing and stranded the whole claimed-but-unstarted
-       backlog until lock-lease expiry. The DB row carries no
+       (backend/_dispatch_sql.py), so every row the drain exists for is
+       stamped and the conjunct never fences a claimed-but-unstarted row.
+       What it fences is the OTHER refund writer's output: the heartbeat's
+       claim-loss reconcile (worker/heartbeat.py) refunds through the same
+       fragment and UN-STAMPS ``started_at`` while leaving the row
+       ``running`` and locked (Sweep 1 owns that reclaim). On a
+       running-and-locked row a NULL ``started_at`` means exactly "this
+       claim was already refunded", so without the conjunct the drain
+       re-pends the reconciled row and refunds the SAME claim a second
+       time: the counter drops below the epoch a genuine execution's
+       ``job_attempts`` row holds, and the row is yanked out of the
+       Sweep-1 reclaim the reconcile preserved. The conjunct is a
+       row-version check, not a memory snapshot, so it holds on the
+       concurrent interleave too: the drain's UPDATE blocking on the
+       reconcile's open transaction re-evaluates the row when the
+       reconcile commits (EvalPlanQual) and the committed NULL stamp
+       drops it from the write set. The refund is exactly-once per claim
+       across both writers. The DB row carries no
        "a consumer took it" mark, so the only honest discriminator for
        "never started" is this process's own active-jobs registry; the
        claim-to-register window (a job taken off local_queue but not yet
@@ -182,6 +196,12 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
         # re-pend class as _SWEEP_1_SQL and the isolate template.
         f"lock_expires_at=NULL, assignment_routed=true, attempt = {ATTEMPT_REFUND_SQL} "
         f"WHERE locked_by_worker=$1 AND status='running' AND j.cancel_phase = 0"
+        # The exactly-once refund fence across the two refund writers
+        # (the docstring's conjunct paragraph): a running-and-locked row
+        # with a NULL started_at is the heartbeat reconcile's refunded
+        # output, already refunded once, and the drain must leave it for
+        # Sweep 1's reclaim.
+        " AND j.started_at IS NOT NULL"
     )
     # The cancel fence (``cancel_phase = 0``): a row carrying an operator
     # cancel in flight must NOT re-enter the fleet through the drain: the

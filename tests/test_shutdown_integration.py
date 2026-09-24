@@ -376,8 +376,15 @@ async def test_ti4_drain_to_pending(
     conn = await asyncpg.connect(str(deps.settings.pg_dsn_direct))
     try:
         for jid in job_ids[:3]:
+            # started_at rides the update because the dispatch claim CTE
+            # stamps it AT CLAIM (backend/_dispatch_sql.py): a row that
+            # reached running through the real claim is never
+            # NULL-stamped, and the drain's exactly-once refund fence
+            # (a NULL stamp on a running row is the heartbeat reconcile's
+            # already-refunded output) would refuse the fabricated shape.
             await conn.execute(
-                f"UPDATE \"{schema}\".jobs SET status='running', locked_by_worker=$1 WHERE id=$2 AND status='pending'",  # noqa: S608 # Why: schema validated by WorkerSettings/conftest; asyncpg has no parameter binding for identifiers.
+                f"UPDATE \"{schema}\".jobs SET status='running', locked_by_worker=$1, "  # noqa: S608  # Why: schema validated by WorkerSettings/conftest; asyncpg has no parameter binding for identifiers.
+                f"started_at = clock_timestamp() WHERE id=$2 AND status='pending'",
                 worker_id,
                 jid,
             )

@@ -617,6 +617,50 @@ def test_poll_state_answers_304_when_the_client_state_is_current() -> None:
     )
 
 
+def test_poll_state_never_304s_a_terminal_row_at_the_same_seq() -> None:
+    """The 304 x terminal gap: the seq does NOT move on the terminal
+    transition.
+
+    The poll body is ``{status, progress_state, progress_seq}`` and the
+    ETag is the seq alone, but the terminal writes' seq expression is
+    ``GREATEST(progress_seq, $buffer_seq)`` and the consumer passes the
+    seq its progress buffer just flushed, exactly the row's current
+    cursor: the status flips terminal and the cursor stands still. A
+    client that rendered ``{running, seq 7}`` then polls with
+    ``If-None-Match: "7"`` and is answered 304, so it renders RUNNING
+    forever, the poll loop never stops (realtime.js only stops on a
+    DOWNLOADED terminal status).
+
+    The fix: a terminal row always answers 200. The terminal body is the
+    LAST body a poll client needs, the one download that ends the poll
+    loop, so the cost is one bounded download per job; the seq-matching
+    304 keeps serving the steady non-terminal state (the hot path). A
+    client that already rendered the terminal re-downloads it once more,
+    bounded by the poll loop's own stop.
+    """
+    # The client rendered {running, seq 7} and cached ETag "7".
+    running_row = _pg_row(status="running", progress_seq=7)
+    _, client = _make_app(running_row, None)
+    fresh = client.get(f"/jobs/api/job/{_JOB_ID}/state")
+    assert fresh.status_code == 200 and fresh.headers.get("etag") == '"7"'
+    client.close()
+
+    # The terminal transition leaves the seq at 7 (the terminal write's
+    # GREATEST keeps the flushed progress cursor): the row's status
+    # moved, the cursor did not.
+    terminal_row = _pg_row(status="succeeded", progress_seq=7)
+    _, client = _make_app(terminal_row, None)
+    answered = client.get(f"/jobs/api/job/{_JOB_ID}/state", headers={"If-None-Match": '"7"'})
+    assert answered.status_code == 200, (
+        "a terminal row at the client's seq must answer 200: the 304 would "
+        "hide the terminal transition behind an unchanged cursor and the "
+        "poll client would render running forever"
+    )
+    assert answered.json()["status"] == "succeeded", (
+        f"the poll client must download the terminal status, got {answered.json()}"
+    )
+
+
 def test_poll_state_200_carries_the_conditional_headers_and_body() -> None:
     """The unconditional answer keeps its body and states the ETag, so a
     client can start conditional polling from its very next tick."""
