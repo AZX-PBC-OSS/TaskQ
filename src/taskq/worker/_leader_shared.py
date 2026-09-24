@@ -441,6 +441,29 @@ _ARCHIVE_CTE_SQL = (
     '  SELECT j.id FROM "{schema}".jobs j'
     "  JOIN locked l ON j.id = l.id"
     '  AND j.status = $1::"{schema}".job_status'
+    "), cascaded_events AS MATERIALIZED ("
+    # The events this statement's delete is about to cascade away
+    # (job_events.job_id REFERENCES jobs ON DELETE CASCADE, there is no
+    # job_events_archive). Read from the statement snapshot: the delete
+    # arm's effects are invisible to a sibling CTE, so the max is the
+    # pre-delete truth, whatever order the executor picks. Fed into the
+    # prune watermark (migration 01.00.20_01) so the cascade deleter
+    # advances the same bound the retention sweep does: a watch_reclaims
+    # consumer resuming a cursor strictly below it has lost undelivered
+    # events to THIS statement, and the poll side fails visible on it.
+    "  SELECT COALESCE(max(e.id), 0) AS max_id"
+    '  FROM "{schema}".job_events e'
+    "  WHERE e.job_id IN (SELECT id FROM verified)"
+    "), event_watermark AS ("
+    '  INSERT INTO "{schema}".job_events_prune_state'
+    "    (singleton, pruned_through_id, updated_at)"
+    "  SELECT true, max_id, clock_timestamp() FROM cascaded_events"
+    "  WHERE max_id > 0"
+    "  ON CONFLICT (singleton) DO UPDATE"
+    "  SET pruned_through_id = GREATEST("
+    "          job_events_prune_state.pruned_through_id, EXCLUDED.pruned_through_id"
+    "      ),"
+    "      updated_at = EXCLUDED.updated_at"
     "), deleted AS ("
     '  DELETE FROM "{schema}".jobs'
     "  WHERE id IN (SELECT id FROM verified)"

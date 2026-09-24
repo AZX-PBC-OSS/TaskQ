@@ -873,8 +873,21 @@ WITH expired AS MATERIALIZED (
 )
 UPDATE "{schema}".jobs j
 SET result = NULL,
-    result_size_bytes = NULL,
-    result_expires_at = NULL
+    result_size_bytes = NULL
+    -- result_expires_at is deliberately KEPT, not nulled: it is the loss
+    -- receipt. A late poller reading the post-sweep row sees
+    -- result NULL + result_expires_at in the past, which the client
+    -- (ResultUnavailable.reason='result_ttl_expired') reports as "the
+    -- result expired at T", not as the indistinguishable-from-a-lost-job
+    -- "no stored result". Nulling it here would make an expired result
+    -- read identical to an actor that returned NULL with no TTL
+    -- configured, the conflation the receipt exists to prevent. The
+    -- sweep's own eligibility guard (result IS NOT NULL) keeps the
+    -- kept stamp from re-eligibility: a swept row never matches this
+    -- statement again. A retried job cannot inherit a stale receipt:
+    -- retry_job re-pends with result_expires_at = NULL, and
+    -- mark_succeeded recomputes from the actor's TTL at the new
+    -- completion.
 FROM expired
 WHERE j.id = expired.id
   AND j.result IS NOT NULL"""
@@ -996,6 +1009,26 @@ to_delete AS (
     SELECT id FROM expired
     UNION ALL
     SELECT id FROM expired_outbox
+),
+-- The prune watermark, advanced in the SAME statement that deletes: a
+-- watch_reclaims consumer resuming a cursor strictly below the watermark has
+-- lost undelivered events to this sweep, and the consumer-side poll turns
+-- that state into a fail-visible EventRetentionGapError instead of a silent
+-- skip to live (migration 01.00.20_01 derives the contract). GREATEST keeps a
+-- concurrent duplicate sweep (rolling deploy, leader-lock name convergence)
+-- from moving the bound backwards; the WHERE EXISTS keeps the drained
+-- steady-state tick write-free, so the index-bounded plan pins
+-- (tests/test_index_audit.py) measure the same statement they measured before
+-- this arm existed.
+watermark AS (
+    INSERT INTO "{schema}".job_events_prune_state (singleton, pruned_through_id, updated_at)
+    SELECT true, (SELECT max(id) FROM to_delete), statement_timestamp()
+    WHERE EXISTS (SELECT 1 FROM to_delete)
+    ON CONFLICT (singleton) DO UPDATE
+    SET pruned_through_id = GREATEST(
+            job_events_prune_state.pruned_through_id, EXCLUDED.pruned_through_id
+        ),
+        updated_at = EXCLUDED.updated_at
 )
 DELETE FROM "{schema}".job_events e
 USING to_delete
@@ -1786,6 +1819,13 @@ async def sweep_expired_results(
     Cond, see the module docstring); this function takes no ``now``
     argument.
 
+    The sweep keeps ``result_expires_at`` on the rows it nulls: the past
+    stamp is the loss receipt a late poller's
+    ``ResultUnavailable.reason='result_ttl_expired'`` reads, the
+    difference between "the result expired at T" and the
+    indistinguishable-from-a-lost-job "no stored result". See
+    ``_SWEEP_RESULT_TTL_SQL``'s comment.
+
     Returns the count of results expired by this call.
     """
     if not _IDENT_RE.match(schema):
@@ -1823,6 +1863,17 @@ async def sweep_expired_events(
     independently of job retention, and reaches the rows the
     terminality-keyed prune never can (a job that never reaches a terminal
     status holds its events forever under the cascade-only regime).
+
+    The statement also advances the event-prune watermark
+    (``job_events_prune_state.pruned_through_id``, migration 01.00.20_01) to
+    the highest id this batch deleted, in the same transaction: a
+    trailing-watermark consumer (``TaskQ.watch_reclaims``) resuming a cursor
+    strictly below that bound has lost undelivered events to this sweep, and
+    the poll side turns that into a fail-visible
+    :class:`~taskq.exceptions.EventRetentionGapError` rather than a silent
+    skip to live. The watermark is the union bound across event kinds; the
+    crash-reclaim carve-out above is what keeps the ordinary arm from
+    advancing it over unconsumed outbox rows before the multiplier age.
 
     The crash-reclaim outbox slice (``kind='state_change'`` and
     ``detail->>'reason'='lock_expired'``) is kept past the ordinary

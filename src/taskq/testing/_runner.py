@@ -646,6 +646,18 @@ def archive_terminal_jobs(
     # twin's get_events answer for an archived id while PG answers empty.
     if to_archive:
         archived_ids = set(to_archive)
+        # The watermark arm of the PG prune's event_watermark CTE: the
+        # cascade deletes events a trailing-watermark consumer may not
+        # have been delivered, so the highest deleted id becomes the
+        # bound the consumer's cursor is tested against (migration
+        # 01.00.20_01, EventRetentionGapError). GREATEST semantics: a
+        # never-backwards bound.
+        max_deleted_event_id = max(
+            (e.event_id for e in backend._events if e.job_id in archived_ids),
+            default=0,
+        )
+        if max_deleted_event_id > backend._events_pruned_through:  # pyright: ignore[reportPrivateUsage]
+            backend._events_pruned_through = max_deleted_event_id  # pyright: ignore[reportPrivateUsage]
         backend._events = [  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
             e
             for e in backend._events

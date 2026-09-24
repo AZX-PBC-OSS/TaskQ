@@ -767,6 +767,29 @@ class PostgresBackend:
             self._worker_pool, self._sql, after_id, limit, visibility_delay=delay
         )
 
+    async def event_prune_watermark(self) -> int:
+        """The event-prune watermark: the highest ``job_events`` id any
+        retention deleter has committed a delete below-or-at.
+
+        Backed by ``job_events_prune_state`` (migration 01.00.20_01), advanced
+        in the same transaction as the deletes by both deleters (the
+        event-retention sweep's ``watermark`` CTE, the terminal prune's
+        ``event_watermark`` CTE for the events its ``DELETE FROM jobs``
+        cascades away). ``watch_reclaims``' transports read this on every
+        poll and fail visible (:class:`~taskq.exceptions.EventRetentionGapError`)
+        when the consumer's persisted cursor sits strictly behind it.
+
+        Deliberately NOT on the ``Backend`` protocol, exactly like
+        :meth:`check_reclaim_visibility_delay_risk`: it is the
+        trailing-watermark consumer's capability, not a core job operation,
+        so a monitoring loop or transport consuming it getattr-probes (as
+        ``taskq.client._taskq`` does) and backends without the table simply
+        arm no signal.
+        """
+        async with _bounded_checkout(self._worker_pool, "event_prune_watermark") as conn:
+            value = await conn.fetchval(self._sql.event_prune_watermark)
+        return int(value or 0)
+
     async def check_reclaim_visibility_delay_risk(
         self,
         *,

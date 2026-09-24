@@ -115,6 +115,12 @@ _TRUNCATE_TABLES: tuple[str, ...] = (
     # previous test's rows. Truncating it is also the per-test story an
     # audit-asserting suite needs; nothing else reads it.
     "admin_audit",
+    # The event-prune watermark is mutable test state too: a retention-gap
+    # pin asserts a cursor reads 0 before its own deleter ran, so the
+    # previous test's advanced bound must not leak. The migration seeds the
+    # singleton row; after a truncate the read path answers 0 (NULL row)
+    # and the next deleter re-seeds it through its UPSERT.
+    "job_events_prune_state",
 )
 
 

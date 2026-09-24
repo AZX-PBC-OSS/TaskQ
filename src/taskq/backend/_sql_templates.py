@@ -194,6 +194,7 @@ class SqlTemplates:
     get_events: str
     poll_reclaim_events: str
     check_reclaim_visibility_risk: str
+    event_prune_watermark: str
     count_pending_jobs: str
     count_active_jobs: str
     list_actor_max_pending: str
@@ -1929,6 +1930,17 @@ WHERE l.relation = '"{s}".job_events'::regclass
   AND l.locktype = 'relation'
   AND a.pid != pg_backend_pid()
   AND a.xact_start < clock_timestamp() - $1::interval""",
+        # The event-prune watermark (migration 01.00.20_01): the highest
+        # job_events id any retention deleter has committed a delete below-or-at.
+        # watch_reclaims' transports compare the consumer's persisted cursor
+        # against this on every poll and fail visible (EventRetentionGapError)
+        # when the cursor sits strictly behind it, instead of silently skipping
+        # to live over events retention deleted before they were delivered. The
+        # row ships at 0 from the migration, so a fleet that never pruned reads
+        # 0 and no cursor can sit behind it: the signal arms itself with the
+        # first delete, never before.
+        event_prune_watermark=f"""\
+SELECT pruned_through_id FROM "{s}".job_events_prune_state WHERE singleton = true""",
         count_pending_jobs=(
             f'SELECT actor, count(*)::int AS cnt FROM "{s}".jobs '
             f"WHERE actor = ANY($1::text[]) "

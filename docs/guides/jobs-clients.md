@@ -1004,7 +1004,7 @@ property to the fetched row; on return, `row` is the terminal row the result was
 | Exception | When |
 |---|---|
 | `JobFailed` | Terminal status is not `"succeeded"` (`"failed"`, `"cancelled"`, `"crashed"`, `"abandoned"`). The `row` attribute carries the full `JobRow` for inspection. |
-| `ResultUnavailable` | Status is `"succeeded"` but no result is stored (TTL expired, actor returned `None` while `R` is non-`None`). The `row` attribute is available. |
+| `ResultUnavailable` | Status is `"succeeded"` but no result is stored (TTL expired, actor returned `None` while `R` is non-`None`). The `row` attribute is available; `reason` distinguishes `"result_ttl_expired"` (the row carries the past `result_expires_at` stamp the retention sweep leaves in place, the message names the expiry instant) from `"not_stored"`. |
 | `TimeoutError` | `timeout` elapsed before a terminal transition was observed. |
 
 #### `status()`
@@ -1549,7 +1549,7 @@ from taskq.exceptions import (
 | `SingletonCollisionError` | `enqueue()` called for a singleton actor that already has an active job. Fields: `actor` (str), `blocking_job_id` (UUID or None), `retry_after` (timedelta or None). |
 | `PayloadValidationError` | Pydantic validation of the payload fails at enqueue time or at dispatch time. Non-retryable regardless of retry policy. Fields: `actor`, `payload_schema_ver`, `validation_errors`. |
 | `JobFailed` | `JobHandle.wait()` observed a non-success terminal status. Field: `row` (JobRow) with `status`, `error_class`, `error_message`, `error_traceback`. |
-| `ResultUnavailable` | `JobHandle.wait()` observed `"succeeded"` but no usable result is stored (TTL expired, `None` returned where `R` is non-`None`). Field: `row` (JobRow). |
+| `ResultUnavailable` | `JobHandle.wait()` observed `"succeeded"` but no usable result is stored (TTL expired, `None` returned where `R` is non-`None`). Fields: `row` (JobRow), `reason` (`"result_ttl_expired"` | `"not_stored"`). |
 
 **Catching backpressure generically.** `MaxPendingExceededError`, `SingletonCollisionError`, and
 `BatchMaxPendingExceededError` all subclass `BackpressureError`, so `except BackpressureError` is a

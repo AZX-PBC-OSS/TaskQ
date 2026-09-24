@@ -1,8 +1,9 @@
 """Integration tests for PostgresBackend.sweep_expired_results() static method.
 
 Covers TTL-based result expiry (sweep 5): clears ``result``,
-``result_size_bytes``, and ``result_expires_at`` from terminated jobs
-whose ``result_expires_at`` has passed.
+``result_size_bytes`` from terminated jobs whose ``result_expires_at`` has
+passed, keeping the past ``result_expires_at`` stamp as the loss receipt
+(``ResultUnavailable.reason='result_ttl_expired'`` reads it).
 """
 
 # ruff: noqa: S608
@@ -75,7 +76,9 @@ class TestSweepExpiredResults:
         clean_pg_conn: asyncpg.Connection,
     ) -> None:
         """Succeeded job with result_expires_at in the past and non-null
-        result → sweep clears result, result_size_bytes, result_expires_at."""
+        result → sweep clears result and result_size_bytes, keeps the past
+        result_expires_at stamp (the loss receipt a late poller's
+        ResultUnavailable.reason reads)."""
         schema = module_pg_schema.schema_name
         job_id = new_uuid()
         past_time = datetime.now(UTC) - timedelta(hours=1)
@@ -103,7 +106,13 @@ class TestSweepExpiredResults:
         assert row is not None
         assert row["result"] is None
         assert row["result_size_bytes"] is None
-        assert row["result_expires_at"] is None
+        assert row["result_expires_at"] is not None, (
+            "the past expiry stamp must survive the sweep: it is the loss "
+            "receipt ResultUnavailable.reason='result_ttl_expired' reads, "
+            "erasing it would make an expired result indistinguishable from "
+            "an actor that returned None with no TTL configured"
+        )
+        assert row["result_expires_at"] <= datetime.now(UTC)
 
     async def test_non_expired_result_not_cleared(
         self,
@@ -251,7 +260,11 @@ class TestSweepExpiredResults:
         assert expired_row is not None
         assert expired_row["result"] is None
         assert expired_row["result_size_bytes"] is None
-        assert expired_row["result_expires_at"] is None
+        assert expired_row["result_expires_at"] is not None, (
+            "same loss-receipt contract as the single-job pin: the past "
+            "stamp survives the sweep it stamps"
+        )
+        assert expired_row["result_expires_at"] <= datetime.now(UTC)
 
         # Future job: result still present
         future_row = await clean_pg_conn.fetchrow(
