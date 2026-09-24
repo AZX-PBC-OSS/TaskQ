@@ -657,6 +657,29 @@ class TokenBucket:
 
         raw = await redis_client.hmget(key, ["tokens", "ts"])  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType, reportGeneralTypeIssues]  # Why: redis-py hmget return type is untyped in the stub; all operations reflect correct runtime behavior.
 
+        if raw is not None and not isinstance(raw, (list, tuple)):  # pyright: ignore[reportUnnecessaryIsInstance, reportUnnecessaryComparison]  # Why: the stub types hmget as a list of per-field values (never None), but the declared type is exactly what a lying reply violates at runtime - the RESP3 map and the set both arrive through this untyped boundary, so the runtime shape check is the defense, not a redundancy.
+            # Why the CONTAINER gets its own shape check before the
+            # element access: the guarded float conversion below
+            # validates the ELEMENT's value, but ``raw[0]``/``raw[1]``
+            # index the raw hmget reply itself - a dict-shaped map (the
+            # RESP3 reply, byte- or str-keyed) raises bare KeyError on
+            # the integer index and a set or bare int raises TypeError,
+            # and neither is in any guarded conversion family, so the
+            # lie escapes the peek as a bare crash. Worse, a bare
+            # string or bare bytes reply IS subscriptable, so the index
+            # silently yields garbage ("12" -> "1") and the peek builds
+            # a RateLimitState from the proxy's lie - the fail-open
+            # direction. The honest hmget reply is a list (one value
+            # per requested field), so any other container is the same
+            # verdict as every other reply lie: the store-corrupt
+            # sentinel, the family the conversion guard below already
+            # speaks. The bare None stays accepted: it is the pinned
+            # empty-hash default shape (the control pin
+            # ``test_token_bucket_peek_honest_reads_pass``), not a
+            # container lie. Mirrors the sibling withscores container
+            # check (6305615b) in ``_sliding_window_redis``.
+            raise RateLimitStoreCorrupt(f"token-bucket peek read a non-list hash reply: {raw!r}")
+
         tokens_raw = raw[0] if raw else None  # pyright: ignore[reportUnknownVariableType]  # Why: raw is untyped from redis-py hmget stub; validated at runtime.
         ts_raw = raw[1] if raw else None  # pyright: ignore[reportUnknownVariableType]  # Why: raw is untyped from redis-py hmget stub; validated at runtime.
 

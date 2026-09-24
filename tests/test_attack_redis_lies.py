@@ -343,6 +343,46 @@ async def test_token_bucket_peek_honest_reads_pass() -> None:
         assert state.is_exhausted is exhausted
 
 
+_PEEK_HASH_CONTAINER_LIES: list[Any] = [
+    # The round-6 reviewer probes: _peek_redis INDEXES the hmget reply
+    # (raw[0]/raw[1]) before any container shape check. The crash shapes -
+    # the RESP3 dict map (byte- and str-keyed), a set, a bare int - raise
+    # bare KeyError/TypeError on the integer index, a sibling of no guarded
+    # conversion family, so the lie escapes the peek as a crash. The
+    # silent-garbage shapes - a bare string, bare bytes - ARE subscriptable,
+    # so the index silently yields garbage ("12" -> "1", b"12" -> 49) and
+    # the peek builds a RateLimitState from the proxy's lie, the fail-open
+    # direction. The honest hmget reply is a list (one value per requested
+    # field), the same honest-container argument as the sibling withscores
+    # check (6305615b) the fix mirrors.
+    pytest.param({"tokens": b"4.0", "ts": b"1767225600"}, id="resp3-dict-map"),
+    pytest.param({"tokens": "4.0", "ts": "1767225600"}, id="str-keyed-map"),
+    pytest.param({b"4.0", b"1767225600"}, id="set-container"),
+    pytest.param(12, id="bare-int"),
+    pytest.param("12", id="bare-string"),
+    pytest.param(b"12", id="bare-bytes"),
+]
+
+
+@pytest.mark.parametrize("reply", _PEEK_HASH_CONTAINER_LIES)
+async def test_token_bucket_peek_container_lies_raise_the_sentinel(reply: object) -> None:
+    """The container shape of the peek's hash read is a trust boundary of
+    its own: a reply no honest hmget could hold (a dict-shaped RESP3 map,
+    a str-keyed map, a set, a bare int) raises the sentinel, not a bare
+    KeyError/TypeError, and a subscriptable lie (a bare string or bare
+    bytes) is NOT indexed into a RateLimitState - the same fail-closed
+    verdict every other reply lie takes.
+
+    The capacity is 1000, not 5, deliberately: the bare string/bytes lies
+    index to small numbers the [0, capacity] range check accepts, so the
+    pre-fix code builds the garbage state SILENTLY - the pin must die on
+    the missing CONTAINER check, not on the range check's coattails.
+    """
+    tb = TokenBucket(name="lie", capacity=1000, refill_per_second=1.0, backend="redis")
+    with pytest.raises(RateLimitStoreCorrupt, match="non-list hash reply"):
+        await tb.peek(redis_client=_PeekRedis(hmget_reply=reply), settings=_settings())
+
+
 async def test_redis_time_lie_raises_the_sentinel() -> None:
     """The store-clock read (``TIME``) is a trust boundary of its own: the
     peek paths' elapsed math runs on it. A malformed tuple (wrong arity,
