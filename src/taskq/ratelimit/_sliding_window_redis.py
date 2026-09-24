@@ -96,7 +96,11 @@ def _validate_script_reply(
         allowed = int(elements[0])  # pyright: ignore[reportArgumentType]  # Why: the element is object after the shape check; int() accepts int | str | bytes at runtime
         second = int(elements[1])  # pyright: ignore[reportArgumentType]  # Why: same object element boundary
         third = int(elements[2])  # pyright: ignore[reportArgumentType]  # Why: same object element boundary
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
+        # OverflowError joins the family: int(float("inf")) and
+        # float(10**400) raise it, a sibling of neither TypeError nor
+        # ValueError, and an uncaught one is the original crash class
+        # the boundary exists to kill.
         raise RateLimitStoreCorrupt(f"sliding-window script reply is not numeric: {raw!r}") from exc
     if allowed not in (0, 1):
         raise RateLimitStoreCorrupt(
@@ -365,7 +369,11 @@ async def _peek_redis_log(
     zcount_raw = await redis_client.zcount(key, f"({cutoff_ms}", "+inf")  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]  # Why: redis-py zcount return type is untyped in the stub
     try:
         count = int(zcount_raw)  # pyright: ignore[reportUnknownArgumentType]  # Why: untyped stub boundary; validated by the conversion and the range check below
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
+        # OverflowError joins the family: int(float("inf")) and
+        # float(10**400) raise it, a sibling of neither TypeError nor
+        # ValueError, and an uncaught one is the original crash class
+        # the boundary exists to kill.
         raise RateLimitStoreCorrupt(
             f"sliding-window log peek read a non-numeric ZCARD: {zcount_raw!r}"
         ) from exc
@@ -434,11 +442,14 @@ async def _peek_redis_gcra(
     tat_raw = await redis_client.get(key)  # pyright: ignore[reportUnknownMemberType]  # Why: redis-py get return type is untyped in the stub
     try:
         tat = float(tat_raw) if tat_raw else now_ms
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         # A TAT value no honest SET could have written (the script writes
         # Lua tostring() of a number) is a store lie, failed closed as
         # the outage it is indistinguishable from, never a ValueError
-        # crash with no provenance.
+        # crash with no provenance. OverflowError joins the family:
+        # float(10**400) raises it, a sibling of neither TypeError nor
+        # ValueError, and an uncaught one is the original crash class
+        # the boundary exists to kill.
         raise RateLimitStoreCorrupt(
             f"sliding-window GCRA peek read a non-numeric TAT: {tat_raw!r}"
         ) from exc

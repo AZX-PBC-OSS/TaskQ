@@ -222,7 +222,11 @@ def _decode_lua_result(raw: object, *, capacity: float) -> _LuaResult:
         allowed_int = int(elements[0])  # pyright: ignore[reportArgumentType]  # Why: the element is object after the shape check; int() accepts int | str | bytes at runtime
         tokens_remaining = float(elements[1])  # pyright: ignore[reportArgumentType]  # Why: same object element boundary
         retry_after_seconds = float(elements[2])  # pyright: ignore[reportArgumentType]  # Why: same object element boundary
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
+        # OverflowError joins the family: int(float("inf")) and
+        # float(10**400) raise it, a sibling of neither TypeError nor
+        # ValueError, and an uncaught one is the original crash class
+        # the boundary exists to kill.
         raise RateLimitStoreCorrupt(f"token-bucket script reply is not numeric: {raw!r}") from exc
     if allowed_int not in (0, 1):
         raise RateLimitStoreCorrupt(f"token-bucket script reply has an impossible verdict: {raw!r}")
@@ -659,11 +663,15 @@ class TokenBucket:
         try:
             tokens = self._capacity if tokens_raw is None else float(tokens_raw)  # pyright: ignore[reportUnknownArgumentType]  # Why: tokens_raw type is unknown due to untyped redis-py stub; validated at runtime.
             ts = now_seconds if ts_raw is None else float(ts_raw)  # pyright: ignore[reportUnknownArgumentType]  # Why: ts_raw type is unknown due to untyped redis-py stub; validated at runtime.
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             # A peek is read-only, but the trust boundary is the same as
             # the acquire's: a reply no honest hash could hold is a store
             # lie, failed closed as the outage it is indistinguishable
             # from, never a ValueError crash with no provenance.
+            # OverflowError joins the family: int(float("inf")) and
+            # float(10**400) raise it, a sibling of neither TypeError nor
+            # ValueError, and an uncaught one is the original crash class
+            # the boundary exists to kill.
             raise RateLimitStoreCorrupt(
                 f"token-bucket peek read a non-numeric hash value: {raw!r}"
             ) from exc

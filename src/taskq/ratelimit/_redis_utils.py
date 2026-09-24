@@ -54,7 +54,11 @@ async def redis_time_seconds(redis_client: "redis_async.Redis") -> float:
     try:
         seconds = float(t_seq[0])  # pyright: ignore[reportArgumentType]  # Why: the element is object after the shape check; float() accepts int | str | bytes at runtime
         micros = float(t_seq[1])  # pyright: ignore[reportArgumentType]  # Why: same object element boundary
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
+        # OverflowError joins the family: int(float("inf")) and
+        # float(10**400) raise it, a sibling of neither TypeError nor
+        # ValueError, and an uncaught one is the original crash class
+        # the boundary exists to kill.
         raise RateLimitStoreCorrupt(f"redis TIME reply is not numeric: {t_raw!r}") from exc
     if not (math.isfinite(seconds) and math.isfinite(micros)):
         # nan/inf: a real clock is a finite number, a proxy answering
