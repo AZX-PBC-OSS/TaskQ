@@ -825,6 +825,7 @@ async def _enqueue_on_conn(
     idempotency_lock_timeout_ms: float = DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS,
     owns_transaction: bool = False,
     mark_wrote: Callable[[], None] | None = None,
+    _pop_retry: bool = False,
 ) -> JobRow:
     """Core enqueue logic running on *conn*.
 
@@ -1263,6 +1264,35 @@ async def _enqueue_on_conn(
             args.idempotency_key,
         )
         if rec is None:
+            # The pop race: the arbiter's DO NOTHING named a holder that
+            # was GONE by the time this statement took its own snapshot
+            # under READ COMMITTED. The holder was the archive/prune's
+            # DELETE committing between the INSERT and this SELECT (the
+            # documented dedup horizon ends at the prune: an archived
+            # pair is FREE again). The re-registration must win, and it
+            # has not run yet, so the enqueue retries ONCE: the pair is
+            # empty now, the retried INSERT writes a NEW row. One retry
+            # is the convergent bound: the freed pair can only be won
+            # once more (by this retry or a racer the follow-up SELECT
+            # then resolves), and a row the retry writes is pending,
+            # never terminal, so it cannot re-enter the prune window
+            # inside this call. The guard stops the recursion: a second
+            # miss is a shape this argument cannot explain, the same
+            # loud RuntimeError as before.
+            if args.idempotency_key is not None and not _pop_retry:
+                return await _enqueue_on_conn(
+                    conn,
+                    sql,
+                    schema,
+                    clock,
+                    args,
+                    max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
+                    unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
+                    idempotency_lock_timeout_ms=idempotency_lock_timeout_ms,
+                    owns_transaction=owns_transaction,
+                    mark_wrote=mark_wrote,
+                    _pop_retry=True,
+                )
             raise RuntimeError(
                 "enqueue ON CONFLICT fired but follow-up SELECT "
                 f"found no row for idempotency_scope={args.idempotency_scope!r} "

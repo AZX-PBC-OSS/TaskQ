@@ -894,11 +894,26 @@ def create_router(
             raise HTTPException(status_code=404, detail="job not found")
 
         # The progress sequence is a monotonically increasing write cursor
-        # on exactly the bytes this endpoint returns, so it IS the ETag:
-        # a seq the client already rendered means every field (including
-        # the fingerprint the client derives from it) is unchanged.
+        # on the progress bytes this endpoint returns, so it IS the ETag
+        # for the progress state: a seq the client already rendered means
+        # every progress field (including the fingerprint the client
+        # derives from it) is unchanged.
+        #
+        # The terminal rows are the exception: the terminal writes' seq
+        # expression is GREATEST(progress_seq, $buffer_seq) and the
+        # consumer passes the seq its progress buffer just flushed,
+        # exactly the row's current cursor, so the status flips terminal
+        # and the cursor stands still. A 304 there would hide the
+        # terminal transition behind an unchanged cursor, and the poll
+        # client (realtime.js stops only on a DOWNLOADED terminal status)
+        # would render running forever. A terminal row therefore always
+        # answers 200: the terminal body is the LAST body a poll client
+        # needs, the one download that ends the poll loop, so the cost is
+        # one bounded download per job and the seq-matching 304 keeps
+        # serving the steady non-terminal state.
         etag = f'"{row["progress_seq"]}"'
-        if request.headers.get("if-none-match") == etag:
+        is_terminal = row["status"] in TERMINAL_STATUSES
+        if not is_terminal and request.headers.get("if-none-match") == etag:
             return Response(status_code=304, headers={"ETag": etag})
 
         raw_ps: Any = row["progress_state"]

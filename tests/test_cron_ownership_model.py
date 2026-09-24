@@ -43,7 +43,11 @@ the failure path is proven to produce) rather than driving strikes through a
 live worker: the failure UPDATE never advances ``next_fire_at``, so a
 re-enabled row sits due and the boot's own cron loop would keep striking it,
 making the final assertion a race. A future ``next_fire_at`` keeps the loop
-out of the row, which is what makes the pins deterministic.
+out of the row, which is what makes the pins deterministic -- and that future
+must be anchored on the server's ``clock_timestamp``, not the hour grid:
+``hour_floor(now) + 1h`` IS the next hour boundary, so a run whose restart
+window straddles the hour sees the row come due mid-test (CI's 16:00:00
+event, both legs, ``assert 1 == 0``).
 """
 
 from __future__ import annotations
@@ -71,6 +75,7 @@ from .test_rt_cron_harness import (
     schedule_row,
     seed_schedule,
     server_hour_floor,
+    server_now,
 )
 from .test_worker_bootstrap import (
     _cleanup_schema_for,
@@ -146,7 +151,16 @@ async def _seed_auto_disabled(
         actor=actor,
         name=name,
         cron_expr=_HOURLY,
-        next_fire_at=await server_hour_floor(conn) + timedelta(hours=1),
+        # An hour out from the SERVER's clock_timestamp, deliberately OFF the
+        # hour grid: ``hour_floor(now) + 1h`` IS the next hour boundary, so a
+        # run that reaches the restart window as the wall clock crosses the
+        # hour (CI at 15:59:59 -> boot tick at 16:00:00) sees the "future"
+        # row come due mid-test, and the boot's own loop strikes the missing
+        # actor once -- consecutive_failures lands at 1 and the pin's final
+        # ``== 0`` reads a race, not the product. Anchoring on clock_timestamp
+        # keeps the row out of due range for the whole window whatever the
+        # wall clock is doing.
+        next_fire_at=await server_now(conn) + timedelta(hours=1),
         consecutive_failures=3,
         enabled=False,
         disabled_by=disabled_by,
@@ -234,11 +248,15 @@ class TestAutoDisableRecovery:
             # The failure UPDATE never advances next_fire_at, so the disabled
             # row sits due; push it out of due range so the boot's own cron
             # loop cannot strike the row while the test observes the restart.
+            # Off the hour grid on purpose: hour_floor + 1h IS the next hour
+            # boundary, so a run straddling the hour sees the row come due
+            # mid-test and the boot loop strikes it once (the CI 16:00:00
+            # event). server_now + 1h cannot come due inside the window.
             await conn.execute(
                 f'UPDATE "{schema}".cron_schedules '  # noqa: S608  # Why: schema is a test-fixture identifier; values are $-bound.
                 "SET next_fire_at = $2 WHERE id = $1",
                 schedule_id,
-                await server_hour_floor(conn) + timedelta(hours=1),
+                await server_now(conn) + timedelta(hours=1),
             )
         finally:
             await conn.close()
@@ -586,12 +604,16 @@ class TestMixedVersionRollingDeploy:
 
             # The failure UPDATE never advances next_fire_at; push the row
             # out of due range so the boot's own cron loop cannot strike it
-            # while the test observes the restart.
+            # while the test observes the restart. Off the hour grid on
+            # purpose: hour_floor + 1h IS the next hour boundary, so a run
+            # straddling the hour sees the row come due mid-test (the CI
+            # 16:00:00 event); server_now + 1h cannot come due inside the
+            # window.
             await conn.execute(
                 f'UPDATE "{schema}".cron_schedules '  # noqa: S608  # Why: schema is a test-fixture identifier; values are $-bound.
                 "SET next_fire_at = $2 WHERE id = $1",
                 schedule_id,
-                await server_hour_floor(conn) + timedelta(hours=1),
+                await server_now(conn) + timedelta(hours=1),
             )
         finally:
             await conn.close()
