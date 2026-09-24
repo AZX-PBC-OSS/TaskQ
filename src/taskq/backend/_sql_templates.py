@@ -1912,12 +1912,45 @@ ORDER BY occurred_at, event_id""",
 -- poll) or aborted (permanently gone).  See
 -- taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY for the bound this
 -- assumes on writer transaction duration.
+--
+-- The held-back ceiling (the `id < COALESCE(...)` arm) is what keeps the
+-- margin's wall stamp from becoming a SKIP under clock skew.  The margin
+-- measures "is this row old enough" from occurred_at, but occurred_at is
+-- stamped by clock_timestamp(), which an NTP correction can step BACK
+-- mid-transaction: two rows in one commit can then carry an INVERTED
+-- (occurred_at, id) pair -- the earlier-id row stamped LATER (its true
+-- time) than the higher-id row beside it (stamped before the
+-- correction, so its stamp reads far older than it really is).  With
+-- only the per-row age filter, the poll serves the higher-id row the
+-- moment it is visible, the consumer's cursor advances past the
+-- lower-id row's id, and that row is then unreachable to `id > $1`
+-- forever: a silently missed reclaim, the exact failure mode the
+-- watermark exists to prevent, now reachable without any slow writer.
+-- The ceiling caps the returned ids strictly below the LOWEST
+-- still-held-back matching row above the cursor, so a row whose
+-- neighbour's stamp lies can only be delayed (until the margin clears
+-- against its own stamp), never skipped; rows the ceiling withholds
+-- come back in a later poll, id order preserved, the cursor never
+-- advances past an unserved row.  Under co-monotone stamps (no step-
+-- back) the held-back rows are the recent tail of the id space and the
+-- ceiling is exactly the old behavior.  The subquery repeats the
+-- partial index's verbatim predicate (01.00.02_01) so the planner
+-- confines the min() walk to job_events_reclaim_idx, an ascending scan
+-- from the cursor that stops at the first held-back row.
 SELECT id AS event_id, job_id, occurred_at, kind, detail
 FROM "{s}".job_events
 WHERE kind = 'state_change'
   AND (detail->>'reason') = 'lock_expired'
   AND id > $1
   AND occurred_at < clock_timestamp() - $3::interval
+  AND id < COALESCE((
+        SELECT min(held.id)
+        FROM "{s}".job_events held
+        WHERE held.kind = 'state_change'
+          AND (held.detail->>'reason') = 'lock_expired'
+          AND held.id > $1
+          AND held.occurred_at >= clock_timestamp() - $3::interval
+      ), 9223372036854775807::bigint)
 ORDER BY id ASC
 LIMIT $2""",
         check_reclaim_visibility_risk=f"""\
