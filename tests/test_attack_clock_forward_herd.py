@@ -94,26 +94,17 @@ _STATEMENT_TIMEOUT_MS = 1750
 
 # The prune family's defaults.
 _PRUNE_BATCH = 10_000
-# Why 120 s: this budget is the statement-timeout TOOTH of the bounded-
-# batch pin - the 363 lesson's "the lock window is the batch, never the
-# population" must fail loudly, not hang. Measured on a 4-core pinned rig
-# (PG 18 container co-pinned to the same 4 cores): a bounded 10k-row batch
-# costs ~0.4 s and a population-wide single 100k write ~4 s - a 10x warm
-# gap, NOT the 100x a glance suggests. And CI's congestion tail is a
-# MULTIPLIER on statement work, not an absolute stall: the original 4 s
-# bound cancelled a legitimate bounded batch on 2 of 4 legs (run
-# 36016634595, m ~ 10x), and scaling to 30 s still cancelled one leg (run
-# 36023222736, m ~ 75x). A wall-clock bound therefore cannot sit between
-# the bounded tail and the defect's runtime on a slow runner - the gap
-# closes - so this budget is the hang guard and the fast-runner backstop,
-# while the DISCRIMINATIVE tooth for bounded-vs-population is the batch-
-# shape assertions below (10 productive batches, sum conserved), which no
-# runner speed can defeat. 120 s is 300x the warm batch cost and 4x over
-# the worst multiplier CI has produced. The sibling _STATEMENT_TIMEOUT_MS
-# users keep 1750 ms: their statements are 100-row LIMIT batches (~5 ms
-# warm), 50x less work per statement, two orders of magnitude inside any
-# multiplier this tail has shown.
-_PRUNE_TIMEOUT_MS = 120_000
+# Why 30 s: the statement budget exists as the TOOTH of the bounded-batch
+# pin - if the prune ever stopped LIMIT-ing and moved to one population-wide
+# write, the budget must cancel it. The discriminative gap is >100x: a
+# LIMIT-bounded 10k-row batch on a 100k cohort costs tens of ms, while a
+# population-wide single write costs minutes. The original 4 s sat inside
+# the gap but too close to the floor: on a CI runner congested by 3-leg
+# co-tenancy (run 36016634595) a legitimate bounded batch exceeded it and
+# the server cancelled the pin's own statement. 30 s keeps the tooth (a
+# population-wide write is still 100x+ over the budget) while surviving a
+# slow, contended runner.
+_PRUNE_TIMEOUT_MS = 30_000
 
 # Cohort sizes.
 _HERD_BUDGET = 7_000  # re-pend arm
@@ -626,23 +617,10 @@ async def test_deadline_herd_batches_stay_bounded_and_ledger_conserved(
 # ── 5. The retention prune herd: 100k rows pass retention at once
 
 
-@pytest.mark.load_sensitive
 async def test_prune_herd_batches_stay_bounded_and_archive_conserves(
     module_pg_schema: ModulePgSchema,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Why load_sensitive: this pin drives a 100k-row real-PG herd. Its
-    # shape/conservation assertions are not load-fragile, but its statement
-    # budget is: on the shared runners' parallel legs the congestion
-    # multiplier on a single bounded batch's statement work has measured
-    # m ~ 10x (run 36016634595, the 4 s bound), m ~ 75x (run 36023222736,
-    # the 30 s bound) and m > 300x (run 36031837491, the 120 s bound) -
-    # every escalation of a wall-clock budget was eventually eaten. The
-    # serial load_sensitive lane is the one place the multiplier is
-    # bounded (no leg co-tenancy), so the budget there is a true backstop;
-    # on the parallel legs the pin would only add a flake surface. The
-    # batch-shape and conservation assertions remain the discriminative
-    # tooth for bounded-vs-population and no runner speed defeats them.
     import taskq.worker._leader_shared as leader_shared
 
     schema = module_pg_schema.schema_name
