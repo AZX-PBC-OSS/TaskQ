@@ -40,7 +40,7 @@ import json
 import time
 from datetime import timedelta
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 import asyncpg
@@ -762,3 +762,133 @@ async def test_demoted_leader_stops_pruning_mid_drain(pg_dsn: str) -> None:
             )
         finally:
             await conn.close()
+
+
+async def test_archive_expiry_loop_demotion_cut_leaves_streak_standing_and_day_unstamped(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """The archive-expiry twin of the prune-loop demotion-cut pin: a
+    demotion that CUTS the expiry drain mid-way is an unfinished day, not
+    a done one. The date latch stays UNSTAMPED - on the backoff ladder's
+    next wake the attempt re-runs (a second advisory-lock attempt), where
+    a wrongly stamped day would sleep to the far cron fire and never
+    re-attempt - and the cut attempt leaves the reset-on-success streak
+    standing: ``guard.ok()`` belongs to the later fully-drained retry
+    alone, never to the demotion-cut half (the reset-on-success contract,
+    ``worker/_transient.py``). The prune loop's copy of this arm is pinned
+    directly; this pin holds the archive loop's duplicate to the same
+    contract, so an asymmetric edit to either copy cannot drift unnoticed.
+    """
+    import croniter as croniter_mod
+
+    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    from taskq.worker.deps import WorkerDeps
+
+    # The established fake shapes of the prune-loop demotion-cut pin
+    # (tests/test_leader.py): redefining them here would drift from the
+    # shapes that pin drives.
+    from tests.test_leader import (
+        _FakeConnForPrune,
+        _FakeRecord,
+        _lock_attempts,
+        _make_leader,
+        _PoolWithFixedConn,
+        _soon_then_far_croniter,
+    )
+
+    monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_INITIAL_SECS", 0.02)
+    monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_CAP_SECS", 0.2)
+    # The loop reads croniter through the bound module (``import croniter
+    # as cr``), so the double sits where the loop looks - the same reason
+    # the prune-loop pin patches the module attribute.
+    monkeypatch.setattr(croniter_mod, "croniter", _soon_then_far_croniter())
+
+    # The streak seam: record every reset-on-success call so the pin can
+    # hold the cut arm to the reset-on-success contract without touching
+    # the product.
+    ok_instants: list[float] = []
+    real_guard = _leader_sweeps_mod.UnexpectedLoopErrorGuard
+
+    def _instrumented_guard(loop: str, **kwargs: Any) -> real_guard:  # type: ignore[valid-type]
+        guard = real_guard(loop, **kwargs)
+        original_ok = guard.ok
+
+        def ok() -> None:
+            ok_instants.append(time.monotonic())
+            original_ok()
+
+        guard.ok = ok  # type: ignore[method-assign]
+        return guard
+
+    monkeypatch.setattr(_leader_sweeps_mod, "UnexpectedLoopErrorGuard", _instrumented_guard)
+
+    # The demotion seam, the prune-loop pin's shape: the conn is built
+    # before the leader (whose deps the drain consults), the first expiry
+    # write's return is the demotion instant, and the pod re-leads a beat
+    # later - so the ladder, not the cron, must land the remainder.
+    deps_holder: list[WorkerDeps] = []
+    lock_instants: list[float] = []
+
+    class _DemoteAtFirstExpiryWriteConn(_FakeConnForPrune):
+        demoted = False
+
+        def __init__(self) -> None:
+            super().__init__(
+                batch_rows=[[_FakeRecord({"status": "succeeded", "cnt": 5})]],
+                fetchval_result=True,
+            )
+
+        async def fetchval(self, sql: str, *args: object) -> object:
+            if "pg_try_advisory_lock" in sql:
+                lock_instants.append(time.monotonic())
+            return await super().fetchval(sql, *args)
+
+        async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
+            result = await super().fetch(sql, *args)
+            if not self.demoted and "WITH expired AS MATERIALIZED" in sql and result:
+                # Batch 1 has committed: the demotion instant. The drain
+                # ends (one partial batch), and the loop's post-drain
+                # leading() read must see the pod no longer leading.
+                self.demoted = True
+                deps_holder[0].stop_leading()
+                # The bug's own scenario: the same pod regains leadership
+                # a beat later. A timer, not a sleep: the assertion below
+                # stays a bounded condition wait.
+                asyncio.get_running_loop().call_later(0.1, deps_holder[0].is_leader.set)
+            return result
+
+    leader_conn = _DemoteAtFirstExpiryWriteConn()
+    leader, deps, _backend, _, _, shutdown = await _make_leader(
+        leader_conn=leader_conn,
+        dispatcher_pool=_PoolWithFixedConn(leader_conn),
+        is_leader=True,
+        monkeypatch=monkeypatch,
+    )
+    deps_holder.append(deps)
+
+    task = asyncio.create_task(leader._archive_expiry_loop(shutdown))
+    try:
+        # The day must have stayed unstamped: on the ladder's next wake
+        # the attempt re-runs (a second advisory-lock attempt). With the
+        # date stamped by the cut, the loop would sleep to the far cron
+        # fire and never attempt again.
+        await wait_for_condition(
+            lambda: _lock_attempts(leader_conn) >= 2,
+            description="the demotion-cut archive-expiry drain must arm the "
+            "retry ladder with the day unstamped: the remainder is "
+            "re-attempted within the day, not deferred to the next cron fire",
+            timeout=3.0,
+        )
+        # The streak stands through the cut: guard.ok() is the
+        # reset-on-success contract and fires on the later fully-drained
+        # retry, never on the demotion-cut attempt itself.
+        assert len(lock_instants) >= 2
+        assert all(ok_t >= lock_instants[1] for ok_t in ok_instants), (
+            "the demotion-cut archive-expiry attempt reset the "
+            "reset-on-success streak: a cut day is an unfinished day, the "
+            "streak is left standing there"
+        )
+    finally:
+        shutdown.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
