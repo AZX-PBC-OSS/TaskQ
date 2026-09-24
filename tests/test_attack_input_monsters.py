@@ -46,6 +46,7 @@ a mechanism, not a style preference. The inventory:
 
 from __future__ import annotations
 
+from pathlib import Path
 from uuid import UUID
 
 import asyncpg
@@ -351,6 +352,50 @@ def test_queue_name_past_the_bound_is_refused_with_a_bounded_message() -> None:
     )
 
 
+def test_queue_name_rejection_echo_truncates_at_exactly_64_chars() -> None:
+    """The bounded echo's own boundary: an invalid name of exactly 64
+    characters is echoed whole (no truncation marks), one of 65 is cut at
+    64 with the ellipsis and never echoed whole. Both edges pinned."""
+    import re
+
+    from taskq.backend._protocol import _validate_queue_name  # pyright: ignore[reportPrivateUsage]
+
+    whole = "b" * 63 + "!"  # 64 chars, invalid last: echoed in full
+    with pytest.raises(ValueError) as exc_info:
+        _validate_queue_name(whole)
+    msg = str(exc_info.value)
+    assert re.search(re.escape(whole) + r"(?!\.\.\.)", msg), (
+        "a 64-char invalid name must be echoed whole without truncation marks"
+    )
+
+    cut = "b" * 64 + "!"  # 65 chars: echoed as the first 64 + "..."
+    with pytest.raises(ValueError) as exc_info:
+        _validate_queue_name(cut)
+    msg = str(exc_info.value)
+    assert re.search(re.escape("b" * 64) + r"\.\.\.", msg), (
+        "a 65-char invalid name must be truncated at 64 with an ellipsis"
+    )
+    assert cut not in msg, "a 65-char invalid name must never be echoed whole"
+
+
+def test_queue_name_offender_classifies_the_bound_as_legal() -> None:
+    """The message helper's boundary: a name AT the 255-char bound is legal,
+    so the offender must not classify it as over the bound - only a name
+    past it gets the 'exceeds' verdict."""
+    from taskq.backend._protocol import (  # pyright: ignore[reportPrivateUsage]
+        _queue_name_offender,
+    )
+
+    assert "exceeds" not in _queue_name_offender("a" * 255)
+    assert "exceeds" in _queue_name_offender("a" * 256)
+    # The charset diagnoses stay exact: the first character and a mid-string
+    # character get DISTINCT verdicts naming the offending character and its
+    # actual position, so a rejection names the real defect.
+    assert "first character" in _queue_name_offender("!abc")
+    mid = _queue_name_offender("a!b")
+    assert "'!'" in mid and "position 1" in mid
+
+
 def test_actor_name_past_the_bound_is_refused_at_registration() -> None:
     """The actor name rides the same composite dispatch indexes beside the
     queue name; the same bound applies at registration, where the fix is
@@ -472,3 +517,23 @@ def test_progress_seq_bind_params_are_bigint_in_the_terminal_templates() -> None
         assert "::bigint AS progress_seq" in sql, (
             f"{name} must bind progress_seq at the column's bigint domain"
         )
+
+
+def test_bigint_migration_documents_the_full_rewrite_ops_window() -> None:
+    """The migration's header must keep stating the apply cost honestly:
+    ALTER TYPE ... TYPE bigint rewrites each table (a fresh relfilenode)
+    and rebuilds EVERY index on it, an ops window an operator budgets
+    against the live row count. What it must never claim again is the
+    "widens in place" / "no index rebuild" story: that understates the
+    lock horizon and hides the rebuild from the ops-window arithmetic."""
+    migration = (
+        Path(__file__).parents[1] / "src/taskq/migrations/01.00.20_01_pre_progress_seq_bigint.sql"
+    )
+    header = migration.read_text(encoding="utf-8").lower()
+    assert "rewrites" in header, "the header must state the full-table rewrite"
+    assert "rebuilt" in header, "the header must state every index is rebuilt"
+    assert "no index rebuild" not in header, "the no-rebuild claim is false"
+    assert "in place" not in header, "the in-place claim is false"
+    assert "ops window" in header or "ops-window" in header, (
+        "the header must frame the rewrite as an ops-window statement"
+    )

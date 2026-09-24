@@ -683,6 +683,24 @@ markers = [
     "fastapi: tests for the [fastapi] extra: the web admin/progress suites (skip with -m 'not fastapi')",
 ]
 
+[tool.pytest-gremlins]
+# The attack-input monsters' mutation gate (PR 521): the four modules the
+# progress/enqueue/name/seq gates live in. Run with the killing suites:
+#   uv run pytest tests/test_attack_input_monsters.py tests/test_progress_flush.py \
+#       tests/web_admin/test_realtime_js_render.py tests/web_admin/test_realtime_js_mode_probe.py \
+#       --gremlins --gremlin-executor=subprocess --gremlin-report=console,json
+# --gremlin-executor=subprocess is REQUIRED, not a preference: the fork
+# executor does not re-import the mutated module in this repo and reports
+# false KILLS (one run zapped 0/127). Coverage-guided test selection is on
+# by default; the suites above are the killers for the gates' own lines
+# (the pins file holds the door raises).
+paths = [
+    "src/taskq/context.py",
+    "src/taskq/actor.py",
+    "src/taskq/backend/_protocol.py",
+    "src/taskq/backend/_sql_templates.py",
+]
+
 [tool.coverage.run]
 source = ["src/taskq"]
 branch = true
