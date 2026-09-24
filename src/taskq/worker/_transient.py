@@ -64,6 +64,25 @@ _log: structlog.stdlib.BoundLogger = get_logger(__name__)
 #: - ``IdleSessionTimeoutError`` / ``IdleInTransactionSessionTimeoutError``:
 #:   operator-set session timeouts killing an idle (or idle-in-tx)
 #:   dedicated conn; the conn-loss path rebuilds on the next tick.
+#: - ``InvalidCachedStatementError`` / ``OutdatedSchemaCacheError``: the
+#:   live-migration family, 0A000 + its decode-path companion. A schema
+#:   change that lands WHILE a fleet runs (the rolling-deploy window, or
+#:   any DDL another tool issues against the same tables) invalidates
+#:   prepared plans asyncpg cached per connection. The server answers the
+#:   next Bind of an affected statement with 0A000; asyncpg then drops
+#:   the pool-wide statement cache and, outside a transaction, retries
+#:   once invisibly, so autocommit statements never surface it. Inside a
+#:   transaction the error propagates and aborts the transaction - which
+#:   is pure infrastructure, not a bug: the very next tick re-prepares
+#:   against the new schema and succeeds. Measured (PG 18.6, pool warm,
+#:   ``ALTER COLUMN TYPE`` / ``DROP COLUMN`` under ``SELECT *``): the
+#:   in-transaction shape raises exactly this class and the next pooled
+#:   statement succeeds with no recycle. Retry-next-tick cannot livelock:
+#:   a schema change that actually broke the statement TEXT (a dropped or
+#:   renamed column old code still names) re-prepares into a DIFFERENT
+#:   class, 42703 ``UndefinedColumnError``, which stays outside this set
+#:   and remains loud and fatal - the expansion-then-contract contract
+#:   speaking.
 #:
 #: Deliberately NOT here: auth failures (``InvalidPasswordError`` et al.)
 #: are not transient for static DSNs and must not retry silently (the
@@ -79,6 +98,11 @@ _log: structlog.stdlib.BoundLogger = get_logger(__name__)
 #: loud and then deliberately fatal; statement-name errors (26000,
 #: 42P05) are bugs on a direct connection but pooler artifacts under
 #: transaction-mode pooling - see :data:`POOLED_TRANSIENT_PG_ERRORS`.
+#: The cached-plan errors (0A000) ARE here, unconditionally: unlike the
+#: statement-name family, a direct connection produces 0A000 in ordinary
+#: operation the moment a migration alters a table under a running pool
+#: (see the live-migration note above), and the driver has already
+#: cleared the caches the recovery needs.
 TRANSIENT_PG_ERRORS: tuple[type[BaseException], ...] = (
     TimeoutError,
     asyncpg.PostgresConnectionError,
@@ -91,6 +115,8 @@ TRANSIENT_PG_ERRORS: tuple[type[BaseException], ...] = (
     asyncpg.SerializationError,
     asyncpg.IdleSessionTimeoutError,
     asyncpg.IdleInTransactionSessionTimeoutError,
+    asyncpg.InvalidCachedStatementError,
+    asyncpg.OutdatedSchemaCacheError,
     asyncpg.InterfaceError,
     OSError,
 )
