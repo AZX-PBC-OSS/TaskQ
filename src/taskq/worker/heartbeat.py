@@ -320,6 +320,25 @@ _SELECT_STILL_HELD_SQL_TEMPLATE = (
 # produces that shape - the request-carrying writers stamp phase 1
 # together) stays reconcile-eligible on purpose: the walk's arms key on
 # the phase, so only a phase-carrying row is provably the ladder's.
+#
+# THE LEDGER GUARD (the NOT EXISTS): the registry is not the only proof
+# an attempt started - the attempt ledger is the durable one. The
+# isolate-self write (this module's shutdown path), the sweep's reclaim
+# INSERT and a retried terminal write each record (job_id, attempt)
+# BEFORE their row's charge is settled, and a body whose session died
+# under connection chaos drops its registry entry while that record
+# stands. Refunding such a row erases the executed attempt's charge
+# while the ledger keeps it: the counter and the ledger diverge (the
+# soak's reconciliation pin reads exactly that divergence as a
+# double-applied claim), and the next claim REVISITS the attempt number
+# the PK already carries - the collision the ATTEMPT_REFUND_SQL
+# fragment's safety argument explicitly excludes ("a non-terminal
+# release writes no job_attempts row"). The conjunct enforces the
+# fragment's premise with data: a row the ledger has recorded is a
+# started attempt, its charge stands, and the lease lapse - not this
+# refund - owns its reclaim. The designed refund (a claim whose reply
+# was lost before any actor, registry entry or ledger row existed)
+# matches nothing here and proceeds unchanged.
 _RECONCILE_LOST_CLAIMS_SQL_TEMPLATE = (
     'UPDATE "{schema}".jobs j SET '  # noqa: S608  # Why: schema validated against _IDENT_RE before interpolation; asyncpg has no parameter binding for identifiers (the still-held template's same shape).
     f"attempt = {ATTEMPT_REFUND_SQL}, started_at = NULL "
@@ -327,6 +346,10 @@ _RECONCILE_LOST_CLAIMS_SQL_TEMPLATE = (
     "AND j.cancel_phase = 0 "
     "AND NOT (j.id = ANY($2::uuid[])) "
     "AND j.started_at < clock_timestamp() - $3::interval "
+    "AND NOT EXISTS ("
+    '    SELECT 1 FROM "{schema}".job_attempts a'
+    "    WHERE a.job_id = j.id AND a.attempt = j.attempt"
+    ") "
     "RETURNING j.id"
 )
 _tick_duration = _meter.create_histogram(
