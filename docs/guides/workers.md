@@ -831,6 +831,67 @@ If a LOOP-scope `asyncpg.Connection` provider is registered but the two DSNs dif
 
 ---
 
+## Fork safety
+
+A process that forks while TaskQ's connections are live - a job body calling
+`os.fork()`, a `multiprocessing` fork context, a prefork server such as
+`gunicorn --preload` that built its TaskQ in the master and forks its
+workers - inherits every socket TaskQ owns: the asyncpg pools' sockets, the
+NOTIFY LISTEN connection, the Redis clients' sockets. Two processes sharing
+one TCP stream corrupt both protocol state machines silently (a parent
+reading the server's answer to the CHILD's statement as the answer to its
+own, a terminal ledger writable by both processes). TaskQ installs an
+`at-fork` guard and refuses the inherited wire.
+
+**The fork contract:** every wire resource TaskQ BUILDS records the process
+that created it. In a forked child, the first touch of one of those
+resources raises `taskq._forkguard.ForkedInheritedProcessError` - a typed
+refusal naming what was refused and what to do instead, BEFORE a byte
+reaches the shared socket. The parent keeps running; the worker's loops
+also consume an at-fork stamp and emit `fork-detected-in-worker-process`
+once per fork, so the log carries one honest signal that a fork happened
+and what it put at risk.
+
+**What is guarded** (the resources TaskQ builds, with the guard riding the
+`connection_class=` TaskQ passes itself):
+
+- every asyncpg pool and dedicated connection TaskQ opens - the query
+  methods, and the COPY / custom-codec methods too (those reach asyncpg's
+  protocol object directly and carry their own overrides);
+- every `redis.asyncio` client TaskQ builds - plain commands (`send_command`)
+  AND pipeline executes (redis-py's `Pipeline` packs all queued commands
+  and writes them with one direct `send_packed_command` call, which is
+  guarded separately);
+- the worker's own loops (the parent-side report above).
+
+**What is NOT guarded:**
+
+- A pool or connection the APPLICATION built itself BEFORE `TaskQ.open()` /
+  worker startup - plain `asyncpg.create_pool()` or
+  `redis.asyncio.from_url()` called without TaskQ's guarded connection
+  class - carries no guard, even in a process that also opened a TaskQ.
+  The guard cannot see sockets it did not create.
+- The OpenTelemetry exporters' background threads are not recoverable in a
+  forked child (the child's copies of the exporter threads do not exist;
+  its telemetry is lost or flushed through inherited pipes). Documented
+  Python behavior; open telemetry after the fork instead.
+
+**Remediation:**
+
+- A child that needs its own TaskQ opens one AFTER the fork (fresh
+  sockets, its own event loop).
+- A child that only runs another program keeps `subprocess.Popen`'s default
+  `close_fds=True`, which drops the inherited descriptors.
+- An application that pre-builds its own pools in a master process either
+  moves that creation after the fork, or passes the guard explicitly:
+  `connection_class=taskq._forkguard.guarded_connection_class()` for
+  asyncpg (and `guarded_redis_connection_class()` for redis clients). A
+  caller-supplied class of its own still wins everywhere TaskQ threads
+  `connection_class=` - the guard never silently wraps a class the caller
+  chose.
+
+---
+
 ## Until-idle mode
 
 For CLI tools and batch processing scripts that enqueue a finite set of jobs

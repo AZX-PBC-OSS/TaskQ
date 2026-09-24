@@ -221,6 +221,60 @@ def test_redis_class_is_pinned_for_the_wire_sites() -> None:
     assert issubclass(cls, redis_async.Connection)
 
 
+async def test_forked_child_is_refused_on_the_live_copy_wire(pg_dsn: str) -> None:
+    """The COPY bypass, made live: ``copy_from_query`` does not ride the
+    query methods - its body drives ``self._protocol.copy_out`` directly,
+    so a guard on the query methods alone leaves the COPY wire open to a
+    forked child. The child grabs the inherited LIVE connection (exercised
+    against real Postgres first) and runs a real COPY: the refusal must
+    fire before the protocol sees the COPY statement."""
+    install_fork_guard()
+    pool = await asyncpg.create_pool(
+        dsn=pg_dsn, min_size=1, max_size=2, connection_class=guarded_connection_class()
+    )
+    assert pool is not None
+    try:
+        conn = await pool.acquire()
+        assert await conn.fetchval("SELECT 1") == 1
+
+        r, w = os.pipe()
+        pid = os.fork()
+        if pid == 0:
+
+            async def child_copies() -> str:
+                chunks: list[bytes] = []
+                try:
+                    await conn.copy_from_query("SELECT 1", output=chunks.append)
+                    return "allowed"
+                except ForkedInheritedProcessError:
+                    return "refused"
+
+            verdict = "no-run"
+            try:
+                verdict = asyncio.run(child_copies())
+            except BaseException as exc:  # Why: the child reports any failure whole.
+                verdict = f"other:{type(exc).__name__}:{exc}"
+            os.write(w, verdict.encode())
+            os.close(w)
+            os.kill(os.getpid(), signal.SIGKILL)  # pragma: no cover - the child never returns
+        os.close(w)
+        with os.fdopen(r, "rb") as fh:
+            child_verdict = fh.read().decode()
+        os.waitpid(pid, 0)  # noqa: ASYNC222  # Why: the raw fork()'s child must be reaped before the parent's pool connection is reused; the pin is synchronous by construction.
+
+        assert child_verdict == "refused", (
+            f"the forked child ran a real COPY against live Postgres on the "
+            f"inherited connection and was not refused (verdict {child_verdict!r})"
+        )
+
+        # The parent's connection never noticed: the same checked-out
+        # connection still works, then goes home.
+        assert await conn.fetchval("SELECT 2") == 2
+        await pool.release(conn)
+    finally:
+        await pool.close()
+
+
 # ── 3: the full loop - fork in a job body, worker keeps consuming ─────
 
 

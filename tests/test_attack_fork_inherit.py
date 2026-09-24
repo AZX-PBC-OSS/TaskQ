@@ -23,8 +23,12 @@ The mechanism (``taskq._forkguard``) and its contract:
 These pins attack the guard itself: install idempotence, the child hook's
 pid refresh (a guard that forgets to re-cache the pid in the child passes
 the child as the owner), the parent stamp's exactly-once consume, the
-uninstalled no-op (processes that never opted in change nothing), and the
-wire classes' pass-through in the owning process.
+uninstalled no-op (processes that never opted in change nothing), the wire
+classes' pass-through in the owning process, and the two BYPASS FAMILIES
+review found in the first cut - redis-py's pipeline wire
+(``send_packed_command``, the path TaskQ's own progress publisher rides)
+and asyncpg's COPY / custom-codec methods (they reach the protocol object
+without touching the query methods).
 """
 
 import contextlib
@@ -275,17 +279,96 @@ def test_guarded_redis_class_refuses_in_the_child() -> None:
     cls = guarded_redis_connection_class()
     assert issubclass(cls, redis_async.Connection)
 
-    def child_tries_send() -> str:
+    def child_tries_send(entry_point: str) -> str:
         import asyncio
 
         try:
-            asyncio.run(cls.send_command(None))  # type: ignore[arg-type]  # Why: deliberate None self, exactly the connection pin's shape.
+            # None self: the connection pin's shape - the refusal must fire
+            # before the method body reaches self.
+            if entry_point == "send_command":
+                asyncio.run(cls.send_command(None))  # type: ignore[arg-type]  # Why: deliberate None self, exactly the connection pin's shape.
+            else:
+                asyncio.run(cls.send_packed_command(None, b"PING"))  # type: ignore[arg-type]  # Why: as above; the packed path is the pipeline wire.
         except ForkedInheritedProcessError:
             return "refused"
         return "allowed"
 
-    verdict = _run_in_forked_child(child_tries_send)
-    assert verdict == "refused", verdict
+    for entry_point in ("send_command", "send_packed_command"):
+        verdict = _run_in_forked_child(lambda ep=entry_point: child_tries_send(ep))
+        assert verdict == "refused", (
+            f"redis connection.{entry_point}: a forked child was not refused (got {verdict!r})"
+        )
+
+
+def test_forked_child_pipeline_execute_is_refused() -> None:
+    """The D1 pin: redis-py's Pipeline does NOT ride ``send_command``.
+    ``Pipeline.execute`` -> ``_execute_pipeline`` / ``_execute_transaction``
+    packs every queued command and calls
+    ``connection.send_packed_command(all_cmds)`` DIRECTLY (redis-py's
+    asyncio client) - exactly the wire path TaskQ's own progress publisher
+    rides (``progress/_publish.py`` builds a ``pipeline(transaction=False)``
+    and executes two PUBLISHes per event). A guard on ``send_command``
+    alone leaves the pipeline wire open: the forked child's progress
+    publish writes the parent's socket with no refusal. This pin runs a
+    REAL ``Pipeline.execute`` over an injected guarded connection (the
+    pooled-connection shape, unconnected and on an unroutable port so any
+    non-guard path fails fast): in a forked child the typed refusal must
+    fire before the packed bytes leave the process."""
+    install_fork_guard()
+    import asyncio
+
+    from redis.asyncio.client import Pipeline
+    from redis.asyncio.connection import ConnectionPool
+
+    conn_cls = guarded_redis_connection_class()
+
+    class _NoReleasePool(ConnectionPool):
+        # Why: the pipeline's reset() releases the connection it never
+        # FETCHED from this pool (the pin injects it), and the real
+        # release() would raise on a connection it does not track - noise
+        # that would mask the refusal this pin exists to observe.
+        async def release(self, connection: object) -> None:  # type: ignore[override]  # Why: the base pools the parameter; the no-op does not care.
+            return None
+
+    async def run_pipeline() -> str:
+        pipe = Pipeline(
+            _NoReleasePool(host="127.0.0.1", port=1),
+            response_callbacks={},
+            transaction=False,
+            shard_hint=None,
+        )
+        # The inherited shape: a connection built in the PARENT, handed to
+        # the pipeline the way a pooled connection would be - never
+        # connected here, so the guard must fire before any socket exists.
+        pipe.connection = conn_cls(host="127.0.0.1", port=1)
+        pipe.publish("the-channel", "payload")
+        pipe.publish("the-channel", "payload")
+        try:
+            await pipe.execute()
+            return "allowed"
+        except ForkedInheritedProcessError:
+            return "refused"
+
+    # Owner: pass-through. The unroutable port surfaces as a connection
+    # error - the one outcome forbidden in the owner is the child's refusal.
+    with pytest.raises(
+        Exception
+    ) as owner_exc:  # Why: deliberate wide net; the assertion below narrows it.
+        asyncio.run(run_pipeline())
+    assert not isinstance(owner_exc.value, ForkedInheritedProcessError), (
+        "the guard refused the OWNING process's pipeline: an inverted or stale pid check"
+    )
+
+    # Child: the pipeline execute is refused, before a packed byte moves.
+    def child_executes_pipeline() -> str:
+        return asyncio.run(run_pipeline())
+
+    verdict = _run_in_forked_child(child_executes_pipeline)
+    assert verdict == "refused", (
+        f"a forked child ran a pipeline execute (the wire path TaskQ's own "
+        f"progress publisher uses) and was NOT refused (got {verdict!r}): "
+        f"the packed bytes reached the inherited socket"
+    )
 
 
 def test_wire_calls_pass_through_in_the_owner() -> None:
@@ -309,6 +392,65 @@ def test_wire_calls_pass_through_in_the_owner() -> None:
     assert not isinstance(exc_info.value, ForkedInheritedProcessError), (
         "the guard refused the OWNING process: an inverted or stale pid check"
     )
+
+
+_COPY_AND_CODEC_ENTRIES: list[tuple[str, tuple[object, ...], dict[str, object]]] = [
+    # The asyncpg wire entries whose bodies do NOT ride the query methods:
+    # the COPY methods drive ``self._protocol.copy_in/copy_out`` directly,
+    # and the codec methods' type introspection goes through the PRIVATE
+    # ``_execute`` - none of the query-method overrides sees them.
+    ("copy_from_table", ("tbl",), {"output": lambda chunk: None}),
+    ("copy_from_query", ("SELECT 1",), {"output": lambda chunk: None}),
+    ("copy_to_table", ("tbl",), {"source": b"data"}),
+    ("copy_records_to_table", ("tbl",), {"records": []}),
+    ("set_type_codec", ("typename",), {"encoder": lambda v: v, "decoder": lambda v: v}),
+    ("reset_type_codec", ("typename",), {}),
+    ("set_builtin_type_codec", ("typename",), {"codec_name": "int"}),
+]
+
+
+def test_guarded_wire_refuses_on_the_copy_and_codec_entries() -> None:
+    """The D2 pin: asyncpg's COPY and custom-codec methods bypass the query
+    methods (direct ``self._protocol.copy_in/copy_out`` calls, and the
+    codec introspection's private ``_execute``), so without their own
+    overrides they are wire entries a forked child can use unrefused. The
+    pin drives EVERY entry through the guarded class (None self: any use
+    past the guard would explode inside asyncpg long after the refusal
+    must already have fired)."""
+    install_fork_guard()
+    conn_cls = guarded_connection_class()
+    import asyncio
+
+    async def drive(entry: tuple[str, tuple[object, ...], dict[str, object]]) -> None:
+        method, args, kwargs = entry
+        await getattr(conn_cls, method)(None, *args, **kwargs)  # type: ignore[arg-type]  # Why: deliberate None self - the pin proves the guard fires before the body.
+
+    # Owner: pass-through - the None self explodes inside asyncpg
+    # (TypeError at binding, AttributeError at attribute access), it is not
+    # refused.
+    for entry in _COPY_AND_CODEC_ENTRIES:
+        with pytest.raises(
+            Exception
+        ) as owner_exc:  # Why: deliberate wide net; the assertion below narrows it.
+            asyncio.run(drive(entry))
+        assert not isinstance(owner_exc.value, ForkedInheritedProcessError), (
+            f"{entry[0]}: the guard refused the OWNING process: an inverted or stale pid check"
+        )
+
+    # Child: every entry refused, before any wire byte.
+    def child_tries(entry: tuple[str, tuple[object, ...], dict[str, object]]) -> str:
+        try:
+            asyncio.run(drive(entry))
+        except ForkedInheritedProcessError:
+            return "refused"
+        return "allowed"
+
+    for entry in _COPY_AND_CODEC_ENTRIES:
+        verdict = _run_in_forked_child(lambda e=entry: child_tries(e))
+        assert verdict == "refused", (
+            f"{entry[0]}: a forked child reached an asyncpg COPY/codec wire "
+            f"entry and was NOT refused (got {verdict!r})"
+        )
 
 
 def test_transaction_default_kwargs_forward_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -32,14 +32,26 @@ THE CONTRACT (fail loud at the wire, report loud in the parent):
 
 1. **Child side - refuse the inherited wire.** TaskQ-built resources record
    the process that created them. Every wire entry point (each query method
-   of a TaskQ-built asyncpg connection, each Redis command, each long-lived
-   worker loop) checks the creating pid first. In a forked child the check
-   raises :class:`ForkedInheritedProcessError` naming what was refused and
-   what to do instead, BEFORE a single byte reaches the shared socket. The
-   child that only ``exec``\\ s (``subprocess.Popen``, the default
-   ``close_fds=True``) never runs Python again and is unaffected; a child
-   that continues in Python gets a typed refusal instead of a corrupted
-   stream.
+   of a TaskQ-built asyncpg connection - the COPY and custom-codec methods
+   included, they reach the protocol object directly and get their own
+   overrides - each Redis command and each pipeline execute, each
+   long-lived worker loop) checks the creating pid first. In a forked
+   child the check raises :class:`ForkedInheritedProcessError` naming what
+   was refused and what to do instead, BEFORE a single byte reaches the
+   shared socket. The child that only ``exec``\\ s (``subprocess.Popen``,
+   the default ``close_fds=True``) never runs Python again and is
+   unaffected; a child that continues in Python gets a typed refusal
+   instead of a corrupted stream.
+
+   The negative scope, stated plainly: the guard rides only the resources
+   TASKQ BUILDS (via its ``connection_class=``). A pool or connection the
+   EMBEDDING APPLICATION built with plain ``asyncpg.create_pool()`` or
+   ``redis.asyncio.from_url()`` BEFORE calling :meth:`taskq.TaskQ.open` -
+   without passing TaskQ's guarded connection class - carries no guard, no
+   matter that the same process also opened a TaskQ. The guard cannot see
+   sockets it did not create; the operator docs carry the remediation
+   (import the guard and pass the class, or open those resources after
+   the fork).
 
 2. **Parent side - the fork is reported, not silent.** The same ``at-fork``
    hook stamps the PARENT after every fork it performs. The worker's loops
@@ -352,6 +364,176 @@ def guarded_connection_class() -> "type[Any]":
             _assert("asyncpg connection.remove_listener")
             await super().remove_listener(channel, callback)  # type: ignore[arg-type]  # Why: same stub over-narrowing as add_listener.
 
+        # The COPY and codec families: their bodies reach the protocol
+        # object directly (self._protocol.copy_in/copy_out, or the private
+        # _execute behind the type introspection) and never touch the
+        # public query methods above, so without their own overrides they
+        # are wire entries a forked child can use unrefused.
+
+        async def copy_from_table(
+            self,
+            table_name: str,
+            *,
+            output: Any,
+            columns: Any = None,
+            schema_name: Any = None,
+            timeout: Any = None,  # noqa: ASYNC109  # Why: mirrors asyncpg's own signature; the override must match it exactly, the kwarg is forwarded to super().
+            format: Any = None,  # Why: mirrors asyncpg.Connection.copy_from_table's own parameter name; the override must bind it exactly.
+            oids: Any = None,
+            delimiter: Any = None,
+            null: Any = None,
+            header: Any = None,
+            quote: Any = None,
+            escape: Any = None,
+            force_quote: Any = None,
+            encoding: Any = None,
+        ) -> Any:
+            _assert("asyncpg connection.copy_from_table (the COPY wire)")
+            return await super().copy_from_table(
+                table_name,
+                output=output,
+                columns=columns,
+                schema_name=schema_name,
+                timeout=timeout,
+                format=format,
+                oids=oids,
+                delimiter=delimiter,
+                null=null,
+                header=header,
+                quote=quote,
+                escape=escape,
+                force_quote=force_quote,
+                encoding=encoding,
+            )
+
+        async def copy_from_query(
+            self,
+            query: str,
+            *args: Any,
+            output: Any,
+            timeout: Any = None,  # noqa: ASYNC109  # Why: mirrors asyncpg's own signature; the override must match it exactly, the kwarg is forwarded to super().
+            format: Any = None,  # Why: mirrors asyncpg.Connection.copy_from_query's own parameter name.
+            oids: Any = None,
+            delimiter: Any = None,
+            null: Any = None,
+            header: Any = None,
+            quote: Any = None,
+            escape: Any = None,
+            force_quote: Any = None,
+            encoding: Any = None,
+        ) -> Any:
+            _assert("asyncpg connection.copy_from_query (the COPY wire)")
+            return await super().copy_from_query(
+                query,
+                *args,
+                output=output,
+                timeout=timeout,
+                format=format,
+                oids=oids,
+                delimiter=delimiter,
+                null=null,
+                header=header,
+                quote=quote,
+                escape=escape,
+                force_quote=force_quote,
+                encoding=encoding,
+            )
+
+        async def copy_to_table(
+            self,
+            table_name: str,
+            *,
+            source: Any,
+            columns: Any = None,
+            schema_name: Any = None,
+            timeout: Any = None,  # noqa: ASYNC109  # Why: mirrors asyncpg's own signature; the override must match it exactly, the kwarg is forwarded to super().
+            format: Any = None,  # Why: mirrors asyncpg.Connection.copy_to_table's own parameter name.
+            oids: Any = None,
+            freeze: Any = None,
+            delimiter: Any = None,
+            null: Any = None,
+            header: Any = None,
+            quote: Any = None,
+            escape: Any = None,
+            force_quote: Any = None,
+            force_not_null: Any = None,
+            force_null: Any = None,
+            encoding: Any = None,
+            where: Any = None,
+        ) -> Any:
+            _assert("asyncpg connection.copy_to_table (the COPY wire)")
+            return await super().copy_to_table(
+                table_name,
+                source=source,
+                columns=columns,
+                schema_name=schema_name,
+                timeout=timeout,
+                format=format,
+                oids=oids,
+                freeze=freeze,
+                delimiter=delimiter,
+                null=null,
+                header=header,
+                quote=quote,
+                escape=escape,
+                force_quote=force_quote,
+                force_not_null=force_not_null,
+                force_null=force_null,
+                encoding=encoding,
+                where=where,
+            )
+
+        async def copy_records_to_table(
+            self,
+            table_name: str,
+            *,
+            records: Any,
+            columns: Any = None,
+            schema_name: Any = None,
+            timeout: Any = None,  # noqa: ASYNC109  # Why: mirrors asyncpg's own signature; the override must match it exactly, the kwarg is forwarded to super().
+            where: Any = None,
+        ) -> Any:
+            _assert("asyncpg connection.copy_records_to_table (the COPY wire)")
+            return await super().copy_records_to_table(
+                table_name,
+                records=records,
+                columns=columns,
+                schema_name=schema_name,
+                timeout=timeout,
+                where=where,
+            )
+
+        async def set_type_codec(
+            self,
+            typename: str,
+            *,
+            schema: Any = "public",
+            encoder: Any,
+            decoder: Any,
+            format: Any = "text",  # Why: mirrors asyncpg.Connection.set_type_codec's own parameter name.
+        ) -> None:
+            _assert("asyncpg connection.set_type_codec (the codec introspection wire)")
+            await super().set_type_codec(
+                typename, schema=schema, encoder=encoder, decoder=decoder, format=format
+            )
+
+        async def reset_type_codec(self, typename: str, *, schema: Any = "public") -> None:
+            _assert("asyncpg connection.reset_type_codec (the codec introspection wire)")
+            await super().reset_type_codec(typename, schema=schema)
+
+        async def set_builtin_type_codec(
+            self,
+            typename: str,
+            *,
+            schema: Any = "public",
+            codec_name: Any,
+            format: Any = None,  # Why: mirrors asyncpg.Connection.set_builtin_type_codec's own parameter name.
+        ) -> None:
+            _assert("asyncpg connection.set_builtin_type_codec (the codec introspection wire)")
+            await super().set_builtin_type_codec(
+                typename, schema=schema, codec_name=codec_name, format=format
+            )
+
     _guarded_connection_class = GuardedConnection
     return GuardedConnection
 
@@ -369,10 +551,16 @@ def guarded_redis_connection_class() -> "type[Any]":
 
     Passed as ``connection_class=`` to every Redis client TaskQ builds (the
     worker's terminal-publish and rate-limit clients, the jobs client, the
-    credential-provider factory). redis-py funnels every command through
-    ``send_command`` on a pooled connection, so one override refuses the
-    whole client surface in a forked child, before a byte reaches the
-    inherited socket.
+    credential-provider factory). Two overrides because redis-py does NOT
+    funnel everything through one method: plain commands leave through
+    ``send_command``, but a pipeline's ``execute`` packs every queued
+    command and writes them with ONE direct
+    ``connection.send_packed_command(all_cmds)`` (``Pipeline
+    ._execute_pipeline`` and ``._execute_transaction`` never call
+    ``send_command``) - the shape TaskQ's own progress publisher rides
+    (``progress/_publish.py`` builds a ``pipeline(transaction=False)`` and
+    executes two PUBLISHes). Both entries are guarded, so a forked child's
+    pipeline execute is refused before a byte reaches the inherited socket.
     """
     from redis.asyncio import Connection as RedisConnection
 
@@ -383,11 +571,15 @@ def guarded_redis_connection_class() -> "type[Any]":
     _base = RedisConnection
 
     class GuardedRedisConnection(_base):  # type: ignore[misc, valid-type]  # Why: redis-py types Connection without a parameteriser the runtime subclass needs.
-        """Redis connection whose command entry refuses a forked child."""
+        """Redis connection whose command writes refuse a forked child."""
 
         async def send_command(self, *args: object, **kwargs: object) -> None:
             _assert("redis connection.send_command")
             await super().send_command(*args, **kwargs)  # type: ignore[arg-type]  # Why: redis-py's own stubs type send_command loosely; the delegated call is the base's exact signature at runtime.
+
+        async def send_packed_command(self, *args: object, **kwargs: object) -> None:
+            _assert("redis connection.send_packed_command (the pipeline wire)")
+            await super().send_packed_command(*args, **kwargs)  # type: ignore[arg-type]  # Why: redis-py's stubs type the packed path loosely; the delegate is the base's exact signature at runtime.
 
     _guarded_redis_connection_class = GuardedRedisConnection
     return GuardedRedisConnection
