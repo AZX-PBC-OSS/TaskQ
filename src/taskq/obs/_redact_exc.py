@@ -693,7 +693,11 @@ def safe_repr(exc: BaseException) -> str:
     """
     try:
         return repr(exc)
-    except Exception:
+    # Why BaseException: same reasoning as :func:`safe_str` directly above -
+    # a hostile __repr__ may raise any BaseException subclass, and this
+    # helper is a pure string render, never an await point, so a swallowed
+    # CancelledError cannot strand anything.
+    except BaseException:
         try:
             name = type(exc).__name__
         except BaseException:

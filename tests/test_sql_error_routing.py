@@ -76,6 +76,13 @@ class _BaseExceptionShapedStr(Exception):  # noqa: N818  # Why: the name is the 
         raise _HostileBase("__str__ is a BaseException-shaped lie")
 
 
+class _BaseExceptionShapedRepr(Exception):  # noqa: N818  # Why: the name is the pin's mutation probe.
+    """An exception whose ``__repr__`` raises a BaseException subclass."""
+
+    def __repr__(self) -> str:
+        raise _HostileBase("__repr__ is a BaseException-shaped lie")
+
+
 class _MetaNameRaises(type):
     """A metaclass whose ``__name__`` property raises: the safe_repr
     fallback's own interpolation is then uncontrolled input too."""
@@ -87,13 +94,15 @@ class _MetaNameRaises(type):
 
 class _DoublyHostile(Exception, metaclass=_MetaNameRaises):  # noqa: N818  # Why: same probe shape, every channel hostile at once.
     """Every rendering channel hostile at once: the metaclass ``__name__``
-    raises, and so do ``__str__`` and ``__repr__``."""
+    raises, and so do ``__str__`` and ``__repr__`` -- the ``__repr__``
+    raising a BaseException SUBCLASS, the escape shape an ``except
+    Exception`` guard lets through."""
 
     def __str__(self) -> str:
         raise TypeError("__str__ is a lie")
 
     def __repr__(self) -> str:
-        raise ValueError("__repr__ is a lie")
+        raise _HostileBase("__repr__ is a BaseException-shaped lie")
 
 
 def _worker_settings() -> WorkerSettings:
@@ -341,13 +350,32 @@ def test_safe_str_survives_a_base_exception_shaped_str() -> None:
     assert safe_str(_BaseExceptionShapedStr()) == "<exception str() failed>"
 
 
+def test_safe_repr_survives_a_base_exception_shaped_repr() -> None:
+    """A ``__repr__`` raising a BaseException SUBCLASS must degrade to the
+    fallback marker, not convert inside the guard into an uncaught
+    KeyboardInterrupt-shaped escape. :func:`safe_repr` is the same defect
+    shape as :func:`safe_str`, one level deeper, so the guard catches
+    BaseException for the same reason: a pure string render, never an
+    await point."""
+    from taskq.obs import safe_repr
+
+    rendered = "<no call>"
+    try:
+        rendered = safe_repr(_BaseExceptionShapedRepr())
+    # Why: the pin asserts NO escape; any escape is captured and asserted on as text.
+    except BaseException as trapped:
+        rendered = f"ESCAPED: {type(trapped).__name__}"
+    assert "repr() failed" in rendered, rendered
+
+
 def test_doubly_hostile_exception_degrades_through_both_guards() -> None:
     """The every-channel-hostile shape: a metaclass ``__name__`` that raises
     (making safe_repr's fallback interpolation itself a live raise) plus a
-    hostile ``__str__`` and a hostile ``__repr__``. Both guards return
-    their fallback string; neither may raise anything. The capture keeps a
-    live escape out of pytest's own renderer, which cannot saferepr this
-    shape (its reporter would INTERNALERROR instead of reporting)."""
+    hostile ``__str__`` and a hostile ``__repr__`` raising a BaseException
+    SUBCLASS. Both guards return their fallback string; neither may raise
+    anything. The capture keeps a live escape out of pytest's own renderer,
+    which cannot saferepr this shape (its reporter would INTERNALERROR
+    instead of reporting)."""
     from taskq.obs import safe_repr, safe_str
 
     exc = _DoublyHostile()
