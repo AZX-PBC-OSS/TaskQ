@@ -195,6 +195,7 @@ def _make_record() -> _FakeRecord:
         retry_backoff="exponential",
         retry_jitter=0.1,
         assignment_routed=False,
+        claim_epoch=0,
     )
 
 
