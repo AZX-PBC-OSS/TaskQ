@@ -10,6 +10,7 @@ Binding the production predicate here rather than restating it keeps the
 stubs from drifting into their own definition of what leading means.
 """
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -41,4 +42,11 @@ def stub_deps(stub: SimpleNamespace, *, term: LeaderTerm | None = None) -> Worke
         stub.leading = lambda: bool(leading(stub))
         stub.lead = lambda new_term: lead(stub, new_term)
         stub.stop_leading = lambda: stop_leading(stub)
+        # The election loop reads the stop signal every iteration (the
+        # shutdown-ordering contract's park: leader.py's _stopping). A
+        # stub driving that loop must carry it, defaulting to "no stop
+        # in progress" - without it the loop dies on AttributeError
+        # before its first attempt.
+        if not hasattr(stub, "shutdown_start_event"):
+            stub.shutdown_start_event = asyncio.Event()
     return cast(WorkerDeps, stub)

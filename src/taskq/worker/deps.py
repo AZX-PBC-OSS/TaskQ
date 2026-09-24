@@ -353,6 +353,15 @@ class WorkerDeps:
     # start or the ShutdownWatchdog observing shutdown_event, whichever
     # is first). Feeds the /ready shutdown_elapsed_seconds surface.
     shutdown_started_at: float | None = None
+    # Set by orchestrate_shutdown at shutdown START, BEFORE the DRAINING
+    # phase touches any row - earlier and narrower than the worker-wide
+    # shutdown_event, which does not fire until every phase has run. This
+    # is the signal the leader runtime's election loop obeys: a stopping
+    # worker parks (no attempts, no renewals), hands a held lease over
+    # immediately (the fenced resign at shutdown start, while this pod
+    # still drains), and ignores the resign-broadcast wake. The
+    # shutdown-ordering contract lives in leader.py's doc header.
+    shutdown_start_event: asyncio.Event = field(default_factory=asyncio.Event)
     heartbeat_failures: int = 0
     disowned_jobs: set[UUID] = field(default_factory=set[UUID])
     """Jobs this worker has finished with but could not record an outcome

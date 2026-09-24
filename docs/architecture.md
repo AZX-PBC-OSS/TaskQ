@@ -1053,9 +1053,14 @@ outlives the row behind it (a candidate dead between its lock attempt and its
 election write, a departed leader's lingering session) blocks nothing.
 Recovery from a holder that died without closing its session depends only on
 the lease, and so needs no privilege beyond `UPDATE` on the row. A graceful
-stop hands over faster than the lapse: the leader's teardown resigns the row,
-so a follower's next election cycle already finds it free. Failover from a
-holder that dies without a FIN is bounded by `leader_lease +
+stop hands over faster than the lapse, and before any of the work it drains:
+the shutdown orchestrator fires the stop signal before its first phase
+touches a row, the leader runtime's election loop parks on it (no attempts,
+no renewals for the rest of the shutdown), and a leader hands the row back
+right there - the fenced resign at shutdown START, over a connection that
+survives the later close. A follower's next election cycle (or the resign
+broadcast wake) elects while the stopping pod is still draining its jobs.
+Failover from a holder that dies without a FIN is bounded by `leader_lease +
 heartbeat_interval` plus one round trip.
 
 A pod that keeps *winning* the row but cannot finish the assume (the

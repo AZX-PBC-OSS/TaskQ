@@ -19,8 +19,10 @@ to pods from releases that only understand the lock; it is never required,
 never waited on, and its absence never gates or costs the role.
 
 Failover SLA:
-  Graceful stop      ≤ heartbeat_interval + one round trip (the resign
-                       deletes the row; the next election wins it)
+  Graceful stop      ≤ one round trip from the stop signal (the
+                       shutdown-ordering contract below: the resign is
+                       the FIRST act of the shutdown, not its last, so
+                       the drain adds no latency to the handover)
   Worker killed      ≤ leader_lease + heartbeat_interval + one round trip
   Silent leader      ≤ leader_lease + heartbeat_interval + one round trip
   Won, unassumable   ≤ leader_lease + heartbeat_interval + one failing
@@ -32,6 +34,39 @@ Failover SLA:
   Partition detect   ≤ watchdog_interval + heartbeat_interval + 2 s
   PG failover        ≤ heartbeat_interval
   Watchdog detect    ≤ watchdog_interval + heartbeat_interval
+
+Shutdown ordering contract (the no-leadership-while-stopping invariant):
+a worker that is shutting down NEVER wins, holds, or renews the leader
+lease, and a leader that begins shutting down hands the lease over at
+shutdown START, so a rolling deploy never has a leaderless window and
+never sees a dying pod win or hold leadership.
+
+1. ``orchestrate_shutdown`` sets ``deps.shutdown_start_event`` BEFORE the
+   DRAINING phase touches any row. That event is the stop signal this
+   runtime obeys, earlier and narrower than the worker-wide
+   ``shutdown_event``, which does not fire until every phase has run.
+2. The election loop parks the moment the stop signal is observed: no
+   attempts and no renewals for the rest of the shutdown, however long
+   the drain runs. It drops its liveness registration when it parks
+   (detector 2 must not trip on a loop that stopped by design) and
+   ignores the resign-broadcast wake (:meth:`wake_election` no-ops).
+3. A pod that is LEADING when the stop lands hands the lease over at
+   shutdown START: demote first (the flag drops before any await), then
+   the fenced resign over ``leader_conn``, which is still open - the
+   orchestrator closes it only after the phases. The successor's
+   election tick (or the broadcast wake) elects while THIS pod is still
+   draining its jobs. The teardown resign in ``run()``'s finally
+   remains as the backstop for exits that never run the orchestrator
+   (a sibling crash, a bare cancel of ``_main``).
+4. An elect statement that was in flight when the stop landed and WON
+   anyway is handed straight back: fenced resign over the conn the
+   elect just used, and the assume path never runs - the monitor/cron
+   conns do not open, ``lead()`` never sets the flag, so no leader-gated
+   loop, sweep or cron tick included, can begin.
+5. The drain does not depend on this pod remaining leader: every phase
+   of ``orchestrate_shutdown`` writes through the dispatcher pool and
+   the backend with no leadership premise, and the successor covers the
+   maintenance sweeps from its first tick.
 """
 
 import asyncio
@@ -348,6 +383,79 @@ class MaintenanceLeader:
         # emitted on the first refusal and re-armed only when a probe
         # succeeds again (the grant appearing IS a new operational fact).
         self._advisory_lock_refused = False
+        # The election-wake seam: the resign broadcast (the leadership
+        # channel's NOTIFY when a leader hands the lease over) lands here
+        # so a follower attempts NOW instead of on its next heartbeat
+        # tick. Consumed by the loop's tick wait; a stopping worker
+        # ignores it (see ``wake_election``) - the shutdown-ordering
+        # contract in this module's doc header.
+        self._wake_event = asyncio.Event()
+
+    def _stopping(self) -> bool:
+        """Whether this worker's shutdown has begun.
+
+        The stop signal is ``deps.shutdown_start_event``, set by the
+        shutdown orchestrator BEFORE its first phase touches a row -
+        earlier and narrower than the ``shutdown`` event the loops exit
+        on, which does not fire until the phases complete. Everything
+        the no-leadership-while-stopping invariant needs hangs off this
+        one predicate: the election park, the mid-elect hand-back, the
+        wake refusal.
+        """
+        return self._deps.shutdown_start_event.is_set()
+
+    def wake_election(self) -> None:
+        """Request an immediate election attempt (the resign-broadcast seam).
+
+        A hint, never a command: the loop still runs every gate it runs
+        on its ordinary cadence. A worker whose shutdown has begun
+        IGNORES the wake - no attempt, no win, no lease - the shutdown
+        ordering contract in this module's doc header. Safe to call from
+        any task on this loop; the wake is consumed by the election
+        loop's tick wait.
+        """
+        if self._stopping():
+            log.debug(
+                "election-wake-ignored-stopping",
+                kind="election_wake_ignored_stopping",
+                worker_id=str(self._worker_id),
+            )
+            return
+        self._wake_event.set()
+
+    async def _wait_next_tick(self, seconds: float) -> None:
+        """Wait out one election tick, cut short by the stop signal or a wake.
+
+        Why the waits race at all: the stop handover is due at shutdown
+        START (before the job drain), and a follower woken by the resign
+        broadcast must attempt now, not a heartbeat later - a plain
+        ``asyncio.sleep`` would charge both to the tick cadence. The
+        wait tasks are always reaped (the ``_watchdog_loop`` idiom), so
+        a wake racing the stop leaks nothing. The wake is consumed even
+        when the stop wins the race: a stale wake must not outlive the
+        tick it interrupted.
+        """
+        stop = self._deps.shutdown_start_event
+        wake = self._wake_event
+        if stop.is_set():
+            return
+        if wake.is_set():
+            wake.clear()
+            return
+        sleep_task = asyncio.create_task(asyncio.sleep(seconds))
+        stop_task = asyncio.create_task(stop.wait())
+        wake_task = asyncio.create_task(wake.wait())
+        try:
+            await asyncio.wait(
+                {sleep_task, stop_task, wake_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            for task in (sleep_task, stop_task, wake_task):
+                if not task.done():
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+            wake.clear()
 
     def _demote(self) -> None:
         """Stop being the leader, synchronously and before anything can await.
@@ -771,6 +879,58 @@ class MaintenanceLeader:
         )
         return True
 
+    async def _hand_over_at_stop(self) -> None:
+        """The early handover: resign at shutdown START, before the job drain.
+
+        The shutdown-ordering contract's leading branch (this module's
+        doc header): a leader that begins shutting down does not carry
+        the lease through the drain - today's shape resigned in
+        ``run()``'s teardown, AFTER every phase, so a rolling deploy's
+        successor waited out the whole drain window. Demote comes first
+        (the ``_demote`` rule: the flag drops before anything can
+        await), then the fenced resign over ``leader_conn``, which is
+        still open here: the orchestrator closes it only after the
+        phases, so the write rides a conn that survives the close.
+
+        Idempotent across the park's retries: once a resign DELETES the
+        row the fence is cleared (there is nothing left of ours to hand
+        back), and a fenced no-op (a successor already holds the row)
+        leaves the fence in place only until the next retry confirms
+        the row is not ours to delete. No retry can ever touch a
+        successor's term: the fence is ``(worker_id, elected_at)``.
+        """
+        if not (
+            self._deps.leading()
+            or self._deps.leader_term is not None
+            or self._resign_fence is not None
+        ):
+            return
+        self._demote()
+        if await self.resign():
+            self._resign_fence = None
+
+    async def _resign_won_lease(self, elected_at: datetime, attempt_started: float) -> None:
+        """Hand back a lease this pod won but must not hold: the stop race.
+
+        The elect statement was in flight when the stop signal landed
+        and won anyway - the row now carries this pod's name, and every
+        peer's lapse predicate is re-falsified by it until it is handed
+        back (the same shape ``_hand_back_unassumable_lease`` exists
+        for). The resign rides ``deps.leader_conn``, the conn the
+        winning elect just used, before the loop parks and the
+        orchestrator's later close takes the conn down. The assume path
+        never starts: no monitor/cron conns, no ``lead()``, no
+        leader-gated sweep, the lease is never held across the drain.
+        """
+        self._resign_fence = LeaderTerm(
+            elected_at=elected_at,
+            trusted_until=attempt_started
+            + self._deps.settings.resolved_leader_lease
+            - _LEADER_TRUST_MARGIN_SECS,
+        )
+        if await self.resign():
+            self._resign_fence = None
+
     async def _hand_back_unassumable_lease(self, *, reason: str) -> None:
         """Give back a lease this pod won but could not assume.
 
@@ -843,13 +1003,38 @@ class MaintenanceLeader:
         elect_sql, renew_sql, _ = build_leader_lease_sql(self._deps.settings.schema_name)
         pre_lease_slack = _PRE_LEASE_STALE_HEARTBEATS * self._deps.settings.heartbeat_interval
         while not shutdown.is_set():
+            # The shutdown-ordering contract, checked before anything
+            # else this loop can do: once the stop signal is observed
+            # this loop NEVER attempts the election again - no elect, no
+            # renew, however long the drain runs. The handover (below)
+            # is the loop's last act of leadership; the liveness
+            # registration is dropped first so detector 2 does not trip
+            # on a loop that stopped by design mid-shutdown.
+            if self._stopping():
+                self._deps.liveness.forget("leader.election")
+                await self._hand_over_at_stop()
+                if self._resign_fence is None:
+                    # The handover landed (or there was never a term of
+                    # ours): park attempt-free for the rest of the
+                    # shutdown. A wake from the resign broadcast finds
+                    # nothing here to wake into - no attempt can run.
+                    await shutdown.wait()
+                else:
+                    # The resign could not reach the database; retry it
+                    # on the tick cadence, still fenced, still
+                    # attempt-free. A plain sleep: the stop-racing wait
+                    # would return instantly now the stop is set, and a
+                    # failed resign has no conn to wait on, so this is
+                    # the only thing pacing the retry.
+                    await asyncio.sleep(self._deps.settings.heartbeat_interval)
+                continue
             self._deps.liveness.tick(
                 "leader.election", period=self._deps.settings.heartbeat_interval
             )
             term = self._deps.leader_term
             if self._deps.is_leader.is_set() and term is not None:
                 if await self._renew_term(term, renew_sql, guard):
-                    await asyncio.sleep(self._deps.settings.heartbeat_interval)
+                    await self._wait_next_tick(self._deps.settings.heartbeat_interval)
                 continue
             if self._deps.is_leader.is_set():
                 # The flag without a term is not a state this loop can renew
@@ -876,7 +1061,7 @@ class MaintenanceLeader:
                         error=repr(exc),
                         error_type=type(exc).__name__,
                     )
-                    await asyncio.sleep(self._deps.settings.heartbeat_interval)
+                    await self._wait_next_tick(self._deps.settings.heartbeat_interval)
                     continue
             attempt_started = asyncio.get_running_loop().time()
             try:
@@ -897,7 +1082,7 @@ class MaintenanceLeader:
                 return
             except TRANSIENT_PG_ERRORS as exc:
                 await self._election_attempt_failed(exc)
-                await asyncio.sleep(self._deps.settings.heartbeat_interval)
+                await self._wait_next_tick(self._deps.settings.heartbeat_interval)
                 continue
             except Exception as exc:
                 # Backstop (see _transient.py): tolerated + logged a few
@@ -905,9 +1090,22 @@ class MaintenanceLeader:
                 # transient path since conn state is unknown.
                 await self._election_attempt_failed(exc)
                 guard.unexpected(exc)
-                await asyncio.sleep(self._deps.settings.heartbeat_interval)
+                await self._wait_next_tick(self._deps.settings.heartbeat_interval)
                 continue
             if isinstance(elected_at, datetime):
+                # The stop race: this elect was in flight when the stop
+                # signal landed and WON anyway. The lease is never held
+                # across the drain - hand the row straight back, fenced,
+                # over the conn the elect just used, and never run the
+                # assume path below (no monitor/cron conns, no lead(),
+                # no leader-gated sweep can begin).
+                if self._stopping():
+                    await self._resign_won_lease(elected_at, attempt_started)
+                    # Not break: the top-of-loop gate is the one park,
+                    # and it drops the liveness registration and retries
+                    # the resign if this one could not reach the
+                    # database.
+                    continue
                 # The assume path (courtesy lock probe, dedicated-conn
                 # opens) runs inside the same error boundary as the
                 # election statement: nothing it raises may escape into
@@ -917,15 +1115,15 @@ class MaintenanceLeader:
                     assumed = await self._assume_leadership(elected_at, attempt_started)
                 except TRANSIENT_PG_ERRORS as exc:
                     await self._election_attempt_failed(exc, won_row=True)
-                    await asyncio.sleep(self._deps.settings.heartbeat_interval)
+                    await self._wait_next_tick(self._deps.settings.heartbeat_interval)
                     continue
                 except Exception as exc:
                     await self._election_attempt_failed(exc, won_row=True)
                     guard.unexpected(exc)
-                    await asyncio.sleep(self._deps.settings.heartbeat_interval)
+                    await self._wait_next_tick(self._deps.settings.heartbeat_interval)
                     continue
                 if not assumed:
-                    await asyncio.sleep(self._deps.settings.heartbeat_interval)
+                    await self._wait_next_tick(self._deps.settings.heartbeat_interval)
                     continue
             else:
                 # A lost election is the observable end of any
@@ -948,7 +1146,7 @@ class MaintenanceLeader:
             # streak resets. (The failure paths above continue earlier,
             # deliberately without resetting.)
             guard.ok()
-            await asyncio.sleep(self._deps.settings.heartbeat_interval)
+            await self._wait_next_tick(self._deps.settings.heartbeat_interval)
 
     async def _election_attempt_failed(self, exc: BaseException, *, won_row: bool = False) -> None:
         """Shared cleanup for one failed election cycle.
@@ -1074,6 +1272,15 @@ class MaintenanceLeader:
                 error=repr(exc),
                 error_type=type(exc).__name__,
             )
+            return False
+        if self._stopping():
+            # The stop signal landed during the assume's conn opens:
+            # this pod never acts on the won row. Hand it straight back
+            # over the conn the elect just used (the fence was captured
+            # at the top), before ``lead()`` can set the flag - the
+            # lease is never held across the drain. The conns opened
+            # here are idle and are closed by run()'s teardown.
+            await self.resign()
             return False
         self._deps.lead(term)
         # The takeover half of the stale-auto-disable recovery (issue #460's
