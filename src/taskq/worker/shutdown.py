@@ -181,8 +181,25 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
         # contract in taskq/backend/_dispatch_sql.py) -- the same
         # re-pend class as _SWEEP_1_SQL and the isolate template.
         f"lock_expires_at=NULL, assignment_routed=true, attempt = {ATTEMPT_REFUND_SQL} "
-        f"WHERE locked_by_worker=$1 AND status='running' AND j.cancel_phase = 0"
+        f"WHERE locked_by_worker=$1 AND status='running' AND j.cancel_phase = 0 "
+        "AND NOT EXISTS ("
+        f'    SELECT 1 FROM "{schema}".job_attempts a'
+        "    WHERE a.job_id = j.id AND a.attempt = j.attempt"
+        ")"
     )
+    # The ledger guard (the NOT EXISTS above): the refund's premise - "a
+    # claim that never reached an actor bought nothing" - is enforced
+    # with data, not just the registry's absence. An attempt row already
+    # recorded for the row's current attempt number (the isolate-self
+    # write, the sweep's reclaim INSERT, a retried terminal write) IS a
+    # started attempt: its charge stands, and refunding it would make
+    # the next claim revisit the number the PK already carries - the
+    # exact collision the ATTEMPT_REFUND_SQL fragment's safety argument
+    # excludes. A never-started claim (no registry entry, no ledger row
+    # - the drain's whole design) matches nothing and refunds unchanged;
+    # a guard-blocked row stays running under its lease, which lapse
+    # hands to Sweep 1, the same owner every other started attempt's
+    # reclaim has.
     # The cancel fence (``cancel_phase = 0``): a row carrying an operator
     # cancel in flight must NOT re-enter the fleet through the drain: the
     # same fence every other deferral/release arm carries (the snooze and
