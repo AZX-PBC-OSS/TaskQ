@@ -2309,7 +2309,10 @@ class Backend(Protocol):
         commit's ``(occurred_at, id)`` pair (the earlier-id row stamped
         later than its sibling) delays the sibling instead of leaving it
         below an advanced cursor. Rows the ceiling withholds are returned
-        in a later poll, id order preserved.
+        in a later poll, id order preserved. The ceiling bounds delays
+        only by the held row's own stamp lie: a far-future-stamped row
+        blocks its higher-id tail for the size of that lie, a wait the
+        margin does not measure.
 
         **An event can still be silently missed if a ``job_events``
         writer transaction stays open longer than the visibility-delay

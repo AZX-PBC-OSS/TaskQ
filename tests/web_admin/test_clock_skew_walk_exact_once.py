@@ -458,3 +458,76 @@ async def test_events_poll_delays_never_skips_an_inverted_stamp_pair(
     assert set(seen) == {held_id, eligible_id}, (
         f"the events walk LOST events: saw {sorted(seen)}, seeded {{{held_id}, {eligible_id}}}"
     )
+
+
+async def test_events_poll_serves_the_lock_expired_tail_beside_a_foreign_reason_row(
+    skewed_fleet: tuple[list[str], httpx.AsyncClient, str],
+    module_pg_schema: ModulePgSchema,
+    clean_jobs_app: JobsApp,
+) -> None:
+    """A different-reason row's stamp lie cannot block the lock_expired tail.
+
+    The held-back ceiling's subquery repeats the slice's verbatim
+    predicate, the ``reason = 'lock_expired'`` arm included, so the
+    ceiling counts only still-held-back LOCK-EXPIRED rows: a
+    ``state_change`` row of any other reason, however far its stamp
+    lies into the future, must not withhold the eligible lock_expired
+    rows above it.  Drop the reason arm from the subquery (the
+    over-broad ceiling) and the foreign-reason row becomes a
+    held-back blocker: the lock_expired tail behind it goes unserved
+    for the size of that stamp lie, here 30 days, a delay the margin's
+    bound does not describe.
+    """
+    _ids, _http_client, _schema = skewed_fleet
+    _deps, backend = clean_jobs_app
+    schema = module_pg_schema.schema_name
+    job_id = _ids[0]
+
+    conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+    try:
+        # One statement, one commit: nextval evaluates per row in row
+        # order, so the foreign-reason blocker carries the LOWER id and
+        # the lock_expired tail sits ABOVE it, exactly the geometry the
+        # ceiling's min() walk decides on.
+        sql = (
+            f'INSERT INTO "{schema}".job_events (id, job_id, occurred_at, kind, detail) '  # noqa: S608  # Why: schema is fixture-derived and validated; every value is $N-bound.
+            "VALUES (nextval('\"{schema}\".job_events_id_seq'), $1, "
+            "          clock_timestamp() + interval '30 days', 'state_change', "
+            '\'{"from_state": "running", "to_state": "failed", '
+            '"reason": "schedule_to_close"}\'::jsonb), '
+            "(nextval('\"{schema}\".job_events_id_seq'), $1, "
+            "          clock_timestamp() - interval '60 seconds', 'state_change', "
+            '\'{"reason": "lock_expired"}\'::jsonb) '
+            "RETURNING id, occurred_at, detail->>'reason' AS reason"
+        ).replace("{schema}", schema)
+        rows = await conn.fetch(
+            sql,
+            uuid_mod.UUID(job_id),
+        )
+        lie_id = rows[0]["id"]
+        eligible_id = rows[1]["id"]
+        assert lie_id < eligible_id, "nextval must allocate in row order"
+        assert rows[0]["reason"] != "lock_expired", (
+            f"the harness needs the blocker to be a DIFFERENT-reason row: got {rows[0]['reason']!r}"
+        )
+        assert rows[0]["occurred_at"] > rows[1]["occurred_at"], (
+            "the harness needs the blocker's stamp to lie forward of the eligible row's"
+        )
+    finally:
+        await conn.close()
+
+    # Served WITHIN the margin: the lock_expired row's own stamp is 60s
+    # old, its 2s margin clears at once, and no held-back lock_expired
+    # row sits below it, so the first poll must serve it.  A ceiling
+    # that also counted the foreign-reason row (the reason arm dropped
+    # from the subquery) would cap the returned ids below lie_id and
+    # withhold the tail for the size of the lie: 30 days.
+    events = await backend.poll_reclaim_events(  # pyright: ignore[reportAttributeAccessUsage]
+        after_id=0, visibility_delay=timedelta(seconds=2)
+    )
+    served = [e.event_id for e in events]
+    assert eligible_id in served, (
+        f"the lock_expired tail was BLOCKED behind the foreign-reason "
+        f"row's stamp lie: served {served}, needed [{eligible_id}]"
+    )
+    assert lie_id not in served, f"the foreign-reason row leaked into the poll's slice: {served}"

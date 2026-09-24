@@ -121,7 +121,10 @@ held-back ceiling guards exactly this: the returned ids are capped
 strictly below the lowest still-held-back matching row above the
 cursor, so an inverted pair delays the higher-id row (delivered in a
 later poll, once the lower-id row's own margin clears) instead of
-losing it. If a writer transaction does exceed the margin, the
+losing it. The ceiling bounds delays only by the held row's own stamp
+lie: a far-future-stamped row blocks its higher-id tail for the size
+of that lie, a wait the margin does not measure. If a writer
+transaction does exceed the margin, the
 consequence is a **silently missed event**: a lower-``id`` row can
 commit after the cursor has already advanced past its position, with
 no error raised anywhere, the same failure mode this feature exists to
