@@ -43,6 +43,7 @@ from uuid import UUID
 
 import pytest
 
+from taskq._close import CLOSE_TIMEOUT_SECS, worst_case_teardown_tail
 from taskq._ids import new_uuid
 from taskq.backend.clock import SystemClock
 from taskq.settings import WorkerSettings
@@ -63,6 +64,40 @@ _LEADER_LEASE = 40.0
 
 _ELECT_PREFIX = "INSERT INTO"
 _RENEW_PREFIX = "UPDATE"
+
+#: The integration pins' leader teardown wait budget: runner-congestion
+#: margin over the product's own teardown math, with a floor so the
+#: budget stays sane if the product's constants ever shrink (the
+#: test_rt_lost_job_soak pattern: scale the bound, floor the result).
+#: This is a cleanup backstop only - the wait resolves the moment the
+#: task finishes.
+_TEARDOWN_CONGESTION_MARGIN = 2.0
+_TEARDOWN_WAIT_FLOOR_SECS = 60.0
+
+
+def _leader_teardown_wait_budget(settings: WorkerSettings) -> float:
+    """Wait budget for one leader task's post-stop teardown, in seconds.
+
+    Scaled to the product's declared teardown math, not a fixed guess.
+    A stopping leader's exit tail is the teardown resign - retried on
+    the election tick cadence when its write fails (pin 6) - plus the
+    bounded conn closes ``run()``'s finally unwinds, each bounded at
+    ``CLOSE_TIMEOUT_SECS``. ``worst_case_teardown_tail`` is the
+    product's exported model of that bounded teardown tail, so the
+    budget is that tail plus one tick cadence, scaled for runner
+    congestion (a starved CI runner stretches every await) and floored.
+    The leader task's own tail is three bounded steps - one resign
+    attempt plus two conn closes - already 3x the fixed 5s cap that
+    used to cover the whole teardown, so on congested runners
+    ``wait_for`` cancelled leaders mid-teardown and red TimeoutError;
+    a budget that moves with the product's own constants cannot be
+    undercut by them.
+    """
+    return max(
+        _TEARDOWN_WAIT_FLOOR_SECS,
+        (settings.heartbeat_interval + worst_case_teardown_tail(CLOSE_TIMEOUT_SECS))
+        * _TEARDOWN_CONGESTION_MARGIN,
+    )
 
 
 def _worker_settings() -> WorkerSettings:
@@ -687,9 +722,10 @@ async def test_pin_row_gone_before_the_drain_write_and_successor_elects_during_i
         drain_released.set()
         shutdown_a.set()
         shutdown_b.set()
+        teardown_budget = _leader_teardown_wait_budget(deps_a.settings)
         for t in (task_a, task_b):
             with contextlib.suppress(asyncio.CancelledError, ExceptionGroup):
-                await asyncio.wait_for(t, timeout=5.0)
+                await asyncio.wait_for(t, timeout=teardown_budget)
         await stack_b.aclose()
         await stack_a.aclose()
 
@@ -762,8 +798,9 @@ async def test_pin_drain_completes_with_a_different_worker_as_leader(pg_dsn: str
     finally:
         shutdown_a.set()
         shutdown_b.set()
+        teardown_budget = _leader_teardown_wait_budget(deps_a.settings)
         for t in (task_a, task_b):
             with contextlib.suppress(asyncio.CancelledError, ExceptionGroup):
-                await asyncio.wait_for(t, timeout=5.0)
+                await asyncio.wait_for(t, timeout=teardown_budget)
         await stack_b.aclose()
         await stack_a.aclose()
