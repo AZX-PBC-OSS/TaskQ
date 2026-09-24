@@ -944,3 +944,171 @@ class TestMarkerWriteArmsSerialize:
         # carries one (or is pre-ownership NULL).
         assert (row["enabled"] and row["disabled_by"] is not None) is False
         assert ((not row["enabled"]) or row["disabled_by"] is None) is True
+
+
+class TestTakeoverRecovery:
+    """The takeover half of the stale-auto-disable recovery (issue #460's
+    deploy window, the boot pass's blind spot).
+
+    The boot pass runs when a NEW pod's process starts. During a rolling
+    deploy the OLD release can hold -- or win -- leadership after every new
+    pod has booted: its cron tick keeps firing, and its failure arm (the
+    parent-of-3f9641cd UPDATE, which cannot name ``disabled_by``) writes
+    ``enabled=false, disabled_by=NULL`` with no boot pass left to match it.
+    The new leader's takeover therefore re-runs the boot pass's ownership
+    predicates over the code's declared specs: the last moment the new
+    release can revert the disable without a full restart.
+
+    Pins: the after-boot repro (old disable, then takeover, then service);
+    the two rows the takeover must NOT touch (operator intent, NULL marker
+    without the failure fingerprint); the pass surviving a failing pool.
+    """
+
+    async def _takeover_pass(
+        self,
+        module_pg_schema: ModulePgSchema,
+        specs: list[CronScheduleSpec],
+    ) -> int:
+        """One leader-takeover recovery pass over a shell ``WorkerDeps``
+        (the pass touches only the dispatcher pool), the same call
+        ``MaintenanceLeader._assume_leadership`` makes when it inherits the
+        cron table."""
+        from taskq.worker._cron_recovery import revert_stale_auto_disables
+
+        settings = _settings_for(module_pg_schema.pg_dsn, module_pg_schema.schema_name)
+        pool = await asyncpg.create_pool(module_pg_schema.pg_dsn, min_size=1, max_size=2)
+        try:
+            deps = WorkerDeps(
+                settings=settings,
+                dispatcher_pool=pool,
+                heartbeat_pool=pool,
+                worker_pool=pool,
+                notify_conn=None,
+                leader_conn=None,
+            )
+            return await revert_stale_auto_disables(deps, settings, specs)
+        finally:
+            await pool.close()
+
+    async def test_old_leader_disable_after_boot_is_recovered_at_takeover(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """The repro, in the deploy order that beats the boot pass: new pods
+        boot (the boot pass runs against a clean table), the old pod keeps
+        the lease and its cron tick auto-disables the schedule (unmarked,
+        fingerprint present), the old pod exits, the new leader takes
+        over. The takeover pass MUST return the schedule to service."""
+        schema = module_pg_schema.schema_name
+        schedule_id = await _seed_auto_disabled(
+            conn=clean_pg_conn,
+            schema=schema,
+            actor=_MISSING_ACTOR,
+            name="takeover-blip",
+            disabled_by=None,
+        )
+
+        # The boot pass has already run and matched nothing (this disable
+        # did not exist yet); the takeover is the new code's next and last
+        # look at the table.
+        reverted = await self._takeover_pass(
+            module_pg_schema, [_spec(_MISSING_ACTOR, "takeover-blip")]
+        )
+
+        assert reverted == 1
+        row = await schedule_row(clean_pg_conn, schema, schedule_id)
+        assert row["enabled"] is True, (
+            "an old leader's unmarked auto-disable lands after every boot "
+            "pass has run; the takeover recovery is the mechanism that "
+            "keeps the deploy's own transient state from halting the "
+            "schedule until a human intervenes"
+        )
+        assert row["consecutive_failures"] == 0
+        assert row["last_fire_error"] is None
+
+    async def test_takeover_pass_leaves_operator_and_unfingerprinted_rows_alone(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """The takeover runs the boot pass's exact predicates: an operator
+        disable is intent and stays; a NULL marker without the old failure
+        arm's fingerprint is an old pod's operator disable during the
+        window and stays."""
+        schema = module_pg_schema.schema_name
+        operator_row = await _seed_auto_disabled(
+            conn=clean_pg_conn,
+            schema=schema,
+            actor=_MISSING_ACTOR,
+            name="takeover-operator",
+            disabled_by="operator",
+        )
+        unfingerprinted_row = await _seed_auto_disabled(
+            conn=clean_pg_conn,
+            schema=schema,
+            actor=_MISSING_ACTOR,
+            name="takeover-quiet",
+            disabled_by=None,
+        )
+        # The unfingerprinted row must not carry the fingerprint: clear the
+        # error and drop the counter below the threshold, the shape an old
+        # pod's deliberate disable leaves.
+        await clean_pg_conn.execute(
+            f'UPDATE "{schema}".cron_schedules '  # noqa: S608  # Why: schema is a test-fixture identifier; values are $-bound.
+            "SET last_fire_error = NULL, consecutive_failures = 0 WHERE id = $1",
+            unfingerprinted_row,
+        )
+
+        reverted = await self._takeover_pass(
+            module_pg_schema,
+            [
+                _spec(_MISSING_ACTOR, "takeover-operator"),
+                _spec(_MISSING_ACTOR, "takeover-quiet"),
+            ],
+        )
+
+        assert reverted == 0
+        rows = await clean_pg_conn.fetch(
+            f"SELECT id, enabled, consecutive_failures, last_fire_error "  # noqa: S608
+            f'FROM "{schema}".cron_schedules WHERE id = ANY($1::uuid[])',
+            [operator_row, unfingerprinted_row],
+        )
+        by_id = {row["id"]: row for row in rows}
+        assert len(by_id) == 2
+        assert by_id[operator_row]["enabled"] is False, (
+            "the takeover recovery reads operator intent exactly like the boot: never reverted"
+        )
+        assert by_id[unfingerprinted_row]["enabled"] is False, (
+            "a NULL marker without the failure fingerprint is an old pod's "
+            "operator disable during the window; the takeover leaves it "
+            "untouched, the same residual-NULL reading the boot applies"
+        )
+
+    async def test_takeover_pass_survives_a_failing_pool(
+        self,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """A per-spec recovery failure (the pool is unreachable) is logged
+        and left to the next assumption: the pass must never fail the
+        leadership assumption that runs it."""
+        from taskq.worker._cron_recovery import revert_stale_auto_disables
+
+        settings = _settings_for(module_pg_schema.pg_dsn, module_pg_schema.schema_name)
+
+        class _BrokenPool:
+            def acquire(self, timeout: float | None = None) -> Any:
+                raise OSError("pool down")
+
+        deps = WorkerDeps(
+            settings=settings,
+            dispatcher_pool=_BrokenPool(),  # type: ignore[arg-type]  # Why: deliberately not a pool; the pin drives the failure arm.
+            heartbeat_pool=None,
+            worker_pool=None,
+            notify_conn=None,
+            leader_conn=None,
+        )
+        reverted = await revert_stale_auto_disables(
+            deps, settings, [_spec(_MISSING_ACTOR, "takeover-broken-pool")]
+        )
+        assert reverted == 0

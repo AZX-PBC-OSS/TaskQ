@@ -46,7 +46,6 @@ from taskq.auth import (
     reload_schedule_of,
 )
 from taskq.backend._protocol import Backend, JobRow, ScheduleCreateArgs
-from taskq.backend._records import parse_rowcount
 from taskq.backend.clock import Clock, SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.client._enqueuer import SubJobEnqueuer
@@ -85,6 +84,7 @@ from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.settings import WorkerSettings
+from taskq.worker._cron_recovery import revert_stale_auto_disable
 from taskq.worker._watchdog import (
     LoopLagWatchdog,
     ShutdownWatchdog,
@@ -930,50 +930,14 @@ async def _revert_stale_auto_disable(
 ) -> bool:
     """Re-enable a schedule row the cron loop auto-disabled, at registration.
 
-    The ownership model (issue #342): ``cron_schedules.disabled_by`` records
-    who disabled a row. ``'auto'`` is the cron loop's failure-count
-    auto-disable, and the code re-declaring the schedule at startup proves the
-    declaration is live again, so the boot reverts the disable (``enabled=true``,
-    ``consecutive_failures=0``, ``last_fire_error=NULL``, ``disabled_by=NULL``):
-    a transient partial-DB blip (fires fail, strike writes commit) must not
-    permanently halt recurring work until a human intervenes. ``'operator'``
-    is a deliberate disable (schedule handle, CLI, admin UI, actor
-    deregistration) and is NEVER reverted by a boot, exactly the intent the
-    create-only registration design guards.
-
-    A disabled row with a NULL marker is read in two populations (issue #460).
-    Rows disabled before the column existed were stamped ``'operator'`` by the
-    backfill migration (``01.00.19_05``), so they land in the operator case
-    above. A residual NULL-disabled row can then only come from an OLD pod
-    during a mixed-version rolling deploy: the previous release's failure
-    UPDATE writes ``enabled=false`` and cannot name this column. When such a
-    row also carries that arm's fingerprint (``consecutive_failures`` at or
-    past the auto-disable threshold, ``last_fire_error`` set), it IS an old
-    pod's auto-disable -- the deploy's own transient state -- and the boot
-    reverts it like an ``'auto'`` row. A NULL-disabled row without the
-    fingerprint reads as an old pod's operator disable during the window and
-    stays untouched.
-
-    Only a code-owned, code-enabled spec may revert: an ``owner='operator'``
-    spec merely ships the declaration, and a spec declared ``enabled=False``
-    does not assert the schedule should run. Returns whether a row was
-    re-enabled.
+    The shared implementation, from :mod:`taskq.worker._cron_recovery`; the
+    takeover pass (``MaintenanceLeader``) runs the same predicate at every
+    leadership assumption, which is what covers an old leader's unmarked
+    auto-disable landing after every new pod has booted. The ownership
+    model (issue #342) and the mixed-version deploy's NULL marker
+    population (issue #460) are documented there.
     """
-    if spec.owner != "code" or not spec.enabled:
-        return False
-    async with deps.dispatcher_pool.acquire(timeout=settings.dispatcher_command_timeout) as conn:
-        tag: str = await conn.execute(
-            f'UPDATE "{settings.schema_name}".cron_schedules '  # noqa: S608  # Why: schema validated against _IDENT_RE at WorkerSettings load; asyncpg cannot bind identifiers, the values below are $-bound.
-            f"SET enabled = true, consecutive_failures = 0, last_fire_error = NULL, "
-            f"disabled_by = NULL "
-            f"WHERE actor = $1 AND name = $2 AND enabled = false AND "
-            f"(disabled_by = 'auto' OR (disabled_by IS NULL AND "
-            f"consecutive_failures >= $3 AND last_fire_error IS NOT NULL))",
-            spec.actor,
-            spec.name,
-            settings.cron_auto_disable_threshold,
-        )
-    return parse_rowcount(tag) > 0
+    return await revert_stale_auto_disable(deps, settings, spec)
 
 
 async def _register_cron_schedules(
@@ -2271,6 +2235,7 @@ async def _main(
                             clock=_clock,
                             rate_limit_registry=resolved_rl_registry,
                             actor_policies=actor_fire_policies,
+                            cron_specs=_cron_registry,
                         ).run(shutdown_event)
                     )
                     # One event shared by the producer and every consumer
