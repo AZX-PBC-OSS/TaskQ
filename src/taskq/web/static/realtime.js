@@ -15,8 +15,16 @@
     // The progress render state: the last sequence either feed accepted,
     // the fingerprint of the progress the timeline currently renders
     // (seeded from the server-rendered snapshot at boot), and the entry
-    // node the render patches in place.
-    let lastSeenSeq = 0;
+    // node the render patches in place. The sequence cursor is the EXACT
+    // decimal string, not a Number: JS numbers are IEEE doubles, exact
+    // only up to 2^53, and a cursor that lost digits lets a seq the page
+    // never rendered compare equal to the cursor and be dropped as a
+    // duplicate (a frozen timeline, at a scale the progress_seq column's
+    // bigint domain admits). Every comparison goes through BigInt; the
+    // wire sources (the SSE Last-Event-ID, the poll state endpoint's
+    // ETag header) already carry the exact decimal digits as strings.
+    let lastSeenSeq = "0";
+    let haveSeenSeq = false;
     let lastRenderedFingerprint = null;
     let renderedEntry = null;
     // True while a poll fetch is outstanding. A background tab that the
@@ -79,6 +87,20 @@
     // Canonical JSON of the identity fields: key-order independent, ts
     // excluded. Equal fingerprints mean the timeline already shows this
     // progress and the tick must write nothing.
+    //
+    // The recursion is depth-capped: a state nested past the cap collapses
+    // to a stable sentinel, so neither the canonicalize nor the
+    // JSON.stringify below it can ever overflow the JS stack (RangeError)
+    // on a poisoned state - the fingerprint machine must be the one part
+    // of the page that cannot crash on its input. Past the cap, states
+    // compare equal whatever their deeper content: dedup stays sound (a
+    // repeated tick still writes nothing), and a changed deep field is
+    // rendered by the next event that also changes anything above the
+    // cap. The cap is far above what the server accepts: the worker's
+    // own encoder refuses progress data nested past its recursion limit,
+    // so a depth this side of it only ever fires on a foreign writer.
+    const FINGERPRINT_MAX_DEPTH = 64;
+
     function progressFingerprint(state) {
         const identity = {};
         for (const field of FINGERPRINT_FIELDS) {
@@ -88,19 +110,20 @@
         }
         if (Object.keys(identity).length === 0) return null;
 
-        function canonicalize(value) {
-            if (Array.isArray(value)) return value.map(canonicalize);
+        function canonicalize(value, depth) {
+            if (depth > FINGERPRINT_MAX_DEPTH) return "…";
+            if (Array.isArray(value)) return value.map((v) => canonicalize(v, depth + 1));
             if (value !== null && typeof value === "object") {
                 return Object.fromEntries(
                     Object.keys(value)
                         .sort()
-                        .map((key) => [key, canonicalize(value[key])]),
+                        .map((key) => [key, canonicalize(value[key], depth + 1)]),
                 );
             }
             return value;
         }
 
-        return JSON.stringify(canonicalize(identity));
+        return JSON.stringify(canonicalize(identity, 0));
     }
 
     // The single gate both feeds render through (the SSE stream and the
@@ -108,11 +131,38 @@
     // state, and a state whose fingerprint the timeline already renders
     // are dropped BEFORE any DOM work, so a repeated identical poll
     // performs zero DOM writes.
-    function acceptProgress(seq, rawState) {
-        if (!Number.isInteger(seq) || seq <= lastSeenSeq) return;
-        lastSeenSeq = seq;
+    // The exact decimal-sequence gate: the cursor advances only on a
+    // strictly greater sequence, compared as BigInt over the exact
+    // digits (see the cursor declaration at the top). Non-decimal and
+    // zero cursors advance nothing, the same drop a malformed frame got
+    // under the Number-based gate.
+    function parseSeq(raw) {
+        let text = typeof raw === "string" ? raw : String(raw ?? "");
+        if (/^".*"$/.test(text)) text = text.slice(1, -1);
+        if (!/^\d+$/.test(text)) return null;
+        const normalized = text.replace(/^0+(?=\d)/, "");
+        return normalized === "0" ? null : normalized;
+    }
 
-        const fingerprint = progressFingerprint(progressState(rawState));
+    function acceptProgress(seqRaw, rawState) {
+        const seq = parseSeq(seqRaw);
+        if (seq === null) return;
+        if (haveSeenSeq && BigInt(seq) <= BigInt(lastSeenSeq)) return;
+        lastSeenSeq = seq;
+        haveSeenSeq = true;
+
+        // Fail open on a fingerprint computation that itself fails: a
+        // tick whose state cannot be fingerprinted must RENDER (the
+        // timeline shows the latest state) rather than freeze the page
+        // behind a dropped exception. With the depth-capped canonicalize
+        // above this is unreachable for JSON-parsed state; it exists so
+        // the gate's own defect can never again take the timeline down.
+        let fingerprint = null;
+        try {
+            fingerprint = progressFingerprint(progressState(rawState));
+        } catch {
+            fingerprint = null;
+        }
         if (fingerprint === null || fingerprint === lastRenderedFingerprint) return;
         lastRenderedFingerprint = fingerprint;
         renderProgressEvent(progressState(rawState));
@@ -148,6 +198,18 @@
         entry.appendChild(meta);
 
         return { entry, bar, detail, meta, dataWrap: null, dataPre: null };
+    }
+
+    // The data <pre>'s text: pretty-printed JSON, bounded by the same
+    // depth cap the fingerprint uses - stringify on a poisoned deep state
+    // would RangeError exactly where the old canonicalize could, so the
+    // render degrades to a notice instead of throwing out of the tick.
+    function stringifyDataBounded(data) {
+        try {
+            return JSON.stringify(data, null, 2);
+        } catch {
+            return "[data too deeply nested to render]";
+        }
     }
 
     function renderProgressEvent(state) {
@@ -187,7 +249,7 @@
             ? null
             : typeof state.data === "string"
                 ? state.data
-                : JSON.stringify(state.data, null, 2);
+                : stringifyDataBounded(state.data);
         if (dataText !== null && !renderedEntry.dataWrap) {
             const details = document.createElement("details");
             const summary = document.createElement("summary");
@@ -244,20 +306,33 @@
             // rendered entry in place.
             fetch(
                 `${BASE}/jobs/api/job/${jobId}/state`,
-                lastSeenSeq > 0
+                haveSeenSeq
                     ? { headers: { "If-None-Match": `"${lastSeenSeq}"` } }
                     : {},
             )
                 .then(function (res) {
                     pollInFlight = false;
                     if (res.status === 304) return null;
-                    return res.json();
+                    return res.json().then(function (body) {
+                        // The sequence cursor's exact source: the ETag
+                        // header carries the same decimal digits the
+                        // server compares, quoted, at any magnitude.
+                        // body.progress_seq is a JS number (a double):
+                        // above 2^53 it loses digits, so it is the
+                        // FALLBACK only, for a response with no ETag -
+                        // precision-limited there, documented at the
+                        // cursor declaration.
+                        const etag = res.headers && typeof res.headers.get === "function"
+                            ? res.headers.get("ETag")
+                            : null;
+                        return { body: body, seqRaw: etag ?? body.progress_seq };
+                    });
                 })
-                .then(function (body) {
+                .then(function (tick) {
                     pollInFlight = false;
-                    if (!pollingActive || body === null) return;
-                    acceptProgress(body.progress_seq, body.progress_state ?? {});
-                    if (TERMINAL_STATUSES.has(body.status)) {
+                    if (!pollingActive || tick === null) return;
+                    acceptProgress(tick.seqRaw, tick.body.progress_state ?? {});
+                    if (TERMINAL_STATUSES.has(tick.body.status)) {
                         stopPolling();
                     }
                 })
@@ -304,8 +379,10 @@
                 return;
             }
             // Same gate the poll uses: a reconnect replay with an
-            // already-rendered fingerprint writes nothing.
-            acceptProgress(Number(rawEvent.lastEventId), evt);
+            // already-rendered fingerprint writes nothing. The
+            // Last-Event-ID string is the exact cursor source (no Number
+            // precision loss).
+            acceptProgress(rawEvent.lastEventId, evt);
             if (evt.terminal) {
                 es.close();
                 eventSource = null;
@@ -395,10 +472,11 @@
         // Seed the dedup cursor from the server-rendered snapshot: the
         // template already shows this progress, so a poll that returns
         // the same state (the common idle case) must write nothing at
-        // all, not even once.
-        const initialSeq = Number(section.getAttribute("data-progress-seq"));
-        if (Number.isInteger(initialSeq) && initialSeq >= 0) {
+        // all, not even once. The attribute is the exact decimal string.
+        const initialSeq = parseSeq(section.getAttribute("data-progress-seq"));
+        if (initialSeq !== null) {
             lastSeenSeq = initialSeq;
+            haveSeenSeq = true;
         }
         try {
             lastRenderedFingerprint = progressFingerprint(
