@@ -475,9 +475,11 @@ async def progress_flush_loop(
     captured pool would be drained and closed seconds after the reload,
     breaking every subsequent flush.
 
-    Each tick flushes its whole dirty set as ONE batched multi-row
-    statement (see :func:`_flush_dirty_set`), so the tick costs one
-    round trip regardless of how many jobs are dirty.
+    Each tick drains its dirty set in bounded row-batches (see
+    :func:`_flush_dirty_set`): :data:`_FLUSH_BATCH_ROWS` rows per
+    statement, at most :data:`_FLUSH_MAX_BATCHES_PER_TICK` statements per
+    tick, the remainder dirty for the next tick - the tick's database
+    cost is capped regardless of how many jobs are dirty.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
