@@ -173,6 +173,17 @@ def _batch_drain_gate(
     shutdown is set (the drain stops; committed batches stay committed),
     a detector-2 liveness tick otherwise.
 
+    The DEMOTION clause: the gate also returns False once ``leading()``
+    is false, so a leader demoted mid-drain stops between batches - the
+    same boundary ``_drain_bounded`` pins for the every-tick sweeps.
+    Committed batches stay committed and nothing further starts under a
+    pod that no longer leads: the retention deletes and the schema's
+    session-advisory lock must not outlive the authority that started
+    them (pinned by ``test_prune_drain_gate_stops_on_demotion`` and
+    ``test_demoted_leader_stops_pruning_mid_drain``). The caller treats
+    the cut as an UNFINISHED day - the date latch stays unstamped and
+    the retry ladder arms - see ``_prune_loop``.
+
     The prune loops are cron-driven, up to a day between attempts, so an
     always-registered liveness entry with the cron cadence would give
     detector 2 a multi-day staleness budget and detect nothing. Instead
@@ -1011,7 +1022,23 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     not wait for tomorrow, see ``_PRUNE_RETRY_BACKOFF_INITIAL_SECS``.
     Every batch is a committed, server-side-bounded statement
     (:func:`~taskq.worker._leader_shared.prune_terminal_jobs`), and the
-    drain stops between batches on shutdown.
+    drain stops between batches on shutdown or once ``leading()`` is
+    false (the demotion clause, see ``_batch_drain_gate``).
+
+    The demotion clause makes a demotion-cut drain an UNFINISHED day,
+    not a done one: the gate stopped the drain between batches with
+    prunable rows left, so the date latch stays unstamped and the retry
+    ladder arms. The ladder's wake (bounded by the doubling cap, never a
+    hot loop) lands the remainder within the day: the successor pod's
+    own cron fire prunes sooner, and if THIS pod regains leadership its
+    next ladder wake resumes the remainder at the (possibly latched)
+    reduced tier - instead of the cut silently deferring it to the next
+    scheduled fire, up to 24h away. The cut check cannot race a
+    re-election: no await runs between the gate's last False and the
+    loop's ``leading()`` read, so leadership cannot flip in between; a
+    fully-drained attempt that demotes right after the last batch arms
+    the ladder once, and the retry finds nothing left and stamps the
+    day.
     """
     last_pruned_date: date | None = None
     retry_backoff: float | None = None
@@ -1114,36 +1141,62 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         statement_timeout_ms=statement_timeout_ms,
                         sizer=prune_sizer,
                     )
-                    last_pruned_date = today_utc
-                    retry_backoff = None
-                    for status, count in result.by_status.items():
-                        log.info(
-                            "prune-completed",
+                    if not ctx.deps.leading():
+                        # The drain was CUT, not exhausted: the gate
+                        # returned False on the demotion boundary (see
+                        # _batch_drain_gate) with prunable rows left. Not
+                        # a done day: the latch stays unstamped and the
+                        # ladder arms, so the remainder is not deferred
+                        # to the next cron fire (up to 24h) if this pod
+                        # regains leadership. No await ran between the
+                        # gate's last False and this read, so a
+                        # re-election cannot have flipped leadership in
+                        # between; a fully-drained attempt that demotes
+                        # right after arms the ladder once, and the
+                        # retry finds nothing left and stamps the day.
+                        # The committed batches stay committed, and no
+                        # further leader-only work runs past the boundary
+                        # (the batch-cleanup delete below is skipped with
+                        # the rest; the retry attempt re-derives it).
+                        retry_backoff = _next_retry_backoff(retry_backoff)
+                        log.warning(
+                            "prune-drain-cut-demotion",
                             kind="prune",
-                            status=status,
-                            count=count,
-                            cutoff=result.cutoffs[status].isoformat(),
-                            duration_ms=result.duration_ms,
+                            worker_id=str(ctx.worker_id),
+                            deleted_so_far=result.total_deleted,
+                            retry_in_secs=retry_backoff,
                         )
-                    # `cutoffs` carries one entry per terminal status, each
-                    # anchored to the database clock inside
-                    # prune_terminal_jobs, so the widest (most recent) of
-                    # them is the batch cutoff: a batch is prunable once no
-                    # status could still be holding a job for it.
-                    max_cutoff = max(result.cutoffs.values())
-                    try:
-                        batch_count = await ctx.backend.prune_old_batches(max_cutoff)
-                        if batch_count:
-                            log.info("batches pruned", kind="batch", count=batch_count)
-                    except (
-                        NotImplementedError,
-                        TimeoutError,
-                        asyncpg.PostgresConnectionError,
-                        asyncpg.InterfaceError,
-                        asyncpg.exceptions.UndefinedTableError,
-                        OSError,
-                    ) as exc:
-                        log.warning("batch-prune-failed", kind="batch", error=repr(exc))
+                    else:
+                        last_pruned_date = today_utc
+                        retry_backoff = None
+                        for status, count in result.by_status.items():
+                            log.info(
+                                "prune-completed",
+                                kind="prune",
+                                status=status,
+                                count=count,
+                                cutoff=result.cutoffs[status].isoformat(),
+                                duration_ms=result.duration_ms,
+                            )
+                        # `cutoffs` carries one entry per terminal status, each
+                        # anchored to the database clock inside
+                        # prune_terminal_jobs, so the widest (most recent) of
+                        # them is the batch cutoff: a batch is prunable once no
+                        # status could still be holding a job for it.
+                        max_cutoff = max(result.cutoffs.values())
+                        try:
+                            batch_count = await ctx.backend.prune_old_batches(max_cutoff)
+                            if batch_count:
+                                log.info("batches pruned", kind="batch", count=batch_count)
+                        except (
+                            NotImplementedError,
+                            TimeoutError,
+                            asyncpg.PostgresConnectionError,
+                            asyncpg.InterfaceError,
+                            asyncpg.exceptions.UndefinedTableError,
+                            OSError,
+                        ) as exc:
+                            log.warning("batch-prune-failed", kind="batch", error=repr(exc))
                 except Exception as exc:
                     # The failure half of the once-a-day policy: this
                     # attempt did NOT prune, so the day is not marked and
@@ -1192,7 +1245,9 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
 async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     """Daily archive expiry with intra-day retry on failure, the same
     policy shape as :func:`_prune_loop` (once per successful attempt per
-    day; failures retry on the shared backoff ladder).
+    day; failures retry on the shared backoff ladder; a demotion-cut
+    drain is an unfinished day whose remainder the ladder retries, see
+    ``_prune_loop``).
     """
     last_expiry_date: date | None = None
     retry_backoff: float | None = None
@@ -1280,17 +1335,32 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
                         statement_timeout_ms=statement_timeout_ms,
                         sizer=expiry_sizer,
                     )
-                    last_expiry_date = today_utc
-                    retry_backoff = None
-                    for status, count in result.by_status.items():
-                        log.info(
-                            "archive-expiry-completed",
+                    if not ctx.deps.leading():
+                        # Same demotion-cut half as _prune_loop: the gate
+                        # stopped the drain between batches, so the day
+                        # is not stamped and the ladder arms - the
+                        # remainder is retried on the ladder instead of
+                        # waiting for the next cron fire (up to 24h).
+                        retry_backoff = _next_retry_backoff(retry_backoff)
+                        log.warning(
+                            "archive-expiry-drain-cut-demotion",
                             kind="archive_expiry",
-                            status=status,
-                            count=count,
-                            expire_before=result.expire_before.isoformat(),
-                            duration_ms=result.duration_ms,
+                            worker_id=str(ctx.worker_id),
+                            deleted_so_far=result.total_deleted,
+                            retry_in_secs=retry_backoff,
                         )
+                    else:
+                        last_expiry_date = today_utc
+                        retry_backoff = None
+                        for status, count in result.by_status.items():
+                            log.info(
+                                "archive-expiry-completed",
+                                kind="archive_expiry",
+                                status=status,
+                                count=count,
+                                expire_before=result.expire_before.isoformat(),
+                                duration_ms=result.duration_ms,
+                            )
                 except Exception as exc:
                     # Same failure half as _prune_loop: retry on the ladder,
                     # never a second successful expiry in one day.
