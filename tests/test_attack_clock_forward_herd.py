@@ -94,7 +94,17 @@ _STATEMENT_TIMEOUT_MS = 1750
 
 # The prune family's defaults.
 _PRUNE_BATCH = 10_000
-_PRUNE_TIMEOUT_MS = 4000
+# Why 30 s: the statement budget exists as the TOOTH of the bounded-batch
+# pin - if the prune ever stopped LIMIT-ing and moved to one population-wide
+# write, the budget must cancel it. The discriminative gap is >100x: a
+# LIMIT-bounded 10k-row batch on a 100k cohort costs tens of ms, while a
+# population-wide single write costs minutes. The original 4 s sat inside
+# the gap but too close to the floor: on a CI runner congested by 3-leg
+# co-tenancy (run 36016634595) a legitimate bounded batch exceeded it and
+# the server cancelled the pin's own statement. 30 s keeps the tooth (a
+# population-wide write is still 100x+ over the budget) while surviving a
+# slow, contended runner.
+_PRUNE_TIMEOUT_MS = 30_000
 
 # Cohort sizes.
 _HERD_BUDGET = 7_000  # re-pend arm
