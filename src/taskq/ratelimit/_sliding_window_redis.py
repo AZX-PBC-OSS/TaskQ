@@ -10,10 +10,12 @@ shared sorted-set scores and TATs are store-domain, so callers on nodes
 with divergent Python clocks are all measured against the same window.
 """
 
+import math
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
+from taskq.exceptions import RateLimitStoreCorrupt
 from taskq.ratelimit._decision_log import log_decision
 from taskq.ratelimit._redis_utils import ensure_redis_script, redis_time_seconds, with_pg_fallback
 from taskq.ratelimit._scripts import (
@@ -43,6 +45,89 @@ __all__ = [
     "_reset_redis_gcra",
     "_reset_redis_log",
 ]
+
+
+def _validate_script_reply(
+    raw: object,
+    *,
+    limit: int,
+    ttl_ms: int,
+    gcra: bool,
+) -> tuple[bool, int, int]:
+    """Decode and validate a sliding-window script reply at the trust
+    boundary; return ``(allowed, count_or_remaining, retry_after_ms)``.
+
+    The reply contract per the script docs, a 3-element list where
+    ``allowed`` is exactly 0 or 1:
+
+    * log style: ``{allowed, count, retry_after_ms}``, the count after
+      the operation inside ``[0, limit]`` (the ZADD is gated on
+      ``count < limit``);
+    * GCRA style: ``{allowed, retry_after_ms, remaining_estimate}``, the
+      estimate floored at 0 by the script and bounded above by
+      ``limit - 1``.
+
+    ``retry_after_ms`` must be non-negative and bounded by the key's own
+    TTL: no honest denial can outlive the key it came from. A proxy
+    answering outside the contract (a truncated reply, a string where an
+    int belongs, a count outside its range, a huge ``retry_after_ms``)
+    raises :class:`RateLimitStoreCorrupt`, the fail-closed verdict: the
+    caller's wrapped path re-runs admission against the durable PG row,
+    exactly as a connection failure would, and a ``timedelta`` overflow
+    (the crash a huge ``retry_after_ms`` produced before validation)
+    cannot happen.
+
+    The GCRA reply may carry two extra elements (the pre/post TAT strings
+    for the compare-and-set refund); they are decoded by
+    :func:`_gcra_tat_strings` and validated there only for type, a
+    corrupt TAT echo fails the refund's CAS compare, which is already a
+    no-op refund (the fail-closed direction).
+    """
+    if not isinstance(raw, (list, tuple)):
+        raise RateLimitStoreCorrupt(
+            f"sliding-window script reply violates the 3-element contract: {raw!r}"
+        )
+    elements = cast("list[object]", raw)
+    if len(elements) < 3:
+        raise RateLimitStoreCorrupt(
+            f"sliding-window script reply violates the 3-element contract: {raw!r}"
+        )
+    try:
+        allowed = int(elements[0])  # pyright: ignore[reportArgumentType]  # Why: the element is object after the shape check; int() accepts int | str | bytes at runtime
+        second = int(elements[1])  # pyright: ignore[reportArgumentType]  # Why: same object element boundary
+        third = int(elements[2])  # pyright: ignore[reportArgumentType]  # Why: same object element boundary
+    except (TypeError, ValueError) as exc:
+        raise RateLimitStoreCorrupt(f"sliding-window script reply is not numeric: {raw!r}") from exc
+    if allowed not in (0, 1):
+        raise RateLimitStoreCorrupt(
+            f"sliding-window script reply has an impossible verdict: {raw!r}"
+        )
+    if gcra:
+        count_or_remaining, retry_after_ms = third, second
+    else:
+        count_or_remaining, retry_after_ms = second, third
+    if not (0 <= count_or_remaining <= limit):
+        raise RateLimitStoreCorrupt(
+            f"sliding-window script reply reports a count outside [0, limit={limit}]: {raw!r}"
+        )
+    if not (0 <= retry_after_ms <= ttl_ms):
+        # The denial hint cannot ask for a wait longer than the key's
+        # own lifetime (the key expires and the next acquire starts
+        # fresh), and a negative wait is not a wait. Both are lies; the
+        # huge case was a timedelta OverflowError crash before this
+        # boundary existed.
+        raise RateLimitStoreCorrupt(
+            f"sliding-window script reply has a retry hint outside [0, ttl_ms={ttl_ms}]: {raw!r}"
+        )
+    return allowed == 1, count_or_remaining, retry_after_ms
+
+
+def _gcra_tat_strings(raw: list[object] | tuple[object, ...]) -> tuple[str, str]:
+    """Decode the GCRA reply's optional CAS echo elements (indexes 3 and 4)."""
+    pre, post = raw[3], raw[4]
+    pre_str = pre.decode() if isinstance(pre, bytes) else str(pre)
+    post_str = post.decode() if isinstance(post, bytes) else str(post)
+    return pre_str, post_str
 
 
 async def _ensure_log_script(
@@ -138,9 +223,9 @@ async def _acquire_redis_log(
 
     raw: list[object] = await script(keys=[key], args=argv)  # pyright: ignore[reportAssignmentType, reportUnknownMemberType, reportUnknownVariableType]  # Why: redis-py AsyncScript.__call__ has no return-type annotation, pyright cannot model the return shape; the three-element list structure is guaranteed by the Lua script contract
 
-    allowed = int(raw[0]) == 1  # pyright: ignore[reportArgumentType]  # Why: raw[0] is int | bytes from Redis; int() accepts both at runtime
-    count = int(raw[1])  # pyright: ignore[reportArgumentType]  # Why: raw[1] is int | bytes from Redis; int() accepts both
-    retry_after_ms = int(raw[2])  # pyright: ignore[reportArgumentType]  # Why: raw[2] is int | bytes from Redis; int() accepts both
+    allowed, count, retry_after_ms = _validate_script_reply(
+        raw, limit=self._limit, ttl_ms=ttl_ms, gcra=False
+    )
 
     result = RateLimitDecision(
         allowed=allowed,
@@ -206,24 +291,13 @@ async def _acquire_redis_gcra(
 
     raw: list[object] = await script(keys=[key], args=argv)  # pyright: ignore[reportAssignmentType, reportUnknownMemberType, reportUnknownVariableType]  # Why: redis-py AsyncScript.__call__ has no return-type annotation, pyright cannot model the return shape; the three-element list structure is guaranteed by the Lua script contract
 
-    allowed = int(raw[0]) == 1  # pyright: ignore[reportArgumentType]  # Why: raw[0] is int | bytes from Redis; int() accepts both at runtime
-    retry_after_ms = int(raw[1])  # pyright: ignore[reportArgumentType]  # Why: raw[1] is int | bytes from Redis; int() accepts both
-    remaining_estimate = int(raw[2])  # pyright: ignore[reportArgumentType]  # Why: raw[2] is int | bytes from Redis; int() accepts both
+    allowed, remaining_estimate, retry_after_ms = _validate_script_reply(
+        raw, limit=self._limit, ttl_ms=ttl_ms, gcra=True
+    )
 
     previous_state: dict[str, object] | None = None
     if allowed and len(raw) >= 5:
-        pre_acquire_tat_str = raw[3]  # pyright: ignore[reportArgumentType]  # Why: raw[3] is bytes | str from Redis (Lua tostring); runtime type is correct
-        post_acquire_tat_str = raw[4]  # pyright: ignore[reportArgumentType]  # Why: raw[4] is bytes | str from Redis (Lua tostring); runtime type is correct
-        pre_str = (
-            pre_acquire_tat_str.decode()
-            if isinstance(pre_acquire_tat_str, bytes)
-            else str(pre_acquire_tat_str)
-        )
-        post_str = (
-            post_acquire_tat_str.decode()
-            if isinstance(post_acquire_tat_str, bytes)
-            else str(post_acquire_tat_str)
-        )
+        pre_str, post_str = _gcra_tat_strings(raw)
         previous_state = {
             "pre_acquire_tat_str": pre_str,
             "post_acquire_tat_str": post_str,
@@ -288,9 +362,18 @@ async def _peek_redis_log(
     # exhaustion while the next acquire is allowed.
     now_ms = await redis_time_seconds(redis_client) * 1000
     cutoff_ms = now_ms - window_ms
-    count = int(
-        await redis_client.zcount(key, f"({cutoff_ms}", "+inf")  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]  # Why: redis-py zcount return type is untyped in the stub
-    )
+    zcount_raw = await redis_client.zcount(key, f"({cutoff_ms}", "+inf")  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]  # Why: redis-py zcount return type is untyped in the stub
+    try:
+        count = int(zcount_raw)  # pyright: ignore[reportUnknownArgumentType]  # Why: untyped stub boundary; validated by the conversion and the range check below
+    except (TypeError, ValueError) as exc:
+        raise RateLimitStoreCorrupt(
+            f"sliding-window log peek read a non-numeric ZCARD: {zcount_raw!r}"
+        ) from exc
+    if count < 0:
+        # A negative window count is a lie (a ZCARD reply is a cardinality);
+        # a count above limit is honest and only overstates exhaustion,
+        # the fail-closed direction, so it is not a lie verdict.
+        raise RateLimitStoreCorrupt(f"sliding-window log peek read a negative count: {count}")
     is_exhausted = count >= self._limit
     retry_after: timedelta | None = None
 
@@ -305,6 +388,15 @@ async def _peek_redis_log(
                 if isinstance(oldest_entry, (list, tuple))
                 else float(oldest_entry)
             )  # pyright: ignore[reportUnknownArgumentType]  # Why: redis-py zrangebyscore return type is untyped in the stub; isinstance narrowing is sufficient at runtime.
+            if not math.isfinite(oldest_score) or not (cutoff_ms < oldest_score <= now_ms):
+                # The member was selected inside the window by the same
+                # store clock this function just read, so its score is
+                # within (cutoff, now]; a score outside is a lie (and a
+                # huge one was a timedelta OverflowError crash before
+                # this boundary existed).
+                raise RateLimitStoreCorrupt(
+                    f"sliding-window log peek read a score outside its own window: {oldest!r}"
+                )
             retry_ms = int(oldest_score) + window_ms - now_ms
             retry_after = timedelta(milliseconds=max(1, retry_ms))
 
@@ -340,7 +432,18 @@ async def _peek_redis_gcra(
 
     now_ms = await redis_time_seconds(redis_client) * 1000
     tat_raw = await redis_client.get(key)  # pyright: ignore[reportUnknownMemberType]  # Why: redis-py get return type is untyped in the stub
-    tat = float(tat_raw) if tat_raw else now_ms
+    try:
+        tat = float(tat_raw) if tat_raw else now_ms
+    except (TypeError, ValueError) as exc:
+        # A TAT value no honest SET could have written (the script writes
+        # Lua tostring() of a number) is a store lie, failed closed as
+        # the outage it is indistinguishable from, never a ValueError
+        # crash with no provenance.
+        raise RateLimitStoreCorrupt(
+            f"sliding-window GCRA peek read a non-numeric TAT: {tat_raw!r}"
+        ) from exc
+    if not math.isfinite(tat):
+        raise RateLimitStoreCorrupt(f"sliding-window GCRA peek read a non-finite TAT: {tat_raw!r}")
     tat = max(tat, now_ms)
 
     remaining = float(max(0, int((delay_tolerance_ms - (tat - now_ms)) / emission_interval_ms)))

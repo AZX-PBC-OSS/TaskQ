@@ -220,7 +220,10 @@ async def test_peek_redis_log_exhausted() -> None:
             num: int = 1,
             withscores: bool = False,
         ) -> list[object]:
-            return [(b"req1", 1000.0)]
+            # In-window score (the query's exclusive lower bound is
+            # cutoff = 1_990_000 ms; a reply outside it cannot occur on
+            # the wire and the trust boundary rejects it as a lie).
+            return [(b"req1", 1_995_000.0)]
 
     from taskq.ratelimit._sliding_window_redis import _peek_redis_log
 

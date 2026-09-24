@@ -2,11 +2,13 @@
 and the store-clock read."""
 
 import asyncio
+import math
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import structlog
 
+from taskq.exceptions import RateLimitStoreCorrupt
 from taskq.ratelimit.decision import RateLimitDecision
 
 if TYPE_CHECKING:
@@ -29,9 +31,36 @@ async def redis_time_seconds(redis_client: "redis_async.Redis") -> float:
 
     Used by the non-script peek paths so their elapsed/refill estimates run
     in the same clock domain as the admission state they read.
+
+    The reply is validated at this trust boundary: a lying proxy answering
+    a malformed tuple (wrong arity, non-numeric fields) must not crash the
+    caller with a ``ValueError``/``TypeError``/``IndexError`` that no
+    fallback or dependency-failure handler recognises. A corrupt reply
+    raises :class:`RateLimitStoreCorrupt`, the same class as a store that
+    cannot answer, so every downstream path treats it as the outage it
+    indistinguishable from.
     """
-    t = await redis_client.time()  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  # Why: redis-py time() return type is untyped in the stub; returns (seconds, microseconds)
-    return float(t[0]) + float(t[1]) / 1_000_000  # pyright: ignore[reportUnknownArgumentType, reportIndex]  # Why: t is an untyped sequence of two ints from the redis-py stub; validated at runtime
+    t_raw = cast("object", await redis_client.time())  # pyright: ignore[reportUnknownMemberType]  # Why: redis-py time() return type is untyped in the stub; returns (seconds, microseconds). The cast to object is the trust boundary itself: the stub's tuple[int, int] describes what an HONEST store sends, and a lying proxy's reply must reach the shape check un-narrowed.
+    if not isinstance(t_raw, (list, tuple)):
+        raise RateLimitStoreCorrupt(
+            f"redis TIME reply violates the (seconds, microseconds) contract: {t_raw!r}"
+        )
+    t_seq = cast("list[object]", t_raw)
+    if len(t_seq) != 2:
+        raise RateLimitStoreCorrupt(
+            f"redis TIME reply violates the (seconds, microseconds) contract: {t_raw!r}"
+        )
+    t_seq = cast("list[object]", t_raw)
+    try:
+        seconds = float(t_seq[0])  # pyright: ignore[reportArgumentType]  # Why: the element is object after the shape check; float() accepts int | str | bytes at runtime
+        micros = float(t_seq[1])  # pyright: ignore[reportArgumentType]  # Why: same object element boundary
+    except (TypeError, ValueError) as exc:
+        raise RateLimitStoreCorrupt(f"redis TIME reply is not numeric: {t_raw!r}") from exc
+    if not (math.isfinite(seconds) and math.isfinite(micros)):
+        # nan/inf: a real clock is a finite number, a proxy answering
+        # either is lying.
+        raise RateLimitStoreCorrupt(f"redis TIME reply is not finite: {t_raw!r}")
+    return seconds + micros / 1_000_000
 
 
 async def with_pg_fallback(
@@ -56,6 +85,16 @@ async def with_pg_fallback(
     :class:`redis.exceptions.NoScriptError` is also a ``ResponseError``
     sibling, and redis-py handles it client-side (``Script.__call__``
     re-EVALs after a fresh SCRIPT LOAD), so it never signals a store outage.
+
+    :class:`RateLimitStoreCorrupt` is named beside them: it is TaskQ's own
+    trust-boundary verdict that the reply the store DID send is a lie
+    (out of the reply's type or range domain), which is indistinguishable
+    from a store that cannot serve and gets the same treatment, admission
+    re-run against the durable PG row. It subclasses
+    :class:`RateLimitDependencyUnavailable` (so the acquire boundary's
+    dependency-failure family recognises it when no fallback is wired)
+    and is deliberately NOT a redis ``ResponseError`` sibling: it marks
+    TaskQ's verdict, not redis's.
 
     The WARNING log is emitted **before** delegating to the PG path so that
     if the PG path also emits an INFO denial log, the WARNING precedes the
@@ -83,6 +122,7 @@ async def with_pg_fallback(
         _redis_mod.TimeoutError,
         _RedisReadOnlyError,
         _RedisOutOfMemoryError,
+        RateLimitStoreCorrupt,
     ) as exc:
         if settings is None or not settings.rate_limit_pg_fallback_enabled:
             raise

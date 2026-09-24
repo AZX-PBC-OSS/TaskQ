@@ -654,6 +654,33 @@ class RateLimitDependencyUnavailable(RuntimeError):
     """
 
 
+class RateLimitStoreCorrupt(RateLimitDependencyUnavailable):
+    """A limiter store answered, but the reply violates the reply contract.
+
+    The trust-boundary verdict for a store that LIES: a semantically
+    wrong reply (a value outside the reply's type or range domain, a
+    truncated or wrongly-shaped payload) is indistinguishable from a
+    store that cannot serve, so it is failed closed as exactly that.
+    Raised by the Redis reply validators (the token-bucket and
+    sliding-window Lua decoders, the peek-path parsers, the store-clock
+    read) when a reply carries a value no honest script could produce:
+    a token count outside ``[0, capacity]``, a negative token count, a
+    non-finite or negative retry hint, a window count outside
+    ``[0, limit]``, a retry hint past the key's own TTL, a malformed
+    ``TIME`` tuple.
+
+    Subclassing :class:`RateLimitDependencyUnavailable` is the routing
+    mechanism, not a convenience: the acquire boundary's
+    ``_RATE_LIMIT_DEPENDENCY_EXCEPTIONS`` family already includes the
+    parent, so a lie synthesizes the same non-consuming fail-closed
+    denial an outage gets (never a burnt attempt, never the lie's value
+    persisted as the job's error), and :func:`taskq.ratelimit
+    ._redis_utils.with_pg_fallback` names this class explicitly beside
+    the outage exceptions so a suspected lie re-runs admission against
+    the durable PG row, the same fallback path an outage takes.
+    """
+
+
 class IllegalStateTransition(TaskQError):
     """Attempted to transition a job to a status not reachable from its current status.
 
