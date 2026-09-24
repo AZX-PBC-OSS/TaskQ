@@ -450,6 +450,81 @@ def test_record_ratelimit_refund_failure_disabled() -> None:
     otel_mod.set_otel_enabled(True)
 
 
+def test_record_ratelimit_refund_failure_bucket_label_capped(
+    otel_reader: InMemoryMetricReader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A keyed bucket's ``bucket`` label collapses past the admission cap.
+
+    The handle name of a keyed rate limit is ``base_name:key`` where *key*
+    is caller-controlled payload data (a tenant id), so carried as-is the
+    counter would mint one never-released OTel series per distinct key
+    ever seen. With the cap, the first ``_MAX_BUCKET_LABEL_VALUES`` names
+    keep their own series and later names share the ``_other_`` series:
+    the data-point count is bounded at cap + 1 no matter how many names
+    the callers mint.
+    """
+    monkeypatch.setattr(otel_mod, "_bucket_label_values", set())
+    for n in range(otel_mod._MAX_BUCKET_LABEL_VALUES + 50):
+        obs_mod.record_ratelimit_refund_failure(
+            f"tenant-bucket:tenant-{n}", "redis", error_type="TimeoutError"
+        )
+
+    dps = counter_data_points(otel_reader, "taskq.ratelimit.refund_failures")
+    assert len(dps) == otel_mod._MAX_BUCKET_LABEL_VALUES + 1
+    overflow_attrs = {
+        "bucket": otel_mod._BUCKET_LABEL_OVERFLOW,
+        "backend": "redis",
+        "error_type": "TimeoutError",
+    }
+    overflow = [dp for dp in dps if dp.attributes == overflow_attrs]
+    assert len(overflow) == 1
+    assert overflow[0].value == 50
+
+
+def test_bounded_bucket_admits_first_n_then_overflows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Admitted names keep their own series; the cap never evicts."""
+    monkeypatch.setattr(otel_mod, "_bucket_label_values", set())
+    for n in range(otel_mod._MAX_BUCKET_LABEL_VALUES):
+        assert otel_mod._bounded_bucket(f"bucket:{n}") == f"bucket:{n}"
+    assert otel_mod._bounded_bucket("bucket:over") == otel_mod._BUCKET_LABEL_OVERFLOW
+    assert otel_mod._bounded_bucket("bucket:over-again") == otel_mod._BUCKET_LABEL_OVERFLOW
+    # An admitted name is still admitted after the cap is reached.
+    assert otel_mod._bounded_bucket("bucket:0") == "bucket:0"
+
+
+def test_refund_failure_series_bounded_under_key_churn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Growth pin: 20k distinct keyed-bucket names -> OTel series count bounded.
+
+    This is the slow-leak shape: a worker that spends weeks refunding
+    keyed buckets whose keys churn must not accumulate one OTel storage
+    element per (key, backend, error_type) triple ever seen. The pin runs
+    the public emitter against a real OTel SDK meter and asserts the
+    reader's series count is hard-bounded at cap + 1.
+    """
+    from opentelemetry.sdk.metrics import MeterProvider
+
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    meter = provider.get_meter(obs_mod.INSTRUMENTATION_NAME, otel_mod._version())
+    monkeypatch.setattr(
+        otel_mod,
+        "_ratelimit_refund_failures",
+        meter.create_counter("taskq.ratelimit.refund_failures"),
+    )
+    monkeypatch.setattr(otel_mod, "_bucket_label_values", set())
+    otel_mod.set_otel_enabled(True)
+
+    for n in range(20_000):
+        obs_mod.record_ratelimit_refund_failure(
+            f"tenant-bucket:tenant-{n}", "redis", error_type="TimeoutError"
+        )
+
+    data = reader.get_metrics_data()
+    assert data is not None
+    (metric,) = data.resource_metrics[0].scope_metrics[0].metrics
+    assert len(metric.data.data_points) == otel_mod._MAX_BUCKET_LABEL_VALUES + 1
+
+
 # ── instruments 14-15: taskq.leader.election_attempts / election_failures ──
 
 

@@ -464,7 +464,7 @@ you *which* jobs absorbed them.
 | `taskq.leader.election_failures` | `1` | n/a | Election attempts that did not win the lock. | yes |
 | `taskq.error_reporter.failures` | `1` | `reporter_type` | `ErrorReporter` invocation failures. | yes |
 | `taskq.progress.publish_failures` | `1` | `channel`, `error_type` | Redis publish failures for progress fanout. `channel` is `per_job` or `global`; `error_type` is the exception class name. | yes |
-| `taskq.ratelimit.refund_failures` | `1` | `bucket`, `backend`, `error_type` | Rate-limit refund/rollback failures. `error_type` is the exception class name. | yes |
+| `taskq.ratelimit.refund_failures` | `1` | `bucket`, `backend`, `error_type` | Rate-limit refund/rollback failures. `error_type` is the exception class name. The `bucket` label is capped: the first 100 distinct names a process sees keep their series, later names collapse onto `_other_`; per-bucket attribution stays on the `ratelimit-rollback-failure` log line. | yes |
 | `taskq.ratelimit.denials` | `1` | `backend` | Rate-limit decisions that denied admission. Bucket names are not a dimension (caller-controlled cardinality). | yes |
 | `taskq.ratelimit.acquire_dependency_failures` | `1` | `error_type` | Rate-limit acquires that failed on a store dependency (Redis or the PG fallback) and were failed closed as denials: an availability signal, distinct from `taskq.reservation.denials` (admission decisions). Read the two together before scaling a bucket; `error_type` is the exception class name. | yes |
 | `taskq.reservation.denials` | `1` | `source` | Reservation/rate-limit admission denials surfaced to a worker handler. `source` is `reservation` or `rate_limit`. Bucket names are not a dimension. | yes |
@@ -619,6 +619,16 @@ names a process sees and collapses the rest onto `_other_`. Every other
 actor-labeled instrument receives actors that flowed through registration
 (`ActorRef` names on the job side, `actor_config`-resolved names on the cron
 success/suppression paths) and carries them as-is.
+
+The `bucket` label on `taskq.ratelimit.refund_failures` is capped the same
+way `queue` is, and for the sharpest reason yet: a keyed bucket's handle name
+is `base_name:key` and the key part is caller-controlled payload data (a
+tenant id, a session id) with no cardinality bound, so carried as-is every
+distinct key ever seen would mint one never-released series for the life of
+the process. The first 100 distinct bucket names a process sees keep their
+own series and later names collapse onto `_other_`. Per-bucket attribution is
+not lost: the concrete handle name rides the `ratelimit-rollback-failure` log
+line emitted at the same catch site, where cardinality is free.
 
 Azure Monitor counts every unique combination of metric name, dimension key and
 dimension value published in the last 12 hours as an *active time series*, caps
