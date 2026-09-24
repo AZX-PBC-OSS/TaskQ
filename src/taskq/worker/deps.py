@@ -319,6 +319,20 @@ class WorkerDeps:
     # gauge and health report expose, while the term is what leader-gated
     # work must consult per iteration (see `leading`).
     leader_term: LeaderTerm | None = None
+    registered_worker_id: UUID | None = None
+    """The ``workers`` row this process inserted at boot, once
+    ``register_worker`` commits. The boot-failure backstop in ``_main``
+    reads it from ``deps._exit_stack``'s teardown: a boot that raises
+    AFTER the row exists but BEFORE the TaskGroup's deregister finally is
+    reached (a drift refusal, a missing-column refusal, a cron or queue
+    -cap sync failure) leaves the context through unwinding, not through
+    the TaskGroup, and without this backstop the row would sit freshly
+    heartbeated with no process behind it until the staleness sweep reaps
+    it a whole ``worker_staleness`` later (the dramatiq #441
+    orphaned-workers shape). The TaskGroup's shutdown finally clears this
+    after its own successful ``deregister_worker``, so on every path that
+    already cleaned up the backstop's DELETE is a no-op; on every path
+    that did not, the backstop is the cleanup."""
     producer_stop_event: asyncio.Event = field(default_factory=asyncio.Event)
     active_jobs: ActiveJobRegistry = field(default_factory=ActiveJobRegistry)
     shutdown_phase: ShutdownPhase = ShutdownPhase.NONE

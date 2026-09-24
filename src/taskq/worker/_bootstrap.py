@@ -1859,6 +1859,32 @@ async def _main(
 
         structlog.contextvars.bind_contextvars(worker_id=str(worker_id))
 
+        # Boot-failure deregistration backstop (the dramatiq #441 shape):
+        # from here until the TaskGroup's finally takes over, any raise
+        # (an actor-config drift refusal, the queues.max_concurrent
+        # missing-column refusal, a queue-cap sync failure, a cron
+        # registration failure) leaves this context through unwinding,
+        # and without the backstop the workers row would outlive the
+        # process fresh-heartbeated, invisible to nothing until the
+        # staleness sweep reaps it a whole worker_staleness later. The
+        # callback rides deps._exit_stack, which unwinds FIRST at context
+        # exit, while the dispatcher pool is still open. On every path
+        # that reached the TaskGroup's finally, that finally already
+        # deleted the row and cleared deps.registered_worker_id, so this
+        # is a no-op there; the flag also stays set when the finally's
+        # own deregister FAILED, making this the retry.
+        deps.registered_worker_id = worker_id
+
+        async def _deregister_on_boot_failure() -> None:
+            if deps.registered_worker_id is None:
+                return
+            deps.registered_worker_id = None
+            with contextlib.suppress(Exception):
+                await deregister_worker(deps.dispatcher_pool, settings, worker_id)
+
+        assert deps._exit_stack is not None  # open_worker_deps owns the stack while yielding
+        deps._exit_stack.push_async_callback(_deregister_on_boot_failure)
+
         if actor_registry is not None:
             # Why: in this block, not the earlier actor_registry block
             # above. Tradeoff: the earlier block needs nothing from the
@@ -2451,6 +2477,10 @@ async def _main(
                 # the fleet-level backstop, start from a staler picture.
                 try:
                     await deregister_worker(deps.dispatcher_pool, settings, worker_id)
+                    # Cleared only on success: a failed deregister leaves the
+                    # flag set so the deps-teardown backstop retries the
+                    # delete while the dispatcher pool is still open.
+                    deps.registered_worker_id = None
                 except Exception:
                     _producer_log.warning(
                         "deregister_worker_failed_in_cleanup",
