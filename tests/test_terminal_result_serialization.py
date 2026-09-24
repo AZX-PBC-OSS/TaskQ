@@ -414,7 +414,7 @@ async def test_in_memory_result_bytes_invalid_json_raises_value_error() -> None:
 async def test_in_memory_non_object_valid_json_result_reads_back_like_pg() -> None:
     """Any valid JSON the guard accepts must be readable back on the
     mirror exactly as PG reads it back. PG accepts any valid JSON in the
-    result column and reads it verbatim through ``jsonb_to_dict`` ->
+    result column and reads it verbatim through ``jsonb_to_value`` ->
     ``loads``, so a JSON array stores and reads back as ``[1, 2]``. The
     mirror's guard accepts the same bytes (they are valid JSON), but its
     read path assumes a dict and must not crash on the stored value."""
@@ -651,7 +651,7 @@ class TestResultBytesAgainstPostgres:
         """The mirror's non-object round-trip test asserts parity with a PG
         behavior it only reads in code - anchor it: a JSON array result
         stores and reads back verbatim on the reference implementation
-        (``jsonb_to_dict`` -> ``loads`` passes the list through), which is
+        (``jsonb_to_value`` -> ``loads`` passes the list through), which is
         what licenses the mirror to do the same."""
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend

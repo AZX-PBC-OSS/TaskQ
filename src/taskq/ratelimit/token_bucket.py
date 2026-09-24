@@ -674,7 +674,7 @@ class TokenBucket:
         if row is None:
             tokens = self._capacity
         else:
-            state = jsonb_to_dict(row["state"])
+            state = jsonb_to_dict(row["state"], column="state")
             tokens = float(state.get("tokens", self._capacity))  # type: ignore[index]  # Why: rate_limit_buckets.state is NOT NULL; jsonb_to_dict only returns None for SQL NULL, which cannot occur here; fallback for rows missing keys (e.g. from schema migrations or interop writes)
 
         is_exhausted = tokens <= 0.0
@@ -863,7 +863,7 @@ class TokenBucket:
                 return
 
             now = float(row["now_s"])
-            state = jsonb_to_dict(row["state"])
+            state = jsonb_to_dict(row["state"], column="state")
             tokens = float(state.get("tokens", self._capacity))  # type: ignore[index]  # Why: rate_limit_buckets.state is NOT NULL; jsonb_to_dict only returns None for SQL NULL, which cannot occur here; fallback for rows missing keys (e.g. from schema migrations or interop writes)
             ts = float(state.get("ts", now))  # type: ignore[index]  # Why: same, state is non-None; fallback to now for rows missing "ts"
 

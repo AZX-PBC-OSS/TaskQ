@@ -65,6 +65,18 @@ _cancel_notify_received_counter = _meter.create_counter(
     name="taskq.notify.cancel_received",
     description="Total cancel NOTIFY callbacks delivered to this worker.",
 )
+_notify_payload_parse_failed_counter = _meter.create_counter(
+    name="taskq.notify.payload_parse_failed",
+    description=(
+        "Total NOTIFY payloads discarded because they did not parse to the "
+        "expected JSON envelope. A drop is the correct outcome for a "
+        "channel TaskQ does not exclusively own, but it must be visible: "
+        "without this counter a publisher that stopped emitting the "
+        "envelope (a schema change, a foreign writer on the channel) is "
+        "indistinguishable from a quiet channel."
+    ),
+    unit="1",
+)
 
 _active_listeners: set[PostgresBackend] = set()
 _connected_lookup: dict[PostgresBackend, bool] = {}
@@ -162,7 +174,8 @@ def _make_events_callback(
             return
         try:
             msg: dict[str, object] = json_loads(payload)
-        except Exception:
+        except Exception:  # Why: a malformed payload on a channel TaskQ does not exclusively own must be dropped WITH its counter, never crash the sync callback asyncpg invokes.
+            _notify_payload_parse_failed_counter.add(1)
             logger.debug("notify-payload-parse-failed", channel=channel, payload=payload[:200])
             return
         if msg.get("type") != "cancel":
@@ -205,7 +218,10 @@ def _make_worker_events_callback(
             return
         try:
             msg: dict[str, object] = json_loads(payload)
-        except Exception:
+        except (
+            Exception
+        ):  # Why: same drop-with-its-counter contract as the fleet-wide callback above.
+            _notify_payload_parse_failed_counter.add(1)
             logger.debug("notify-payload-parse-failed", channel=channel, payload=payload[:200])
             return
         if msg.get("type") != "cancel":

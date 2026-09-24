@@ -17,15 +17,16 @@ import time
 import weakref
 from collections.abc import Callable
 from datetime import timedelta
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
 import asyncpg
 
+from taskq._json import sanitize_nul_str
 from taskq.backend._dispatch_sql import (
     dispatch_batch as dispatch_batch_helper,
 )
-from taskq.backend._protocol import ConnLike, JobRow
+from taskq.backend._protocol import ConnLike, JobId, JobRow
 from taskq.backend._records import (
     _job_row_from_record,
 )
@@ -33,12 +34,15 @@ from taskq.backend._sql_templates import SqlTemplates
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
 )
+from taskq.exceptions import CorruptJobDataError
 from taskq.obs import (
     get_logger,
+    record_corrupt_dispatch_row,
     record_dispatch_duration,
     record_dispatch_failure,
     record_pool_acquire_duration,
 )
+from taskq.obs._redact_exc import safe_exception_message
 
 if TYPE_CHECKING:
     import asyncpg
@@ -222,6 +226,13 @@ async def _dispatch_batch(
     audit entries; the claim itself writes no row, so the jobs table cannot
     grow per claim. The claim's observability rides the ``kind='dispatch'``
     log line and OTEL span in ``_dispatch_sql.dispatch_batch``.
+
+    One claimed row can still fail to DECODE (``_decode_claimed_rows``):
+    a row whose jsonb columns hold garbage is terminally failed in the
+    round with ``error_class='CorruptJobDataError'`` and the round's
+    healthy rows still dispatch. That write is the exception to the
+    no-job_events-rows rule on this path, and it is the row's terminal
+    failure, not a claim record.
     """
     queue_attr = queues[0] if queues else ""
     # Autocommit, deliberately: the claim is one atomic UPDATE … RETURNING
@@ -340,6 +351,15 @@ async def _dispatch_batch(
                     expansion=expansions,
                     oversample=oversample,
                 )
+            # The claimed records are decoded to JobRows while the round's
+            # connection is still checked out: a poisoned row's terminal
+            # fail-write (see _decode_claimed_rows) runs on THIS
+            # connection. Decoding after the release made every fail-write
+            # raise InterfaceError ("connection has been released back to
+            # the pool") and degrade to the retry-next-round warning, the
+            # poison row then loops through claim and reclaim forever -
+            # the real-PG pin caught exactly that.
+            rows = await _decode_claimed_rows(conn, sql, records, worker_id, queue_attr)
             # Claims deliberately write NO job_events rows (see this
             # function's docstring above): the dispatch log line and OTEL
             # span carry the observability.
@@ -364,7 +384,106 @@ async def _dispatch_batch(
         # __aexit__ sees exactly what the async-with form would have
         # passed it.
         await pool_ctx.__aexit__(*sys.exc_info())
-    return [_job_row_from_record(rec) for rec in records]
+    return rows
+
+
+async def _decode_claimed_rows(
+    conn: ConnLike,
+    sql: SqlTemplates,
+    records: list[Any],
+    worker_id: UUID,
+    queue_attr: str,
+) -> list[JobRow]:
+    """Convert the claimed records, failing a poisoned row terminally.
+
+    The decode boundary sits AFTER the claim statement has committed (the
+    claim is one autocommit UPDATE...RETURNING), so a row whose jsonb
+    columns decode to garbage has ALREADY cost its claim. Letting the
+    decode exception escape here makes the whole round the producer loop's
+    problem: the round raises ``JSONDecodeError`` unclassified, the
+    unexpected-failure backstop counts it (and at its consecutive cap
+    kills the worker), and the poisoned row itself is stuck claimed until
+    the lease sweep reclaims it into the identical failure, a poison loop
+    with no terminal state.
+
+    So each row is decoded alone. A row that refuses to decode is failed
+    TERMINALLY on the same connection through the standard fused
+    ``mark_failed`` statement, ``error_class='CorruptJobDataError'``, the
+    same attempt/claim_epoch fence every other terminal write uses, a
+    ``job_attempts`` row and a ``state_change`` event included, so the
+    failure is an honest job outcome a `job_events` reader sees, not a
+    worker crash. The fail-write failing (a dead connection) degrades to
+    a logged warning: the row stays claimed, the lease sweep reclaims it,
+    and the next round's decode retries the write. Either way the round's
+    remaining healthy rows dispatch, and the loop ticks on.
+    """
+    rows: list[JobRow] = []
+    for rec in records:
+        try:
+            rows.append(_job_row_from_record(rec))
+        except CorruptJobDataError as exc:
+            await _fail_corrupt_claimed_row(conn, sql, rec, exc, worker_id, queue_attr)
+    return rows
+
+
+async def _fail_corrupt_claimed_row(
+    conn: ConnLike,
+    sql: SqlTemplates,
+    rec: Any,
+    exc: CorruptJobDataError,
+    worker_id: UUID,
+    queue_attr: str,
+) -> None:
+    """Write one corrupt claimed row's terminal failure, best-effort fenced.
+
+    ``mark_failed``'s fence binds the claimed row's own attempt and
+    claim_epoch from the record, so the write can only land on the row
+    this round actually claimed. A no-op fence (the row moved underneath
+    us between claim and decode, a cancel or sweep won) is fine: the row
+    has an owner and its owner owns the outcome.
+    """
+    record_corrupt_dispatch_row(queue_attr, exc.column or "unknown")
+    job_id: JobId | None = None
+    try:
+        job_id = rec["id"]
+        matched = await conn.fetchrow(
+            sql.mark_failed,
+            job_id,
+            worker_id,
+            "CorruptJobDataError",
+            sanitize_nul_str(safe_exception_message(exc)),
+            None,  # error_traceback: a decode defect has none
+            rec["progress_seq"],
+            None,  # progress_state: keep whatever the row already holds
+            rec["attempt"],
+            rec["claim_epoch"],
+        )
+    except Exception as fail_exc:
+        # The fail-write could not land (dead connection is the realistic
+        # case). The row stays claimed; the lease sweep reclaims it and
+        # the next round's decode retries this write. Swallowed, not
+        # silenced: the warning names the row and both errors.
+        logger.warning(
+            "dispatch-corrupt-row-fail-write-failed",
+            kind="dispatch_corrupt_row_fail_write_failed",
+            job_id=str(job_id),
+            column=exc.column,
+            error=str(exc),
+            fail_error_class=type(fail_exc).__name__,
+            fail_error=str(fail_exc),
+            queue=queue_attr,
+        )
+        return
+    logger.warning(
+        "dispatch-corrupt-row-failed",
+        kind="dispatch_corrupt_row_failed",
+        job_id=str(job_id),
+        column=exc.column,
+        error=str(exc),
+        error_class="CorruptJobDataError",
+        fenced=matched is not None,
+        queue=queue_attr,
+    )
 
 
 async def _resolve_queue_modes_by_queue(

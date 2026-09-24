@@ -59,7 +59,7 @@ def _copy_result_value(value: Any) -> Any:
     The ``result`` field is typed ``dict[str, object] | None`` (the actor
     contract), but a direct ``mark_succeeded(result_bytes=...)`` caller
     can store any single JSON value, exactly as PG's jsonb column holds
-    it and reads it back (``jsonb_to_dict`` → ``loads`` returns the
+    it and reads it back (``jsonb_to_value`` → ``loads`` returns the
     array/bool/number/string verbatim), the mirror must read the same
     bytes back the same way, so this copy cannot assume a dict. Mutable
     container shapes get one new container (the shallow-copy line the

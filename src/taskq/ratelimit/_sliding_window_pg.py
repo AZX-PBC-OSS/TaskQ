@@ -136,7 +136,7 @@ async def _peek_pg_gcra(
             current_tat = now_seconds
         else:
             now_seconds = float(row["now_s"])
-            state = jsonb_to_dict(row["state"])
+            state = jsonb_to_dict(row["state"], column="state")
             current_tat = float(state.get("tat", now_seconds))  # type: ignore[index]  # Why: state is non-None; fallback to now_seconds for rows missing "tat"
 
     tat = max(now_seconds, current_tat)
