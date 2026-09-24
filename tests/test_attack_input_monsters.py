@@ -39,7 +39,7 @@ a mechanism, not a style preference. The inventory:
    arithmetic overflowed at INT_MAX (SQLSTATE 22003), the flush errored
    every tick, the terminal write's 22003 was misclassified as transient
    infrastructure, and the job was stuck ``running`` forever - re-executed
-   by every reclaim. Migrated to bigint (01.00.20_01); the JS-side double
+   by every reclaim. Migrated to bigint (01.00.20_03); the JS-side double
    precision bound (2^53) is documented at the comparison in realtime.js,
    and the poll's cursor reads the exact decimal from the ETag header.
 """
@@ -527,7 +527,7 @@ def test_bigint_migration_documents_the_full_rewrite_ops_window() -> None:
     "widens in place" / "no index rebuild" story: that understates the
     lock horizon and hides the rebuild from the ops-window arithmetic."""
     migration = (
-        Path(__file__).parents[1] / "src/taskq/migrations/01.00.20_01_pre_progress_seq_bigint.sql"
+        Path(__file__).parents[1] / "src/taskq/migrations/01.00.20_03_pre_progress_seq_bigint.sql"
     )
     header = migration.read_text(encoding="utf-8").lower()
     assert "rewrites" in header, "the header must state the full-table rewrite"
