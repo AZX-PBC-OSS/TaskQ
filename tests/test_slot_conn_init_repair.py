@@ -149,3 +149,40 @@ async def test_repair_path_terminates_on_hook_failure() -> None:
 
     assert applied_to == []
     assert physical.terminated is True
+
+
+async def test_repair_path_survives_a_hook_exception_with_a_hostile_str() -> None:
+    """The hook is registration-supplied code, so its exception's __str__
+    can raise too. The handler converts the failure into
+    SlotPoolAcquireError; an unguarded str() in the log or the detail
+    f-string would raise a fresh TypeError out of the handler and escape
+    the acquire classification entirely."""
+    applied_to: list[object] = []
+
+    class _UnprintableStr(Exception):  # noqa: N818  # Why: the name IS the mutation probe, matching the pin file's actor-shaped exception class.
+        def __str__(self) -> str:
+            raise TypeError("__str__ is a lie")
+
+    async def hostile_hook(conn: Any) -> None:
+        applied_to.append(conn)
+        raise _UnprintableStr()
+
+    registry = ProviderRegistry()
+    registry.register_factory(
+        asyncpg.Connection, Scope.LOOP, with_connection_init(lambda: None, hostile_hook)
+    )
+    physical = _PhysicalConn()
+    proxy = _PoolConnProxy(physical)
+    deps = _Deps()
+
+    with pytest.raises(dispatch_mod.SlotPoolAcquireError) as exc_info:
+        await _ensure_registered_init_on_slot_conn(
+            proxy,  # type: ignore[arg-type]
+            deps=deps,  # type: ignore[arg-type]
+            registry=registry,
+            acquire_timeout=5.0,
+            job_id=new_uuid(),
+        )
+
+    assert physical.terminated is True
+    assert "<exception str() failed>" in str(exc_info.value)

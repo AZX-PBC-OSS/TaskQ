@@ -44,6 +44,7 @@ from taskq.exceptions import (
     UnencodableValue,
     WorkerOwnershipMismatch,
 )
+from taskq.obs._redact_exc import safe_repr
 
 __all__ = [
     "MAX_ATTEMPTS_SMALLINT_CEILING",
@@ -817,7 +818,11 @@ def decide_after_failure(
             logger.warning(
                 "retry-classifier-hook-failed",
                 hook="retry_classifier",
-                error=repr(exc),
+                # Why safe_repr: the hook raised, its exception's __repr__
+                # can raise too, and this handler's contract is to swallow
+                # and continue (override = None) - a raising repr() would
+                # convert inside the handler and escape it.
+                error=safe_repr(exc),
             )
             override = None
 
@@ -863,7 +868,9 @@ async def _invoke_hook(
             job_id=str(job_row.id),
             actor=job_row.actor,
             hook=name,
-            error=repr(exc),
+            error=safe_repr(
+                exc
+            ),  # Why: hook exceptions are uncontrolled; a raising __repr__ must not escape the swallow (see safe_repr).
         )
         return
 
@@ -886,7 +893,9 @@ async def _invoke_hook(
             job_id=str(job_row.id),
             actor=job_row.actor,
             hook=name,
-            error=repr(exc),
+            error=safe_repr(
+                exc
+            ),  # Why: same uncontrolled-exception contract as the sync arm above.
         )
 
 

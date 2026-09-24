@@ -144,6 +144,8 @@ from taskq.obs._redact_exc import (
     record_exception_text,
     render_exception,
     safe_exception_message,
+    safe_repr,
+    safe_str,
     set_exception_message_max_chars,
     set_exception_redaction_enabled,
 )
@@ -238,7 +240,9 @@ __all__ = [
     "redact_payload",
     "render_exception",
     "safe_exception_message",
+    "safe_repr",
     "safe_start_span",
+    "safe_str",
     "set_exception_message_max_chars",
     "set_exception_redaction_enabled",
     "set_otel_enabled",

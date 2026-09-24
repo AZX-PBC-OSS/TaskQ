@@ -83,6 +83,8 @@ __all__ = [
     "render_exception",
     "safe_exception_message",
     "safe_exception_parts",
+    "safe_repr",
+    "safe_str",
     "scrub_exception_field",
     "set_exception_message_max_chars",
     "set_exception_redaction_enabled",
@@ -619,7 +621,10 @@ def render_exception(exc: BaseException) -> ExceptionText:
     return ExceptionText(
         type_name=type(exc).__qualname__,
         raw_stacktrace=raw_stacktrace,
-        message=ScrubbedText(_bound_message(_scrub_text(str(exc)))),
+        # Why safe_str: the exception is uncontrolled (an actor raises it);
+        # a __str__ that raises must degrade to the constant marker, not
+        # convert inside the handler that was classifying it.
+        message=ScrubbedText(_bound_message(_scrub_text(safe_str(exc)))),
         stacktrace=ScrubbedText(_scrub_text(raw_stacktrace)),
     )
 
@@ -631,8 +636,73 @@ def safe_exception_message(exc: BaseException) -> str:
     constraint or relation, which is the part that is actually diagnostic.
     ``HINT`` and ``CONTEXT`` are kept for the same reason -- neither carries
     row values, and both are what an operator reads next.
+
+    The ``str()`` is guarded: the exception is uncontrolled input (an actor
+    raises it), and an exception whose own ``__str__`` raises would otherwise
+    convert HERE, inside the handler that was classifying it, into an uncaught
+    ``TypeError`` that escapes the classification entirely. The fallback
+    mirrors CPython's own traceback rendering for the same condition
+    ("<exception str() failed>"), so sinks stay consistent.
     """
-    return _bound_message(_scrub_text(str(exc)))
+    return _bound_message(_scrub_text(safe_str(exc)))
+
+
+def safe_str(exc: BaseException) -> str:
+    """``str(exc)`` that cannot raise, for uncontrolled exceptions.
+
+    The one conversion every sink of raw exception text shares: a hostile
+    or broken ``__str__`` (an actor's exception class is the attacker's
+    code) must degrade to a constant marker instead of raising a fresh
+    exception inside a caller's ``except`` block and escaping the
+    classification that was running. Unlike :func:`safe_exception_message`
+    this is the RAW text (no scrub, no bound) - call sites that derive
+    stored/log fields from it apply their own guards
+    (``sanitize_nul_str``), and the render-once invariant
+    (``render_exception`` is the single scrub) is not paid twice. The
+    fallback marker mirrors CPython's own traceback rendering for the same
+    condition (measured on 3.14: ``format_exception`` survives and prints
+    ``Boom: <exception str() failed>``), so a reader sees one idiom. The
+    catch is a BARE ``except BaseException`` for the same reason CPython's
+    ``traceback._safe_string`` uses one: a ``__str__`` may raise any
+    ``BaseException`` subclass, and ``except Exception`` would let it
+    convert inside the guard. Swallowing a ``CancelledError`` here is safe:
+    this is a string-rendering helper, never an await point, so there is no
+    suspension it could strand.
+    """
+    try:
+        return str(exc)
+    # Why BaseException: CPython's traceback._safe_string idiom - a hostile
+    # __str__ may raise any BaseException subclass, and this helper is a
+    # pure string render, never an await point, so a swallowed
+    # CancelledError cannot strand anything.
+    except BaseException:
+        return "<exception str() failed>"
+
+
+def safe_repr(exc: BaseException) -> str:
+    """``repr(exc)`` that cannot raise, for uncontrolled exceptions.
+
+    The ``except``-handler logs that render ``repr(exc)`` (hook failures,
+    classifier failures) would otherwise have their own swallow converted
+    into an escape by a ``__repr__`` that raises - the same defect shape as
+    :func:`safe_str`, one level deeper. The fallback keeps the class name
+    because it is the one diagnostic that survives (pinned), but the NAME
+    ACCESS is guarded too: a metaclass can define ``__name__`` as a
+    property that raises, so even the interpolation is uncontrolled input
+    and degrades to ``<unknown>``.
+    """
+    try:
+        return repr(exc)
+    # Why BaseException: same reasoning as :func:`safe_str` directly above -
+    # a hostile __repr__ may raise any BaseException subclass, and this
+    # helper is a pure string render, never an await point, so a swallowed
+    # CancelledError cannot strand anything.
+    except BaseException:
+        try:
+            name = type(exc).__name__
+        except BaseException:
+            name = "<unknown>"
+        return f"<exception repr() failed: {name}>"
 
 
 #: A validated ``(cls, exc, tb)`` triple ready for ``traceback.format_exception``.

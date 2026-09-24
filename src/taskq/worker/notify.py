@@ -531,6 +531,7 @@ async def _health_check_loop(
             asyncpg.InterfaceError,
             asyncpg.InternalClientError,  # Why: container stop can leave the protocol in an inconsistent state (e.g. "cannot switch to state 15"); must trigger reconnect, not crash the worker.
             asyncpg.AdminShutdownError,  # Why: graceful PG shutdown raises AdminShutdownError, not PostgresConnectionError; without this the listener crashes the worker.
+            asyncpg.QueryCanceledError,  # Why: the server-side half of the same deadline family TimeoutError opens - a DBA pg_cancel_backend, or a role-level statement_timeout firing while the probe's round trip wedges server-side (a storage stall). It is a PostgresError, NOT a PostgresConnectionError, so the conn-loss arms never see it; uncaught it leaves this loop task, the bootstrap TaskGroup reads a sibling crash, and the worker tears down mid-blip - the exact outcome the AdminShutdownError arm above exists to prevent.
             OSError,
         ) as exc:
             recovered = await _recover_notify_conn(deps, backend, shutdown, channels, conn, exc)
@@ -595,6 +596,7 @@ async def notify_listener_loop(
             asyncpg.InterfaceError,
             asyncpg.InternalClientError,
             asyncpg.AdminShutdownError,
+            asyncpg.QueryCanceledError,  # Why: same 57014 hole the mid-run probe closed - a pg_cancel_backend or role-level statement_timeout racing the initial LISTEN round trips is infra-retryable, and this clause is the setup window's route into _recover_notify_conn; without it the escape kills the bootstrap TaskGroup.
             OSError,
         ) as exc:
             # The chaos window this clause exists for: a connection loss
@@ -643,7 +645,12 @@ async def notify_listener_loop(
             # family's existing execute bound; a timeout is another
             # suppressed failure, not a crash.
             with contextlib.suppress(
-                asyncpg.InterfaceError, RuntimeError, AttributeError, TimeoutError
+                asyncpg.InterfaceError,
+                RuntimeError,
+                AttributeError,
+                TimeoutError,
+                asyncpg.QueryCanceledError,  # Why: the shutdown UNLISTEN is best-effort on a conn being dropped; a server cancel or role-level statement_timeout racing it must not escape this finally - a raise here would REPLACE the in-flight shutdown exception and read as a listener crash instead of a suppressed teardown round trip.
+                OSError,  # Why: same best-effort contract, the socket can die mid-UNLISTEN (the conn-loss family the teardown close already owns).
             ):
                 await asyncio.wait_for(
                     deps.notify_conn.remove_listener(channel, on_notify_callback),  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess]  # Why: stubs over-narrow callback type; notify_conn is non-None after open_worker_deps
