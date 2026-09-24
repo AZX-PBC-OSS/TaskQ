@@ -654,6 +654,33 @@ def record_dispatch_failure(queue: str, error_type: str | None = None) -> None:
     )
 
 
+_corrupt_dispatch_rows = get_meter().create_counter(
+    "taskq.dispatch.corrupt_rows",
+    description=(
+        "Count of claimed rows whose jsonb columns could not be decoded to "
+        "the row contract, labeled by queue (capped -- see _bounded_queue) "
+        "and column (a closed set: payload, metadata, progress_state, "
+        "result). Each counted row is terminally failed in the same round "
+        "with error_class='CorruptJobDataError', so a poisoned row is "
+        "visible here instead of as a producer loop that keeps dying on "
+        "the unexpected-failure backstop."
+    ),
+    unit="1",
+)
+
+
+def record_corrupt_dispatch_row(queue: str, column: str) -> None:
+    """Bump the corrupt-claimed-row counter.
+
+    Called from the dispatch round's per-row decode path. ``column`` is
+    the jsonb column that refused to decode (a closed set). Respects
+    ``_otel_enabled``, no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _corrupt_dispatch_rows.add(1, {"queue": _bounded_queue(queue), "column": column})
+
+
 _consumed_messages = get_meter().create_counter(
     "messaging.client.consumed.messages",
     description=(

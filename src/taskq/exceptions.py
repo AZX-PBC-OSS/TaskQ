@@ -481,6 +481,36 @@ def __getattr__(name: str) -> object:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+class CorruptJobDataError(TaskQError):
+    """A stored jsonb column decoded to something its row contract refuses.
+
+    Two shapes trigger it at the decode boundary
+    (:func:`taskq.backend._records.jsonb_to_dict`): text that is not valid
+    JSON at all (a hand-corrupted row, schema drift to ``text``, an
+    interop writer), and valid JSON whose body is not the object the row
+    contract declares (a list or scalar in ``payload``/``metadata``/
+    ``progress_state``/``result``, e.g. a row written by a different
+    version's codec). The raw driver/JSON errors
+    (``orjson.JSONDecodeError``, a ``ValueError``) are re-raised as this
+    class so every consumer sees one named ``error_class`` instead of a
+    driver vocabulary word.
+
+    Non-retryable by construction: the bytes on disk cannot change by
+    re-reading them. The dispatch claim boundary
+    (:mod:`taskq.backend._dispatch`) catches this class per claimed row,
+    writes the row's terminal failure with
+    ``error_class='CorruptJobDataError'`` through the same fused
+    ``mark_failed`` statement every other failure uses, and dispatches
+    the round's remaining healthy rows, so one poisoned row can neither
+    crash the worker through the producer loop's unexpected-failure
+    backstop nor loop forever through claim and lease-sweep reclaim.
+    """
+
+    def __init__(self, detail: str, *, column: str | None = None) -> None:
+        self.column = column
+        super().__init__(detail)
+
+
 class ResultTooLarge(TaskQError):
     """Terminal result exceeded ``WorkerSettings.result_max_bytes``.
 

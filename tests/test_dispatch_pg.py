@@ -1203,3 +1203,89 @@ async def test_a_protocol_poisoned_round_discards_its_connection() -> None:
         "a protocol-poisoned connection must be terminated before release: "
         "releasing it intact wedges every later acquire on it"
     )
+
+
+# ── Corrupt jsonb decode at the claim boundary ────────────────────
+
+
+@pytest.mark.asyncio
+async def test_corrupt_jsonb_row_fails_terminally_round_survives(
+    jobs_app: JobsApp,
+) -> None:
+    """A row whose jsonb column holds valid-JSON-but-not-an-object (the
+    shape an interop writer or a different version's codec leaves, here
+    written straight into PG) must fail THAT row terminally with
+    error_class='CorruptJobDataError' and still let the round dispatch
+    its healthy rows. Before the classification, the decode raised a raw
+    JSONDecodeError out of the round: the producer loop's
+    unexpected-failure backstop counted it toward killing the worker and
+    the poisoned row looped forever through claim and lease-sweep
+    reclaim, never reaching a terminal state."""
+    deps = jobs_app.deps
+    backend = jobs_app.backend
+    schema = deps.settings.schema_name
+
+    async with deps.worker_pool.acquire() as conn:
+        await conn.execute(
+            f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2) '
+            "ON CONFLICT (actor) DO NOTHING",
+            "A",
+            "default",
+        )
+
+    healthy_args = make_enqueue_args(actor="A")
+    corrupt_args = make_enqueue_args(actor="A")
+    await backend.enqueue(healthy_args)
+    await backend.enqueue(corrupt_args)
+
+    worker_id = new_uuid()
+    async with deps.worker_pool.acquire() as conn:
+        # The corruption no enqueue path can produce, written the way an
+        # interop writer would: a JSON scalar in the dict-typed column.
+        await conn.execute(
+            f"UPDATE \"{schema}\".jobs SET payload = '5'::jsonb WHERE id = $1",
+            corrupt_args.id,
+        )
+        # Distinct attempt/claim_epoch at claim time: with both at 1 the
+        # fence binds are interchangeable and a swapped-bind mutation
+        # still matches. attempt=2 pre-claim makes the claimed row
+        # attempt=3, epoch=1, so each fence bind only matches its own
+        # argument position.
+        await conn.execute(
+            f'UPDATE "{schema}".jobs SET attempt = 2 WHERE id = $1',
+            corrupt_args.id,
+        )
+
+    dispatched = await backend.dispatch_batch(
+        worker_id=worker_id,
+        queues=["default"],
+        limit=10,
+        lock_lease=_LEASE,
+    )
+    assert [j.id for j in dispatched] == [healthy_args.id], (
+        "the round must dispatch exactly its healthy rows; the corrupt row "
+        "is failed in the round, not returned and not lost"
+    )
+
+    async with deps.worker_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f'SELECT status, error_class, error_message FROM "{schema}".jobs WHERE id = $1',
+            corrupt_args.id,
+        )
+    assert row is not None
+    assert row["status"] == "failed", (
+        "the corrupt row must reach a terminal state in the same round, "
+        "never loop through claim and reclaim"
+    )
+    assert row["error_class"] == "CorruptJobDataError"
+    assert "payload" in (row["error_message"] or "")
+
+    # The terminal write is a full citizen: the fused statement's
+    # job_events row exists too.
+    async with deps.worker_pool.acquire() as conn:
+        event = await conn.fetchrow(
+            f'SELECT kind FROM "{schema}".job_events WHERE job_id = $1 '
+            "ORDER BY occurred_at DESC LIMIT 1",
+            corrupt_args.id,
+        )
+    assert event is not None and event["kind"] == "state_change"

@@ -21,7 +21,7 @@ from taskq.backend._protocol import (
     parse_retry_kind,
 )
 from taskq.backend._sql import parse_rowcount
-from taskq.exceptions import PayloadValidationError
+from taskq.exceptions import CorruptJobDataError, PayloadValidationError
 
 if TYPE_CHECKING:
     import asyncpg
@@ -40,18 +40,46 @@ __all__ = [
 ]
 
 
-def jsonb_to_dict(value: str | dict[str, object] | None) -> dict[str, object] | None:
+def jsonb_to_dict(
+    value: str | dict[str, object] | None,
+    *,
+    column: str = "jsonb",
+) -> dict[str, object] | None:
     """Convert a jsonb column value from an asyncpg Record to a dict.
 
     asyncpg may return jsonb as a Python dict (if a custom codec is
     registered on the connection) or as a text string (default).  This
     helper normalises both paths.
+
+    The decode is classified here, at the boundary: text that parses
+    fails with :class:`~taskq.exceptions.CorruptJobDataError` (never the
+    raw ``orjson.JSONDecodeError``), and a JSON body that is not an
+    object (a list, scalar, or array a different version's codec or a
+    hand-corrupted row left in a dict-typed column) raises the same
+    class instead of landing a wrong-typed value in a
+    ``dict``-typed row field to ``AttributeError`` downstream. PG's own
+    jsonb invariant makes malformed text unreachable through an intact
+    schema; the classification exists for the shapes that reach Python
+    anyway (schema drift, interop writers, corruption).
     """
     if value is None:
         return None
     if isinstance(value, dict):
         return value
-    return loads(value)
+    try:
+        decoded = loads(value)
+    except ValueError as exc:
+        raise CorruptJobDataError(
+            f"{column} column holds text that is not valid JSON: {exc}",
+            column=column,
+        ) from exc
+    if not isinstance(decoded, dict):
+        raise CorruptJobDataError(
+            f"{column} column holds valid JSON whose body is "
+            f"{type(decoded).__name__}, not the object the row contract requires",
+            column=column,
+        )
+    return decoded  # pyright: ignore[reportUnknownVariableType]  # Why: orjson.loads returns Any; the isinstance narrowing above proves the dict shape but pyright sees the Any's dict as partially unknown, the same erasure every loads() consumer tolerates.
 
 
 def jsonb_param(value: dict[str, object] | None) -> str | None:
@@ -183,7 +211,7 @@ def _job_row_from_record(rec: "asyncpg.Record") -> JobRow:
         queue=rec["queue"],
         identity_key=IdentityKey(raw_identity) if raw_identity is not None else None,
         fairness_key=rec["fairness_key"],
-        payload=jsonb_to_dict(rec["payload"]) or {},
+        payload=jsonb_to_dict(rec["payload"], column="payload") or {},
         payload_schema_ver=rec["payload_schema_ver"],
         status=rec["status"],  # type: ignore[arg-type]  # Why: asyncpg returns PG enum as str; JobStatus is Literal[str, ...]
         priority=rec["priority"],
@@ -205,16 +233,16 @@ def _job_row_from_record(rec: "asyncpg.Record") -> JobRow:
         error_class=rec["error_class"],
         error_message=rec["error_message"],
         error_traceback=rec["error_traceback"],
-        progress_state=jsonb_to_dict(rec["progress_state"]) or {},
+        progress_state=jsonb_to_dict(rec["progress_state"], column="progress_state") or {},
         progress_seq=rec["progress_seq"],
-        result=jsonb_to_dict(rec["result"]),
+        result=jsonb_to_dict(rec["result"], column="result"),
         result_size_bytes=rec["result_size_bytes"],
         result_expires_at=rec["result_expires_at"],
         idempotency_key=IdempotencyKey(raw_idempotency) if raw_idempotency is not None else None,
         idempotency_scope=raw_scope,
         trace_id=rec["trace_id"],
         span_id=rec["span_id"],
-        metadata=jsonb_to_dict(rec["metadata"]) or {},
+        metadata=jsonb_to_dict(rec["metadata"], column="metadata") or {},
         tags=tuple(rec["tags"]) if rec["tags"] else (),
         snooze_count=rec["snooze_count"],
         rate_limit_blocked_count=rec["rate_limit_blocked_count"],
@@ -246,7 +274,7 @@ def _batch_row_from_record(rec: "asyncpg.Record") -> BatchRow:
         originating_actor=rec["originating_actor"],
         created_at=rec["created_at"],
         completed_at=rec["completed_at"],
-        metadata=jsonb_to_dict(rec["metadata"]) or {},
+        metadata=jsonb_to_dict(rec["metadata"], column="batches.metadata") or {},
     )
 
 

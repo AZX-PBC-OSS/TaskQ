@@ -1091,6 +1091,42 @@ async def test_sse_malformed_payload_discarded_stream_continues(
 
 
 @pytest.mark.asyncio
+async def test_sse_malformed_message_increments_its_counter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The malformed-message drop carries its counter: a publisher that
+    stopped emitting the ProgressEvent envelope (schema change, foreign
+    writer on the channel) is visible in the metric stream, not only in
+    a debug log that production log levels filter out."""
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+    from taskq.testing.otel import counter_value, setup_tracer
+
+    setup_tracer(monkeypatch)
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    counter = provider.get_meter("taskq").create_counter("taskq.sse.malformed_messages", unit="1")
+    monkeypatch.setattr(progress_mod, "_sse_malformed_counter", counter)
+
+    good = _make_event(seq=3)
+    pubsub = _StubPubSub(
+        [
+            {"type": "message", "data": b"not valid json"},
+            {"type": "message", "data": b"[1, 2]"},
+            _redis_msg(good),
+            _EXHAUST,
+        ]
+    )
+
+    results = await _drive_generator(_pg_row(status="running", progress_seq=0), pubsub)
+
+    data_events = [r for r in results if r.data is not None]
+    assert len(data_events) == 2, "the stream must continue past the dropped messages"
+    assert counter_value(reader, "taskq.sse.malformed_messages") == 2
+
+
+@pytest.mark.asyncio
 async def test_sse_missing_terminal_key_defaults_to_progress() -> None:
     """``terminal`` is optional on the model (default False): an envelope
     without it must emit as a progress event, not be discarded."""

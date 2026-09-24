@@ -70,11 +70,27 @@ from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it
     progress_channel,
 )
+from taskq.obs import get_meter
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
 from taskq.web._sse_limit import SESSION_RECHECK_TIMEOUT_SECS, acquire_sse_slot
 
 logger = structlog.get_logger("taskq.web.progress")
+
+_meter = get_meter()
+
+_sse_malformed_counter = _meter.create_counter(
+    name="taskq.sse.malformed_messages",
+    description=(
+        "Total Redis pub/sub messages discarded by the SSE progress bridge "
+        "because they did not parse to the ProgressEvent envelope. The "
+        "channel is not exclusively owned by this library so a drop is "
+        "the correct outcome, but it must be visible: without the counter "
+        "a publisher that stopped emitting the envelope is "
+        "indistinguishable from a quiet channel."
+    ),
+    unit="1",
+)
 
 # ------------------------------------------------------------------
 # Wire-format constants
@@ -374,7 +390,8 @@ async def _event_generator(
                 for _required in ("job_id", "actor", "ts", "status"):
                     if _required not in envelope:
                         raise ValueError(f"missing {_required!r}")
-            except Exception:  # Why: malformed/non-ProgressEvent messages on the shared channel must be discarded silently; the channel is not exclusively owned by this library.
+            except Exception:  # Why: malformed/non-ProgressEvent messages on the shared channel must be discarded with their counter, never crash the stream; the channel is not exclusively owned by this library.
+                _sse_malformed_counter.add(1)
                 logger.debug(
                     "sse-redis-malformed-message",
                     job_id=str(job_id),

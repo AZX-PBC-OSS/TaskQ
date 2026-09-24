@@ -66,9 +66,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import inspect
-import json
 from typing import Any, Protocol, Self, runtime_checkable
 
+from taskq._json import loads as json_loads
 from taskq.auth import (
     PgCredential,
     PgCredentialProvider,
@@ -272,8 +272,13 @@ def _decode_jwt_oid(jwt: str) -> str | None:
     padding = "=" * (-len(payload) % 4)
     try:
         decoded = base64.urlsafe_b64decode(payload + padding)
-        claims = json.loads(decoded)
-    except (ValueError, json.JSONDecodeError):
+        claims = json_loads(decoded)
+    except ValueError:
+        # binascii.Error (bad base64) and orjson.JSONDecodeError are both
+        # ValueError subclasses. taskq._json.loads (orjson) depth-limits
+        # its parse instead of recursing, so a pathologically nested
+        # claims object raises JSONDecodeError here, not RecursionError
+        # the except below cannot see.
         return None
     if not isinstance(claims, dict):
         return None
