@@ -1209,18 +1209,21 @@ async def test_a_protocol_poisoned_round_discards_its_connection() -> None:
 
 
 @pytest.mark.asyncio
-async def test_corrupt_jsonb_row_fails_terminally_round_survives(
+async def test_non_object_json_payload_round_trips_through_claim(
     jobs_app: JobsApp,
 ) -> None:
-    """A row whose jsonb column holds valid-JSON-but-not-an-object (the
-    shape an interop writer or a different version's codec leaves, here
-    written straight into PG) must fail THAT row terminally with
-    error_class='CorruptJobDataError' and still let the round dispatch
-    its healthy rows. Before the classification, the decode raised a raw
-    JSONDecodeError out of the round: the producer loop's
-    unexpected-failure backstop counted it toward killing the worker and
-    the poisoned row looped forever through claim and lease-sweep
-    reclaim, never reaching a terminal state."""
+    """``payload`` is a USER-CONTENT column: its body is the actor's data
+    and the decode boundary asserts no shape. A valid-but-non-object
+    payload (a JSON scalar, a JSON array, here written straight into PG
+    the way an interop writer would) must claim and DISPATCH like any
+    other row, never be terminally failed: the actor-schema layer
+    (pydantic) owns payload-shape rejection, with the job-level failure
+    semantics that carries, not a ``CorruptJobDataError`` verdict that
+    the bytes on disk are rotten. (A jsonb column of an intact schema
+    cannot hold malformed text at all, so the corrupt-text side of the
+    boundary is only reachable through schema drift; the unit pins in
+    ``test_decode_exception_audit.py`` carry that arm against the
+    decode helper and the claim path directly.)"""
     deps = jobs_app.deps
     backend = jobs_app.backend
     schema = deps.settings.schema_name
@@ -1233,27 +1236,22 @@ async def test_corrupt_jsonb_row_fails_terminally_round_survives(
             "default",
         )
 
-    healthy_args = make_enqueue_args(actor="A")
-    corrupt_args = make_enqueue_args(actor="A")
-    await backend.enqueue(healthy_args)
-    await backend.enqueue(corrupt_args)
+    scalar_args = make_enqueue_args(actor="A")
+    list_args = make_enqueue_args(actor="A")
+    await backend.enqueue(scalar_args)
+    await backend.enqueue(list_args)
 
     worker_id = new_uuid()
     async with deps.worker_pool.acquire() as conn:
-        # The corruption no enqueue path can produce, written the way an
-        # interop writer would: a JSON scalar in the dict-typed column.
+        # The bodies no enqueue path can produce, written the way an
+        # interop writer would: non-object JSON in the column.
         await conn.execute(
             f"UPDATE \"{schema}\".jobs SET payload = '5'::jsonb WHERE id = $1",
-            corrupt_args.id,
+            scalar_args.id,
         )
-        # Distinct attempt/claim_epoch at claim time: with both at 1 the
-        # fence binds are interchangeable and a swapped-bind mutation
-        # still matches. attempt=2 pre-claim makes the claimed row
-        # attempt=3, epoch=1, so each fence bind only matches its own
-        # argument position.
         await conn.execute(
-            f'UPDATE "{schema}".jobs SET attempt = 2 WHERE id = $1',
-            corrupt_args.id,
+            f'UPDATE "{schema}".jobs SET payload = \'[1, "x"]\'::jsonb WHERE id = $1',
+            list_args.id,
         )
 
     dispatched = await backend.dispatch_batch(
@@ -1262,30 +1260,28 @@ async def test_corrupt_jsonb_row_fails_terminally_round_survives(
         limit=10,
         lock_lease=_LEASE,
     )
-    assert [j.id for j in dispatched] == [healthy_args.id], (
-        "the round must dispatch exactly its healthy rows; the corrupt row "
-        "is failed in the round, not returned and not lost"
+    by_id = {j.id: j for j in dispatched}
+    assert set(by_id) == {scalar_args.id, list_args.id}, (
+        "user-content payloads of any valid JSON shape must dispatch; the "
+        "decode boundary may not verdict the actor's data corrupt"
+    )
+    assert by_id[scalar_args.id].payload == 5, (
+        "a scalar payload round-trips verbatim, the jsonb body un-gated"
+    )
+    assert by_id[list_args.id].payload == [1, "x"], (
+        "a list payload round-trips verbatim, the jsonb body un-gated"
     )
 
     async with deps.worker_pool.acquire() as conn:
-        row = await conn.fetchrow(
-            f'SELECT status, error_class, error_message FROM "{schema}".jobs WHERE id = $1',
-            corrupt_args.id,
+        rows = await conn.fetch(
+            f'SELECT id, status, error_class FROM "{schema}".jobs '
+            "WHERE id = ANY($1::uuid[])",  # Why: schema is a test-fixture identifier, validated by render() in every caller; every user-supplied value goes through $N parameter binding.
+            [scalar_args.id, list_args.id],
         )
-    assert row is not None
-    assert row["status"] == "failed", (
-        "the corrupt row must reach a terminal state in the same round, "
-        "never loop through claim and reclaim"
-    )
-    assert row["error_class"] == "CorruptJobDataError"
-    assert "payload" in (row["error_message"] or "")
-
-    # The terminal write is a full citizen: the fused statement's
-    # job_events row exists too.
-    async with deps.worker_pool.acquire() as conn:
-        event = await conn.fetchrow(
-            f'SELECT kind FROM "{schema}".job_events WHERE job_id = $1 '
-            "ORDER BY occurred_at DESC LIMIT 1",
-            corrupt_args.id,
+    by_id = {row["id"]: row for row in rows}
+    for job_id in (scalar_args.id, list_args.id):
+        row = by_id[job_id]
+        assert row["status"] == "running", (
+            "the dispatched row claimed normally, no terminal write landed"
         )
-    assert event is not None and event["kind"] == "state_change"
+        assert row["error_class"] is None, "no CorruptJobDataError verdict against user content"

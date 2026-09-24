@@ -6,7 +6,7 @@ reuse (e.g. the rate-limit modules) and unit testing.
 """
 
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from taskq._json import NUL_JSONB_ERROR, dumps_jsonb_str, loads
 from taskq.backend._protocol import (
@@ -34,6 +34,7 @@ __all__ = [
     "item_tags_jsonb_param",
     "jsonb_param",
     "jsonb_to_dict",
+    "jsonb_to_value",
     "metadata_jsonb_param",
     "parse_rowcount",
     "payload_jsonb_param",
@@ -61,6 +62,13 @@ def jsonb_to_dict(
     jsonb invariant makes malformed text unreachable through an intact
     schema; the classification exists for the shapes that reach Python
     anyway (schema drift, interop writers, corruption).
+
+    This gate is for the ROW-CONTRACT dict fields only (``metadata``,
+    ``progress_state``, the rate-limit ``state``, ``detail``): fields
+    whose body TaskQ itself owns and whose consumers index into it.
+    The user-content columns (``result``, ``payload``) hold the actor's
+    data and declare no shape; they decode through
+    :func:`jsonb_to_value`, which keeps only the malformed-text guard.
     """
     if value is None:
         return None
@@ -80,6 +88,44 @@ def jsonb_to_dict(
             column=column,
         )
     return decoded  # pyright: ignore[reportUnknownVariableType]  # Why: orjson.loads returns Any; the isinstance narrowing above proves the dict shape but pyright sees the Any's dict as partially unknown, the same erasure every loads() consumer tolerates.
+
+
+def jsonb_to_value(
+    value: object | None,
+    *,
+    column: str = "jsonb",
+) -> Any:
+    """Convert a user-content jsonb column value from an asyncpg Record to
+    the JSON value it holds, verbatim.
+
+    The user-content sibling of :func:`jsonb_to_dict`: for the columns
+    whose body is the ACTOR's data (``result``, ``payload``) the row
+    contract declares no shape, so this helper asserts none. Only the
+    malformed-text guard applies: text that is not valid JSON raises
+    :class:`~taskq.exceptions.CorruptJobDataError` (never the raw
+    ``orjson.JSONDecodeError``), the same classification
+    :func:`jsonb_to_dict` raises, so a corrupt row still fails loudly
+    with the named class. A valid list, scalar, or ``null`` round-trips
+    byte-faithfully: an actor may return a list or any other JSON value,
+    and a ``::jsonb`` column of an intact schema cannot hold malformed
+    text anyway (the guard exists for the shapes that reach Python
+    through schema drift, interop writers, or corruption).
+
+    A value that arrives already decoded (a codec registered on the
+    connection) passes through untouched, the same pass-through
+    :func:`jsonb_to_dict` gives dicts.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return value  # already decoded by a registered codec
+    try:
+        return loads(value)
+    except ValueError as exc:
+        raise CorruptJobDataError(
+            f"{column} column holds text that is not valid JSON: {exc}",
+            column=column,
+        ) from exc
 
 
 def jsonb_param(value: dict[str, object] | None) -> str | None:
@@ -211,7 +257,16 @@ def _job_row_from_record(rec: "asyncpg.Record") -> JobRow:
         queue=rec["queue"],
         identity_key=IdentityKey(raw_identity) if raw_identity is not None else None,
         fairness_key=rec["fairness_key"],
-        payload=jsonb_to_dict(rec["payload"], column="payload") or {},
+        # payload/result are USER-CONTENT columns: the actor's data, no
+        # row-contract shape to assert. jsonb_to_value keeps only the
+        # malformed-text guard; a valid list/scalar round-trips (a scalar
+        # payload is pydantic's problem at the actor-schema layer, not
+        # the decode's). The NULL payload normalizes to the empty dict
+        # through an identity check, not `or {}`: a truthiness fold would
+        # clobber every falsy-but-valid body (an empty list, 0, "").
+        payload=(
+            jsonb_to_value(rec["payload"], column="payload") if rec["payload"] is not None else {}
+        ),
         payload_schema_ver=rec["payload_schema_ver"],
         status=rec["status"],  # type: ignore[arg-type]  # Why: asyncpg returns PG enum as str; JobStatus is Literal[str, ...]
         priority=rec["priority"],
@@ -235,7 +290,7 @@ def _job_row_from_record(rec: "asyncpg.Record") -> JobRow:
         error_traceback=rec["error_traceback"],
         progress_state=jsonb_to_dict(rec["progress_state"], column="progress_state") or {},
         progress_seq=rec["progress_seq"],
-        result=jsonb_to_dict(rec["result"], column="result"),
+        result=jsonb_to_value(rec["result"], column="result"),
         result_size_bytes=rec["result_size_bytes"],
         result_expires_at=rec["result_expires_at"],
         idempotency_key=IdempotencyKey(raw_idempotency) if raw_idempotency is not None else None,

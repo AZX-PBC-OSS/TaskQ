@@ -4,8 +4,9 @@ escapes its boundary unclassified, and no poison row crashes a worker.
 Three boundaries are attacked with hand-constructed malformed input:
 
 1. The dispatch claim path (``taskq.backend._dispatch``): a claimed row
-   whose jsonb columns hold text that is not valid JSON, or valid JSON
-   whose body is not the object the row contract declares. The decode
+   whose jsonb columns hold text that is not valid JSON, or a ROW-CONTRACT
+   dict column (metadata, progress_state) whose valid-JSON body is not the
+   object the row contract declares. The decode
    sits AFTER the claim committed, so an escaping decode exception made
    the whole round the producer loop's problem (the unexpected-failure
    backstop kills the worker at its consecutive cap) while the poisoned
@@ -13,6 +14,12 @@ Three boundaries are attacked with hand-constructed malformed input:
    corrupt row is terminally failed with ``error_class='CorruptJobDataError'``
    through the standard fenced ``mark_failed`` statement and the round's
    healthy rows still dispatch.
+
+   The USER-CONTENT columns (result, payload) hold the actor's data and
+   declare no shape: they decode through ``jsonb_to_dict``'s sibling
+   ``jsonb_to_value``, which keeps ONLY the malformed-text guard. Pinned:
+   a list result round-trips verbatim, a scalar payload dispatches, and a
+   corrupt-TEXT result still fails with the named class.
 
 2. The NOTIFY event callbacks (``taskq.worker.notify``): a hostile
    payload on a channel TaskQ does not exclusively own. Pinned: the drop
@@ -37,7 +44,7 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
 from taskq._ids import new_uuid
 from taskq.backend import _dispatch as _dispatch_mod
-from taskq.backend._records import jsonb_to_dict
+from taskq.backend._records import _job_row_from_record, jsonb_to_dict, jsonb_to_value
 from taskq.backend._sql_templates import render
 from taskq.exceptions import CorruptJobDataError
 from taskq.obs import (
@@ -272,6 +279,67 @@ def test_jsonb_to_dict_happy_shapes() -> None:
     assert jsonb_to_dict('{"a": 1}') == {"a": 1}
 
 
+# ── jsonb_to_value: the user-content sibling (result, payload) ────────
+
+
+def test_jsonb_to_value_round_trips_every_valid_json_shape() -> None:
+    """A user-content column declares no shape: dict, list, scalar,
+    string, and null all pass through verbatim, byte-faithfully."""
+    assert jsonb_to_value(None) is None
+    obj: dict[str, object] = {"a": 1}
+    assert jsonb_to_value(obj) is obj  # pre-decoded by a codec: untouched
+    pre_decoded = [1, "x"]
+    assert jsonb_to_value(pre_decoded) is pre_decoded
+    assert jsonb_to_value('{"a": 1}') == {"a": 1}
+    assert jsonb_to_value("[1, 2]") == [1, 2]
+    assert jsonb_to_value("5") == 5
+    assert jsonb_to_value('"a bare string"') == "a bare string"
+    assert jsonb_to_value("true") is True
+
+
+@pytest.mark.parametrize("blob", ['{"broken"', "not json at all", ""])
+def test_jsonb_to_value_still_guards_malformed_text(blob: str) -> None:
+    """The ONLY guard the user-content decode drops is the shape
+    assertion. Text that is not valid JSON raises the same named class
+    jsonb_to_dict raises: a corrupt row fails loudly, user content or
+    not."""
+    with pytest.raises(CorruptJobDataError):
+        jsonb_to_value(blob, column="result")
+
+
+def test_jsonb_to_value_names_the_column_and_classifies_the_recursion_bomb() -> None:
+    """The raise names the refusing column, and the 10k-deep nest is the
+    classified ValueError shape, never a RecursionError escape."""
+    bomb = "[" * 10_000 + "]" * 10_000
+    with pytest.raises(CorruptJobDataError) as exc_info:
+        jsonb_to_value(bomb, column="payload")
+    assert not isinstance(exc_info.value, RecursionError)
+    assert exc_info.value.column == "payload"
+
+
+def test_list_result_round_trips_through_the_row_decode() -> None:
+    """The regression pin (the round-trip the PG test anchors): an actor
+    may return a list; the claimed-row decode must hand it back verbatim,
+    no CorruptJobDataError, no dict coercion."""
+    rec = _record(result="[1, 2]")
+    row = _job_row_from_record(rec)  # pyright: ignore[reportArgumentType]  # Why: the pin drives the seam with a duck-typed dict, not a real Record.
+    assert row.result == [1, 2]
+
+
+def test_scalar_payload_decodes_verbatim_through_the_row_decode() -> None:
+    """A valid-but-scalar payload is USER CONTENT: the decode passes it
+    through untouched (its shape is the actor-schema layer's problem),
+    and a falsy scalar body (0, empty list) is not clobbered by the NULL
+    normalization."""
+    rec = _record(payload="0", result=None)
+    row = _job_row_from_record(rec)  # pyright: ignore[reportArgumentType]  # Why: duck-typed dict, see above.
+    assert row.payload == 0
+    list_rec = _record(payload="[]")
+    assert _job_row_from_record(list_rec).payload == []  # pyright: ignore[reportArgumentType]  # Why: duck-typed dict, see above.
+    null_rec = _record(payload=None)
+    assert _job_row_from_record(null_rec).payload == {}  # pyright: ignore[reportArgumentType]  # Why: SQL NULL keeps its empty-dict normalization.
+
+
 # ── the claim path: fail-visible per row, round ticks on ─────────────
 
 
@@ -373,6 +441,63 @@ async def test_corrupt_row_increments_its_counter(
     assert counter_value(reader, "taskq.dispatch.corrupt_rows") == 1, (
         "a terminally-failed corrupt row must be counted, not merely logged"
     )
+
+
+# ── the claim path: the shape partition ───────────────────────────────
+
+
+async def test_corrupt_text_result_fails_terminally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The user-content columns keep the malformed-text guard: a claimed
+    row whose RESULT column holds text that is not valid JSON is failed
+    terminally with the named class, the column named in the persisted
+    error message."""
+    corrupt = _record(result='{"broken"')
+    conn = _FakeConn([corrupt])
+
+    rows = await _run_round(conn, monkeypatch)
+
+    assert rows == []
+    assert len(conn.fail_writes) == 1
+    assert conn.fail_writes[0][1][2] == "CorruptJobDataError"
+    assert "result" in str(conn.fail_writes[0][1][3])
+
+
+async def test_non_object_row_contract_columns_still_fail_terminally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The partition's other edge: a valid-but-non-object body in a
+    ROW-CONTRACT dict column (metadata here, progress_state equally)
+    still fails the row terminally. The shape gate belongs to the fields
+    TaskQ owns and indexes into, and the user-content relaxation must
+    not widen to them."""
+    corrupt = _record(metadata="[1, 2, 3]")
+    conn = _FakeConn([corrupt])
+
+    rows = await _run_round(conn, monkeypatch)
+
+    assert rows == []
+    assert len(conn.fail_writes) == 1
+    assert conn.fail_writes[0][1][2] == "CorruptJobDataError"
+    assert "metadata" in str(conn.fail_writes[0][1][3])
+
+
+async def test_scalar_payload_dispatches_through_the_claim_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A valid-but-scalar payload (an interop writer's row) DISPATCHES:
+    no fail-write, the row returned to the producer loop with its
+    payload verbatim. Its shape is the actor-schema layer's verdict to
+    make, never the decode boundary's."""
+    scalar = _record(payload="5")
+    conn = _FakeConn([scalar])
+
+    rows = await _run_round(conn, monkeypatch)
+
+    assert [r.id for r in rows] == [scalar["id"]]  # pyright: ignore[reportAttributeAccessIssue]  # Why: the fake-driven round returns JobRow-shaped objects.
+    assert rows[0].payload == 5  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]  # Why: see above.
+    assert conn.fail_writes == [], "user content must never wear a CorruptJobDataError verdict"
 
 
 # ── the NOTIFY event callbacks: drop WITH the counter ─────────────────

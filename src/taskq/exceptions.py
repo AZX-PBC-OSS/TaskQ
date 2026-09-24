@@ -482,18 +482,27 @@ def __getattr__(name: str) -> object:
 
 
 class CorruptJobDataError(TaskQError):
-    """A stored jsonb column decoded to something its row contract refuses.
+    """A stored jsonb column decoded to something its boundary refuses.
 
-    Two shapes trigger it at the decode boundary
-    (:func:`taskq.backend._records.jsonb_to_dict`): text that is not valid
-    JSON at all (a hand-corrupted row, schema drift to ``text``, an
-    interop writer), and valid JSON whose body is not the object the row
-    contract declares (a list or scalar in ``payload``/``metadata``/
-    ``progress_state``/``result``, e.g. a row written by a different
-    version's codec). The raw driver/JSON errors
-    (``orjson.JSONDecodeError``, a ``ValueError``) are re-raised as this
-    class so every consumer sees one named ``error_class`` instead of a
-    driver vocabulary word.
+    Two shapes trigger it, both classified at the decode boundary:
+
+    - Text that is not valid JSON at all (a hand-corrupted row, schema
+      drift to ``text``, an interop writer), through
+      :func:`taskq.backend._records.jsonb_to_dict` OR its user-content
+      sibling :func:`taskq.backend._records.jsonb_to_value`.
+    - Valid JSON whose body is not the object the row contract declares
+      (a list or scalar in a dict-typed field, e.g. a row written by a
+      different version's codec), through :func:`jsonb_to_dict` only.
+      That shape gate covers the ROW-CONTRACT dict fields TaskQ itself
+      owns and indexes into (``metadata``, ``progress_state``, the
+      rate-limit ``state``, ``detail``). The USER-CONTENT columns
+      (``result``, ``payload``) hold the actor's data and declare no
+      shape, so they decode through :func:`jsonb_to_value` with ONLY the
+      malformed-text guard: a valid list or scalar round-trips.
+
+    The raw driver/JSON errors (``orjson.JSONDecodeError``, a
+    ``ValueError``) are re-raised as this class so every consumer sees
+    one named ``error_class`` instead of a driver vocabulary word.
 
     Non-retryable by construction: the bytes on disk cannot change by
     re-reading them. The dispatch claim boundary
