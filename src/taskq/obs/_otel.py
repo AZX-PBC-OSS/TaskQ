@@ -1376,7 +1376,10 @@ _ratelimit_refund_failures = get_meter().create_counter(
     description=(
         "Rate-limit refund/rollback failures, labeled by bucket, backend, "
         "and error_type (exception class name, a closed set; see "
-        "_resolve_error_type)."
+        "_resolve_error_type). The bucket label is capped at the first "
+        "100 distinct names per meter, overflow collapses onto '_other_'; "
+        "per-bucket attribution is on the ratelimit-rollback-failure log "
+        "line emitted at the same catch site."
     ),
     unit="1",
 )
