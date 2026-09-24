@@ -626,10 +626,23 @@ async def test_deadline_herd_batches_stay_bounded_and_ledger_conserved(
 # ── 5. The retention prune herd: 100k rows pass retention at once
 
 
+@pytest.mark.load_sensitive
 async def test_prune_herd_batches_stay_bounded_and_archive_conserves(
     module_pg_schema: ModulePgSchema,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Why load_sensitive: this pin drives a 100k-row real-PG herd. Its
+    # shape/conservation assertions are not load-fragile, but its statement
+    # budget is: on the shared runners' parallel legs the congestion
+    # multiplier on a single bounded batch's statement work has measured
+    # m ~ 10x (run 36016634595, the 4 s bound), m ~ 75x (run 36023222736,
+    # the 30 s bound) and m > 300x (run 36031837491, the 120 s bound) -
+    # every escalation of a wall-clock budget was eventually eaten. The
+    # serial load_sensitive lane is the one place the multiplier is
+    # bounded (no leg co-tenancy), so the budget there is a true backstop;
+    # on the parallel legs the pin would only add a flake surface. The
+    # batch-shape and conservation assertions remain the discriminative
+    # tooth for bounded-vs-population and no runner speed defeats them.
     import taskq.worker._leader_shared as leader_shared
 
     schema = module_pg_schema.schema_name
