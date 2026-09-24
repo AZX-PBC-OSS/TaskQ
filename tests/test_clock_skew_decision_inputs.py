@@ -228,7 +228,7 @@ async def test_renewal_gate_judged_in_the_lease_domain_under_python_clock_skew(
             "under a behind-clock worker and the reclaim would race its "
             "live body."
         )
-        assert remaining_after <= _LEASE + timedelta(seconds=2), (
+        assert remaining_after <= _LEASE, (
             f"skew {skew}: the renewal stamped {remaining_after} of lease, "
             f"not ~{_LEASE}; the statement's stamp is not the server clock."
         )
