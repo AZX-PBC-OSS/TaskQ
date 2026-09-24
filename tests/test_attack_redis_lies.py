@@ -61,7 +61,13 @@ from taskq.progress._events import ProgressEvent
 from taskq.ratelimit import SlidingWindow, TokenBucket
 from taskq.ratelimit._sliding_window_redis import _peek_redis_gcra, _peek_redis_log
 from taskq.settings import WorkerSettings
-from taskq.web.progress import _event_generator
+
+# Why: the SSE pins' _event_generator lives in taskq.web.progress, which
+# imports fastapi at its own module level. The guard and import live in
+# _collect (the one seam the SSE pins use) rather than at module scope -
+# a module-level import fails collection on the extras legs without
+# fastapi (aws, vault, ...), skipping the rate-limit lie pins that need
+# only the base install.
 
 pytestmark = [pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")]
 
@@ -711,6 +717,9 @@ class _PubSubMock:
 
 
 async def _collect(pubsub: Any, n: int) -> list[Any]:
+    pytest.importorskip("fastapi")
+    from taskq.web.progress import _event_generator
+
     gen = _event_generator(
         pubsub=pubsub,
         channel="taskq:s:progress:job",
