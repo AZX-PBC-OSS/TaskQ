@@ -159,7 +159,19 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
        reconcile's open transaction re-evaluates the row when the
        reconcile commits (EvalPlanQual) and the committed NULL stamp
        drops it from the write set. The refund is exactly-once per claim
-       across both writers. The DB row carries no
+       across both writers.
+
+       The disowned exclusion: a row this worker DISOWNED (a terminal
+       write that failed on infrastructure, a slot-pool acquire failure)
+       is not this helper's population. The disown arms cover attempts
+       that may have STARTED executing, and refunding a started attempt
+       re-creates the exact epoch the first execution ran under - the
+       successor's re-claim would re-run the body at the SAME attempt
+       number. The row's recovery stays where the disown arms put it: the
+       lease lapses unrenewed and Sweep 1 reclaims at the charged attempt
+       (the reconcile's documented owner).
+
+       The DB row carries no
        "a consumer took it" mark, so the only honest discriminator for
        "never started" is this process's own active-jobs registry; the
        claim-to-register window (a job taken off local_queue but not yet
@@ -181,6 +193,13 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
     # and claim intents (taken off local_queue, not yet registered, the
     # window the registry's comment documents).
     active_ids: list[JobId] = deps.active_jobs.held_ids()
+    # The disowned rows are never this pass's population (the docstring's
+    # disowned-exclusion paragraph): their attempts may have started, so
+    # the refund is wrong for them, and Sweep 1 owns their reclaim.
+    # Why the comprehension instead of sorted(): JobId is NewType(UUID),
+    # sorted() erases the NewType, and list invariance would refuse the
+    # uuid[] bind parameter's declared type below.
+    disowned_ids: list[JobId] = [JobId(job_id) for job_id in sorted(deps.disowned_jobs)]
     # The attempt refund: the claim stamped attempt + 1 for an execution
     # this hand-back says never happened, so the increment goes back ,
     # the same non-consuming-release idiom the snooze/unavailable and
@@ -231,13 +250,16 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
     # fenced row stays here: running, owned by this worker, refund never
     # applied; its lease expiry hands it to sweep-1's cancel arm, which
     # terminalises it with the operator's audit intact.
-    # The exclusion clause is only bound when there is something to
+    # The exclusion clauses are only bound when there is something to
     # exclude: an empty registry (the common drained-worker case) keeps
     # the single-parameter statement shape the helper has always issued.
     params: list[UUID | list[JobId]] = [worker_id]
     if active_ids:
         sql += " AND id <> ALL($2::uuid[])"
         params.append(active_ids)
+    if disowned_ids:
+        sql += f" AND NOT j.id = ANY(${len(params) + 1}::uuid[])"
+        params.append(disowned_ids)
 
     try:
         async with deps.dispatcher_pool.acquire(timeout=2.0) as conn:

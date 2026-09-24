@@ -117,6 +117,7 @@ from taskq.worker._watchdog import (  # pyright: ignore[reportPrivateUsage]  # W
 from taskq.worker.cancel import ActiveJobRegistry, _ActiveJob
 from taskq.worker.deps import POOL_INFRA_EXCEPTIONS, WorkerDeps
 from taskq.worker.shutdown import (  # pyright: ignore[reportPrivateUsage]  # Why: the consumer's release arm and the RELEASING phase are the two writers of the same interruption release; they must share the one hold computation rather than drift (see _interrupted_actor_hold).
+    ShutdownPhase,
     _release_hold,
 )
 
@@ -995,6 +996,26 @@ async def consume_one_job(
             entry = active_jobs.get(job.id) if active_jobs is not None else None
             if entry is not None and entry.cancel_phase >= CancelPhase.ABANDON_PENDING:
                 raise
+            if (
+                entry is not None
+                and entry.cancel_origin is CancelOrigin.NONE
+                and deps is not None
+                and deps.shutdown_phase is not ShutdownPhase.NONE
+            ):
+                # A registration that landed after CANCELLING's stamping
+                # pass (a slow slot-pool acquire or DI resolution held the
+                # take-to-register window open past every phase snapshot)
+                # is torn down by the worker's own teardown cancellation
+                # with no origin recorded. While the orchestration runs it
+                # is the only canceler that could be driving this task:
+                # stamp SHUTDOWN so the routing below releases the attempt
+                # back to the fleet instead of terminalising a deploy's
+                # work. The row stays the final arbiter: an operator cancel
+                # already on the row fences the release (cancel_phase != 0)
+                # and the fall-through to mark_cancelled below keeps the
+                # operator's verdict.
+                entry.cancel_origin = CancelOrigin.SHUTDOWN
+                entry.ctx._set_cancel_origin(CancelOrigin.SHUTDOWN)  # pyright: ignore[reportPrivateUsage]  # Why: the consumer is the designated writer of its own context's origin stamp when it completes the orchestration's missed stamp (set alongside the registry entry's, per the field's contract).
             # Identity-scoped (the issue-461 class, the same fence the
             # deregister below applies): the terminal override reads and
             # removes THIS attempt's buffer, never a bare-id pop of the
