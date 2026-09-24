@@ -139,7 +139,13 @@ collision's ``InterfaceError`` instead of the truthful ``TimeoutError``
 tx-path caller therefore bound-waits the unwind up to this budget before
 letting the marker propagate, and the rollback runs on a quiesced
 connection. A hostile unwind outliving the budget proceeds detached (the
-deadline's win survives, bounded by the budget). 2s covers every
+deadline's win survives, bounded by the budget): the marker propagates
+anyway, the ROLLBACK may still collide with the unwind's in-flight
+statement, and that collision is translated back to the truthful timeout
+disposition at the capture boundary (the rollback-collision window
+stamped on the ctx -- only the enforcement's own rollback's collision
+under the deadline's stamp is re-labeled; a genuine body-caused
+``InterfaceError`` always records its own class). 2s covers every
 legitimate unwind many times over while keeping the worst-case slot hold
 past the deadline small. The autonomous path needs no such wait: its
 connections are the body's own, never shared with the rollback.
@@ -1390,7 +1396,18 @@ async def _enforce_start_to_close(
     propagates into the ``__aexit__``: the rollback runs on a quiesced
     connection, and a legitimate ``finally`` on the shared connection
     gets to finish. A hostile unwind outliving the budget proceeds
-    detached -- the deadline's win survives, bounded by the budget.
+    detached -- the deadline's win survives, bounded by the budget -- and
+    the budget's expiry is exactly the rollback-collision window: the
+    marker propagates into the ``__aexit__`` while the connection may
+    still be busy, so this enforcement stamps the window on the ctx and
+    the transactional consumer's capture boundary translates an
+    ``InterfaceError`` arriving under the stamp (only the enforcement's
+    own rollback's collision can arrive under it) back to the truthful
+    timeout disposition. A body-caused ``InterfaceError`` never crosses
+    that boundary under the stamp -- the body's exceptions are confined
+    to its detached task once the deadline has fired -- and one arriving
+    before the deadline (surfacing through ``body_task.result()``) keeps
+    its own class.
 
     The body-task boundary also converts ``SystemExit`` to the
     ``_ActorSystemExitAttemptError`` carrier, the third task boundary
@@ -1498,6 +1515,25 @@ async def _enforce_start_to_close(
         # connection the marker is about to reach is quiesced), or may
         # still be unwinding (detached above): either way the attempt is
         # a timeout, never a success, however the body feels about it.
+        if unwind_wait is not None:
+            # THE TX PATH'S ROLLBACK-COLLISION WINDOW, OPEN. The marker
+            # raised below is now the exception in flight through the
+            # transaction __aexit__, and the __aexit__'s own ROLLBACK is
+            # the only statement the tx path issues on the SHARED
+            # connection from here. If the unwind still holds that
+            # connection (a shielded conn op past deadline + budget), the
+            # ROLLBACK collides on asyncpg's one-operation-at-a-time
+            # guard and the collision's InterfaceError replaces the
+            # marker -- and the body's own exceptions are confined to its
+            # detached task, unable to cross the capture boundary once
+            # the deadline has fired. So stamp the window: the
+            # transactional consumer's capture boundary re-labels an
+            # InterfaceError arriving under this stamp to the truthful
+            # TimeoutError (the row, the job_timeout log and the metric
+            # all stay the deadline's), and never touches one arriving
+            # without it (a body-caused InterfaceError keeps its own
+            # class). Read the stamp's contract on the ctx setter.
+            ctx._set_tx_rollback_collision_window()
         raise _StartToCloseExceededError from None
     # The body finished before the deadline: its return value, or its own
     # exception (including its own TimeoutError, which now routes as the
@@ -1577,7 +1613,12 @@ async def _consume_transactional(
                 # unwind's own statement on the asyncpg one-operation-at-
                 # a-time guard and replacing the marker (the row once
                 # recorded InterfaceError instead of the truthful
-                # TimeoutError). Transaction integrity is the
+                # TimeoutError). PAST the budget the marker propagates
+                # anyway and the collision can still happen; the capture
+                # boundary at the shield below translates our own
+                # rollback's collision (only it can arrive under the
+                # rollback-collision window the enforcement stamps) back
+                # to the truthful TimeoutError. Transaction integrity is the
                 # OUTER shield's job (`shield(
                 # _run_actor_in_tx())` below): that one decouples EXTERNAL
                 # cancellation from an in-flight commit.  A cancel landing
@@ -1765,7 +1806,35 @@ async def _consume_transactional(
 
     tx_task: asyncio.Task[object] = asyncio.create_task(_run_actor_in_tx_tracked())
     try:
-        await asyncio.shield(tx_task)
+        try:
+            await asyncio.shield(tx_task)
+        except asyncpg.exceptions.InterfaceError as exc:
+            # THE CAPTURE BOUNDARY OF THE ROLLBACK-COLLISION WINDOW. Under
+            # the stamp (see the window's opener in _enforce_start_to_close)
+            # the deadline's marker was the exception in flight through the
+            # transaction __aexit__, whose ROLLBACK is the only statement
+            # the tx path issues on the SHARED connection from there: an
+            # InterfaceError arriving now can only be that ROLLBACK
+            # colliding with a body-owned statement still in flight (the
+            # hostile unwind holding the connection past the exit-wait
+            # budget), never the body's own -- the body's exceptions are
+            # confined to its detached task once the deadline has fired.
+            # So re-label the collision to the truthful timeout
+            # disposition: the marker routes to the timeout handler and
+            # the row, the job_timeout log and the timeouts metric all
+            # record the deadline, not the collision. Without the stamp
+            # (no deadline, or the body's own InterfaceError surfacing
+            # through body_task.result() before the deadline fired) the
+            # InterfaceError propagates unchanged: the re-label must never
+            # launder a genuine body-caused one. The stamp is taken (and
+            # closed) exactly once, so one window justifies one re-label.
+            if ctx._take_tx_rollback_collision_window():
+                raise _StartToCloseExceededError(
+                    "the start_to_close deadline fired; the transaction rollback"
+                    " collided with the body's still-hostile unwind on the shared"
+                    " connection and the collision was re-labeled to the deadline"
+                ) from exc
+            raise
         await invoke_on_success(
             actor_config.on_success,
             job,

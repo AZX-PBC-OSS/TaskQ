@@ -1382,7 +1382,18 @@ colliding with the unwind's own statement on asyncpg's
 one-operation-at-a-time guard, a collision that once replaced the marker
 and made the row record `InterfaceError` instead of the truthful
 `TimeoutError`. A hostile unwind outliving the budget proceeds detached --
-the deadline's win survives, bounded by the budget.
+the deadline's win survives, bounded by the budget -- and past the budget
+the ROLLBACK can still collide with a hostile statement still in flight on
+the shared connection. That residual collision is translated back to the
+truthful timeout disposition at the capture boundary: the enforcement
+stamps a rollback-collision window on the ctx at the moment the marker
+starts propagating, and the transactional consumer re-labels an
+`InterfaceError` arriving under that stamp (only the enforcement's own
+rollback's collision can arrive under it, the body's own exceptions being
+confined to its detached task once the deadline has fired) to the
+`TimeoutError` the deadline path records, with its `job_timeout` log and
+its timeouts metric. A body-caused `InterfaceError` never arrives under
+the stamp and keeps its own class on the row.
 
 #### The interruption release contract
 

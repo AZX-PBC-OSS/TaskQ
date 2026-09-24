@@ -95,8 +95,14 @@ class _AtomicGuardConn:
     ``__aexit__`` while the body unwind's statement is still in flight.
     """
 
-    def __init__(self, execute_delay: float) -> None:
+    def __init__(self, execute_delay: float, delayed_queries: "set[str] | None" = None) -> None:
         self._execute_delay = execute_delay
+        # None (the default): every statement takes the delay. A set: only
+        # those statements take it and the rest are instant -- the
+        # reviewer's round-2 shape needs SAVEPOINT and ROLLBACK instant
+        # while the hostile unwind's own statement stays in flight past
+        # the budget.
+        self._delayed_queries = delayed_queries
         self._busy = False
         self.log: list[str] = []
 
@@ -123,7 +129,12 @@ class _AtomicGuardConn:
             )
         self._busy = True
         try:
-            await asyncio.sleep(self._execute_delay)
+            delay = (
+                self._execute_delay
+                if self._delayed_queries is None or query in self._delayed_queries
+                else 0.0
+            )
+            await asyncio.sleep(delay)
             self.log.append(query)
             return "OK"
         finally:
@@ -837,6 +848,153 @@ async def test_tx_hostile_finally_past_the_budget_still_ends_at_the_deadline() -
     for c in cleanups:
         c.cancel()
     await asyncio.gather(*zombies, *cleanups, return_exceptions=True)
+
+
+async def test_tx_hostile_finally_holding_the_conn_past_the_budget_records_the_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE RESIDUAL, the reviewer's round-2 shape: the hostile ``finally``
+    holds the SHARED transaction connection ITSELF -- a SHIELDED conn
+    execute that outlives the deadline AND the exit-wait budget. At budget
+    expiry the marker proceeds, the transaction ``__aexit__``'s ROLLBACK
+    collides with the still-in-flight statement on asyncpg's
+    one-operation-at-a-time guard, and the collision's ``InterfaceError``
+    replaced the marker -- the row recorded ``InterfaceError`` instead of
+    the truthful ``TimeoutError``, the ``job_timeout`` log and the
+    timeouts metric lost with it.
+
+    The obligation: on the deadline path the row is ALWAYS the truthful
+    ``TimeoutError`` -- the capture boundary translates our own rollback's
+    collision back to the deadline disposition -- the ``job_timeout`` log
+    and the timeouts metric land, the attempt stays bounded (deadline +
+    budget + slack), and the still-hostile unwind is captured tracked."""
+    import structlog
+
+    import taskq.worker._handlers as handlers_mod
+
+    timeout_metric_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        handlers_mod,
+        "record_job_timeout",
+        lambda actor, *, kind, count=1: timeout_metric_calls.append({"actor": actor, "kind": kind}),
+    )
+    backend = FakeBackend()
+    # The hostile statement never finishes inside the test: it is still
+    # in flight (the guard's busy flag held) when the budget expires and
+    # the __aexit__'s ROLLBACK collides with it. Only the hostile CLEANUP
+    # is delayed; the tx machinery's own SAVEPOINT/ROLLBACK are instant.
+    tx_conn = _AtomicGuardConn(execute_delay=3600.0, delayed_queries={"CLEANUP"})
+    held_ops: list[asyncio.Task[object]] = []
+
+    async def body(job_row: JobRow, ctx: JobContext[BaseModel]) -> object:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            # The hostile cleanup: a SHIELDED statement on the SHARED
+            # transaction connection, outliving deadline + budget.
+            op: asyncio.Task[object] = asyncio.ensure_future(tx_conn.execute("CLEANUP"))
+            held_ops.append(op)
+            await asyncio.shield(op)
+
+    started = asyncio.get_running_loop().time()
+    with structlog.testing.capture_logs() as logs:
+        outcome = await consume_one_job(
+            as_backend(backend),
+            _job(timedelta(milliseconds=80)),
+            _WORKER_ID,
+            run_actor=body,
+            actor_config=default_actor_config(),
+            payload_type=EmptyPayload,
+            clock=FakeClock(_NOW),
+            transaction_conn=tx_conn,
+        )
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert outcome == "scheduled", outcome
+    assert elapsed >= _TX_UNWIND_WAIT_BUDGET, (
+        f"the budget did not bound the wait: {elapsed}s < {_TX_UNWIND_WAIT_BUDGET}s"
+    )
+    assert elapsed < _TX_UNWIND_WAIT_BUDGET + 3.0, (
+        f"the hostile conn op held the attempt past the budget: {elapsed}s"
+    )
+    write = backend.mark_failed_or_retry_calls[0]
+    assert write["error_info"].error_class == "TimeoutError", (  # pyright: ignore[reportAttributeAccessIssue]
+        write,
+    )
+    assert any(call["kind"] == "start_to_close" for call in timeout_metric_calls), (
+        timeout_metric_calls
+    )
+    assert any(entry.get("event") == "job_timeout" for entry in logs), logs
+    zombies = [t for t in live_tracked_actor_handles() if not t.done()]
+    assert zombies, "the still-hostile unwind is not captured tracked"
+    # Teardown: reap the zombie and its shielded conn op so the test loop
+    # closes clean.
+    for z in zombies:
+        z.cancel()
+    for op in held_ops:
+        op.cancel()
+    await asyncio.gather(*zombies, *held_ops, return_exceptions=True)
+
+
+class _BodyOpFailsConn(_AtomicGuardConn):
+    """A shared conn whose body-issued statement fails with a genuine
+    ``InterfaceError`` (asyncpg's own failure class), well before the
+    deadline: the honest case the collision re-label must never launder."""
+
+    async def execute(self, query: str, *args: object) -> str:
+        if query == "BODY_OP":
+            raise asyncpg.exceptions.InterfaceError("the body's own statement failed")
+        return await super().execute(query, *args)
+
+
+async def test_body_caused_interface_error_outside_the_deadline_window_stays_interfaceerror(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The honest-InterfaceError case: a body whose OWN conn op raises a
+    genuine ``InterfaceError`` while the deadline (150ms) is nowhere near.
+    The collision re-label keys on the deadline window alone -- it must
+    never launder a body-caused ``InterfaceError`` into a deadline hit:
+    the row stays ``InterfaceError``, no ``job_timeout`` log, no timeouts
+    metric, and the ``__aexit__``'s ROLLBACK still completes (the conn is
+    quiesced: no deadline, no hostile unwind)."""
+    import structlog
+
+    import taskq.worker._handlers as handlers_mod
+
+    timeout_metric_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        handlers_mod,
+        "record_job_timeout",
+        lambda actor, *, kind, count=1: timeout_metric_calls.append({"actor": actor, "kind": kind}),
+    )
+    backend = FakeBackend()
+    tx_conn = _BodyOpFailsConn(execute_delay=0.0)
+
+    async def body(job_row: JobRow, ctx: JobContext[BaseModel]) -> object:
+        # The body's own statement on the shared conn fails genuinely,
+        # long before the 150ms deadline could fire.
+        await tx_conn.execute("BODY_OP")
+
+    with structlog.testing.capture_logs() as logs:
+        outcome = await consume_one_job(
+            as_backend(backend),
+            _job(timedelta(milliseconds=150)),
+            _WORKER_ID,
+            run_actor=body,
+            actor_config=default_actor_config(),
+            payload_type=EmptyPayload,
+            clock=FakeClock(_NOW),
+            transaction_conn=tx_conn,
+        )
+
+    assert outcome == "scheduled", outcome
+    write = backend.mark_failed_or_retry_calls[0]
+    assert write["error_info"].error_class == "InterfaceError", (  # pyright: ignore[reportAttributeAccessIssue]
+        write,
+    )
+    assert not timeout_metric_calls, timeout_metric_calls
+    assert not any(entry.get("event") == "job_timeout" for entry in logs), logs
+    assert "ROLLBACK" in tx_conn.log, "the tx ROLLBACK completed on the quiesced conn"
 
 
 # ── The sentinel's own contract ───────────────────────────────────────
