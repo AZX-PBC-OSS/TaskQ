@@ -48,6 +48,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
+import asyncpg
 import pytest
 from hypothesis import given
 from hypothesis import settings as hyp_settings
@@ -59,7 +60,7 @@ from taskq.actor import actor
 from taskq.exceptions import ProgressTooLarge
 from taskq.progress._buffer import _ProgressBuffer
 from taskq.progress._flush import _retire_flushed_snapshot
-from taskq.settings import WorkerSettings
+from taskq.settings import TaskQSettings, WorkerSettings
 from tests._progress_context import make_progress_context
 
 pytestmark = pytest.mark.integration
@@ -359,7 +360,9 @@ def test_actor_name_past_the_bound_is_refused_at_registration() -> None:
     with pytest.raises(ValueError, match="actor name exceeds 255 characters"):
 
         @actor(name=monster)
-        async def long_named_actor(payload: _SimplePayload, *args: object, **kwargs: object) -> None:
+        async def long_named_actor(
+            payload: _SimplePayload, *args: object, **kwargs: object
+        ) -> None:
             pass
 
 
@@ -378,7 +381,10 @@ def test_list_page_columns_do_not_carry_error_message() -> None:
     every list page view drag the whole message out of TOAST per row,
     per fetch. The detail page bounds it at render; the list refuses the
     transfer outright."""
-    from taskq.web.admin.jobs import _ARCHIVE_COLS, _LIVE_COLS  # pyright: ignore[reportPrivateUsage]
+    from taskq.web.admin.jobs import (  # pyright: ignore[reportPrivateUsage]
+        _ARCHIVE_COLS,
+        _LIVE_COLS,
+    )
 
     assert "error_message" not in _LIVE_COLS
     assert "error_message" not in _ARCHIVE_COLS
@@ -387,7 +393,9 @@ def test_list_page_columns_do_not_carry_error_message() -> None:
 # ── 7. the seq monster: the cursor's storage domain is bigint ──────────
 
 
-async def test_flush_sql_advances_progress_seq_past_int4_max(pg_conn, settings) -> None:  # noqa: ANN001
+async def test_flush_sql_advances_progress_seq_past_int4_max(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
     """The real mechanism, against real PG: the flush UPDATE advances
     ``progress_seq`` by arithmetic, and on the old int4 column the row at
     2147483646 + delta raised 22003 (integer out of range) every tick,
@@ -422,18 +430,18 @@ async def test_flush_sql_advances_progress_seq_past_int4_max(pg_conn, settings) 
     # The overflow write itself, on a live row: the exact arithmetic the
     # flush statement applies, at the boundary that used to raise 22003.
     await pg_conn.execute(
-        f'INSERT INTO "{settings.schema_name}".jobs '
+        f'INSERT INTO "{settings.schema_name}".jobs '  # noqa: S608  # Why: the schema name comes from the test's own settings fixture, the same f-string SQL shape every migration-backed test in this repo binds.
         "(id, actor, queue, payload, max_attempts, retry_kind) "
         "VALUES ($1, 'monster', 'default', '{}', 1, 'transient')",
         _JOB_ID,
     )
     await pg_conn.execute(
-        f'UPDATE "{settings.schema_name}".jobs SET progress_seq = $1 WHERE id = $2',
+        f'UPDATE "{settings.schema_name}".jobs SET progress_seq = $1 WHERE id = $2',  # noqa: S608
         2**31 - 1,
         _JOB_ID,
     )
     advanced = await pg_conn.fetchval(
-        f'UPDATE "{settings.schema_name}".jobs '
+        f'UPDATE "{settings.schema_name}".jobs '  # noqa: S608
         "SET progress_seq = progress_seq + $1 "
         "WHERE id = $2 AND progress_seq = $3 RETURNING progress_seq",
         3,
