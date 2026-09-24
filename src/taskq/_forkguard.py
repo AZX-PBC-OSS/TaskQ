@@ -53,6 +53,19 @@ THE CONTRACT (fail loud at the wire, report loud in the parent):
    (import the guard and pass the class, or open those resources after
    the fork).
 
+   And one boundary the ``connection_class=`` cannot close at any price:
+   the guard's checks live on the CONNECTION's methods, evaluated at call
+   time - but a cursor or prepared statement object the parent created
+   BEFORE the fork captured the wire at ITS creation (asyncpg's
+   ``PreparedStatement`` and cursor factories bind
+   ``self._connection._protocol`` directly) and its calls bypass every
+   connection-level check, guarded class or not. The remediation is the
+   fork contract's own: a child that continues in Python works on
+   resources opened AFTER the fork - re-prepare and re-cursor there (on
+   the child's own post-fork connection, which the fresh
+   ``prepare()``/``cursor()`` call guards) - never reuse the parent's
+   captured object.
+
 2. **Parent side - the fork is reported, not silent.** The same ``at-fork``
    hook stamps the PARENT after every fork it performs. The worker's loops
    consume that stamp and emit ``fork-detected-in-worker-process``: a job
@@ -291,6 +304,23 @@ def guarded_connection_class() -> "type[Any]":
         ) -> None:
             _assert("asyncpg connection.executemany")
             await super().executemany(command, args, timeout=timeout)
+
+        # ``fetchmany`` is its own wire entry, not a shape of ``fetch``:
+        # asyncpg 0.31's body calls ``self._executemany`` ->
+        # ``_protocol.bind_execute_many`` DIRECTLY, never the public
+        # ``executemany`` - so the executemany override above never sees
+        # it, and without its own check a forked child's fetchmany writes
+        # the inherited socket unrefused.
+        async def fetchmany(
+            self,
+            query: str,
+            args: Iterable[Sequence[object]],
+            *,
+            timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg.Connection's own signature; the override must match it exactly, the kwarg is forwarded to super().
+            record_class: Any = None,
+        ) -> Any:
+            _assert("asyncpg connection.fetchmany")
+            return await super().fetchmany(query, args, timeout=timeout, record_class=record_class)
 
         async def fetch(
             self,
@@ -533,6 +563,24 @@ def guarded_connection_class() -> "type[Any]":
             await super().set_builtin_type_codec(
                 typename, schema=schema, codec_name=codec_name, format=format
             )
+
+        # The teardown wire: ``close`` sends Terminate through
+        # ``self._protocol.close`` and ``terminate`` aborts the protocol
+        # directly - neither rides a query method, so a forked child's
+        # ``__aexit__`` or pool shutdown would put ITS Terminate on the
+        # shared stream and kill the PARENT's connection (exactly the
+        # corruption class this guard exists for). The refusal is the safe
+        # disposition: the child's teardown does not reach the inherited
+        # socket, the parent's connection survives its child's death, and
+        # the owner's path is unchanged (the check is a no-op there).
+
+        async def close(self, *, timeout: float | None = None) -> None:  # noqa: ASYNC109  # Why: mirrors asyncpg.Connection's own signature; the override must match it exactly, the kwarg is forwarded to super().
+            _assert("asyncpg connection.close (the Terminate wire)")
+            await super().close(timeout=timeout)
+
+        def terminate(self) -> None:
+            _assert("asyncpg connection.terminate (the abort wire)")
+            super().terminate()
 
     _guarded_connection_class = GuardedConnection
     return GuardedConnection

@@ -24,11 +24,15 @@ These pins attack the guard itself: install idempotence, the child hook's
 pid refresh (a guard that forgets to re-cache the pid in the child passes
 the child as the owner), the parent stamp's exactly-once consume, the
 uninstalled no-op (processes that never opted in change nothing), the wire
-classes' pass-through in the owning process, and the two BYPASS FAMILIES
-review found in the first cut - redis-py's pipeline wire
-(``send_packed_command``, the path TaskQ's own progress publisher rides)
-and asyncpg's COPY / custom-codec methods (they reach the protocol object
-without touching the query methods).
+classes' pass-through in the owning process, and the BYPASS FAMILIES review
+found - redis-py's pipeline wire (``send_packed_command``, the path TaskQ's
+own progress publisher rides), asyncpg's COPY / custom-codec methods (they
+reach the protocol object without touching the query methods) from the
+first cut, and from the second: ``fetchmany`` (it drives
+``_executemany`` -> ``_protocol.bind_execute_many`` directly, never the
+public ``executemany``) and the teardown wire (``close``/``terminate`` -
+a forked child's pool shutdown would put its own Terminate on the
+parent's stream).
 """
 
 import contextlib
@@ -394,11 +398,20 @@ def test_wire_calls_pass_through_in_the_owner() -> None:
     )
 
 
-_COPY_AND_CODEC_ENTRIES: list[tuple[str, tuple[object, ...], dict[str, object]]] = [
-    # The asyncpg wire entries whose bodies do NOT ride the query methods:
-    # the COPY methods drive ``self._protocol.copy_in/copy_out`` directly,
-    # and the codec methods' type introspection goes through the PRIVATE
-    # ``_execute`` - none of the query-method overrides sees them.
+_PROTOCOL_DIRECT_ENTRIES: list[tuple[str, tuple[object, ...], dict[str, object]]] = [
+    # The asyncpg wire entries whose bodies do NOT ride the public query
+    # methods - every one reaches the protocol object (or the private
+    # introspection ``_execute``) directly, so none of the query-method
+    # overrides sees it:
+    # - the COPY methods drive ``self._protocol.copy_in/copy_out``;
+    # - the codec methods' type introspection goes through the private
+    #   ``_execute``;
+    # - ``fetchmany`` drives ``_executemany`` ->
+    #   ``_protocol.bind_execute_many`` (asyncpg 0.31 never reaches the
+    #   public ``executemany``);
+    # - ``close``/``terminate`` write the Terminate/abort through the
+    #   protocol - a forked child's teardown close would put its own
+    #   Terminate on the parent's stream.
     ("copy_from_table", ("tbl",), {"output": lambda chunk: None}),
     ("copy_from_query", ("SELECT 1",), {"output": lambda chunk: None}),
     ("copy_to_table", ("tbl",), {"source": b"data"}),
@@ -406,29 +419,40 @@ _COPY_AND_CODEC_ENTRIES: list[tuple[str, tuple[object, ...], dict[str, object]]]
     ("set_type_codec", ("typename",), {"encoder": lambda v: v, "decoder": lambda v: v}),
     ("reset_type_codec", ("typename",), {}),
     ("set_builtin_type_codec", ("typename",), {"codec_name": "int"}),
+    ("fetchmany", ("SELECT 1", []), {}),
+    ("close", (), {}),
+    ("terminate", (), {}),
 ]
 
 
-def test_guarded_wire_refuses_on_the_copy_and_codec_entries() -> None:
-    """The D2 pin: asyncpg's COPY and custom-codec methods bypass the query
-    methods (direct ``self._protocol.copy_in/copy_out`` calls, and the
-    codec introspection's private ``_execute``), so without their own
-    overrides they are wire entries a forked child can use unrefused. The
-    pin drives EVERY entry through the guarded class (None self: any use
-    past the guard would explode inside asyncpg long after the refusal
-    must already have fired)."""
+def test_guarded_wire_refuses_on_every_protocol_direct_entry() -> None:
+    """The D2 + D5 pin: asyncpg's COPY and custom-codec methods bypass the
+    query methods (direct ``self._protocol.copy_in/copy_out`` calls, and
+    the codec introspection's private ``_execute``), ``fetchmany`` drives
+    ``_executemany`` -> ``_protocol.bind_execute_many`` DIRECTLY (0.31:
+    never the public ``executemany``), and ``close``/``terminate`` write
+    the Terminate/abort through the protocol - so a forked child's pool
+    shutdown would kill the PARENT's connection. Without their own
+    overrides all of these are wire entries a forked child can use
+    unrefused. The pin drives EVERY entry through the guarded class (None
+    self: any use past the guard would explode inside asyncpg long after
+    the refusal must already have fired; ``terminate`` is sync, the rest
+    coroutine - the drive awaits whichever the call returns)."""
     install_fork_guard()
     conn_cls = guarded_connection_class()
     import asyncio
+    import inspect
 
     async def drive(entry: tuple[str, tuple[object, ...], dict[str, object]]) -> None:
         method, args, kwargs = entry
-        await getattr(conn_cls, method)(None, *args, **kwargs)  # type: ignore[arg-type]  # Why: deliberate None self - the pin proves the guard fires before the body.
+        result = getattr(conn_cls, method)(None, *args, **kwargs)  # type: ignore[arg-type]  # Why: deliberate None self - the pin proves the guard fires before the body.
+        if inspect.iscoroutine(result):
+            await result
 
     # Owner: pass-through - the None self explodes inside asyncpg
     # (TypeError at binding, AttributeError at attribute access), it is not
     # refused.
-    for entry in _COPY_AND_CODEC_ENTRIES:
+    for entry in _PROTOCOL_DIRECT_ENTRIES:
         with pytest.raises(
             Exception
         ) as owner_exc:  # Why: deliberate wide net; the assertion below narrows it.
@@ -445,11 +469,11 @@ def test_guarded_wire_refuses_on_the_copy_and_codec_entries() -> None:
             return "refused"
         return "allowed"
 
-    for entry in _COPY_AND_CODEC_ENTRIES:
+    for entry in _PROTOCOL_DIRECT_ENTRIES:
         verdict = _run_in_forked_child(lambda e=entry: child_tries(e))
         assert verdict == "refused", (
-            f"{entry[0]}: a forked child reached an asyncpg COPY/codec wire "
-            f"entry and was NOT refused (got {verdict!r})"
+            f"{entry[0]}: a forked child reached an asyncpg protocol-direct "
+            f"wire entry and was NOT refused (got {verdict!r})"
         )
 
 
