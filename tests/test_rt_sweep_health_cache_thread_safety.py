@@ -39,6 +39,7 @@ def fresh_caches(monkeypatch: pytest.MonkeyPatch) -> None:
     other tests.
     """
     monkeypatch.setattr(otel_mod, "_sweep_success_cache", {})
+    monkeypatch.setattr(otel_mod, "_sweep_success_monotonic_cache", {})
     monkeypatch.setattr(otel_mod, "_sweep_batch_size_cache", {})
     monkeypatch.setattr(otel_mod, "_sweep_batch_size_configured_cache", {})
     monkeypatch.setattr(otel_mod, "_otel_enabled", True)
