@@ -567,6 +567,32 @@ async def test_log_peek_truncated_withscores_pair_raises_the_sentinel() -> None:
             )
 
 
+async def test_log_peek_lying_withscores_container_raises_the_sentinel() -> None:
+    """The round-3 arity check validates the ELEMENT's shape, but the
+    CONTAINER access ``oldest[0]`` runs on the raw zrangebyscore reply
+    unguarded: a RESP3-map lie (a dict, ``{b"req1": 2000.0}``) raises
+    bare ``KeyError: 0`` on the integer index and a set lie raises
+    ``TypeError: not subscriptable`` - neither is in any guarded
+    conversion family, so the lie escapes the peek as a bare crash.
+    The container gets the same treatment as the truncated pairs: the
+    store-corrupt sentinel.
+    """
+    for container in [
+        {b"req1": 2000.0},  # the RESP3-map lie: oldest[0] -> KeyError: 0
+        {b"req1"},  # the set lie: oldest[0] -> TypeError
+    ]:
+        with pytest.raises(RateLimitStoreCorrupt, match="withscores"):
+            await _peek_redis_log(
+                SlidingWindow("l", limit=5, window=timedelta(seconds=10), style="log"),
+                redis_client=_PeekRedis(
+                    time_reply=[2000, 0],  # honest TIME
+                    zcount_reply=10,  # an exhausted log bucket: the peek enters the oldest arm
+                    zrangebyscore_reply=container,
+                ),
+                settings=_settings(),
+            )
+
+
 @pytest.mark.parametrize(
     "time_reply",
     [

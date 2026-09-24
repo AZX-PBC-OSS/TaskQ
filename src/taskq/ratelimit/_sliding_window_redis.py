@@ -420,6 +420,25 @@ async def _peek_redis_log(
         oldest = await redis_client.zrangebyscore(  # pyright: ignore[reportUnknownMemberType]  # Why: redis-py zrangebyscore return type is untyped in the stub
             key, f"({cutoff_ms}", "+inf", start=0, num=1, withscores=True
         )
+        if not isinstance(oldest, (list, tuple)):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the stub types zrangebyscore as ZSetRangeResponse (list/tuple), but the declared type is exactly what a lying reply violates at runtime - the RESP3 map and the set both arrive through this untyped boundary, so the runtime shape check is the defense, not a redundancy.
+            # Why the CONTAINER gets its own shape check before the
+            # element access: the pair-arity check below validates the
+            # ELEMENT's shape, but ``oldest[0]`` indexes the raw
+            # zrangebyscore reply itself - a RESP3 map (a dict) raises
+            # bare KeyError on the integer index and a set raises
+            # TypeError, and neither is in any guarded conversion
+            # family, so the lie escapes the peek as a bare crash. An
+            # honest withscores reply is a list of pairs, so a
+            # non-sequence container is the same verdict as every
+            # other reply lie: the store-corrupt sentinel, the family
+            # the truncated-pair check below already speaks. The EMPTY
+            # list stays accepted: it is the honest count-vs-read race
+            # (the member aged out between ZCOUNT and ZRANGEBYSCORE,
+            # pinned by ``test_peek_log_oldest_empty_race``), not a
+            # container lie.
+            raise RateLimitStoreCorrupt(
+                f"sliding-window log peek read a non-list withscores reply: {oldest!r}"
+            )
         if oldest:
             oldest_entry = oldest[0]
             if isinstance(oldest_entry, (list, tuple)) and len(oldest_entry) != 2:
