@@ -64,7 +64,16 @@ async def redis_time_seconds(redis_client: "redis_async.Redis") -> float:
         # nan/inf: a real clock is a finite number, a proxy answering
         # either is lying.
         raise RateLimitStoreCorrupt(f"redis TIME reply is not finite: {t_raw!r}")
-    return seconds + micros / 1_000_000
+    derived = seconds + micros / 1_000_000
+    if not math.isfinite(derived):
+        # Why the DERIVED sum gets its own check: both fields finite does
+        # not bound the sum - seconds at 1.797e308 plus a micros field
+        # that survives the division overflow it to inf SILENTLY (float
+        # addition never raises), and the consumers' millisecond
+        # arithmetic runs on the lie. A clock no honest store can report
+        # is the same verdict as a malformed one.
+        raise RateLimitStoreCorrupt(f"redis TIME reply is not finite: {t_raw!r}")
+    return derived
 
 
 async def with_pg_fallback(

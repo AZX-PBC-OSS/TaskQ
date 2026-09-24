@@ -386,6 +386,16 @@ async def _peek_redis_log(
     # scores live in. ZCARD would count the whole key and overstate
     # exhaustion while the next acquire is allowed.
     now_ms = await redis_time_seconds(redis_client) * 1000
+    if not math.isfinite(now_ms):
+        # Why the DERIVED value gets its own guard: the seconds fields
+        # can each pass the clock read's finiteness check yet overflow
+        # the millisecond derivation (1e306 * 1000 = inf, silently), and
+        # every window comparison below runs in that domain. A clock no
+        # honest store can report is the sentinel, the same verdict as a
+        # malformed TIME reply.
+        raise RateLimitStoreCorrupt(
+            f"sliding-window log peek read a non-finite store clock (TIME): {now_ms!r}"
+        )
     cutoff_ms = now_ms - window_ms
     zcount_raw = await redis_client.zcount(key, f"({cutoff_ms}", "+inf")  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]  # Why: redis-py zcount return type is untyped in the stub
     try:
@@ -412,6 +422,19 @@ async def _peek_redis_log(
         )
         if oldest:
             oldest_entry = oldest[0]
+            if isinstance(oldest_entry, (list, tuple)) and len(oldest_entry) != 2:
+                # Why the pair arity is checked BEFORE the conversion: a
+                # truncated withscores "pair" ([(b"req1",)] or [()])
+                # raises bare IndexError on the element access, and
+                # IndexError is in no guarded conversion family - the
+                # reply contract (``_redis_utils.redis_time_seconds``:
+                # "must not crash the caller with a
+                # ValueError/TypeError/IndexError") explicitly names it
+                # as a crash class this boundary must kill. Same verdict
+                # as every other reply lie: the store-corrupt sentinel.
+                raise RateLimitStoreCorrupt(
+                    f"sliding-window log peek read a truncated withscores pair: {oldest!r}"
+                )
             try:
                 oldest_score = (
                     float(oldest_entry[1])
@@ -473,6 +496,19 @@ async def _peek_redis_gcra(
     delay_tolerance_ms = window_ms
 
     now_ms = await redis_time_seconds(redis_client) * 1000
+    if not math.isfinite(now_ms):
+        # Why the DERIVED value gets its own guard: the seconds fields
+        # can each pass the clock read's finiteness check yet overflow
+        # the millisecond derivation (1e306 * 1000 = inf, silently).
+        # With an honest-shaped TAT that inf makes ``tat = max(tat, inf)
+        # = inf`` and ``tat - now_ms = nan`` (``inf - inf``), so the
+        # remaining estimate's ``int(nan)`` crashed with ValueError (and
+        # ``int(-inf)`` with OverflowError) - crash classes this
+        # boundary exists to kill. A clock no honest store can report is
+        # the sentinel, the same verdict as a malformed TIME reply.
+        raise RateLimitStoreCorrupt(
+            f"sliding-window GCRA peek read a non-finite store clock (TIME): {now_ms!r}"
+        )
     tat_raw = await redis_client.get(key)  # pyright: ignore[reportUnknownMemberType]  # Why: redis-py get return type is untyped in the stub
     try:
         tat = float(tat_raw) if tat_raw else now_ms
@@ -491,7 +527,21 @@ async def _peek_redis_gcra(
         raise RateLimitStoreCorrupt(f"sliding-window GCRA peek read a non-finite TAT: {tat_raw!r}")
     tat = max(tat, now_ms)
 
-    remaining = float(max(0, int((delay_tolerance_ms - (tat - now_ms)) / emission_interval_ms)))
+    try:
+        remaining = float(max(0, int((delay_tolerance_ms - (tat - now_ms)) / emission_interval_ms)))
+    except (TypeError, ValueError, OverflowError) as exc:
+        # Why the arithmetic conversion joins the sentinel family: the
+        # clock and TAT guards bound each input to finite, but a finite
+        # TAT against a finite extreme clock can still overflow the
+        # difference to +-inf (and inf - inf is nan), and int(nan) is a
+        # ValueError while int(+-inf) is an OverflowError - siblings of
+        # neither TypeError nor ValueError, the crash classes this
+        # boundary exists to kill. The clock guard above kills the
+        # reachable lie; this catch is the residual-arm defence.
+        raise RateLimitStoreCorrupt(
+            f"sliding-window GCRA peek derived a non-numeric remaining estimate: "
+            f"tat={tat!r}, now_ms={now_ms!r}"
+        ) from exc
     is_exhausted = remaining <= 0
     retry_after: timedelta | None = None
     if is_exhausted:
