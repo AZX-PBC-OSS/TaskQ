@@ -2284,6 +2284,79 @@ async def test_prune_loop_success_stops_retry_for_the_day(monkeypatch: Any) -> N
             await task
 
 
+async def test_prune_loop_demotion_cut_arms_ladder_instead_of_stamping_the_day(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """A demotion that CUTS the drain mid-way is an unfinished day, not a
+    done one: the date latch stays unstamped and the backoff ladder arms,
+    so the remainder is re-attempted within the day instead of silently
+    waiting for the next cron fire (up to 24h) once the pod leads again."""
+    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+
+    monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_INITIAL_SECS", 0.02)
+    monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_CAP_SECS", 0.2)
+    # _leader_sweeps binds the croniter MODULE (``import croniter as cr``),
+    # so patching the attribute on the module itself reaches the loop
+    # without a private-import report on ``_leader_sweeps_mod.cr``.
+    import croniter as croniter_mod
+
+    monkeypatch.setattr(croniter_mod, "croniter", _soon_then_far_croniter())
+
+    # The demotion seam: the conn must be built before the leader (whose
+    # deps the drain consults), so the cut resolves the holder at write
+    # time - the batch's own commit instant is the demotion instant.
+    deps_holder: list[WorkerDeps] = []
+
+    class _DemoteAtFirstWriteConn(_FakeConnForPrune):
+        demoted = False
+
+        async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
+            result = await super().fetch(sql, *args)
+            if not self.demoted and "WITH locked AS MATERIALIZED" in sql and result and deps_holder:
+                # Batch 1 has committed: this is the demotion instant.
+                # The drain's next gate call refuses (the demotion
+                # clause), and the loop's post-drain leading() read must
+                # see the pod no longer leading.
+                self.demoted = True
+                deps_holder[0].stop_leading()
+                # The bug's own scenario: the same pod regains leadership
+                # a beat later. The ladder, not the cron, must land the
+                # remainder. A timer, not a sleep: the assertion below
+                # stays a bounded condition wait.
+                asyncio.get_running_loop().call_later(0.1, deps_holder[0].is_leader.set)
+            return result
+
+    leader_conn = _DemoteAtFirstWriteConn(
+        batch_rows=[[_full_batch_record(5)]], fetchval_result=True, actor_config_rows=[]
+    )
+    leader, deps, _backend, _, _, shutdown = await _make_leader(
+        leader_conn=leader_conn,
+        dispatcher_pool=_PoolWithFixedConn(leader_conn),
+        is_leader=True,
+        monkeypatch=monkeypatch,
+    )
+    deps_holder.append(deps)
+
+    task = asyncio.create_task(leader._prune_loop(shutdown))
+    try:
+        # The cut attempt ends without raising, so the ladder only proves
+        # itself when the pod leads again: on the ladder's next wake the
+        # attempt re-runs (a second advisory-lock attempt). With the date
+        # wrongly stamped by the cut, the loop would sleep to the far
+        # cron fire and never attempt again.
+        await wait_for_condition(
+            lambda: _lock_attempts(leader_conn) >= 2,
+            description="the demotion-cut drain must arm the retry ladder: "
+            "the remainder is re-attempted within the day, not deferred to "
+            "the next cron fire",
+            timeout=3.0,
+        )
+    finally:
+        shutdown.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 async def test_archive_expiry_loop_retries_failed_attempt_with_backoff(
     monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
 ) -> None:
