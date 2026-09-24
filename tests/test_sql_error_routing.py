@@ -205,8 +205,9 @@ async def test_notify_probe_survives_server_side_statement_cancel() -> None:
 
     shutdown.set()
     await asyncio.wait_for(task, timeout=5.0)
-    if task.exception() is not None:  # pragma: no cover - wait_for re-raises first
-        raise task.exception()
+    task_exc = task.exception()
+    if task_exc is not None:  # pragma: no cover - wait_for re-raises first
+        raise task_exc
 
 
 async def test_notify_setup_survives_server_side_statement_cancel() -> None:
@@ -270,8 +271,9 @@ async def test_notify_teardown_unlisten_server_cancel_is_suppressed() -> None:
         name="notify.teardown-57014",
     )
     await asyncio.wait_for(task, timeout=5.0)
-    if task.exception() is not None:  # pragma: no cover - wait_for re-raises first
-        raise task.exception()
+    task_exc = task.exception()
+    if task_exc is not None:  # pragma: no cover - wait_for re-raises first
+        raise task_exc
 
 
 # ── Leak 2: the 500-lesson (unprintable exceptions inside handlers) ─────
