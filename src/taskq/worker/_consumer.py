@@ -106,6 +106,7 @@ from taskq.worker._handlers import (
     _dispatch_exception,
     _handle_reservation_class_denied,
     _log_terminal_write_failed,
+    _StartToCloseExceededError,
     _terminal_write_with_retry,
     _TerminalWriteFailed,
 )
@@ -367,8 +368,11 @@ async def _interrupted_actor_hold(
     fast path a responsive actor has always had.
 
     A sync actor still executing in its executor thread (``task.cancel()``
-    cancels the await, never the thread) and a transactional actor whose tx
-    task is still unwinding its rollback are NOT exited. Their tracked
+    cancels the await, never the thread), a transactional actor whose tx
+    task is still unwinding its rollback, and an async actor whose body
+    task is still unwinding a start_to_close cancel (the deadline
+    enforcement runs the body in its own task, see
+    :func:`_enforce_start_to_close`) are NOT exited. Their tracked
     handles on *ctx* are the only proof available, so this parks on them:
     bounded by the remaining termination budget minus the release write's
     own retry budget, so the write still fits before the watchdog's
@@ -384,13 +388,17 @@ async def _interrupted_actor_hold(
     the hold below still covers the process's exit window.
     """
     loop = asyncio.get_running_loop()
-    # The dispatch layer and the transactional consumer are the designated
-    # writers of these handles (JobContext._set_sync_actor_task /
-    # _set_tx_unwind_task); this shutdown arm is their designated reader.
+    # The dispatch layer, the transactional consumer and the start_to_close
+    # enforcement are the designated writers of these handles
+    # (JobContext._set_sync_actor_task / _set_tx_unwind_task /
+    # _set_actor_body_task); this shutdown arm is their designated reader.
     sync_handle = ctx._sync_actor_task  # pyright: ignore[reportPrivateUsage]  # Why: reading the dispatch layer's tracked thread handle: see the setter's contract.
     tx_handle = ctx._tx_unwind_task  # pyright: ignore[reportPrivateUsage]  # Why: reading the transactional consumer's unwind handle: see the setter's contract.
+    body_handle = ctx._actor_body_task  # pyright: ignore[reportPrivateUsage]  # Why: reading the deadline enforcement's body-task handle: see the setter's contract.
     pending: list[asyncio.Task[object]] = [
-        handle for handle in (sync_handle, tx_handle) if handle is not None and not handle.done()
+        handle
+        for handle in (sync_handle, tx_handle, body_handle)
+        if handle is not None and not handle.done()
     ]
     if not pending:
         return timedelta(0)
@@ -1284,6 +1292,160 @@ async def consume_one_job(
                 )
 
 
+def _retrieve_body_task_outcome(task: "asyncio.Task[object]") -> None:
+    """Retrieve a detached body task's eventual outcome.
+
+    The one shared retriever for the deadline enforcement's detached tasks
+    (the same discipline ``_retrieve_detached_outcome`` applies to the tx
+    task and ``shield_with_retrieval`` to a detached terminal write): a
+    body whose ``finally`` outlives the deadline keeps unwinding after the
+    attempt is already terminal, and without this its eventual exception
+    is asyncio "Task exception was never retrieved" noise burying the real
+    signal. The outcome itself is deliberately discarded: the attempt is
+    terminal, the row is fenced by attempt epoch, and a late failure is
+    the expected shape of a hostile unwind.
+    """
+    with contextlib.suppress(asyncio.CancelledError):
+        task.exception()
+
+
+async def _enforce_start_to_close(
+    run_actor: Callable[[JobRow, JobContext[BaseModel]], Awaitable[object]],
+    job: JobRow,
+    ctx: JobContext[BaseModel],
+    timeout: float | None,
+) -> object:
+    """Run the actor body under its ``start_to_close`` deadline.
+
+    Replaces a bare ``asyncio.wait_for(run_actor(...), timeout)``, which
+    had three body-side holes this mechanism closes:
+
+    1. THE #791 CONFLATION. ``wait_for`` propagates a body-raised
+       ``TimeoutError`` and its own deadline expiry through the same
+       exception type, so the consumer routed every body ``TimeoutError``
+       (a nested ``wait_for``, a socket read, a futures timeout) into the
+       timeout handler: a false ``job_timeout`` log, a false
+       ``taskq.jobs.timeouts{kind="start_to_close"}`` increment, the
+       deadline's routing for an error that never touched the deadline.
+       Here the expiry alone raises ``_StartToCloseExceededError`` (a
+       private ``TimeoutError`` subclass the dispatcher routes to the
+       timeout handler); the body's own ``TimeoutError`` propagates
+       unchanged and takes the ordinary generic-failure path.
+
+    2. THE ABSORBABLE DEADLINE. Since 3.12 ``wait_for`` documents: "If the
+       task suppresses the cancellation and returns a value instead, that
+       value is returned." A body that caught the deadline's cancellation
+       and returned was marked SUCCEEDED, past its own time limit. Here
+       the deadline is a first-completed race: a body that returns after
+       the deadline fired has its result discarded and the marker raised.
+
+    3. THE DEFERRABLE DEADLINE. ``wait_for`` waits out the body's unwind
+       unboundedly: a ``finally`` that awaits (worse, ``await
+       asyncio.shield(cleanup())``) deferred the hard limit for as long as
+       it liked while the slot sat occupied. Here the body runs in its own
+       task and the attempt ends at the deadline, however the body is
+       still unwinding: the task is detached tracked (the shutdown
+       watchdog accounts for it) and stashed on the ctx (the exit-proof
+       hold parks on it, bounded, before the re-pend). The unwind itself
+       is never sabotaged: no re-cancel is delivered into a task that is
+       honouring the first one's cleanup, a legitimate ``finally`` gets to
+       finish, and a body that absorbed the cancel and kept WORKING is
+       exactly the tracked zombie the watchdog's hard rung exists for.
+
+    The body-task boundary also converts ``SystemExit`` to the
+    ``_ActorSystemExitAttemptError`` carrier, the third task boundary
+    after the sync executor thread and the tx task (CPython's
+    ``Task.__step`` re-raises that pair bare and would kill the loop).
+
+    External cancellation (shutdown interrupt, operator phase 2) is
+    forwarded to the body task and re-raised: the consumer's cancel arm
+    runs while the body unwinds detached, and the interrupt hold reads the
+    ctx handle instead of the old "the cancellation propagated through the
+    body's frames, so an async actor has provably unwound" assumption.
+    """
+    if timeout is None:
+        return await run_actor(job, ctx)
+
+    loop = asyncio.get_running_loop()
+
+    async def _body() -> object:
+        try:
+            return await run_actor(job, ctx)
+        except SystemExit as exc:
+            # This coroutine is a task body now: Task.__step re-raises
+            # exactly (KeyboardInterrupt, SystemExit) bare after
+            # set_exception, killing the loop before the wait below can
+            # run (the same conversion _run_actor_in_tx_tracked and
+            # _run_sync_actor_tracked._thread_body apply at their task
+            # boundaries). _dispatch_exception unwraps the carrier, so the
+            # row records the actor's own SystemExit.
+            raise _ActorSystemExitAttemptError(exc) from exc
+
+    body_task: asyncio.Task[object] = asyncio.ensure_future(_body())
+    ctx._set_actor_body_task(body_task)  # pyright: ignore[reportPrivateUsage]  # Why: the deadline enforcement is the designated writer of the body-task handle (see the setter's contract).
+
+    expired = False
+    deadline_latch: asyncio.Future[None] = loop.create_future()
+
+    def _fire() -> None:
+        nonlocal expired
+        expired = True
+        body_task.cancel()
+        deadline_latch.set_result(None)
+
+    deadline_handle = loop.call_later(timeout, _fire)
+    try:
+        await asyncio.wait(
+            {body_task, deadline_latch},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+    except asyncio.CancelledError:
+        # An external cancellation of THIS task (a shutdown interrupt, an
+        # operator phase 2): re-raise and let the finally below forward
+        # the cancellation to the body task, detach it tracked, and leave
+        # the unwind proof to the ctx handle the interrupt hold reads.
+        raise
+    finally:
+        deadline_handle.cancel()
+        deadline_latch.cancel()
+        if body_task.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                # Retrieve a raced-out body outcome (an exception landing
+                # in the same loop iteration the deadline fired) so
+                # asyncio never reports it unretrieved.
+                body_task.exception()
+        else:
+            if not expired:
+                # An external cancellation of THIS task (a shutdown
+                # interrupt, an operator phase 2): the consumer's cancel
+                # arm owns the row now and the body must get the cancel
+                # it owes. The unwind is detached (below), so the arm
+                # runs while the body unwinds and the exit-proof hold
+                # reads the ctx handle instead of the old inline
+                # propagation assumption.
+                body_task.cancel()
+            # Detach tracked, retrieval pinned: the exit-proof hold /
+            # shutdown watchdog own the unwind from here. The attempt's
+            # terminal path does not wait on it, and an unwinder is never
+            # re-cancelled: a finally honouring the deadline's first
+            # cancellation gets to finish; a body that swallowed it and
+            # kept working is the tracked zombie the watchdog's hard rung
+            # owns.
+            body_task.add_done_callback(_retrieve_body_task_outcome)
+            register_tracked_actor_handle(body_task)
+
+    if expired:
+        # The deadline won the race. The body may have finished in the
+        # same loop iteration (its outcome is raced out and discarded) or
+        # may still be unwinding (detached above): either way the attempt
+        # is a timeout, never a success, however the body feels about it.
+        raise _StartToCloseExceededError from None
+    # The body finished before the deadline: its return value, or its own
+    # exception (including its own TimeoutError, which now routes as the
+    # ordinary failure it is), surfaced by the result() read.
+    return body_task.result()
+
+
 async def _consume_transactional(
     backend: Backend,
     job: JobRow,
@@ -1338,15 +1500,16 @@ async def _consume_transactional(
             await transaction_conn.execute("SAVEPOINT _tq_actor")
             result: object = None
             try:
-                # Why no shield here: asyncio.shield leaves the shielded
-                # awaitable running when its waiter is cancelled, so
-                # wait_for(shield(actor)) enforced the deadline on the WAIT
-                # and not on the actor, the attempt was marked timed out and
-                # became retryable elsewhere while the actor body carried on,
-                # duplicating every side effect past the timeout point.  The
-                # start_to_close cancellation must reach the actor, exactly as
-                # on the autonomous path (_consume_autonomous).  Transaction
-                # integrity is the OUTER shield's job (`shield(
+                # Why no shield here: the deadline enforcement below runs
+                # the actor in its own task and the deadline wins over
+                # whatever the body does after expiry (a cancellation-
+                # absorbing return, a hostile finally): see
+                # _enforce_start_to_close for the three holes a bare
+                # wait_for left (the #791 TimeoutError conflation, the
+                # absorbable deadline, the deferrable unwind). The
+                # start_to_close cancellation reaches the actor exactly as
+                # on the autonomous path.  Transaction integrity is the
+                # OUTER shield's job (`shield(
                 # _run_actor_in_tx())` below): that one decouples EXTERNAL
                 # cancellation from an in-flight commit.  A cancel landing
                 # mid-statement on transaction_conn is safe, asyncpg sends a
@@ -1355,7 +1518,7 @@ async def _consume_transactional(
                 # `async with transaction_conn.transaction()` then rolls back; the
                 # timeout's own terminal write goes through the worker pool,
                 # not this connection.
-                result = await asyncio.wait_for(run_actor(job, ctx), timeout=timeout)
+                result = await _enforce_start_to_close(run_actor, job, ctx, timeout)
                 # Why a second flag beside `completion`: the outer shield's
                 # CancelledError handler must distinguish "the actor
                 # attempt is still running" (the external cancel has to be
@@ -1683,7 +1846,7 @@ async def _consume_autonomous(
         worker_pool if worker_pool is not None else (deps.worker_pool if deps is not None else None)
     )
 
-    result = await asyncio.wait_for(run_actor(job, ctx), timeout=timeout)
+    result = await _enforce_start_to_close(run_actor, job, ctx, timeout)
 
     # Why NO cancel-phase check between the actor's return and the success
     # write: the actor returned a value, so the attempt's outcome is

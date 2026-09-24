@@ -1355,6 +1355,22 @@ window can still overlap a later re-claim of its retry. The enforced exit
 boundary (the watchdog gate) protects the interruption release; the timeout
 path's promise is exactly the park plus the deferral, and no more.
 
+The deadline itself is enforced against the BODY, not just the clock. The
+actor runs in its own task under a first-completed race with the deadline,
+and three properties hold that a bare `wait_for` does not give. First, the
+machinery's expiry raises its own marker (a private `TimeoutError` subclass),
+so an actor that raises its own `TimeoutError` (a nested wait, a socket
+read) is classified as the actor's failure, never as a deadline hit
+(dramatiq #791's conflation). Second, the deadline wins over the body: a
+body that catches the expiry's cancellation and returns does not succeed
+past its own time limit, the result is discarded and the attempt is a
+timeout. Third, the deadline is not deferrable: a body whose `finally`
+awaits (worse, awaits a shielded cleanup) cannot hold the attempt past the
+deadline; the still-unwinding task is detached tracked, the shutdown
+watchdog accounts for it, and the re-pend's exit-proof park reads its
+handle. The unwind itself is never re-cancelled: a finally honouring the
+deadline's cancellation gets to finish.
+
 #### The interruption release contract
 
 TaskQ's interruption release rejects the at-least-once overlap other

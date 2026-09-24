@@ -111,6 +111,7 @@ class JobContext[P: BaseModel]:
     _progress_dropped_notice: threading.Event = field(default_factory=threading.Event)
     _sync_actor_task: asyncio.Task[object] | None = None
     _tx_unwind_task: asyncio.Task[object] | None = None
+    _actor_body_task: asyncio.Task[object] | None = None
 
     @property
     def cancellation_requested(self) -> bool:
@@ -174,6 +175,24 @@ class JobContext[P: BaseModel]:
         after construction.
         """
         object.__setattr__(self, "_tx_unwind_task", task)
+
+    def _set_actor_body_task(self, task: asyncio.Task[object]) -> None:
+        """Record the deadline-enforced actor body task. Called by the
+        start_to_close enforcement (the consumer's deadline helper) when
+        the body runs in its own task, never by actor code.
+
+        The start_to_close machinery runs the body in a task so the
+        deadline can win over whatever the body does after expiry (a
+        cancellation-absorbing return, a hostile ``finally``). The task
+        then unwinds ASYNCHRONOUSLY, exactly like a sync actor's executor
+        thread: the consumer's cancel arm and the timeout handler's
+        re-pend park on this handle, bounded, before releasing the row,
+        and a body still unwinding at the window's expiry holds the
+        release behind the exit window. ``object.__setattr__`` because the
+        dataclass is frozen; the handle is consumer state that arrives
+        after construction, exactly as the other two handles do.
+        """
+        object.__setattr__(self, "_actor_body_task", task)
 
     def check_cancelled(self) -> None:
         if self.cancel_event.is_set():
