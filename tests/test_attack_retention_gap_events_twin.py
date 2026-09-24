@@ -4,7 +4,7 @@ The loss class: a trailing-watermark consumer (``TaskQ.watch_reclaims``)
 parks its cursor at seq K; event retention (the sweep's age arm, the outbox
 age-cap arm, or the terminal prune's cascade) deletes ``(K, K+n]``; the
 consumer resumes. Before the event-prune watermark
-(``job_events_prune_state``, migration 01.00.20_01) the resumed poll simply
+(``job_events_prune_state``, migration 01.00.20_02) the resumed poll simply
 returned the surviving rows: the stream read exactly like a quiet fleet,
 the loss was silent on both sides. These pins fix the replacement contract
 on the in-memory twin (the same gate code the PG transports run):

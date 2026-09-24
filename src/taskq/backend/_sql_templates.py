@@ -1930,7 +1930,7 @@ WHERE l.relation = '"{s}".job_events'::regclass
   AND l.locktype = 'relation'
   AND a.pid != pg_backend_pid()
   AND a.xact_start < clock_timestamp() - $1::interval""",
-        # The event-prune watermark (migration 01.00.20_01): the highest
+        # The event-prune watermark (migration 01.00.20_02): the highest
         # job_events id any retention deleter has committed a delete below-or-at.
         # watch_reclaims' transports compare the consumer's persisted cursor
         # against this on every poll and fail visible (EventRetentionGapError)

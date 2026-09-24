@@ -650,7 +650,7 @@ def archive_terminal_jobs(
         # cascade deletes events a trailing-watermark consumer may not
         # have been delivered, so the highest deleted id becomes the
         # bound the consumer's cursor is tested against (migration
-        # 01.00.20_01, EventRetentionGapError). GREATEST semantics: a
+        # 01.00.20_02, EventRetentionGapError). GREATEST semantics: a
         # never-backwards bound.
         max_deleted_event_id = max(
             (e.event_id for e in backend._events if e.job_id in archived_ids),

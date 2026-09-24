@@ -1338,7 +1338,7 @@ class TaskQ:
         The terminal-job prune is a second deleter: its cascade removes
         the archived jobs' events with them.  Both deleters record their
         highest deleted event id in the event-prune watermark
-        (``job_events_prune_state``, migration 01.00.20_01) in the same
+        (``job_events_prune_state``, migration 01.00.20_02) in the same
         transaction as the delete, and every delivery path of this
         generator opens on the gap gate: a resumed cursor (a persisted
         cursor, ``after_id > 0``) strictly below the watermark ends the
@@ -1546,7 +1546,7 @@ async def _assert_no_retention_gap(client: JobsClient, cursor: int) -> None:
     """Fail visible when a resumed cursor sits behind the event-prune horizon.
 
     The event-prune watermark (``backend.event_prune_watermark``,
-    PostgresBackend-only, migration 01.00.20_01) is the highest ``job_events``
+    PostgresBackend-only, migration 01.00.20_02) is the highest ``job_events``
     id any retention deleter has committed a delete below-or-at: the
     event-retention sweep's ``watermark`` CTE and the terminal prune's
     ``event_watermark`` CTE (the events its ``DELETE FROM jobs`` cascades

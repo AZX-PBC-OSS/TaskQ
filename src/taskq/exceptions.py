@@ -79,7 +79,7 @@ class EventRetentionGapError(TaskQError):
     """A ``watch_reclaims`` stream resumed a cursor the retention horizon passed.
 
     The event-prune watermark (``job_events_prune_state.pruned_through_id``,
-    migration 01.00.20_01) records the highest ``job_events`` id any retention
+    migration 01.00.20_02) records the highest ``job_events`` id any retention
     deleter has committed a delete below-or-at. A resumed cursor strictly
     below that bound means at least one event id the consumer never received
     was deleted: the hole can never be refilled, so the stream ends here

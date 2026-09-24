@@ -1017,7 +1017,7 @@ to_delete AS (
 -- watch_reclaims consumer resuming a cursor strictly below the watermark has
 -- lost undelivered events to this sweep, and the consumer-side poll turns
 -- that state into a fail-visible EventRetentionGapError instead of a silent
--- skip to live (migration 01.00.20_01 derives the contract). GREATEST keeps a
+-- skip to live (migration 01.00.20_02 derives the contract). GREATEST keeps a
 -- concurrent duplicate sweep (rolling deploy, leader-lock name convergence)
 -- from moving the bound backwards; the WHERE EXISTS keeps the drained
 -- steady-state tick write-free, so the index-bounded plan pins
@@ -1869,7 +1869,7 @@ async def sweep_expired_events(
     status holds its events forever under the cascade-only regime).
 
     The statement also advances the event-prune watermark
-    (``job_events_prune_state.pruned_through_id``, migration 01.00.20_01) to
+    (``job_events_prune_state.pruned_through_id``, migration 01.00.20_02) to
     the highest id this batch deleted, in the same transaction: a
     trailing-watermark consumer (``TaskQ.watch_reclaims``) resuming a cursor
     strictly below that bound has lost undelivered events to this sweep, and

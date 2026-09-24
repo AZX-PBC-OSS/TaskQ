@@ -6,7 +6,7 @@ The loss class these pins close: a ``watch_reclaims`` consumer parked at
 cursor K while event retention deletes ``(K, K+n]`` used to resume into a
 silent skip to live - the surviving rows returned, no error anywhere, the
 consumer free to believe it saw everything. The fix is the event-prune
-watermark (``job_events_prune_state``, migration 01.00.20_01): each deleter
+watermark (``job_events_prune_state``, migration 01.00.20_02): each deleter
 advances ``pruned_through_id`` to the highest event id its statement deleted,
 in the same transaction as the delete, and the stream gate turns a cursor
 strictly below that bound into ``EventRetentionGapError``.

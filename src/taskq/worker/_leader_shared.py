@@ -447,7 +447,7 @@ _ARCHIVE_CTE_SQL = (
     # job_events_archive). Read from the statement snapshot: the delete
     # arm's effects are invisible to a sibling CTE, so the max is the
     # pre-delete truth, whatever order the executor picks. Fed into the
-    # prune watermark (migration 01.00.20_01) so the cascade deleter
+    # prune watermark (migration 01.00.20_02) so the cascade deleter
     # advances the same bound the retention sweep does: a watch_reclaims
     # consumer resuming a cursor strictly below it has lost undelivered
     # events to THIS statement, and the poll side fails visible on it.

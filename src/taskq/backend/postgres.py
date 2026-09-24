@@ -771,7 +771,7 @@ class PostgresBackend:
         """The event-prune watermark: the highest ``job_events`` id any
         retention deleter has committed a delete below-or-at.
 
-        Backed by ``job_events_prune_state`` (migration 01.00.20_01), advanced
+        Backed by ``job_events_prune_state`` (migration 01.00.20_02), advanced
         in the same transaction as the deletes by both deleters (the
         event-retention sweep's ``watermark`` CTE, the terminal prune's
         ``event_watermark`` CTE for the events its ``DELETE FROM jobs``
