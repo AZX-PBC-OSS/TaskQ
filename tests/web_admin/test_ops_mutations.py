@@ -15,6 +15,7 @@ from asyncpg.exceptions import UndefinedTableError
 pytest.importorskip("fastapi")
 pytest.importorskip("jinja2")
 
+import taskq.web.admin.ops as ops_mod
 from taskq._ids import new_uuid
 from taskq.ratelimit.decision import RateLimitState
 from taskq.ratelimit.registry import registry as rl_registry
@@ -440,6 +441,70 @@ def test_schedule_run_now_succeeds_and_enqueues(monkeypatch: pytest.MonkeyPatch)
     assert enqueued.retry_cap == _DEFAULT_RETRY_CAP
     assert enqueued.retry_backoff == "exponential"
     assert enqueued.retry_jitter == 0.2
+
+
+# ── Run-now cooldown map: process-lifetime growth bound ──────────────────
+
+
+def test_schedule_run_now_cooldown_map_bounded_under_schedule_churn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Growth pin: N run-now clicks on distinct schedule rows keep the map bounded.
+
+    ``_last_schedule_run`` is a process-lifetime dict keyed by schedule
+    UUID, and schedule rows are created and deleted through this very UI:
+    without eviction each click on a fresh UUID would leave a permanent
+    entry and the map would grow monotonically for the life of the admin
+    process. The eviction sweep rides the write path and drops every
+    entry whose cooldown window has fully elapsed, so after each request
+    only that request's own entry survives. The cooldown window here is
+    shrunk to zero so every earlier entry is strictly past its window
+    within the test's real-time clock.
+    """
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    monkeypatch.setattr(ops_mod, "_SCHEDULE_RUN_COOLDOWN_SECONDS", 0.0)
+    monkeypatch.setattr(ops_mod, "_last_schedule_run", {})
+    conn = _ScriptedConnection(fetchrow_results=[None])
+    backend = StubBackend(job_row=_stub_job_row(new_uuid()))
+    client = _make_app(_ScriptedPool(conn), backend=backend)
+    token = _get_csrf_token(client)
+    for _ in range(200):
+        resp = client.post(
+            f"/schedules/{new_uuid()}/run", data={"csrf_token": token}, follow_redirects=False
+        )
+        assert resp.status_code == 404  # pyright: ignore[reportUnknownMemberType]
+    assert len(ops_mod._last_schedule_run) == 1
+
+
+def test_schedule_run_now_prune_keeps_live_cooldown_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fence discipline: the eviction sweep must not lose a LIVE entry.
+
+    An entry whose cooldown window is still open is the only state the
+    map exists to keep, so the sweep must prune strictly past-window
+    entries and nothing else. A fix that cleared the whole map (or pruned
+    by insertion count) would pass a bare growth pin while silently
+    dropping an in-window cooldown and letting a double-fire through.
+    """
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    monkeypatch.setattr(ops_mod, "_last_schedule_run", {})
+    live_sid = new_uuid()
+    # A stamp far in the future reads as "clicked just now" to any
+    # realistic loop-time value: strictly inside its cooldown window.
+    ops_mod._last_schedule_run[live_sid] = 1.0e18
+    stale_sid = new_uuid()
+    ops_mod._last_schedule_run[stale_sid] = -1.0e18
+    conn = _ScriptedConnection(fetchrow_results=[None])
+    backend = StubBackend(job_row=_stub_job_row(new_uuid()))
+    client = _make_app(_ScriptedPool(conn), backend=backend)
+    token = _get_csrf_token(client)
+    resp = client.post(
+        f"/schedules/{new_uuid()}/run", data={"csrf_token": token}, follow_redirects=False
+    )
+    assert resp.status_code == 404  # pyright: ignore[reportUnknownMemberType]
+    assert live_sid in ops_mod._last_schedule_run
+    assert stale_sid not in ops_mod._last_schedule_run
 
 
 # ── Rate-limit reset ─────────────────────────────────────────────────────

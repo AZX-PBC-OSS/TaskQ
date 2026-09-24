@@ -34,6 +34,10 @@ Metric dimensions are limited to values that are bounded by construction:
   cardinality note above :func:`_bounded_queue`).  Identity-like values
   (``worker_id``, ``job_id``, ``schedule_id``) are never dimensions at all --
   see the cardinality note above ``_lock_expires_in_seconds``.
+- ``bucket``: the ``taskq.ratelimit.refund_failures`` emitter's handle
+  name.  For a keyed bucket it embeds a caller-controlled key
+  (``base_name:key``), so it is capped like ``queue`` (see the cardinality
+  note above :func:`_bounded_bucket`).
 """
 
 import contextlib
@@ -1383,7 +1387,12 @@ def record_ratelimit_refund_failure(
 ) -> None:
     """Bump the ratelimit.refund_failures counter.
 
-    Called at the rate-limit refund failure catch site. ``error_type`` is
+    Called at the rate-limit refund failure catch site. ``bucket`` is the
+    handle's concrete bucket name, admitted through the same cap as
+    ``queue`` / the cron ``actor``: a keyed bucket's name embeds a
+    caller-controlled key (``base_name:key``), so carried as-is it would
+    mint one never-released OTel series per distinct key ever seen (see
+    the cardinality note above ``_bounded_bucket``). ``error_type`` is
     the exception class name; omitted, it derives from the exception being
     handled (``_resolve_error_type``).
     Respects ``_otel_enabled``, no-op when False.
@@ -1393,7 +1402,7 @@ def record_ratelimit_refund_failure(
     _ratelimit_refund_failures.add(
         1,
         {
-            "bucket": bucket,
+            "bucket": _bounded_bucket(bucket),
             "backend": backend,
             "error_type": _resolve_error_type(error_type),
         },
@@ -1797,6 +1806,39 @@ def _bounded_cron_actor(actor: str) -> str:
     """
     return _admitted_label_value(
         _cron_actor_label_values, actor, _MAX_ACTOR_LABEL_VALUES, _ACTOR_LABEL_OVERFLOW
+    )
+
+
+#: The ``bucket`` label of ``taskq.ratelimit.refund_failures`` is the one
+#: remaining open-ended label the contract above did not yet name: a keyed
+#: bucket's handle name is ``f"{base_name}:{key}"`` and the key part is
+#: caller-controlled payload data (a tenant id, a session id) with no
+#: cardinality bound. The registry's own entry cap bounds the LIVE
+#: registry, but the refund-failure counter is emitted from the rollback /
+#: release failure catch sites with ``handle.name`` verbatim, so the OTel
+#: SDK's cumulative storage would mint one never-released series per
+#: distinct (key, backend, error_type) triple ever seen: a map keyed by
+#: caller-controlled strings that grows monotonically for the life of the
+#: process (the slow-leak shape the registry caps exist to prevent
+#: everywhere else). The same first-N-then-overflow mechanism as ``queue``
+#: bounds it: the first ``_MAX_BUCKET_LABEL_VALUES`` distinct names keep
+#: their own series, later names collapse onto ``_other_``. Per-bucket
+#: attribution is not lost: the concrete handle name rides the
+#: ``ratelimit-rollback-failure`` log line emitted at the same catch site,
+#: where cardinality is free.
+_MAX_BUCKET_LABEL_VALUES: int = 100
+_BUCKET_LABEL_OVERFLOW: str = "_other_"
+
+_bucket_label_values: set[str] = set()
+
+
+def _bounded_bucket(bucket: str) -> str:
+    """Return *bucket*, or the fixed overflow label once the cap is reached.
+
+    See the cardinality note above.
+    """
+    return _admitted_label_value(
+        _bucket_label_values, bucket, _MAX_BUCKET_LABEL_VALUES, _BUCKET_LABEL_OVERFLOW
     )
 
 

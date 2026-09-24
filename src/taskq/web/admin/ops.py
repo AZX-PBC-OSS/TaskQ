@@ -452,6 +452,20 @@ def register(router: APIRouter) -> None:
             )
 
         now_ts = asyncio.get_running_loop().time()
+        # Evict entries whose cooldown window has fully elapsed before the
+        # check below. This map exists solely to enforce the per-schedule
+        # cooldown, so an entry older than the window can never influence
+        # any later decision: pruning it cannot lose a LIVE entry (every
+        # entry still inside its window is kept), while schedule rows are
+        # created and deleted through this very UI and each row's run-now
+        # click would otherwise leave a permanent UUID-keyed residue in
+        # this process-lifetime dict (the slow-leak shape under schedule
+        # churn). The eviction sweep rides the write path, the only path
+        # that grows the map, so the steady-state size is bounded by the
+        # number of distinct schedules clicked within one cooldown window.
+        for sid, stamp in list(_last_schedule_run.items()):
+            if now_ts - stamp >= _SCHEDULE_RUN_COOLDOWN_SECONDS:
+                del _last_schedule_run[sid]
         last_run = _last_schedule_run.get(schedule_id)
         if last_run is not None and (now_ts - last_run) < _SCHEDULE_RUN_COOLDOWN_SECONDS:
             return RedirectResponse(
