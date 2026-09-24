@@ -363,6 +363,10 @@ _BREAKING_SECTION_ENTRIES: dict[str, tuple[str, tuple[str, ...]]] = {
         "0.3.0",
         ("startup packet",),
     ),
+    "Queue and actor names are bounded at 255 characters": (
+        "0.3.0",
+        ("bounded at 255 characters",),
+    ),
 }
 
 
