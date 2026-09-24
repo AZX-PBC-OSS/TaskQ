@@ -389,12 +389,16 @@ async def test_fork_in_a_job_body_refuses_reports_and_keeps_consuming(
 # ── 4: the subprocess cousin's dark side ──────────────────────────────
 
 
-def _pg_backend_count(dsn: str, db: str) -> int:
+def _pg_backend_count(dsn: str) -> int:
     async def _count() -> int:
         conn = await asyncpg.connect(dsn)
         try:
+            # Scoped to the querying connection's own database (the same
+            # discipline the suite-hygiene gate pins): pg_stat_activity is
+            # cluster-wide and the shared container hosts every xdist
+            # worker's per-module database.
             row = await conn.fetchrow(
-                "SELECT count(*) AS n FROM pg_stat_activity WHERE datname = $1", db
+                "SELECT count(*) AS n FROM pg_stat_activity WHERE datname = current_database()"
             )
             assert row is not None
             return int(row["n"])
@@ -413,7 +417,6 @@ def test_close_fds_false_child_holds_the_backend_alive_after_the_parent_dies(
     process that will never speak the protocol. This is the shape Python's
     close_fds=True default prevents, and why TaskQ's contract says 'let the
     default stand'."""
-    db = pg_dsn.rpartition("/")[2]
     # The child script: open a connection, spawn a sleeper with
     # close_fds=False, exit. The sleeper holds the socket copy.
     script = (
@@ -435,7 +438,7 @@ def test_close_fds_false_child_holds_the_backend_alive_after_the_parent_dies(
 
     try:
         # The spawning parent is DEAD; the backend lives in the sleeper.
-        alive_with_parent_dead = _pg_backend_count(pg_dsn, db)
+        alive_with_parent_dead = _pg_backend_count(pg_dsn)
         assert alive_with_parent_dead >= 1, (
             "the close_fds=False child did not hold the backend: the leak "
             "did not reproduce, the pin proves nothing"
@@ -450,7 +453,7 @@ def test_close_fds_false_child_holds_the_backend_alive_after_the_parent_dies(
         time.sleep(0.3)
         # Only the dead-spawner's backends age out; the safe run leaked none
         # on top of whatever the first arm still holds.
-        after_safe = _pg_backend_count(pg_dsn, db)
+        after_safe = _pg_backend_count(pg_dsn)
         assert after_safe <= alive_with_parent_dead, (
             "a close_fds=True spawn left a backend behind: Python's default contract regressed"
         )
