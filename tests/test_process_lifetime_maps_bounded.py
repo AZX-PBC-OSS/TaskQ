@@ -78,13 +78,24 @@ def test_topic_semaphores_keyed_by_limit_does_not_leak_shared_topics(
 
 
 def test_sse_limit_semaphores_bounded_by_endpoint_family() -> None:
-    """N acquire/release rounds for the one family key -> map length == 1.
+    """N acquire/release rounds for the one family key -> the map gains one key.
 
     Every caller passes a fixed endpoint-family string (``progress-stream``
     is the only production call site) and a settings-derived limit, so the
     map is keyed by the (family, limit) cross product of closed sets.
+
+    The count is HERMETIC, not absolute: ``_SEMAPHORES`` is process-global,
+    and other test files legitimately populate it with their own (family,
+    limit) keys earlier in the run, so an absolute ``len(...) == 1`` flaked
+    with 2 and 3 depending on file order. The behavior asserted is that
+    the map does not grow without bound under key churn: the pin snapshots
+    the map's keys before the churn and asserts (a) the churn's own keys
+    are exactly the one key it creates, and (b) the map grew by at most
+    the churn's distinct-key count.
     """
     from taskq.web._sse_limit import _SEMAPHORES, acquire_sse_slot, release_after
+
+    keys_before = set(_SEMAPHORES)
 
     async def _noop_stream():
         yield ""
@@ -99,7 +110,20 @@ def test_sse_limit_semaphores_bounded_by_endpoint_family() -> None:
                 pass
 
     asyncio.run(_rounds(1_000))
-    assert len(_SEMAPHORES) == 1
+
+    added = set(_SEMAPHORES) - keys_before
+    # (a) The churn's own keys are bounded: at most the one (family,
+    # limit) key the rounds create -- no per-round keys, no wider key
+    # vocabulary than the family's closed set admits (the subset form
+    # holds whether or not another test file already created the key).
+    assert added <= {("progress-stream", 4)}
+    # ... and the churn's key is present after the churn: nothing evicted
+    # the entry the rounds were sharing.
+    assert ("progress-stream", 4) in _SEMAPHORES
+    # (b) No unbounded growth across the churn, whatever the rest of the
+    # run parked in the map before it: the growth is capped at the
+    # churn's distinct-key count.
+    assert len(_SEMAPHORES) - len(keys_before) <= 1
 
 
 # ── taskq.cron._factory_cache ────────────────────────────────────────────
