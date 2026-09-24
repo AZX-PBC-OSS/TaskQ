@@ -38,11 +38,14 @@ from taskq.progress._flush import (
     _FLUSH_MAX_BATCHES_PER_TICK,
     _flush_dirty_set,
 )
-from taskq.web.progress import _event_generator
 from tests.test_progress_flush import _WORKER_ID
 
-# The SSE pins need the fastapi/sse-starlette extra; the flush pin does not.
-pytest.importorskip("sse_starlette")
+# Why: only the SSE pins need the fastapi/sse-starlette extra; the flush
+# and notify-wake pins run on every extras leg. The web module imports
+# fastapi at its own module level, so the import (and its guard) lives
+# inside the SSE pins rather than at module scope - a module-level guard
+# here would skip the flush pin on the legs that lack fastapi (aws,
+# vault, ...), and a module-level import would fail collection on them.
 
 _JOB_ID = UUID("aaaaaaaa-bbbb-cccc-dddd-000000000f01")
 _FLOOD_DIRTY = 10_000
@@ -206,6 +209,9 @@ async def test_pin_sse_seq_total_order_under_10k_flood() -> None:
     pubsub = _FloodPubSub(events)
     seen_seqs: list[int] = []
 
+    pytest.importorskip("fastapi")
+    from taskq.web.progress import _event_generator
+
     gen = _event_generator(
         pubsub=cast("Any", pubsub),
         channel="ch",
@@ -239,6 +245,9 @@ async def test_pin_sse_disconnect_reap_with_deep_inflight_backlog() -> None:
     the close contract forbids).
     """
     pubsub = _FloodPubSub([_flood_event(seq) for seq in range(1, 50_001)])
+    pytest.importorskip("fastapi")
+    from taskq.web.progress import _event_generator
+
     gen = _event_generator(
         pubsub=cast("Any", pubsub),
         channel="ch",
