@@ -150,12 +150,25 @@
         return normalized === "0" ? null : normalized;
     }
 
-    function acceptProgress(seqRaw, rawState) {
+    // One exemption, and only for a terminal body the POLL observes: a
+    // durable terminal state is the delivery even when its seq trails
+    // the cursor. The lost-flush cut leaves the row behind what the wire
+    // already carried (the flushes lagged the fanout, the redispatched
+    // attempt re-seeded from the behind row and its terminal write
+    // landed a small seq), the job is durably over, and no later seq
+    // ever recovers the page - so the poll that observes a terminal
+    // body flags it, and the row renders whatever the cursor says. The
+    // cursor never rewinds: the exemption renders the row, it does not
+    // un-see the frames above it.
+    function acceptProgress(seqRaw, rawState, terminal) {
         const seq = parseSeq(seqRaw);
         if (seq === null) return;
-        if (haveSeenSeq && BigInt(seq) <= BigInt(lastSeenSeq)) return;
-        lastSeenSeq = seq;
-        haveSeenSeq = true;
+        if (haveSeenSeq && BigInt(seq) <= BigInt(lastSeenSeq)) {
+            if (!terminal) return;
+        } else {
+            lastSeenSeq = seq;
+            haveSeenSeq = true;
+        }
 
         // Fail open on a fingerprint computation that itself fails: a
         // tick whose state cannot be fingerprinted must RENDER (the
@@ -171,7 +184,7 @@
         }
         if (fingerprint === null || fingerprint === lastRenderedFingerprint) return;
         lastRenderedFingerprint = fingerprint;
-        renderProgressEvent(progressState(rawState));
+        renderProgressEvent(state);
     }
 
     function progressMetaText(state) {
@@ -337,9 +350,24 @@
                 .then(function (tick) {
                     pollInFlight = false;
                     if (!pollingActive || tick === null) return;
-                    acceptProgress(tick.seqRaw, tick.body.progress_state ?? {});
+                    acceptProgress(
+                        tick.seqRaw,
+                        tick.body.progress_state ?? {},
+                        TERMINAL_STATUSES.has(tick.body.status),
+                    );
                     if (TERMINAL_STATUSES.has(tick.body.status)) {
                         stopPolling();
+                        // The poll can be the ONLY discoverer of the
+                        // terminal: in the lost-flush cut the terminal
+                        // envelope never rides the wire, so the stream can
+                        // never learn the job is over from a frame - left
+                        // open, it sits subscribed to a finished job
+                        // forever. Discovery is teardown: the stream closes
+                        // here, once, with the poller.
+                        if (eventSource) {
+                            eventSource.close();
+                            eventSource = null;
+                        }
                     }
                 })
                 .catch(function () {
