@@ -16,14 +16,18 @@
 -- No Python-side gate can close this: the overflow is the STORAGE
 -- domain, so the honest bound is the column's.
 --
--- The migration is a plain ALTER TYPE: int4 -> bigint rewrites each table
--- under ACCESS EXCLUSIVE. Both tables are bounded (jobs by the retention
--- sweep, jobs_archive by archive retention), so the rewrite is an ops-
--- window statement, not a live-traffic risk; run with the same ddl lock
--- timeout discipline every migration runs under. No index touches
--- progress_seq, so there is no index rebuild; a rolled-back or
--- interrupted run is simply re-run (the runner records completion only
--- after the whole file succeeds).
+-- The migration is a plain ALTER TYPE: int4 -> bigint REWRITES each table
+-- under ACCESS EXCLUSIVE. That is a full table rewrite, not an in-place
+-- widening: every row is copied into a fresh relfilenode and EVERY index
+-- on the table is rebuilt, including the indexes that never touch
+-- progress_seq (a Postgres behaviour of ALTER TYPE, not a choice), so
+-- budget an ops window that scales with the live row count (measured
+-- ~1.4 s at 2M jobs on the reference container). Both tables are bounded
+-- (jobs by the retention sweep, jobs_archive by archive retention), so
+-- the rewrite is an ops-window statement, not a live-traffic risk; run
+-- with the same ddl lock timeout discipline every migration runs under.
+-- A rolled-back or interrupted run is simply re-run (the runner records
+-- completion only after the whole file succeeds).
 --
 -- The JS-side companion bound this creates (documented, not fixed): the
 -- admin portal's progress driver compares progress_seq values as JS

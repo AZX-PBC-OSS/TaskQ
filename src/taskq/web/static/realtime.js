@@ -93,12 +93,18 @@
     // JSON.stringify below it can ever overflow the JS stack (RangeError)
     // on a poisoned state - the fingerprint machine must be the one part
     // of the page that cannot crash on its input. Past the cap, states
-    // compare equal whatever their deeper content: dedup stays sound (a
-    // repeated tick still writes nothing), and a changed deep field is
-    // rendered by the next event that also changes anything above the
-    // cap. The cap is far above what the server accepts: the worker's
-    // own encoder refuses progress data nested past its recursion limit,
-    // so a depth this side of it only ever fires on a foreign writer.
+    // compare equal whatever their deeper content. The honest bound and
+    // its cost: the cap (64) sits BELOW what the worker accepts - orjson's
+    // encoder stores states hundreds deep (the Python pins hold 200 and
+    // refuse 600) - so a legal server-stored state can be deeper than the
+    // cap, and a tick whose changes all land below it canonicalizes to the
+    // same fingerprint as the tick before and is DROPPED as a duplicate.
+    // The deep change renders only when a later tick also changes
+    // something at or above the cap (step, percent, detail, or a shallower
+    // data field); dedup itself stays sound (a repeated tick still writes
+    // nothing). That bounded staleness on below-cap-only changes is the
+    // accepted price for a fingerprint machine that cannot be crashed by
+    // its input.
     const FINGERPRINT_MAX_DEPTH = 64;
 
     function progressFingerprint(state) {
