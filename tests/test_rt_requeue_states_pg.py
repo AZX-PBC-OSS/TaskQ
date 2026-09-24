@@ -1216,3 +1216,59 @@ async def test_state5_the_cancel_fence_keeps_a_phase_one_row_off_the_drain(
         "a cancelled row must not re-enter the fleet"
     )
     await _assert_balanced(deps, schema, _TAG)
+
+
+async def test_state4_the_ledger_row_blocks_the_drains_refund(
+    clean_jobs_app: JobsApp,
+) -> None:
+    """A running row whose CURRENT attempt already carries a job_attempts
+    row (the isolate-self write, the reclaim INSERT, or a retried
+    terminal's shape) is NEVER the drain's refund population.
+
+    The refund would erase the executed attempt's charge and the
+    successor's re-claim would re-issue the number the ledger's PK
+    already holds: the exact collision the ledger guard's NOT EXISTS
+    conjunct enforces the premise against. The row stays running and
+    locked, its charge and started_at intact, the ledger untouched.
+    """
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    schema = deps.settings.schema_name
+    await _create_effects_table(deps)
+
+    job_id = await _enqueue(backend)
+    enqueued = await backend.get(job_id)
+    assert enqueued is not None
+    worker_id, claimed = await _claim(backend, deps, schema)
+    row = claimed[0]
+    assert row.attempt == enqueued.attempt + 1, "the premise: the claim charged the attempt"
+    assert row.started_at is not None, "the premise: the claim stamped started_at"
+
+    # The attempt's ledger row exists (the isolate-self write's shape: the
+    # consumer wrote its own attempt row before the body finished).
+    async with deps.worker_pool.acquire() as conn:
+        await conn.execute(
+            f'INSERT INTO "{schema}".job_attempts '  # noqa: S608  # Why: the schema identifier is fixture-owned; every value is $-bound.
+            "(job_id, attempt, started_at, finished_at, outcome, worker_id, metadata) "
+            "VALUES ($1, $2, clock_timestamp(), NULL, NULL, $3, '{}'::jsonb)",
+            job_id,
+            row.attempt,
+            worker_id,
+        )
+    ledger_before = await _attempt_rows(deps, schema, job_id)
+    assert [int(a["attempt"]) for a in ledger_before] == [row.attempt], (
+        "fixture broken: the ledger row must be the current attempt's"
+    )
+
+    drained = await drain_local_queue_to_pending(deps, worker_id)
+    assert drained == 0, (
+        "a row whose current attempt has a ledger row is not the drain's "
+        f"refund population, got {drained} re-pended rows"
+    )
+    after = await _job_row(deps, schema, job_id)
+    assert after["status"] == "running" and after["locked_by"] == str(worker_id), (
+        f"the drain must leave the row for its own writer's race, got {after}"
+    )
+    assert after["attempt"] == row.attempt, "the refund would erase the executed attempt's charge"
+    ledger_after = await _attempt_rows(deps, schema, job_id)
+    assert ledger_after == ledger_before, "the ledger must be untouched"
