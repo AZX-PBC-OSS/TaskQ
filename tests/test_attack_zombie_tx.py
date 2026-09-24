@@ -43,6 +43,7 @@ presents a stale epoch and must fence out.
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import timedelta
 from uuid import UUID
@@ -346,11 +347,14 @@ def _dsn_parts(dsn: str) -> tuple[str, int, str, str, str]:
 
 
 async def _zombie_pool(proxy_dsn: str) -> asyncpg.Pool:
-    return await asyncpg.create_pool(proxy_dsn, min_size=1, max_size=1)
+    # The connect timeout bounds pool establishment against a starved
+    # shared PG; deliberately NO command timeout - the pool's whole job is
+    # the zombie manufacture, whose swallowed-response hang is the point.
+    return await asyncpg.create_pool(proxy_dsn, min_size=1, max_size=1, timeout=10.0)
 
 
 async def _job_state(dsn: str, schema: str, job_id: JobId) -> asyncpg.Record | None:
-    conn = await asyncpg.connect(dsn)
+    conn = await asyncpg.connect(dsn, timeout=10.0, command_timeout=10.0)
     try:
         return await conn.fetchrow(
             f'SELECT status, attempt, claim_epoch FROM "{schema}".jobs WHERE id = $1', job_id
@@ -360,7 +364,7 @@ async def _job_state(dsn: str, schema: str, job_id: JobId) -> asyncpg.Record | N
 
 
 async def _scalar(dsn: str, sql: str, job_id: JobId) -> int:
-    conn = await asyncpg.connect(dsn)
+    conn = await asyncpg.connect(dsn, timeout=10.0, command_timeout=10.0)
     try:
         return await conn.fetchval(sql, job_id)
     finally:
@@ -380,7 +384,7 @@ async def _wait_status(
         if row is not None and row["status"] == expected:
             return row
         if asyncio.get_running_loop().time() > deadline:
-            conn = await asyncpg.connect(dsn)
+            conn = await asyncpg.connect(dsn, timeout=10.0, command_timeout=10.0)
             try:
                 all_rows = await conn.fetch(
                     f'SELECT id, status, actor FROM "{schema}".jobs LIMIT 10'
@@ -467,8 +471,9 @@ async def test_mark_succeeded_zombie_commit_lands_worker_sees_death(
     schema = f"tqr_{new_base62()}".lower()
     proxy = _ZombieProxy(*_dsn_parts(pg_dsn))
     proxy_dsn = await proxy.start()
-    stack, deps, _backend = await _open_pg_backend(proxy_dsn, schema_name=schema)
+    stack: AsyncExitStack | None = None
     try:
+        stack, deps, _backend = await _open_pg_backend(proxy_dsn, schema_name=schema)
         sql = render(schema)
         worker_id = new_uuid()
         async with deps.worker_pool.acquire() as conn:
@@ -536,7 +541,7 @@ async def test_mark_succeeded_zombie_commit_lands_worker_sees_death(
 
         # The reclaim's re-pend predicates filter status='running': the
         # terminal zombie row is never re-pended, the work never re-runs.
-        reclaim_conn = await asyncpg.connect(pg_dsn)
+        reclaim_conn = await asyncpg.connect(pg_dsn, timeout=10.0, command_timeout=10.0)
         try:
             reclaimed = await sweep_expired_locks(
                 reclaim_conn, timedelta(0), timedelta(0), schema=schema
@@ -547,7 +552,8 @@ async def test_mark_succeeded_zombie_commit_lands_worker_sees_death(
         finally:
             await reclaim_conn.close()
     finally:
-        await stack.aclose()
+        if stack is not None:
+            await stack.aclose()
         await proxy.stop()
 
 
@@ -558,8 +564,9 @@ async def test_mark_failed_zombie_retry_surfaces_fenced_outcome(pg_dsn: str) -> 
     schema = f"tqr_{new_base62()}".lower()
     proxy = _ZombieProxy(*_dsn_parts(pg_dsn))
     proxy_dsn = await proxy.start()
-    stack, deps, _backend = await _open_pg_backend(proxy_dsn, schema_name=schema)
+    stack: AsyncExitStack | None = None
     try:
+        stack, deps, _backend = await _open_pg_backend(proxy_dsn, schema_name=schema)
         sql = render(schema)
         worker_id = new_uuid()
         async with deps.worker_pool.acquire() as conn:
@@ -612,7 +619,8 @@ async def test_mark_failed_zombie_retry_surfaces_fenced_outcome(pg_dsn: str) -> 
         )
         assert attempts == 1, f"the zombie re-run double-wrote the attempt row ({attempts})"
     finally:
-        await stack.aclose()
+        if stack is not None:
+            await stack.aclose()
         await proxy.stop()
 
 
@@ -633,8 +641,9 @@ async def test_enqueue_zombie_no_key_retry_returns_same_job_id(pg_dsn: str) -> N
     schema = f"tqr_{new_base62()}".lower()
     proxy = _ZombieProxy(*_dsn_parts(pg_dsn))
     proxy_dsn = await proxy.start()
-    stack, _deps, _backend = await _open_pg_backend(proxy_dsn, schema_name=schema)
+    stack: AsyncExitStack | None = None
     try:
+        stack, _deps, _backend = await _open_pg_backend(proxy_dsn, schema_name=schema)
         sql = render(schema)
         args = make_enqueue_args()
         proxy.arm_zombie(_ENQUEUE_MARKER)
@@ -690,7 +699,8 @@ async def test_enqueue_zombie_no_key_retry_returns_same_job_id(pg_dsn: str) -> N
         )
         assert count == 1, f"the re-run duplicated the committed row ({count})"
     finally:
-        await stack.aclose()
+        if stack is not None:
+            await stack.aclose()
         await proxy.stop()
 
 
@@ -700,8 +710,9 @@ async def test_enqueue_zombie_with_key_retry_returns_same_job_id(pg_dsn: str) ->
     schema = f"tqr_{new_base62()}".lower()
     proxy = _ZombieProxy(*_dsn_parts(pg_dsn))
     proxy_dsn = await proxy.start()
-    stack, _deps, _backend = await _open_pg_backend(proxy_dsn, schema_name=schema)
+    stack: AsyncExitStack | None = None
     try:
+        stack, _deps, _backend = await _open_pg_backend(proxy_dsn, schema_name=schema)
         sql = render(schema)
         key = IdempotencyKey(f"zombie-{new_base62()}")
         args = make_enqueue_args(idempotency_key=str(key))
@@ -730,7 +741,8 @@ async def test_enqueue_zombie_with_key_retry_returns_same_job_id(pg_dsn: str) ->
         )
         assert count == 1
     finally:
-        await stack.aclose()
+        if stack is not None:
+            await stack.aclose()
         await proxy.stop()
 
 
@@ -745,8 +757,9 @@ async def test_claim_zombie_late_write_fenced_by_restamped_epoch(pg_dsn: str) ->
     schema = f"tqr_{new_base62()}".lower()
     proxy = _ZombieProxy(*_dsn_parts(pg_dsn))
     proxy_dsn = await proxy.start()
-    stack, deps, backend = await _open_pg_backend(proxy_dsn, schema_name=schema)
+    stack: AsyncExitStack | None = None
     try:
+        stack, deps, backend = await _open_pg_backend(proxy_dsn, schema_name=schema)
         sql = render(schema)
         zombie_worker = new_uuid()
         live_worker = new_uuid()
@@ -784,7 +797,7 @@ async def test_claim_zombie_late_write_fenced_by_restamped_epoch(pg_dsn: str) ->
         zombie_attempt = row["attempt"]
 
         # The worker never knew: the lease lapses, the reclaim re-pends.
-        admin = await asyncpg.connect(pg_dsn)
+        admin = await asyncpg.connect(pg_dsn, timeout=10.0, command_timeout=10.0)
         try:
             await admin.execute(
                 f'UPDATE "{schema}".jobs SET lock_expires_at = statement_timestamp() '
@@ -880,7 +893,8 @@ async def test_claim_zombie_late_write_fenced_by_restamped_epoch(pg_dsn: str) ->
         row = await _job_state(pg_dsn, schema, args.id)
         assert row is not None and row["status"] == "running"
     finally:
-        await stack.aclose()
+        if stack is not None:
+            await stack.aclose()
         await proxy.stop()
 
 
@@ -898,8 +912,9 @@ async def test_tx_commit_zombie_whole_tx_lands_nothing_double_writes(
     schema = f"tqr_{new_base62()}".lower()
     proxy = _ZombieProxy(*_dsn_parts(pg_dsn))
     proxy_dsn = await proxy.start()
-    stack, deps, backend = await _open_pg_backend(proxy_dsn, schema_name=schema)
+    stack: AsyncExitStack | None = None
     try:
+        stack, deps, backend = await _open_pg_backend(proxy_dsn, schema_name=schema)
         sql = render(schema)
         worker_id = new_uuid()
         job_args = make_enqueue_args()
@@ -984,7 +999,7 @@ async def test_tx_commit_zombie_whole_tx_lands_nothing_double_writes(
         assert row is not None and row["status"] == "succeeded"
 
         # The reclaim never re-pends the terminal tx-zombie row.
-        reclaim_conn = await asyncpg.connect(pg_dsn)
+        reclaim_conn = await asyncpg.connect(pg_dsn, timeout=10.0, command_timeout=10.0)
         try:
             await sweep_expired_locks(reclaim_conn, timedelta(0), timedelta(0), schema=schema)
             row = await _job_state(pg_dsn, schema, job.id)
@@ -992,5 +1007,6 @@ async def test_tx_commit_zombie_whole_tx_lands_nothing_double_writes(
         finally:
             await reclaim_conn.close()
     finally:
-        await stack.aclose()
+        if stack is not None:
+            await stack.aclose()
         await proxy.stop()
