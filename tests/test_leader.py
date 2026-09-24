@@ -20,6 +20,7 @@ from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import CancelPhase, JobId, JobRow
 from taskq.backend._sweeps import SweepBatchSizer
 from taskq.backend.statemachine import TERMINAL_STATUSES
+from taskq.cron import CronScheduleSpec
 from taskq.settings import WorkerSettings
 from taskq.testing.assertions import (
     wait_for,
@@ -4421,3 +4422,104 @@ async def test_close_leader_owned_conns_identity_guard() -> None:
         "suspension was nulled out, orphaning it and busy-spinning"
     )
     assert leader._cron_conn is fresh_conn
+
+
+# ── Takeover recovery: the assume path re-runs the cron ownership pass ──
+
+
+async def test_assume_leadership_runs_the_cron_takeover_recovery(
+    monkeypatch: Any,
+) -> None:
+    """A leader that inherits the cron table re-runs the stale-auto-disable
+    recovery over the code's declared specs (issue #460's deploy window: an
+    old leader's unmarked auto-disable can land after every new pod has
+    booted, so the takeover is the last look the new code gets)."""
+    import taskq.worker.leader as leader_mod
+
+    spec_calls: list[object] = []
+    captured: dict[str, object] = {}
+
+    async def fake_recovery(deps: Any, settings: Any, specs: Any) -> int:
+        captured["specs"] = list(specs)
+        spec_calls.append(specs)
+        return 1
+
+    monkeypatch.setattr(leader_mod, "revert_stale_auto_disables", fake_recovery)
+
+    spec = CronScheduleSpec(
+        actor="takeover_actor",
+        name="hourly",
+        cron_expr="0 * * * *",
+        timezone="UTC",
+    )
+    leader, deps, _backend, _conn, _pool, _shutdown = await _make_leader(monkeypatch=monkeypatch)
+    leader2 = MaintenanceLeader(
+        deps,
+        new_uuid(),
+        leader._backend,  # type: ignore[arg-type]  # Why: the InMemoryBackend _make_leader built satisfies the Backend protocol at runtime.
+        clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)),
+        cron_specs=[spec],
+    )
+    await leader2._assume_leadership(datetime.now(UTC), 0.0)
+
+    assert spec_calls, "the assume path must run the takeover recovery"
+    assert captured["specs"] == [spec]
+    assert deps.is_leader.is_set()
+
+
+async def test_assume_leadership_without_specs_skips_the_recovery(
+    monkeypatch: Any,
+) -> None:
+    """No declared specs (tests, spec-less deployments): the takeover pass
+    is skipped entirely, the assume path unchanged."""
+    import taskq.worker.leader as leader_mod
+
+    called = False
+
+    async def fake_recovery(deps: Any, settings: Any, specs: Any) -> int:
+        nonlocal called
+        called = True
+        return 0
+
+    monkeypatch.setattr(leader_mod, "revert_stale_auto_disables", fake_recovery)
+
+    leader, deps, _backend, _conn, _pool, _shutdown = await _make_leader(monkeypatch=monkeypatch)
+    await leader._assume_leadership(datetime.now(UTC), 0.0)
+
+    assert not called
+    assert deps.is_leader.is_set()
+
+
+async def test_assume_leadership_survives_a_failing_takeover_recovery(
+    monkeypatch: Any,
+) -> None:
+    """A recovery pass that cannot run (pool down) must not fail the
+    assumption: the pod keeps the term it won, the next assumption
+    retries the pass."""
+    import taskq.worker.leader as leader_mod
+
+    async def fake_recovery(deps: Any, settings: Any, specs: Any) -> int:
+        raise OSError("pool down")
+
+    monkeypatch.setattr(leader_mod, "revert_stale_auto_disables", fake_recovery)
+
+    spec = CronScheduleSpec(
+        actor="takeover_actor",
+        name="hourly",
+        cron_expr="0 * * * *",
+        timezone="UTC",
+    )
+    leader, deps, _backend, _conn, _pool, _shutdown = await _make_leader(monkeypatch=monkeypatch)
+    leader2 = MaintenanceLeader(
+        deps,
+        new_uuid(),
+        leader._backend,  # type: ignore[arg-type]  # Why: the InMemoryBackend _make_leader built satisfies the Backend protocol at runtime.
+        clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)),
+        cron_specs=[spec],
+    )
+    await leader2._assume_leadership(datetime.now(UTC), 0.0)
+
+    assert deps.is_leader.is_set(), (
+        "the takeover recovery is best-effort; a pass that cannot reach "
+        "the pool is a degraded maintenance plane, never a lost election"
+    )

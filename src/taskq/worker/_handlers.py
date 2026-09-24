@@ -108,6 +108,7 @@ __all__ = [
     "AttemptOutcome",
     "_ActorSystemExitAttemptError",
     "_AttemptFencedOut",
+    "_StartToCloseExceededError",
     "_TerminalWriteFailed",
     "_disown_job",
     "_dispatch_exception",
@@ -321,6 +322,35 @@ class _ActorSystemExitAttemptError(Exception):
         super().__init__(f"actor raised SystemExit: {original.code!r}")
 
 
+class _StartToCloseExceededError(TimeoutError):
+    """Typed marker for the MACHINERY's ``start_to_close`` expiry.
+
+    The deadline enforcement raises this subclass, never a bare
+    ``TimeoutError``, and :func:`_dispatch_exception` routes it (alone) to
+    :func:`_handle_timeout`. A bare ``TimeoutError`` reaching
+    ``_dispatch_exception`` is therefore always the ACTOR's own, and takes
+    the ordinary generic-failure path: its own ``error_class``, its own
+    retry classification, no ``job_timeout`` log line, no
+    ``taskq.jobs.timeouts{kind="start_to_close"}`` increment.
+
+    Why the split exists: ``asyncio.wait_for`` propagates a body-raised
+    ``TimeoutError`` and its own deadline expiry through the exact same
+    exception type, so the consumer could not tell them apart. The
+    conflation is dramatiq #791's shape: a body that raises (or catches
+    and re-raises) ``TimeoutError`` as part of its own logic (a nested
+    ``wait_for``, a socket read, a futures timeout) was misreported as a
+    start_to_close hit, miscounted on the timeouts metric, and logged with
+    the machinery's ``job_timeout`` line while the deadline was never
+    near. The row truthfully carries ``"TimeoutError"`` either way (the
+    handler stamps the deadline class for the sentinel, the generic path
+    stamps the body's own type name, and both read ``TimeoutError``), but
+    the ROUTING and the observability now track who raised it.
+
+    The name is private on purpose: body code must not be able to raise
+    the machinery's marker and buy the deadline's special handling.
+    """
+
+
 def _unwrap_actor_system_exit(exc: BaseException) -> BaseException:
     """Return the actor's own exception for a ``_ActorSystemExitAttemptError``
     carrier, *exc* unchanged otherwise.
@@ -513,7 +543,11 @@ async def _report_terminal_failure(
         log,
         from_state="running",
         to_state="failed",
-        cause=type(exc).__name__,
+        # The row's own stamp, not the exception's type name: the two
+        # agree everywhere except a carrier/sentinel (the SystemExit
+        # carrier, the start_to_close marker), whose private names are
+        # never audit trail.
+        cause=error_info.error_class,
         retryable=retryable,
     )
     _log_job_failed(
@@ -579,8 +613,15 @@ async def _handle_timeout(
     # convert INSIDE this handler, escaping the classification and
     # stranding the row running until lease expiry.
     raw_message = safe_str(exc)
+    # The sentinel is the MACHINERY's expiry; the row reports the deadline
+    # class, not the private marker's own name. A body-raised TimeoutError
+    # never reaches this handler (the dispatcher routes it to the generic
+    # path), so the stamp below stays ``type(exc).__name__`` there.
+    error_class = (
+        "TimeoutError" if isinstance(exc, _StartToCloseExceededError) else type(exc).__name__
+    )
     error_info = ErrorInfo(
-        error_class=type(exc).__name__,
+        error_class=error_class,
         error_message=sanitize_nul_str(raw_message or "start_to_close"),
         error_traceback=sanitize_nul_str(text.raw_stacktrace),
     )
@@ -663,7 +704,7 @@ async def _handle_timeout(
                 "consume-timeout-noop",
                 from_state="running",
                 to_state="noop",
-                cause=type(exc).__name__,
+                cause=error_info.error_class,
             )
             return "noop"
         if updated_row.status == "failed":
@@ -699,7 +740,7 @@ async def _handle_timeout(
             log,
             from_state="running",
             to_state="scheduled",
-            cause=type(exc).__name__,
+            cause=error_info.error_class,
         )
         return "scheduled"
     else:
@@ -726,7 +767,7 @@ async def _handle_timeout(
                 "consume-timeout-noop",
                 from_state="running",
                 to_state="noop",
-                cause=type(exc).__name__,
+                cause=error_info.error_class,
             )
             return "noop"
         await _report_terminal_failure(
@@ -1279,7 +1320,16 @@ async def _dispatch_exception(
     if pre_handler is not None:
         pre_handler()
 
-    if isinstance(exc, TimeoutError):
+    if isinstance(exc, _StartToCloseExceededError):
+        # ONLY the machinery's own start_to_close marker routes here. A
+        # bare TimeoutError (the actor body raised its own: a nested
+        # wait_for, a socket read, a futures timeout) falls through to the
+        # generic failure path, its own error_class and its own retry
+        # classification, with no job_timeout log line and no
+        # taskq.jobs.timeouts increment: the dramatiq #791 conflation,
+        # where the time-limit machinery's internal use of TimeoutError
+        # absorbed the body's own and every such body error was
+        # misreported as a deadline hit.
         return await _run_terminal_path(
             job=job,
             worker_id=worker_id,

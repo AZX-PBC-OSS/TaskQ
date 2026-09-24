@@ -42,8 +42,11 @@ def _patch_caches(
     batch: dict[str, int],
 ) -> None:
     # Replace, never mutate: the real dicts are process-wide singletons and
-    # in-place writes would leak into other tests.
-    monkeypatch.setattr(_otel, "_sweep_success_cache", success)
+    # in-place writes would leak into other tests. The staleness ledger is
+    # the MONOTONIC twin (maintenance_health is an elapsed-time comparison;
+    # see tests/test_attack_clock_back_sweep_health.py for why the wall
+    # ledger must not anchor it), so the success dict stamps land there.
+    monkeypatch.setattr(_otel, "_sweep_success_monotonic_cache", success)
     monkeypatch.setattr(_otel, "_sweep_batch_size_cache", batch)
 
 
@@ -87,7 +90,7 @@ def test_stale_sweep_stamp_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
     """A sweep missing > 3 * sweep_interval is stalled → degraded True."""
     settings = _settings()
     # 4 intervals of age against a 3-interval threshold (sweep_interval=10).
-    stale = time.time() - 4 * settings.sweep_interval
+    stale = time.monotonic() - 4 * settings.sweep_interval
     _patch_caches(monkeypatch, success={"scheduled_to_pending": stale}, batch={})
 
     view = maintenance_health(settings)
@@ -104,7 +107,7 @@ def test_slow_but_not_stalled_sweep_stays_healthy(
     """Staleness under 3 * sweep_interval is slow, not stalled → not degraded."""
     settings = _settings()
     # 2.5 intervals of age: jitter/slow, not three whole missed intervals.
-    lagging = time.time() - 2.5 * settings.sweep_interval
+    lagging = time.monotonic() - 2.5 * settings.sweep_interval
     _patch_caches(monkeypatch, success={"scheduled_to_pending": lagging}, batch={})
 
     view = maintenance_health(settings)
@@ -121,7 +124,7 @@ def test_reduced_batch_tier_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _settings()
     _patch_caches(
         monkeypatch,
-        success={"scheduled_to_pending": time.time()},
+        success={"scheduled_to_pending": time.monotonic()},
         batch={"scheduled_to_pending": settings.event_writer_batch_size // 4},
     )
 
@@ -142,7 +145,7 @@ def test_healthy_sweeps_report_clean(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _settings()
     _patch_caches(
         monkeypatch,
-        success={"scheduled_to_pending": time.time()},
+        success={"scheduled_to_pending": time.monotonic()},
         batch={"scheduled_to_pending": settings.event_writer_batch_size},
     )
 
@@ -176,7 +179,7 @@ def test_degraded_maintenance_does_not_flip_ready(
 ) -> None:
     """A degraded maintenance view stays a body signal - ready is untouched."""
     settings = _settings()
-    stale = time.time() - 4 * settings.sweep_interval
+    stale = time.monotonic() - 4 * settings.sweep_interval
     _patch_caches(monkeypatch, success={"scheduled_to_pending": stale}, batch={})
     deps = SimpleNamespace(shutdown_phase=ShutdownPhase.NONE, settings=settings)
 
