@@ -29,7 +29,10 @@ Mutation notes (each pin names what going red proves):
 * mutating the jitter sleep off reds ``test_follower_park_jitter_damps_the_wake``;
 * mutating the callback's ``type`` check off reds
   ``test_foreign_type_is_dropped``;
-* mutating the own-echo check off reds ``test_own_echo_is_dropped``.
+* mutating the own-echo check off reds ``test_own_echo_is_dropped``;
+* mutating the consume-door refusal (``_follower_park``'s
+  ``or self._stopping()``) off reds
+  ``test_follower_park_refuses_a_wake_that_races_the_stop``.
 """
 
 from __future__ import annotations
@@ -303,6 +306,53 @@ class TestFollowerPark:
         start = loop.time()
         await leader._follower_park()
         assert loop.time() - start < 0.1, "a sticky wake must not be lost to the park"
+
+    async def test_follower_park_refuses_a_wake_that_races_the_stop(self, monkeypatch: Any) -> None:
+        """MUTATION PIN - the consume-door refusal (``or self._stopping()``).
+
+        A wake that lands in the same step as the stop signal must never
+        be damped into a fast re-elect, EVEN IF the arm door
+        (``wake_election``'s refusal) were bypassed: the wake event is
+        set directly here, so the arm door never runs and the park's own
+        consume-door refusal is the only tooth under test. The wake and
+        ``shutdown_start_event`` are set while the park is inside
+        ``_wait_next_tick``'s wait, so the wake wins that race
+        (``woken=True``) and only the consume door can refuse it.
+        """
+        leader, deps, _backend, _conn, _pool, _shutdown = await _unit_leader()
+        leader._deps.settings.leader_wake_jitter = 0.2
+        import random as random_mod
+
+        monkeypatch.setattr(random_mod, "uniform", lambda a, b: 0.15)
+        wake = asyncio.Event()
+        leader._wake_event = wake
+        loop = asyncio.get_running_loop()
+
+        async def _race() -> None:
+            # Let the park settle into its wait, then land the stop and
+            # the peer wake in the SAME step: the wake wins
+            # ``_wait_next_tick``'s race, the stop must win the park's.
+            await asyncio.sleep(0.05)
+            deps.shutdown_start_event.set()
+            wake.set()
+
+        racer = asyncio.create_task(_race())
+        start = loop.time()
+        await leader._follower_park()
+        elapsed = loop.time() - start
+        await racer
+        # The damped re-elect the jitter sleep schedules never fires: the
+        # refusal returned the park BEFORE the (pinned, deterministic)
+        # damped delay elapsed, so no election attempt can be reaching
+        # for the row inside the jitter window.
+        assert elapsed < 0.14, (
+            f"a wake that races the stop must be refused at the consume door, "
+            f"never damped into a fast re-elect; the park returned after "
+            f"{elapsed:.3f}s (the damped delay is 0.150s)"
+        )
+        # The wake is still consumed: a stale wake must not outlive the
+        # tick it interrupted.
+        assert not wake.is_set(), "the wake must be consumed even when the stop refuses it"
 
 
 async def _unit_leader() -> tuple[
