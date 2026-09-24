@@ -75,6 +75,7 @@ from taskq.obs import (
     record_job_timeout,
     record_reservation_denial,
     render_exception,
+    safe_str,
 )
 from taskq.retry import (
     ActorConfigLike,
@@ -362,7 +363,11 @@ def _log_terminal_write_failed(
         actor=job.actor,
         actor_succeeded=job_exc is None,
         job_error_class=type(job_exc).__name__ if job_exc is not None else None,
-        job_error_message=str(job_exc) if job_exc is not None else None,
+        # Why safe_str: job_exc is the actor's own exception, its __str__
+        # can raise, and this log runs inside the terminal-write failure
+        # handler - a raising str() here would escape the handler with a
+        # fresh TypeError instead of logging the infra failure.
+        job_error_message=(safe_str(job_exc) if job_exc is not None else None),
         job_error_traceback=_format_exc(job_exc) if job_exc is not None else None,
         infra_error_class=type(infra_exc).__name__,
         infra_error_message=str(infra_exc),
@@ -568,8 +573,12 @@ async def _handle_timeout(
     # The message and traceback are derived from an uncontrolled exception:
     # rejecting them (the ErrorInfo guard's job for caller-supplied text)
     # would strand the very job the text describes, the terminal write
-    # must land with the defect visible as an escape sequence.
-    raw_message = str(exc)
+    # must land with the defect visible as an escape sequence. Why
+    # safe_str, not str(): a TimeoutError SUBCLASS raised by actor code
+    # can carry a __str__ that raises, and an unguarded str() here would
+    # convert INSIDE this handler, escaping the classification and
+    # stranding the row running until lease expiry.
+    raw_message = safe_str(exc)
     error_info = ErrorInfo(
         error_class=type(exc).__name__,
         error_message=sanitize_nul_str(raw_message or "start_to_close"),
@@ -1076,10 +1085,17 @@ async def _handle_generic_exception(
     # The message and traceback are derived from an uncontrolled exception:
     # rejecting them (the ErrorInfo guard's job for caller-supplied text)
     # would strand the very job the text describes, the terminal write
-    # must land with the defect visible as an escape sequence.
+    # must land with the defect visible as an escape sequence. Why
+    # safe_str, not str(): the actor's exception class is attacker-adjacent
+    # code and its __str__ can raise; an unguarded str() here would convert
+    # INSIDE this handler and defeat the per-attempt capture contract (the
+    # row would stay running until lease expiry instead of recording the
+    # actor's failure). Raw text, not safe_exception_message: the
+    # render-once invariant owns scrubbing (text above), the row keeps the
+    # raw message exactly as before the guard.
     error_info = ErrorInfo(
         error_class=type(e).__name__,
-        error_message=sanitize_nul_str(str(e)),
+        error_message=sanitize_nul_str(safe_str(e)),
         error_traceback=sanitize_nul_str(text.raw_stacktrace),
     )
     # The log channel leaves the trust boundary and carries the scrubbed text.

@@ -52,6 +52,7 @@ from taskq.obs import (
     record_queue_wait,
     record_slot_pool_acquire_failure,
     safe_start_span,
+    safe_str,
 )
 from taskq.ratelimit.refs import KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry, queue_concurrency_reservation_name
@@ -400,18 +401,24 @@ async def _ensure_registered_init_on_slot_conn(
         await asyncio.wait_for(hook(target), timeout=acquire_timeout)
     except Exception as exc:
         target.terminate()
+        # Why safe_str twice: the hook is registration-supplied
+        # code, its exception's __str__ can raise, and this is the handler
+        # converting that failure into SlotPoolAcquireError - an unguarded
+        # str() (including the f-string below) would raise a fresh TypeError
+        # out of the handler and escape the acquire classification entirely.
         logger.error(
             "slot-conn-init-hook-failed",
             kind="slot_conn_init_hook_failed",
             job_id=str(job_id),
             error_class=type(exc).__name__,
-            error_message=str(exc),
+            error_message=safe_str(exc),
         )
         raise SlotPoolAcquireError(
             acquire_timeout=acquire_timeout,
             detail=(
                 "the registered connection's declared init hook failed on a "
-                f"slot-pool connection ({type(exc).__name__}: {exc})"
+                f"slot-pool connection ({type(exc).__name__}: "
+                f"{safe_str(exc)})"
             ),
         ) from exc
     if trackable:
