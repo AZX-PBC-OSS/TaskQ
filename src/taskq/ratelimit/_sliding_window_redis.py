@@ -24,6 +24,7 @@ from taskq.ratelimit._scripts import (
     SLIDING_WINDOW_LOG_SCRIPT,
 )
 from taskq.ratelimit.decision import RateLimitDecision, RateLimitState
+from taskq.ratelimit.token_bucket import _retry_after
 
 if TYPE_CHECKING:
     import asyncpg
@@ -81,7 +82,12 @@ def _validate_script_reply(
     for the compare-and-set refund); they are decoded by
     :func:`_gcra_tat_strings` and validated there only for type, a
     corrupt TAT echo fails the refund's CAS compare, which is already a
-    no-op refund (the fail-closed direction).
+    no-op refund (the fail-closed direction). A type-valid echo holding
+    bytes that are not UTF-8 is the one decode the type check cannot
+    cover, so :func:`_gcra_tat_strings` raises the sentinel for it: the
+    wrapped acquire takes the PG fallback instead of leaking a
+    ``UnicodeDecodeError`` (a ``ValueError`` sibling the fallback does
+    not name) out of the boundary.
     """
     if not isinstance(raw, (list, tuple)):
         raise RateLimitStoreCorrupt(
@@ -127,10 +133,25 @@ def _validate_script_reply(
 
 
 def _gcra_tat_strings(raw: list[object] | tuple[object, ...]) -> tuple[str, str]:
-    """Decode the GCRA reply's optional CAS echo elements (indexes 3 and 4)."""
+    """Decode the GCRA reply's optional CAS echo elements (indexes 3 and 4).
+
+    The decode is guarded: a type-valid element holding invalid-UTF-8
+    bytes (``b"\\xff\\xfe"``) is a lie no honest script wrote (Lua
+    ``tostring()`` of a number is ASCII), and a bare ``pre.decode()``
+    raises ``UnicodeDecodeError`` - a ``ValueError`` sibling
+    :func:`with_pg_fallback` does not name, so the lie escaped the
+    wrapped acquire as a crash. Raising the store-corrupt sentinel here
+    routes the lie to the same fail-closed fallback as every other
+    verdict in this module.
+    """
     pre, post = raw[3], raw[4]
-    pre_str = pre.decode() if isinstance(pre, bytes) else str(pre)
-    post_str = post.decode() if isinstance(post, bytes) else str(post)
+    try:
+        pre_str = pre.decode() if isinstance(pre, bytes) else str(pre)
+        post_str = post.decode() if isinstance(post, bytes) else str(post)
+    except UnicodeDecodeError as exc:
+        raise RateLimitStoreCorrupt(
+            f"sliding-window GCRA reply has a non-UTF-8 TAT echo: {raw!r}"
+        ) from exc
     return pre_str, post_str
 
 
@@ -391,11 +412,24 @@ async def _peek_redis_log(
         )
         if oldest:
             oldest_entry = oldest[0]
-            oldest_score = (
-                float(oldest_entry[1])
-                if isinstance(oldest_entry, (list, tuple))
-                else float(oldest_entry)
-            )  # pyright: ignore[reportUnknownArgumentType]  # Why: redis-py zrangebyscore return type is untyped in the stub; isinstance narrowing is sufficient at runtime.
+            try:
+                oldest_score = (
+                    float(oldest_entry[1])
+                    if isinstance(oldest_entry, (list, tuple))
+                    else float(oldest_entry)
+                )  # pyright: ignore[reportUnknownArgumentType]  # Why: redis-py zrangebyscore return type is untyped in the stub; isinstance narrowing is sufficient at runtime.
+            except (TypeError, ValueError, OverflowError) as exc:
+                # Why the conversion has its own family: the score element
+                # of a lying withscores pair is converted BEFORE the finite
+                # and window checks below can speak - a big int past
+                # float's range raises OverflowError and a nested element
+                # raises TypeError, and neither is a ValueError, so an
+                # unguarded conversion lets the lie out of the peek as a
+                # bare crash. Same verdict as every other reply boundary:
+                # the store-corrupt sentinel.
+                raise RateLimitStoreCorrupt(
+                    f"sliding-window log peek read a non-numeric oldest score: {oldest!r}"
+                ) from exc
             if not math.isfinite(oldest_score) or not (cutoff_ms < oldest_score <= now_ms):
                 # The member was selected inside the window by the same
                 # store clock this function just read, so its score is
@@ -463,7 +497,15 @@ async def _peek_redis_gcra(
     if is_exhausted:
         new_tat = tat + emission_interval_ms
         allow_at = new_tat - delay_tolerance_ms
-        retry_after = timedelta(milliseconds=max(1, round(allow_at - now_ms)))
+        # Why the hint goes through token_bucket._retry_after: the TAT
+        # validation above admits any finite float, and a lying GET
+        # answering b"1e300" passes every numeric check here yet
+        # overflows timedelta(milliseconds=...) at this arm (an
+        # OverflowError out of the peek). The hint is advisory, so a
+        # value no honest store can ask for is clamped to the same
+        # bounded "not any time soon" hint the token bucket uses; the
+        # denial itself stands (is_exhausted), only the wait is bounded.
+        retry_after = _retry_after((allow_at - now_ms) / 1000.0)
 
     return RateLimitState(
         bucket_name=self._name,
