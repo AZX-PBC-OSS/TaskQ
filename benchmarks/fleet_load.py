@@ -62,7 +62,7 @@ async def main() -> None:
     await admin.execute(f'CREATE SCHEMA "{args.schema}"')  # Why: benchmark-controlled identifier
     await apply_pending(admin, schema=args.schema)
     await admin.execute(
-        f'INSERT INTO "{args.schema}".actor_config (actor, queue) VALUES ($1, $2)',  # noqa: S608
+        f'INSERT INTO "{args.schema}".actor_config (actor, queue) VALUES ($1, $2)',  # noqa: S608  # Why: schema is a benchmark-controlled identifier, values are bound parameters
         ACTOR,
         QUEUE,
     )
