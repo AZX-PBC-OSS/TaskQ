@@ -6,7 +6,7 @@ smallint-out-of-range driver error (the backlog-drain pin lives in
 tests/test_dispatch_pg.py::
 test_backlog_still_dispatches_with_a_job_at_the_attempt_ceiling). What that
 pin does not cover is what happens to the clamped job itself AFTER the claim
-- the chain a reviewer previously verified only by hand probe:
+- the chain this file exercises end to end:
 
 * the clamped row is claimed at attempt 32767 (not 32768, no driver error)
   and runs;

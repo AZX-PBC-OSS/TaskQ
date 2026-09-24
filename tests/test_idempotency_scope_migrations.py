@@ -429,8 +429,8 @@ class TestPrePhaseOverlapWindow:
 # TestPrePhaseOverlapWindow above proves the raw-SQL shape stays safe.
 # This class drives the real PostgresBackend.enqueue()/enqueue_batch()
 # (this release's actual application code, not raw SQL) against a
-# pre-phase-only schema -- the gap a HIGH finding fell through in an
-# earlier review round: unscoped and same-scope usage must be
+# pre-phase-only schema -- the gap a HIGH-severity finding identified:
+# unscoped and same-scope usage must be
 # unaffected, but cross-scope usage of a repeated key hits the
 # still-present old global index and must raise a clear, typed error
 # rather than crash on a raw asyncpg.UniqueViolationError.

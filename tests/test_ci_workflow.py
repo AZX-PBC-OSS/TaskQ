@@ -325,8 +325,8 @@ def test_frozen_is_never_used() -> None:
 
 
 def test_uv_run_never_injects_an_undeclared_dependency() -> None:
-    """``uv run --with X`` resolves X outside the lock, so the command runs against a package no
-    reviewer approved and no other lane shares.
+    """``uv run --with X`` resolves X outside the lock, so the command runs against a package with
+    no dependency review behind it and no other lane shares.
 
     This repo had ``uv run --with pip-audit pip-audit`` in the security job while ``pip-audit``
     was already declared in the ``dev`` group: the flag injected a second, separately resolved

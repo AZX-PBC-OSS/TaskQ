@@ -632,7 +632,7 @@ async def test_actor_backlog_read_failure_counts_and_clears_only_its_own_gauges(
         # As call arguments the comprehensions ran update (a fresh depth
         # cache) and then raised in comprehension , landing the fresh
         # depth beside a FROZEN age cache, the alert's operand, a mixed
-        # state the fix-round review flagged; built as locals first, the
+        # state; built as locals first, the
         # failure is atomic (neither cache is written).
         (
             [{"actor": "emails", "queue": "default", "depth": 7}],

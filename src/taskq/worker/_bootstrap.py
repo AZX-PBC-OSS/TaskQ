@@ -1191,8 +1191,8 @@ def _emit_startup_warnings(settings: WorkerSettings) -> None:
     # that requires the double write failure AND a sweep tick landing
     # inside it. Deliberately a warning, not a hard fail: the shipped
     # default would not load otherwise, and whether to spend 3 more
-    # seconds of lease on that residue is an operator call the maintainer
-    # surfaces here rather than makes (see
+    # seconds of lease on that residue is an operator call, surfaced here
+    # as a warning rather than decided (see
     # WorkerSettings.release_disown_lease_floor).
     # Deliberately NOT gated on watchdog_enabled, unlike its sibling
     # above: the lease arithmetic does not read the flag, and an operator

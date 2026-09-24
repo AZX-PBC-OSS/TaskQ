@@ -1,7 +1,7 @@
-"""Conservation chaos, round 2: the NEW seams of the combined main composed.
+"""Conservation chaos, the second composition: the NEW seams of the combined main composed.
 
 The first sweep (tests/test_rt_conservation_chaos.py) composed the
-individually-pinned failure families two at a time.  This round composes
+individually-pinned failure families two at a time.  This composition layers
 the seams main gained since it, each pin two NEW seams deep, against real
 Postgres (and Dragonfly where the broker rides), every pin carrying the
 same CONSERVATION counter: jobs-in == terminal-out + in-flight-under-a-
@@ -75,7 +75,7 @@ from taskq.obs import bind_job_context
 from taskq.settings import WorkerSettings
 from taskq.testing.fixtures import (
     ModulePgSchema,
-    _open_pg_backend_on_schema,  # pyright: ignore[reportPrivateUsage]  # Why: the driver's own backend on the module schema, the surface the first chaos round reaches through.
+    _open_pg_backend_on_schema,  # pyright: ignore[reportPrivateUsage]  # Why: the driver's own backend on the module schema, the surface the first chaos sweep reaches through.
     redis_url_for,
 )
 from taskq.testing.health import unique_health_sock_path

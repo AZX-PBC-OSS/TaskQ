@@ -8,8 +8,8 @@ backends:
   exercising the ``j.actor`` column added to ``_SWEEP_1_SQL``'s
   ``RETURNING`` and the post-transaction aggregation the sweep records.
 
-Also pins the disposition map's totality, the property the adversarial
-review round established is critical: an unmapped post-update status
+Also pins the disposition map's totality, a property that is critical:
+an unmapped post-update status
 must not kill the reclaim sweep (it is the fleet's crash-recovery path),
 and map/CASE drift must fail CI loudly instead of surfacing as a
 dashboard anomaly.
@@ -259,7 +259,7 @@ async def test_pg_reclaim_increments_per_actor_and_disposition(
 
 # ── Map totality: the sweep must survive drift, and CI must see it ───────
 #
-# The adversarial review round drove an unmapped post-update status through
+# An unmapped post-update status driven through
 # the REAL sweep: a bare ``_RECLAIM_DISPOSITIONS[status]`` raised KeyError
 # inside the transaction -> the whole reclaim batch rolled back (no
 # job_attempts, no job_events, no wake NOTIFY, no metric) -> the exception

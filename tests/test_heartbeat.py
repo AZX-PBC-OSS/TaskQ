@@ -1639,7 +1639,7 @@ def test_lease_renewal_threshold_default_config() -> None:
         # A failure-tolerant fleet (F=10) with a default lease.
         (60.0, 10.0, 10, 2.0),
         # The DEFAULT lease: the enforced-bound floor (56) meets the
-        # harvestable slack (50) - the fix-round finding that closed the
+        # harvestable slack (50) - the arithmetic that closes the
         # reproduced default-settings lapse window.
         (60.0, 10.0, 3, 2.0),
     ],
@@ -1815,22 +1815,20 @@ def test_gated_renewal_never_lets_a_live_lease_lapse(
     lets a lease lapse, and the lease outlives the isolate decision.
 
     The per-tick model is the one the heartbeat loop now enforces
-    (heartbeat.py's tick block), so every falsifying shape the fix-round
-    attack found is expressible here:
+    (heartbeat.py's tick block), so every falsifying shape the attack
+    reproduced is expressible here:
 
     * a CONTENDED ACQUIRE - drawn up to (strictly under) the interval,
       the pool acquire's own timeout;
     * a MULTI-COMMAND tick - 3..6 statements, each drawn up to (strictly
       under) one command timeout, whose SEQUENCE the single budget cuts
-      at one command timeout total (the round-1 model hard-capped the
-      whole tick at interval + ONE command timeout, which could not
-      express the attack's shape: two just-under-timeout statements
-      succeeding, then a timeout);
+      at one command timeout total (a per-tick hard cap of interval +
+      ONE command timeout cannot express the attack's shape: two
+      just-under-timeout statements succeeding, then a timeout);
     * a bounded teardown - a rollback that fits the budget's remainder,
       or the bounded close (server-side rollback on disconnect) - the
       teardown spends the SAME budget's remainder, never a second
-      budget (the shared-remainder rule the integration attack round
-      pinned).
+      budget (the shared-remainder rule the integration attack pinned).
 
     The beat-to-beat gap is bounded by ``max(interval, tick_duration)`` -
     the loop anchors its wait to the tick's START, and a FAILED tick
@@ -1936,9 +1934,9 @@ def test_gated_renewal_never_lets_a_live_lease_lapse(
     assert remaining > 0, "a recovering worker found its lease already expired"
 
 
-def test_the_round1_floor_was_under_sized_for_multi_command_ticks() -> None:
-    """Regression guard for the fix-round finding: the round-1 floor
-    (F+1) * (interval + ONE command timeout) does NOT cover a failed
+def test_the_tail_less_cascade_floor_was_under_sized_for_multi_command_ticks() -> None:
+    """Regression guard: the cascade floor WITHOUT its tail term -
+    (F+1) * (interval + ONE command timeout) - does NOT cover a failed
     multi-command tick bounded only per-statement - the exact shape the
     attack reproduced at the default settings (a legal skip at 49.5s of
     a 60s lease, then four brownout ticks of acquire + three
@@ -1950,7 +1948,7 @@ def test_the_round1_floor_was_under_sized_for_multi_command_ticks() -> None:
     default-config cascade is under-sized again.
     """
     interval, command_timeout, failures, lease = 10.0, 2.0, 3, 60.0
-    round1_floor = (failures + 1) * (interval + command_timeout)
+    tail_less_floor = (failures + 1) * (interval + command_timeout)
 
     # A brownout failed tick under per-statement bounds only: a
     # contended acquire plus three statements each just under one
@@ -1962,11 +1960,11 @@ def test_the_round1_floor_was_under_sized_for_multi_command_ticks() -> None:
         "the point of the budget: the tick is cut at one command "
         "timeout instead of running its statements out"
     )
-    remaining = 49.5  # a legal round-1 skip: just above the round-1 floor
+    remaining = 49.5  # a legal skip under the tail-less floor: just above it
     for _ in range(failures + 1):
         remaining -= brownout_tick
     assert remaining < -3.0, (
-        f"the round-1 floor ({round1_floor}) let the lease lapse "
+        f"the tail-less cascade floor ({tail_less_floor}) let the lease lapse "
         f"{abs(remaining):.1f}s before the isolate decision - the "
         "reproduced window; the shipped floor must cover this shape"
     )
@@ -1984,7 +1982,7 @@ def test_the_round1_floor_was_under_sized_for_multi_command_ticks() -> None:
     # cycles (acquire + ONE budget, the sequence and its teardown
     # sharing it) against the 60s lease. The UN-enforced brownout tick
     # (per-statement bounds) would overrun the same lease - the budget
-    # is load-bearing - and the round-1 floor without the tail term
+    # is load-bearing - and the cascade floor without the tail term
     # would under-count the cascade by exactly that tail.
     tail = max(interval, command_timeout)
     enforced_cascade = tail + (failures + 1) * (interval + command_timeout)
@@ -2049,7 +2047,7 @@ async def test_heartbeat_loop_binds_the_renewal_threshold() -> None:
     assert args[3] == expected
 
 
-# ── The tick's single command budget (fix round) ───────────────
+# ── The tick's single command budget ───────────────
 
 
 class _SlowConn(FakeConn):
@@ -2148,8 +2146,8 @@ async def test_the_tick_command_budget_cuts_a_brownout_tick() -> None:
     """The reproduced attack shape, at unit speed: a tick whose
     statements each take just under the per-query timeout would, under
     the OLD per-statement accounting, run two of them and cut on the
-    third - ~3x the command timeout in total, the gap the round-1 floor
-    assumed away. Under the single budget the tick is CUT at one command
+    third - ~3x the command timeout in total, the gap the tail-less
+    floor assumed away. Under the single budget the tick is CUT at one command
     timeout: the third statement never starts, and the teardown - whose
     rollback AND close SHARE the budget's remainder (never a second full
     budget) - terminates the connection immediately, the server rolling

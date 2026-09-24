@@ -108,7 +108,7 @@ async def test_factory_own_timeout_reason_survives_the_rewrite(
 
 
 def test_allof_exact_minute_seed_with_later_inhour_matches_owes_them_first() -> None:
-    """FINDING (coverage round 3, fixed): the seed branch fired too broadly.
+    """FINDING (fixed): the seed branch fired too broadly.
 
     The seed check of the time (``_seed_is_first_occurrence_of_match``,
     since reworked into ``_next_fold1_fire``) answered True for ANY
@@ -351,7 +351,7 @@ def test_fold1_seed_routes_within_or_beyond_the_range_by_strategy(
 
 
 def test_allof_fold1_seed_owes_the_next_fold1_match_not_the_spent_fold0() -> None:
-    """FINDING (coverage round 4, fixed): from a fold-1 seed the walk answered a
+    """FINDING (fixed): from a fold-1 seed the walk answered a
     pair whose first member was in the PAST.
 
     In a fall-back repeated hour every wall time's fold-0 occurrence

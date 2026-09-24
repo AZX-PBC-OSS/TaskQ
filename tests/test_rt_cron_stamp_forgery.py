@@ -1,6 +1,6 @@
 """Red-team attacks on the `cron_schedule_id` provenance stamp.
 
-The round-5 fix scopes the DST twin-coverage walk to the schedule that
+The fix scopes the DST twin-coverage walk to the schedule that
 enqueued the jobs: every cron fire and twin carries
 ``metadata['cron_schedule_id']`` and
 ``_skip_already_delivered_overlap_twins`` counts only rows bearing the

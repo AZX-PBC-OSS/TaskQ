@@ -27,8 +27,8 @@ between heartbeat ticks.
 
 The test runs against mock connections only - no PG, no Docker. The existing
 ``test_cancel_hook.py::test_forbidden_order_task_cancel_before_pg_write``
-provides the reverse-angle check (fails on forbidden order), so the
-reviewer can confirm that both directions are covered.
+provides the reverse-angle check (fails on forbidden order), so both
+directions are covered.
 """
 
 import asyncio
