@@ -231,6 +231,14 @@ spec:
               stall, not slowness. Same signature as the 12,732-job incident.
               Runbook: docs/guides/runbooks.md#taskqpromotionstalled.
 
+          # Clock-domain caveat: both operands of `time() - <gauge>` are wall
+          # clock (the gauge is stamped from time.time() in obs/_otel.py). A
+          # backward clock step makes the expression negative until wall time
+          # catches up, so this alert is MUTED for the whole catch-up window
+          # after an NTP correction or a similar step. If a stall is suspected
+          # right after a clock correction, verify with the due-jobs SQL in
+          # the runbook instead of trusting this alert's silence.
+
         - alert: TaskQSweepTimeouts
           expr: rate(taskq_maintenance_leader_sweep_timeouts_total[5m]) > 0
           for: 5m

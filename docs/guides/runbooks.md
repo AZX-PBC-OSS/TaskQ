@@ -127,6 +127,25 @@ the triage below before touching replica counts.
   [TaskQLeaderLockContention](#taskqleaderlockcontention)); a holder from
   another schema now takes a different key and cannot stall this one.
 
+**Clock-domain caveat (both sides of the difference are wall clock).** The
+alert's expression computes `time() - <gauge>` in the wall-clock domain on
+both operands: the gauge is stamped from `time.time()` inside the leader
+process (see the metric's description) and Prometheus's `time()` is the
+scrape-time wall clock. A backward clock step (an NTP correction, a manual
+change, a VM restored from a suspended state) moves `time()` behind the
+stamp, so the expression reads negative and stays under the 120 s
+threshold until wall time has caught up with the stale stamp: a sweep
+that stopped completing reads fresh for the whole catch-up window and
+this alert is muted for exactly that long. A forward step has the
+opposite polarity: it can fire the alert one jump early. The same
+applies to the readiness body's in-process `maintenance` view, which
+computes staleness as `time.time() - stamp` over the same wall stamps
+(`worker/health.py`), so `/ready`'s maintenance section is muted by the
+same step. If a promotion stall is suspected during or right after a
+clock correction, do not trust either staleness signal: run the due-jobs
+SQL below and watch the `last_success` stamp's own movement, which is a
+timestamp, not a difference.
+
 **How to remediate.**
 
 1. Check `TaskQSweepTimeouts` and `TaskQSweepDegraded`; if either is firing,
