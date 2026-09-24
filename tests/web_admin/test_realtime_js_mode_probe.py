@@ -69,30 +69,35 @@ global.EventSource = class {
 global.setInterval = (fn, ms) => { const id = nextTimer++; timers.push({ id, fn, ms, due: now + ms }); return id; };
 global.clearInterval = (id) => { timers = timers.filter((t) => t.id !== id); };
 
-global.fetch = (url) => ({
-    then(f1) {
-        log.push("fetch:" + url.split("?")[0]);
-        const body = url.endsWith("/sse/mode")
-            ? { realtime: wantRealtime }
-            : {};
-        return { then(f2) { f2(f1({ json: () => body })); return { catch() {} }; } };
-    },
-});
+global.fetch = async (url) => {
+    log.push("fetch:" + url.split("?")[0]);
+    const body = url.endsWith("/sse/mode") ? { realtime: wantRealtime } : {};
+    // Real promise contract (the module awaits res.json()); the poll
+    // body has no progress data and the ETag getter answers null, so the
+    // cursor never advances on this stub's empty state.
+    return { status: 200, json: () => Promise.resolve(body), headers: { get: () => null } };
+};
 
-function advance(ms) {
+async function advance(ms) {
     const target = now + ms;
     while (true) {
         const due = timers.filter((t) => t.due <= target).sort((a, b) => a.due - b.due)[0];
         if (!due) break;
         now = due.due; due.due += due.ms; due.fn();
+        await new Promise((resolve) => setImmediate(resolve));
     }
     now = target;
+    await new Promise((resolve) => setImmediate(resolve));
 }
 
-new Function(src)();
-advance(30000);
-log.push("mode:" + badge.attrs["data-mode"]);
-process.stdout.write(JSON.stringify(log));
+async function main() {
+    new Function(src)();
+    await advance(30000);
+    log.push("mode:" + badge.attrs["data-mode"]);
+    process.stdout.write(JSON.stringify(log));
+}
+
+main();
 """
 
 

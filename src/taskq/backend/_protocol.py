@@ -470,6 +470,20 @@ IdentityKey = NewType("IdentityKey", str)
 _QUEUE_NAME_FIRST: Final = "[A-Za-z0-9_]"
 _QUEUE_NAME_REST: Final = "[A-Za-z0-9_.-]"
 
+#: Character bound for a queue name. ``jobs.queue`` is carried in btree
+#: indexes (``(queue, priority DESC, scheduled_at)`` and the two composite
+#: dispatch probes), and a btree index item caps at
+#: :data:`~taskq.constants.BTREE_MAX_ITEM_BYTES` (2704 bytes): an
+#: incompressible name past ~2700 bytes fails the jobs INSERT with an
+#: opaque ``ProgramLimitExceededError`` ("index row size ... exceeds btree
+#: version 4 maximum"), a storage-engine verdict surfaced to
+#: ``jobs.enqueue`` with no validation story. 255 characters (the tag
+#: bound's precedent, ``_MAX_TAG_LENGTH``) bounds the worst case at 4
+#: bytes/char to 1020 bytes, so even the composite index's (actor, queue,
+#: priority, scheduled_at, id) item fits the limit with room for the actor
+#: name's own bound (255) and the fixed-width tail columns.
+_QUEUE_NAME_MAX_CHARS: Final = 255
+
 _QUEUE_NAME_RE: Final[re.Pattern[str]] = re.compile(rf"\A{_QUEUE_NAME_FIRST}{_QUEUE_NAME_REST}*\Z")
 # \A/\Z, not ^/$: Python's `$` also matches immediately before a trailing
 # newline, so "default\n" satisfied ^...$ (see _IDENT_RE's docstring in
@@ -518,6 +532,11 @@ def _queue_name_offender(v: str) -> str:
     """Name what disqualified *v*, for the tail of the rejection message."""
     if not v:
         return "it is empty"
+    if len(v) > _QUEUE_NAME_MAX_CHARS:
+        return (
+            f"it exceeds {_QUEUE_NAME_MAX_CHARS} characters (got {len(v)}); the name "
+            "must fit a btree index item (see _QUEUE_NAME_MAX_CHARS)"
+        )
     if not _QUEUE_NAME_FIRST_RE.match(v[0]):
         return f"the first character {v[0]!r} is not allowed there"
     for i, ch in enumerate(v[1:], start=1):
@@ -529,9 +548,12 @@ def _queue_name_offender(v: str) -> str:
 
 
 def _validate_queue_name(v: str) -> str:
-    if not _QUEUE_NAME_RE.match(v):
+    if len(v) > _QUEUE_NAME_MAX_CHARS or not _QUEUE_NAME_RE.match(v):
+        # The echoed name is bounded: a rejection for a megabyte name must
+        # not itself carry a megabyte of it.
+        shown = v if len(v) <= 64 else f"{v[:64]}..."
         raise ValueError(
-            f"invalid queue name: {v!r} -- {_queue_name_offender(v)}. {_QUEUE_NAME_RULE}"
+            f"invalid queue name: {shown!r} -- {_queue_name_offender(v)}. {_QUEUE_NAME_RULE}"
         )
     return v
 

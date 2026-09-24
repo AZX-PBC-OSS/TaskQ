@@ -123,7 +123,15 @@ _LIVE_COLS = (
     "CASE WHEN status = 'running' AND cancel_phase = 0 "
     "  AND lock_expires_at < clock_timestamp() "
     "  THEN true ELSE false END AS lease_expired, "
-    "cancel_requested_at, progress_state, error_message, "
+    # error_message is deliberately NOT selected: the list renders no
+    # error text (the status column and the detail page carry it), and
+    # the column is actor-derived text with no storage bound - one
+    # poisoned row (an actor raising ValueError("a" * 10_000_000)) would
+    # otherwise TOAST its value through and make every list page view
+    # drag the whole message out of TOAST per row, per fetch, for as
+    # long as the row lives. The detail page bounds it at render
+    # (_TRACEBACK_DISPLAY_LIMIT); the list refuses the transfer outright.
+    "cancel_requested_at, progress_state, "
     "tags"
 )
 
@@ -135,7 +143,8 @@ _ARCHIVE_COLS = (
     # retry_kind: same inert-ceiling marker as the live tab (jobs_archive
     # carries the column too).
     "attempt, max_attempts, retry_kind, priority, identity_key, fairness_key, "
-    "archived_at, error_message, tags"
+    # error_message: not selected, same bound as _LIVE_COLS above.
+    "archived_at, tags"
 )
 
 _TRACEBACK_DISPLAY_LIMIT: int = 2000

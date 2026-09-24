@@ -400,13 +400,20 @@ def test_embedded_data_bytes_render_the_same_document(data: dict[str, object], s
 async def test_flush_rejects_a_nul_inside_pre_encoded_data(surface: str) -> None:
     """The jsonb NUL guard fires on the bytes the flush binds, whether it
     encoded them itself or reused ``ctx.progress``'s: the statement never
-    reaches the connection and the buffer stays dirty."""
+    reaches the connection and the buffer stays dirty.
+
+    The buffer is poisoned directly: ``ctx.progress`` now refuses a NUL
+    at the caller-supplied door (the same contract the enqueue door
+    holds), so the only writer that can still put a NUL on the buffer is
+    a direct buffer write - exactly the population this defense-in-depth
+    guard exists for."""
     job_id = UUID("00000000-0000-0000-0000-aabbccddee03")
     buf = _ProgressBuffer(job_id=job_id, base_seq=0, attempt=1)
+    buf.pending_seq_delta = 1
+    buf.pending_state["data"] = {"path": "bad\x00value"}
+    buf.dirty = True
     buffers: dict[UUID, _ProgressBuffer] = {job_id: buf}
-    ctx = make_progress_context(buffers, job_id, settings=WorkerSettings.load_from_dict({}))
 
-    await ctx.progress(data={"path": "bad\x00value"})
     pool, conn = _make_pool_with_conn(returning_row={"progress_seq": 1})
     if surface == "single_row":
         await _flush_buffer(pool, "taskq_test", job_id, _WORKER_ID, buf, buffers)
