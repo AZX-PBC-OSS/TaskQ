@@ -126,6 +126,25 @@ _log: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 _OK = object()
 
+_TX_UNWIND_WAIT_BUDGET: Final[float] = 2.0
+"""The transactional path's exit-wait budget, in loop-time seconds.
+
+When the ``start_to_close`` deadline fires on the TRANSACTIONAL path, the
+marker must not reach the transaction ``__aexit__``'s ROLLBACK while the
+body task's unwind still awaits on the SHARED transaction connection:
+the two collide on asyncpg's one-operation-at-a-time guard, the failing
+ROLLBACK replaces the marker in ``__aexit__``, and the row records the
+collision's ``InterfaceError`` instead of the truthful ``TimeoutError``
+(the ``job_timeout`` log and the timeouts metric go with it). The
+tx-path caller therefore bound-waits the unwind up to this budget before
+letting the marker propagate, and the rollback runs on a quiesced
+connection. A hostile unwind outliving the budget proceeds detached (the
+deadline's win survives, bounded by the budget). 2s covers every
+legitimate unwind many times over while keeping the worst-case slot hold
+past the deadline small. The autonomous path needs no such wait: its
+connections are the body's own, never shared with the rollback.
+"""
+
 
 def _rate_limit_dependency_exceptions() -> tuple[type[BaseException], ...]:
     """The exception family a limiter acquire raises when its STORE
@@ -1314,6 +1333,7 @@ async def _enforce_start_to_close(
     job: JobRow,
     ctx: JobContext[BaseModel],
     timeout: float | None,
+    unwind_wait: float | None = None,
 ) -> object:
     """Run the actor body under its ``start_to_close`` deadline.
 
@@ -1346,11 +1366,31 @@ async def _enforce_start_to_close(
        task and the attempt ends at the deadline, however the body is
        still unwinding: the task is detached tracked (the shutdown
        watchdog accounts for it) and stashed on the ctx (the exit-proof
-       hold parks on it, bounded, before the re-pend). The unwind itself
-       is never sabotaged: no re-cancel is delivered into a task that is
-       honouring the first one's cleanup, a legitimate ``finally`` gets to
-       finish, and a body that absorbed the cancel and kept WORKING is
-       exactly the tracked zombie the watchdog's hard rung exists for.
+       hold parks on it, bounded, before the re-pend).
+
+    *unwind_wait* scopes the unwind guarantee to the path that needs it.
+    On the AUTONOMOUS path (the default, ``None``) the unwind is never
+    sabotaged: no re-cancel is delivered into a task that is honouring
+    the first one's cleanup, a legitimate ``finally`` gets to finish, and
+    a body that absorbed the cancel and kept WORKING is exactly the
+    tracked zombie the watchdog's hard rung exists for -- and no
+    sabotage is possible, the autonomous body's connections are its own,
+    never shared with the machinery. On the TRANSACTIONAL path
+    (``unwind_wait`` set, the exit-wait budget) that unconditional claim
+    was once falsified, and the budget is what restores it: the
+    transactional body runs inside ``transaction_conn.transaction()``,
+    and a ``finally`` awaiting on the SHARED transaction connection was
+    still in flight when the marker reached the ``__aexit__``'s ROLLBACK
+    -- the two collided on asyncpg's one-operation-at-a-time guard, the
+    failing ROLLBACK replaced the marker, and the row recorded the
+    collision's ``InterfaceError`` instead of the truthful
+    ``TimeoutError`` (the ``job_timeout`` log and the timeouts metric
+    lost with it). The tx-path caller therefore passes the budget and
+    this enforcement bound-waits the unwind BEFORE the marker
+    propagates into the ``__aexit__``: the rollback runs on a quiesced
+    connection, and a legitimate ``finally`` on the shared connection
+    gets to finish. A hostile unwind outliving the budget proceeds
+    detached -- the deadline's win survives, bounded by the budget.
 
     The body-task boundary also converts ``SystemExit`` to the
     ``_ActorSystemExitAttemptError`` carrier, the third task boundary
@@ -1399,6 +1439,23 @@ async def _enforce_start_to_close(
             {body_task, deadline_latch},
             return_when=asyncio.FIRST_COMPLETED,
         )
+        if expired and unwind_wait is not None and not body_task.done():
+            # THE TRANSACTIONAL PATH'S BOUND UNWIND WAIT. The deadline won
+            # the race and the unwind (the body's except/finally frames)
+            # is still running. On the transactional path that unwind may
+            # await on the SHARED transaction connection, and the marker
+            # raised below reaches the transaction __aexit__'s ROLLBACK:
+            # letting them race once collided on asyncpg's one-operation-
+            # at-a-time guard, the failing ROLLBACK replaced the marker in
+            # __aexit__, and the row recorded InterfaceError instead of
+            # the truthful TimeoutError (the job_timeout log and the
+            # timeouts metric lost with it). Wait the unwind out, up to
+            # the exit-wait budget: a legitimate finally finishes and the
+            # rollback runs on a quiesced connection. At budget expiry the
+            # marker proceeds anyway -- the deadline's win survives,
+            # bounded by the budget -- and the still-hostile unwind is
+            # detached tracked by the finally below.
+            await asyncio.wait({body_task}, timeout=unwind_wait)
     except asyncio.CancelledError:
         # An external cancellation of THIS task (a shutdown interrupt, an
         # operator phase 2): re-raise and let the finally below forward
@@ -1436,9 +1493,11 @@ async def _enforce_start_to_close(
 
     if expired:
         # The deadline won the race. The body may have finished in the
-        # same loop iteration (its outcome is raced out and discarded) or
-        # may still be unwinding (detached above): either way the attempt
-        # is a timeout, never a success, however the body feels about it.
+        # same loop iteration (its outcome is raced out and discarded),
+        # may have finished inside the tx path's bound unwind wait (the
+        # connection the marker is about to reach is quiesced), or may
+        # still be unwinding (detached above): either way the attempt is
+        # a timeout, never a success, however the body feels about it.
         raise _StartToCloseExceededError from None
     # The body finished before the deadline: its return value, or its own
     # exception (including its own TimeoutError, which now routes as the
@@ -1508,7 +1567,17 @@ async def _consume_transactional(
                 # wait_for left (the #791 TimeoutError conflation, the
                 # absorbable deadline, the deferrable unwind). The
                 # start_to_close cancellation reaches the actor exactly as
-                # on the autonomous path.  Transaction integrity is the
+                # on the autonomous path, PLUS the tx path's bound unwind
+                # wait: this actor runs inside
+                # `transaction_conn.transaction()`, whose __aexit__ answers
+                # the marker with a ROLLBACK on the SHARED connection, so
+                # the unwind is waited out (up to _TX_UNWIND_WAIT_BUDGET)
+                # before the marker propagates -- the rollback runs on a
+                # quiesced connection instead of colliding with the
+                # unwind's own statement on the asyncpg one-operation-at-
+                # a-time guard and replacing the marker (the row once
+                # recorded InterfaceError instead of the truthful
+                # TimeoutError). Transaction integrity is the
                 # OUTER shield's job (`shield(
                 # _run_actor_in_tx())` below): that one decouples EXTERNAL
                 # cancellation from an in-flight commit.  A cancel landing
@@ -1518,7 +1587,9 @@ async def _consume_transactional(
                 # `async with transaction_conn.transaction()` then rolls back; the
                 # timeout's own terminal write goes through the worker pool,
                 # not this connection.
-                result = await _enforce_start_to_close(run_actor, job, ctx, timeout)
+                result = await _enforce_start_to_close(
+                    run_actor, job, ctx, timeout, unwind_wait=_TX_UNWIND_WAIT_BUDGET
+                )
                 # Why a second flag beside `completion`: the outer shield's
                 # CancelledError handler must distinguish "the actor
                 # attempt is still running" (the external cancel has to be

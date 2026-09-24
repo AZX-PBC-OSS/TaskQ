@@ -1366,10 +1366,23 @@ body that catches the expiry's cancellation and returns does not succeed
 past its own time limit, the result is discarded and the attempt is a
 timeout. Third, the deadline is not deferrable: a body whose `finally`
 awaits (worse, awaits a shielded cleanup) cannot hold the attempt past the
-deadline; the still-unwinding task is detached tracked, the shutdown
-watchdog accounts for it, and the re-pend's exit-proof park reads its
-handle. The unwind itself is never re-cancelled: a finally honouring the
-deadline's cancellation gets to finish.
+deadline on the autonomous path, and past the deadline plus a bounded
+exit-wait on the transactional path; the still-unwinding task is detached
+tracked, the shutdown watchdog accounts for it, and the re-pend's
+exit-proof park reads its handle. The unwind itself is never re-cancelled,
+and how far "a finally honouring the deadline's cancellation gets to
+finish" goes is path-scoped. On the autonomous path, unconditionally: the
+body's connections are its own, nothing the machinery does can touch
+them. On the transactional path the body runs inside
+`transaction_conn.transaction()`, whose `__aexit__` answers the deadline's
+marker with a ROLLBACK on the SHARED connection, so the transactional path
+first bound-waits the unwind (the exit-wait budget) before the marker
+propagates: the rollback runs on a quiesced connection instead of
+colliding with the unwind's own statement on asyncpg's
+one-operation-at-a-time guard, a collision that once replaced the marker
+and made the row record `InterfaceError` instead of the truthful
+`TimeoutError`. A hostile unwind outliving the budget proceeds detached --
+the deadline's win survives, bounded by the budget.
 
 #### The interruption release contract
 

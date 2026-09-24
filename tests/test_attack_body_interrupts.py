@@ -20,6 +20,14 @@ pinned here, all enforced by ``_enforce_start_to_close``:
    slot, the row) hostage; the body unwinds detached and tracked, and the
    exit-proof hold fences the re-pend on its handle.
 
+Plus the transactional path's rollback x unwind race (Attack 6): the tx
+body unwinds inside ``transaction_conn.transaction()``, whose
+``__aexit__`` answers the deadline's marker with a ROLLBACK on the SHARED
+connection, so the tx path bound-waits the unwind (the exit-wait budget)
+before the marker propagates -- the rollback runs on a quiesced
+connection, the row records the truthful ``TimeoutError``, and a hostile
+unwind outliving the budget still cannot hold the attempt past it.
+
 Plus the classification matrix: for each exception class a body can raise,
 the observed disposition and the attempt ledger's wholeness.
 """
@@ -32,6 +40,7 @@ from contextlib import suppress
 from dataclasses import replace as _dc_replace
 from datetime import UTC, datetime, timedelta
 
+import asyncpg
 import pytest
 from pydantic import BaseModel
 
@@ -44,7 +53,10 @@ from taskq.settings import WorkerSettings
 from taskq.testing.actor import EmptyPayload, FakeBackend, as_backend, default_actor_config
 from taskq.testing.clock import FakeClock
 from taskq.testing.jobs import make_job_row
-from taskq.worker._consumer import consume_one_job
+from taskq.worker._consumer import (  # pyright: ignore[reportPrivateUsage]  # Why: the pins reference the exact budget the tx path bound-waits, so a budget change cannot silently invalidate the timing contract.
+    _TX_UNWIND_WAIT_BUDGET,
+    consume_one_job,
+)
 from taskq.worker._watchdog import live_tracked_actor_handles
 
 _NOW = datetime(2025, 1, 1, tzinfo=UTC)
@@ -67,6 +79,55 @@ class _FakeConnection:
 
     async def execute(self, query: str, *args: object) -> str:
         return ""
+
+
+class _AtomicGuardConn:
+    """asyncpg.Connection stand-in with the two faces the tx path races on.
+
+    ``execute`` models asyncpg's one-operation-at-a-time connection guard
+    (the ``_Atomic`` wrap): a second operation issued while one is still
+    in flight raises ``InterfaceError`` ("another operation on this
+    connection is in progress"). ``transaction()`` models the asyncpg
+    transaction context manager: an exception flowing through
+    ``__aexit__`` is met by a ROLLBACK issued on the same connection.
+    Together they reproduce, deterministically, the collision the reviewer
+    proved on the transactional path: the deadline's marker reaches the
+    ``__aexit__`` while the body unwind's statement is still in flight.
+    """
+
+    def __init__(self, execute_delay: float) -> None:
+        self._execute_delay = execute_delay
+        self._busy = False
+        self.log: list[str] = []
+
+    class _Transaction:
+        def __init__(self, conn: "_AtomicGuardConn") -> None:
+            self._conn = conn
+
+        async def __aenter__(self) -> "_AtomicGuardConn._Transaction":
+            return self
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            if exc_type is not None:
+                # asyncpg's __aexit__ answers an exception flow with a
+                # ROLLBACK on the same connection.
+                await self._conn.execute("ROLLBACK")
+
+    def transaction(self) -> "_AtomicGuardConn._Transaction":
+        return self._Transaction(self)
+
+    async def execute(self, query: str, *args: object) -> str:
+        if self._busy:
+            raise asyncpg.exceptions.InterfaceError(
+                "another operation on this connection is in progress"
+            )
+        self._busy = True
+        try:
+            await asyncio.sleep(self._execute_delay)
+            self.log.append(query)
+            return "OK"
+        finally:
+            self._busy = False
 
 
 def _job(start_to_close: timedelta | None) -> JobRow:
@@ -651,6 +712,126 @@ async def test_fleet_of_deadline_hits_keeps_capacity_and_slots() -> None:
     assert not unretrieved, f"detached zombies leaked task outcomes: {unretrieved}"
     zombies = [t for t in live_tracked_actor_handles() if not t.done()]
     assert len(zombies) >= n_jobs, f"expected {n_jobs} tracked zombies, got {len(zombies)}"
+    for z in zombies:
+        z.cancel()
+    for c in cleanups:
+        c.cancel()
+    await asyncio.gather(*zombies, *cleanups, return_exceptions=True)
+
+
+# ── Attack 6: the tx ROLLBACK x the unwind, the shared connection ─────
+
+
+async def test_tx_rollback_waits_out_the_unwind_before_touching_the_conn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE REVIEWER'S INSTRUMENT, the transactional path's rollback x the
+    unwind race. A tx-path body whose ``finally`` awaits ON the
+    transaction connection past an 80ms deadline: the deadline's marker
+    reached the transaction ``__aexit__`` while the unwind's statement was
+    still in flight on the SHARED connection, the ROLLBACK collided with
+    it on asyncpg's one-operation-at-a-time guard, and the failing
+    ROLLBACK replaced the marker in ``__aexit__`` -- the row recorded the
+    collision's ``InterfaceError`` instead of the truthful
+    ``TimeoutError``, and the ``job_timeout`` log and the timeouts metric
+    were lost with it.
+
+    The obligation: the tx path bound-waits the unwind (the exit-wait
+    budget) BEFORE the marker propagates into ``__aexit__`` -- the
+    rollback runs on a quiesced connection, the unwind's cleanup completes
+    untouched, and the row is the truthful deadline hit with its log line
+    and its metric."""
+    import structlog
+
+    import taskq.worker._handlers as handlers_mod
+
+    timeout_metric_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        handlers_mod,
+        "record_job_timeout",
+        lambda actor, *, kind, count=1: timeout_metric_calls.append({"actor": actor, "kind": kind}),
+    )
+    backend = FakeBackend()
+    tx_conn = _AtomicGuardConn(execute_delay=0.2)
+
+    async def body(job_row: JobRow, ctx: JobContext[BaseModel]) -> object:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            # The unwind's cleanup awaits ON the transaction connection,
+            # in flight when the marker reaches the __aexit__.
+            await tx_conn.execute("CLEANUP")
+
+    with structlog.testing.capture_logs() as logs:
+        outcome = await consume_one_job(
+            as_backend(backend),
+            _job(timedelta(milliseconds=80)),
+            _WORKER_ID,
+            run_actor=body,
+            actor_config=default_actor_config(),
+            payload_type=EmptyPayload,
+            clock=FakeClock(_NOW),
+            transaction_conn=tx_conn,
+        )
+
+    assert outcome == "scheduled", outcome
+    write = backend.mark_failed_or_retry_calls[0]
+    assert write["error_info"].error_class == "TimeoutError", (  # pyright: ignore[reportAttributeAccessIssue]
+        write
+    )
+    assert any(call["kind"] == "start_to_close" for call in timeout_metric_calls), (
+        timeout_metric_calls
+    )
+    assert any(entry.get("event") == "job_timeout" for entry in logs), logs
+    assert "CLEANUP" in tx_conn.log, "the unwind's cleanup completed on the conn"
+    assert "ROLLBACK" in tx_conn.log, "the tx ROLLBACK completed, never blocked by the guard"
+
+
+async def test_tx_hostile_finally_past_the_budget_still_ends_at_the_deadline() -> None:
+    """The deferrable-deadline win survives the bound unwind wait on the
+    transactional path: a hostile ``finally`` that awaits PAST the
+    exit-wait budget cannot hold the attempt hostage either. At budget
+    expiry the marker proceeds (the unwind detached tracked), so the
+    attempt ends bounded -- deadline + budget + slack, never at the
+    hostile cleanup's leisure -- and the row stays the truthful
+    deadline hit."""
+    backend = FakeBackend()
+    cleanups: list[asyncio.Task[object]] = []
+
+    async def body(job_row: JobRow, ctx: JobContext[BaseModel]) -> object:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup: asyncio.Task[object] = asyncio.ensure_future(asyncio.sleep(3600))
+            cleanups.append(cleanup)
+            await asyncio.shield(cleanup)  # outlives the budget
+
+    started = asyncio.get_running_loop().time()
+    outcome = await consume_one_job(
+        as_backend(backend),
+        _job(timedelta(milliseconds=80)),
+        _WORKER_ID,
+        run_actor=body,
+        actor_config=default_actor_config(),
+        payload_type=EmptyPayload,
+        clock=FakeClock(_NOW),
+        transaction_conn=_AtomicGuardConn(execute_delay=0.0),
+    )
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert outcome == "scheduled", outcome
+    assert elapsed >= _TX_UNWIND_WAIT_BUDGET, (
+        f"the budget did not bound the wait: {elapsed}s < {_TX_UNWIND_WAIT_BUDGET}s"
+    )
+    assert elapsed < _TX_UNWIND_WAIT_BUDGET + 3.0, (
+        f"the hostile cleanup held the attempt past the budget: {elapsed}s"
+    )
+    write = backend.mark_failed_or_retry_calls[0]
+    assert write["error_info"].error_class == "TimeoutError"  # pyright: ignore[reportAttributeAccessIssue]
+    zombies = live_tracked_actor_handles()
+    assert any(not z.done() for z in zombies), "a hostile unwind past the budget stays tracked"
+    # Teardown: reap the zombies and their shielded cleanups so the test
+    # loop closes clean.
     for z in zombies:
         z.cancel()
     for c in cleanups:
