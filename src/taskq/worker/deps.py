@@ -325,6 +325,27 @@ class WorkerDeps:
     # gauge and health report expose, while the term is what leader-gated
     # work must consult per iteration (see `leading`).
     leader_term: LeaderTerm | None = None
+    registered_worker_id: UUID | None = None
+    """The ``workers`` row this process inserted at boot, once
+    ``register_worker`` commits. The boot-failure backstop in ``_main``
+    reads it from ``deps._exit_stack``'s teardown: a boot that raises
+    AFTER the row exists but BEFORE the TaskGroup's deregister finally is
+    reached (a drift refusal, a missing-column refusal, a cron or queue
+    -cap sync failure) leaves the context through unwinding, not through
+    the TaskGroup, and without this backstop the row would sit freshly
+    heartbeated with no process behind it until the staleness sweep reaps
+    it a whole ``worker_staleness`` later (the dramatiq #441
+    orphaned-workers shape). The TaskGroup's shutdown finally clears this
+    when its own ``deregister_worker`` reports the row gone (``True``) or
+    reports no outcome at all (``None``, the contract a caller override
+    predating the outcome report may still present); a TRANSIENT-failed
+    deregister is reported as ``False`` without raising, leaves this set,
+    and the backstop genuinely retries the delete at teardown when the
+    pool may be healthier. A non-transient failure raises in the finally,
+    is logged-and-suppressed there, and leaves this set too: that retry
+    reproduces identically in the backstop, which also logs-and-suppresses
+    it, so the teardown never crashes on either shape - the staleness
+    sweep is the final backstop for a row still not confirmed gone."""
     producer_stop_event: asyncio.Event = field(default_factory=asyncio.Event)
     active_jobs: ActiveJobRegistry = field(default_factory=ActiveJobRegistry)
     shutdown_phase: ShutdownPhase = ShutdownPhase.NONE

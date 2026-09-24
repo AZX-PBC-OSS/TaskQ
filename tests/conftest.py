@@ -850,7 +850,15 @@ def _pg_admin(base_dsn: str, *statements: str) -> None:
 
     t = threading.Thread(target=_target, daemon=True)
     t.start()
-    t.join(timeout=30)
+    # Why: a hang guard, not a performance budget. The 30s first tried here
+    # failed four module teardowns on one congested CI runner - a
+    # ``DROP DATABASE ... WITH (FORCE)`` against the shared container,
+    # queued behind parallel modules' teardowns under CPU starvation, took
+    # longer than 30s to land (the daemon thread completes it regardless;
+    # the TimeoutError poisoned the leg). A true hang - a dead container
+    # the connect can never finish against - still errors, just later, and
+    # the job-level timeout bounds the leg either way.
+    t.join(timeout=120)
     if t.is_alive():
         raise TimeoutError(f"database admin timed out: {statements!r}")
     if error:

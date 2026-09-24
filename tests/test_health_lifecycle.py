@@ -123,7 +123,7 @@ def _setup_lifecycle_stubs(
     ws = _ws(TASKQ_HEALTH_ENABLED=str(health_enabled).lower())
 
     # ── Stub open_worker_deps ──────────────────────────────────────────
-    from contextlib import asynccontextmanager
+    from contextlib import AsyncExitStack, asynccontextmanager
 
     @asynccontextmanager
     async def _stub_open_worker_deps(
@@ -139,11 +139,21 @@ def _setup_lifecycle_stubs(
             worker_pool=fake_pool,  # type: ignore[arg-type]
             notify_conn=None,
             leader_conn=None,
+            # The bootstrap asserts the incremental stack exists after
+            # open_worker_deps yields (it pushes the boot-failure
+            # deregister backstop onto it); the real open_worker_deps
+            # owns that stack, this stub owns one the same way and
+            # unwinds it in its finally, mirroring the real exit.
+            _exit_stack=AsyncExitStack(),
         )
         events.append("pools_open")
         try:
             yield deps
         finally:
+            stack = deps._exit_stack
+            if stack is not None:
+                await stack.aclose()
+            deps._exit_stack = None
             events.append("pools_close")
 
     monkeypatch.setattr("taskq.worker._bootstrap.open_worker_deps", _stub_open_worker_deps)

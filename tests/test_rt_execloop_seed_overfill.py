@@ -20,8 +20,9 @@ bootstrap; the oversized attack (seed of 2) then proves the park.
 
 import asyncio
 import contextlib
-from collections.abc import Generator
-from contextlib import ExitStack, contextmanager
+from collections.abc import Callable, Generator
+from contextlib import AsyncExitStack, ExitStack, contextmanager
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
@@ -106,6 +107,11 @@ def _stub_deps(settings: WorkerSettings) -> WorkerDeps:
         worker_pool=pool,  # type: ignore[arg-type]  # Why: duck-typed pool stub, same as above.
         notify_conn=None,
         leader_conn=None,
+        # The bootstrap asserts the incremental stack exists after
+        # open_worker_deps yields (it pushes the boot-failure deregister
+        # backstop onto it); the real open_worker_deps owns that stack,
+        # the harness fake below owns this one the same way.
+        _exit_stack=AsyncExitStack(),
     )
 
 
@@ -156,11 +162,30 @@ def _fake_main_harness(
     async def _fake_dereg(pool: object, s: object, wid: object) -> None:
         return None
 
+    def _fake_open_worker_deps_exit(
+        deps: WorkerDeps,
+    ) -> Callable[[object, object, object], Any]:
+        """Build an ``open_worker_deps.__aexit__`` stand-in for a stub deps.
+
+        Mirrors open_worker_deps' real exit: unwind the incremental stack
+        (the boot-failure deregister backstop rides it) and null the
+        attribute so a late reload_credentials fails fast on a dead stack
+        (see open_worker_deps' own finally).
+        """
+
+        async def _exit(*args: object) -> None:
+            stack = deps._exit_stack
+            if stack is not None:
+                await stack.aclose()
+            deps._exit_stack = None
+
+        return _exit
+
     with ExitStack() as stack:
         stack.enter_context(patch("taskq.worker._bootstrap.PostgresBackend", return_value=backend))
         mock_open = stack.enter_context(patch("taskq.worker._bootstrap.open_worker_deps"))
         mock_open.return_value.__aenter__ = AsyncMock(return_value=deps)
-        mock_open.return_value.__aexit__ = AsyncMock(return_value=None)
+        mock_open.return_value.__aexit__ = _fake_open_worker_deps_exit(deps)
         stack.enter_context(patch("taskq.worker.run.register_worker", side_effect=_fake_register))
         stack.enter_context(
             patch("taskq.worker._bootstrap.install_signal_handlers", side_effect=_fake_install)

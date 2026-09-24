@@ -18,7 +18,7 @@ Covers:
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
@@ -153,7 +153,30 @@ def _stub_deps(settings: WorkerSettings) -> WorkerDeps:
         worker_pool=pool,  # type: ignore[arg-type]
         notify_conn=None,
         leader_conn=None,
+        # The bootstrap asserts the incremental stack exists after
+        # open_worker_deps yields (it pushes the boot-failure deregister
+        # backstop onto it); the real open_worker_deps owns that stack,
+        # the harness __aexit__ below owns this one the same way.
+        _exit_stack=contextlib.AsyncExitStack(),
     )
+
+
+def _fake_open_worker_deps_exit(deps: WorkerDeps) -> Callable[[object, object, object], Any]:
+    """Build an ``open_worker_deps.__aexit__`` stand-in for a stub deps.
+
+    Mirrors open_worker_deps' real exit: unwind the incremental stack
+    (the boot-failure deregister backstop rides it) and null the attribute
+    so a late reload_credentials fails fast on a dead stack (see
+    open_worker_deps' own finally).
+    """
+
+    async def _exit(*args: object) -> None:
+        stack = deps._exit_stack
+        if stack is not None:
+            await stack.aclose()
+        deps._exit_stack = None
+
+    return _exit
 
 
 def _fake_install_with_holder(
@@ -193,6 +216,7 @@ async def _run_main_with_mocked_deps(
     """
     fake_backend = _backend_methods_stub()
     worker_id_val = new_uuid()
+    deps = _stub_deps(settings)
 
     async def _fake_register(pool: object, s: WorkerSettings) -> object:
         return worker_id_val
@@ -235,9 +259,8 @@ async def _run_main_with_mocked_deps(
         mock_leader_instance.run.side_effect = _fake_all
         mock_leader_cls.return_value = mock_leader_instance
 
-        deps = _stub_deps(settings)
         mock_open.return_value.__aenter__ = AsyncMock(return_value=deps)
-        mock_open.return_value.__aexit__ = AsyncMock(return_value=None)
+        mock_open.return_value.__aexit__ = _fake_open_worker_deps_exit(deps)
 
         return await _main(settings, actor_registry=actor_registry, _registry=_registry)
 
