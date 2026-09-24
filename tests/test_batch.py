@@ -1116,9 +1116,11 @@ class TestTN3EmptyBatchRaisesValueErrorBeforeDB:
             )  # type: ignore[arg-type]  # Why: wrapper delegates with same args
 
         async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
-            with patch.object(PostgresBackend, "enqueue_batch", _counting_enqueue_batch):
-                with pytest.raises(ValueError, match="empty"):
-                    await tq.enqueue_batch([])
+            with (
+                patch.object(PostgresBackend, "enqueue_batch", _counting_enqueue_batch),
+                pytest.raises(ValueError, match="empty"),
+            ):
+                await tq.enqueue_batch([])
 
         assert enqueue_batch_calls == 0
 
@@ -1166,9 +1168,11 @@ class TestTN4OversizedBatchRaisesValueErrorBeforeDB:
 
         items = [_make_item(i) for i in range(1001)]
         async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
-            with patch.object(PostgresBackend, "enqueue_batch", _counting_enqueue_batch):
-                with pytest.raises(ValueError, match="1000"):
-                    await tq.enqueue_batch(items)
+            with (
+                patch.object(PostgresBackend, "enqueue_batch", _counting_enqueue_batch),
+                pytest.raises(ValueError, match="1000"),
+            ):
+                await tq.enqueue_batch(items)
 
         assert enqueue_batch_calls == 0
 
