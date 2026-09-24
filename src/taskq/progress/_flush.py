@@ -14,6 +14,7 @@ from taskq.constants import (
 )
 from taskq.obs import record_progress_flush_failure
 from taskq.progress._buffer import _ProgressBuffer
+from taskq.worker._transient import UnexpectedLoopErrorGuard
 from taskq.worker._watchdog import LoopLiveness
 
 __all__ = ["_flush_buffer", "_flush_buffer_immediate", "_flush_dirty_set", "progress_flush_loop"]
@@ -482,6 +483,25 @@ async def progress_flush_loop(
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
 
+    # The unexpected-error backstop, the same one every other long-lived
+    # loop carries (worker/_transient.py): the statement and pool failures
+    # inside _flush_dirty_set are already handled per batch (buffers stay
+    # dirty, the tick goes on), but the frames AROUND them, the snapshot
+    # phase's per-buffer state rendering and the retire loop, are NOT, and
+    # before this guard a non-transient shape there (a partial-migration
+    # AttributeError on a buffer field, a data defect that renders
+    # TypeError past the ValueError guard) escaped the while body and
+    # killed the flush loop for the life of the process: the worker's
+    # progress telemetry went silently dark (every later ctx.progress call
+    # still buffered in memory, never flushed) while every other sibling
+    # kept ticking, a functional zombie the stale-loop detector cannot see
+    # because this loop's own tick stops with its death. The guard
+    # tolerates isolated surprises with a loud, alertable record each,
+    # retries next tick (the dirty buffers are intact, so nothing is
+    # lost), and re-raises deliberately at the cap rather than retrying a
+    # real bug forever.
+    guard = UnexpectedLoopErrorGuard("progress_flush")
+
     while not shutdown.is_set():
         await asyncio.sleep(coalesce_interval)
 
@@ -517,4 +537,15 @@ async def progress_flush_loop(
                 )
             continue
 
-        await _flush_dirty_set(pool, schema, worker_id, progress_buffers, dirty)
+        try:
+            await _flush_dirty_set(pool, schema, worker_id, progress_buffers, dirty)
+            # A tick whose flush completed without error resets the
+            # backstop's streak (the reset-on-success contract): a handled
+            # per-batch failure inside _flush_dirty_set counts as the
+            # tick's work completing, those failures carry their own
+            # records and must not reach the cap.
+            guard.ok()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            guard.unexpected(exc)
