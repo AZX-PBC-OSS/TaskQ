@@ -143,7 +143,18 @@ jobs:
       # load-sensitive tier has its own lane for the same wall-clock
       # reason.
       - name: Run the suite (all extras, minus slow and load-sensitive)
-        run: uv run --no-sync pytest -n 4 -m "not slow and not load_sensitive"
+        # faulthandler_timeout: DUMP-ONLY stack dumps (no exit) when a test
+        # outlives pytest-timeout's own 300s budget by any margin, so a
+        # hung leg NAMES its test and its blocked frames instead of going
+        # silent until the job cap cancels with zero output (the 3.12 leg
+        # of PR #492 sat silent for 11 minutes at 99% with nothing in the
+        # log). Scoped to THIS step's command line, not pyproject's ini
+        # options: the slow lane's soak legitimately runs 2700s trials
+        # under per-test @pytest.mark.timeout(2700), which a global
+        # faulthandler timer cannot see and would dump on every run.
+        # Dump-only on purpose: a worker that exits on the dump would turn
+        # pytest-timeout's graceful per-test failure into a lost worker.
+        run: uv run --no-sync pytest -n 4 -m "not slow and not load_sensitive" -o faulthandler_timeout=300
 
   test-extras:
     # The extra-gated families, one leg per extra: install the extra, run
@@ -388,7 +399,11 @@ jobs:
       # the fast+integration suite runs with coverage; the slow tier's
       # lane owns the wall-clock families.
       - name: Run tests with coverage gate
-        run: uv run --no-sync pytest -n 2 -m "not slow and not load_sensitive" --cov=taskq --cov-report=term-missing --cov-fail-under=90
+        # faulthandler_timeout: same dump-only hang-name as the test
+        # matrix's lane (its step comment holds the full rationale; this
+        # lane matches the same mark filter, so no 2700s slow-tier trial
+        # can trip the timer).
+        run: uv run --no-sync pytest -n 2 -m "not slow and not load_sensitive" --cov=taskq --cov-report=term-missing --cov-fail-under=90 -o faulthandler_timeout=300
 
   e2e:
     # Containerized e2e tier: workers built from the packaged wheel run
