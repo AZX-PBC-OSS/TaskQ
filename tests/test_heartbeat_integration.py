@@ -798,9 +798,9 @@ async def test_threshold_gated_renewal_selects_rows_by_remaining_lease(
       discriminates the shipped floor from the issue's naive half-lease
       (30s) - RENEWS: a naive-threshold build of this statement would
       leave it alone (rowcount 3, not 4), so this pin fails green-only
-      on the shipped sizing, not on the naive one (the fix-round
-      false-green finding: the round-1 seeding had no row in this band,
-      so both sizings answered identically);
+      on the shipped sizing, not on the naive one (a seed with no row
+      in this band answers identically under both sizings - the
+      false-green trap this seed avoids);
     * a row with 25s remaining (at/under any sane threshold) renews to a
       live future lease;
     * a row carrying a per-job ``heartbeat_timeout`` renews even with a

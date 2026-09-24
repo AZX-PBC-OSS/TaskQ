@@ -305,7 +305,7 @@ class _RecordingConn:
 
 class _NoopTransaction:
     """Explicit-API transaction stand-in (the heartbeat tick drives the
-    transaction explicitly since the fix round's command budget)."""
+    transaction explicitly since the tick's single command budget)."""
 
     def __init__(self) -> None:
         self.started = False

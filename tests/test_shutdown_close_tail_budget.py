@@ -265,9 +265,9 @@ def test_disown_floor_warning_fires_at_the_defaults_with_the_arithmetic() -> Non
     both failing) leaves the row to lease expiry, and the earliest reclaim
     (last heartbeat + lease) must stay behind the deadline trip + exit
     tail where an outlived actor dies. At the defaults that demands 63
-    against the shipped 60: a ~3s residue the maintainer chose to surface
-    rather than hard-fail (the default would not load) or change (a
-    maintainer call, flagged in the fix-round report).
+    against the shipped 60: a ~3s residue surfaced rather than
+    hard-failed (the default would not load) or closed by changing the
+    arithmetic (a sizing judgment call).
     """
     from taskq.worker._bootstrap import _emit_startup_warnings
 

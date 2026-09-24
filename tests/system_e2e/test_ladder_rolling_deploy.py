@@ -6,8 +6,8 @@ exits while the fleet's ladders are live - with rows held mid-grace, rows
 fenced out of their outcome writes (the unheld class the walk owns), and
 the second generation's ladder still between phases.
 
-The composition the round-2 conservation round adds: the rolling-deploy
-shape (generation A drains while generation B serves) laid over the
+The composition layers the rolling-deploy
+shape (generation A drains while generation B serves) over the
 ladder's NEW seams - the full-poll walk (held AND unheld rows) and its
 controller-side sighting map.
 

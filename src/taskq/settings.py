@@ -1175,8 +1175,8 @@ class WorkerSettings(TaskQSettings):
         default=2.0,
         gt=0.0,
         description="TASKQ_HEARTBEAT_COMMAND_TIMEOUT (seconds). Per-query "
-        "timeout for the heartbeat pool, and, since the single-command-budget fix round, "
-        "the SINGLE command budget the heartbeat tick wraps around its "
+        "timeout for the heartbeat pool, and the SINGLE command budget "
+        "the heartbeat tick wraps around its "
         "whole command sequence (BEGIN, the liveness write, the lease "
         "renewals, the still-held probe, the cancel hook's statements, "
         "COMMIT, each statement's own per-query timeout stays as the "

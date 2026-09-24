@@ -1576,16 +1576,16 @@ def test_no_nested_quantifier_regexes_in_taskq_obs() -> None:
 
 # ── the repr channel: marker parity and a terminator that cannot cross lines ──
 #
-# The fix-round review found the repr channel -- the
-# ``error=repr(exc)`` majority log idiom, scrubbed by
-# _PG_DETAIL_ESCAPED_RE -- half-updated: the line-anchored _PG_DETAIL_RE had
+# The repr channel -- the ``error=repr(exc)`` majority log idiom,
+# scrubbed by _PG_DETAIL_ESCAPED_RE -- was half-updated: the line-anchored
+# _PG_DETAIL_RE had
 # gained the ``[ \t|+]*`` ExceptionGroup marker class, the escaped companion
 # had kept ``[ \t]*``, so a marker-prefixed DETAIL line inside an exception
 # message shipped verbatim once repr() flattened its newline. That is the
 # branch's own named poison vector -- adversarial text echoed into an
 # exception message -- so the parity gap was a leak on exactly the threat
-# model the perf fix had closed the stall for. The same review also found
-# the escaped scrub's closers terminator ending in ``\s*``: ``\s`` crosses
+# model the perf fix had closed the stall for. The escaped scrub's
+# closers terminator also ended in ``\s*``: ``\s`` crosses
 # newlines, so on CR-bearing text a DETAIL value carrying quote + closers +
 # a CR/LF boundary satisfied the repr-tail leg by peering PAST the line end,
 # and the scrub stopped at the mid-value quote, keeping closers the
@@ -1691,12 +1691,12 @@ def test_repr_escaped_terminator_cannot_cross_a_line_boundary() -> None:
     line end (on CR-bearing text it fires for real), and the scrub stopped
     at the mid-value quote -- keeping closers the no-closers control
     scrubs, less deletion than the control, against the module's law. The
-    fix-round shape below was red for ``\\s*``: the closers survived as a
+    shape below fails under a ``\\s*`` scrub: the closers survive as a
     fake repr tail.
     """
     from taskq.obs._redact_exc import scrub_exception_field
 
-    # The reviewer's shape, CR-rendered blank line: the value carries
+    # The CR-rendered blank line shape: the value carries
     # quote + closers + a CR/LF boundary. The scrub must NOT accept the
     # closers as a repr tail across that boundary -- it fails closed and
     # the closers ride the scrub (more deletion, never less).

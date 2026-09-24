@@ -90,18 +90,17 @@ class _AtomicGuardConn:
     connection is in progress"). ``transaction()`` models the asyncpg
     transaction context manager: an exception flowing through
     ``__aexit__`` is met by a ROLLBACK issued on the same connection.
-    Together they reproduce, deterministically, the collision the reviewer
-    proved on the transactional path: the deadline's marker reaches the
-    ``__aexit__`` while the body unwind's statement is still in flight.
+    Together they reproduce, deterministically, the transactional path's
+    collision: the deadline's marker reaches the ``__aexit__`` while the
+    body unwind's statement is still in flight.
     """
 
     def __init__(self, execute_delay: float, delayed_queries: "set[str] | None" = None) -> None:
         self._execute_delay = execute_delay
         # None (the default): every statement takes the delay. A set: only
-        # those statements take it and the rest are instant -- the
-        # reviewer's round-2 shape needs SAVEPOINT and ROLLBACK instant
-        # while the hostile unwind's own statement stays in flight past
-        # the budget.
+        # those statements take it and the rest are instant -- this
+        # shape needs SAVEPOINT and ROLLBACK instant while the hostile
+        # unwind's own statement stays in flight past the budget.
         self._delayed_queries = delayed_queries
         self._busy = False
         self.log: list[str] = []
@@ -736,8 +735,8 @@ async def test_fleet_of_deadline_hits_keeps_capacity_and_slots() -> None:
 async def test_tx_rollback_waits_out_the_unwind_before_touching_the_conn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """THE REVIEWER'S INSTRUMENT, the transactional path's rollback x the
-    unwind race. A tx-path body whose ``finally`` awaits ON the
+    """THE INSTRUMENT, the transactional path's rollback x the unwind
+    race. A tx-path body whose ``finally`` awaits ON the
     transaction connection past an 80ms deadline: the deadline's marker
     reached the transaction ``__aexit__`` while the unwind's statement was
     still in flight on the SHARED connection, the ROLLBACK collided with
@@ -853,7 +852,7 @@ async def test_tx_hostile_finally_past_the_budget_still_ends_at_the_deadline() -
 async def test_tx_hostile_finally_holding_the_conn_past_the_budget_records_the_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """THE RESIDUAL, the reviewer's round-2 shape: the hostile ``finally``
+    """THE RESIDUAL: the hostile ``finally``
     holds the SHARED transaction connection ITSELF -- a SHIELDED conn
     execute that outlives the deadline AND the exit-wait budget. At budget
     expiry the marker proceeds, the transaction ``__aexit__``'s ROLLBACK

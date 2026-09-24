@@ -275,10 +275,10 @@ _PINNED_JOBS_INDEXES: frozenset[str] = frozenset(
         # 01.00.12_06
         "jobs_tags_active_gin_idx",
         "jobs_tags_cancellable_running_gin_idx",
-        # 01.00.12_08 (this round: assignment-routed population)
+        # 01.00.12_08 (assignment-routed population)
         "jobs_assignment_routed_probe_idx",
         "jobs_actor_queue_backlog_idx",
-        # 01.00.12_09 (this round: producer-placed population)
+        # 01.00.12_09 (producer-placed population)
         "jobs_unrouted_actor_dispatch_idx",
         "jobs_unrouted_round_robin_probe_idx",
         # 01.00.13_02

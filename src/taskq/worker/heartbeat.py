@@ -129,20 +129,20 @@ def _lease_renewal_threshold(
     consecutive failure, and the lease must still be valid at that
     decision.
 
-    Fix-round premise correction: the round-1 derivation assumed a
+    A premise correction: an earlier derivation assumed a
     failed tick was bounded by "acquire-block then a timed-out command"
     (interval + ONE command timeout). That premise was false, the tick
     issues >= 3 commands each separately bounded by the pool's
     per-query command timeout, and the transaction's teardown adds its
     own round trip, so a brownout tick (a contended acquire, then two
     just-under-timeout statements, then a timeout) lasted acquire +
-    ~3 command-timeouts, which the round-1 floor of (F+1) * (interval +
-    command_timeout) did not cover: a legal skip at 49.5s of a 60s lease
+    ~3 command-timeouts, which a floor of (F+1) * (interval +
+    command_timeout) WITHOUT the tail term did not cover: a legal skip at 49.5s of a 60s lease
     followed by four such failed ticks let the lease expire 3.2-9.2s
     BEFORE the isolate decision while the unconditional renewal
     survived. The per-tick command budget above makes the bound true by
     enforcement, and this floor sizes against it.
-    * Round 2 (the integration attack round) measured the ENFORCED
+    * The integration attack measured the ENFORCED
       cascade with worst-case ticks - a stalled-but-successful acquire,
       a budget-cut sequence, a teardown close stalling to its bound -
       and found the observed cascade running PAST the validator's own
@@ -197,7 +197,7 @@ def _lease_renewal_threshold(
     skew cannot move the threshold: the same clock that stamped the
     lease judges it.
 
-    Pacing correction (the phantom-cancel round): a FAILED tick is not a
+    Pacing correction: a FAILED tick is not a
     beat. The loop no longer sleeps the full remaining interval after a
     tick that raised - it retries promptly, after
     ``min(remaining, _FAILED_TICK_RETRY_FRACTION * interval)`` - so the
@@ -497,7 +497,7 @@ async def heartbeat_loop(
                         # under one timeout and whose third times out
                         # lasts acquire + ~3 command-timeouts when only
                         # the per-statement bounds apply, which is the
-                        # gap bound the round-1 threshold arithmetic
+                        # gap bound the tail-less threshold arithmetic
                         # assumed away (the reproduced default-settings
                         # lease-lapse window). A tick whose statements
                         # legitimately need more than one command-timeout

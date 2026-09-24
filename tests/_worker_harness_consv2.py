@@ -1,10 +1,10 @@
-"""Private test-only worker entry point for the round-2 conservation chaos.
+"""Private test-only worker entry point for the conservation chaos composition.
 
 Invoked via ``sys.executable -m tests._worker_harness_consv2`` by
 ``tests/test_rt_conservation_chaos2.py``.  Same shape as
 ``tests/_worker_harness_consv.py`` (env-configured WorkerSettings, the
 production ``_main`` bootstrap, one fault-injection switch), with the
-injection the round-2 compositions need:
+injection the compositions need:
 
 ``TASKQ_CONSV2_KILL_ON_ABANDON=1``
     Patch ``PostgresBackend.mark_abandoned`` so the process dies by

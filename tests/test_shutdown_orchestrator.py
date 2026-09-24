@@ -1247,7 +1247,7 @@ async def test_orchestrate_shutdown_sets_shutdown_event_before_leader_close(
     assert event_set_at_close == [True]
 
 
-# ── Round-3 race: orchestrator close vs deps exit-stack guard ─────────────
+# ── Race: orchestrator close vs deps exit-stack guard ─────────────
 
 
 class _InstantPool:
@@ -1335,8 +1335,8 @@ async def test_orchestrate_shutdown_does_not_double_close_leader_conn(
 
     _bootstrap wiring: ``await shutdown_event.wait()`` runs INSIDE
     ``async with open_worker_deps(...)``; the orchestrator task is awaited
-    only AFTER the context exits. The early ``shutdown_event.set()`` (round-2
-    fix - stops the election loop before the close park) therefore releases
+    only AFTER the context exits. The early ``shutdown_event.set()``
+    (stops the election loop before the close park) therefore releases
     the exit-stack unwind CONCURRENTLY with the parked close, and the
     guard's ``_close_leader_conn`` enters a second ``close_conn_bounded`` on
     the same conn unless ``deps.leader_conn`` is nulled BEFORE the park. On

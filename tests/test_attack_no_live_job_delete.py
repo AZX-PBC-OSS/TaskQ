@@ -66,8 +66,8 @@ def _packaged_sql_delete_targets() -> dict[str, set[str]]:
     Source scan with docstrings removed by line span, not an SQL parse:
     the statements are package-owned (no user input reaches a table name,
     every dynamic identifier is validated against _IDENT_RE), so the
-    literal text is the truth the reviewer sees and the tripwire fires the
-    moment a new statement is written. Docstrings are excluded by their
+    literal source text is the classification's ground truth and the
+    tripwire fires the moment a new statement is written. Docstrings are excluded by their
     AST line spans, which is what keeps prose like "the archive move's
     ``DELETE FROM jobs`` cascade" from polluting the classification while
     a real SQL literal - f-string-split pieces included - counts.

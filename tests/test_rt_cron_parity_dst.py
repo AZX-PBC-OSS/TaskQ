@@ -798,8 +798,8 @@ class TestSteadyStateMinutelyFoldTraversal:
 
 
 class TestPartialTwinCoverageFoldHandoff:
-    """The partial-coverage pin the round-4 triage deferred to the fix:
-    some fold-1 slots twin-covered, some not - the handoff must deliver
+    """The partial-coverage pin: some fold-1 slots twin-covered, some
+    not - the handoff must deliver
     the uncovered remainder exactly once and never re-deliver a covered
     instant, whichever mechanism carries each slot.
 
@@ -974,7 +974,7 @@ class TestSingletonMinutelyFoldTraversal:
 
 
 class TestTwinCoverageIsPerSchedule:
-    """FINDING (coverage round 5, fixed): the coverage walk counted ANY
+    """FINDING (fixed): the coverage walk counted ANY
     job at an in-range instant as delivered - including another
     schedule's.
 

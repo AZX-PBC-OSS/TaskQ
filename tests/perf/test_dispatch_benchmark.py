@@ -149,7 +149,7 @@ async def test_dispatch_cte_latency_at_10k_pending(
     best_p50_ms = min(round_p50_ms)
     worst_p50_ms = max(round_p50_ms)
 
-    # ── Output for reviewer (requires --capture=no) ──
+    # ── Output summary (requires --capture=no) ──
     print(f"\n── Dispatch CTE Benchmark @ {TOTAL_JOBS} pending jobs ──")
     for i, (p50, p95, p99) in enumerate(zip(round_p50_ms, round_p95_ms, round_p99_ms, strict=True)):
         print(f"  round {i + 1}: p50={p50:.2f}ms p95={p95:.2f}ms p99={p99:.2f}ms")
