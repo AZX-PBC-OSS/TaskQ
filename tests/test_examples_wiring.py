@@ -13,6 +13,7 @@ Covers:
 """
 
 import asyncio
+from contextlib import AsyncExitStack
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -106,6 +107,11 @@ async def _run_main_with_mocked_deps(
         worker_pool=pool_obj,  # type: ignore[arg-type]
         notify_conn=None,
         leader_conn=None,
+        # The bootstrap asserts the incremental stack exists after
+        # open_worker_deps yields (it pushes the boot-failure deregister
+        # backstop onto it); the real open_worker_deps owns that stack,
+        # the harness fake below owns this one the same way.
+        _exit_stack=AsyncExitStack(),
     )
 
     from unittest.mock import create_autospec
@@ -177,7 +183,18 @@ async def _run_main_with_mocked_deps(
         mock_leader_cls.return_value = mock_leader_instance
 
         mock_open.return_value.__aenter__ = AsyncMock(return_value=deps)
-        mock_open.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        async def _fake_open_worker_deps_exit(*args: object) -> None:
+            # Mirrors open_worker_deps' real exit: unwind the incremental
+            # stack (the boot-failure deregister backstop rides it) and
+            # null the attribute so a late reload_credentials fails fast
+            # on a dead stack (see open_worker_deps' own finally).
+            stack = deps._exit_stack
+            if stack is not None:
+                await stack.aclose()
+            deps._exit_stack = None
+
+        mock_open.return_value.__aexit__ = _fake_open_worker_deps_exit
 
         return await _main(settings, _registry=_registry)
 
