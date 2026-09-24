@@ -17,6 +17,7 @@ from uuid import UUID
 
 import structlog
 from asyncpg.exceptions import (
+    InternalClientError,
     LockNotAvailableError,
     UniqueViolationError,
 )
@@ -86,6 +87,13 @@ __all__ = [
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 _SINGLETON_CONSTRAINT_NAME = "jobs_singleton_uniq"
+
+#: The jobs table's primary key's constraint name (the inline ``id uuid
+#: PRIMARY KEY`` of 01.00.00_01_pre_initial.sql). The zombie-enqueue
+#: read-back keys on it: a re-run colliding on THIS index, in an attempt
+#: that only runs because the first died unacknowledged, is the proof the
+#: first attempt's INSERT landed.
+_JOBS_PK_CONSTRAINT_NAME: Final[str] = "jobs_pkey"
 
 #: Bounded wait (milliseconds) for the max_pending advisory lock on the
 #: single-enqueue path. The lock is held across a count query + INSERT (a
@@ -1327,6 +1335,51 @@ async def _enqueue_with_conn(
         raise exc.to_public() from exc.original or exc
 
 
+async def _read_back_landed_enqueue(
+    guard: _RetryGuard,
+    sql: SqlTemplates,
+    args: EnqueueArgs,
+) -> JobRow:
+    """Return the row a zombie enqueue already committed, by its own id.
+
+    Runs only from ``_enqueue``'s fresh-connection retry arm, after the
+    re-run's INSERT violated ``jobs_pkey``: the retry exists because the
+    first attempt died before its acknowledgement, so the collision is
+    the first attempt's row, carrying the args' own id. The read-back is
+    the same follow-up the (scope, key) arbiter's dedup arm runs, by the
+    id instead of the key: with a key the arbiter dedupes the re-run
+    before the id can collide (the committed row satisfies both), without
+    a key the id is the only identity there is, and the same contract
+    applies -- the retry returns the SAME job id, never an error for work
+    that succeeded, never a fresh row.
+
+    A row that resolves to another actor is refused exactly as an
+    idempotency hit is (:func:`_refuse_cross_actor_idempotency_hit`): the
+    id collision cannot hand back another actor's job as a success.
+    A missing row is impossible (the violation is the existence proof),
+    a caller bug or a dropped table if real, so it fails loudly.
+    """
+    async with guard.checkout() as conn:
+        rec = await conn.fetchrow(sql.get_job, args.id)
+    if rec is None:
+        raise RuntimeError(
+            "enqueue re-run violated jobs_pkey but no row exists for id="
+            f"{args.id} - the collision is not this enqueue's zombie"
+        )
+    row = _job_row_from_record(rec)
+    _refuse_cross_actor_idempotency_hit(args, existing_actor=row.actor, existing_job_id=row.id)
+    _log_enqueue_dedup(row, dedup_reason="zombie_ack_lost")
+    logger.warning(
+        "enqueue-zombie-ack-lost",
+        kind="enqueue_zombie_ack_lost",
+        job_id=str(row.id),
+        actor=row.actor,
+        idempotency_key=str(args.idempotency_key) if args.idempotency_key is not None else None,
+        idempotency_scope=args.idempotency_scope,
+    )
+    return row
+
+
 async def _enqueue(
     pool: "asyncpg.Pool",
     sql: SqlTemplates,
@@ -1343,13 +1396,20 @@ async def _enqueue(
     # capped / single-flight preflights, the singleton savepoint, the
     # bounded idempotency wait, so a wrapper here only added BEGIN and
     # COMMIT round trips to every enqueue.
+    # The zombie marker: an attempt of THIS call already died unacknowledged
+    # (the wrapper's retry family). Only then can a jobs_pkey collision in a
+    # later arm be THIS call's own zombie (the first INSERT committed, its
+    # ack lost); without a prior death the same collision is a caller reusing
+    # an id across calls, which keeps its documented raise.
+    zombie_possible = {"armed": False}
+
     async def _attempt(guard: _RetryGuard) -> JobRow:
         # Retry-safety under the wrapper: the guard's flag is marked inside
         # _enqueue_on_conn at the INSERT's acknowledgement, so a retry only
         # runs when no write was acknowledged (the poisoned-connection
         # first-statement case); a parked-connection failure after the
         # INSERT propagates instead of re-running the enqueue.
-        try:
+        async def _arm() -> JobRow:
             async with guard.checkout() as conn:
                 return await _enqueue_on_conn(
                     conn,
@@ -1362,8 +1422,15 @@ async def _enqueue(
                     idempotency_lock_timeout_ms=idempotency_lock_timeout_ms,
                     mark_wrote=guard.mark_wrote,
                 )
+
+        try:
+            return await _arm()
         except _LegacyIdempotencyKeyConflictError as exc:
             public = exc.to_public()
+        except UniqueViolationError as exc:
+            if exc.constraint_name != _JOBS_PK_CONSTRAINT_NAME or not zombie_possible["armed"]:
+                raise
+            return await _read_back_landed_enqueue(guard, sql, args)
 
         # One retry on a fresh statement. If the violation was a same-pair
         # race, the conflicting row is now committed (a unique-violation report
@@ -1371,18 +1438,7 @@ async def _enqueue(
         # dedupes cleanly below. If it was genuine cross-scope reuse, the
         # legacy index violates again and the public typed error is raised.
         try:
-            async with guard.checkout() as conn:
-                return await _enqueue_on_conn(
-                    conn,
-                    sql,
-                    schema,
-                    clock,
-                    args,
-                    max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
-                    unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
-                    idempotency_lock_timeout_ms=idempotency_lock_timeout_ms,
-                    mark_wrote=guard.mark_wrote,
-                )
+            return await _arm()
         except _LegacyIdempotencyKeyConflictError as exc:
             logger.warning(
                 "scoped-idempotency-migration-pending",
@@ -1391,8 +1447,34 @@ async def _enqueue(
                 idempotency_scope=public.idempotency_scope,
             )
             raise public from exc.original or exc
+        except UniqueViolationError as exc:
+            if exc.constraint_name != _JOBS_PK_CONSTRAINT_NAME or not zombie_possible["armed"]:
+                raise
+            # THE ZOMBIE ENQUEUE (the uncertain commit, enqueue shape): a
+            # prior attempt of this call died unacknowledged and the re-run
+            # now collides on the row that attempt already landed. The id is
+            # the enqueue's identity (client-generated, carried in the
+            # args), so a re-run colliding on it IS the proof the first
+            # landed: read the row back by that id and return it -- the same
+            # job id, the same contract the (scope, key) arbiter's follow-up
+            # SELECT gives a same-pair retry. Letting the violation surface
+            # instead hands the caller an error for work that SUCCEEDED and
+            # invites a fresh-id re-enqueue: the duplicate-job route
+            # _with_fresh_connection_retry's docstring names.
+            return await _read_back_landed_enqueue(guard, sql, args)
 
-    return await _with_fresh_connection_retry(pool, _attempt, operation="enqueue")
+    async def _zombie_watching_attempt(guard: _RetryGuard) -> JobRow:
+        try:
+            return await _attempt(guard)
+        except InternalClientError:
+            # The wrapper's retry family: if this call's write is the one
+            # that committed unacknowledged, the wrapper's re-run may
+            # collide with its own row -- the zombie this module now
+            # recovers (see the PK-violation arms above).
+            zombie_possible["armed"] = True
+            raise
+
+    return await _with_fresh_connection_retry(pool, _zombie_watching_attempt, operation="enqueue")
 
 
 def _membership_batch_ids(args_list: list[EnqueueArgs]) -> list[UUID]:

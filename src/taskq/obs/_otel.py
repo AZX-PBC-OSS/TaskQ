@@ -1546,8 +1546,8 @@ def record_enqueue_dedup(dedup_reason: str) -> None:
     scale, so the RATE a stampede produces has no log channel left to
     ride on; this counter is that rate. ``dedup_reason`` is the bounded
     enum of reasons a hit can occur (``unique_for`` |
-    ``idempotency_key``), the same value the helper logs, never a
-    caller-controlled string.
+    ``idempotency_key`` | ``zombie_ack_lost``), the same value the
+    helper logs, never a caller-controlled string.
     Respects ``_otel_enabled``, no-op when False.
     """
     if not _otel_enabled:
@@ -1557,9 +1557,9 @@ def record_enqueue_dedup(dedup_reason: str) -> None:
         description=(
             "Enqueue dedup hits (an enqueue returned an existing row instead "
             "of writing one). Attributes: dedup_reason ('unique_for' | "
-            "'idempotency_key'). The per-hit log lines are budget-bounded at "
-            "batch scale; this counter is the rate signal that survives the "
-            "bound."
+            "'idempotency_key' | 'zombie_ack_lost'). The per-hit log lines "
+            "are budget-bounded at batch scale; this counter is the rate "
+            "signal that survives the bound."
         ),
     ).add(1, {"dedup_reason": dedup_reason})
 
