@@ -190,9 +190,9 @@ class _ZombieProxy:
     ) -> None:
         import os
 
+        debug = bool(os.environ.get("ZOMBIE_PROXY_DEBUG"))
         server_reader, server_writer = await asyncio.open_connection(*self._target)
         state = _ConnState()
-        debug = bool(os.environ.get("ZOMBIE_PROXY_DEBUG"))
 
         async def c2s() -> None:
             buf = b""
@@ -330,6 +330,17 @@ class _ZombieProxy:
             # (the loop-shutdown residue guard fails on any pending task).
             await asyncio.gather(*tasks, return_exceptions=True)
             server_writer.close()
+            # The client side MUST close with the relay: asyncpg's
+            # Connection.close sends Terminate and then waits for the
+            # connection-lost signal - the EOF arriving from the server
+            # through this proxy. Leaving client_writer open after the
+            # server side is done leaves that wait unresolvable (no
+            # timeout backs it: the waiter is unbounded), and on 3.12 the
+            # close parks the caller forever - the whole module's CI
+            # timeouts. The victim's socket is the exception: kill_zombie
+            # closed it deliberately (the zombie manufacture), and close
+            # on a closing transport is a no-op.
+            client_writer.close()
             self._handlers.discard(handler)
 
 
