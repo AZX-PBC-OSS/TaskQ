@@ -1,6 +1,6 @@
 """Pins for the shutdown-ordering contract: no leadership while stopping.
 
-The owner's invariant (leader.py's doc header, "Shutdown ordering
+The shutdown-ordering invariant (leader.py's doc header, "Shutdown ordering
 contract"): a worker that is shutting down NEVER assumes the leader role,
 and a leader that begins shutting down hands the lease over EARLY, at
 shutdown START, before the job drain, so a rolling deploy never has a
@@ -459,7 +459,7 @@ async def test_pin_handover_demotes_before_the_resign_write_and_cancels_nothing(
     loop can pass its gate and start a new sweep mid-handover, and the
     handover itself neither closes nor terminates any conn - an
     in-flight sweep transaction finishes or aborts whole on its own
-    (Postgres transaction semantics), never half-applied by us.
+    (Postgres transaction semantics), never half-applied.
     """
     conn = FakeConn(holds_row=True)
     deps = _make_deps(conn)
