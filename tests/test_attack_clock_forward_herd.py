@@ -94,17 +94,26 @@ _STATEMENT_TIMEOUT_MS = 1750
 
 # The prune family's defaults.
 _PRUNE_BATCH = 10_000
-# Why 30 s: the statement budget exists as the TOOTH of the bounded-batch
-# pin - if the prune ever stopped LIMIT-ing and moved to one population-wide
-# write, the budget must cancel it. The discriminative gap is >100x: a
-# LIMIT-bounded 10k-row batch on a 100k cohort costs tens of ms, while a
-# population-wide single write costs minutes. The original 4 s sat inside
-# the gap but too close to the floor: on a CI runner congested by 3-leg
-# co-tenancy (run 36016634595) a legitimate bounded batch exceeded it and
-# the server cancelled the pin's own statement. 30 s keeps the tooth (a
-# population-wide write is still 100x+ over the budget) while surviving a
-# slow, contended runner.
-_PRUNE_TIMEOUT_MS = 30_000
+# Why 120 s: this budget is the statement-timeout TOOTH of the bounded-
+# batch pin - the 363 lesson's "the lock window is the batch, never the
+# population" must fail loudly, not hang. Measured on a 4-core pinned rig
+# (PG 18 container co-pinned to the same 4 cores): a bounded 10k-row batch
+# costs ~0.4 s and a population-wide single 100k write ~4 s - a 10x warm
+# gap, NOT the 100x a glance suggests. And CI's congestion tail is a
+# MULTIPLIER on statement work, not an absolute stall: the original 4 s
+# bound cancelled a legitimate bounded batch on 2 of 4 legs (run
+# 36016634595, m ~ 10x), and scaling to 30 s still cancelled one leg (run
+# 36023222736, m ~ 75x). A wall-clock bound therefore cannot sit between
+# the bounded tail and the defect's runtime on a slow runner - the gap
+# closes - so this budget is the hang guard and the fast-runner backstop,
+# while the DISCRIMINATIVE tooth for bounded-vs-population is the batch-
+# shape assertions below (10 productive batches, sum conserved), which no
+# runner speed can defeat. 120 s is 300x the warm batch cost and 4x over
+# the worst multiplier CI has produced. The sibling _STATEMENT_TIMEOUT_MS
+# users keep 1750 ms: their statements are 100-row LIMIT batches (~5 ms
+# warm), 50x less work per statement, two orders of magnitude inside any
+# multiplier this tail has shown.
+_PRUNE_TIMEOUT_MS = 120_000
 
 # Cohort sizes.
 _HERD_BUDGET = 7_000  # re-pend arm
