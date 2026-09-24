@@ -19,6 +19,7 @@ import asyncio
 import contextlib
 import importlib
 import math
+import signal
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any, cast
@@ -2874,13 +2875,13 @@ def worker_main(
     exceeded.
     """
     with asyncio.Runner() as runner:
-        return runner.run(
+        code = runner.run(
             worker_main_async(
                 settings,
                 actor_registry=actor_registry,
                 di_registry=di_registry,
-                cron_registry=cron_registry,
                 connections=connections,
+                cron_registry=cron_registry,
                 pg_credential_provider=pg_credential_provider,
                 rate_limit_registry=rate_limit_registry,
                 until_idle=until_idle,
@@ -2889,6 +2890,22 @@ def worker_main(
                 idle_max_runtime=idle_max_runtime,
             )
         )
+    # The Runner is closed, and closing the loop removed the SIGTERM handler
+    # (asyncio restores SIG_DFL on close) - but the process is not gone yet:
+    # returning the code, interpreter teardown, atexit hooks and thread joins
+    # all still run, and a loaded host stretches every one of them. A signal
+    # in that window kills the process with -15 and ERASES the drain's
+    # verdict: the pod's exit status stops saying what the drain said (the
+    # observed fleet-wide-storm shape - the orchestrator's redundant
+    # stop-signal landing after one pod had already drained cleanly). The
+    # escalation contract only has meaning while the loop lives; once it is
+    # closed there is nothing left to escalate, so SIGTERM is ignored and the
+    # exit status stays the drain's. SIGINT is left alone: its default
+    # disposition is KeyboardInterrupt, a live interactive contract, not a
+    # silent status eraser.
+    with contextlib.suppress(ValueError):  # Why: not the main thread -> no window to guard.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    return code
 
 
 async def worker_main_async(
