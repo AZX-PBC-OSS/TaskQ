@@ -19,6 +19,13 @@
     let lastSeenSeq = 0;
     let lastRenderedFingerprint = null;
     let renderedEntry = null;
+    // True while a poll fetch is outstanding. A background tab that the
+    // browser throttles (or a server that answers slowly) must never
+    // stack overlapping conditional GETs: the tick that finds one in
+    // flight skips itself, and the next interval fire - a suspended
+    // tab's overdue fires are coalesced to one by the browser - catches
+    // up with a single request.
+    let pollInFlight = false;
 
     function getBadgeEl() {
         return document.querySelector(".taskq-badge");
@@ -225,6 +232,8 @@
 
         pollingInterval = setInterval(function () {
             if (!pollingActive) return;
+            if (pollInFlight) return;
+            pollInFlight = true;
             // Conditional GET: the request carries the progress sequence
             // the page already rendered, so a tick whose data is
             // unchanged is answered 304 and downloads no state at all.
@@ -240,20 +249,29 @@
                     : {},
             )
                 .then(function (res) {
+                    pollInFlight = false;
                     if (res.status === 304) return null;
                     return res.json();
                 })
                 .then(function (body) {
+                    pollInFlight = false;
                     if (!pollingActive || body === null) return;
                     acceptProgress(body.progress_seq, body.progress_state ?? {});
                     if (TERMINAL_STATUSES.has(body.status)) {
                         stopPolling();
                     }
                 })
-                .catch(function () {});
+                .catch(function () {
+                    pollInFlight = false;
+                });
         }, POLL_INTERVAL_MS);
 
         pollingActive = true;
+        // A restart (the stream dropped) must not inherit a wedged guard
+        // from a request the browser abandoned while the tab was
+        // suspended: the first catch-up poll always fires, and the seq
+        // gate absorbs any overlap with a genuinely stale response.
+        pollInFlight = false;
     }
 
     function stopPolling() {
@@ -262,6 +280,7 @@
             pollingInterval = null;
         }
         pollingActive = false;
+        pollInFlight = false;
     }
 
     // ---------------------------------------------------------------------------

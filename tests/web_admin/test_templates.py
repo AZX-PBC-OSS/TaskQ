@@ -33,6 +33,20 @@ def _render_base(
     return template.render(realtime_mode=realtime_mode, mode_label=mode_label)
 
 
+def _render_base_with_poll_interval(
+    monkeypatch: pytest.MonkeyPatch, pool: _StubPool, poll_interval_ms: int
+) -> str:
+    """Render _base.html with an overridden poll_interval_ms (a template
+    variable beats the env global, which is how the factory injects it)."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    bundle = create_router(pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    env = bundle.templates
+    template = env.get_template("_base.html")
+    return template.render(
+        realtime_mode="polling", mode_label="polling mode", poll_interval_ms=poll_interval_ms
+    )
+
+
 def test_base_template_polling_mode_shows_badge_and_meta_refresh(
     monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
 ) -> None:
@@ -62,6 +76,27 @@ def test_base_template_contains_htmx_script_tag(
     """DoD: _base.html includes an HTMX script tag referencing the /static/ path."""
     html = _render_base(monkeypatch=monkeypatch, pool=stub_pool)
     assert '<script src="/static/htmx.min.js"></script>' in html
+
+
+def test_meta_refresh_delay_is_floored_at_one_second(
+    monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
+) -> None:
+    """The refresh delay is evaluated against the BROWSER's clock and the
+    browser honors ``content="0"`` as "reload immediately": a sub-second
+    admin_ui_polling_interval_seconds (the setting admits 0.1) used to
+    floor to 0 and render a reload storm. The render clamps the delay to
+    at least one whole second."""
+    html = _render_base_with_poll_interval(monkeypatch, stub_pool, poll_interval_ms=500)
+    assert '<meta http-equiv="refresh" content="1">' in html, html
+
+
+def test_meta_refresh_delay_floors_millisecond_remainder(
+    monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
+) -> None:
+    """A delay that is not a whole number of seconds floors (1500 ms -> 1),
+    never rounds up past what the operator configured."""
+    html = _render_base_with_poll_interval(monkeypatch, stub_pool, poll_interval_ms=1500)
+    assert '<meta http-equiv="refresh" content="1">' in html, html
 
 
 # ── the SSO logout control is a POST form carrying the session-bound token ─

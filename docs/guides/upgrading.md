@@ -1215,6 +1215,31 @@ table the apply can stall the worker fleet's writes for a noticeable window.
   `01.00.02_01` precedent; the migration file's header carries the full
   derivation.
 
+### Rolling deploys from 0.2.2: old pods' prune sweep fails after `01.00.03`
+
+> **Known, bounded, self-healing.** Documented in the
+> `01.00.03_01_pre_idempotency_scope.sql` header (RESIDUAL RISK, reviewed
+> twice); repeated here because it is the one rolling-deploy cell the
+> migration chain cannot protect.
+
+A fleet rolling from 0.2.2 (whose schema predates `01.00.03`) to this
+release: 0.2.2's prune/archive sweep moves terminal rows with a positional
+`INSERT INTO jobs_archive SELECT j.*, ...`, which relies on `jobs` and
+`jobs_archive` sharing physical column order. `01.00.03` appends
+`idempotency_scope` to both tables, and `ADD COLUMN` always appends at the
+end of each table's OWN order, so on `jobs_archive` the new column lands
+after `archived_at`/`expire_at` while on `jobs` it lands after `tags`: the
+orders diverge, and every old-pod prune attempt fails with a type error
+(the text lands in the `archived_at` timestamptz position) until the last
+old pod exits. Non-destructive: the sweep's CTE rolls back cleanly, nothing
+is lost or corrupted, and dispatch/enqueue/dequeue are unaffected. The cost
+is retention lag while old pods lead: terminal rows accumulate for the
+window and the old leader logs a prune failure per sweep tick. This
+release's sweep names every column explicitly, so pruning drains as soon as
+a new pod holds leadership. Fleets that need a bounded window: apply the
+migrations and roll the pods back to back, or promote a new pod to the
+maintenance leadership before the retention cutoff matters.
+
 ### Migration `01.00.13_03` adds the batch open-members index
 
 > **Unreleased.** Operational note; nothing breaks. Same lock caveat as
@@ -2011,8 +2036,17 @@ changelog becomes the authoritative record and these notes age out.
   (`consecutive_failures` at or past the threshold, `last_fire_error` set) --
   without the fix, such a row matched nothing and the schedule stayed
   disabled until a human re-enabled it (issue #460). Fresh installs get the
-  column from the migration chain. See
-  [cron.md](cron.md#schedule-ownership).
+  column from the migration chain.
+  The boot is not the only moment the old write can land: during the roll
+  the previous release can hold (or win) leadership after every new pod has
+  booted, and its cron tick keeps firing schedules, so its unmarked
+  auto-disable can postdate every boot pass. Each new-release leader
+  therefore re-runs the same ownership predicates over the code's declared
+  specs when it assumes leadership (the
+  `cron-schedule-auto-disable-reverted-at-takeover` log line): any old
+  leader's disable is reverted the first time a new pod leads after it
+  landed, not only at the next full restart.
+  See [cron.md](cron.md#schedule-ownership).
 - **`name` and `identity_key` fields on `CronScheduleSpec`** for per-property
   cron schedules and cron↔on-demand dedup.
 - **`JobSortField` enum and `JobFilter.order_by`** for "latest run by

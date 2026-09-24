@@ -2303,11 +2303,23 @@ class Backend(Protocol):
         after_id``, ascending, the durable cursor behind
         ``TaskQ.watch_reclaims``.
 
-        **An event can be silently missed if a ``job_events`` writer
-        transaction stays open longer than the visibility-delay margin
-        between its INSERT and its COMMIT**, ids are allocated at INSERT
-        time but transactions commit out of order, so a late-committing
-        lower-id row can land behind an already-advanced cursor.  Rows
+        The wall-stamp visibility margin is delay-only, never a skip: the
+        poll caps returned ids strictly below the lowest still-held-back
+        matching row above the cursor, so a clock step-back that inverts a
+        commit's ``(occurred_at, id)`` pair (the earlier-id row stamped
+        later than its sibling) delays the sibling instead of leaving it
+        below an advanced cursor. Rows the ceiling withholds are returned
+        in a later poll, id order preserved. The ceiling bounds delays
+        only by the held row's own stamp lie: a far-future-stamped row
+        blocks its higher-id tail for the size of that lie, a wait the
+        margin does not measure.
+
+        **An event can still be silently missed if a ``job_events``
+        writer transaction stays open longer than the visibility-delay
+        margin between its INSERT and its COMMIT**, ids are allocated at
+        INSERT time but transactions commit out of order, so a
+        late-committing lower-id row can land behind an already-advanced
+        cursor.  Rows
         are therefore held back by a trailing-watermark filter
         (*visibility_delay*; backend-configured default when ``None`` ,
         see :data:`taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY` for

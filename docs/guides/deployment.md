@@ -174,6 +174,42 @@ middle state is the rollout window by design.
 
 For rolling deploys where actor config changes, deploy the first pod with `TASKQ_FORCE_UPDATE_ACTOR_CONFIG=true` to overwrite stored config, then deploy the rest without it. See [workers.md: ActorConfig sync](workers.md#actorconfig-sync).
 
+### Migrations under a running fleet: what rides, what must wait
+
+Ops sometimes runs DDL against the tables while workers and admins still hold
+pools of cached prepared statements (asyncpg caches prepared statements per
+connection). The behaviour under that, measured against PostgreSQL 18.6 with a
+warm worker pool:
+
+* **`ADD COLUMN ... NOT NULL DEFAULT` is safe under a live fleet.** Cached
+  plans over the old column set stay valid (PG stores the default as a fast
+  default: no table rewrite, no plan invalidation), and an old-shape INSERT
+  that omits the new column reads the default back invisibly. No error
+  reaches the worker.
+* **A cached plan that a DDL invalidates inside an open transaction**
+  (a result-type change: `ALTER COLUMN TYPE`, a `DROP COLUMN` under
+  `SELECT *`) surfaces as `InvalidCachedStatementError`, SQLSTATE 0A000.
+  TaskQ classifies the 0A000 family as transient infrastructure: the loop
+  retries next tick and the statement re-prepares against the new schema
+  (asyncpg has already cleared its pool-wide statement cache by the time the
+  error propagates). A log line, a tick, not a restart.
+* **The migration's own lock queue is the freeze risk.** `ALTER TABLE` queues
+  ACCESS EXCLUSIVE behind any open job transaction, and once queued every
+  later statement on that table queues behind IT: one 30s job can freeze the
+  whole fleet's dispatch, enqueue, and heartbeat for 30s. The runner bounds
+  the wait (`ddl_lock_timeout`, default 30s) and gives up with
+  `MigrationLockTimeoutError`, nothing applied; find the holder in
+  `pg_stat_activity`/`pg_locks`, end it or let it finish, then re-run
+  `taskq migrate up`. Do not raise the bound past your longest job: the bound
+  is the fleet's worst freeze window.
+* **What must still wait for the contract: `DROP`/`RENAME` of anything the
+  old code still references.** Old workers' SQL then fails with
+  `UndefinedColumnError` (42703) on every execution, permanently - the text
+  itself no longer matches the schema. That failure stays loud and fatal by
+  design (42703 is deliberately not transient; classifying it as such would
+  livelock a fleet that can never succeed again). Drop old structures only in
+  the `post` phase, after the rollout completed.
+
 ---
 
 ## Redis (Optional)

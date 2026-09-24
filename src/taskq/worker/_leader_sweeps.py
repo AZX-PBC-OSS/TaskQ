@@ -1013,6 +1013,7 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     (:func:`~taskq.worker._leader_shared.prune_terminal_jobs`), and the
     drain stops between batches on shutdown.
     """
+    guard = UnexpectedLoopErrorGuard("leader.prune")
     last_pruned_date: date | None = None
     retry_backoff: float | None = None
     lock_name = schema_lock_name("prune", ctx.deps.settings.schema_name)
@@ -1116,6 +1117,12 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     )
                     last_pruned_date = today_utc
                     retry_backoff = None
+                    # A fully successful attempt is what resets the
+                    # backstop's streak (the reset-on-success contract,
+                    # worker/_transient.py): a skipped or failed day, even a
+                    # tolerated unexpected one, must not buy the fault more
+                    # time.
+                    guard.ok()
                     for status, count in result.by_status.items():
                         log.info(
                             "prune-completed",
@@ -1187,6 +1194,18 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 error=repr(exc),
                 retry_in_secs=retry_backoff,
             )
+        except Exception as exc:
+            # Backstop (see _transient.py): the acquire and the lock probe
+            # above sit OUTSIDE the attempt body's broad failure half, so
+            # before this arm a non-transient shape there (a revoked grant
+            # on pg_try_advisory_lock, a partial-migration AttributeError)
+            # escaped into the leader TaskGroup and tore down the whole
+            # worker for a once-a-day sweep's blip. Tolerate it loudly a
+            # few times, arm the retry ladder so the attempt re-runs on
+            # the backoff cadence rather than tomorrow's fire, and go
+            # deliberately fatal at the cap.
+            retry_backoff = _next_retry_backoff(retry_backoff)
+            guard.unexpected(exc)
 
 
 async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
@@ -1194,6 +1213,7 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
     policy shape as :func:`_prune_loop` (once per successful attempt per
     day; failures retry on the shared backoff ladder).
     """
+    guard = UnexpectedLoopErrorGuard("leader.archive_expiry")
     last_expiry_date: date | None = None
     retry_backoff: float | None = None
     lock_name = schema_lock_name("archive_expiry", ctx.deps.settings.schema_name)
@@ -1282,6 +1302,9 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
                     )
                     last_expiry_date = today_utc
                     retry_backoff = None
+                    # Reset-on-success, same contract as _prune_loop's
+                    # guard: only a completed attempt buys the streak down.
+                    guard.ok()
                     for status, count in result.by_status.items():
                         log.info(
                             "archive-expiry-completed",
@@ -1322,6 +1345,14 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
                 error=repr(exc),
                 retry_in_secs=retry_backoff,
             )
+        except Exception as exc:
+            # Backstop (see _transient.py), same rationale as
+            # _prune_loop's: the acquire and lock probe sit outside the
+            # attempt body's broad failure half, and a non-transient shape
+            # there must count loudly and retry on the ladder, not tear
+            # the worker down for a once-a-day sweep's blip.
+            retry_backoff = _next_retry_backoff(retry_backoff)
+            guard.unexpected(exc)
 
 
 #: Live workers per subscribed queue. statement_timestamp() (STABLE) for

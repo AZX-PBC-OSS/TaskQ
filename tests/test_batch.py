@@ -613,10 +613,16 @@ class TestTI6SingleInsertStatement:
         original_fetch = asyncpg.Connection.fetch
 
         async def _counting_fetch(
-            conn_self: asyncpg.Connection, query: str, *args: object
+            conn_self: asyncpg.Connection,
+            query: str,
+            *args: object,
+            timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg.Connection.fetch's own signature (and _forkguard.GuardedConnection's override); the wrapper must accept the kwarg the guarded wire forwards, and delegates it faithfully.
+            record_class: Any = None,
         ) -> list[asyncpg.Record]:
             nonlocal insert_call_count
-            result = await original_fetch(conn_self, query, *args)
+            result = await original_fetch(
+                conn_self, query, *args, timeout=timeout, record_class=record_class
+            )
             if "INSERT" in query.upper().split()[0]:
                 insert_call_count += 1
             return result  # type: ignore[return-value]  # Why: asyncpg Record list returned from real fetch; wrapper delegates faithfully

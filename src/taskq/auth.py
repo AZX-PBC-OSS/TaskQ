@@ -71,6 +71,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
+from taskq._forkguard import (
+    guarded_or_own_connection_class,
+    guarded_or_own_redis_connection_class,
+)
 from taskq.connections import (
     _CONNECTION_INIT_HOOK_ATTR,  # pyright: ignore[reportPrivateUsage]  # Why: the attribute name is owned by taskq.connections; the declaring writers share the single constant so the worker-side reader can never drift from them.
     DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
@@ -734,6 +738,11 @@ def make_pg_pool_factory(
             kwargs["server_settings"] = server_settings
         if connection_class is not None:
             kwargs["connection_class"] = connection_class
+        else:
+            # TaskQ owns this pool's connections; the fork guard rides on
+            # them by default (a caller-supplied class is the caller's
+            # wire, the guard does not silently wrap their choice).
+            kwargs["connection_class"] = guarded_or_own_connection_class(None)
         pool = await asyncpg.create_pool(**kwargs)
         assert pool is not None  # asyncpg returns None only for record_class paths
         return pool
@@ -834,6 +843,11 @@ def make_dedicated_conn_factory(
             kwargs["server_settings"] = server_settings
         if connection_class is not None:
             kwargs["connection_class"] = connection_class
+        else:
+            # Same default as the pool factory above: TaskQ-owned dedicated
+            # connections (notify/leader, the LISTEN wire included) carry
+            # the fork guard.
+            kwargs["connection_class"] = guarded_or_own_connection_class(None)
         conn = await asyncpg.connect(**kwargs)
         if setup is not None:
             # Why here, not forwarded: asyncpg.connect has no setup
@@ -917,9 +931,14 @@ def make_redis_client_factory(
                 ),
             )
         client_kwargs.setdefault("decode_responses", False)
+        # Pop, not get: passing connection_class twice (here and via
+        # **client_kwargs) would be a TypeError, and the caller's class
+        # must win over the guard's default either way.
+        own_class = client_kwargs.pop("connection_class", None)
         return redis_async.Redis.from_url(
             url,
             credential_provider=adapter,
+            connection_class=guarded_or_own_redis_connection_class(own_class),
             **client_kwargs,
         )
 

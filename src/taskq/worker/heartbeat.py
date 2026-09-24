@@ -31,6 +31,7 @@ import structlog
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq._dsn import dsn_host
+from taskq._forkguard import guarded_connection_class, take_parent_fork_event
 from taskq._shield import shield_with_retrieval
 from taskq.backend._protocol import CancelPhase, JobId
 from taskq.backend._records import jsonb_param
@@ -292,10 +293,38 @@ _SELECT_STILL_HELD_SQL_TEMPLATE = (
 # sweep's attempt INSERT coalesces a NULL stamp through the per-row clock
 # fallback, and the next claim stamps it fresh), so no reader learns a
 # new shape - only the fabrication goes away.
+#
+# The reconcile NEVER touches a phase-carrying row (``cancel_phase <> 0``).
+# The cancel ladder's poll owns those rows - mark_retry's header grants
+# every phase-carrying row to the ladder ("a phase-carrying row matches no
+# arm ... for the cancel ladder to terminalise") - and the ladder's
+# unheld walk abandons them within the graces, its fused attempt INSERT
+# writing the ledger row of whatever attempt the row carries. The
+# reconcile's predicate cannot see that distinction: a cancel-fenced
+# outcome write (the body ran, the write matched no arm, the consumer's
+# finally deregistered) leaves the row running, locked here, carrying its
+# phase, held by NOTHING - every in-memory exclusion passes, and once the
+# claim-stamped started_at ages past the lease the reconcile reads the
+# EXECUTED attempt as "a claim that never reached an actor" and refunds
+# it. The refund steals the ledger row the abandon's INSERT is about to
+# write, and the un-stamp poisons that INSERT besides: job_attempts.
+# started_at is NOT NULL, the abandon's fused write raises
+# NotNullViolationError, the drain re-queues and re-raises, the heartbeat
+# burns its failure budget on the same poisoned row every tick, and the
+# isolate it finally declares fails the same way - one fenced row under a
+# tight lease wedges the worker's heartbeat loop AND strands the row
+# (running, attempt refunded, started_at NULL, no ledger, no owner). The
+# phase-carve-out hands the row back to the writer the header already
+# named: the walk escalates and abandons it, ledger and effects balance.
+# A phase-0 row carrying a bare cancel_requested_at (no real writer
+# produces that shape - the request-carrying writers stamp phase 1
+# together) stays reconcile-eligible on purpose: the walk's arms key on
+# the phase, so only a phase-carrying row is provably the ladder's.
 _RECONCILE_LOST_CLAIMS_SQL_TEMPLATE = (
     'UPDATE "{schema}".jobs j SET '  # noqa: S608  # Why: schema validated against _IDENT_RE before interpolation; asyncpg has no parameter binding for identifiers (the still-held template's same shape).
     f"attempt = {ATTEMPT_REFUND_SQL}, started_at = NULL "
     "WHERE j.locked_by_worker = $1 AND j.status = 'running' "
+    "AND j.cancel_phase = 0 "
     "AND NOT (j.id = ANY($2::uuid[])) "
     "AND j.started_at < clock_timestamp() - $3::interval "
     "RETURNING j.id"
@@ -417,6 +446,27 @@ async def heartbeat_loop(
     # until the first renewal, there is nothing to measure before it.
     last_renewal_at: float | None = None
     while not shutdown.is_set():
+        _fork_at = take_parent_fork_event()
+        if _fork_at is not None:
+            # The loop's guaranteed cadence is what makes this the fork
+            # report's floor: even a worker idle between jobs learns of a
+            # fork within one interval. The parent keeps running - its
+            # connections were not written by the child unless the child
+            # used them too, and a protocol-dead pooled connection is
+            # discarded and rebuilt by the pool - but the operator now has
+            # the one line that says a fork happened and what it inherited.
+            logger.error(
+                "fork-detected-in-worker-process",
+                fork_age_secs=round(time.monotonic() - _fork_at, 3),
+                detail=(
+                    "a fork() happened in this worker process while its "
+                    "connections were live; the child inherits every socket "
+                    "(pools, LISTEN, redis, the loop's pipes). A job body or "
+                    "library must not fork: use subprocess.Popen (default "
+                    "close_fds=True drops the inherited descriptors), or "
+                    "open fresh resources in the child after the fork."
+                ),
+            )
         deps.liveness.tick("heartbeat", period=interval)
         _in_tx_failed = False
         _tick_failed = False
@@ -1057,6 +1107,7 @@ async def isolate_self(
             pg_dsn,
             timeout=5.0,  # pyright: ignore[reportCallIssue]  # Why: asyncpg-stubs does not declare timeout kwarg on connect(); the parameter exists at runtime at 0.31.0.
             command_timeout=deps.settings.dispatcher_command_timeout,
+            connection_class=guarded_connection_class(),
         )
         try:
 

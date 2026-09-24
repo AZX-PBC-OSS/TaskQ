@@ -227,7 +227,7 @@ def reset_otel_gauge_caches() -> None:
     iteration`` hazard that discipline exists to prevent.  Rebinding is
     also coherent for importers: every reader of these globals reads
     through the module namespace at call time (``worker/health.py`` reads
-    ``_otel._sweep_success_cache`` / ``_otel._sweep_batch_size_cache``
+    ``_otel._sweep_success_monotonic_cache`` / ``_otel._sweep_batch_size_cache``
     that way, the ``_observe_*`` callbacks read the module globals, and
     the tests read ``otel_mod.<attr>``), so no holder of a stale object
     exists to desynchronize.
@@ -255,6 +255,7 @@ def reset_otel_gauge_caches() -> None:
     otel_mod._reservation_slots_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
     otel_mod._keyed_reclaim_pending = 0  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
     otel_mod._sweep_success_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    otel_mod._sweep_success_monotonic_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: the monotonic twin ledger maintenance_health reads; cleared with the wall one so no stamp leaks between tests.
     otel_mod._sweep_batch_size_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
     otel_mod._sweep_batch_size_configured_cache = {}  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
     otel_mod._leader_lease_expires_in_seconds_cache = None  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.

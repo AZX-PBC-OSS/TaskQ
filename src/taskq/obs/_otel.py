@@ -2105,26 +2105,51 @@ _sweep_unexpected_errors = get_meter().create_counter(
 
 _sweep_success_cache: dict[str, float] = {}
 
+#: The MONOTONIC twin of ``_sweep_success_cache``, stamped at the same
+#: instant and read by ``maintenance_health``'s stalled-sweep view. Two
+#: ledgers, deliberately: the exported gauge's contract is an absolute
+#: Unix timestamp (``time() - value`` is staleness, an operator's
+#: PromQL subtraction), while the in-process staleness comparison is an
+#: ELAPSED-time question and elapsed time belongs to the monotonic
+#: domain. Anchoring the health view on the wall stamp is a bound a
+#: backward clock step defeats: an NTP correction, a VM live-migration,
+#: a hypervisor pause-replay moves ``time.time()`` back an hour, and
+#: ``time() - last_success`` goes NEGATIVE for exactly as long as the
+#: real stall continues, a sweep that stopped completing an hour ago
+#: reads fresh on /ready for the whole catch-up. The wall ledger keeps
+#: feeding the gauge (its consumers re-derive staleness themselves and
+#: can see the step in their own data); the health view reads this
+#: ledger, which cannot step backwards.
+_sweep_success_monotonic_cache: dict[str, float] = {}
+
 
 def record_sweep_success(sweep_name: str) -> None:
-    """Stamp the wall-clock time of a sweep call's success.
+    """Stamp a sweep call's success in BOTH clock domains.
 
-    Feeds the staleness gauge below and ``maintenance_health``'s stalled
-    view: ``time() - last_success`` answers "is this sweep still making
-    progress?" independently of row counts, so a sweep that finds zero
-    eligible rows every tick (healthy) is distinguishable from one that
-    never completes (stalled). The row-count counter and the duration
-    histogram share this call site but NOT this sample population: a
-    timed-out sweep records duration and a timeout but no row sample, so
-    rows and duration must be read as different populations, which the
-    sweep_timeouts counter reconciles.
+    Feeds the staleness gauge below (the wall ledger, an absolute Unix
+    timestamp) and ``maintenance_health``'s stalled view (the monotonic
+    ledger, an elapsed-time anchor, see
+    ``_sweep_success_monotonic_cache`` for why the health view must not
+    read the wall ledger): ``time() - last_success`` answers "is this
+    sweep still making progress?" independently of row counts, so a
+    sweep that finds zero eligible rows every tick (healthy) is
+    distinguishable from one that never completes (stalled). The
+    row-count counter and the duration histogram share this call site
+    but NOT this sample population: a timed-out sweep records duration
+    and a timeout but no row sample, so rows and duration must be read
+    as different populations, which the sweep_timeouts counter
+    reconciles.
 
-    Rebind, never write in place: the cache is iterated on the OTel
+    Rebind, never write in place: the caches are iterated on the OTel
     reader thread while this runs on the event-loop thread (see the
     section comment above).
     """
-    global _sweep_success_cache
+    global _sweep_success_cache, _sweep_success_monotonic_cache
     _sweep_success_cache = {**_sweep_success_cache, sweep_name: time.time()}
+    _sweep_success_monotonic_cache = {
+        **_sweep_success_monotonic_cache,
+        sweep_name: time.monotonic(),
+    }
 
 
 def _observe_sweep_success(options: CallbackOptions) -> Iterable[Observation]:
@@ -2246,7 +2271,9 @@ def clear_sweep_health_caches() -> None:
     caches on their next tick.
     """
     global _sweep_success_cache, _sweep_batch_size_cache
+    global _sweep_success_monotonic_cache
     _sweep_success_cache = {}
+    _sweep_success_monotonic_cache = {}
     _sweep_batch_size_cache = {}
 
 

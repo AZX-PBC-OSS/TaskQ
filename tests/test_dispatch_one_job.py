@@ -1188,13 +1188,20 @@ async def test_start_to_close_timeout_is_counted_and_its_duration_labelled(
 ) -> None:
     """A per-attempt timeout records taskq.jobs.timeouts{kind="start_to_close"}
     once, and the process-duration sample carries the attempt's outcome so
-    a budget-length timeout is not folded into the success distribution."""
+    a budget-length timeout is not folded into the success distribution.
+
+    The actor must genuinely run past its start_to_close: since the
+    #791-conflation fix, a body-RAISED TimeoutError routes as the body's
+    own failure (no timeouts metric), so the deadline here does the
+    raising (the job's start_to_close is 0 by default; the actor sleeps
+    past the enforcement's clock and the sentinel fires)."""
     from taskq.testing.otel import histogram_points
 
     async def slow_actor(payload: _Payload, ctx: JobContext[_Payload]) -> None:
-        raise TimeoutError("start_to_close")
+        await asyncio.sleep(10)
 
-    reader, outcome = await _dispatch_with(monkeypatch, slow_actor)
+    job = replace(make_job_row(payload={"value": 42}), start_to_close=timedelta(milliseconds=100))
+    reader, outcome = await _dispatch_with(monkeypatch, slow_actor, job=job)
 
     assert outcome == "scheduled"
     assert _timeouts(reader) == {("test_actor", "start_to_close"): 1}

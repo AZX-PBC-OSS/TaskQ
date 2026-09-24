@@ -770,6 +770,7 @@ async def test_the_unanchored_park_shapes_pin_their_degraded_bounds() -> None:
     class _Ctx:
         _sync_actor_task: asyncio.Task[object] | None = None
         _tx_unwind_task: asyncio.Task[object] | None = None
+        _actor_body_task: asyncio.Task[object] | None = None
 
         def _set_sync_actor_task(self, task: asyncio.Task[object]) -> None:
             self._sync_actor_task = task

@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from taskq.settings import TaskQSettings
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded, close_pool_bounded
+from taskq._forkguard import guarded_connection_class, install_fork_guard
 from taskq.actor import ActorRef
 from taskq.backend._protocol import (
     BatchFilter,
@@ -659,6 +660,14 @@ class TaskQ:
         if self._client is not None:
             raise RuntimeError("TaskQ is already open")
 
+        # The fork guard pins THIS process as the resource owner before any
+        # socket exists: the preload-in-master-then-fork embedding shape
+        # (gunicorn --preload, a multiprocessing fork context) leaves every
+        # child holding this pool's sockets, and the guard is what turns a
+        # child's use of them from silent wire corruption into a typed
+        # refusal. Idempotent; a no-op on platforms without fork.
+        install_fork_guard()
+
         # Lazy imports keep asyncpg out of the module-level import graph so
         # taskq.testing can be imported without pulling in asyncpg.
         import asyncpg
@@ -734,6 +743,7 @@ class TaskQ:
                     command_timeout=pool_command_timeout,
                     statement_cache_size=stmt_kwargs["statement_cache_size"],
                     max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
+                    connection_class=guarded_connection_class(),
                 )
                 assert created is not None  # asyncpg returns None only for record_class paths
                 self._pool = created
@@ -1775,14 +1785,14 @@ async def _watch_reclaims_pg(
     async def _open_listen_conn() -> asyncpg.Connection:
         if pg_conn_factory is not None:
             return await pg_conn_factory()
-        return await asyncpg.connect(dsn=str(dsn))
+        return await asyncpg.connect(dsn=str(dsn), connection_class=guarded_connection_class())
 
     if listen_conn is not None:
         conn = listen_conn
     elif pg_conn_factory is not None:
         conn = await pg_conn_factory()
     else:
-        conn = await asyncpg.connect(dsn=str(dsn))
+        conn = await asyncpg.connect(dsn=str(dsn), connection_class=guarded_connection_class())
     try:
         await conn.add_listener(channel, _on_notify)  # pyright: ignore[reportArgumentType]  # Why: asyncpg stubs over-narrow the callback type, same pattern as _stream_pg
         conn.add_termination_listener(_on_terminate)  # pyright: ignore[reportArgumentType]  # Why: asyncpg stubs over-narrow the callback type, same pattern as add_listener above

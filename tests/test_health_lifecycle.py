@@ -53,6 +53,7 @@ class _FakeMaintenanceLeader:
         clock: object = None,
         rate_limit_registry: object = None,
         actor_policies: object = None,
+        cron_specs: object = None,  # Why: mirrors the real MaintenanceLeader signature (leader.py); the cron-spec takeover recovery runs at leadership ASSUME inside run(), which this fake stubs out, so the bootstrap constructor call must merely type-check.
     ) -> None:
         pass
 

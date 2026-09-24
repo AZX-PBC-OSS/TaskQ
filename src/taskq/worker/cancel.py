@@ -204,11 +204,14 @@ class _CancelController:
         self._pending_abandons: deque[tuple[JobId, _ActiveJob | None]] = deque()
 
         # First-sight stamps for the unheld class: polled rows carrying a
-        # cancel flag that no registry entry holds. The graces measure
-        # THIS worker's observation of the flag exactly as
-        # ``_ActiveJob.cancel_observed_at`` does for held rows; a row the
-        # poll stops returning (terminalised, reclaimed) drops its stamp,
-        # so a reappearance re-observes with fresh graces.
+        # cancel flag that no registry entry holds AND that none of this
+        # worker's other holding maps covers (queued, claim intents - the
+        # walk's ownership test excludes them, see run_in_tx's unheld
+        # walk). The graces measure THIS worker's observation of the flag
+        # exactly as ``_ActiveJob.cancel_observed_at`` does for held rows;
+        # a row the walk stops treating as unheld (taken by a consumer,
+        # parked, terminalised, reclaimed) drops its stamp, so a
+        # reappearance re-observes with fresh graces.
         self._unheld_observed_at: dict[JobId, float] = {}
 
     def _tick_liveness(self) -> None:
@@ -438,7 +441,31 @@ class _CancelController:
         # started_at age test - the same lease the e2e conftest cascade
         # pins, so the ordering holds wherever that cascade's premises
         # hold.
-        unheld_ids = [row["id"] for row in rows if self._deps.active_jobs.get(row["id"]) is None]
+        #
+        # The ownership test excludes EVERY map this worker holds rows in,
+        # not just the registry. A bare ``get(id) is None`` reads two other
+        # classes as "unheld": a row PARKED in the local queue (the
+        # producer's mark_enqueued mark, no consumer take yet) and a row in
+        # its take-to-register window (a standing claim intent). Neither
+        # has an entry, and neither is orphaned - both are rows this
+        # process is ABOUT to execute, exactly the rows every hand-back
+        # pass excludes through held_ids() + queued_ids(). Abandoning one
+        # hands a terminal row to a consumer that has not taken it yet:
+        # the abandon applies (the guard reads running x phase 2, both
+        # true of the parked row), the drain's delivery resolves no entry,
+        # and the consumer's later take then runs the body on a terminal
+        # row with no cancellation ever delivered - the ladder's poll
+        # filters status = 'running', so no arm ever sees the row again,
+        # and the body's effects postdate the job's terminal write (the
+        # run-after-terminal shape the system tier's effects ledger
+        # surfaced; tests/test_attack_double_run_seams.py pins both
+        # classes). The held walk owns the taken row the moment it
+        # registers: the same graces run from ITS observation, and the
+        # abandon delivers the cancellation to the live entry.
+        owned_ids = set(self._deps.active_jobs.held_ids()) | set(
+            self._deps.active_jobs.queued_ids()
+        )
+        unheld_ids = [row["id"] for row in rows if row["id"] not in owned_ids]
         if unheld_ids or self._unheld_observed_at:
             now = loop.time()
             polled = set(unheld_ids)

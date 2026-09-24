@@ -73,7 +73,7 @@ import asyncio
 import contextlib
 import threading
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Final
 from uuid import UUID
@@ -91,6 +91,7 @@ from taskq.constants import (
     schema_lock_name,
     wake_channel,
 )
+from taskq.cron import CronScheduleSpec
 from taskq.obs import (  # pyright: ignore[reportPrivateUsage]  # Why: the sweep-health caches are module-level singletons owned by the obs layer; the demotion path clears them directly (see health.py for the same seam).
     _otel,
     get_logger,
@@ -105,6 +106,7 @@ from taskq.obs import (  # pyright: ignore[reportPrivateUsage]  # Why: the sweep
     update_stranded_jobs_cache,
 )
 from taskq.ratelimit.registry import RateLimitRegistry
+from taskq.worker._cron_recovery import revert_stale_auto_disables
 from taskq.worker._leader_shared import (
     _EK1,
     ArchiveExpiryResult,
@@ -315,6 +317,7 @@ class MaintenanceLeader:
         clock: Clock,
         rate_limit_registry: RateLimitRegistry | None = None,
         actor_policies: Mapping[str, ActorFirePolicy] | None = None,
+        cron_specs: Sequence[CronScheduleSpec] | None = None,
     ) -> None:
         self._deps = deps
         self._worker_id = worker_id
@@ -324,6 +327,17 @@ class MaintenanceLeader:
         # on its fires (parity with the client enqueue path); None keeps
         # the tick's no-stamping behavior.
         self._actor_policies = actor_policies
+        # The code's declared cron specs, for the takeover recovery. At
+        # every leadership assumption the leader re-runs the stale
+        # auto-disable recovery over these (the same predicates the boot
+        # registration pass applies): during a mixed-version rolling
+        # deploy the OLD leader's cron tick can auto-disable a schedule
+        # AFTER every new pod has booted, an unmarked (disabled_by=NULL)
+        # write the boot pass has already finished matching, so the next
+        # leadership change is the last moment the new code can revert it
+        # without a full restart. None (tests, spec-less deployments) runs
+        # no takeover pass.
+        self._cron_specs = list(cron_specs) if cron_specs else []
         self._sweep_ctx = SweepContext(
             deps=deps,
             backend=backend,
@@ -1269,6 +1283,27 @@ class MaintenanceLeader:
             await self.resign()
             return False
         self._deps.lead(term)
+        # The takeover half of the stale-auto-disable recovery (issue #460's
+        # deploy window): an old leader's unmarked auto-disable can land
+        # after every new pod has booted, so the boot pass has already run
+        # when it appears. The new leader inherits the cron table at this
+        # instant and re-applies the boot pass's ownership predicates, the
+        # last moment the new release can revert the disable without a
+        # restart. Best-effort by contract (the helper never raises for a
+        # per-spec failure), and this call site additionally isolates the
+        # pass from the assume: a recovery that cannot reach the pool must
+        # cost the term nothing, the next assumption retries.
+        if self._cron_specs:
+            try:
+                await revert_stale_auto_disables(self._deps, self._deps.settings, self._cron_specs)
+            except Exception as exc:  # Why: the assume path's own error boundary above treats an exception as assume-failure and hands the lease back; a recovery pass that cannot run is a degraded maintenance plane, not a lost election.
+                log.warning(
+                    "cron-takeover-recovery-failed",
+                    kind="cron_takeover_recovery_failed",
+                    worker_id=str(self._worker_id),
+                    error=repr(exc),
+                    error_type=type(exc).__name__,
+                )
         # A completed assume ends any won-but-unassumable episode: this
         # pod has just proven it can lead, so the next failure, whenever
         # it comes, starts a fresh episode with a fresh trust budget.

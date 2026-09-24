@@ -864,13 +864,21 @@ def maintenance_health(settings: WorkerSettings) -> MaintenanceHealth:
     reasons: list[str] = []
     degraded = False
 
-    success_stamps: dict[str, float] = _otel._sweep_success_cache  # pyright: ignore[reportPrivateUsage]  # Why: in-process singleton cache; the docstring above is the rationale for reading it directly.
+    success_stamps: dict[str, float] = _otel._sweep_success_monotonic_cache  # pyright: ignore[reportPrivateUsage]  # Why: in-process singleton cache; the docstring above is the rationale for reading it directly.
     batch_sizes: dict[str, int] = _otel._sweep_batch_size_cache  # pyright: ignore[reportPrivateUsage]  # Why: same singleton-cache rationale as above.
 
     if not success_stamps:
         return MaintenanceHealth(degraded=False, reasons=["no sweep has completed yet"])
 
-    now = time.time()
+    # Elapsed-time question, monotonic domain: staleness measured on the
+    # wall clock is a bound a backward step defeats (NTP correction, VM
+    # live-migration): ``time() - stamp`` goes negative for the length
+    # of the jump and a genuinely stalled sweep reads fresh for the
+    # whole catch-up. The monotonic ledger (stamped beside the wall one
+    # at the same call site, taskq.obs._otel.record_sweep_success)
+    # cannot step backwards, so the three-interval bound holds across
+    # any wall-clock event.
+    now = time.monotonic()
     for sweep_name, stamp in success_stamps.items():
         staleness = now - stamp
         # Three whole intervals without a success is a stalled sweep, not a

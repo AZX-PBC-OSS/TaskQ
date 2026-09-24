@@ -62,6 +62,7 @@ import asyncpg
 import structlog
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_pool_bounded
+from taskq._forkguard import guarded_connection_class
 from taskq._ids import new_uuid
 from taskq.connections import statement_cache_kwargs
 from taskq.constants import (
@@ -1129,6 +1130,7 @@ async def run_forever(config_path: Path) -> None:
                 max_size=len(health_workers) + 1,
                 statement_cache_size=stmt_kwargs["statement_cache_size"],
                 max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
+                connection_class=guarded_connection_class(),
             )
             logger.info(
                 "workgroup.health_pool_ready",

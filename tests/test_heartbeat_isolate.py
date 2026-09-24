@@ -137,7 +137,12 @@ async def test_isolate_self_writes_reclaim_event_rows() -> None:
     conn = FakeConn(fetch_rows=job_rows)
 
     async def fake_connect(
-        dsn: str, *, timeout: float, command_timeout: float | None = None
+        dsn: str,
+        *,
+        timeout: float,
+        command_timeout: float | None = None,
+        connection_class: type[object]
+        | None = None,  # Why: the isolate connect now threads the fork guard's connection class; the fakes accept and ignore it, the connection object they return is what the assertions see.
     ) -> FakeConn:
         return conn
 
@@ -183,7 +188,12 @@ async def test_isolate_self_opens_fresh_connect() -> None:
     connect_calls: list[tuple[str, float]] = []
 
     async def fake_connect(
-        dsn: str, *, timeout: float, command_timeout: float | None = None
+        dsn: str,
+        *,
+        timeout: float,
+        command_timeout: float | None = None,
+        connection_class: type[object]
+        | None = None,  # Why: the isolate connect now threads the fork guard's connection class; the fakes accept and ignore it, the connection object they return is what the assertions see.
     ) -> FakeConn:
         connect_calls.append((dsn, timeout))
         return FakeConn()
@@ -209,7 +219,12 @@ async def test_isolate_self_shutdown_even_on_connect_failure() -> None:
     """isolate_self calls shutdown.set() even when asyncpg.connect() raises."""
 
     async def fake_connect(
-        dsn: str, *, timeout: float, command_timeout: float | None = None
+        dsn: str,
+        *,
+        timeout: float,
+        command_timeout: float | None = None,
+        connection_class: type[object]
+        | None = None,  # Why: the isolate connect now threads the fork guard's connection class; the fakes accept and ignore it, the connection object they return is what the assertions see.
     ) -> FakeConn:
         raise OSError("connection refused")
 
@@ -254,7 +269,12 @@ async def test_isolate_self_writes_attempt_row_per_job() -> None:
     conn = FakeConn(fetch_rows=job_rows)
 
     async def fake_connect(
-        dsn: str, *, timeout: float, command_timeout: float | None = None
+        dsn: str,
+        *,
+        timeout: float,
+        command_timeout: float | None = None,
+        connection_class: type[object]
+        | None = None,  # Why: the isolate connect now threads the fork guard's connection class; the fakes accept and ignore it, the connection object they return is what the assertions see.
     ) -> FakeConn:
         return conn
 
@@ -313,7 +333,12 @@ async def test_isolate_self_honours_fr12_case_shape() -> None:
     conn = StubConn()
 
     async def fake_connect(
-        dsn: str, *, timeout: float, command_timeout: float | None = None
+        dsn: str,
+        *,
+        timeout: float,
+        command_timeout: float | None = None,
+        connection_class: type[object]
+        | None = None,  # Why: the isolate connect now threads the fork guard's connection class; the fakes accept and ignore it, the connection object they return is what the assertions see.
     ) -> StubConn:
         return conn
 
@@ -407,7 +432,12 @@ async def test_isolate_self_shields_terminal_writes() -> None:
         )
 
         async def fake_connect(
-            dsn: str, *, timeout: float, command_timeout: float | None = None
+            dsn: str,
+            *,
+            timeout: float,
+            command_timeout: float | None = None,
+            connection_class: type[object]
+            | None = None,  # Why: the isolate connect now threads the fork guard's connection class; the fakes accept and ignore it, the connection object they return is what the assertions see.
         ) -> FakeConn:
             return conn
 
@@ -450,7 +480,12 @@ async def test_isolate_self_terminates_hung_conn_close(
     conn.close_wait.clear()  # close() blocks forever from now on
 
     async def fake_connect(
-        dsn: str, *, timeout: float, command_timeout: float | None = None
+        dsn: str,
+        *,
+        timeout: float,
+        command_timeout: float | None = None,
+        connection_class: type[object]
+        | None = None,  # Why: the isolate connect now threads the fork guard's connection class; the fakes accept and ignore it, the connection object they return is what the assertions see.
     ) -> FakeConn:
         return conn
 
@@ -477,7 +512,12 @@ async def test_isolate_self_fast_close_not_terminated(
     conn = FakeConn()
 
     async def fake_connect(
-        dsn: str, *, timeout: float, command_timeout: float | None = None
+        dsn: str,
+        *,
+        timeout: float,
+        command_timeout: float | None = None,
+        connection_class: type[object]
+        | None = None,  # Why: the isolate connect now threads the fork guard's connection class; the fakes accept and ignore it, the connection object they return is what the assertions see.
     ) -> FakeConn:
         return conn
 
@@ -553,7 +593,12 @@ async def test_isolate_self_cancels_live_actors_and_excludes_their_rows() -> Non
     conn = FakeConn()
 
     async def fake_connect(
-        dsn: str, *, timeout: float, command_timeout: float | None = None
+        dsn: str,
+        *,
+        timeout: float,
+        command_timeout: float | None = None,
+        connection_class: type[object]
+        | None = None,  # Why: the isolate connect now threads the fork guard's connection class; the fakes accept and ignore it, the connection object they return is what the assertions see.
     ) -> FakeConn:
         return conn
 
@@ -632,7 +677,12 @@ async def test_isolate_self_excludes_claim_intent_rows() -> None:
     conn = _ExclusionAwareConn(fetch_rows=[row])
 
     async def fake_connect(
-        dsn: str, *, timeout: float, command_timeout: float | None = None
+        dsn: str,
+        *,
+        timeout: float,
+        command_timeout: float | None = None,
+        connection_class: type[object]
+        | None = None,  # Why: the isolate connect now threads the fork guard's connection class; the fakes accept and ignore it, the connection object they return is what the assertions see.
     ) -> _ExclusionAwareConn:
         return conn
 
@@ -708,7 +758,12 @@ async def test_isolate_self_preserves_an_already_cancelled_entry() -> None:
     conn = FakeConn()
 
     async def fake_connect(
-        dsn: str, *, timeout: float, command_timeout: float | None = None
+        dsn: str,
+        *,
+        timeout: float,
+        command_timeout: float | None = None,
+        connection_class: type[object]
+        | None = None,  # Why: the isolate connect now threads the fork guard's connection class; the fakes accept and ignore it, the connection object they return is what the assertions see.
     ) -> FakeConn:
         return conn
 
@@ -782,7 +837,12 @@ async def test_isolate_self_warns_and_proceeds_when_an_actor_ignores_cancellatio
     conn = FakeConn()
 
     async def fake_connect(
-        dsn: str, *, timeout: float, command_timeout: float | None = None
+        dsn: str,
+        *,
+        timeout: float,
+        command_timeout: float | None = None,
+        connection_class: type[object]
+        | None = None,  # Why: the isolate connect now threads the fork guard's connection class; the fakes accept and ignore it, the connection object they return is what the assertions see.
     ) -> FakeConn:
         return conn
 

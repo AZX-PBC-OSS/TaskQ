@@ -504,6 +504,16 @@ disabled need opposite treatment at worker restart:
 | `'operator'` | A deliberate disable: schedule handle `disable()`, the CLI, the admin UI, actor deregistration | **Never reverted**, whatever owns the spec |
 | NULL | Enabled, or a row an old pod wrote during a mixed-version deploy (the backfill migration `01.00.19_05` stamped every disabled row that predates it `'operator'`) | Reverted **only** when the row also carries the old failure arm's fingerprint (`consecutive_failures` at or past the threshold, `last_fire_error` set): that is an old pod's auto-disable from the deploy window. Without the fingerprint it reads as an old pod's operator disable and is untouched |
 
+The revert runs at **every** re-declaration of ownership over the cron table:
+the boot's registration pass, and each new-release leader's assumption of
+leadership. The takeover run exists because during a rolling deploy the
+previous release can hold (or win) leadership after every new pod has booted;
+its cron tick keeps firing, so its unmarked auto-disable can postdate every
+boot pass. The new leader re-applies the same predicates when it inherits the
+table (log line `cron-schedule-auto-disable-reverted-at-takeover`), which is
+what recovers an old leader's disable without waiting for the next full
+restart.
+
 The revert is narrow: it re-enables the row, resets `consecutive_failures` to 0,
 clears `last_fire_error` and the marker, and logs
 `cron-schedule-auto-disable-reverted`. It fires only when the registering spec
@@ -514,7 +524,8 @@ three ticks, and without ownership the schedule would stay disabled forever
 until a human noticed. Code re-declaring the schedule is the recovery signal.
 
 The revert cannot oscillate on its own: it runs once per worker boot per
-schedule (the registration pass is a startup step), it only matches a row that
+schedule (the registration pass is a startup step) plus once per leadership
+assumption, it only matches a row that
 is `enabled = false AND disabled_by = 'auto'`, or a NULL-marked row carrying
 the old failure arm's fingerprint (`consecutive_failures` at or past the
 threshold, `last_fire_error` set -- an old pod's auto-disable from a

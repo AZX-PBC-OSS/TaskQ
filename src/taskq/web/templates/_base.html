@@ -16,7 +16,13 @@
         })();
     </script>
     {% if realtime_mode | default("polling") != "realtime" and not suppress_refresh | default(false) %}
-    <meta http-equiv="refresh" content="{{ poll_interval_ms // 1000 }}">
+    {# The refresh delay is evaluated against the BROWSER's clock, and the
+       browser floors the attribute at whole seconds: ``content="0"`` is
+       honored as "reload immediately", so a sub-second
+       admin_ui_polling_interval_seconds (the setting admits 0.1) would
+       render a reload storm. The render clamps the delay to at least one
+       second; ``//`` keeps the default (2000 ms) at 2. #}
+    <meta http-equiv="refresh" content="{{ [poll_interval_ms // 1000, 1] | max }}">
     {% endif %}
     <title>{% block title %}TaskQ Admin{% endblock %}</title>
     <link rel="stylesheet" href="{{ base_path }}/static/admin.css">

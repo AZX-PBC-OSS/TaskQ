@@ -504,7 +504,15 @@ async def test_make_pg_pool_factory_forwards_setup() -> None:
 
 
 async def test_make_pg_pool_factory_omits_new_params_when_not_provided() -> None:
-    """Without the new params, none reach create_pool - backward-compat guard."""
+    """Without the new params, none reach create_pool - backward-compat guard.
+
+    Amended by the fork-guard campaign: ``connection_class`` now ALWAYS
+    reaches create_pool. A pool the factory builds is TaskQ-owned wire, and
+    TaskQ-owned wire carries the fork guard by default (the caller's own
+    class still wins, see the resolver pin in
+    tests/test_attack_fork_inherit.py). The other optional params keep the
+    omit-when-absent contract.
+    """
     provider = _FakePgProvider(password="tok")
     factory = make_pg_pool_factory("postgresql://user@host:5432/db", provider)
 
@@ -513,8 +521,14 @@ async def test_make_pg_pool_factory_omits_new_params_when_not_provided() -> None
 
     call_kwargs = mock_create.call_args.kwargs
     assert "server_settings" not in call_kwargs
-    assert "connection_class" not in call_kwargs
     assert "setup" not in call_kwargs
+    from taskq._forkguard import guarded_connection_class
+
+    assert call_kwargs["connection_class"] is guarded_connection_class(), (
+        "a TaskQ-owned factory pool must carry the fork guard's connection "
+        "class by default: the guard is the one thing standing between a "
+        "forked child and the pool's sockets"
+    )
 
 
 # ---- ReloadSchedule ------------------------------------------------------------------------------------------------
@@ -842,7 +856,13 @@ async def test_make_dedicated_conn_factory_applies_setup_inside_the_factory() ->
 
 
 async def test_make_dedicated_conn_factory_omits_new_params_when_not_provided() -> None:
-    """Without the new params, none reach connect - backward-compat guard."""
+    """Without the new params, none reach connect - backward-compat guard.
+
+    Amended by the fork-guard campaign: ``connection_class`` now ALWAYS
+    reaches connect (the factory's dedicated connections - the LISTEN wire
+    included - are TaskQ-owned and carry the guard by default); the other
+    optional params keep the omit-when-absent contract.
+    """
     provider = _FakePgProvider(password="tok")
     factory = make_dedicated_conn_factory("postgresql://user@host:5432/db", provider)
 
@@ -851,8 +871,13 @@ async def test_make_dedicated_conn_factory_omits_new_params_when_not_provided() 
 
     call_kwargs = mock_connect.call_args.kwargs
     assert "server_settings" not in call_kwargs
-    assert "connection_class" not in call_kwargs
     assert "setup" not in call_kwargs
+    from taskq._forkguard import guarded_connection_class
+
+    assert call_kwargs["connection_class"] is guarded_connection_class(), (
+        "a TaskQ-owned dedicated connection (notify/leader, the LISTEN wire) "
+        "must carry the fork guard's connection class by default"
+    )
 
 
 async def test_make_dedicated_conn_factory_declares_setup_as_the_inheritable_init_hook() -> None:
