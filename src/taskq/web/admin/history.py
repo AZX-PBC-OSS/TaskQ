@@ -77,6 +77,18 @@ _SELECT_COLS_LIVE = (
 # operation ("invalid UNION/INTERSECT/EXCEPT ORDER BY clause") -- so the
 # union is wrapped and the sort applied to the wrapper, the same shape the
 # jobs list's reversed prev pages use.
+#
+# The wrapper sort is also where the walk's cost used to live: a sort
+# over a set operation cannot be served by index order (the planner does
+# not propagate pathkeys through computed set-operation output columns),
+# so EVERY page turn read and top-N sorted every matching row of the
+# archive, 18 ms at a 100k-row archive and growing linearly with
+# retention. The walk therefore sorts and limits EACH BRANCH (the
+# per-branch ORDER BY is the same tuple over a bare table, which the
+# seam indexes 01.00.20_01 serves as an index scan that starts at the
+# seam and stops at the branch limit) and the outer sort only merges the
+# two branches' pages, at most 2 * limit rows: same total order, same
+# seam, the page's cost independent of the archive's size.
 _HISTORY_SEAM_PREDICATE = (
     "  AND (COALESCE(finished_at, '9999-12-31 23:59:59+00'::timestamptz), "
     "created_at, id) < ($4, $5, $6)"
@@ -88,26 +100,38 @@ _HISTORY_ORDER_BY = (
 )
 
 _HISTORY_UNION_TEMPLATE = """\
-SELECT {cols}
-FROM "{schema}".jobs_archive
-WHERE status = ANY($1)
-  AND ($2::text IS NULL OR actor ILIKE '%' || $2 || '%')
-  AND ($3::text IS NULL OR queue = $3){seam}
+SELECT * FROM (
+  (SELECT {cols}
+      FROM "{schema}".jobs_archive
+      WHERE status = ANY($1)
+        AND ($2::text IS NULL OR actor ILIKE '%' || $2 || '%')
+        AND ($3::text IS NULL OR queue = $3){seam}
+      {order_by}
+      LIMIT {limit})
 UNION ALL
-SELECT {cols_live}
-FROM "{schema}".jobs
-WHERE status = ANY($1)
-  AND ($2::text IS NULL OR actor ILIKE '%' || $2 || '%')
-  AND ($3::text IS NULL OR queue = $3){seam}"""
+  (SELECT {cols_live}
+      FROM "{schema}".jobs
+      WHERE status = ANY($1)
+        AND ($2::text IS NULL OR actor ILIKE '%' || $2 || '%')
+        AND ($3::text IS NULL OR queue = $3){seam}
+      {order_by}
+      LIMIT {limit})
+) sub
+{order_by}
+LIMIT {limit}"""
 
 
 def _history_list_sql(schema: str, *, cursor: bool, limit: int) -> str:
     """Return the history list SELECT for *schema*, paged or not.
 
     ``cursor=True`` binds the keyset seam ($4 finished-or-ceiling, $5
-    created_at, $6 id) into both sides' WHERE; the wrapper's ORDER BY is
+    created_at, $6 id) into both sides' WHERE; each branch's ORDER BY is
     exactly the tuple that predicate compares, so the seam can neither
-    replay nor skip a row the ordering places on one side of it.
+    replay nor skip a row the ordering places on one side of it. Each
+    branch is sorted and limited to the page itself, and the outer sort
+    merges the two pages under the same tuple -- the union of the two
+    branches' top-``limit`` rows contains the global top-``limit`` rows,
+    so the page is identical to sorting the whole union.
     """
     seam = f"\n{_HISTORY_SEAM_PREDICATE}" if cursor else ""
     union = _HISTORY_UNION_TEMPLATE.format(
@@ -115,8 +139,10 @@ def _history_list_sql(schema: str, *, cursor: bool, limit: int) -> str:
         seam=seam,
         cols=_SELECT_COLS,
         cols_live=_SELECT_COLS_LIVE,
+        order_by=_HISTORY_ORDER_BY,
+        limit=limit,
     )
-    return f"SELECT * FROM ({union}) sub {_HISTORY_ORDER_BY} LIMIT {limit}"
+    return union
 
 
 _SUMMARY_SQL = (

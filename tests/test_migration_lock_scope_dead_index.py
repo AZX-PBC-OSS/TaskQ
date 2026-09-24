@@ -285,6 +285,11 @@ _PINNED_JOBS_INDEXES: frozenset[str] = frozenset(
         "jobs_queue_actor_dispatch_idx",
         # 01.00.13_03
         "jobs_batch_open_members_idx",
+        # 01.00.20_01 (pre): the /history seam walk's expression index,
+        # the COALESCE ceiling the page's ORDER BY and keyset cursor
+        # compare; see the migration's header for the per-page full-sort
+        # it removes.
+        "jobs_seam_idx",
     }
 )
 _PINNED_JOBS_ARCHIVE_INDEXES: frozenset[str] = frozenset(
@@ -293,6 +298,10 @@ _PINNED_JOBS_ARCHIVE_INDEXES: frozenset[str] = frozenset(
         "jobs_archive_expire_at_idx",
         "jobs_archive_finished_at_idx",
         "jobs_archive_tags_gin_idx",
+        # 01.00.20_01 (pre): the archive branch's copy of the /history
+        # seam index; the archive is the branch whose size the walk used
+        # to sort in full on every page turn.
+        "jobs_archive_seam_idx",
     }
 )
 
