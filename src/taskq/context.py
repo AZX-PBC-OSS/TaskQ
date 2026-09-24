@@ -19,7 +19,12 @@ import structlog
 from opentelemetry.trace import Span
 from pydantic import BaseModel
 
-from taskq._json import NUL_JSONB_ERROR, _encoded_has_nul, check_no_nul_str, dumps
+from taskq._json import (
+    NUL_JSONB_ERROR,
+    _encoded_has_nul,  # pyright: ignore[reportPrivateUsage]  # Why: the byte-level NUL scan runs on the bytes the size check already encoded - a second encode of the same dict to reach a public wrapper would pay the walk the embed exists to avoid.
+    check_no_nul_str,
+    dumps,
+)
 from taskq.exceptions import ProgressTooLarge
 from taskq.progress._buffer import _EncodedProgressData, _PendingPublish
 from taskq.progress._publish import _publish_progress_event, _publish_progress_event_coalesced
@@ -325,19 +330,25 @@ class JobContext[P: BaseModel]:
         # (finiteness only; no range: a percent of 150.0 stays legal, range
         # is the actor's semantics) applied at the runtime gate.
         if percent is not None:
-            if isinstance(percent, bool) or not isinstance(percent, (int, float)):
+            # The isinstance checks look unnecessary to a type checker
+            # because the annotations say float | None - actor code is
+            # under no such discipline at runtime, and the confused types
+            # are exactly what this gate exists for (see the tests that
+            # feed a str percent through the real path).
+            if isinstance(percent, bool) or not isinstance(  # pyright: ignore[reportUnnecessaryIsInstance]
+                percent, (int, float)
+            ):
                 raise TypeError(f"percent must be a number, got {type(percent).__name__}")
             if not math.isfinite(percent):
                 raise ValueError(f"percent must be a finite number, got {percent!r}")
-        if step is not None:
+        if step is not None and (isinstance(step, bool) or not isinstance(step, int)):  # pyright: ignore[reportUnnecessaryIsInstance]
             # An int on the wire (``ProgressEvent.step: int | None``); a
             # non-int step passes the buffer today and then fails the
             # publish's pydantic validation downstream (the event silently
             # dropped, a progress-publish-failure logged per call) while
             # the flush still stores the junk - refused here instead.
-            if isinstance(step, bool) or not isinstance(step, int):
-                raise TypeError(f"step must be an int, got {type(step).__name__}")
-        if detail is not None and not isinstance(detail, str):
+            raise TypeError(f"step must be an int, got {type(step).__name__}")
+        if detail is not None and not isinstance(detail, str):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError(f"detail must be a str, got {type(detail).__name__}")
 
         data_json: bytes | None = None

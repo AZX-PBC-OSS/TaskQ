@@ -499,7 +499,7 @@ def test_a_seq_at_the_double_precision_boundary_still_renders() -> None:
     come from the ETag header (the exact decimal the server compares), so
     the changed state at seq 2^53 + 1 RENDERS."""
     out = _drive("bigint-seq-collision")
-    dom, segments = out["dom"], _segments(out["dom"])
+    segments = _segments(out["dom"])
 
     first = segments[1]
     assert any(entry.startswith("timeline-append:") for entry in first), (
@@ -522,14 +522,13 @@ def test_a_deeply_nested_data_monster_cannot_crash_the_fingerprint() -> None:
     depth-capped canonicalize degrades gracefully: the tick renders, the
     data node degrades to its notice, and the machine stands."""
     out = _drive("deeply-nested-data")
-    dom, segments = out["dom"], _segments(out["dom"])
+    segments = _segments(out["dom"])
 
     first = segments[1]
     assert any(entry.startswith("timeline-append:") for entry in first), (
         f"the deep-data tick must render the entry, not throw: {first}"
     )
-    assert any(
-        entry.startswith("text:") and entry.endswith("=deep")
-        for entry in first
-    ), f"the deep-data tick must render the state's own fields: {first}"
+    assert any(entry.startswith("text:") and entry.endswith("=deep") for entry in first), (
+        f"the deep-data tick must render the state's own fields: {first}"
+    )
     _no_scroll(out["dom"])

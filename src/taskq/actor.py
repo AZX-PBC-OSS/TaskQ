@@ -52,9 +52,9 @@ import structlog
 from pydantic import BaseModel, TypeAdapter
 
 from taskq.backend._protocol import (
+    _QUEUE_NAME_MAX_CHARS,  # pyright: ignore[reportPrivateUsage]  # Why: the queue name's btree bound governs the actor name's too (the two share the composite dispatch indexes); one constant, no drift.
     DEFAULT_UNIQUE_STATES,
     JobStatus,
-    _QUEUE_NAME_MAX_CHARS,  # pyright: ignore[reportPrivateUsage]  # Why: the queue name's btree bound governs the actor name's too (the two share the composite dispatch indexes); one constant, no drift.
     _validate_queue_name,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical queue-name validator; the enqueue path (client._args) runs the same one, so the charset cannot drift between the two chokepoints.
 )
 from taskq.constants import check_payload_float_constraints, check_priority_domain
