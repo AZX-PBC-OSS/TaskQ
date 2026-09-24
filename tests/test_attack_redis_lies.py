@@ -536,6 +536,98 @@ async def test_gcra_peek_huge_tat_hint_is_clamped_not_an_overflow() -> None:
     )
 
 
+# ── round-3 pins: the truncated pair and the huge-finite clock ────────
+
+
+async def test_log_peek_truncated_withscores_pair_raises_the_sentinel() -> None:
+    """The round-2 fix guarded the score CONVERSION, but the element
+    access itself sat outside the guard: a truncated withscores "pair"
+    (a 1-tuple member with the score element missing, or the empty
+    tuple) raises bare IndexError on ``oldest_entry[1]``. IndexError is
+    a crash class the reply contract
+    (``_redis_utils.redis_time_seconds``'s "must not crash the caller
+    with a ValueError/TypeError/IndexError") explicitly names for this
+    boundary, and it is in no guarded conversion family. The pair shape
+    check routes it to the same store-corrupt sentinel as every other
+    reply lie.
+    """
+    for pair in [
+        [(b"req1",)],  # the member with the score element truncated away
+        [()],  # the fully empty "pair"
+    ]:
+        with pytest.raises(RateLimitStoreCorrupt, match="withscores"):
+            await _peek_redis_log(
+                SlidingWindow("l", limit=5, window=timedelta(seconds=10), style="log"),
+                redis_client=_PeekRedis(
+                    time_reply=[2000, 0],
+                    zcount_reply=10,
+                    zrangebyscore_reply=pair,
+                ),
+                settings=_settings(),
+            )
+
+
+@pytest.mark.parametrize(
+    "time_reply",
+    [
+        pytest.param([1e306, 0], id="huge-positive"),
+        pytest.param([-1e306, 0], id="huge-negative"),
+        pytest.param([1.7976931348623157e308, 1.7e308], id="sum-overflows-float"),
+    ],
+)
+async def test_huge_finite_time_lie_fails_closed_on_both_peeks(time_reply: object) -> None:
+    """A lying TIME that is FINITE but past the millisecond domain: each
+    field passes ``redis_time_seconds``'s finiteness check, yet the
+    derived ``now_ms = seconds * 1000`` overflows to +-inf. In the GCRA
+    peek an honest-shaped TAT (``b"5"``) then gives ``tat = max(5, inf)
+    = inf`` and ``tat - now_ms = nan`` (``inf - inf``), so ``int(nan)``
+    crashes with ValueError (``int(-inf)`` with OverflowError); the
+    sum-overflow shape never even returns from the clock read. Both
+    peeks must raise the sentinel, the fail-closed verdict.
+    """
+    with pytest.raises(RateLimitStoreCorrupt):
+        await _peek_redis_gcra(
+            SlidingWindow("g", limit=5, window=timedelta(seconds=10), style="gcra"),
+            redis_client=_PeekRedis(time_reply=time_reply, get_reply=b"5"),
+            settings=_settings(),
+        )
+    with pytest.raises(RateLimitStoreCorrupt):
+        await _peek_redis_log(
+            SlidingWindow("l", limit=5, window=timedelta(seconds=10), style="log"),
+            redis_client=_PeekRedis(
+                time_reply=time_reply,
+                zcount_reply=10,
+                zrangebyscore_reply=[(b"req1", 2000.0)],
+            ),
+            settings=_settings(),
+        )
+
+
+async def test_honest_extreme_time_stays_accepted() -> None:
+    """The magnitude guard's regression fence: an honest TIME as large
+    as ``[10**18, 0]`` (finite seconds far past any real epoch, the
+    honest-extreme probe) must stay ACCEPTED by the clock read and both
+    peeks. The guard fails closed only when the millisecond derivation
+    is not finite, never on a finite honest reply - no false
+    fail-closed on the large-but-representable clock.
+    """
+    from taskq.ratelimit._redis_utils import redis_time_seconds
+
+    assert await redis_time_seconds(_PeekRedis(time_reply=[10**18, 0])) == 1e18  # type: ignore[arg-type]  # Why: the duck-typed client is the point
+    gcra_state = await _peek_redis_gcra(
+        SlidingWindow("g", limit=5, window=timedelta(seconds=10), style="gcra"),
+        redis_client=_PeekRedis(time_reply=[10**18, 0], get_reply=b"5"),
+        settings=_settings(),
+    )
+    assert gcra_state.is_exhausted is False
+    log_state = await _peek_redis_log(
+        SlidingWindow("l", limit=5, window=timedelta(seconds=10), style="log"),
+        redis_client=_PeekRedis(time_reply=[10**18, 0], zcount_reply=0),
+        settings=_settings(),
+    )
+    assert log_state.is_exhausted is False
+
+
 # ── SSE envelope: the cursor blackhole and the crossed wire ───────────
 
 
