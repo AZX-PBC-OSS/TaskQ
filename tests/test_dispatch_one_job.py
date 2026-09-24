@@ -52,6 +52,7 @@ from taskq.worker.dispatch import (
     SlotPoolAcquireError,
     dispatch_one_job,
 )
+from taskq.worker.shutdown import ShutdownPhase
 from tests._di_scopes import bootstrap_scopes, make_scopes
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
@@ -82,6 +83,12 @@ class _FakeWorkerDeps:
         self.active_jobs = ActiveJobRegistry()
         self.worker_pool: asyncpg.Pool | None = None
         self.slot_pool: asyncpg.Pool | None = None
+        # Mirrors WorkerDeps.shutdown_phase's default: the consumer's
+        # cancel handler reads it on EVERY cancellation (the missed-stamp
+        # guard that completes the orchestration's origin stamp during
+        # shutdown), so a worker not shutting down must carry the faithful
+        # ShutdownPhase.NONE, not omit the attribute.
+        self.shutdown_phase: ShutdownPhase = ShutdownPhase.NONE
         # Mirrors WorkerDeps.slot_pool_connection_init: None = this pool's
         # connections are not known to carry the registration's hook (the
         # injected-pool shape every slot-pool test in this file drives).

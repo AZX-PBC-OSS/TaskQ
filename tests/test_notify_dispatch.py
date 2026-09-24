@@ -456,8 +456,11 @@ class _NoopDrainPool:
 
 def _drain_capable(deps: Mock) -> None:
     """Give a Mock deps the reads the producer makes: the exit
-    hand-back's two (``active_jobs`` / ``dispatcher_pool``) and the
-    availability accounting's ``active_jobs.count()``."""
+    hand-back's two (``active_jobs`` / ``dispatcher_pool``), the
+    availability accounting's ``active_jobs.count()``, and the
+    hand-back's disowned exclusion (the production field is a plain
+    ``set[UUID]``; a bare Mock is not iterable and the drain's
+    ``sorted(deps.disowned_jobs)`` would raise)."""
     deps.active_jobs = Mock(
         all=list,
         count=lambda: 0,
@@ -466,6 +469,7 @@ def _drain_capable(deps: Mock) -> None:
         resolve_claim=lambda jid, tok=None: None,
     )
     deps.dispatcher_pool = _NoopDrainPool()
+    deps.disowned_jobs = set()
 
 
 # ── Eager re-check optimization ────────────────────────────────────

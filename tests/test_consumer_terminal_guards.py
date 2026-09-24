@@ -44,6 +44,7 @@ from taskq.testing.jobs import make_job_row
 from taskq.worker._consumer import consume_one_job
 from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.deps import WorkerDeps
+from taskq.worker.shutdown import ShutdownPhase
 
 _NOW = datetime(2025, 1, 1, tzinfo=UTC)
 _WORKER_ID = new_uuid()
@@ -295,6 +296,13 @@ async def _cancelled_write(*, report_progress: bool) -> dict[str, object]:
     deps.settings = _settings()
     deps.redis_client = None
     deps.disowned_jobs = set()
+    # The faithful phase: a MagicMock(spec=WorkerDeps) auto-generates a
+    # Mock for shutdown_phase, and "is not ShutdownPhase.NONE" is true for
+    # any Mock, which would stamp the registry entry SHUTDOWN and route
+    # this cancel through mark_interrupted (release) instead of the
+    # mark_cancelled write these pins exercise. A worker not shutting
+    # down carries the production default, ShutdownPhase.NONE.
+    deps.shutdown_phase = ShutdownPhase.NONE
 
     async def actor(running: JobRow, ctx: JobContext[BaseModel]) -> dict[str, object]:
         if report_progress:

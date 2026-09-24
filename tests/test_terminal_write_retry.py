@@ -25,6 +25,7 @@ from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.worker._consumer import consume_one_job
 from taskq.worker._handlers import AttemptOutcome
+from taskq.worker.shutdown import ShutdownPhase
 
 _START = datetime(2026, 1, 1, tzinfo=UTC)
 _ACTOR = "blip_actor"
@@ -341,7 +342,16 @@ async def test_a_defect_in_the_write_stays_loud_on_the_first_raise() -> None:
 
 
 class _ConsumerDeps:
+    """The WorkerDeps fields consume_one_job's cancel handler reads.
+
+    ``shutdown_phase`` mirrors the production field's default: a worker
+    not shutting down is ``ShutdownPhase.NONE``, and the handler's
+    missed-stamp guard reads it on every cancellation, so the fake must
+    carry the faithful value rather than omit the attribute.
+    """
+
     def __init__(self) -> None:
+        self.shutdown_phase: ShutdownPhase = ShutdownPhase.NONE
         self.disowned_jobs: set[UUID] = set()
         self.progress_buffers: dict[UUID, object] = {}
         self.redis_client = None
