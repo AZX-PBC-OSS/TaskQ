@@ -55,3 +55,47 @@ here instead, where noise can be stated honestly instead of failing a PR.
   `test_bind_job_context_performance_bounded` is the pattern: median,
   20× headroom, slow-marked), never a bare average — and only at a
   surface an operator can observe, not an internal helper's micro-budget.
+
+## Appendix: `_scrub_text` on a realistic traceback — measured evidence for the retired 1 ms CI gate
+
+`tests/test_obs_exception_redaction.py` carried a gate asserting a 27-frame
+traceback scrubs in under 1 ms. It failed at **2.2 ms** on a shared CI runner
+(single preemption between two clock reads on an operation whose clean cost is
+~20 µs) — the same lottery the section above documents, at the same ratio of
+noise to budget. The gate is retired; the behavioral contract it protected (a
+credential-free traceback survives the scrub verbatim) is pinned as
+`test_scrubbing_a_realistic_traceback_preserves_the_diagnostics`, and the
+scan's linearity on the dotted shapes a traceback reaches the scrub with stays
+pinned structurally by `test_jwt_scan_stays_linear_on_long_word_runs`.
+
+### Method
+
+- The realistic field shape: `"Traceback (most recent call last):\n"` plus 27
+  `'  File "taskq/worker.py", line 1, in run\n'` frames plus
+  `"RuntimeError: deadline exceeded"` (dots from the `.py` paths, so the JWT
+  prefilter fires — the trigger-present case, not a free pass).
+- Single timed call after import warm-up, `time.perf_counter` around the bare
+  call; for the scale linearity check, the same shape at 40× the frames
+  (1080), one timed call.
+- Engine: CPython 3.13, Linux x86_64 container, otherwise idle. Treat the
+  numbers as a class (tens of µs per traceback, linear in frames), not a bound.
+
+### Results
+
+| shape | frames | text size | time |
+|---|---|---|---|
+| realistic traceback | 27 | ~1.4 KB | ~20–25 µs |
+| 40× traceback | 1080 | ~57 KB | ~0.86 ms |
+
+Scaling 40× the frames moved the cost ~36× — linear (the per-frame scan is
+O(text)), no super-linear term at traceback magnitudes. A quadratic term would
+have shown ~1600×.
+
+### Verdict
+
+- The scrub of a rendered traceback is microsecond-scale at realistic frame
+  counts and linear in frames. Nothing to regress silently: a change that made
+  it super-linear would show up in the structural JWT-linearity pin first
+  (that pin's shapes are the scan's worst case), and a change that made it
+  I/O-bound or copying-bound would move the absolute cost by orders of
+  magnitude, visible in any benchmark run rather than a PR lottery.
