@@ -143,6 +143,7 @@ _NO_SEMANTIC_SURFACE: dict[str, str] = {
     ),
     "subscribe_wake": "notification plumbing; returns no rows",
     "subscribe_cancel_wake": "notification plumbing; returns no rows",
+    "subscribe_leader_wake": "notification plumbing; returns no rows",
 }
 
 

@@ -222,6 +222,7 @@ _STORED_CALLER_DATA_NO_READ_SEAM: dict[str, str] = {
 _WIRING_SHARED_BY_DESIGN: dict[str, str] = {
     "subscribe_wake": "returns the subscriber event handle the backend sets - sharing is the mechanism",
     "subscribe_cancel_wake": "same subscriber-event contract as subscribe_wake",
+    "subscribe_leader_wake": "same subscriber-event contract as subscribe_wake",
     "register_cancel_event": "registers the caller's event for the backend to set - sharing is the point",
     "register_stub": "installs a caller-owned stub double - the stub must be the object the caller holds",
     "slot_table": "test-only handle exposing the internal slot table deliberately",

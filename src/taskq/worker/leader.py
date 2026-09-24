@@ -19,10 +19,22 @@ to pods from releases that only understand the lock; it is never required,
 never waited on, and its absence never gates or costs the role.
 
 Failover SLA:
-  Graceful stop      ≤ one round trip from the stop signal (the
-                       shutdown-ordering contract below: the resign is
-                       the FIRST act of the shutdown, not its last, so
-                       the drain adds no latency to the handover)
+   Graceful stop      sub-second when the wake lands: the resign is the
+                       FIRST act of the shutdown (the shutdown-ordering
+                       contract below: the handover happens at shutdown
+                       START, not after the drain, so draining adds no
+                       latency to the handover), it deletes the row and
+                       then broadcasts on the leadership wake channel,
+                       a HINT (the row and the fence stay the authority)
+                       that makes a follower re-run the fenced elect
+                       after at most leader_wake_jitter of damping. The
+                       wake is never the guarantee: a lost, duplicated,
+                       malformed, or disabled broadcast, and a killed
+                       leader (that can notify no one), degrades to
+                       exactly the old bound
+                      ≤ heartbeat_interval + one round trip (the resign
+                        deletes the row; the next election wins it - the
+                        bound the hint degrades to, and the crash bound)
   Worker killed      ≤ leader_lease + heartbeat_interval + one round trip
   Silent leader      ≤ leader_lease + heartbeat_interval + one round trip
   Won, unassumable   ≤ leader_lease + heartbeat_interval + one failing
@@ -71,11 +83,12 @@ never sees a dying pod win or hold leadership.
 
 import asyncio
 import contextlib
+import random
 import threading
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Iterable, Mapping, Sequence
 from datetime import datetime
-from typing import Final
+from typing import Final, cast
 from uuid import UUID
 
 import asyncpg
@@ -83,11 +96,14 @@ import structlog
 from opentelemetry.metrics import CallbackOptions, Observation
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
+from taskq._json import dumps_str
 from taskq.backend._protocol import Backend
 from taskq.backend._sql import WAKE_NOTIFY_SQL
 from taskq.backend.clock import Clock
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    LEADER_RESIGNED_EVENT,
+    leader_wake_channel,
     schema_lock_name,
     wake_channel,
 )
@@ -383,12 +399,15 @@ class MaintenanceLeader:
         # emitted on the first refusal and re-armed only when a probe
         # succeeds again (the grant appearing IS a new operational fact).
         self._advisory_lock_refused = False
-        # The election-wake seam: the resign broadcast (the leadership
-        # channel's NOTIFY when a leader hands the lease over) lands here
-        # so a follower attempts NOW instead of on its next heartbeat
-        # tick. Consumed by the loop's tick wait; a stopping worker
-        # ignores it (see ``wake_election``) - the shutdown-ordering
-        # contract in this module's doc header.
+        # The election-wake seam, ONE handler shape for both callers that
+        # arm it: ``wake_election`` (this pod's own resign-broadcast seam)
+        # sets it directly, and a PEER's broadcast reaches the same object
+        # through run()'s subscription, which re-points this field at the
+        # backend registry's event for the run's life (see
+        # ``_leader_wake_subscription``). Consumed by the loop's tick wait
+        # and damped by ``_follower_park``; a stopping worker ignores it
+        # (see ``wake_election``) - the shutdown-ordering contract in this
+        # module's doc header.
         self._wake_event = asyncio.Event()
 
     def _stopping(self) -> bool:
@@ -412,7 +431,9 @@ class MaintenanceLeader:
         IGNORES the wake - no attempt, no win, no lease - the shutdown
         ordering contract in this module's doc header. Safe to call from
         any task on this loop; the wake is consumed by the election
-        loop's tick wait.
+        loop's park wait (``_follower_park``), which damps it by
+        ``leader_wake_jitter`` - and refuses it outright while stopping,
+        the same refusal this arm-time gate makes.
         """
         if self._stopping():
             log.debug(
@@ -423,7 +444,7 @@ class MaintenanceLeader:
             return
         self._wake_event.set()
 
-    async def _wait_next_tick(self, seconds: float) -> None:
+    async def _wait_next_tick(self, seconds: float) -> bool:
         """Wait out one election tick, cut short by the stop signal or a wake.
 
         Why the waits race at all: the stop handover is due at shutdown
@@ -434,14 +455,19 @@ class MaintenanceLeader:
         a wake racing the stop leaks nothing. The wake is consumed even
         when the stop wins the race: a stale wake must not outlive the
         tick it interrupted.
+
+        Returns whether a WAKE (not the stop, not the ordinary tick)
+        ended the wait - ``_follower_park`` damps only a woken park, and
+        a wake that raced the stop to a tie is refused there, never
+        damped into a fast re-elect.
         """
         stop = self._deps.shutdown_start_event
         wake = self._wake_event
         if stop.is_set():
-            return
+            return False
         if wake.is_set():
             wake.clear()
-            return
+            return True
         sleep_task = asyncio.create_task(asyncio.sleep(seconds))
         stop_task = asyncio.create_task(stop.wait())
         wake_task = asyncio.create_task(wake.wait())
@@ -455,7 +481,53 @@ class MaintenanceLeader:
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await task
+            woken = wake.is_set()
             wake.clear()
+        return woken
+
+    async def _follower_park(self) -> None:
+        """Park one election cycle: a heartbeat tick, or a peer's resign wake.
+
+        The heartbeat tick is the cadence every bound in this module's
+        header table is written against. The resign broadcast is a HINT
+        layered on top, never the authority: when a peer's graceful
+        hand-back NOTIFY lands, the park returns early and the next cycle
+        re-runs the SAME fenced elect immediately, damped by a small
+        uniform jitter (``leader_wake_jitter``) so a waking fleet does not
+        land on the row in the same millisecond. Every way the hint can
+        fail - the listener disabled (the poll fallback never sets the
+        event), a dropped or malformed broadcast, this pod mid-bootstrap
+        with no subscriber registered yet - just sleeps the full tick,
+        which is the pre-wake behavior and the bound that holds for a
+        killed leader.
+
+        Why the single wake event (one handler shape for both callers):
+        the peer broadcast reaches ``_wake_event`` through run()'s
+        subscription (the backend registry's event, see
+        ``_leader_wake_subscription``) and this pod's own seam
+        (``wake_election``) arms the same object - so the stopping
+        refusal cannot be routed around by choosing a door. It is
+        enforced at BOTH doors anyway: the arm (``wake_election`` refuses
+        while stopping) and the consume (a woken park REFUSED below while
+        stopping - no damping sleep, no fast re-elect; the loop's
+        top-of-loop gate stays the one authority on the
+        shutdown-ordering contract, and the next iteration parks
+        attempt-free).
+
+        A wake that lands while this pod is mid-cycle stays set and wakes
+        the NEXT park immediately: at most one extra fenced elect per
+        broadcast, which against a row already taken matches nothing and
+        parks again - there is no spin, the event is cleared once per wake.
+        """
+        woken = await self._wait_next_tick(self._deps.settings.heartbeat_interval)
+        if not woken or self._stopping():
+            return
+        jitter = float(self._deps.settings.leader_wake_jitter)
+        if jitter > 0.0:
+            # Why uniform: non-crypto timing jitter, the same use as the
+            # notify reconnect backoff's multiplicative jitter (notify.py),
+            # not a secret.
+            await asyncio.sleep(random.uniform(0.0, jitter))  # noqa: S311
 
     def _demote(self) -> None:
         """Stop being the leader, synchronously and before anything can await.
@@ -651,7 +723,7 @@ class MaintenanceLeader:
         with _active_leaders_lock:
             _active_leaders.add(self)
         try:
-            async with asyncio.TaskGroup() as tg:
+            async with self._leader_wake_subscription(), asyncio.TaskGroup() as tg:
                 tg.create_task(self._election_loop(shutdown), name="leader.election")
                 tg.create_task(self._watchdog_loop(shutdown), name="leader.watchdog")
                 tg.create_task(self._scheduled_wake_loop(shutdown), name="leader.scheduled_wake")
@@ -681,6 +753,46 @@ class MaintenanceLeader:
             await self._close_leader_owned_conns(mid_run=False)
             with _active_leaders_lock:
                 _active_leaders.discard(self)
+
+    @contextlib.asynccontextmanager
+    async def _leader_wake_subscription(self) -> AsyncGenerator[None, None]:
+        """Hold this pod's leadership wake subscription for the run's life.
+
+        The backend owns the registry the notify callback fans out to (the
+        cancel-wake pattern); run() enters the subscription and points the
+        election loop's ONE wake event (``_wake_event``, the object
+        ``wake_election`` arms) at the backend's event for the run's life.
+        Why re-binding rather than a pump task forwarding the backend
+        event to a private one: a pump is a second scheduling hop and a
+        second task to reap for a handoff the event object already
+        carries, and one shared event is what makes the stopping refusal
+        airtight - both doors that arm the wake (the peer broadcast and
+        ``wake_election``) open onto the same object the park consumes
+        (see ``_follower_park``). getattr-guarded, exactly as the
+        bootstrap guards ``subscribe_cancel_wake``: a backend without the
+        leadership wake leaves ``_wake_event`` the private event nothing
+        external sets, the park sleeps the plain tick, and nothing about
+        the election changes.
+
+        Entered BEFORE the TaskGroup and exited before the teardown
+        resign: the resigner emits its broadcast over pg_notify, never
+        through this event, so losing the subscription early cannot cost
+        a handover.
+        """
+        subscribe = getattr(self._backend, "subscribe_leader_wake", None)
+        if not callable(subscribe):
+            yield None
+            return
+        cm = cast("contextlib.AbstractAsyncContextManager[asyncio.Event]", subscribe())
+        async with cm as event:
+            self._wake_event = event
+            try:
+                yield None
+            finally:
+                # A fresh, cleared private event: a wake that landed in the
+                # subscription's last instants must not outlive it, and the
+                # post-run teardown resign must never wake a parked loop.
+                self._wake_event = asyncio.Event()
 
     async def _try_election_lock(self) -> bool:
         """Try the schema's advisory lock as a courtesy; report whether held.
@@ -827,6 +939,13 @@ class MaintenanceLeader:
         fence is the one that applies): it rides the leader conn the
         winning elect just used, before that conn is dropped.
 
+        A resign that DELETED the row then broadcasts the vacancy on the
+        leadership wake channel (``_emit_leader_wake``), so a successor
+        assumes sub-second instead of on its next tick. The broadcast is
+        best-effort on top of a best-effort resign: it is a HINT, the
+        tick is the guarantee, and a broadcast that never lands costs
+        exactly what the pre-wake design cost.
+
         Returns whether the resign actually DELETED the row. ``False`` is
         the ordinary fenced no-op (a successor's row, or none left) and
         every best-effort shape (no term to resign, no live conn to ride,
@@ -872,12 +991,70 @@ class MaintenanceLeader:
                 tag=tag,
             )
             return False
+        # The broadcast AFTER the delete commits: the DELETE is a single
+        # autocommit statement, so this separate statement is sent only
+        # once the delete's round trip returned - the commit-gate
+        # discipline (never notify inside the tx whose fact the payload
+        # claims), without needing the cron tick's self-addressed gate,
+        # because there is no surrounding transaction to roll back a
+        # committed row out from under the payload.
+        await self._emit_leader_wake(term)
         log.info(
             "leader-resigned",
             kind="leader_resigned",
             worker_id=str(self._worker_id),
         )
         return True
+
+    async def _emit_leader_wake(self, term: LeaderTerm) -> None:
+        """Broadcast the vacancy on the leadership wake channel, best-effort.
+
+        Followers subscribed through ``subscribe_leader_wake`` re-run the
+        fenced elect immediately (damped by ``leader_wake_jitter``); every
+        other pod, and every pod this fails to reach, keeps the heartbeat
+        tick. The payload names the kind, the resigning worker, and the
+        term handed back, the same ``{"type": ...}`` JSON convention the
+        events channels carry: receivers drop other kinds, their own
+        echo, and anything unparseable, and a wake for a term already
+        taken is answered by the receiver's fenced elect no-op - the row,
+        not the broadcast, decides.
+
+        Rides the same conn the resign DELETE used when it is still open;
+        any failure (a conn that died between delete and notify - the
+        shape at most one tick covers) is logged and swallowed: a missed
+        broadcast must never fail the resign that already committed.
+        """
+        conn = self._deps.leader_conn
+        if conn is None or conn.is_closed():
+            conn = self._leader_monitor_conn
+        if conn is None or conn.is_closed():
+            # No wire to broadcast on: the tick bound covers the vacancy,
+            # exactly as it did before this channel existed.
+            return
+        payload = dumps_str(
+            {
+                "type": LEADER_RESIGNED_EVENT,
+                "worker_id": str(self._worker_id),
+                "elected_at": term.elected_at.isoformat(),
+            }
+        )
+        try:
+            await conn.execute(
+                "SELECT pg_notify($1, $2)",
+                leader_wake_channel(self._deps.settings.schema_name),
+                payload,
+            )
+        except Exception as exc:
+            # Best-effort by design: the wake is a hint, the tick is the
+            # guarantee, and this must never fail the resign that already
+            # committed. Logged so a deployment whose wakes never land
+            # (a proxy that drops NOTIFY) is diagnosable from its logs.
+            log.warning(
+                "leader-wake-emit-failed",
+                kind="leader_wake_emit_failed",
+                worker_id=str(self._worker_id),
+                error=repr(exc),
+            )
 
     async def _hand_over_at_stop(self) -> None:
         """The early handover: resign at shutdown START, before the job drain.
@@ -1146,7 +1323,16 @@ class MaintenanceLeader:
             # streak resets. (The failure paths above continue earlier,
             # deliberately without resetting.)
             guard.ok()
-            await self._wait_next_tick(self._deps.settings.heartbeat_interval)
+            # The follower's park: a heartbeat tick, a peer's resign
+            # broadcast, or the stop signal. Waking a pod that just WON is
+            # harmless - the next cycle's renewal is fenced and merely
+            # refreshes early - and a pod that just lost gets exactly the
+            # proactive re-elect the broadcast exists for. The park REFUSES
+            # the wake while stopping (see ``_follower_park``): this
+            # top-of-loop gate stays the one authority on the
+            # shutdown-ordering contract, so a broadcast arriving at a
+            # draining pod wakes nothing.
+            await self._follower_park()
 
     async def _election_attempt_failed(self, exc: BaseException, *, won_row: bool = False) -> None:
         """Shared cleanup for one failed election cycle.
