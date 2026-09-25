@@ -11,8 +11,11 @@ derived below, then measured).
 The timeline shapes, one pin each:
 
 1. the drain's own bound: SIGTERM with jobs running that finish WITHIN the
-   grace: every job reaches a terminal state before exit, the ledger whole,
-   the requeue count zero;
+   grace: every job is conserved - terminal ``succeeded`` (whole ledger,
+   requeue count zero) or the drain's documented hand-back to the fleet
+   (a row parked in local_queue at the signal goes back pending, its
+   claim refunded; the graces-expired unwind goes back ``scheduled`` on
+   the interrupt release) - the either-signal form, every arm toothed;
 2. the grace EXPIRY: a job still running at the hard deadline (it defies
    cancellation, the stand-in for work that cannot observe cancellation):
    the process dies by its own watchdog's deadline trip, the row leaves
@@ -417,6 +420,7 @@ async def _job_row(conn: asyncpg.Connection, schema: str, job_id: object) -> asy
         f"SELECT status::text AS status, attempt AS attempt, "
         "interrupt_count AS interrupt_count, cancel_phase AS cancel_phase, "
         "cancel_requested_at AS cancel_requested_at, finished_at AS finished_at, "
+        "locked_by_worker AS locked_by_worker, lock_expires_at AS lock_expires_at, "
         f"result->>'marker' AS marker FROM \"{schema}\".jobs WHERE id = $1",
         job_id,
     )
@@ -464,6 +468,147 @@ async def _body_run_count(
     )
 
 
+async def _assert_drained_job_conserved(
+    conn: asyncpg.Connection, schema: str, job_id: object
+) -> None:
+    """The drain-to-terminal conservation, per job, in the either-signal form.
+
+    The worker exited 0 (both promptness pins above already held), so the
+    row's state is final: every write the drain owed was awaited before the
+    process died. What the drain owes is NOT one fixed verdict - the
+    observable contract ("a deploy never terminalises a job", conservation:
+    no lost job, no double run, a whole attempt ledger) admits exactly the
+    arms below, each with its own teeth:
+
+    1. ``succeeded`` - the job finished within the graces and terminalised:
+       the original single-form pin, byte-identical.
+    2. ``pending`` - the DRAINING hand-back: SIGTERM landed while the row
+       was claimed but still parked in local_queue (the claim-to-take
+       window: the claim commits before the consumer takes, and
+       ``_wait_running`` fires the signal the instant the DB says
+       running). The hand-back deliberately re-pends parked rows
+       (``held_ids`` covers registered consumers and claim intents, not
+       queued ones), the consumer's post-take stop-check declines the
+       stale copy, and the row goes back to the fleet with the claim's
+       attempt refunded. The teeth pin that premise HARD: zero body runs
+       (a run under a refunded attempt with no successor is a lost
+       verdict, the defect class the tooth hunts), no attempt row, the
+       lock cleared, no interrupt/reclaim/succeeded event anywhere.
+    3. ``scheduled`` - the RELEASING interrupt-release: the unwind
+       outlasted the cancellation and cleanup graces (wall-clock graces
+       on a runner whose loop was starved - the #523 lesson: every
+       wall-clock premise gets eaten eventually). The release hands the
+       row back with the spent attempt standing, held until this process
+       is provably gone. Teeth: exactly one body run, interrupt_count 1,
+       the lock cleared, no succeeded verdict, no reclaim, the release's
+       own ``interrupted`` audit present.
+
+    Any other state - running, failed, cancelled, abandoned - is a lost
+    or double-manufactured job and fails the pin.
+    """
+    row = await _job_row(conn, schema, job_id)
+    status = str(row["status"])
+
+    # Every arm: the reclaim sweep never touched a clean drain's rows.
+    assert await _event_count(conn, schema, job_id, "detail->>'reason' = 'lock_expired'") == 0, (
+        f"a clean drain's job was reclaimed (status {status!r}): the lease "
+        "lapsed and Sweep 1 owns the row - the drain lost it"
+    )
+
+    if status == "succeeded":
+        assert row["marker"] == "landed", "the terminal result was lost"
+        assert row["attempt"] == 1, f"the job requeued: attempt {row['attempt']}"
+        assert row["interrupt_count"] == 0, "the job was interrupted: a requeue"
+        assert row["finished_at"] is not None
+
+        # The ledger, whole: exactly one run, one attempt row, its
+        # outcome succeeded.
+        assert await _body_run_count(conn, schema, job_id) == 1, (
+            "the body ran more than once: a double run inside the drain"
+        )
+        attempts = await _attempt_rows(conn, schema, job_id)
+        assert len(attempts) == 1 and attempts[0]["outcome"] == "succeeded", (
+            f"the attempt ledger is not whole: {attempts}"
+        )
+        # Requeue count zero: no interruption event, no reclaim event.
+        assert await _event_count(conn, schema, job_id, "detail->>'reason' = 'interrupted'") == 0
+        assert (
+            await _event_count(
+                conn,
+                schema,
+                job_id,
+                "kind = 'state_change' AND detail->>'to_state' = 'succeeded'",
+            )
+            >= 1
+        )
+        return
+
+    if status == "pending":
+        # The hand-back's premise, in data: the claim never reached an
+        # actor. A body run here is an executed attempt whose verdict
+        # went nowhere - the run is lost to the ledger and a successor
+        # would run the body a second time.
+        assert await _body_run_count(conn, schema, job_id) == 0, (
+            "the hand-back re-pended a row whose body EXECUTED: the run's "
+            "verdict was discarded (fenced or never written) and the refund "
+            "erases it - a lost verdict, a double run across the fleet"
+        )
+        assert row["attempt"] == 0, (
+            f"the hand-back did not refund the claim: attempt {row['attempt']}"
+        )
+        attempts = await _attempt_rows(conn, schema, job_id)
+        assert len(attempts) == 0, f"an unexecuted claim grew an attempt ledger: {attempts}"
+        assert row["locked_by_worker"] is None, "the hand-back left the row locked"
+        assert row["lock_expires_at"] is None, "the hand-back left a lease on the row"
+        assert row["interrupt_count"] == 0, "the hand-back interrupted nothing: the body never ran"
+        assert row["finished_at"] is None, "the hand-back manufactured a finish stamp"
+        assert await _event_count(conn, schema, job_id, "detail->>'reason' = 'interrupted'") == 0, (
+            "the release ladder touched a row the hand-back owns"
+        )
+        assert (
+            await _event_count(
+                conn,
+                schema,
+                job_id,
+                "kind = 'state_change' AND detail->>'to_state' = 'succeeded'",
+            )
+            == 0
+        ), "the hand-back's row carries a succeeded verdict it never earned"
+        return
+
+    if status == "scheduled":
+        # The interrupt-release: the body ran (exactly once), the release
+        # handed the row back claimable, the spent attempt stands.
+        assert await _body_run_count(conn, schema, job_id) == 1, (
+            "the interrupted job's body did not run exactly once"
+        )
+        assert row["interrupt_count"] == 1, (
+            f"the release's interrupt stamp is wrong: {row['interrupt_count']}"
+        )
+        assert row["locked_by_worker"] is None, "the release left the row locked"
+        assert row["lock_expires_at"] is None, "the release left a lease on the row"
+        assert row["finished_at"] is None, "the release manufactured a finish stamp"
+        assert await _event_count(conn, schema, job_id, "detail->>'reason' = 'interrupted'") >= 1, (
+            "the release wrote no interrupted audit"
+        )
+        assert (
+            await _event_count(
+                conn,
+                schema,
+                job_id,
+                "kind = 'state_change' AND detail->>'to_state' = 'succeeded'",
+            )
+            == 0
+        ), "the released row also carries a succeeded verdict: a double verdict"
+        return
+
+    raise AssertionError(
+        f"a drained job was left {status!r}: neither terminal nor a documented "
+        "hand-back (pending: the claimed-but-unstarted DRAINING hand-back; "
+        "scheduled: the graces-expired interrupt release) - a lost job"
+    )
+
+
 # ── Shape 1: the drain's own bound ───────────────────────────────────────
 
 
@@ -476,8 +621,10 @@ async def test_sigterm_with_jobs_finishing_within_grace_drains_to_terminal(
     trial: int,
 ) -> None:
     """SIGTERM with jobs mid-flight that finish WITHIN the grace: the worker
-    exits CLEANLY inside the termination deadline, every job is terminal
-    before the exit, the ledger is whole, and the requeue count is zero."""
+    exits CLEANLY inside the termination deadline, and every job is conserved
+    through the drain - terminal ``succeeded`` with a whole ledger, or the
+    documented hand-back (``_assert_drained_job_conserved``'s arms), never a
+    lost job, a double run, or a manufactured verdict."""
     schema = module_pg_schema.schema_name
     tag = f"{_TAG}-s1-{trial}"
     conn = await asyncpg.connect(pg_dsn)
@@ -527,40 +674,7 @@ async def test_sigterm_with_jobs_finishing_within_grace_drains_to_terminal(
         )
 
         for job_id in job_ids:
-            row = await _job_row(conn, schema, job_id)
-            assert row["status"] == "succeeded", (
-                f"a job that finished within the grace was left {row['status']!r}"
-            )
-            assert row["marker"] == "landed", "the terminal result was lost"
-            assert row["attempt"] == 1, f"the job requeued: attempt {row['attempt']}"
-            assert row["interrupt_count"] == 0, "the job was interrupted: a requeue"
-            assert row["finished_at"] is not None
-
-            # The ledger, whole: exactly one run, one attempt row, its
-            # outcome succeeded.
-            assert await _body_run_count(conn, schema, job_id) == 1, (
-                "the body ran more than once: a double run inside the drain"
-            )
-            attempts = await _attempt_rows(conn, schema, job_id)
-            assert len(attempts) == 1 and attempts[0]["outcome"] == "succeeded", (
-                f"the attempt ledger is not whole: {attempts}"
-            )
-            # Requeue count zero: no interruption event, no reclaim event.
-            assert (
-                await _event_count(conn, schema, job_id, "detail->>'reason' = 'interrupted'") == 0
-            )
-            assert (
-                await _event_count(conn, schema, job_id, "detail->>'reason' = 'lock_expired'") == 0
-            )
-            assert (
-                await _event_count(
-                    conn,
-                    schema,
-                    job_id,
-                    "kind = 'state_change' AND detail->>'to_state' = 'succeeded'",
-                )
-                >= 1
-            )
+            await _assert_drained_job_conserved(conn, schema, job_id)
     finally:
         if proc.poll() is None:
             proc.kill()
