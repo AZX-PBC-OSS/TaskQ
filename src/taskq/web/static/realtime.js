@@ -184,7 +184,7 @@
         }
         if (fingerprint === null || fingerprint === lastRenderedFingerprint) return;
         lastRenderedFingerprint = fingerprint;
-        renderProgressEvent(state);
+        renderProgressEvent(progressState(rawState));
     }
 
     function progressMetaText(state) {
@@ -323,6 +323,7 @@
             // snapshot (a re-flushed state with a bumped seq and a fresh
             // ts) renders nothing; a changed snapshot patches the
             // rendered entry in place.
+            let tickEtag = null;
             fetch(
                 `${BASE}/jobs/api/job/${jobId}/state`,
                 haveSeenSeq
@@ -332,30 +333,33 @@
                 .then(function (res) {
                     pollInFlight = false;
                     if (res.status === 304) return null;
-                    return res.json().then(function (body) {
-                        // The sequence cursor's exact source: the ETag
-                        // header carries the same decimal digits the
-                        // server compares, quoted, at any magnitude.
-                        // body.progress_seq is a JS number (a double):
-                        // above 2^53 it loses digits, so it is the
-                        // FALLBACK only, for a response with no ETag -
-                        // precision-limited there, documented at the
-                        // cursor declaration.
-                        const etag = res.headers && typeof res.headers.get === "function"
-                            ? res.headers.get("ETag")
-                            : null;
-                        return { body: body, seqRaw: etag ?? body.progress_seq };
-                    });
+                    // The sequence cursor's exact source: the ETag
+                    // header carries the same decimal digits the
+                    // server compares, quoted, at any magnitude.
+                    // body.progress_seq is a JS number (a double):
+                    // above 2^53 it loses digits, so it is the
+                    // FALLBACK only, for a response with no ETag -
+                    // precision-limited there, documented at the
+                    // cursor declaration. Read off ``res`` here, then
+                    // pass ``res.json()`` through UNTOUCHED: the next
+                    // .then receives the body whether json() answered
+                    // with a promise (the browser) or the value itself
+                    // (a stub), and a .then chained ON json()'s return
+                    // would throw on the plain-object shape.
+                    tickEtag = res.headers && typeof res.headers.get === "function"
+                        ? res.headers.get("ETag")
+                        : null;
+                    return res.json();
                 })
-                .then(function (tick) {
+                .then(function (body) {
                     pollInFlight = false;
-                    if (!pollingActive || tick === null) return;
+                    if (!pollingActive || body === null) return;
                     acceptProgress(
-                        tick.seqRaw,
-                        tick.body.progress_state ?? {},
-                        TERMINAL_STATUSES.has(tick.body.status),
+                        tickEtag ?? body.progress_seq,
+                        body.progress_state ?? {},
+                        TERMINAL_STATUSES.has(body.status),
                     );
-                    if (TERMINAL_STATUSES.has(tick.body.status)) {
+                    if (TERMINAL_STATUSES.has(body.status)) {
                         stopPolling();
                         // The poll can be the ONLY discoverer of the
                         // terminal: in the lost-flush cut the terminal

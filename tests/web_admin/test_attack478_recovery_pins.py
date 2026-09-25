@@ -667,16 +667,18 @@ def _mutated_catchup_drop() -> Path:
     return _mutated(
         "catchup_drop",
         (
-            """        if (!Number.isInteger(seq) || seq <= lastSeenSeq) {
+            """        if (haveSeenSeq && BigInt(seq) <= BigInt(lastSeenSeq)) {
             if (!terminal) return;
         } else {
             lastSeenSeq = seq;
+            haveSeenSeq = true;
         }""",
-            """        if (!Number.isInteger(seq) || seq <= lastSeenSeq) {
+            """        if (haveSeenSeq && BigInt(seq) <= BigInt(lastSeenSeq)) {
             if (!terminal) return;
         } else {
-            if (seq > lastSeenSeq + 1) return;
+            if (haveSeenSeq && BigInt(seq) - BigInt(lastSeenSeq) > 1n) return;
             lastSeenSeq = seq;
+            haveSeenSeq = true;
         }""",
         ),
     )
