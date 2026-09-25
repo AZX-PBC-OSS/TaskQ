@@ -45,7 +45,7 @@ async def test_full_and_composition(
     is a single-element list; actor body runs; release_for_actor releases the
     reservation slot; Redis keys reflect consumed tokens."""
     schema = module_pg_schema.schema_name
-    redis_client = redis_async.from_url(redis_url, decode_responses=False)
+    redis_client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
     settings = WorkerSettings.load_from_dict(
         {
             "pg_dsn": module_pg_schema.pg_dsn,
@@ -125,7 +125,7 @@ async def test_rate_limit_denial_in_composition(
     TokenBucket fails; SlidingWindow NOT acquired; reservation released;
     ReservationUnavailable raised with correct retry_after."""
     schema = module_pg_schema.schema_name
-    redis_client = redis_async.from_url(redis_url, decode_responses=False)
+    redis_client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
     settings = WorkerSettings.load_from_dict(
         {
             "pg_dsn": module_pg_schema.pg_dsn,
@@ -194,7 +194,7 @@ async def test_reservation_denial_in_composition(
     """Reservation denial in composition. Fill all reservation slots.
     acquire_for_actor. ReservationUnavailable raised; no rate limits acquired."""
     schema = module_pg_schema.schema_name
-    redis_client = redis_async.from_url(redis_url, decode_responses=False)
+    redis_client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
     settings = WorkerSettings.load_from_dict(
         {
             "pg_dsn": module_pg_schema.pg_dsn,
@@ -253,7 +253,7 @@ async def test_cancellation_mid_actor(
     finally calls release_for_actor; reservation slot released; rate-limit
     tokens NOT refunded (actor ran briefly)."""
     schema = module_pg_schema.schema_name
-    redis_client = redis_async.from_url(redis_url, decode_responses=False)
+    redis_client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
     settings = WorkerSettings.load_from_dict(
         {
             "pg_dsn": module_pg_schema.pg_dsn,

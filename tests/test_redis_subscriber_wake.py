@@ -318,7 +318,9 @@ async def test_redis_subscriber_receives_progress_events(
         channel = progress_channel(schema, job_id)
 
         # Subscribe via raw Redis pubsub - proven pattern from test_progress_redis.py
-        redis_client = redis_async.from_url(clean_redis_url, decode_responses=False)
+        redis_client = redis_async.from_url(
+            clean_redis_url, decode_responses=False, socket_timeout=None
+        )
         received: list[dict[str, object]] = []
         try:
             pubsub = redis_client.pubsub()
@@ -489,7 +491,9 @@ async def test_subscriber_filters_per_job_channel_no_cross_talk(
 
         channel_a = progress_channel(schema, job_id_a)
 
-        redis_client = redis_async.from_url(clean_redis_url, decode_responses=False)
+        redis_client = redis_async.from_url(
+            clean_redis_url, decode_responses=False, socket_timeout=None
+        )
         received_a: list[dict[str, object]] = []
         try:
             pubsub_a = redis_client.pubsub()
@@ -595,7 +599,7 @@ async def test_redis_reconnection_subscriber_recovers(
         job_row1 = await _dispatch_one(backend, deps, wid1)
         channel1 = progress_channel(schema, job_id1)
 
-        client1 = redis_async.from_url(clean_redis_url, decode_responses=False)
+        client1 = redis_async.from_url(clean_redis_url, decode_responses=False, socket_timeout=None)
         received1: list[dict[str, object]] = []
         try:
             pubsub1 = client1.pubsub()
@@ -638,7 +642,7 @@ async def test_redis_reconnection_subscriber_recovers(
         job_row2 = await _dispatch_one(backend, deps, wid2)
         channel2 = progress_channel(schema, job_id2)
 
-        client2 = redis_async.from_url(clean_redis_url, decode_responses=False)
+        client2 = redis_async.from_url(clean_redis_url, decode_responses=False, socket_timeout=None)
         received2: list[dict[str, object]] = []
         try:
             pubsub2 = client2.pubsub()
