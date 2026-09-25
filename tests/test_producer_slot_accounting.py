@@ -467,8 +467,7 @@ async def test_over_admission_scales_with_the_window_never_with_the_slots() -> N
         active.intents = 0
         await asyncio.sleep(0.2)
         assert backend.rounds == [], (
-            f"round limits {[limit for _, limit in backend.rounds]} on a "
-            "genuinely full worker"
+            f"round limits {[limit for _, limit in backend.rounds]} on a genuinely full worker"
         )
     finally:
         task.cancel()
