@@ -337,13 +337,29 @@ main();
 def _drive(scenario: str) -> dict[str, list[str]]:
     node = shutil.which("node")
     assert node is not None
+    # No per-spawn wall-clock deadline on purpose: the harness is fully
+    # virtual (scripted fetches, virtual timers, a synchronous log), so
+    # the child's exit is the only event worth waiting for, and a fixed
+    # deadline is a delay that races child startup, not a behaviour gate.
+    # Under co-tenant load (-n 4 plus a CPU/IO stressor) a starved Node
+    # startup blew a 30s deadline and turned a behaviourally-correct pin
+    # red (the same child runs in ~60ms of CPU once scheduled). A wedged
+    # child is the suite-wide pytest-timeout budget's job (--timeout=300
+    # in addopts, every lane): it fails the hung test by name with a
+    # stack dump instead of guessing a threshold no load condition can
+    # justify.
     result = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; the harness and scenario names are this file's own constants.
         [node, "-e", _HARNESS, "--", str(REALTIME_JS), scenario],
         capture_output=True,
         text=True,
-        check=True,
-        timeout=30,
     )
+    if result.returncode != 0:
+        # Surface the child's stderr: a harness crash (a stub drift, a
+        # scenario typo) must name the JS error, not exit status 1.
+        pytest.fail(
+            f"the harness Node process exited {result.returncode} "
+            f"(its stderr follows)\n{result.stderr}"
+        )
     return json.loads(result.stdout)
 
 
@@ -382,15 +398,28 @@ def test_repeated_identical_polls_produce_zero_dom_mutations_and_zero_layout() -
     tick that writes nothing lays out nothing."""
     log = _drive("identical-polls")
     dom, segments = log["dom"], _segments(log["dom"])
+    net_segments = _segments(log["net"])
 
     first = segments[1]
     assert any(entry.startswith("timeline-append:") for entry in first), (
         f"the first poll renders the entry once: {first}"
     )
-    for tick in (2, 3, 4):
+    for tick, expected_inm in ((2, '"2"'), (3, '"3"'), (4, '"4"')):
         assert segments[tick] == [], (
             f"a repeated identical poll must perform zero DOM mutations "
             f"(and therefore zero layout), tick {tick} wrote {segments[tick]}"
+        )
+        # The zero-write is not vacuous: the tick polled (the cadence
+        # kept running) and it polled the sequence the previous tick's
+        # gate advanced - the fingerprint gate drops the render but the
+        # conditional-GET cursor moves with every sequence, dropped or
+        # not, so the next tick asks about the NEW state, not a stale one.
+        assert net_segments[tick] == [
+            "fetch:/jobs/api/job/j1/state",
+            f"inm:{expected_inm}",
+        ], (
+            f"tick {tick} must poll the advanced conditional-GET cursor "
+            f"while writing nothing: {net_segments[tick]}"
         )
     _no_scroll(dom)
 

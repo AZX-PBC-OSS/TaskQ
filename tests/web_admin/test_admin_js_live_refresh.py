@@ -151,13 +151,28 @@ process.stdout.write(JSON.stringify(log));
 
 def _drive(scenario: str) -> list[str]:
     node = _node_or_skip()
+    # No per-spawn wall-clock deadline on purpose. The harness is fully
+    # virtual (scripted fetches, stubbed timers, a synchronous log), so the
+    # child's exit is the only event worth waiting for, and a fixed deadline
+    # is a delay that races child startup, not a behaviour gate: under
+    # co-tenant load (-n 4 plus a CPU/IO stressor) a starved Node startup
+    # blew a 30s deadline and turned a behaviourally-correct pin red (the
+    # same child runs in ~60ms of CPU once scheduled). A wedged child is
+    # the suite-wide pytest-timeout budget's job (--timeout=300 in
+    # addopts, every lane): it fails the hung test by name with a stack
+    # dump instead of guessing a threshold no load condition can justify.
     result = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; the harness and scenario names are this file's own constants.
         [node, "-e", _HARNESS, "--", str(ADMIN_JS), scenario],
         capture_output=True,
         text=True,
-        check=True,
-        timeout=30,
     )
+    if result.returncode != 0:
+        # Surface the child's stderr: a harness crash (a stub drift, a
+        # scenario typo) must name the JS error, not exit status 1.
+        pytest.fail(
+            f"the harness Node process exited {result.returncode} "
+            f"(its stderr follows)\n{result.stderr}"
+        )
     return json.loads(result.stdout)
 
 
@@ -225,6 +240,14 @@ def test_sse_payload_without_status_refreshes_the_table() -> None:
     the truth is on the server, so the table is refreshed."""
     log = _drive("sse-payload-without-status")
     assert log.count("fetch:/admin/jobs") == 1, log
+    # The one refresh is a page-one fetch: with no cursor active (the
+    # operator never paginated), the SSE-driven refresh must not
+    # manufacture one - a cursor-less refresh is the page's own vantage
+    # point, and this is the exact complement of the cursor-page pin
+    # (where the refresh is left to the poll that carries the cursor).
+    qs_entries = [e for e in log if e.startswith("qs:")]
+    assert len(qs_entries) == 1, log
+    assert all("cursor_at" not in q and "cursor_id" not in q for q in qs_entries), log
 
 
 @requires_node
@@ -268,9 +291,13 @@ def test_resuming_reloads_the_table_and_restarts_live_refresh() -> None:
     log = _drive("resume-reloads-and-restarts")
     assert log.count("sse-open:/admin/sse/jobs") == 2
     assert "submit" in log
-    # The two fetches are both after the resume: none while paused.
+    # The two fetches are both after the resume: none while paused, and
+    # both downstream of the reload (the submit) - the frozen window
+    # fetched nothing and the resumed page's cadence starts from the
+    # reload, not alongside or before it.
     assert log.count("fetch:/admin/jobs") == 2, log
-    assert log.index("submit") < log.index("fetch:/admin/jobs")
+    submit_at = log.index("submit")
+    assert log[submit_at + 1 :].count("fetch:/admin/jobs") == 2, log
     assert log[-1] == "polling:true sse:true"
 
 

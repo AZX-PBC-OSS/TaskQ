@@ -293,13 +293,29 @@ function fireSse(evt) {
 def _drive(scenario: str) -> dict[str, Any]:
     node = shutil.which("node")
     assert node is not None
+    # No per-spawn wall-clock deadline on purpose: the harness is fully
+    # virtual (scripted fetches, virtual timers, a synchronous log), so
+    # the child's exit is the only event worth waiting for, and a fixed
+    # deadline is a delay that races child startup, not a behaviour gate.
+    # Under co-tenant load (-n 4 plus a CPU/IO stressor) a starved Node
+    # startup blew a 30s deadline and turned a behaviourally-correct pin
+    # red (the same child runs in ~60ms of CPU once scheduled). A wedged
+    # child is the suite-wide pytest-timeout budget's job (--timeout=300
+    # in addopts, every lane): it fails the hung test by name with a
+    # stack dump instead of guessing a threshold no load condition can
+    # justify.
     result = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; the harness and scenario names are this file's own constants.
         [node, "-e", _HARNESS, "--", str(REALTIME_JS), scenario],
         capture_output=True,
         text=True,
-        check=True,
-        timeout=30,
     )
+    if result.returncode != 0:
+        # Surface the child's stderr: a harness crash (a stub drift, a
+        # scenario typo) must name the JS error, not exit status 1.
+        pytest.fail(
+            f"the harness Node process exited {result.returncode} "
+            f"(its stderr follows)\n{result.stderr}"
+        )
     return json.loads(result.stdout)  # pyright: ignore[reportAny, reportUnknownMemberType]
 
 
@@ -388,6 +404,19 @@ def test_an_outstanding_poll_never_stacks_a_second_one() -> None:
     ], f"the late render must advance the conditional-GET cursor: {net['tick3']}"
     assert dom["tick3"] == [], f"a 304 after the late render must write nothing: {dom['tick3']}"
 
+    # The release renders, it never refetches: exactly two conditional GETs
+    # run the whole scenario - tick 1's request and tick 3's catch-up.
+    # Nothing stacked while the response was held, and the late arrival
+    # did not fire a catch-up burst of its own.
+    assert net["release"] == [], (
+        f"the late response must render without refetching: {net['release']}"
+    )
+    whole_run_fetches = [e for e in log["net"] if e.startswith("fetch:")]
+    assert whole_run_fetches == [
+        "fetch:/jobs/api/job/j1/state",
+        "fetch:/jobs/api/job/j1/state",
+    ], f"exactly two conditional GETs run the whole scenario: {log['net']}"
+
 
 @requires_node
 def test_sse_replays_and_stale_seqs_write_nothing_and_meta_has_no_relative_time() -> None:
@@ -412,6 +441,15 @@ def test_sse_replays_and_stale_seqs_write_nothing_and_meta_has_no_relative_time(
     assert len(dom["fresh"]) == 2 and all(
         e.startswith(("width:", "text:")) for e in dom["fresh"]
     ), f"a changed field must patch exactly its own nodes: {dom['fresh']}"
+
+    # The stream fast path never touches the network either: a replay, a
+    # stale sequence, and a fresh event are all applied locally from the
+    # event payload - zero fetches across the whole scenario. The SSE
+    # event's only job is to keep the page current without spending the
+    # request the poll cadence already budgets.
+    assert not any(e.startswith("fetch:") for e in log["net"]), (
+        f"an SSE event must apply locally, never refetch: {log['net']}"
+    )
 
     # Every meta line is percent · step · the snapshot's own instant:
     # no 'ago', no 'in ', no negative anything - nothing the browser's
