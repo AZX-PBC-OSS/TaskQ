@@ -92,7 +92,18 @@ async def pool(pg_dsn: str) -> AsyncIterator[asyncpg.Pool]:
 
 @pytest_asyncio.fixture
 async def redis_client(redis_url: str) -> AsyncIterator[aioredis.Redis]:
-    client = aioredis.from_url(redis_url)
+    # socket_timeout is EXPLICIT here because redis-py 8 defaults it to 5s
+    # (redis._defaults.DEFAULT_SOCKET_TIMEOUT), and the default fires on a
+    # fresh connection's handshake read (HELLO/PING inside
+    # on_connect_check_health) whenever a co-tenant-stretched CI runner
+    # delays the container's reply past 5s: redis.exceptions.TimeoutError
+    # ("Timeout reading from localhost:...") kills the wire task inside
+    # the test's own TaskGroup and reds a conservation pin that has
+    # nothing to do with broker latency. The scenario's real bounds are
+    # the tests' own (the stream reader's overall_timeout, the explicit
+    # asyncio.timeout around the paused-broker publish), so the client
+    # here waits as long as those bounds allow, the pre-8 default.
+    client = aioredis.from_url(redis_url, socket_timeout=None)
     try:
         yield client
     finally:
@@ -242,8 +253,12 @@ async def test_paused_broker_drops_the_fanout_and_recovery_restores_exactly_once
     job_id = await _seed_running_job(pool, progress_seq=3, progress_state={"step": 3})
     channel = progress_channel(SCHEMA_LABEL, job_id)
     # The admin connection rides the SAME broker the stream and the
-    # publisher use; the pause must reach every client of it.
-    admin = aioredis.from_url(redis_url)
+    # publisher use; the pause must reach every client of it. Patient
+    # reads for the same reason the redis_client fixture is explicit
+    # (redis-py 8's 5s default socket_timeout is a handshake-read
+    # timeout, not part of this scenario's contract; the publish inside
+    # the pause is bounded by its own asyncio.timeout below).
+    admin = aioredis.from_url(redis_url, socket_timeout=None)
     try:
         # Healthy start: the snapshot (seq 3), then one delta whose flush
         # lands. ONE SECOND IN, the broker stops serving writes.

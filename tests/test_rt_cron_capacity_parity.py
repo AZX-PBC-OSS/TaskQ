@@ -29,7 +29,7 @@ configuration ("never accept any jobs", ``taskq/actor.py``).
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from uuid import UUID
 
 import asyncpg
@@ -48,7 +48,7 @@ from .test_rt_cron_harness import (
     schedule_row,
     seed_actor_config,
     seed_schedule,
-    ten_min_floor,
+    server_ten_min_floor,
 )
 
 pytestmark = pytest.mark.integration
@@ -59,14 +59,22 @@ _STORED_ZERO_ACTOR = "rt_cron_cap_drain"
 
 
 async def _seed_three_due_schedules(
-    conn: asyncpg.Connection, schema: str, actor: str, *, prefix: str
+    conn: asyncpg.Connection,
+    schema: str,
+    actor: str,
+    *,
+    prefix: str,
+    grid: datetime,
 ) -> tuple[UUID, UUID, UUID]:
     """Three past-due ten-minutely slots for *actor*, earliest first.
 
     The tick reads due rows ``ORDER BY next_fire_at``, so the staggered
-    slots make the admission order deterministic: early, mid, late.
+    slots make the admission order deterministic: early, mid, late. The
+    grid comes from the caller so the seed values and the assertions that
+    compare against them share ONE server-clock floor: recomputing a
+    floor at assert time re-races the 10-minute boundary (the harness's
+    own ``server_ten_min_floor`` docstring, the CI red of 2026-09-21).
     """
-    grid = ten_min_floor(datetime.now(UTC))
     ids: list[UUID] = []
     for label, minutes in (("early", 30), ("mid", 20), ("late", 10)):
         ids.append(
@@ -107,9 +115,12 @@ class TestStoredCapMatchesLiteralCap:
         await set_actor_config_capacity(
             clean_pg_conn, _STORED_CAPPED_ACTOR, max_pending=2, schema=schema
         )
-        await _seed_three_due_schedules(clean_pg_conn, schema, _LITERAL_CAPPED_ACTOR, prefix="lit")
+        grid = await server_ten_min_floor(clean_pg_conn)
+        await _seed_three_due_schedules(
+            clean_pg_conn, schema, _LITERAL_CAPPED_ACTOR, prefix="lit", grid=grid
+        )
         stored_ids = await _seed_three_due_schedules(
-            clean_pg_conn, schema, _STORED_CAPPED_ACTOR, prefix="sto"
+            clean_pg_conn, schema, _STORED_CAPPED_ACTOR, prefix="sto", grid=grid
         )
 
         async with clean_pg_conn.transaction():
@@ -163,8 +174,9 @@ class TestStoredZeroCapEmergencyDrain:
         await set_actor_config_capacity(
             clean_pg_conn, _STORED_ZERO_ACTOR, max_pending=0, schema=schema
         )
+        grid = await server_ten_min_floor(clean_pg_conn)
         early_id, mid_id, late_id = await _seed_three_due_schedules(
-            clean_pg_conn, schema, _STORED_ZERO_ACTOR, prefix="drain"
+            clean_pg_conn, schema, _STORED_ZERO_ACTOR, prefix="drain", grid=grid
         )
 
         async with clean_pg_conn.transaction():
@@ -185,6 +197,16 @@ class TestStoredZeroCapEmergencyDrain:
             row = await schedule_row(clean_pg_conn, schema, schedule_id)
             assert row["last_fired_at"] is None
             assert row["consecutive_failures"] == 0, "drain backpressure strikes nothing"
-            assert row["next_fire_at"] > ten_min_floor(datetime.now(UTC)) - timedelta(minutes=30), (
+            # The bound is the slot's OWN seed value on the tick's server
+            # clock (the early slot sits exactly at grid - 30m), captured
+            # once before the seed: the suppression advance moves the slot
+            # one cadence up from there, so a hot re-fire loop - which
+            # leaves the slot un-advanced - fails the strict inequality.
+            # Recomputing a floor at assert time instead re-races the
+            # 10-minute grid boundary: the strict > lands on exact
+            # equality whenever the test straddles the boundary under
+            # co-tenant load, and the CI red of 2026-09-21 is the same
+            # shape (the harness's server_ten_min_floor docstring).
+            assert row["next_fire_at"] > grid - timedelta(minutes=30), (
                 "suppression advances the slot - no hot re-fire loop against the cap"
             )

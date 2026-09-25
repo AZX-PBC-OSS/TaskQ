@@ -84,16 +84,25 @@ async def test_pg_fallback_activation(
         backend="redis",
     )
 
-    # Seed the PG row with a SERVER-domain ts so the fallback acquire
-    # measures ~zero elapsed refill (a Python-domain ts would be read
-    # against the server epoch and refill the bucket by the domain gap).
+    # Seed the PG row with a SERVER-domain ts one hour INTO THE FUTURE,
+    # so the fallback acquire measures EXACTLY zero elapsed refill: the
+    # conflict arm's refill math clamps negative elapsed to zero
+    # (``GREATEST(statement_timestamp() - ts, 0)``), so the seeded
+    # ``tokens: 0`` survives however much wall clock the starved stretch
+    # between this seed and the acquire below burns. A ts at seed time
+    # was the old shape, and it raced its own 1 s refill window: at
+    # refill 1.0/s a co-tenant-stretched second between the INSERT and
+    # the acquire refilled the bucket past ``count`` and the denial
+    # turned into an allowance (CI, repeated, on four legs of one run).
+    # The ts domain is still the store's own clock domain
+    # (``clock_timestamp()``), the same domain the acquire reads.
     async with module_pg_pool.acquire() as conn, conn.transaction():
         await conn.execute(
             f"INSERT INTO {schema}.rate_limit_buckets "  # noqa: S608  # Why: schema is fixture-derived; values are $1-bound
             f"(bucket_name, kind, state, updated_at) "
             f"VALUES ($1, 'token_bucket', "
             f"jsonb_build_object('tokens', 0.0::float8, "
-            f"'ts', EXTRACT(EPOCH FROM clock_timestamp())), clock_timestamp())",
+            f"'ts', EXTRACT(EPOCH FROM clock_timestamp()) + 3600.0), clock_timestamp())",
             "ord-test",
         )
 
@@ -115,8 +124,9 @@ async def test_pg_fallback_activation(
     assert result.allowed is False
     assert result.backend == "postgres"
     assert result.retry_after is not None
-    # ~1 token at 1/s from empty; real elapsed between seed and acquire
-    # shaves a few hundredths off the 1.0 s ideal.
+    # One token at 1/s from an exactly-empty bucket: the future-stamped
+    # seed above pins elapsed to zero, so the deficit is exactly count
+    # and the hint exactly 1.0 s.
     assert 0.5 < result.retry_after.total_seconds() <= 1.0
 
 
