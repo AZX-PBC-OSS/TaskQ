@@ -261,7 +261,11 @@ async def test_ti2_hundred_progress_events(
         job_id: UUID = job_row.id
         channel = progress_channel(deps.settings.schema_name, job_id)
 
-        redis_client = redis_async.from_url(redis_url, decode_responses=False)
+        # socket_timeout explicit: redis-py 8 defaults it to 5s and the default fires on a
+        # fresh connection's handshake read under a co-tenant-stretched runner
+        # (Timeout reading from localhost:..., the subscribe ack never arriving in
+        # time); the scenario's real bounds are the test's own wait_for windows.
+        redis_client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
         received_events: list[dict[str, object]] = []
         try:
             pubsub = redis_client.pubsub()
@@ -343,7 +347,11 @@ async def test_ti3_event_ordering_progress_then_succeeded(
         job_id: UUID = job_row.id
         channel = progress_channel(deps.settings.schema_name, job_id)
 
-        redis_client = redis_async.from_url(redis_url, decode_responses=False)
+        # socket_timeout explicit: redis-py 8 defaults it to 5s and the default fires on a
+        # fresh connection's handshake read under a co-tenant-stretched runner
+        # (Timeout reading from localhost:..., the subscribe ack never arriving in
+        # time); the scenario's real bounds are the test's own wait_for windows.
+        redis_client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
         ordered_events: list[dict[str, object]] = []
         try:
             pubsub = redis_client.pubsub()
@@ -436,7 +444,11 @@ async def test_ti3b_first_message_is_state_change_running(
         job_id: UUID = job_row.id
         channel = progress_channel(deps.settings.schema_name, job_id)
 
-        redis_client = redis_async.from_url(redis_url, decode_responses=False)
+        # socket_timeout explicit: redis-py 8 defaults it to 5s and the default fires on a
+        # fresh connection's handshake read under a co-tenant-stretched runner
+        # (Timeout reading from localhost:..., the subscribe ack never arriving in
+        # time); the scenario's real bounds are the test's own wait_for windows.
+        redis_client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
         first_real_message: list[dict[str, object]] = []
         try:
             pubsub = redis_client.pubsub()

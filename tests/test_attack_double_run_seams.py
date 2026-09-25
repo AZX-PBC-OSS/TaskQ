@@ -73,10 +73,30 @@ _QUEUE = "default"
 # The graces collapsed so the ladder's whole schedule (observe -> escalate
 # -> abandon) fits inside a handful of ticks - the repro stays deterministic
 # without depending on how long a body takes to reach its first await.
-_GRACES = {
+# The heartbeat command budget is RAISED from the testing factory's 0.1s
+# for the same reason the fleet's other clocks are deliberate: the
+# heartbeat pool's connections carry asyncpg's command_timeout, and the
+# pins run the REAL tick and reconcile statements through it. A traced
+# runner under xdist co-tenancy (the coverage leg: the tracer's own CPU
+# tax on one shared 4-core VM and one shared PG container) pushed the
+# reconcile UPDATE's single round trip past 100ms and asyncpg raised a
+# bare TimeoutError out of protocol.pyx - a transport budget firing, not
+# a verdict any pin asserts. The lock_lease rides along to satisfy the
+# settings' own cascade invariant (max(interval, timeout) +
+# (max_heartbeat_failures + 1) * (interval + timeout) <= lock_lease:
+# max(1.0, 2.0) + 4 * 3.0 = 14.0 <= 15) and because no pin's contract touches the
+# lease: the reconcile grace ages started_at an HOUR past it, the
+# ladders are driven by hand, and the claims ride _fleet.py's own
+# FLEET_LOCK_LEASE. 2s keeps every transport hang loud (pytest-timeout
+# owns the wall bound) while the budget stops being the binding
+# constraint on a slow box.
+_FLEET_SETTINGS = {
     "cancellation_grace_period": "0.05",
     "cleanup_grace_period": "0.05",
+    "heartbeat_command_timeout": "2.0",
+    "lock_lease": "15.0",
 }
+_GRACES = _FLEET_SETTINGS
 _TICK = 0.05
 _MAX_TICKS = 40
 _BARRIER_PODS = 2
