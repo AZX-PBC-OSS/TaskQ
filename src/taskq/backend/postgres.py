@@ -310,6 +310,14 @@ class PostgresBackend:
         self._cancel_subscribers: set[asyncio.Event] = set()
         self._cancel_lock: asyncio.Lock = asyncio.Lock()
 
+        # The leadership wake registry: events set when the leader's resign
+        # broadcast arrives on the leadership wake channel (see
+        # ``leader_wake_channel`` and ``MaintenanceLeader._follower_park``).
+        # Same shape as the cancel registry; own lock for the same
+        # cross-coroutine reason.
+        self._leader_wake_subscribers: set[asyncio.Event] = set()
+        self._leader_wake_lock: asyncio.Lock = asyncio.Lock()
+
         self._sql: SqlTemplates = render(self._schema_name)
         self._schedule_sql = ScheduleSql.build(self._schema_name)
         self._batch_sql: BatchSql = render_batch_sql(self._schema_name)
@@ -1279,6 +1287,17 @@ class PostgresBackend:
     def subscribe_cancel_wake(self) -> AsyncContextManager[asyncio.Event]:
         event = asyncio.Event()
         return _SubscriberContext(event, self._cancel_subscribers, self._cancel_lock)
+
+    def subscribe_leader_wake(self) -> AsyncContextManager[asyncio.Event]:
+        """Subscribe to the leader's resign broadcast (see ``leader_wake_channel``).
+
+        The election loop uses this to re-run the fenced elect immediately
+        when a peer resigns, rather than waiting for the next heartbeat
+        tick. The wake is a hint: nothing here promises delivery, the
+        tick cadence is the guarantee.
+        """
+        event = asyncio.Event()
+        return _SubscriberContext(event, self._leader_wake_subscribers, self._leader_wake_lock)
 
     # ── Schedule CRUD ────────────────────────────────────────────────────
 
