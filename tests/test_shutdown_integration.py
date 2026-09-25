@@ -372,19 +372,20 @@ async def test_ti4_drain_to_pending(
         )
 
     # Lock 3 jobs as "dispatched but not started" - use worker_pool to simulate
+    # the dispatch claim's row shape: running, locked, and the claim CTE's
+    # ``started_at = clock_timestamp()`` stamp (backend/_dispatch_sql.py).
+    # The stamp is not decoration: the drain's ``started_at IS NOT NULL``
+    # conjunct fences the claim-loss reconcile's refunded output (a
+    # running-and-locked row with a NULL stamp is an already-refunded
+    # claim), so a seed without the stamp pins a row shape the drain no
+    # longer hands back.
     schema = deps.settings.schema_name
     conn = await asyncpg.connect(str(deps.settings.pg_dsn_direct))
     try:
         for jid in job_ids[:3]:
-            # started_at rides the update because the dispatch claim CTE
-            # stamps it AT CLAIM (backend/_dispatch_sql.py): a row that
-            # reached running through the real claim is never
-            # NULL-stamped, and the drain's exactly-once refund fence
-            # (a NULL stamp on a running row is the heartbeat reconcile's
-            # already-refunded output) would refuse the fabricated shape.
             await conn.execute(
-                f"UPDATE \"{schema}\".jobs SET status='running', locked_by_worker=$1, "  # noqa: S608  # Why: schema validated by WorkerSettings/conftest; asyncpg has no parameter binding for identifiers.
-                f"started_at = clock_timestamp() WHERE id=$2 AND status='pending'",
+                f"UPDATE \"{schema}\".jobs SET status='running', locked_by_worker=$1, "  # noqa: S608 # Why: schema validated by WorkerSettings/conftest; asyncpg has no parameter binding for identifiers.
+                "started_at=clock_timestamp() WHERE id=$2 AND status='pending'",
                 worker_id,
                 jid,
             )
