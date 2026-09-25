@@ -987,9 +987,14 @@ async def consume_one_job(
         # The seam's observable, read the way the release-park bound reads
         # it (the deps doubles of the consumer's unit pins are hand-built
         # duck types that model no shutdown fields; getattr's None default
-        # reads them as "not shutting down", their tests' meaning).
+        # reads them as "not shutting down", their tests' meaning). The
+        # isinstance guard is the Mock-shape of the same tolerance: a
+        # spec'd Mock that never stamped the field resolves the getattr to
+        # an auto-created attribute, which is not a float and therefore
+        # not a stamp - the field is ``float | None``, its only real value
+        # the orchestration's ``loop.time()``.
         _shutdown_started = getattr(deps, "shutdown_started_at", None) if deps is not None else None
-        if _shutdown_started is not None:
+        if isinstance(_shutdown_started, float):
             # THE TAKE-TO-REGISTER SHUTDOWN SEAM. Everything between this
             # attempt's take (the claim intent) and this line - DI
             # resolution, payload validation, the slot-pool acquire, and

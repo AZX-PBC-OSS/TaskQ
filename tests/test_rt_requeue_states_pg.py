@@ -145,6 +145,18 @@ async def _enqueue(
 
 async def _new_worker(deps: WorkerDeps, schema: str, worker_id: UUID | None = None) -> UUID:
     wid = worker_id or new_uuid()
+    # A successor is a NEW PROCESS: a fresh WorkerDeps carries no shutdown
+    # state, and the consumer's take-to-register seam reads exactly that
+    # state - a deps object reused across a completed orchestration still
+    # carries the finished shutdown's stamps (the orchestrator never
+    # clears them; in production the process exits instead), which would
+    # release every successor attempt before its body. The same reset the
+    # fleet harness's stop_pod applies between generations. No test here
+    # creates a worker while an orchestration is in flight - every
+    # successor lands after `await orchestrator` - so the reset never
+    # races a live phase.
+    deps.shutdown_phase = ShutdownPhase.NONE
+    deps.shutdown_started_at = None
     async with deps.worker_pool.acquire() as conn:
         await create_worker(conn, schema, wid)
     return wid
