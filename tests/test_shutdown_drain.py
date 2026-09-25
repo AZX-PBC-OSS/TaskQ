@@ -330,3 +330,72 @@ async def test_drain_hands_back_at_most_once_across_repeated_calls() -> None:
     assert "status='pending'" in normalised.replace(" = ", "="), (
         f"the hand-back must set the row back to pending: {normalised!r}"
     )
+
+
+async def test_drain_exclusion_captures_a_take_that_lands_during_the_pool_acquire() -> None:
+    """A claim intent marked while the drain waits for its connection is excluded.
+
+    The exclusion arrays are the row's classification ("a consumer of this
+    process holds this row"), and the UPDATE is the writer that acts on it.
+    The registry's maps are in-memory; the pool acquire is the one await
+    between the helper's entry and its statement, and on a contended pool it
+    parks the drain for as long as the contention lasts - exactly the window
+    a consumer's take (mark_claimed) or registration lands in. A capture
+    taken BEFORE the acquire binds a stale exclusion: the UPDATE re-pends the
+    row under its live consumer, the consumer's terminal write fences out
+    (the fence requires status='running' AND locked_by_worker, both cleared
+    by the re-pend), and the row is stranded 'pending' with its body
+    mid-flight. The capture must therefore happen AFTER the acquire,
+    immediately before the bind: the bound exclusion carries the intent the
+    acquire's park let land.
+
+    The fake pool marks the take inside ``acquire`` - the take's exact
+    timing, deterministically. RED on a capture-before-acquire tree: the
+    exclusion binds empty and the UPDATE runs with no ``<> ALL`` predicate.
+    """
+    worker_id = new_uuid()
+    taken_id = JobId(new_uuid())
+    pool = FakePool()
+    settings = _worker_settings("taskq")
+    deps = WorkerDeps(
+        settings=settings,
+        dispatcher_pool=pool,  # type: ignore[arg-type] # Why: FakePool drop-in for asyncpg.Pool in unit tests.
+        heartbeat_pool=pool,  # type: ignore[arg-type]
+        worker_pool=pool,  # type: ignore[arg-type]
+        notify_conn=None,
+        leader_conn=None,
+    )
+
+    real_acquire = pool.acquire
+
+    @asynccontextmanager
+    async def acquire_marking_the_take(
+        *,
+        timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg.Pool.acquire's signature, the same convention FakePool.acquires uses.
+    ) -> AsyncGenerator[FakeConn, None]:
+        # The consumer's take: the row is claimed (running, locked) and this
+        # loop's take records the claim intent - the registry's own fast
+        # path, no awaits, exactly what mark_claimed does at a real take.
+        deps.active_jobs.mark_claimed(taken_id)
+        async with real_acquire(timeout=timeout) as conn:
+            yield conn
+
+    cast("Any", deps.dispatcher_pool).acquire = acquire_marking_the_take
+
+    await drain_local_queue_to_pending(deps, worker_id)
+
+    sql, args = pool.execute_calls[0]
+    assert len(args) == 2, (
+        "the drain captured its exclusion BEFORE the pool acquire: the take "
+        f"that landed during the acquire's park is missing from the bound "
+        f"exclusion (bound args {args!r}), and the UPDATE re-pends a row its "
+        "consumer is executing - the terminal write fences out and the row "
+        "strands 'pending'"
+    )
+    assert set(cast("list[object]", args[1])) == {taken_id}, (
+        "the take that landed during the pool acquire must appear in the "
+        f"exclusion list; got {args[1]!r}"
+    )
+    assert "<>" in sql or "NOT" in sql.upper(), (
+        f"the exclusion must be a bound predicate of the UPDATE: {sql!r}"
+    )
