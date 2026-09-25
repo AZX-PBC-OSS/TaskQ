@@ -133,6 +133,42 @@ _PRUNE_TIMEOUT_MS = 30_000
 # leg while a genuinely wedged drain still ends red, not hung.
 _PRUNE_REDRIVE_ATTEMPTS = 5
 
+# The events family's defaults (the TTL herd pin).
+_EVENTS_BATCH = 10_000
+# Why 30 s: this budget is the pin's HANG GUARD, not its discriminative
+# tooth - the same demotion the prune family's budget earned (and for the
+# same measured reason). The sweep's own batch is CHEAP warm, measured on
+# this rig (PG 18 container, the test-identical 100k-row seed, no vacuum):
+# every one of the drain's 10k-row passes costs 20-52 ms and EXPLAIN
+# (ANALYZE, BUFFERS) shows the healthy plan - an Index Only Scan on
+# job_events_occurred_at_idx with the age bound as an Index Cond (67 ms
+# first pass, Heap Fetches the only tax), no seq scan, no post-scan
+# Filter. There is no plan defect to fix: on CI the same passes landed
+# 2.5-5 minutes apart (run 36067201212's 3.12 leg: count=10000 logged at
+# 22:32:48 and again at 22:35:30; run 36018340466, the same 300 s
+# pytest-timeout) - a statement that crawls at ANY multiplier of its warm
+# cost while every dumped thread stack sits idle in epoll is BLOCKED by
+# the shared runner's weather, not slow, and a wall-clock budget cannot
+# sit between that tail and any bound (the prune pin measured m ~ 10x,
+# m ~ 75x and m > 300x on the same runners). So: the pin joins the serial
+# load_sensitive lane (the prune pin's #523 precedent - no leg co-tenancy,
+# the multiplier bounded), and this budget keeps the two jobs a wall clock
+# CAN do: bound a hung statement and cancel a population-wide write on a
+# healthy runner. 30 s is ~600x the warm pass; with the re-drive bound
+# below the pin's own worst case (~150 s of absorbed stalls plus the
+# ~20 s seed) still ends red well inside the 300 s pytest-timeout, so a
+# wedged drain fails instead of hanging the loop into the harness kill.
+# The DISCRIMINATIVE teeth stay in the test body, byte-identical: the
+# first pass deletes exactly one batch, no pass exceeds it, the drain's
+# total conserved, the outbox carve-out spared.
+_EVENTS_TIMEOUT_MS = 30_000
+# Same re-drive discipline as the prune family: a deadline-cancelled batch
+# is a pause (the aborted statement committed nothing; its rows are still
+# eligible and the next pass re-selects exactly them), so the harness
+# re-drives instead of failing when the shared runner's weather cancels a
+# legitimate bounded pass.
+_EVENTS_REDRIVE_ATTEMPTS = 5
+
 # Cohort sizes.
 _HERD_BUDGET = 7_000  # re-pend arm
 _HERD_EXHAUSTED = 3_000  # crashed arm
@@ -822,12 +858,95 @@ async def test_prune_herd_batches_stay_bounded_and_archive_conserves(
         await conn.close()
 
 
+async def _drive_events_to_completion(
+    conn: asyncpg.Connection,
+    *,
+    retention: timedelta,
+    batch_size: int,
+    schema: str,
+) -> tuple[int, int]:
+    """Drive ``sweep_expired_events`` to completion the way the leader tick
+    experiences it: one committed batch per call, and a deadline-cancelled
+    batch is a PAUSE, not a failure.
+
+    The session-level ``statement_timeout`` is this drain's HANG GUARD (the
+    budget's rationale sits on _EVENTS_TIMEOUT_MS): the sweep statement
+    itself carries no server-side bound (the production tick absorbs the
+    deadline family into the next tick instead), so the guard is bound here,
+    on the harness's own connection, and restored in ``finally``.
+
+    A statement the server cancels at the guard committed nothing (one
+    statement, autocommit): the aborted batch's rows are still eligible and
+    the next pass re-selects exactly them, so the harness re-drives on the
+    deadline family the same way the leader loop re-drives - up to
+    _EVENTS_REDRIVE_ATTEMPTS attempts, then the raise surfaces (a wedged
+    drain ends red, never hung).
+
+    Returns ``(first, total)``: the first SUCCESSFUL pass's count (a
+    cancelled pass moved nothing, so the first successful pass still meets
+    the full eligible backlog) and the drain's whole total. The per-pass
+    batch bound is asserted here, on every pass: the pin's shape tooth.
+    """
+    prev = await conn.fetchval("SELECT current_setting('statement_timeout')")
+    await conn.execute("SELECT set_config('statement_timeout', $1, false)", str(_EVENTS_TIMEOUT_MS))
+    first: int | None = None
+    total = 0
+    passes = 0
+    try:
+        for attempt in range(_EVENTS_REDRIVE_ATTEMPTS):
+            try:
+                while True:
+                    passes += 1
+                    if passes > 1_000:
+                        raise AssertionError(
+                            "the events drain exceeded 1000 passes without a "
+                            "clean tick: the sweep re-selects rows it already "
+                            "deleted, the drain never converges"
+                        )
+                    rows = await PostgresBackend.sweep_expired_events(
+                        conn, schema=schema, retention=retention, batch_size=batch_size
+                    )
+                    assert rows <= batch_size, (
+                        f"a pass deleted {rows} rows, past the {batch_size} batch bound"
+                    )
+                    if first is None:
+                        first = rows
+                    total += rows
+                    if rows == 0:
+                        assert first is not None
+                        return first, total
+            except DEADLINE_ERRORS:
+                if attempt == _EVENTS_REDRIVE_ATTEMPTS - 1:
+                    raise
+                continue
+        raise AssertionError(
+            f"the events drain exhausted its {_EVENTS_REDRIVE_ATTEMPTS} re-drive "
+            "attempts on deadline cancellations: the statement is wedged, not "
+            "weathered"
+        )
+    finally:
+        await conn.execute("SELECT set_config('statement_timeout', $1, false)", prev)
+
+
 # ── 6. The TTL'd event rows: one bounded batch per tick, outbox spared
 
 
+@pytest.mark.load_sensitive
 async def test_event_ttl_herd_batch_bounded_and_outbox_carveout_holds(
     module_pg_schema: ModulePgSchema,
 ) -> None:
+    """Why load_sensitive: this pin drives a 100k-row real-PG herd whose
+    drain is measured in wall-clock passes. Its shape and conservation
+    assertions are not load-fragile, but its pass cadence is: on the shared
+    runners' parallel legs the passes measured 2.5-5 minutes apart (run
+    36018340466, run 36067201212's 3.12 leg - the 300 s pytest-timeout
+    killed a still-pending coroutine both times), a co-tenancy BLOCK the
+    warm plan never shows (the measured plan is index-served at 20-52 ms
+    per pass, see _EVENTS_TIMEOUT_MS). The serial load_sensitive lane is
+    the one place the multiplier is bounded (the prune pin's #523
+    precedent); the batch-shape, conservation and carve-out teeth below
+    are byte-identical to what the parallel lane armed, and no runner
+    speed defeats them."""
     schema = module_pg_schema.schema_name
     conn = await _reset(module_pg_schema)
     try:
@@ -836,25 +955,16 @@ async def test_event_ttl_herd_batch_bounded_and_outbox_carveout_holds(
         await conn.execute(_EVENTS_OUTBOX_SQL.format(schema=schema), _EVENTS_OUTBOX)
 
         retention = timedelta(hours=1)
-        batch = 10_000
+        batch = _EVENTS_BATCH
 
         # ONE tick: at most one batch. The herd's first pass must not
-        # become a 100k-row DELETE in one transaction.
-        first = await PostgresBackend.sweep_expired_events(
-            conn, schema=schema, retention=retention, batch_size=batch
+        # become a 100k-row DELETE in one transaction. (A pass the hang
+        # guard cancelled moved nothing, so the first SUCCESSFUL pass
+        # still meets the full backlog and the tooth is unchanged.)
+        first, total = await _drive_events_to_completion(
+            conn, retention=retention, batch_size=batch, schema=schema
         )
         assert first == batch
-
-        # Drain the rest; every pass inside the batch bound.
-        total = first
-        while True:
-            rows = await PostgresBackend.sweep_expired_events(
-                conn, schema=schema, retention=retention, batch_size=batch
-            )
-            assert rows <= batch
-            if rows == 0:
-                break
-            total += rows
 
         assert total == _EVENTS_HERD
 
