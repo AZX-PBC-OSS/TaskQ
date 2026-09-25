@@ -55,7 +55,7 @@ from taskq.backend.postgres import PostgresBackend
 from taskq.constants import leader_wake_channel
 from taskq.migrate import apply_pending
 from taskq.settings import WorkerSettings
-from taskq.testing.assertions import wait_for_condition
+from taskq.testing.assertions import wait_for, wait_for_condition
 from taskq.testing.fixtures import _create_worker
 from taskq.worker.deps import LeaderTerm, WorkerDeps, open_worker_deps
 from taskq.worker.leader import MaintenanceLeader, build_leader_lease_sql
@@ -536,9 +536,11 @@ async def test_lw2_the_broadcast_names_the_kind_the_resigner_and_the_dead_term(
     ) = await _start_two(pg_dsn, f"test_leader_wake_{new_base62()}")
 
     payloads: list[str] = []
+    broadcast = asyncio.Event()
 
     def _tap(conn: object, pid: int, channel: str, payload: str) -> None:
         payloads.append(payload)
+        broadcast.set()
 
     raw = await asyncpg.connect(pg_dsn)
     try:
@@ -558,11 +560,23 @@ async def test_lw2_the_broadcast_names_the_kind_the_resigner_and_the_dead_term(
             resigner_task = task_a if deps_a.is_leader.is_set() else task_b
             resigner_shutdown = shutdown_a if deps_a.is_leader.is_set() else shutdown_b
             resigner_shutdown.set()
-            await asyncio.wait_for(
-                wait_for_condition(
-                    lambda: bool(payloads), description="the broadcast", timeout=5.0
-                ),
-                timeout=6.0,
+            # Either-signal: the wait resolves exactly when the broadcast
+            # lands - the tap sets the event inside the delivery callback,
+            # no poll cadence between the payload arriving and the assert.
+            # The timeout only bounds FAILURE, and it funds the same drain
+            # the resigner task's completion wait below funds: run()'s
+            # TaskGroup drains naturally on the stop (the body completes,
+            # nothing is cancelled), so the resign - and the NOTIFY behind
+            # its committed DELETE - waits out each loop's current sleep,
+            # the watchdog's probe sleep the longest tail. The broadcast is
+            # a strict prefix of the task's completion, so this scaled
+            # bound can never expire while that wait would still be legal;
+            # the old fixed 5.0s wall clock could - and on a co-tenanted
+            # runner, did.
+            await wait_for(
+                broadcast,
+                timeout=_WATCHDOG_INTERVAL + float(settings.heartbeat_interval) + 3.0,
+                description="the resign's broadcast",
             )
             await asyncio.wait_for(
                 resigner_task,
