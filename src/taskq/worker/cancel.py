@@ -971,5 +971,20 @@ class ActiveJobRegistry:
         """Return the number of currently registered in-flight jobs."""
         return len(self._by_id)
 
+    def intent_count(self) -> int:
+        """Return the number of takes not yet absorbed by a registration.
+
+        The claim-to-register window (the consumer's DI resolution, payload
+        validation, and admission acquire all run before ``register``) is
+        invisible to ``count()``, and that window is where a denied
+        admission's bounded local retry now waits, so a producer sizing a
+        claim by registered jobs alone can double-claim every slot its
+        consumers are already holding. The intents are disjoint from both
+        the queued ids (``mark_claimed`` moves the row out of ``_queued``)
+        and the registered entries (``register`` absorbs the intent), so
+        ``count() + intent_count()`` is the exact in-process hold.
+        """
+        return len(self._claim_intents)
+
     def __len__(self) -> int:
         return len(self._by_id)

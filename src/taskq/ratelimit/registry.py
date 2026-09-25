@@ -278,6 +278,17 @@ class RateLimitRegistry:
     def __init__(self) -> None:
         self._rate_limits: dict[str, TokenBucket | SlidingWindow] = {}
         self._reservations: dict[str, ConcurrencyReservation] = {}
+        # Per-reservation release signals, created on demand: a consumer
+        # whose admission acquire was denied parks its bounded local retry
+        # on its bucket's event instead of a bare sleep, so a LIVE holder's
+        # completion (a release this process performed) wakes the retry
+        # within one loop turn - the freed slot is then contested against
+        # fresh claimants' acquires, which the retry's head start wins.
+        # The event is a WAKE SIGNAL, never a token: any number of waiters
+        # wake on one release and re-probe, each denial re-arming its own
+        # wait. Cross-process releases (a peer worker's) are not seen here;
+        # the retry's timeout floor covers them.
+        self._reservation_release_events: dict[str, asyncio.Event] = {}
         # Names of reservations materialized from a KeyedReservationRef
         # (as opposed to a static @actor(reservations=["name"]) entry),
         # and the monotonic time each was last acquired, used only by
@@ -1505,6 +1516,8 @@ class RateLimitRegistry:
         for handle in reversed(acquired):
             try:
                 await handle.release()
+                if isinstance(handle, ReservationHandle):
+                    self._notify_bucket_release(handle.name)
             except Exception as exc:
                 backend = (
                     handle.decision.backend if isinstance(handle, RateLimitHandle) else "postgres"
@@ -1517,6 +1530,32 @@ class RateLimitRegistry:
                     acquired_count=len(acquired),
                 )
                 record_ratelimit_refund_failure(handle.name, backend)
+
+    def _notify_bucket_release(self, bucket_name: str) -> None:
+        """Wake every local retry parked on *bucket_name*'s release event.
+
+        Called after a successful reservation release: a slot this process
+        freed is a slot a denied consumer's next acquire can win, and the
+        wake is what lets that retry win the race against a fresh claimant's
+        acquire (the retry starts ~1 loop turn after the release, the fresh
+        claimant's path is a get plus DI resolution away). Events are
+        created here on demand; a bucket nobody retried on has no event and
+        this is one dict probe.
+        """
+        event = self._reservation_release_events.get(bucket_name)
+        if event is not None:
+            event.set()
+
+    def bucket_release_event(self, bucket_name: str) -> "asyncio.Event":
+        """Return (creating on first use) the release-wake event for
+        *bucket_name*. The retry path in ``taskq.worker._consumer`` waits
+        on this between acquire attempts; see ``_notify_bucket_release``.
+        """
+        event = self._reservation_release_events.get(bucket_name)
+        if event is None:
+            event = asyncio.Event()
+            self._reservation_release_events[bucket_name] = event
+        return event
 
     def _opportunistic_evict_reservations(self, settings: "WorkerSettings | None") -> None:
         """Idle-reservation scan, amortized to one per min-interval.

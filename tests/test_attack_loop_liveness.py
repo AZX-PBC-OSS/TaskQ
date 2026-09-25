@@ -168,6 +168,7 @@ def _producer_deps(*, poll_interval: float = 0.005, pooled: bool = False) -> Sim
         active_jobs=SimpleNamespace(
             all=list,
             count=lambda: 0,
+            intent_count=lambda: 0,
             # The producer's enqueue path stamps the queued map on the
             # registry (run.py mark_enqueued); the stub tracks nothing,
             # but the call must land - a real registry's bound method,

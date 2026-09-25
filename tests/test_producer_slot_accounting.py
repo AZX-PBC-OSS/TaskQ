@@ -43,13 +43,19 @@ from taskq.worker.run import (
 
 
 class _Active:
-    """Mutable active-jobs stand-in: ``count()`` reads the live number."""
+    """Mutable active-jobs stand-in: ``count()``/``intent_count()`` read
+    the live numbers. ``n`` is the registered count, ``intents`` the
+    takes not yet absorbed by a registration."""
 
-    def __init__(self, n: int = 0) -> None:
+    def __init__(self, n: int = 0, *, intents: int = 0) -> None:
         self.n = n
+        self.intents = intents
 
     def count(self) -> int:
         return self.n
+
+    def intent_count(self) -> int:
+        return self.intents
 
     def all(self) -> list[object]:
         return []
@@ -392,21 +398,20 @@ async def test_a_saturated_producer_drains_promptly_as_slots_free() -> None:
             await task
 
 
-# ── The take-to-register window: the documented over-admission bound ────
+# ── The take-to-register window: counted, never blind ───────────────────
 
 
-async def test_a_consumer_in_the_take_register_window_over_admits_at_most_one_row() -> None:
-    """run.py's producer comment documents the transient window between a
-    consumer's get() and the job's active_jobs register: the taken row is
-    out of the queue and not yet counted active, so the sizing
-    arithmetic reads one slot too many for one scheduler step. The bound
-    is ONE extra row per consumer caught in the window, never
-    queue-emptiness sizing: with three slots genuinely busy and the
-    fourth consumer sitting in the window, the claim is exactly 1 row,
-    the follow-up rounds claim nothing while the window stays open (the
-    over-admission does not compound across fallback polls), and closing
-    the window settles the worker at zero further claims."""
-    active = _Active(3)  # three consumers registered, genuinely busy
+async def test_a_consumer_in_the_take_register_window_over_admits_nothing() -> None:
+    """The window between a consumer's get() and the job's active_jobs
+    register is COUNTED: the take installs a claim intent the producer's
+    sizing arithmetic subtracts (count + intent_count), so a consumer
+    paused in DI resolution or a denied-admission retry is still a held
+    slot. With three slots genuinely busy and the fourth consumer sitting
+    in the window, the claim is exactly 0 rows - the blind window that
+    read one slot too many (the burst's double-claim amplifier) is gone.
+    Closing the window changes nothing: all four slots were held all
+    along."""
+    active = _Active(3, intents=1)  # three registered busy, one take in the window
     backend = _RecordingBackend(jobs=4)
     # The queue is empty because the fourth slot's row was TAKEN: the
     # window is open, its consumer has not registered the row yet.
@@ -416,26 +421,21 @@ async def test_a_consumer_in_the_take_register_window_over_admits_at_most_one_ro
         _deps(active, maxsize=4, poll_interval=0.05), backend, local_queue, slot_freed
     )
     try:
-        await wait_for_condition(
-            lambda: len(backend.rounds) >= 1,
-            description="claim while one consumer sits in the take-register window",
-            timeout=2.0,
-        )
-        assert backend.rounds[0][1] == 1, (
-            f"first round asked for {backend.rounds[0][1]} rows with three "
-            "slots busy and one row taken but unregistered - the claim must "
-            "over-admit by exactly the window's one row, never queue-emptiness "
-            "sizing (4)"
-        )
-        # The claimed row parks in the queue (qsize 1), the window stays
-        # open: the fallback polls must not compound the over-admission.
         await asyncio.sleep(0.35)
-        assert [limit for _, limit in backend.rounds] == [1]
+        assert backend.rounds == [], (
+            f"the producer claimed {[limit for _, limit in backend.rounds]} with three "
+            "slots busy and one row taken but unregistered - the claim intents "
+            "are the third term of the slot arithmetic: the take-register "
+            "window is a held slot, never a free one, and the burst shape "
+            "(DI + admission-retry pauses in that window) must not "
+            "double-claim it"
+        )
         # The window closes: the taken row registers, all four slots are
         # genuinely occupied, nothing more to claim.
         active.n = 4
+        active.intents = 0
         await asyncio.sleep(0.2)
-        assert [limit for _, limit in backend.rounds] == [1]
+        assert backend.rounds == []
     finally:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -443,12 +443,10 @@ async def test_a_consumer_in_the_take_register_window_over_admits_at_most_one_ro
 
 
 async def test_over_admission_scales_with_the_window_never_with_the_slots() -> None:
-    """The bound is per consumer IN the window, and there it stops: two
-    consumers caught between get() and register make the claim exactly 2,
-    never the full slot count. The window can hold at most one row per
-    consumer, so the over-admission is capped by the consumer count
-    however the queue and the registry disagree."""
-    active = _Active(2)  # two consumers registered, two rows taken unregistered
+    """Two consumers caught between get() and register hold two slots the
+    arithmetic can see: the claim is 0, never the full slot count. The
+    window is bounded by the consumer count and counted row for row."""
+    active = _Active(2, intents=2)  # two consumers registered, two rows taken unregistered
     backend = _RecordingBackend(jobs=0)
     local_queue: asyncio.Queue[JobRow] = asyncio.Queue(maxsize=4)
     slot_freed = asyncio.Event()
@@ -456,23 +454,21 @@ async def test_over_admission_scales_with_the_window_never_with_the_slots() -> N
         _deps(active, maxsize=4, poll_interval=0.05), backend, local_queue, slot_freed
     )
     try:
-        await wait_for_condition(
-            lambda: len(backend.rounds) >= 1,
-            description="claim with two consumers in the window",
-            timeout=2.0,
-        )
-        assert backend.rounds[0][1] == 2, (
-            f"first round asked for {backend.rounds[0][1]} rows with two "
-            "slots busy and two rows taken but unregistered - the "
-            "over-admission must be the window's two rows, capped by the "
-            "consumer count, never 4"
+        await asyncio.sleep(0.35)
+        assert backend.rounds == [], (
+            f"first round asked for {[limit for _, limit in backend.rounds]} with two "
+            "slots busy and two rows taken but unregistered - the take-register "
+            "window is counted (intents), so the claim is 0, never 4 and never "
+            "the window's old two-row over-admission"
         )
         # Settle the window: both taken rows register, the worker is
         # genuinely full, the claims stop.
         active.n = 4
+        active.intents = 0
         await asyncio.sleep(0.2)
-        assert all(limit <= 2 for _, limit in backend.rounds), (
-            f"round limits {[limit for _, limit in backend.rounds]} exceeded the window bound"
+        assert backend.rounds == [], (
+            f"round limits {[limit for _, limit in backend.rounds]} on a "
+            "genuinely full worker"
         )
     finally:
         task.cancel()

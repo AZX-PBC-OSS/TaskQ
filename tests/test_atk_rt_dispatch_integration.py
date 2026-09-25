@@ -224,7 +224,7 @@ def _producer_deps(poll_interval: float = 0.05) -> Any:
     return SimpleNamespace(
         settings=settings,
         liveness=liveness,
-        active_jobs=SimpleNamespace(all=list, count=lambda: 0),
+        active_jobs=SimpleNamespace(all=list, count=lambda: 0, intent_count=lambda: 0),
         disowned_jobs=set(),
         dispatcher_pool=_NoopPool(),
     )

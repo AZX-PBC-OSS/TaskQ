@@ -99,7 +99,7 @@ async def test_producer_loop_forgets_liveness_registration_on_exit() -> None:
             settings=settings,
             liveness=liveness,
             # The producer's availability subtracts active jobs.
-            active_jobs=SimpleNamespace(count=lambda: 0),
+            active_jobs=SimpleNamespace(count=lambda: 0, intent_count=lambda: 0),
         ),
     )
     local_queue: asyncio.Queue[object] = asyncio.Queue(maxsize=4)
@@ -737,7 +737,7 @@ def _health_deps(liveness: LoopLiveness, *, watchdog_enabled: bool) -> WorkerDep
             slot_pool=None,
             settings=settings,
             is_leader=SimpleNamespace(is_set=lambda: False),
-            active_jobs=SimpleNamespace(count=lambda: 0),
+            active_jobs=SimpleNamespace(count=lambda: 0, intent_count=lambda: 0),
             heartbeat_failures=0,
             redis_client=None,
             liveness=liveness,
