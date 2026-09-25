@@ -684,9 +684,15 @@ markers = [
 ]
 
 [tool.pytest-gremlins]
-# The retention-loss fix's mutation surface: ResultUnavailable's reason
-# derivation and message (exceptions.py) and the in-memory twin's
-# post-sweep result view (testing/_reads.py). Reproducible run:
+# The mutation gates' surfaces. --gremlin-executor=subprocess is REQUIRED,
+# not a preference: the fork executor does not re-import the mutated module
+# in this repo and reports false KILLS (one run zapped 0/127). Coverage-
+# guided test selection is on by default; the suites named per surface are
+# the killers for its own lines.
+#
+# 1. The retention-loss fix's mutation surface: ResultUnavailable's reason
+#    derivation and message (exceptions.py) and the in-memory twin's
+#    post-sweep result view (testing/_reads.py). Reproducible run:
 #
 #   uv run pytest --gremlins tests/test_attack_retention_gap_events_twin.py \
 #       tests/test_in_memory_terminal_writes.py tests/test_exceptions.py
@@ -694,7 +700,21 @@ markers = [
 # (The PG sweep suite tests/test_postgres_sweep_expired_results.py also
 # covers these lines but spawns a container per mutant run, so it stays
 # out of the scoped command; its pins were verified separately.)
-paths = ["src/taskq/exceptions.py", "src/taskq/testing/_reads.py"]
+#
+# 2. The attack-input monsters' gate: the four modules the
+#    progress/enqueue/name/seq gates live in. Run with the killing suites:
+#   uv run pytest tests/test_attack_input_monsters.py tests/test_progress_flush.py \
+#       tests/web_admin/test_realtime_js_render.py tests/web_admin/test_realtime_js_mode_probe.py \
+#       --gremlins --gremlin-executor=subprocess --gremlin-report=console,json
+# (the pins file holds the door raises).
+paths = [
+    "src/taskq/exceptions.py",
+    "src/taskq/testing/_reads.py",
+    "src/taskq/context.py",
+    "src/taskq/actor.py",
+    "src/taskq/backend/_protocol.py",
+    "src/taskq/backend/_sql_templates.py",
+]
 
 [tool.coverage.run]
 source = ["src/taskq"]

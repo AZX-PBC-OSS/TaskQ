@@ -288,6 +288,40 @@ never diverge.
 
 ## Breaking API changes
 
+### Queue and actor names are bounded at 255 characters
+
+> **Unreleased.** Breaking for anyone enqueueing to a queue name longer
+> than 255 characters or declaring an actor name longer than 255
+> characters: on previous releases both were accepted and worked; now
+> each raises `ValueError` at its chokepoint (the queue at enqueue, the
+> actor at `@actor(...)` registration).
+
+`jobs.queue` and `jobs.actor` are carried in btree indexes (the
+`(queue, priority DESC, scheduled_at)` dispatch order and the composite
+dispatch probes), and a btree index item caps at 2704 bytes: an
+incompressible name past that bound used to fail the `jobs` INSERT with
+an opaque `ProgramLimitExceededError` ("index row size ... exceeds btree
+version 4 maximum") at enqueue, far from the declaration that caused it.
+Both names are now refused with a plain `ValueError` naming the bound and
+echoing at most the first 64 characters of the rejected name.
+
+The bound is deliberately a **character** count, stricter than the ~2700
+**bytes** the storage mechanism alone forces, and that is the point: the
+composite dispatch index item carries the actor name and the queue name
+side by side, so a per-name bound has to compose with a second
+variable-length name in the same item. 255 characters is at most 1020
+bytes at UTF-8's worst-case 4 bytes/char, and two of those plus the
+fixed-width tail columns fit inside one index item. A byte-measured
+single-name bound (~2500 bytes) would admit a queue name that only fails
+when paired with a legal actor name, resurfacing the same opaque storage
+error the cap exists to remove.
+
+**To upgrade:** if you enqueue to queue names over 255 characters or
+declare actors with names over 255 characters, shorten them before
+deploying this release. A name past the bound now raises `ValueError` at
+the call (enqueue or registration) instead of failing deep in the
+storage engine.
+
 ### `/logout` is now a POST with a session-bound CSRF token
 
 > **Unreleased.** Breaking for anything that ended an SSO session by

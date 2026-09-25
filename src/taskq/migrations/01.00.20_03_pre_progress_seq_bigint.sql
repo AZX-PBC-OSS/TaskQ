@@ -1,0 +1,45 @@
+-- progress_seq: int -> bigint.
+--
+-- Why: the column is the job's strict monotone progress-write cursor, and
+-- every writer ADVANCES it by arithmetic -- the flush's
+-- ``progress_seq = j.progress_seq + f.seq_delta`` and the terminal writes'
+-- absolute ``GREATEST(progress_seq, $n)`` SETs. On an int4 column the
+-- arithmetic overflows at 2147483647 (SQLSTATE 22003, "integer out of
+-- range"), and the failure mode is the crash-reclaim loop: the flush
+-- UPDATE errors every tick, then the terminal write errors and the
+-- terminal-write classification reads the 22003 (a PostgresError) as
+-- TRANSIENT infrastructure failure, so the job never terminalises, the
+-- lease sweep reclaims it, the actor re-executes (its committed side
+-- effects included), produces more progress, and overflows again -- a
+-- permanently stuck ``running`` row, reached by one chatty actor calling
+-- ``ctx.progress()`` ~2^31 times (days at a few thousand calls/second).
+-- No Python-side gate can close this: the overflow is the STORAGE
+-- domain, so the honest bound is the column's.
+--
+-- The migration is a plain ALTER TYPE: int4 -> bigint REWRITES each table
+-- under ACCESS EXCLUSIVE. That is a full table rewrite, not an in-place
+-- widening: every row is copied into a fresh relfilenode and EVERY index
+-- on the table is rebuilt, including the indexes that never touch
+-- progress_seq (a Postgres behaviour of ALTER TYPE, not a choice), so
+-- budget an ops window that scales with the live row count (measured
+-- ~1.4 s at 2M jobs on the reference container). Both tables are bounded
+-- (jobs by the retention sweep, jobs_archive by archive retention), so
+-- the rewrite is an ops-window statement, not a live-traffic risk; run
+-- with the same ddl lock timeout discipline every migration runs under.
+-- A rolled-back or interrupted run is simply re-run (the runner records
+-- completion only after the whole file succeeds).
+--
+-- The JS-side companion bound this creates (documented, not fixed): the
+-- admin portal's progress driver compares progress_seq values as JS
+-- numbers, which are exact only up to 2^53 -- above that, seq n and
+-- n + 1 can compare equal and a tick is dropped as a duplicate. Reaching
+-- 2^53 progress writes on ONE job is ~4 billion times this migration's
+-- motivating overflow; at a sustained 1000 progress calls/second it is
+-- ~285 years for a single job. The driver documents the bound where the
+-- comparison happens (web/static/realtime.js, acceptProgress), and the
+-- poll wire keeps the exact decimal in the ETag header for clients that
+-- need exactness at any magnitude.
+
+ALTER TABLE "{schema}".jobs ALTER COLUMN progress_seq TYPE bigint;
+
+ALTER TABLE "{schema}".jobs_archive ALTER COLUMN progress_seq TYPE bigint;

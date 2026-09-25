@@ -52,6 +52,7 @@ import structlog
 from pydantic import BaseModel, TypeAdapter
 
 from taskq.backend._protocol import (
+    _QUEUE_NAME_MAX_CHARS,  # pyright: ignore[reportPrivateUsage]  # Why: the queue name's btree bound governs the actor name's too (the two share the composite dispatch indexes); one constant, no drift.
     DEFAULT_UNIQUE_STATES,
     JobStatus,
     _validate_queue_name,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical queue-name validator; the enqueue path (client._args) runs the same one, so the charset cannot drift between the two chokepoints.
@@ -747,6 +748,18 @@ def _build_ref[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInva
     result_adapter: TypeAdapter[R] = TypeAdapter(result_annotation)
 
     actor_name = name or fn.__qualname__
+
+    # The queue name's btree bound governs the actor name's too: jobs.actor
+    # rides the composite btree dispatch probes beside jobs.queue, and an
+    # incompressible name past the btree index-item limit (2704 bytes) fails
+    # the jobs INSERT with an opaque storage-engine error at enqueue, far
+    # from the declaration that caused it. Refused at registration instead,
+    # where the fix is one edit.
+    if len(actor_name) > _QUEUE_NAME_MAX_CHARS:
+        raise ValueError(
+            f"actor name exceeds {_QUEUE_NAME_MAX_CHARS} characters "
+            f"(got {len(actor_name)}); the name must fit a btree index item"
+        )
 
     if retry.kind == "indefinite" and retry.time_budget is None:
         logger.warning(

@@ -792,7 +792,7 @@ WITH params AS (
            -- never match neither).
             GREATEST($3::interval, {MIN_DEFERRAL_INTERVAL_SQL}) AS effective_delay,
             $4::jsonb AS metadata_update,
-            $5::int AS progress_seq,
+            $5::bigint AS progress_seq,
             $6::jsonb AS progress_state,
             $8::int AS attempt,
             -- The denial class the caller reported for THIS deferral (the
@@ -997,7 +997,7 @@ WITH params AS (
     SELECT $1::uuid AS job_id,
            $2::uuid AS worker_id,
            $3::interval AS delay,
-           $4::int AS progress_seq,
+           $4::bigint AS progress_seq,
            $5::jsonb AS progress_state,
            $6::int AS attempt,
            $7::bigint AS claim_epoch
@@ -1250,7 +1250,7 @@ WITH params AS (
            -- by construction, and it must never park the job at the
            -- head of the dispatch order either.
             GREATEST($3::interval, {MIN_DEFERRAL_INTERVAL_SQL}) AS effective_delay,
-            $4::int AS progress_seq,
+            $4::bigint AS progress_seq,
             $5::jsonb AS progress_state,
             $6::int AS attempt,
             $7::bigint AS claim_epoch
@@ -1468,7 +1468,7 @@ WITH params AS (
            CASE WHEN $4::interval > interval '0'
                 THEN GREATEST($4::interval, {MIN_DEFERRAL_INTERVAL_SQL})
                 ELSE interval '0' END AS effective_hold,
-           $5::int AS progress_seq,
+           $5::bigint AS progress_seq,
            $6::jsonb AS progress_state,
            $7::bigint AS claim_epoch
 ),

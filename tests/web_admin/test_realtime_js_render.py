@@ -59,6 +59,14 @@ const fs = require("fs");
 const src = fs.readFileSync(process.argv[process.argv.length - 2], "utf8");
 const scenario = process.argv[process.argv.length - 1];
 
+// A state object nested *depth* levels deep ({"a": {"a": ... 1}}), the
+// shape the deep-data monster ships.
+function deepState(depth) {
+    let v = 1;
+    for (let i = 0; i < depth; i++) v = { a: v };
+    return v;
+}
+
 const SCENARIOS = {
     // One changed snapshot, then the same snapshot re-flushed with a
     // bumped seq and a fresh ts: the repeated identical polls must write
@@ -98,9 +106,36 @@ const SCENARIOS = {
     "unchanged-cadence": {
         seed: { seq: 0, state: {} },
         polls: [
-            { status: "running", progress_seq: 2, progress_state: { percent: 50, step: "stage", detail: "half" }, etag: false },
+            { status: "running", progress_seq: 2, progress_state: { percent: 50, step: "stage", detail: "half" } },
             { notModified: true },
             { notModified: true },
+        ],
+    },
+    // The seq monster at the double-precision boundary: the poll body's
+    // progress_seq arrives as a JS number, and 2^53 + 1 parses back as
+    // exactly 2^53 - the value the cursor already holds. The cursor must
+    // come from the ETag (the exact decimal), so the tick RENDERS instead
+    // of being dropped as a duplicate of the state before it. Both polls'
+    // bodies carry the mangled double (the first the plain 2^53 value the
+    // second's body would parse to); the second's ETag carries the exact
+    // 2^53 + 1 the server compared.
+    "bigint-seq-collision": {
+        seed: { seq: 0, state: {} },
+        polls: [
+            { status: "running", progress_seq: 9007199254740992, progress_state: { percent: 50, step: "stage", detail: "half" } },
+            { status: "running", progress_seq: 9007199254740992, etag: "9007199254740993", progress_state: { percent: 75, step: "stage", detail: "more" } },
+        ],
+    },
+    // The data monster: a progress_state whose data is nested 10000 deep.
+    // The fingerprint machinery (canonicalize + JSON.stringify) used to
+    // recurse unbounded and RangeError on exactly this shape, killing the
+    // poll's then-chain: the tick wrote nothing and every later tick was
+    // swallowed by the same throw. Depth-capped, the tick renders and the
+    // machine stands.
+    "deeply-nested-data": {
+        seed: { seq: 0, state: {} },
+        polls: [
+            { status: "running", progress_seq: 2, progress_state: { step: "deep", data: deepState(10000) } },
         ],
     },
 };
@@ -197,29 +232,47 @@ global.document = {
 
 let pollCount = 0;
 
-global.fetch = (url, opts) => ({
-    then(f1) {
-        net.push(`fetch:${url.split("?")[0]}`);
-        if (opts && opts.headers && opts.headers["If-None-Match"] !== undefined) {
-            net.push(`inm:${opts.headers["If-None-Match"]}`);
+// A real promise chain: the module's poll path awaits ``res.json()``
+// (the browser contract), so the stub answers with one and the async
+// timer pump below drains the microtasks between ticks.
+global.fetch = async (url, opts) => {
+    net.push(`fetch:${url.split("?")[0]}`);
+    if (opts && opts.headers && opts.headers["If-None-Match"] !== undefined) {
+        net.push(`inm:${opts.headers["If-None-Match"]}`);
+    }
+    let status = 200;
+    let body = { status: "running", progress_seq: 0, progress_state: {} };
+    let scriptedEtag = null;
+    if (config && url.endsWith("/state")) {
+        const scripted = config.polls[pollCount] ?? config.polls[config.polls.length - 1];
+        pollCount += 1;
+        if (scripted.notModified) {
+            status = 304;
+        } else {
+            body = scripted;
+            scriptedEtag = scripted.etag ?? null;
         }
-        let status = 200;
-        let body = { status: "running", progress_seq: 0, progress_state: {} };
-        if (config && url.endsWith("/state")) {
-            const scripted = config.polls[pollCount] ?? config.polls[config.polls.length - 1];
-            pollCount += 1;
-            if (scripted.notModified) {
-                status = 304;
-            } else {
-                body = scripted;
-            }
-        } else if (url.endsWith("/sse/mode")) {
-            body = { realtime: sseScenario };
-        }
-        const response = { status, json: () => body };
-        return { then(f2) { f2(f1(response)); return { catch() {} }; } };
-    },
-});
+    } else if (url.endsWith("/sse/mode")) {
+        body = { realtime: sseScenario };
+    }
+    // The state endpoint sets an ETag on every answer: the exact decimal
+    // progress_seq, the cursor's precision-safe source. A scenario can
+    // override it (``etag``) to stage the double-precision collision -
+    // body.progress_seq mangled by JSON parsing, ETag exact.
+    const responseEtag = status === 304 || !body || body.progress_seq === undefined
+        ? null
+        : `"${body.progress_seq}"`;
+    return {
+        status,
+        json: () => Promise.resolve(body),
+        headers: {
+            get(name) {
+                if (name.toLowerCase() !== "etag") return null;
+                return scriptedEtag !== null ? `"${scriptedEtag}"` : responseEtag;
+            },
+        },
+    };
+};
 
 global.EventSource = class {
     constructor(url) {
@@ -237,38 +290,47 @@ global.EventSource = class {
 global.setInterval = (fn, ms) => { const id = nextTimer++; timers.push({ id, fn, ms, due: now + ms }); return id; };
 global.clearInterval = (id) => { timers = timers.filter((t) => t.id !== id); };
 
-function advanceOneTick() {
+// One macrotask hop per fired timer: the poll's promise callbacks are
+// microtasks, so the pump yields once after each firing to let them land
+// BEFORE the next tick - the per-tick log segmentation depends on it.
+async function advanceOneTick() {
     const target = now + POLL_INTERVAL_MS;
     while (true) {
         const due = timers.filter((t) => t.due <= target).sort((a, b) => a.due - b.due)[0];
         if (!due) break;
         now = due.due; due.due += due.ms; due.fn();
+        await new Promise((resolve) => setImmediate(resolve));
     }
     now = target;
+    await new Promise((resolve) => setImmediate(resolve));
 }
 
-new Function(src)();
-if (sseScenario) {
-    // A realtime page whose stream drops mid-flight (a proxy blip): the
-    // badge must stay calm while polling bridges the gap, and the badge
-    // only moves when the periodic probe - the authority - says so.
-    mark("poll:1");
-    advanceOneTick();
-    global.lastEventSource.emitError();
-    mark("poll:2");
-    advanceOneTick();
-    // The probe still reports Redis healthy: no mode transition.
-    global.lastEventSource.emitOpen();
-    mark("poll:3");
-    advanceOneTick();
-} else {
-    for (let i = 0; i < config.polls.length; i += 1) {
-        mark(`poll:${i + 1}`);
-        advanceOneTick();
+async function main() {
+    new Function(src)();
+    if (sseScenario) {
+        // A realtime page whose stream drops mid-flight (a proxy blip): the
+        // badge must stay calm while polling bridges the gap, and the badge
+        // only moves when the periodic probe - the authority - says so.
+        mark("poll:1");
+        await advanceOneTick();
+        global.lastEventSource.emitError();
+        mark("poll:2");
+        await advanceOneTick();
+        // The probe still reports Redis healthy: no mode transition.
+        global.lastEventSource.emitOpen();
+        mark("poll:3");
+        await advanceOneTick();
+    } else {
+        for (let i = 0; i < config.polls.length; i += 1) {
+            mark(`poll:${i + 1}`);
+            await advanceOneTick();
+        }
     }
+    mark(`mode:${badge.attrs["data-mode"]}`);
+    process.stdout.write(JSON.stringify({ dom, net }));
 }
-mark(`mode:${badge.attrs["data-mode"]}`);
-process.stdout.write(JSON.stringify({ dom, net }));
+
+main();
 """
 
 
@@ -425,3 +487,48 @@ def test_a_dropped_stream_does_not_flip_the_badge_to_degraded() -> None:
     assert not any(entry.startswith("fetch:/jobs/api/job") for entry in after_reopen), (
         f"the bridging poll must stand down when the stream reconnects: {after_reopen}"
     )
+
+
+@requires_node
+def test_a_seq_at_the_double_precision_boundary_still_renders() -> None:
+    """The seq monster at 2^53: the poll body's ``progress_seq`` arrives as
+    a JS double, and 9007199254740993 parses back as exactly 9007199254740992
+    - the value the cursor already holds - so under the Number-based gate
+    the tick compared equal to the cursor and was dropped as a duplicate:
+    the timeline froze on the state before it, forever. The cursor must
+    come from the ETag header (the exact decimal the server compares), so
+    the changed state at seq 2^53 + 1 RENDERS."""
+    out = _drive("bigint-seq-collision")
+    segments = _segments(out["dom"])
+
+    first = segments[1]
+    assert any(entry.startswith("timeline-append:") for entry in first), (
+        f"the first poll (seq 2^53) renders the entry: {first}"
+    )
+    assert segments[2] == ["width:div3=75%", "text:div4=more", "text:div5=75% · stage"], (
+        f"the tick at seq 2^53 + 1 must advance the exact cursor and patch "
+        f"its nodes, not be dropped as a duplicate of 2^53: {segments[2]}"
+    )
+    _no_scroll(out["dom"])
+
+
+@requires_node
+def test_a_deeply_nested_data_monster_cannot_crash_the_fingerprint() -> None:
+    """The data monster: a progress state nested 10000 deep used to
+    RangeError the fingerprint's recursive canonicalize (and the
+    JSON.stringify beneath it) - the poll's then-chain died mid-tick, the
+    tick wrote nothing, and every later tick died the same way: the
+    timeline froze with stale content while Postgres held new state. The
+    depth-capped canonicalize degrades gracefully: the tick renders, the
+    data node degrades to its notice, and the machine stands."""
+    out = _drive("deeply-nested-data")
+    segments = _segments(out["dom"])
+
+    first = segments[1]
+    assert any(entry.startswith("timeline-append:") for entry in first), (
+        f"the deep-data tick must render the entry, not throw: {first}"
+    )
+    assert any(entry.startswith("text:") and entry.endswith("=deep") for entry in first), (
+        f"the deep-data tick must render the state's own fields: {first}"
+    )
+    _no_scroll(out["dom"])

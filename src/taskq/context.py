@@ -8,6 +8,7 @@ handed to worker actors. :class:`SubJobEnqueuer` is defined in
 from __future__ import annotations
 
 import asyncio
+import math
 import threading
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -18,7 +19,12 @@ import structlog
 from opentelemetry.trace import Span
 from pydantic import BaseModel
 
-from taskq._json import dumps
+from taskq._json import (
+    NUL_JSONB_ERROR,
+    _encoded_has_nul,  # pyright: ignore[reportPrivateUsage]  # Why: the byte-level NUL scan runs on the bytes the size check already encoded - a second encode of the same dict to reach a public wrapper would pay the walk the embed exists to avoid.
+    check_no_nul_str,
+    dumps,
+)
 from taskq.exceptions import ProgressTooLarge
 from taskq.progress._buffer import _EncodedProgressData, _PendingPublish
 from taskq.progress._publish import _publish_progress_event, _publish_progress_event_coalesced
@@ -306,6 +312,45 @@ class JobContext[P: BaseModel]:
         :func:`taskq.progress._publish._publish_progress_event_coalesced`
         for the full residual.
         """
+        # Numeric type-and-finiteness gates FIRST, before any serialization
+        # or buffer mutation (the established no-mutation-on-raise contract
+        # this call's other guards hold): the buffer's retire protocol keys
+        # on ``==`` equality between the pending state and the flushed
+        # snapshot, and ``nan != nan`` is True in Python, so a single
+        # ``percent=float("nan")`` call would never retire its pending
+        # entry - the buffer stays dirty forever and the flush loop
+        # re-writes the row EVERY tick for the job's remaining lifetime
+        # (unbounded work a one-line actor bug produces). The same gate
+        # keeps the wire honest: orjson and pydantic both silently
+        # serialize a non-finite float as ``null``, so today's inf percent
+        # is stored as a null it never declared, and a str percent ("half")
+        # coerces onto the Redis event but stores as a string in the row -
+        # the two progress surfaces diverging. Rejected at the trust
+        # boundary instead, the settings.py ``_finite_float`` hook's rule
+        # (finiteness only; no range: a percent of 150.0 stays legal, range
+        # is the actor's semantics) applied at the runtime gate.
+        if percent is not None:
+            # The isinstance checks look unnecessary to a type checker
+            # because the annotations say float | None - actor code is
+            # under no such discipline at runtime, and the confused types
+            # are exactly what this gate exists for (see the tests that
+            # feed a str percent through the real path).
+            if isinstance(percent, bool) or not isinstance(  # pyright: ignore[reportUnnecessaryIsInstance]
+                percent, (int, float)
+            ):
+                raise TypeError(f"percent must be a number, got {type(percent).__name__}")
+            if not math.isfinite(percent):
+                raise ValueError(f"percent must be a finite number, got {percent!r}")
+        if step is not None and (isinstance(step, bool) or not isinstance(step, int)):  # pyright: ignore[reportUnnecessaryIsInstance]
+            # An int on the wire (``ProgressEvent.step: int | None``); a
+            # non-int step passes the buffer today and then fails the
+            # publish's pydantic validation downstream (the event silently
+            # dropped, a progress-publish-failure logged per call) while
+            # the flush still stores the junk - refused here instead.
+            raise TypeError(f"step must be an int, got {type(step).__name__}")
+        if detail is not None and not isinstance(detail, str):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise TypeError(f"detail must be a str, got {type(detail).__name__}")
+
         data_json: bytes | None = None
         if (data is not None or detail is not None) and self._worker_settings is not None:
             # Essential serialization, not redundant with the publish
@@ -329,6 +374,18 @@ class JobContext[P: BaseModel]:
                 limit = self._worker_settings.progress_data_max_bytes
                 if len(data_json) > limit:
                     raise ProgressTooLarge(limit=limit, actual=len(data_json))
+                # The jsonb NUL guard at the caller-supplied door, on the
+                # bytes already encoded above (no second walk): a NUL
+                # anywhere in ``data`` is refused here exactly as the
+                # enqueue door refuses it in a payload, because downstream
+                # it is the same permanent jsonb defect - the flush's own
+                # guard would only SKIP the row (and re-log the error every
+                # tick forever, the actor none the wiser), the durable
+                # progress never landing. Refusal at the call is the
+                # actor-visible failure; the flush guard stays as the
+                # defense-in-depth for direct buffer writers.
+                if _encoded_has_nul(data_json):
+                    raise ValueError(NUL_JSONB_ERROR)
             if detail is not None:
                 # The detail string passes through the same publish-time
                 # serialization ``data`` does: an unencodable detail (a lone
@@ -339,7 +396,21 @@ class JobContext[P: BaseModel]:
                 # unwired context (direct actor testing) falls through to
                 # the write boundary, which escapes the unencodable form
                 # instead of stranding the job.
-                dumps(detail)
+                detail_json = dumps(detail)
+                # The same bound ``data`` obeys, measured the same way
+                # (serialized bytes): a detail is unbounded today, and the
+                # coalesce buffer holds the LATEST value only, so a
+                # multi-megabyte detail would ride every flush and TOAST the
+                # jobs row's progress_state jsonb at actor call rate.
+                detail_limit = self._worker_settings.progress_data_max_bytes
+                if len(detail_json) > detail_limit:
+                    raise ProgressTooLarge(limit=detail_limit, actual=len(detail_json))
+                # Caller-supplied text: refused at the door (the enqueue
+                # door's contract), never escaped - the derived-text escape
+                # (sanitize_nul_str) is for text the worker produced, and a
+                # NUL in a detail the actor chose is a data defect the
+                # actor must see.
+                check_no_nul_str(detail, what="detail")
 
         if self._progress_buffers is None:
             # No coalesce buffer wired, so this call, publish included ,
