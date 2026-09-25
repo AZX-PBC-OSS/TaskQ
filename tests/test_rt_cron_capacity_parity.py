@@ -29,7 +29,7 @@ configuration ("never accept any jobs", ``taskq/actor.py``).
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import UUID
 
 import asyncpg
