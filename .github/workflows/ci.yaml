@@ -84,6 +84,14 @@ jobs:
 
   test:
     # The per-interpreter suite: ALL extras installed, the whole test suite
+    # -n 2, not -n 4: the lanes were calibrated for the 8-core larger
+    # runner (a dedicated core per worker) but run on the 4-core standard
+    # runner (the labels matched none): at -n 4 the four workers plus the
+    # PG and Redis containers all contend for 4 cores, and every
+    # sub-second settle budget in the suite becomes a lottery (the
+    # moving-red class of 2026-09-24/25: a different test each run, all
+    # green solo). The 451 precedent: the density is the defect.
+
     # except the load-sensitive family (which owns its serial lane below).
     # One leg per Python version replaces the old 12-leg matrix (3 x 4
     # extra-sets, each re-running the same 9,000 tests with different skips):
@@ -94,7 +102,7 @@ jobs:
     # stand-in until the org's larger-runner labels exist: the pinned
     # labels matched no runner and queued these legs forever.
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
@@ -154,7 +162,7 @@ jobs:
         # faulthandler timer cannot see and would dump on every run.
         # Dump-only on purpose: a worker that exits on the dump would turn
         # pytest-timeout's graceful per-test failure into a lost worker.
-        run: uv run --no-sync pytest -n 4 -m "not slow and not load_sensitive" -o faulthandler_timeout=300
+        run: uv run --no-sync pytest -n 2 -m "not slow and not load_sensitive" -o faulthandler_timeout=300
 
   test-extras:
     # The extra-gated families, one leg per extra: install the extra, run
@@ -165,7 +173,7 @@ jobs:
     # safety net for local runs without selection; under selection they are
     # dead code by construction.
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     strategy:
       matrix:
         include:
@@ -198,7 +206,7 @@ jobs:
     # interplay, container contention) surfaces here rather than in a
     # user's install. Small legs, standard runners.
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     strategy:
       matrix:
         include:
@@ -238,7 +246,7 @@ jobs:
     # nothing - the summary is parsed and any skip, deselection, or
     # failure fails the job. Bump the floor when the module grows.
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
 
@@ -288,7 +296,7 @@ jobs:
     # has always run -n 2), and the wall-clock scenarios must not tighten
     # further under heavier packing.
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
@@ -311,7 +319,7 @@ jobs:
     # nothing for a serial lane). Every other lane deselects the family via
     # "not load_sensitive"; this lane is the one place it runs.
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
 
@@ -411,7 +419,7 @@ jobs:
     # suite's isolation contract assumes one test at a time). ubuntu-latest
     # provides Docker.
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
@@ -440,7 +448,7 @@ jobs:
     # ubuntu-latest provides Docker; the dev group already carries
     # testcontainers, so no e2e group is needed here.
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
