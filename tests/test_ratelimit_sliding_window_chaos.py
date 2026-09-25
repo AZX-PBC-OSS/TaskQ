@@ -52,7 +52,7 @@ def _settings_no_fallback(module_pg_schema: ModulePgSchema) -> WorkerSettings:
 
 
 async def _make_redis_client(redis_url: str) -> redis_async.Redis:
-    return redis_async.from_url(redis_url, decode_responses=False)
+    return redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
 
 
 # ── Redis→PG degradation - parametrised over style ──────────────

@@ -193,7 +193,7 @@ async def test_sliding_window_redis_nodes_share_the_time_clock(redis_url: str) -
         name=name, limit=1, window=timedelta(seconds=60), backend="redis", style="log"
     )
 
-    client = redis_async.from_url(redis_url, decode_responses=False)
+    client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
     try:
         a = await node_a.acquire(redis_client=client, clock=SystemClock(), settings=settings)
         b = await node_b.acquire(
@@ -231,7 +231,7 @@ async def test_sliding_window_redis_gcra_tat_not_poisoned_by_skewed_caller(
         name=name, limit=60, window=timedelta(seconds=60), backend="redis", style="gcra"
     )
 
-    client = redis_async.from_url(redis_url, decode_responses=False)
+    client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
     try:
         a = await node_a.acquire(
             redis_client=client,
@@ -261,7 +261,7 @@ async def test_token_bucket_redis_refill_measured_by_redis_time(redis_url: str) 
     node_a = TokenBucket(name=name, capacity=1.0, refill_per_second=0.02, backend="redis")
     node_b = TokenBucket(name=name, capacity=1.0, refill_per_second=0.02, backend="redis")
 
-    client = redis_async.from_url(redis_url, decode_responses=False)
+    client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
     try:
         a = await node_a.acquire(
             count=1.0, redis_client=client, clock=SystemClock(), settings=settings

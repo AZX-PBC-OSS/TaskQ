@@ -116,7 +116,7 @@ class TestModuleRedisUrl:
     def test_redis_is_reachable(self, module_redis_url: str) -> None:
         import redis as redis_sync
 
-        r = redis_sync.from_url(module_redis_url, decode_responses=False)
+        r = redis_sync.from_url(module_redis_url, decode_responses=False, socket_timeout=None)
         try:
             assert r.ping()
         finally:
@@ -215,7 +215,7 @@ class TestCleanRedisUrl:
     def test_can_write_key(self, clean_redis_url: str) -> None:
         import redis as redis_sync
 
-        r = redis_sync.from_url(clean_redis_url, decode_responses=True)
+        r = redis_sync.from_url(clean_redis_url, decode_responses=True, socket_timeout=None)
         try:
             r.set("test_key", "hello")
             assert r.get("test_key") == "hello"
@@ -225,7 +225,7 @@ class TestCleanRedisUrl:
     def test_no_slop_from_previous_test(self, clean_redis_url: str) -> None:
         import redis as redis_sync
 
-        r = redis_sync.from_url(clean_redis_url, decode_responses=True)
+        r = redis_sync.from_url(clean_redis_url, decode_responses=True, socket_timeout=None)
         try:
             assert r.get("test_key") is None
         finally:
