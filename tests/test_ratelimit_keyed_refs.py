@@ -11,6 +11,7 @@ given - that path is exercised against real Postgres in
 ``tests/test_ratelimit_keyed_refs_pg.py``).
 """
 
+import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from enum import Enum, StrEnum
@@ -601,6 +602,75 @@ async def test_evict_idle_keyed_reservations_re_registration_after_eviction_is_i
 
     assert name == "session-cap:s1"
     assert len(reg.reservations) == 1
+
+
+async def test_eviction_reclaims_the_denial_retry_release_wake_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A denied admission's retry parks on its bucket's release-wake event
+    (``bucket_release_event``, the public surface the consumer's retry path
+    calls after a ``ReservationUnavailable``), and every distinct keyed name
+    that ever denied creates one. The event must ride the keyed lifecycle:
+    eviction pops it with the same idle criterion, so N deny-evict cycles
+    leave the dict at its baseline - pre-fix every cycle left an
+    asyncio.Event behind forever, unbounded in the caller-controlled key
+    space (the same class the registry-entry and slot-row reclamation
+    closed). A waiter holding a popped object is never stranded: the
+    retry's wait is bounded and its return (wake or timeout) falls through
+    to the availability re-probe, and a re-materialized bucket gets a
+    fresh event. Private read Why: the dict has no public reader - the pin
+    asserts its population directly, the same convention the
+    ``_clean_rate_limit_registry`` guard below uses.
+    """
+    from importlib import import_module
+
+    registry_mod = import_module("taskq.ratelimit.registry")
+
+    reg = RateLimitRegistry()
+    ref = _keyed_ref(base_name="session-cap")
+
+    fake_time = 1000.0
+    monkeypatch.setattr(registry_mod, "monotonic", lambda: fake_time)
+
+    # N deny-evict cycles: materialize the keyed bucket, then the denial
+    # parks its retry on the bucket's release event. Three distinct keys
+    # under sustained denials is the exact high-cardinality shape.
+    denied_names = [f"session-cap:s{i}" for i in range(3)]
+    parked: dict[str, asyncio.Event] = {}
+    for name in denied_names:
+        await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
+            ref,
+            payload=_DefaultPayload(session_id=name.removeprefix("session-cap:")),
+            pg_pool=None,
+            settings=None,
+        )
+        parked[name] = reg.bucket_release_event(name)
+
+    # A fresh (recently used) key denies too: its event must SURVIVE the
+    # eviction pass, the pop is scoped to the evicted names, not global.
+    fake_time = 1100.0  # 100s later - the s* keys are now idle-stale
+    await reg._resolve_reservation_name(
+        ref, payload=_DefaultPayload(session_id="fresh"), pg_pool=None, settings=None
+    )  # pyright: ignore[reportPrivateUsage]
+    fresh_event = reg.bucket_release_event("session-cap:fresh")
+
+    evicted = reg.evict_idle_keyed_reservations(idle_for=timedelta(seconds=50))
+
+    assert evicted == 3, "fixture broken: the idle keyed buckets were not evicted"
+    assert set(reg._reservation_release_events) == {"session-cap:fresh"}, (  # pyright: ignore[reportPrivateUsage]
+        "the denial-retry release-wake events outlived their buckets: "
+        f"{sorted(reg._reservation_release_events)} - the dict grows without "
+        "bound under sustained denials on high-cardinality keyed reservations"
+    )
+    assert reg._reservation_release_events["session-cap:fresh"] is fresh_event  # pyright: ignore[reportPrivateUsage]
+
+    # Public-surface observable: a post-eviction denial on an evicted name
+    # parks on a FRESH event, never the evicted bucket's stale one.
+    assert reg.bucket_release_event("session-cap:s0") is not parked["session-cap:s0"], (
+        "the evicted bucket's stale release-wake event came back: the dict "
+        "entry was never reclaimed, every denial on every key ever seen "
+        "leaves one behind forever"
+    )
 
 
 # ── _clean_rate_limit_registry fixture isolation ──────────────────────

@@ -318,6 +318,7 @@ class TestPollFallback:
         # The producer's availability subtracts active jobs.
         deps.active_jobs = Mock(
             count=lambda: 0,
+            intent_count=lambda: 0,
             held_ids=lambda: [],
             mark_claimed=lambda jid: None,
             resolve_claim=lambda jid, tok=None: None,
@@ -386,6 +387,7 @@ class TestPollFallback:
         # The producer's availability subtracts active jobs.
         deps.active_jobs = Mock(
             count=lambda: 0,
+            intent_count=lambda: 0,
             held_ids=lambda: [],
             mark_claimed=lambda jid: None,
             resolve_claim=lambda jid, tok=None: None,
@@ -464,6 +466,7 @@ def _drain_capable(deps: Mock) -> None:
     deps.active_jobs = Mock(
         all=list,
         count=lambda: 0,
+        intent_count=lambda: 0,
         held_ids=lambda: [],
         mark_claimed=lambda jid: None,
         resolve_claim=lambda jid, tok=None: None,
@@ -576,6 +579,7 @@ class TestEagerRecheck:
         # The producer's availability subtracts active jobs.
         deps.active_jobs = Mock(
             count=lambda: 0,
+            intent_count=lambda: 0,
             held_ids=lambda: [],
             mark_claimed=lambda jid: None,
             resolve_claim=lambda jid, tok=None: None,
@@ -657,6 +661,7 @@ class TestNotifyDisabled:
         # The producer's availability subtracts active jobs.
         deps.active_jobs = Mock(
             count=lambda: 0,
+            intent_count=lambda: 0,
             held_ids=lambda: [],
             mark_claimed=lambda jid: None,
             resolve_claim=lambda jid, tok=None: None,
@@ -811,6 +816,7 @@ def mock_deps() -> tuple[Mock, PostgresBackend]:
     # The producer's availability subtracts active jobs.
     deps.active_jobs = Mock(
         count=lambda: 0,
+        intent_count=lambda: 0,
         held_ids=lambda: [],
         mark_claimed=lambda jid: None,
         resolve_claim=lambda jid, tok=None: None,

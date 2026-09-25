@@ -110,6 +110,7 @@ def _producer_deps(
         active_jobs=SimpleNamespace(
             all=list,
             count=lambda: 0,
+            intent_count=lambda: 0,
             mark_enqueued=registry.mark_enqueued,
             queued_ids=registry.queued_ids,
             mark_claimed=registry.mark_claimed,

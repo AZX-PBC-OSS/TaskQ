@@ -221,7 +221,8 @@ async def producer_loop(
        ``poll_interval`` fallback timer, whichever fires first.
     2. Calls ``backend.dispatch_batch()`` to atomically claim up to the
        worker's genuinely free slots, ``local_queue.maxsize -
-       local_queue.qsize() - active_jobs.count()`` pending jobs
+       local_queue.qsize() - active_jobs.count() -
+       active_jobs.intent_count()`` pending jobs
        (pending → running) using ``FOR UPDATE SKIP LOCKED``.
     3. Puts each returned :class:`JobRow` onto ``local_queue`` for the
        consumer tasks.
@@ -238,10 +239,11 @@ async def producer_loop(
     ``max_concurrency`` rows locked (a full local queue while every
     consumer was busy still looked like ``max_concurrency`` free slots:
     double reclaim exposure on a crash, and head-of-line latency behind
-    long jobs while peer workers idle). The transient window between a
-    consumer's ``get()`` and the job's ``active_jobs`` register is
-    uncounted for one scheduler step (bounded by the consumer count);
-    the completion-side slot frees at the consumer's ``deregister``, and
+    long jobs while peer workers idle). The get()-to-register window is
+    counted through the claim intent the consumer loop records at the
+    take, so a consumer paused in DI resolution or a denied-admission
+    local retry is still a held slot to this arithmetic; the
+    completion-side slot frees at the consumer's ``deregister``, and
     the wake the consumer sets there re-arms this producer the moment
     accounting settles, no claim waits for the next poll tick.
 
@@ -326,7 +328,10 @@ async def producer_loop(
         while not (shutdown_event.is_set() or producer_stop_event.is_set()):
             deps.liveness.tick("producer", period=poll_interval)
             # The worker's genuinely free slots: every slot is
-            # either empty, lent to a queued row (qsize), or occupied by
+            # either empty, lent to a queued row (qsize), claimed by a
+            # consumer whose registration has not absorbed the take yet
+            # (intent_count: the claim-to-register window where DI
+            # resolution and the admission acquire run), or occupied by
             # a running job (active_jobs). Sizing the claim by queue
             # emptiness alone counted a fully-busy worker's slots as
             # free whenever its queue had drained, up to 2x
@@ -338,7 +343,12 @@ async def producer_loop(
             # consumer count; the reverse, a row finished but not yet
             # deregistered, delays only its own slot's re-claim until
             # the deregister-side wake, never a poll tick.
-            available = local_queue.maxsize - local_queue.qsize() - deps.active_jobs.count()
+            available = (
+                local_queue.maxsize
+                - local_queue.qsize()
+                - deps.active_jobs.count()
+                - deps.active_jobs.intent_count()
+            )
             if available <= 0:
                 # All consumer slots busy and the local queue full. A
                 # consumer's get() frees a queue slot and a job's
@@ -448,9 +458,28 @@ async def producer_loop(
             )
             stop_wait = asyncio.create_task(producer_stop_event.wait())
             shutdown_wait = asyncio.create_task(shutdown_event.wait())
+            # A consumer's slot release (get() or deregister) is itself a
+            # wake: an empty round caused by a closed admission gate (the
+            # queue-cap damper admits nothing while a running cohort holds
+            # the cap) self-corrects the moment that cohort completes, and
+            # the completion's release lands here as this event. Without
+            # it the producer sleeps the full fallback poll (5s shipped)
+            # with pending work, free slots, and an idle DB: the burst
+            # cadence collapses to one cohort per poll. An empty round
+            # on a genuinely drained queue never sees the event set and
+            # still waits out the poll.
+            slot_wait = asyncio.create_task(slot_freed.wait())
 
             all_waits = [
-                w for w in (wake_wait, poll_wait, stop_wait, shutdown_wait) if w is not None
+                w
+                for w in (
+                    wake_wait,
+                    poll_wait,
+                    stop_wait,
+                    shutdown_wait,
+                    slot_wait,
+                )
+                if w is not None
             ]
 
             try:
@@ -468,6 +497,15 @@ async def producer_loop(
                         task.cancel()
                         with contextlib.suppress(asyncio.CancelledError):
                             await task
+
+            # Cleared after the wait, not before: a release landing while
+            # the round ran is covered by the round's own claim (the loop
+            # continues past a full round without waiting); one landing
+            # between this clear and the next round's snapshot re-arms the
+            # event, and the next empty round's wait returns to it
+            # immediately, a bounded re-check, never a hot loop (the wait
+            # is re-entered only after a round that claimed nothing).
+            slot_freed.clear()
 
             if poll_wait in _done:
                 # The fallback poll is its own cadence, already jittered

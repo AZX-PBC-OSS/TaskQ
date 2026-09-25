@@ -278,6 +278,26 @@ class RateLimitRegistry:
     def __init__(self) -> None:
         self._rate_limits: dict[str, TokenBucket | SlidingWindow] = {}
         self._reservations: dict[str, ConcurrencyReservation] = {}
+        # Per-reservation release signals, created on demand: a consumer
+        # whose admission acquire was denied parks its bounded local retry
+        # on its bucket's event instead of a bare sleep, so a LIVE holder's
+        # completion (a release this process performed) wakes the retry
+        # within one loop turn - the freed slot is then contested against
+        # fresh claimants' acquires, which the retry's head start wins.
+        # The event is a WAKE SIGNAL, never a token: any number of waiters
+        # wake on one release and re-probe, each denial re-arming its own
+        # wait. Cross-process releases (a peer worker's) are not seen here;
+        # the retry's timeout floor covers them.
+        # Reclaimed with the keyed lifecycle: evict_idle_keyed_reservations()
+        # pops the entry alongside the bucket itself (same idle criterion),
+        # so high-cardinality keyed reservations under sustained denials do
+        # not grow this dict without bound. A waiter holding a popped event
+        # object is never stranded: its wait is bounded (the retry's backoff
+        # floor) and its return - wake or timeout - falls through to the
+        # availability re-probe, which is the correctness anchor; a
+        # re-materialized bucket gets a fresh event, so no stale set()
+        # crosses the eviction boundary.
+        self._reservation_release_events: dict[str, asyncio.Event] = {}
         # Names of reservations materialized from a KeyedReservationRef
         # (as opposed to a static @actor(reservations=["name"]) entry),
         # and the monotonic time each was last acquired, used only by
@@ -1505,6 +1525,8 @@ class RateLimitRegistry:
         for handle in reversed(acquired):
             try:
                 await handle.release()
+                if isinstance(handle, ReservationHandle):
+                    self._notify_bucket_release(handle.name)
             except Exception as exc:
                 backend = (
                     handle.decision.backend if isinstance(handle, RateLimitHandle) else "postgres"
@@ -1517,6 +1539,32 @@ class RateLimitRegistry:
                     acquired_count=len(acquired),
                 )
                 record_ratelimit_refund_failure(handle.name, backend)
+
+    def _notify_bucket_release(self, bucket_name: str) -> None:
+        """Wake every local retry parked on *bucket_name*'s release event.
+
+        Called after a successful reservation release: a slot this process
+        freed is a slot a denied consumer's next acquire can win, and the
+        wake is what lets that retry win the race against a fresh claimant's
+        acquire (the retry starts ~1 loop turn after the release, the fresh
+        claimant's path is a get plus DI resolution away). Events are
+        created here on demand; a bucket nobody retried on has no event and
+        this is one dict probe.
+        """
+        event = self._reservation_release_events.get(bucket_name)
+        if event is not None:
+            event.set()
+
+    def bucket_release_event(self, bucket_name: str) -> "asyncio.Event":
+        """Return (creating on first use) the release-wake event for
+        *bucket_name*. The retry path in ``taskq.worker._consumer`` waits
+        on this between acquire attempts; see ``_notify_bucket_release``.
+        """
+        event = self._reservation_release_events.get(bucket_name)
+        if event is None:
+            event = asyncio.Event()
+            self._reservation_release_events[bucket_name] = event
+        return event
 
     def _opportunistic_evict_reservations(self, settings: "WorkerSettings | None") -> None:
         """Idle-reservation scan, amortized to one per min-interval.
@@ -1639,8 +1687,11 @@ class RateLimitRegistry:
         (not leader-gated) with a 1-hour idle threshold; call directly for
         custom eviction windows.
 
-        Removes the in-memory registry entry and its acquire-recency
-        tracking, and RECORDS the bucket in the pending-reclaim set so
+        Removes the in-memory registry entry, its acquire-recency
+        tracking, and its release-wake event (the denial-retry's wake
+        signal, popped with the same idle criterion so sustained denials
+        under high key cardinality cannot grow the event dict without
+        bound), and RECORDS the bucket in the pending-reclaim set so
         its ``reservation_slots`` rows are deleted by
         :meth:`drain_pending_reservation_reclaims` on the same sweep
         cadence. The lock-expiry sweep is an ``UPDATE ... SET job_id =
@@ -1703,10 +1754,19 @@ class RateLimitRegistry:
         )
         # The heal stamps ride the registration's lifecycle: an evicted
         # bucket's window must not survive into a future re-registration
-        # of the same concrete name.
+        # of the same concrete name. The release-wake event rides the
+        # same lifecycle (see the dict's comment above): a keyed bucket
+        # that denies waiters creates an event on demand, and without
+        # this pop every distinct denied key would leave one behind
+        # forever - unbounded in the caller-controlled key space under
+        # sustained denials. A waiter holding the popped object is never
+        # stranded: its wait is bounded and falls through to the
+        # availability re-probe, and a re-materialized bucket gets a
+        # fresh event (no stale set() crosses the eviction boundary).
         for name in evicted:
             self._keyed_reservation_heal_attempted.pop(name, None)
             self._keyed_reservation_heal_failure_logged.pop(name, None)
+            self._reservation_release_events.pop(name, None)
         update_keyed_reclaim_pending(self._pending_reclaim_total())
         if vetoed:
             logger.warning(

@@ -454,7 +454,9 @@ def _producer_deps(ticks: _TickRecorder) -> SimpleNamespace:
         settings=settings,
         liveness=ticks,
         active_jobs=SimpleNamespace(
-            count=lambda: 0, mark_enqueued=ActiveJobRegistry().mark_enqueued
+            count=lambda: 0,
+            intent_count=lambda: 0,
+            mark_enqueued=ActiveJobRegistry().mark_enqueued,
         ),
         disowned_jobs=set(),
         dispatcher_pool=SimpleNamespace(),

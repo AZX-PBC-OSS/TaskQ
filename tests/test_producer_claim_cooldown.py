@@ -95,6 +95,7 @@ def _deps(*, maxsize: int, notify_enabled: bool) -> SimpleNamespace:
         # here never read the map).
         active_jobs=SimpleNamespace(
             count=lambda: 0,
+            intent_count=lambda: 0,
             mark_enqueued=ActiveJobRegistry().mark_enqueued,
             queued_ids=lambda: [],
         ),

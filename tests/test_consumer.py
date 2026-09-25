@@ -272,6 +272,7 @@ class _StubRateLimitRegistry:
         self.release_calls: list[dict[str, object]] = []
         self._acquire_side_effect = acquire_side_effect
         self._acquired: list[object] = [_STUB_HANDLE]
+        self._release_event = asyncio.Event()
 
     async def acquire_for_actor(
         self,
@@ -298,6 +299,9 @@ class _StubRateLimitRegistry:
         if self._acquire_side_effect is not None:
             raise self._acquire_side_effect
         return list(self._acquired)
+
+    def bucket_release_event(self, bucket_name: str) -> asyncio.Event:
+        return asyncio.Event()
 
     async def release_for_actor(
         self,
@@ -630,6 +634,10 @@ class _KeyFnRecordingRegistry:
         self.acquire_calls: list[dict[str, object]] = []
         self.release_calls: list[dict[str, object]] = []
         self.key_fn_received: list[BaseModel] = []
+        self._release_event = asyncio.Event()
+
+    def bucket_release_event(self, bucket_name: str) -> asyncio.Event:
+        return self._release_event
 
     async def acquire_for_actor(
         self,

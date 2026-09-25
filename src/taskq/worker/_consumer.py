@@ -195,6 +195,120 @@ per denial is a log flood, not a signal, the same bound the registry's
 keyed heal-failure emission applies. The per-occurrence aggregate stays
 on the ``ratelimit.acquire_dependency_failures`` counter."""
 
+_RESERVATION_DENIAL_RETRY_BACKOFF_S: Final[float] = 0.1
+"""Local wait between a reservation denial and this consumer's next
+acquire attempt (the no-release fallback cadence). The denial's snooze
+hint prices the earliest held LEASE's expiry, which is the crash bound:
+a LIVE holder frees its slot at its job's completion, an unknown but
+typically sub-lease horizon the acquire statement cannot read. The
+retry spends this process's own consumer slot to re-probe the bucket on
+this cadence, woken early by local releases, before accepting the
+hint-priced snooze."""
+
+_RESERVATION_DENIAL_RETRY_ATTEMPT_FLOOR: Final[int] = 10
+"""Lower bound on the acquire re-attempts a reservation denial earns
+when the worker's concurrency is unknown (a bare call without
+settings)."""
+
+
+def _denial_retry_attempts(settings: WorkerSettings | None) -> int:
+    """Re-attempt budget for one denied admission.
+
+    Scaled to the worker's own consumer count: the concurrent-denier
+    population is bounded by it (each denier holds one consumer slot),
+    and under a burst the bucket's holders release roughly one slot per
+    body length, each release letting about one waiting denier win, so a
+    denier needs at most one attempt per release until the denier cohort
+    is drained: twice the consumer count is attempt coverage with
+    margin. A worker with no settings (a bare ``consume_one_job`` call)
+    gets the floor.
+    """
+    mc = getattr(settings, "max_concurrency", None)
+    if not isinstance(mc, int) or mc <= 0:
+        return _RESERVATION_DENIAL_RETRY_ATTEMPT_FLOOR
+    return 2 * mc
+
+
+async def _acquire_for_actor_with_denial_retry(
+    registry: RateLimitRegistry,
+    *,
+    rate_limits: Sequence[str | KeyedRateLimitRef | TokenBucket | SlidingWindow],
+    reservations: Sequence[str | KeyedReservationRef | ConcurrencyReservation],
+    job_id: UUID,
+    worker_id: UUID,
+    payload: dict[str, object] | BaseModel | None,
+    redis_client: "redis_async.Redis | None",
+    pg_pool: "asyncpg.Pool | None",
+    clock: Clock,
+    settings: WorkerSettings | None,
+    job_log: structlog.stdlib.BoundLogger,
+) -> list[AcquiredResource]:
+    """Acquire the actor's rate-limit composition, re-probing a
+    reservation denial locally before accepting its hint-priced snooze.
+
+    A denial under a burst-shaped over-admission (the claim admits past a
+    queue cap before the holders' acquires commit, the cap's own post-claim
+    acquire is the authority that denies the excess) parks the job for the
+    earliest held lease's remaining life when snoozed, while the holders it
+    lost to complete and release their slots within one body length. The
+    lease hint is the CRASH bound (the holder dies, the sweep reclaims at
+    expiry), never the completion time of a live holder, so a snooze priced
+    from it strands the job past capacity that is about to free. The retry
+    re-probes the same composition on the local cadence: one acquire
+    statement per attempt, the composition's own rollback-on-denial keeps
+    every attempt all-or-nothing, and no claim, attempt counter, or snooze
+    write moves. When the budget exhausts (genuine saturation: the holders
+    keep their slots for the whole lease because their bodies do), the LAST
+    denial propagates and the caller's snooze path proceeds exactly as
+    before, its hint and doctrine unchanged.
+
+    Re-raised immediately, never retried: a ``source != "reservation"``
+    denial (a rate limit's own decision) and every non-denial exception
+    keep their existing routing.
+    """
+    last_attempt = _denial_retry_attempts(settings)
+    for attempt in range(last_attempt + 1):
+        try:
+            return await registry.acquire_for_actor(
+                rate_limits=rate_limits,
+                reservations=reservations,
+                job_id=job_id,
+                worker_id=worker_id,
+                payload=payload,
+                redis_client=redis_client,
+                pg_pool=pg_pool,
+                clock=clock,
+                settings=settings,
+            )
+        except ReservationUnavailable as exc:
+            if exc.source != "reservation" or attempt == last_attempt:
+                raise
+            if attempt == 0:
+                job_log.debug(
+                    "reservation-denial-local-retry",
+                    kind="reservation_denial_local_retry",
+                    bucket=exc.bucket_name,
+                    hint_seconds=exc.retry_after.total_seconds(),
+                    attempts=last_attempt,
+                    backoff_s=_RESERVATION_DENIAL_RETRY_BACKOFF_S,
+                )
+            # Wake on a local release of THIS bucket when one lands (a
+            # holder's completion frees the slot the retry is waiting
+            # for), falling back to the fixed cadence otherwise: a peer
+            # worker's release is not visible here, and neither is a
+            # bucket that stays held. The event is a wake signal, not a
+            # token: waking guarantees only that a release HAPPENED, the
+            # next acquire decides.
+            release_event = registry.bucket_release_event(exc.bucket_name)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    release_event.wait(),
+                    timeout=_RESERVATION_DENIAL_RETRY_BACKOFF_S,
+                )
+            release_event.clear()
+    raise AssertionError("unreachable: every loop iteration returns or raises")
+
+
 _dependency_failure_warned: dict[str, float] = {}
 """Monotonic stamp of the last emitted dependency-failure WARNING, keyed
 by error class (bounded: the stores' exception vocabulary)."""
@@ -661,7 +775,8 @@ async def consume_one_job(
 
     if _needs_acquire and rate_limit_registry is not None:
         try:
-            acquired = await rate_limit_registry.acquire_for_actor(
+            acquired = await _acquire_for_actor_with_denial_retry(
+                rate_limit_registry,
                 rate_limits=_rl_limits,
                 reservations=_rl_reservations,
                 job_id=job.id,
@@ -671,6 +786,7 @@ async def consume_one_job(
                 pg_pool=worker_pool,
                 clock=clock,
                 settings=settings,
+                job_log=job_log,
             )
         except ReservationUnavailable as e:
             # The handler owns the outcome tri-state (a snooze, a

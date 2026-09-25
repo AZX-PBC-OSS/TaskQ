@@ -637,6 +637,7 @@ async def test_producer_reowns_a_disowned_job_it_claims_again() -> None:
         # has somewhere to write.
         active_jobs=SimpleNamespace(
             count=lambda: 0,
+            intent_count=lambda: 0,
             mark_enqueued=ActiveJobRegistry().mark_enqueued,
             queued_ids=lambda: [],
         ),

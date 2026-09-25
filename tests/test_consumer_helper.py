@@ -67,6 +67,10 @@ class _StubRateLimitRegistry:
         acquire_side_effect: BaseException | None = None,
     ) -> None:
         self._acquire_side_effect = acquire_side_effect
+        self._release_event = asyncio.Event()
+
+    def bucket_release_event(self, bucket_name: str) -> asyncio.Event:
+        return self._release_event
 
     async def acquire_for_actor(
         self,

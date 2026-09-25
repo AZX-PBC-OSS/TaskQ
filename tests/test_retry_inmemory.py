@@ -10,6 +10,7 @@ handlers' hook-row and pre-actor-denial routing contracts via direct
 # Why: ActorRef creation with pydantic BaseModel in tests uses generic inference;
 # JobHandle has a public job_id property accessed directly.
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -865,6 +866,10 @@ class _AcquireDeniesRegistry:
 
     def __init__(self, exc: ReservationUnavailable) -> None:
         self._exc = exc
+        self._release_event = asyncio.Event()
+
+    def bucket_release_event(self, bucket_name: str) -> asyncio.Event:
+        return self._release_event
 
     async def acquire_for_actor(
         self,
