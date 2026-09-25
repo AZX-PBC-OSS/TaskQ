@@ -27,7 +27,12 @@ import pytest
 
 from taskq.backend.clock import Clock
 from taskq.backend.postgres import PostgresBackend
-from taskq.constants import events_channel, wake_channel, worker_channel
+from taskq.constants import (
+    events_channel,
+    leader_wake_channel,
+    wake_channel,
+    worker_channel,
+)
 from taskq.testing.assertions import wait_for, wait_for_condition
 from taskq.worker.notify import (
     _active_listeners,
@@ -120,7 +125,11 @@ def _make_channels(
     backend: PostgresBackend, worker_id: uuid.UUID = _WORKER_ID
 ) -> list[tuple[str, object]]:
     """Build a minimal channels list (wake + events + worker) for tests."""
-    from taskq.constants import events_channel, wake_channel, worker_channel
+    from taskq.constants import (
+        events_channel,
+        wake_channel,
+        worker_channel,
+    )
 
     schema = "taskq_test"
     return [
@@ -159,11 +168,12 @@ class TestListenerStartup:
 
         await asyncio.wait_for(_runner(), timeout=2.0)
 
-        assert conn.add_listener.call_count == 3
+        assert conn.add_listener.call_count == 4
         channels_registered = [c[0][0] for c in conn.add_listener.call_args_list]
         assert wake_channel("taskq_test") in channels_registered
         assert events_channel("taskq_test") in channels_registered
         assert worker_channel("taskq_test", str(_WORKER_ID)) in channels_registered
+        assert leader_wake_channel("taskq_test") in channels_registered
 
 
 # ---- Fan-out (wake channel) ----------------------------------------------------------------------
@@ -401,11 +411,12 @@ class TestShutdownPath:
 
         await asyncio.wait_for(_runner(), timeout=2.0)
 
-        assert conn.remove_listener.call_count == 3
+        assert conn.remove_listener.call_count == 4
         channels_removed = [c[0][0] for c in conn.remove_listener.call_args_list]
         assert wake_channel("taskq_test") in channels_removed
         assert events_channel("taskq_test") in channels_removed
         assert worker_channel("taskq_test", str(_WORKER_ID)) in channels_removed
+        assert leader_wake_channel("taskq_test") in channels_removed
 
         unlisten_calls = [
             c[0][0]

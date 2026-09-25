@@ -40,6 +40,7 @@ from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.heartbeat import heartbeat_loop
 from taskq.worker.run import producer_loop
+from taskq.worker.shutdown import ShutdownPhase
 from tests.conftest import _FakePool
 
 _START = datetime(2026, 1, 1, tzinfo=UTC)
@@ -84,9 +85,16 @@ class _DeadWriteBackend(InMemoryBackend):
 
 
 class _ConsumerDeps:
-    """The WorkerDeps fields consume_one_job reads, plus the disowned set."""
+    """The WorkerDeps fields consume_one_job reads, plus the disowned set.
+
+    ``shutdown_phase`` mirrors the production field's default: a worker
+    not shutting down is ``ShutdownPhase.NONE``, and the cancel handler's
+    missed-stamp guard reads it on every cancellation, so the fake must
+    carry the faithful value rather than omit the attribute.
+    """
 
     def __init__(self) -> None:
+        self.shutdown_phase: ShutdownPhase = ShutdownPhase.NONE
         self.progress_buffers: dict[UUID, Any] = {}
         self.worker_pool: asyncpg.Pool | None = None
         self.settings = WorkerSettings.load_from_dict(

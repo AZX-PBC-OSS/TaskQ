@@ -2521,6 +2521,19 @@ class Backend(Protocol):
         """
         ...
 
+    def subscribe_leader_wake(self) -> AsyncContextManager[asyncio.Event]:
+        """Return an async context manager yielding a fresh ``asyncio.Event``
+        that is set whenever a leader resign broadcast arrives on the
+        leadership wake channel (``leader_wake_channel``).
+
+        The election loop uses this to re-run the fenced elect immediately
+        when a peer hands the lease back, rather than waiting out the
+        heartbeat tick. The broadcast is a HINT: a backend with no LISTEN
+        wire simply never sets the event, and the loop keeps today's tick
+        cadence, which is the guarantee the crash bound rests on.
+        """
+        ...
+
     # ── Schedule CRUD ────────────────────────────────────────────────────
     async def create_schedule(self, args: ScheduleCreateArgs) -> ScheduleRecord: ...
 

@@ -321,6 +321,12 @@ class InMemoryBackend:
         self._wake_subscribers: set[asyncio.Event] = set()
         self._wake_queues: dict[asyncio.Event, frozenset[str] | None] = {}
         self._cancel_wake_subscribers: set[asyncio.Event] = set()
+        # Leadership wake registry: parity with the PG backend's
+        # subscribe_leader_wake keeps the differential tests honest about
+        # the subscription contract. The in-memory backend never emits the
+        # broadcast (there is no LISTEN wire); the event is set only by a
+        # test that drives the wake by hand.
+        self._leader_wake_subscribers: set[asyncio.Event] = set()
         self._actor_stubs: dict[str, StubFn] = {}
         self._actor_configs: dict[str, _InMemoryActorConfig] = {}
         self._actor_configs_meta: dict[str, ActorConfig] = {}
@@ -1019,6 +1025,14 @@ class InMemoryBackend:
     def subscribe_cancel_wake(self) -> AsyncContextManager[asyncio.Event]:
         event = asyncio.Event()
         return _SubscriberContext(event, self._cancel_wake_subscribers)
+
+    def subscribe_leader_wake(self) -> AsyncContextManager[asyncio.Event]:
+        """Parity with the PG backend: subscribe to the leader's resign
+        broadcast. Nothing in-memory emits it (no LISTEN wire), so a
+        subscriber keeps the heartbeat-tick cadence, exactly the poll
+        fallback the hint semantics promise."""
+        event = asyncio.Event()
+        return _SubscriberContext(event, self._leader_wake_subscribers)
 
     # ── Cancel polling ─────────────────────────────────────────────────
 

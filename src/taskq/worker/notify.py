@@ -14,6 +14,12 @@ each carrying the schema's fixed-width tag rather than the schema name):
   - ``worker_channel(schema, worker_id)``: per-worker targeted events,
     same payload format, no filtering needed
 
+plus the leadership wake channel, ``leader_wake_channel(schema)``, the
+resigning leader's vacancy broadcast: same JSON ``{"type": ...}`` payload
+convention, kind ``"leader_resigned"``, with the resigning worker's id so
+a pod drops its own echo. It wakes only the election loop's park event;
+a lost, duplicate, or malformed broadcast degrades to the heartbeat tick.
+
 The reconnect backoff carries multiplicative jitter (±25% around the
 doubled delay). Without it, a large worker fleet that loses PG
 simultaneously (failover, container restart) retries in lockstep: every
@@ -28,6 +34,7 @@ import contextlib
 import logging
 import random
 from collections.abc import Callable, Iterable
+from typing import cast
 from uuid import UUID
 
 import asyncpg
@@ -39,7 +46,13 @@ from taskq._dsn import dsn_host
 from taskq._forkguard import assert_own_process
 from taskq._json import loads as json_loads
 from taskq.backend.postgres import PostgresBackend
-from taskq.constants import events_channel, wake_channel, worker_channel
+from taskq.constants import (
+    LEADER_RESIGNED_EVENT,
+    events_channel,
+    leader_wake_channel,
+    wake_channel,
+    worker_channel,
+)
 from taskq.obs import get_logger, get_meter
 from taskq.worker.deps import (
     WorkerDeps,
@@ -239,6 +252,83 @@ def _make_worker_events_callback(
         )
 
     return _on_worker_event
+
+
+def _make_leader_wake_callback(
+    backend: PostgresBackend,
+    worker_id: UUID,
+) -> Callable[[asyncpg.Connection, int, str, str], None]:
+    """Return a sync closure for the leadership wake channel.
+
+    Payload is a JSON object, kind ``"leader_resigned"`` (the
+    ``{"type": ...}`` convention of the events channels), carrying the
+    resigning worker's id. Three payloads are dropped WITHOUT waking the
+    election loop, the same payload-kind discipline the events callback
+    applies:
+
+    - an empty payload (an unparseable foreign NOTIFY, or a reconnect
+      wake aimed at the dispatch channel),
+    - a payload of any other ``"type"`` (future events may share the
+      channel without a rename),
+    - this worker's OWN echo: the resigner hears its own broadcast and
+      must not wake itself (a pod that just handed the row back must not
+      immediately re-win it, and an unassumable holder that hands back
+      mid-run would otherwise flap at NOTIFY speed instead of the tick).
+
+    A wake for a term already taken is deliberately NOT filtered here:
+    the fleet cannot cheaply know it is stale, and the woken follower's
+    FENCED elect is the arbiter - it matches no row it may not take and
+    no-ops, which is exactly the crash-bound behavior.
+
+    This callback only sets the wake events registered on the backend
+    (``subscribe_leader_wake``); the election loop owns everything past
+    that, including the jitter. A worker whose listener is disabled (the
+    poll fallback) never runs this, so its loop keeps the tick cadence.
+    """
+    worker_id_str = str(worker_id)
+
+    def _on_leader_wake(
+        conn: asyncpg.Connection,
+        pid: int,
+        channel: str,
+        payload: str,
+    ) -> None:
+        _notify_received_counter.add(1)
+        if not payload:
+            return
+        try:
+            msg: object = json_loads(payload)
+        except Exception:
+            logger.debug("notify-payload-parse-failed", channel=channel, payload=payload[:200])
+            return
+        if not isinstance(msg, dict):
+            # Valid JSON of the wrong shape (a list, a scalar): the same
+            # wrong-schema drop as a parse failure, never a crash in a
+            # callback asyncpg invokes inside the protocol.
+            logger.debug("notify-payload-parse-failed", channel=channel, payload=payload[:200])
+            return
+        payload_kind: object = cast("dict[str, object]", msg).get("type")
+        if payload_kind != LEADER_RESIGNED_EVENT:
+            return
+        if str(cast("dict[str, object]", msg).get("worker_id", "")) == worker_id_str:
+            logger.debug(
+                "leader_wake_own_echo_dropped",
+                kind="leader_wake_own_echo_dropped",
+                channel=channel,
+                pid=pid,
+            )
+            return
+        for event in list(backend._leader_wake_subscribers):  # pyright: ignore[reportPrivateUsage]  # Why: snapshot iteration, same registry shape as the cancel subscribers; event.set() is idempotent
+            event.set()
+        logger.debug(
+            "leader_wake_received",
+            kind="leader_wake_received",
+            channel=channel,
+            pid=pid,
+            resigned_worker_id=str(cast("dict[str, object]", msg).get("worker_id") or ""),
+        )
+
+    return _on_leader_wake
 
 
 async def reconnect_notify_conn(
@@ -555,6 +645,7 @@ async def notify_listener_loop(
         (wake_channel(schema), _make_callback(backend)),
         (events_channel(schema), _make_events_callback(backend, worker_id)),
         (worker_channel(schema, worker_id_str), _make_worker_events_callback(backend)),
+        (leader_wake_channel(schema), _make_leader_wake_callback(backend, worker_id)),
     ]
 
     _active_listeners.add(backend)

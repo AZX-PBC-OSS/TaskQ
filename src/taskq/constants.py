@@ -840,6 +840,26 @@ channels share one database-wide namespace, so two schemas' cron sessions
 in one database would otherwise hear each other's commit signals.
 """
 
+LEADER_WAKE_CHANNEL_FMT: Final[str] = "taskq_leader_wake_{schema_tag}"
+"""Format template for the leadership wake channel.
+
+The resigning leader broadcasts the vacancy here AFTER its resign DELETE
+has committed, and every follower's election loop wakes on it to re-run
+the fenced elect immediately instead of waiting out the heartbeat tick.
+The wake is a HINT, never the authority: the lease row and the fence stay
+the truth, and a follower that misses the wake (a dropped proxy, a
+disabled listener, a killed leader that can notify no one) simply keeps
+today's tick cadence, so the crash bound never regresses. Schema-tagged
+like every other channel: channels share one database-wide namespace.
+"""
+
+LEADER_RESIGNED_EVENT: Final[str] = "leader_resigned"
+"""The ``"type"`` discriminator of the leadership wake payload, the same
+JSON ``{"type": ...}`` convention the events channels carry. Receivers
+drop every other kind (future events may share the channel), their own
+echo, and anything unparseable."""
+
+
 _IDENT_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
 r"""SQL identifier validator (schema names, table/column names).
 
@@ -1045,6 +1065,17 @@ def cron_commit_gate_channel(schema: str) -> str:
     )
 
 
+def leader_wake_channel(schema: str) -> str:
+    """Return the leadership wake channel for *schema*.
+
+    Every worker subscribes; the resigning leader emits the vacancy
+    broadcast here. Raises :class:`ValueError` on invalid schema identifier.
+    """
+    return _bounded_channel(
+        LEADER_WAKE_CHANNEL_FMT.format(schema_tag=schema_channel_tag(schema)), schema=schema
+    )
+
+
 #: The widest ``str(uuid.UUID)`` (36 chars), the probe id
 #: :func:`check_channels_fit` interpolates where a channel carries one.
 _WIDEST_UUID_TEXT: Final[str] = "ffffffff-ffff-ffff-ffff-ffffffffffff"
@@ -1064,3 +1095,4 @@ def check_channels_fit(schema: str) -> None:
     progress_channel(schema, _WIDEST_UUID_TEXT)
     progress_global_channel(schema)
     cron_commit_gate_channel(schema)
+    leader_wake_channel(schema)
