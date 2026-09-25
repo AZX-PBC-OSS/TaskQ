@@ -984,7 +984,12 @@ async def consume_one_job(
             _pending_publish_tasks=_pending_publish_tasks,
         )
 
-        if deps is not None and deps.shutdown_phase is not ShutdownPhase.NONE:
+        # The seam's observable, read the way the release-park bound reads
+        # it (the deps doubles of the consumer's unit pins are hand-built
+        # duck types that model no shutdown fields; getattr's None default
+        # reads them as "not shutting down", their tests' meaning).
+        _shutdown_started = getattr(deps, "shutdown_started_at", None) if deps is not None else None
+        if _shutdown_started is not None:
             # THE TAKE-TO-REGISTER SHUTDOWN SEAM. Everything between this
             # attempt's take (the claim intent) and this line - DI
             # resolution, payload validation, the slot-pool acquire, and
@@ -998,18 +1003,21 @@ async def consume_one_job(
             # the process's TaskGroup join then waits out the body's full
             # natural runtime, past the termination grace (observed 30s
             # bodies under a 15s grace, system-e2e cap-churn). The body
-            # must not start under a shutdown in progress. This row never
-            # reached an actor, so the claim bought nothing and spends
-            # nothing: mark_snoozed's default arm refunds the attempt
-            # increment and releases the row to the fleet on a short
-            # delay - the same bounded, fenced release the
-            # actor-not-found arm applies - and the outer finally below
-            # returns the acquired composition. The claim intent stays
-            # live until the consumer loop's own finally resolves it, so
-            # every hand-back pass keeps excluding the row while this
-            # release is in flight. On an infra failure the row stays
-            # running and is disowned: the lock-lease reclaim is the
-            # backstop, exactly the actor-not-found failure arm.
+            # must not start under a shutdown in progress. The observable
+            # is shutdown_started_at, stamped in the same synchronous
+            # block that raises the phase to DRAINING (the orchestrator's
+            # entry), so the two are one signal with no await between
+            # them. This row never reached an actor, so the claim bought
+            # nothing and spends nothing: mark_snoozed's default arm
+            # refunds the attempt increment and releases the row to the
+            # fleet on a short delay - the same bounded, fenced release
+            # the actor-not-found arm applies - and the outer finally
+            # below returns the acquired composition. The claim intent
+            # stays live until the consumer loop's own finally resolves
+            # it, so every hand-back pass keeps excluding the row while
+            # this release is in flight. On an infra failure the row
+            # stays running and is disowned: the lock-lease reclaim is
+            # the backstop, exactly the actor-not-found failure arm.
             try:
                 release_outcome = await backend.mark_snoozed(
                     job.id,
