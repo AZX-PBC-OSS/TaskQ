@@ -285,33 +285,42 @@ async def _reclaim_expired_locks(
             delta = now - row.started_at
             duration_ms = int(delta.total_seconds() * 1000)
 
-        attempt_row = AttemptRow(
-            job_id=row.id,
-            attempt=row.attempt,
-            started_at=row.started_at if row.started_at is not None else now,
-            finished_at=now,
-            outcome="crashed",
-            error_class=ERROR_CLASS_WORKER_CRASHED,
-            # Names the deadline that fired (the PG batched INSERT's $6
-            # array comes from the same map), never the sibling arm's.
-            error_message=_ATTEMPT_MESSAGES[cause],
-            error_traceback=None,
-            duration_ms=duration_ms,
-            worker_id=row.locked_by_worker,
-            metadata={},
-        )
-        # Through the shared keep-first write (the twin of the batched
-        # INSERT's ON CONFLICT (job_id, attempt) DO NOTHING, see
-        # _SWEEP_1_ATTEMPTS_BATCH_SQL): an attempt number can already have
-        # its row when the reclaim fires, a claim-clamped repeat at the
-        # smallint ceiling, a spent attempt left behind by a re-pend, and
-        # the existing record is the truthful one, so the synthetic crash
-        # row yields to it rather than accumulating a duplicate PG refused
-        # to store. The same guard the deadline twin states inline above
-        # and _terminal._write_attempt carries for the terminal paths ,
-        # one doctrine, one guarded write. Pinned by
-        # tests/test_rt_sweeps_parity.py::test_sweep1_double_reclaim_keeps_one_attempt_row_on_both_backends.
-        await _write_attempt(self, attempt_row)
+        # THE NEVER-STARTED CLAIM WRITES NO LEDGER ROW (the PG batched
+        # INSERT's WHERE started_at IS NOT NULL, the twin's parity half):
+        # a running row with a NULL started_at is the heartbeat reconcile's
+        # refund output - the claim charged an attempt no actor ever saw -
+        # and a crashed row fabricated at the refunded number breaks the
+        # counter<->ledger conservation the soak's reconcile pin reads
+        # (rows {0, 1} against a counter of 1). The reclaim's state_change
+        # event carries the hand-back; the ledger records executions only.
+        if row.started_at is not None:
+            attempt_row = AttemptRow(
+                job_id=row.id,
+                attempt=row.attempt,
+                started_at=row.started_at,
+                finished_at=now,
+                outcome="crashed",
+                error_class=ERROR_CLASS_WORKER_CRASHED,
+                # Names the deadline that fired (the PG batched INSERT's $6
+                # array comes from the same map), never the sibling arm's.
+                error_message=_ATTEMPT_MESSAGES[cause],
+                error_traceback=None,
+                duration_ms=duration_ms,
+                worker_id=row.locked_by_worker,
+                metadata={},
+            )
+            # Through the shared keep-first write (the twin of the batched
+            # INSERT's ON CONFLICT (job_id, attempt) DO NOTHING, see
+            # _SWEEP_1_ATTEMPTS_BATCH_SQL): an attempt number can already have
+            # its row when the reclaim fires, a claim-clamped repeat at the
+            # smallint ceiling, a spent attempt left behind by a re-pend, and
+            # the existing record is the truthful one, so the synthetic crash
+            # row yields to it rather than accumulating a duplicate PG refused
+            # to store. The same guard the deadline twin states inline above
+            # and _terminal._write_attempt carries for the terminal paths ,
+            # one doctrine, one guarded write. Pinned by
+            # tests/test_rt_sweeps_parity.py::test_sweep1_double_reclaim_keeps_one_attempt_row_on_both_backends.
+            await _write_attempt(self, attempt_row)
 
         # Operator intent outranks retry budget, mirroring _SWEEP_1_SQL's
         # CASE ordering exactly (the PG statement evaluates the cancel

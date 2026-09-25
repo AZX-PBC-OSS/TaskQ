@@ -663,17 +663,24 @@ WITH upd AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT upd.id, upd.attempt,
-           -- A NULL started_at falls back to the per-row clock, the same
-           -- COALESCE-to-now contract the reclaim sweep's attempt INSERT
-           -- applies (tests/test_rt_sweeps_started_at_fallback.py): the
+           -- A NULL started_at falls back to the per-row clock: the
            -- column is NOT NULL, and a statement that could raise on the
            -- stamp turns a data oddity into a heartbeat-wedging crash
            -- (the drain re-queues the abandon, the tick's failure budget
            -- burns on it, the isolate fails the same way). Dispatch
-           -- always stamps the claim, so the fallback is for the
-           -- un-stamped shapes only (a restored backup, a direct-SQL
-           -- writer) - the duration reads the row's own stamps and is
-           -- NULL when they are.
+           -- always stamps the claim, and the refund's un-stamped output
+           -- is out of this arm's population (a refunded row keeps its
+           -- lease and carries no phase, so it matches neither WHERE
+           -- conjunct), so the fallback is for the un-stamped direct-SQL
+           -- shapes only (a restored backup, a hand-forged row) - the
+           -- duration reads the row's own stamps and is NULL when they
+           -- are. Note the reclaim sweep's attempt INSERT carries the
+           -- OPPOSITE doctrine for its shape (a never-started claim
+           -- writes no ledger row at all): there the counter was
+           -- refunded under the row, so a fabricated stamp would break
+           -- the counter<->ledger conservation; here the counter stands,
+           -- the abandon terminalises it, and the row keeps the history
+           -- aligned.
            COALESCE(upd.started_at, clock_timestamp()), clock_timestamp(), 'cancelled',
            '{CANCEL_ORIGIN_ABANDONED}', NULL, NULL,
            trunc(EXTRACT(EPOCH FROM (upd.finished_at - upd.started_at)) * 1000)::int,

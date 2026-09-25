@@ -1087,8 +1087,7 @@ INSERT INTO "{schema}".job_attempts
 (job_id, attempt, started_at, finished_at, outcome,
  error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
 SELECT a.job_id, a.attempt,
-       -- NULL started_at (direct-SQL-reachable only; dispatch always stamps it) falls back to the per-row clock, the in-memory twin's COALESCE-to-now contract.
-       COALESCE(a.started_at, clock_timestamp() + (a.ord - 1) * interval '1 microsecond'),
+       a.started_at,
        clock_timestamp() + (a.ord - 1) * interval '1 microsecond',
        'crashed', '{worker_crashed_class}',
        a.error_message, NULL,
@@ -1096,6 +1095,23 @@ SELECT a.job_id, a.attempt,
 FROM unnest($1::uuid[], $2::smallint[], $3::timestamptz[], $4::uuid[], $5::int[], $6::text[])
     WITH ORDINALITY AS a(job_id, attempt, started_at, worker_id, duration_ms, error_message, ord)
 LEFT JOIN holder ON holder.id = a.worker_id
+-- THE NEVER-STARTED CLAIM WRITES NO LEDGER ROW. A running row whose
+-- started_at is NULL is the heartbeat reconcile's refund output
+-- (worker/heartbeat.py): the claim charged an attempt, no actor ever saw
+-- it, and the reconcile un-stamped started_at as the durable "never
+-- started" mark while handing the row to THIS reclaim. The ledger records
+-- EXECUTIONS; writing a crashed row for an execution that did not happen
+-- is the exact fabrication issue 458 banned, and it breaks the
+-- counter<->ledger conservation the soak's reconcile pin reads: a
+-- first-attempt refund re-claims at attempt 1, so a row fabricated at the
+-- refunded number 0 leaves the job with TWO ledger rows and a counter of
+-- 1 (the soak reds "attempt counter 1 vs 2 attempt rows"). The reclaim
+-- itself stays honest through its state_change event (the lease lapsed,
+-- the row was handed back); only the manufactured execution record goes.
+-- The filter also keeps the batched INSERT satisfied against
+-- job_attempts.started_at NOT NULL without any fallback stamp: the old
+-- COALESCE(started_at, clock) fallback was this fabrication's mechanism.
+WHERE a.started_at IS NOT NULL
 -- Same doctrine as sweep 2's deadline insert below: an attempt number
 -- can already have its row (a claim-clamped repeat at the smallint
 -- ceiling; a spent attempt left behind by a re-pend), and the truthful
@@ -1366,13 +1382,17 @@ async def sweep_expired_locks(
     carve-out see heartbeat reclaims exactly like lease reclaims, with
     a ``cause`` key naming which deadline fired); both writes are
     batched into one statement each
-    over the batch's rows. A running job with NULL ``started_at``
-    (reachable only via direct SQL, dispatch always stamps it) lands
-    the per-row clock fallback for the attempt's ``started_at``,
-    matching the in-memory twin's COALESCE-to-now contract (pinned by
-    ``tests/test_rt_sweeps_started_at_fallback.py``); without it the
-    batched INSERT would violate ``job_attempts.started_at NOT NULL``
-    and abort the sweep's transaction on a non-transient error.
+    over the batch's rows. A running job with NULL ``started_at`` (the
+    heartbeat claim-loss reconcile's refund output - dispatch always
+    stamps the claim) is a NEVER-STARTED claim: it writes the event and
+    NO attempt row - the ledger records executions, and a crashed row
+    fabricated at the refunded attempt number would break the
+    counter<->ledger conservation the soak's reconcile pin reads (a
+    first-attempt refund re-claims at attempt 1, so a row fabricated at
+    0 leaves two ledger rows against a counter of 1). The batched
+    INSERT's ``WHERE started_at IS NOT NULL`` is that doctrine's guard,
+    and it keeps the statement satisfied against
+    ``job_attempts.started_at NOT NULL`` without any fallback stamp.
 
     PG uses server-side ``statement_timestamp()`` for the WHERE range
     bound (STABLE, so the partial index serves it as an Index Cond ,

@@ -454,7 +454,13 @@ asymmetries under
 [Crash-reclaim interaction](#crash-reclaim-interaction)).  The attempt row
 is still the complete HeartbeatLost source: the isolate path writes a
 `job_attempts` row under `error_class='HeartbeatLost'` whichever arm a job
-lands on, while a `jobs`-table query (`status='crashed'` with
+lands on, for every row whose claim reached an execution (a stamped
+`started_at`); the one exception is the claim-loss reconcile's refund
+output - a claim no actor ever saw carries a NULL `started_at`, and no
+reclaim writer (sweep or isolate) fabricates an attempt row for an
+execution that did not happen, so the ledger and the attempt counter
+conserve exactly (the soak's reconcile pin reads that equality) - while a
+`jobs`-table query (`status='crashed'` with
 `error_class='HeartbeatLost'`) catches the terminal arm only -- a
 heartbeat-lost job with retry budget left re-pends to `status='pending'`
 and keeps whatever `error_class` the row had before.  The admin UI's Jobs

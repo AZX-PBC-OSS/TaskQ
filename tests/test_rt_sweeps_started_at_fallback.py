@@ -1,18 +1,28 @@
-"""Sweep 1's attempt INSERT must satisfy job_attempts.started_at NOT NULL
-for a running job whose started_at is NULL.
+"""Sweep 1's reclaim of a NEVER-STARTED claim writes no attempt row.
 
-That shape is reachable only via direct SQL (dispatch always stamps
-started_at = clock_timestamp() - see _dispatch_sql.py), but it is a
-legal row, and the crash-reclaim sweep is exactly the path that meets
-the first direct-SQL author's orphan: pre-fix, the batched attempt
-INSERT writes a.started_at raw, the INSERT dies on a non-transient
-NotNullViolation inside the sweep's transaction (deliberately
-non-transient per taskq.worker._transient), and the orphan is left
-unreclaimed with no live worker to reclaim it - while the in-memory
-twin COALESCEs NULL started_at to its injected now
-(taskq/testing/_sweeps.py), so the same corpus also silently diverges
-the two backends' parity contract. The twin's COALESCE is therefore the
-CONTRACT, not dead mirroring.
+A running row whose ``started_at`` is NULL is the heartbeat claim-loss
+reconcile's refund output (worker/heartbeat.py): dispatch always stamps
+``started_at = clock_timestamp()`` at claim, so the only TaskQ-reachable
+NULL is the reconcile's un-stamp - the durable "never started" mark of a
+claim that charged an attempt no actor ever saw (direct SQL can forge the
+shape too; no system writer can).
+
+The ledger records EXECUTIONS. The pre-fix doctrine coalesced the NULL
+stamp to a clock and wrote a crashed row for the never-started claim -
+a record asserting an execution that did not happen, indistinguishable
+from a genuine mid-execution crash (the exact record issue 458 banned),
+and worse, a conservation break the soak's reconcile pin reads: the
+refund rewinds the counter, so a FIRST-attempt refund re-claims at
+attempt 1 while the fabricated row sits at 0 - the settled job then
+carries TWO attempt rows against a counter of 1 ("attempt counter 1 vs
+2 attempt rows", the soak grand_mixin's ``assert 2 == 1`` red, run
+36175331443 job 108204436302). The batched attempt INSERT now filters
+``WHERE started_at IS NOT NULL``: the reclaim's state_change event still
+records the hand-back, and the statement stays satisfied against
+``job_attempts.started_at NOT NULL`` without any fallback stamp - the
+original NotNullViolation concern is met by not inserting, not by
+fabricating a stamp. The in-memory twin carries the identical guard, so
+the two backends' parity contract holds on this shape too.
 """
 
 from __future__ import annotations
@@ -43,9 +53,9 @@ _START = datetime(2025, 6, 1, tzinfo=UTC)
 async def _seed_running_job_null_started_at(
     conn: asyncpg.Connection, schema: str, job_id: UUID, worker_id: UUID
 ) -> None:
-    """The only reachable NULL-started_at shape: a running row written by
-    direct SQL (dispatch stamps started_at, so no TaskQ path produces
-    it) with an expired lock held by a live workers row."""
+    """The only TaskQ-reachable NULL-started_at shape: the heartbeat
+    reconcile's refunded claim (a running row, lock expired, held by a
+    live workers row, no ledger row - nothing executed)."""
     await conn.execute(
         f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) '  # noqa: S608  # Why: schema is a test-fixture identifier validated upstream.
         "VALUES ($1, 'null-start-host', 12345, ARRAY['default'])",
@@ -67,15 +77,14 @@ async def _seed_running_job_null_started_at(
     )
 
 
-async def test_sweep1_lands_attempt_row_for_null_started_at_running_job(
+async def test_sweep1_writes_no_attempt_row_for_a_never_started_claim(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """Pre-fix red: the sweep raises NotNullViolationError on the batched
-    attempt INSERT and the transaction rolls back - the job is left
-    running (still unreclaimable), with no audit rows. Post-fix the
-    sweep completes and the attempt row carries the per-row clock
-    fallback for started_at, the in-memory twin's contract."""
+    """The reclaim completes (the original concern: the batched INSERT must
+    not die on a NotNullViolation for the raw NULL stamp - it does not,
+    because it inserts nothing), the row transitions, the event lands, and
+    NO attempt row is fabricated for the execution that never ran."""
     schema = module_pg_schema.schema_name
     job_id = new_uuid()
     worker_id = new_uuid()
@@ -100,27 +109,17 @@ async def test_sweep1_lands_attempt_row_for_null_started_at_running_job(
     assert job["finished_at"] is not None
     assert job["locked_by_worker"] is None
 
-    attempt = await clean_pg_conn.fetchrow(
-        f"SELECT started_at, finished_at, duration_ms, outcome, worker_id "  # noqa: S608  # Why: schema is a test-fixture identifier validated upstream.
-        f'FROM "{schema}".job_attempts WHERE job_id = $1',
+    attempts = await clean_pg_conn.fetchval(
+        f'SELECT count(*) FROM "{schema}".job_attempts WHERE job_id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier validated upstream.
         job_id,
     )
-    assert attempt is not None, "the sweep must write the attempt row"
-    assert attempt["started_at"] is not None, (
-        "job_attempts.started_at is NOT NULL: a NULL-started_at running job "
-        "must land the per-row clock fallback, not the raw NULL (pre-fix this "
-        "sweep dies on NotNullViolationError before ever reaching this assert)"
+    assert attempts == 0, (
+        f"a never-started claim (started_at NULL: the refund's durable mark) "
+        f"must write NO attempt row - a crashed row fabricated at the "
+        f"refunded attempt number asserts an execution that did not happen "
+        f"and breaks the counter<->ledger conservation the soak pins, got "
+        f"{attempts} row(s)"
     )
-    # The fallback stamps started_at inside the same statement as
-    # finished_at, so the span between them is the statement's own
-    # execution time, not a measurable job duration.
-    assert attempt["finished_at"] >= attempt["started_at"]
-    # duration is unknowable for a never-started attempt: the twin records
-    # NULL (no started_at to measure from), and the sweep computes
-    # duration_ms in Python from the job's NULL started_at - None.
-    assert attempt["duration_ms"] is None
-    assert attempt["outcome"] == "crashed"
-    assert attempt["worker_id"] == worker_id, "the live holder must be recorded"
 
     events = await clean_pg_conn.fetchval(
         f'SELECT count(*) FROM "{schema}".job_events WHERE job_id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier validated upstream.
@@ -129,20 +128,18 @@ async def test_sweep1_lands_attempt_row_for_null_started_at_running_job(
     assert events == 1, "the reclaim state_change event must land in the same transaction"
 
 
-async def test_sweep1_null_started_at_fallback_is_per_row_distinct_within_a_batch(
+async def test_sweep1_never_started_batch_writes_no_rows_and_survives(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """A batch of SEVERAL NULL-started_at running jobs must not collapse onto
-    one fallback stamp.
+    """A batch of SEVERAL NULL-started_at running jobs must reclaim cleanly.
 
-    The fallback is ``clock_timestamp() + (ord - 1) * 1us`` - the per-row
-    ladder.  A single-row test (the pin above) cannot see the ladder: ord
-    is always 1.  With three NULL-started_at rows in one batch, a fallback
-    written as a bare per-statement ``clock_timestamp()`` would pass the
-    single-row test while stamping every attempt identically - the exact
-    collapse the ladder exists to prevent (see the comment above
-    _SWEEP_1_ATTEMPTS_BATCH_SQL)."""
+    The pre-fix COALESCE fallback stamped each row via the per-row
+    microsecond ladder; the doctrine is now no-fabrication, so the batch's
+    attempt INSERT is empty. The statement must still complete (no
+    NotNullViolation, no zero-row INSERT error) and reclaim every sibling,
+    and it must not disturb GENUINE crashes swept in the same batch: a
+    mixed batch filters only the never-started rows."""
     schema = module_pg_schema.schema_name
     # One workers row per job: the seeder INSERTs a worker each call, so a
     # shared worker_id would violate the workers PK on the second call.
@@ -159,27 +156,24 @@ async def test_sweep1_null_started_at_fallback_is_per_row_distinct_within_a_batc
     )
     assert count == 3, "one call must reclaim the whole three-row batch"
 
-    attempts = await clean_pg_conn.fetch(
-        f'SELECT job_id, started_at FROM "{schema}".job_attempts ORDER BY started_at',  # noqa: S608  # Why: schema is a test-fixture identifier validated upstream.
+    attempts = await clean_pg_conn.fetchval(
+        f'SELECT count(*) FROM "{schema}".job_attempts',  # noqa: S608  # Why: schema is a test-fixture identifier validated upstream.
     )
-    assert len(attempts) == 3
-    assert {r["job_id"] for r in attempts} == set(job_ids)
-    stamps = [r["started_at"] for r in attempts]
-    assert len(set(stamps)) == 3, (
-        f"the per-row fallback ladder collapsed: three NULL-started_at rows got "
-        f"{len(set(stamps))} distinct started_at stamps - the ord term in the "
-        "COALESCE fallback is what keeps the audit trail per-row distinct"
+    assert attempts == 0, (
+        f"no never-started claim in the batch may gain a fabricated attempt row, got {attempts}"
     )
-    assert all(s is not None for s in stamps)
+    events = await clean_pg_conn.fetchval(
+        f'SELECT count(*) FROM "{schema}".job_events WHERE job_id = ANY($1::uuid[])',  # noqa: S608  # Why: schema is a fixture identifier validated by the backend; every value is $-bound.
+        job_ids,
+    )
+    assert events == 3, "every reclaimed row's state_change event must still land"
 
 
-async def test_sweep1_null_started_at_contract_is_the_in_memory_twin() -> None:
-    """The in-memory twin's COALESCE-to-now is the contract both backends
-    must satisfy: for the same NULL-started_at corpus the twin leaves one
-    attempt row with a non-NULL started_at (its injected now), NULL
-    duration_ms, 'crashed' outcome, and the lock bookkeeping cleared -
-    the observable the Postgres path is hardened to match (pinned by the
-    test above)."""
+async def test_sweep1_never_started_contract_is_the_in_memory_twin() -> None:
+    """The in-memory twin carries the identical no-fabrication guard: for
+    the same NULL-started_at corpus the twin writes NO attempt row, the
+    hand-back recorded by the reclaim event alone - the observable the
+    Postgres path is hardened to match (pinned by the test above)."""
     memory = InMemoryBackend(
         clock=FakeClock(_START),
         cancellation_grace_period=_GRACE,
@@ -188,7 +182,7 @@ async def test_sweep1_null_started_at_contract_is_the_in_memory_twin() -> None:
     holder = new_uuid()
     args = make_enqueue_args(scheduled_at=_START, max_attempts=1)
     row = await memory.enqueue(args)
-    memory._jobs[args.id] = replace(  # pyright: ignore[reportPrivateUsage]  # Why: test-only seeding of the direct-SQL-reachable running shape, the established pattern from test_rt_sweeps_parity.py.
+    memory._jobs[args.id] = replace(  # pyright: ignore[reportPrivateUsage]  # Why: test-only seeding of the refunded running shape, the established pattern from test_rt_sweeps_parity.py.
         row,
         status="running",
         attempt=1,
@@ -209,12 +203,8 @@ async def test_sweep1_null_started_at_contract_is_the_in_memory_twin() -> None:
     assert job.lock_expires_at is None
 
     attempts = await memory.get_attempts(args.id)
-    assert len(attempts) == 1
-    twin = attempts[0]
-    assert twin.started_at == _START, (
-        "the twin's COALESCE-to-now fallback is the contract the Postgres path matches"
+    assert attempts == [], (
+        f"the twin must write no attempt row for a never-started claim "
+        f"(the PG batched INSERT's WHERE started_at IS NOT NULL, the "
+        f"parity half), got {attempts}"
     )
-    assert twin.finished_at == _START
-    assert twin.duration_ms is None
-    assert twin.outcome == "crashed"
-    assert twin.worker_id == holder

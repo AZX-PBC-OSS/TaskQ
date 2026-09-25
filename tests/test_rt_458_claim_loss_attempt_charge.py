@@ -18,7 +18,6 @@ The chain, all on one real PostgreSQL:
    the crashed arm writes a ``job_attempts`` row for the charged attempt:
    a record asserting an execution that did not happen, indistinguishable
    from a genuine mid-execution crash.
-
 The rule the sibling sink already enforces (``worker/shutdown.py``'s
 ``drain_local_queue_to_pending``, which refunds through
 ``ATTEMPT_REFUND_SQL``): a claim that never reached an actor bought
@@ -47,6 +46,7 @@ import pytest
 from taskq._ids import new_uuid
 from taskq.backend._dispatch_sql import dispatch_batch
 from taskq.backend._sql_templates import render
+from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.settings import WorkerSettings
 from taskq.testing.fixtures import ModulePgSchema
@@ -297,17 +297,21 @@ async def test_reconcile_refunds_the_claim_time_increment_of_a_job_that_never_ra
         f"did not happen"
     )
 
-    # The record: the sweep's reclaim ledger (one job_attempts row per
-    # reclaimed row, every branch, its own pinned contract) must sit at
-    # the REFUNDED attempt, the pre-claim counter. On main the unrefunded
-    # charge leaves [(1, 'crashed', 'lock expired before worker reported
-    # terminal state')]: the charged attempt recorded as an execution that
-    # did not happen, indistinguishable from a genuine mid-execution crash.
+    # The record: the sweep's reclaim ledger must hold NO attempt row for
+    # a never-started claim. The reclaim's state_change event is the
+    # honest record of the hand-back (the lease lapsed, nothing executed);
+    # a crashed row fabricated at the refunded attempt number would assert
+    # an execution that did not happen - indistinguishable from a genuine
+    # mid-execution crash, the exact record the issue measured on the
+    # pre-458 main - AND break the counter<->ledger conservation the
+    # soak's reconcile pin reads: the re-pend re-claims at attempt 1, so a
+    # row fabricated at 0 leaves the job TWO ledger rows against a counter
+    # of 1 ("attempt counter 1 vs 2 attempt rows", the soak red).
     attempts = await _attempt_rows(clean_pg_conn, schema, job_id)
-    assert [(a["attempt"], a["outcome"]) for a in attempts] == [(0, "crashed")], (
-        f"the reclaim's attempt ledger must not claim the charged attempt "
-        f"(the claim charged attempt 1 and nothing ever executed it), got "
-        f"{attempts}"
+    assert attempts == [], (
+        f"the reclaim must write no attempt row for a never-started claim "
+        f"(the ledger records executions; the state_change event records "
+        f"the hand-back), got {attempts}"
     )
 
     # 5. The budget was not consumed: the job re-dispatches. The reclaim's
@@ -555,4 +559,128 @@ async def test_drain_concurrent_with_the_reconcile_refunds_exactly_once(
         f"the concurrent drain re-refunded the reconcile's claim after "
         f"EvalPlanQual re-evaluation, got attempt={row['attempt']} - the "
         f"exactly-once guard must hold on the re-checked row version"
+    )
+
+
+class _TerminalBackendDeps:
+    """Duck-typed BackendDeps for the real PostgresBackend's terminal
+    write (the test_rt_sweeps_breaker idiom): only the settings and the
+    pool the fused mark statement reads are consulted."""
+
+    def __init__(self, settings: WorkerSettings, pool: asyncpg.Pool) -> None:
+        self.settings = settings
+        self.dispatcher_pool = pool
+        self.heartbeat_pool = pool
+        self.worker_pool = pool
+
+
+async def test_refund_then_reclaim_then_re_claim_conserves_ledger_and_counter(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """The soak's exact conservation red, at the mechanism level.
+
+    The CI red (run 36175331443, job 108204436302): soak grand_mixin,
+    ``job <id>: attempt counter 1 vs 2 attempt rows``, ``assert 2 == 1``.
+    The chain: a first attempt's claim charges the counter (1) with no
+    ledger row (the ledger records executions); the connection chaos kills
+    the consumer; the reconcile refunds (counter 1 -> 0, started_at
+    un-stamped); Sweep 1 reclaims the lapsed row - and wrote a crashed
+    ledger row AT THE REFUNDED NUMBER (0), a record asserting an execution
+    that did not happen; the re-claim re-occupies attempt 1; the terminal
+    write lands row (1). Two ledger rows against a counter of 1.
+
+    Post-fix the reclaim writes NO attempt row for a never-started claim
+    (its state_change event records the hand-back), so the settled history
+    conserves exactly: counter 1, ledger [(1, 'succeeded')].
+    """
+    schema = module_pg_schema.schema_name
+    worker_id = new_uuid()
+    await _seed_worker(clean_pg_conn, schema, worker_id)
+    # Retryable with budget to spare, the soak's job shape (max_attempts=5):
+    # the refunded reclaim must RE-PEND, never terminalise.
+    job_id = await _seed_pending_job(clean_pg_conn, schema, max_attempts=5)
+
+    # 1. The real claim: charged (attempt 1), started_at stamped, no ledger
+    #    row - the consumer's execution has not finished, so the ledger has
+    #    nothing to record yet.
+    claimed = await _claim_via_real_dispatch_cte(clean_pg_conn, schema, worker_id)
+    assert claimed["attempt"] == 1
+    assert claimed["claim_epoch"] == 1
+    attempt_rows = await _attempt_rows(clean_pg_conn, schema, job_id)
+    assert attempt_rows == [], "the claim writes no ledger row (executions only)"
+
+    # 2-3. The consumer dies under connection chaos; the real reconcile
+    #    refunds: counter 1 -> 0, started_at un-stamped (the durable
+    #    "never started" mark).
+    await _age_started_at(clean_pg_conn, schema, job_id)
+    deps = _heartbeat_deps(module_pg_schema.pg_dsn, schema, module_pg_pool)
+    await _one_tick(deps, worker_id)
+    assert job_id in deps.disowned_jobs
+    row = await _job_row(clean_pg_conn, schema, job_id)
+    assert row["attempt"] == 0 and row["status"] == "running", row
+    assert row["started_at"] is None, "the refund must un-stamp started_at"
+
+    # 4. The lease lapses; the real Sweep 1 reclaims: re-pend, NO attempt
+    #    row (the fabrication is the defect this pin exists for).
+    await _age_lock_expiry(clean_pg_conn, schema, job_id)
+    count = await PostgresBackend.sweep_expired_locks(
+        clean_pg_conn,
+        timedelta(0),
+        timedelta(0),
+        schema=schema,
+    )
+    assert count == 1, f"the lapsed row must be reclaimed, sweep count={count}"
+    row = await _job_row(clean_pg_conn, schema, job_id)
+    assert row["status"] == "pending" and row["attempt"] == 0, row
+    attempt_rows = await _attempt_rows(clean_pg_conn, schema, job_id)
+    assert attempt_rows == [], (
+        f"the reclaim of a never-started claim must write no attempt row "
+        f"(a crashed row at the refunded number 0 is what broke the "
+        f"conservation), got {attempt_rows}"
+    )
+
+    # 5. The fleet re-claims: the counter re-occupies attempt 1.
+    await clean_pg_conn.execute(
+        f'UPDATE "{schema}".jobs SET scheduled_at = '  # noqa: S608
+        "clock_timestamp() - interval '1 second' WHERE id = $1",
+        job_id,
+    )
+    reclaimed = await _claim_via_real_dispatch_cte(clean_pg_conn, schema, worker_id)
+    assert reclaimed["attempt"] == 1
+    assert reclaimed["claim_epoch"] == 2
+
+    # 6. The body succeeds: the REAL fused terminal write.
+    settings = WorkerSettings.load_from_dict(
+        {"TASKQ_PG_DSN": "postgresql://x:x@localhost/x", "TASKQ_SCHEMA_NAME": schema},
+        validate=False,
+    )
+    backend = PostgresBackend(
+        _TerminalBackendDeps(settings, module_pg_pool),  # type: ignore[arg-type]
+        clock=SystemClock(),
+        cancellation_grace_period=timedelta(0),
+        cleanup_grace_period=timedelta(0),
+    )
+    landed = await backend.mark_succeeded_with_conn(
+        clean_pg_conn,
+        job_id,
+        worker_id,
+        attempt=1,
+        claim_epoch=2,
+    )
+    assert landed, "the terminal write must land on the re-claimed epoch"
+
+    # 7. THE SOAK'S EXACT INVARIANT, settled: the ledger rows equal the
+    #    counter, and the history is the truth (one execution, succeeded).
+    attempt_rows = await _attempt_rows(clean_pg_conn, schema, job_id)
+    row = await _job_row(clean_pg_conn, schema, job_id)
+    assert [(a["attempt"], a["outcome"]) for a in attempt_rows] == [(1, "succeeded")], (
+        f"the settled ledger must hold exactly the one execution that ran, got {attempt_rows}"
+    )
+    assert row["attempt"] == 1
+    assert len(attempt_rows) == row["attempt"], (
+        f"THE SOAK'S RED: attempt counter {row['attempt']} vs "
+        f"{len(attempt_rows)} attempt rows - the conservation contract "
+        "(the attempts exactly counted) is broken"
     )

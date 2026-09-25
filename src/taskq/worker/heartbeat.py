@@ -1260,19 +1260,32 @@ async def isolate_self(
                         }
                         event_job_ids.append(JobId(row["id"]))
                         event_details.append(jsonb_param(detail))
-                        await conn.execute(
-                            insert_attempt_sql,
-                            row["id"],
-                            row["attempt"],
-                            row["started_at"],
-                            "crashed",
-                            ERROR_CLASS_HEARTBEAT_LOST,
-                            None,
-                            None,
-                            None,
-                            worker_id,
-                            "{}",  # metadata, matches the sweep paths' literal
-                        )
+                        # THE NEVER-STARTED CLAIM WRITES NO LEDGER ROW (the
+                        # sweep's reclaim INSERT carries the same doctrine):
+                        # a NULL started_at on a running row is the claim-loss
+                        # reconcile's refund output - the claim charged an
+                        # attempt no actor ever saw - and a crashed row
+                        # fabricated at the refunded number breaks the
+                        # counter<->ledger conservation the soak's reconcile
+                        # pin reads (and job_attempts.started_at is NOT NULL:
+                        # the raw NULL would abort this whole transaction on
+                        # a non-transient violation). The reclaim event above
+                        # carries the hand-back; the ledger records
+                        # executions only.
+                        if row["started_at"] is not None:
+                            await conn.execute(
+                                insert_attempt_sql,
+                                row["id"],
+                                row["attempt"],
+                                row["started_at"],
+                                "crashed",
+                                ERROR_CLASS_HEARTBEAT_LOST,
+                                None,
+                                None,
+                                None,
+                                worker_id,
+                                "{}",  # metadata, matches the sweep paths' literal
+                            )
                     if event_job_ids:
                         await conn.execute(
                             INSERT_EVENTS_DETAIL_BATCH_SQL.format(schema=schema),

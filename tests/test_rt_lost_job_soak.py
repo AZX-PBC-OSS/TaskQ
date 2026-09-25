@@ -566,10 +566,16 @@ async def _trial(
     for row in reconciled:
         assert row["attempts"] == row["attempt"], (
             f"job {row['id']}: attempt counter {row['attempt']} vs "
-            f"{row['attempts']} attempt rows - a claim was double-applied "
-            "(two consumers ran one attempt number: the PK absorbs the "
-            "second, so the ledger undercounts the counter) or a claim's "
-            "ledger row was lost"
+            f"{row['attempts']} attempt rows - the ledger and the counter "
+            "diverged in one of three shapes: a claim double-applied (two "
+            "consumers ran one attempt number: the PK absorbs the second, "
+            "so the ledger undercounts the counter), a claim's ledger row "
+            "lost (the counter moved, the row did not land), or a ledger "
+            "row FABRICATED for an execution that never ran (a reclaim "
+            "writing a crashed row at a refunded, never-started attempt "
+            "number - the ledger overcounts the counter, the exact red "
+            "run 36175331443's job 108204436302 measured: counter 1 vs "
+            "rows {0, 1})"
         )
         assert 1 <= row["terminals"] <= row["attempts"], (
             f"job {row['id']}: {row['terminals']} terminal events on "
