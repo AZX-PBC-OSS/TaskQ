@@ -84,16 +84,20 @@ async def test_pg_fallback_activation(
         backend="redis",
     )
 
-    # Seed the PG row with a SERVER-domain ts so the fallback acquire
-    # measures ~zero elapsed refill (a Python-domain ts would be read
-    # against the server epoch and refill the bucket by the domain gap).
+    # Seed the PG row with a SERVER-domain ts one hour INTO THE FUTURE:
+    # the store's GREATEST(now - ts, 0) clamp pins the elapsed refill to
+    # exactly zero at any wall-clock speed, so the fallback's denial is
+    # deterministic no matter how long the transient-retry budget (the
+    # weather family's bounded backoffs) delays the fallback's acquire -
+    # a now-domain seed refills ~1 token during that second and the
+    # borderline allow flips the verdict.
     async with module_pg_pool.acquire() as conn, conn.transaction():
         await conn.execute(
             f"INSERT INTO {schema}.rate_limit_buckets "  # noqa: S608  # Why: schema is fixture-derived; values are $1-bound
             f"(bucket_name, kind, state, updated_at) "
             f"VALUES ($1, 'token_bucket', "
             f"jsonb_build_object('tokens', 0.0::float8, "
-            f"'ts', EXTRACT(EPOCH FROM clock_timestamp())), clock_timestamp())",
+            f"'ts', EXTRACT(EPOCH FROM clock_timestamp() + interval '1 hour')), clock_timestamp())",
             "ord-test",
         )
 
@@ -115,8 +119,8 @@ async def test_pg_fallback_activation(
     assert result.allowed is False
     assert result.backend == "postgres"
     assert result.retry_after is not None
-    # ~1 token at 1/s from empty; real elapsed between seed and acquire
-    # shaves a few hundredths off the 1.0 s ideal.
+    # The future ts pins elapsed to zero (the GREATEST clamp): the retry
+    # hint is the full 1.0 s window, exactly.
     assert 0.5 < result.retry_after.total_seconds() <= 1.0
 
 
