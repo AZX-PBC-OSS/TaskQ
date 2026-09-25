@@ -370,16 +370,19 @@ async def _open_isolate_deps(
 async def _wait_for_lock_waiter(
     conn: asyncpg.Connection, schema: str, *, timeout_secs: float = 4.0
 ) -> None:
-    """Poll until a session other than *conn*'s is queued on a lock in
-    this database: the isolate's arbiter UPDATE parked on the holder's
-    FOR UPDATE. Waiting on a lock is a state, not a delay - once it is
-    observable, the isolate's SELECT (which precedes the arbiter) is
-    guaranteed to have taken its snapshot."""
+    """Poll until some session is queued on an ungranted lock: the
+    isolate's arbiter UPDATE parked on the holder's FOR UPDATE. Waiting
+    on a lock is a state, not a delay - once it is observable, the
+    isolate's SELECT (which precedes the arbiter) is guaranteed to have
+    taken its snapshot. pg_locks, not pg_stat_activity's wait_event
+    columns: the parked arbiter's wait_event registration proved
+    unreliable under the parallel runner, the ungranted pg_locks row is
+    the arbiter's own queue entry and does not lag."""
+    del schema
     waited = 0.0
     while waited < timeout_secs:
         waiters = await conn.fetchval(
-            "SELECT count(*) FROM pg_stat_activity WHERE pid <> pg_backend_pid() "
-            "AND datname = current_database() AND wait_event_type = 'Lock'",
+            "SELECT count(*) FROM pg_locks WHERE pid <> pg_backend_pid() AND NOT granted",
         )
         assert waiters is not None and int(waiters) <= 1, (
             f"fixture broken: {waiters} unexpected lock waiters in the database"
