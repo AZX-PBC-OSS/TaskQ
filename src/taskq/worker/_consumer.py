@@ -984,6 +984,64 @@ async def consume_one_job(
             _pending_publish_tasks=_pending_publish_tasks,
         )
 
+        if deps is not None and deps.shutdown_phase is not ShutdownPhase.NONE:
+            # THE TAKE-TO-REGISTER SHUTDOWN SEAM. Everything between this
+            # attempt's take (the claim intent) and this line - DI
+            # resolution, payload validation, the slot-pool acquire, and
+            # the reservation-denial retry loop - is a window the shutdown
+            # ladder cannot see: CANCELLING stamps and FORCING cancels
+            # iterate REGISTERED entries only, and this attempt registers
+            # just below. An acquire that lands DURING shutdown makes it
+            # worse than a missed cancel: the ladder's own unwind of a
+            # sibling releases the bucket this retry is parked on, the
+            # wake acquires the slot, and the body STARTS after SIGTERM -
+            # the process's TaskGroup join then waits out the body's full
+            # natural runtime, past the termination grace (observed 30s
+            # bodies under a 15s grace, system-e2e cap-churn). The body
+            # must not start under a shutdown in progress. This row never
+            # reached an actor, so the claim bought nothing and spends
+            # nothing: mark_snoozed's default arm refunds the attempt
+            # increment and releases the row to the fleet on a short
+            # delay - the same bounded, fenced release the
+            # actor-not-found arm applies - and the outer finally below
+            # returns the acquired composition. The claim intent stays
+            # live until the consumer loop's own finally resolves it, so
+            # every hand-back pass keeps excluding the row while this
+            # release is in flight. On an infra failure the row stays
+            # running and is disowned: the lock-lease reclaim is the
+            # backstop, exactly the actor-not-found failure arm.
+            try:
+                release_outcome = await backend.mark_snoozed(
+                    job.id,
+                    worker_id,
+                    timedelta(seconds=10),
+                    metadata_update={"released_reason": "shutdown"},
+                    attempt=job.attempt,
+                    claim_epoch=job.claim_epoch,
+                )
+            except Exception:
+                job_log.warning(
+                    "shutdown-release-failed",
+                    kind="shutdown_release_failed",
+                    error_class="infra",
+                )
+                _disown_job(_disowned_jobs, job)
+            else:
+                if release_outcome == "noop":
+                    # The row stopped being this worker's to move between
+                    # the claim and this release; the new owner holds it.
+                    job_log.debug(
+                        "shutdown-release-noop",
+                        kind="shutdown_release_noop",
+                    )
+                else:
+                    job_log.info(
+                        "shutdown-released-before-body",
+                        kind="shutdown_released_before_body",
+                        released_outcome=release_outcome,
+                    )
+            return "scheduled"
+
         if active_jobs is not None:
             task = asyncio.current_task()
             assert task is not None
