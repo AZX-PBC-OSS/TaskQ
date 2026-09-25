@@ -1060,9 +1060,15 @@ class TokenBucket:
         pg_pool: "asyncpg.Pool | None",
         settings: "WorkerSettings | None",
     ) -> RateLimitDecision:
-        """Redis path with optional PG fallback on ConnectionError/TimeoutError."""
+        """Redis path with optional PG fallback on ConnectionError/TimeoutError.
+
+        The Redis acquire is passed as a FACTORY so the fallback seam's
+        bounded transient retry can re-invoke it after a connection-family
+        blip (see ``with_pg_fallback``); the factory shape is the retry's
+        re-entry point, the PG arm stays an independent decision behind it.
+        """
         return await with_pg_fallback(
-            self._acquire_redis(count, redis_client, settings),
+            lambda: self._acquire_redis(count, redis_client, settings),
             lambda: self._acquire_pg(count, pg_pool, settings),
             bucket_name=self._name,
             settings=settings,
