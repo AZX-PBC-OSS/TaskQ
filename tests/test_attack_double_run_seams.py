@@ -602,12 +602,32 @@ async def test_reconcile_never_refunds_a_row_a_claim_intent_holds(pg_dsn: str) -
     )
 
     schema = f"seam_reconcile_{new_uuid().hex[:8]}"
+    # The reconcile statement rides the heartbeat pool, whose per-query
+    # command_timeout is the TICK's budget - and the suite's fleet defaults
+    # set that budget to 0.1s. A tick's statement sequence gets that whole
+    # budget on a healthy machine, but this pin runs one statement of it
+    # under a SHARED container while sibling xdist workers run their own
+    # migrations and bursts against the same cluster: a single round trip
+    # there can exceed 100ms on runner-starved legs, and the bare asyncpg
+    # TimeoutError then reds the pin BEFORE its own assertions run (the CI
+    # failure's traceback is exactly that - a protocol timeout at the
+    # fetch, not a refund). What the pin binds is the reconcile's refund
+    # semantics, not the tick's command cadence, so the fleet this pin
+    # opens gets a tick budget sized for the co-tenancy it actually runs
+    # under. The cascade invariant binds the pair: lock_lease >=
+    # max(interval, command) + (max_heartbeat_failures + 1) *
+    # (interval + command) = 1.0 + 4 * 1.5 = 7.0.
+    pin_graces = {
+        **_GRACES,
+        "heartbeat_command_timeout": "1.0",
+        "lock_lease": "7.0",
+    }
     async with open_fleet(
         pg_dsn,
         schema=schema,
         pods=["pod-a", "pod-b"],
         actors=[(_ACTOR, _QUEUE)],
-        settings_overrides=_GRACES,
+        settings_overrides=pin_graces,
     ) as fleet:
         job_ids = await fleet.enqueue(1, actor=_ACTOR, queue=_QUEUE)
         job_id = job_ids[0]
@@ -630,7 +650,11 @@ async def test_reconcile_never_refunds_a_row_a_claim_intent_holds(pg_dsn: str) -
         )
         settings.schema_name = schema
         reconcile_sql = _RECONCILE_LOST_CLAIMS_SQL_TEMPLATE.format(schema=schema)
-        lease_seconds = settings.lock_lease
+        # The tick's exact lease binding: the FLEET's own lock_lease, not a
+        # separately loaded default - the pin binds the tick's rendered
+        # statement, and the tick reads the lease off the settings its pods
+        # run with.
+        lease_seconds = fleet.settings.lock_lease
 
         barrier = asyncio.Barrier(_BARRIER_PODS)
 

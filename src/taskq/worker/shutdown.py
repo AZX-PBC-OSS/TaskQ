@@ -193,20 +193,6 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
 
-    # Why the explicit list[UUID] annotation: JobId is NewType(UUID), so
-    # the bare comprehension infers list[JobId], and list invariance
-    # would refuse the uuid[] bind parameter's declared type below.
-    # held_ids() covers BOTH maps: registered consumers (executing now)
-    # and claim intents (taken off local_queue, not yet registered, the
-    # window the registry's comment documents).
-    active_ids: list[JobId] = deps.active_jobs.held_ids()
-    # The disowned rows are never this pass's population (the docstring's
-    # disowned-exclusion paragraph): their attempts may have started, so
-    # the refund is wrong for them, and Sweep 1 owns their reclaim.
-    # Why the comprehension instead of sorted(): JobId is NewType(UUID),
-    # sorted() erases the NewType, and list invariance would refuse the
-    # uuid[] bind parameter's declared type below.
-    disowned_ids: list[JobId] = [JobId(job_id) for job_id in sorted(deps.disowned_jobs)]
     # The attempt refund: the claim stamped attempt + 1 for an execution
     # this hand-back says never happened, so the increment goes back ,
     # the same non-consuming-release idiom the snooze/unavailable and
@@ -260,16 +246,52 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
     # The exclusion clauses are only bound when there is something to
     # exclude: an empty registry (the common drained-worker case) keeps
     # the single-parameter statement shape the helper has always issued.
-    params: list[UUID | list[JobId]] = [worker_id]
-    if active_ids:
-        sql += " AND id <> ALL($2::uuid[])"
-        params.append(active_ids)
-    if disowned_ids:
-        sql += f" AND NOT j.id = ANY(${len(params) + 1}::uuid[])"
-        params.append(disowned_ids)
-
     try:
         async with deps.dispatcher_pool.acquire(timeout=2.0) as conn:
+            # The exclusion arrays are captured HERE, after the pool
+            # acquire and immediately before the bind - never before it.
+            # The capture is the row's classification ("a consumer of
+            # this process holds this row, the hand-back must not touch
+            # it"), and the statement is the writer that acts on it: any
+            # take (a claim intent's mark) or registration landing
+            # between an EARLIER capture and this statement's execution
+            # would be invisible to the exclusion array, and the UPDATE
+            # would re-pend the row UNDER ITS LIVE CONSUMER - the
+            # consumer's terminal write then fences out
+            # (JOB_FENCE_BOUND_SQL requires status='running' AND
+            # locked_by_worker, both cleared by this re-pend) and the
+            # row is stranded 'pending' with its body mid-flight. The
+            # pool acquire is the one await between the function's entry
+            # and the statement, and on a contended pool (the shared-CI
+            # shape) it parks this task for as long as the contention
+            # lasts - exactly the window a take or a registration lands
+            # in. Capturing after it leaves the bind-to-execute round
+            # trip as the only gap, the same order every other
+            # capture-then-write arm of the shutdown uses.
+            #
+            # Why the explicit list[UUID] annotation: JobId is
+            # NewType(UUID), so the bare comprehension infers
+            # list[JobId], and list invariance would refuse the uuid[]
+            # bind parameter's declared type below. held_ids() covers
+            # BOTH maps: registered consumers (executing now) and claim
+            # intents (taken off local_queue, not yet registered, the
+            # window the registry's comment documents).
+            active_ids: list[JobId] = deps.active_jobs.held_ids()
+            # The disowned rows are never this pass's population (the
+            # docstring's disowned-exclusion paragraph): their attempts
+            # may have started, so the refund is wrong for them, and
+            # Sweep 1 owns their reclaim. Why the comprehension instead
+            # of sorted(): JobId is NewType(UUID), sorted() erases the
+            # NewType, and list invariance would refuse the uuid[] bind
+            # parameter's declared type below.
+            disowned_ids: list[JobId] = [JobId(job_id) for job_id in sorted(deps.disowned_jobs)]
+            params: list[UUID | list[JobId]] = [worker_id]
+            if active_ids:
+                sql += " AND id <> ALL($2::uuid[])"
+                params.append(active_ids)
+            if disowned_ids:
+                sql += f" AND NOT j.id = ANY(${len(params) + 1}::uuid[])"
+                params.append(disowned_ids)
             tag = await conn.execute(sql, *params)
             rowcount = parse_rowcount(tag)
             _log.info(
