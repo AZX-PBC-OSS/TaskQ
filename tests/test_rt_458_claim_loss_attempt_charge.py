@@ -297,17 +297,25 @@ async def test_reconcile_refunds_the_claim_time_increment_of_a_job_that_never_ra
         f"did not happen"
     )
 
-    # The record: the sweep's reclaim ledger (one job_attempts row per
-    # reclaimed row, every branch, its own pinned contract) must sit at
-    # the REFUNDED attempt, the pre-claim counter. On main the unrefunded
-    # charge leaves [(1, 'crashed', 'lock expired before worker reported
-    # terminal state')]: the charged attempt recorded as an execution that
-    # did not happen, indistinguishable from a genuine mid-execution crash.
+    # The record: the sweep's reclaim ledger must sit at the REFUNDED
+    # attempt - which, the refund having de-charged the increment, is NO
+    # attempt row at all. The reclaim's crashed-row INSERT is fenced on
+    # the STANDING CLAIM (the un-stamped started_at is the refund's void
+    # marker): a crashed row at the refunded number would permanentise an
+    # epoch the counter no longer carries, and the next claim's re-mint
+    # of the number would close the lineage with one more attempt row
+    # than the counter - the soak's reconciliation red (``attempt counter
+    # 1 vs 2 attempt rows``, run 36175331443). The reclaim is still
+    # audited - by the job_events state_change, which fires either way.
+    # On main pre-fence the unrefunded charge left [(1, 'crashed', ...)]
+    # and the pre-fence fence left the phantom [(0, 'crashed')]: both
+    # fabricated an execution that did not happen.
     attempts = await _attempt_rows(clean_pg_conn, schema, job_id)
-    assert [(a["attempt"], a["outcome"]) for a in attempts] == [(0, "crashed")], (
+    assert attempts == [], (
         f"the reclaim's attempt ledger must not claim the charged attempt "
-        f"(the claim charged attempt 1 and nothing ever executed it), got "
-        f"{attempts}"
+        f"(the claim charged attempt 1 and nothing ever executed it) NOR "
+        f"the refunded number (an epoch the counter no longer carries), "
+        f"got {attempts}"
     )
 
     # 5. The budget was not consumed: the job re-dispatches. The reclaim's

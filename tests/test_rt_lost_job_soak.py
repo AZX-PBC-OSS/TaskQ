@@ -554,6 +554,8 @@ async def _trial(
         f"""
         SELECT j.id, j.attempt,
                (SELECT count(*)::int FROM "{schema}".job_attempts a WHERE a.job_id = j.id) AS attempts,
+               (SELECT min(a.attempt) FROM "{schema}".job_attempts a WHERE a.job_id = j.id) AS min_attempt,
+               (SELECT max(a.attempt) FROM "{schema}".job_attempts a WHERE a.job_id = j.id) AS max_attempt,
                (SELECT count(*)::int FROM "{schema}".job_events e
                 WHERE e.job_id = j.id AND e.kind = 'state_change'
                   AND e.detail->>'to_state' IN
@@ -570,6 +572,27 @@ async def _trial(
             "(two consumers ran one attempt number: the PK absorbs the "
             "second, so the ledger undercounts the counter) or a claim's "
             "ledger row was lost"
+        )
+        # THE EPOCH-LINEAGE CLOSURE: the ledger must reconcile with the
+        # counter for EVERY epoch, not just in count. The ledger's PK
+        # makes its rows distinct, so count == attempt together with
+        # min >= 1 (no row BELOW the first charge: a refund de-charges the
+        # increment, and a reclaim that permanentises the refunded number
+        # mints a phantom epoch the next claim double-counts) and
+        # max <= attempt (no row ABOVE the counter: a charge whose refund
+        # erased the counter leaving its ledger row standing) pins the
+        # rows to exactly {1..attempt}: every recorded epoch was charged,
+        # every charged epoch is recorded.
+        assert row["min_attempt"] is None or row["min_attempt"] >= 1, (
+            f"job {row['id']}: ledger holds attempt {row['min_attempt']}, "
+            f"below the first charge - a refund's de-charge was "
+            f"permanentised into the ledger (the reclaim recorded the "
+            f"refunded epoch), the phantom the counter re-mints"
+        )
+        assert row["max_attempt"] is None or row["max_attempt"] <= row["attempt"], (
+            f"job {row['id']}: ledger holds attempt {row['max_attempt']} "
+            f"above the counter {row['attempt']} - a charge whose refund "
+            f"erased the counter left its ledger row standing"
         )
         assert 1 <= row["terminals"] <= row["attempts"], (
             f"job {row['id']}: {row['terminals']} terminal events on "
