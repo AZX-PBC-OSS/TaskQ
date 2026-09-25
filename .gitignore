@@ -85,3 +85,6 @@ vendor/
 
 coverage.json
 coverage/gremlins/
+
+# pytest-gremlins incremental mutation cache
+.gremlins_cache/
