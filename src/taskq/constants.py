@@ -49,6 +49,8 @@ __all__ = [
     "PROGRESS_CHANNEL_FMT",
     "PROGRESS_GLOBAL_CHANNEL_FMT",
     "QUEUE_CONCURRENCY_PREFIX",
+    "RATE_LIMIT_REDIS_TRANSIENT_RETRY_ATTEMPTS",
+    "RATE_LIMIT_REDIS_TRANSIENT_RETRY_BACKOFFS_S",
     "RECLAIM_EVENT_VISIBILITY_DELAY",
     "RECLAIM_OUTBOX_RETENTION_MULTIPLIER",
     "RELEASE_EXIT_TAIL_SLACK_SECS",
@@ -172,6 +174,47 @@ expiry instant never guarantees the slot is free anyway. Sub-second
 hints are additionally floored by ``MIN_DEFERRAL_INTERVAL`` downstream,
 so the margin's real work is on multi-second lease horizons where it is
 noise by design.
+"""
+
+RATE_LIMIT_REDIS_TRANSIENT_RETRY_ATTEMPTS: Final[int] = 3
+"""Total acquire attempts against Redis before the dependency-unavailable
+decision, one initial attempt plus two retries.
+
+Why retry at all: a TRANSIENT connection failure (a blip of 100ms to 1s,
+the container co-tenancy shape) previously took the SAME path as a
+persistent outage, straight to the fail-closed decision, so a
+redis-only deployment denied a legitimate request the store could have
+served a quarter-second later. Weather gets a bounded retry, lies get
+the sentinel: the retry arm exists ONLY for the connection family
+(``redis.ConnectionError``/``redis.TimeoutError``, the error reaching
+the SERVER), never for the store-lie classification
+(:class:`~taskq.exceptions.RateLimitStoreCorrupt`, a reply that arrived
+and is wrong) and never for the cannot-serve ``ResponseError`` siblings
+(READONLY, OOM), all of which fail closed on first sight.
+
+Why bounded at three: the budget caps the added latency a PERSISTENT
+outage pays before the fail-closed decision (1.0s of backoff below) on
+the hot admission path, and pins the attempt count so a replay cannot
+loop. See :data:`RATE_LIMIT_REDIS_TRANSIENT_RETRY_BACKOFFS_S` for the
+double-spend trade the retry accepts.
+"""
+
+RATE_LIMIT_REDIS_TRANSIENT_RETRY_BACKOFFS_S: Final[tuple[float, ...]] = (0.25, 0.75)
+"""Backoff sleeps (seconds) between the transient-retry attempts, one
+per retry, so ``len(...) == RATE_LIMIT_REDIS_TRANSIENT_RETRY_ATTEMPTS - 1``.
+
+Geometric like the repo's other ladders (workgroup restart 0.5/2.0,
+notify reconnect 1.0/2.0) but compressed: the sequence SUMS to 1.0s,
+the ceiling of the observed blip window, so the retry budget covers a
+blip of 100ms to 1s and a persistent outage pays at most one extra
+second before the fail-closed decision. The accepted trade: a
+connection error can mask an APPLIED script (the reply lost in
+flight), and the retry re-runs the acquire, so a fixed-quota token can
+be spent twice by one admission. Over-admitting one token during a
+sub-second blip is judged the smaller failure against the alternative,
+the certain denial of a request the healthy store would have allowed;
+the deny arm (the fallback, then the sentinel) stays exactly as it
+was.
 """
 
 CANCEL_ORIGIN_COOPERATIVE: Final[str] = "CancelledCooperatively"

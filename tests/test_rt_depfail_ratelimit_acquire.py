@@ -22,6 +22,7 @@ from taskq._di.scope import Scope
 from taskq._ids import new_uuid
 from taskq.actor import ActorRef
 from taskq.client._enqueuer import SubJobEnqueuer
+from taskq.constants import RATE_LIMIT_REDIS_TRANSIENT_RETRY_ATTEMPTS
 from taskq.context import JobContext
 from taskq.retry import RetryPolicy
 from taskq.settings import WorkerSettings
@@ -322,11 +323,14 @@ async def test_redis_outage_fallback_composition_runs_actor_via_pg() -> None:
         "the fallback acquire must have run the token-bucket PG statements, "
         "the fused acquire is one fetchrow"
     )
-    assert script.calls == 1, (
-        f"the Redis acquire ran {script.calls} times: the fallback must be an "
-        "INDEPENDENT Postgres decision, never a replay of the Redis acquire - "
-        "a replay would spend the bucket twice for one admission (and a "
-        "half-applied script state would be spent a third time)"
+    assert script.calls == RATE_LIMIT_REDIS_TRANSIENT_RETRY_ATTEMPTS, (
+        f"the Redis acquire ran {script.calls} times on a persistent outage: "
+        "the connection family gets EXACTLY the bounded transient-retry budget "
+        "(RATE_LIMIT_REDIS_TRANSIENT_RETRY_ATTEMPTS attempts, never an unbounded "
+        "replay), and only AFTER the budget is spent does the fallback run as "
+        "an INDEPENDENT Postgres decision - the fallback must never be a replay "
+        "of the Redis acquire, a replay would spend the bucket twice for one "
+        "admission (and a half-applied script state would be spent a third time)"
     )
 
 

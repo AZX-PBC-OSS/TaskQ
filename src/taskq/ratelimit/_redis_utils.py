@@ -8,6 +8,10 @@ from typing import TYPE_CHECKING, cast
 
 import structlog
 
+from taskq.constants import (
+    RATE_LIMIT_REDIS_TRANSIENT_RETRY_ATTEMPTS,
+    RATE_LIMIT_REDIS_TRANSIENT_RETRY_BACKOFFS_S,
+)
 from taskq.exceptions import RateLimitStoreCorrupt
 from taskq.ratelimit.decision import RateLimitDecision
 
@@ -77,7 +81,7 @@ async def redis_time_seconds(redis_client: "redis_async.Redis") -> float:
 
 
 async def with_pg_fallback(
-    redis_call: Awaitable[RateLimitDecision],
+    redis_call: Callable[[], Awaitable[RateLimitDecision]],
     pg_call: Callable[[], Awaitable[RateLimitDecision]],
     *,
     bucket_name: str,
@@ -88,12 +92,25 @@ async def with_pg_fallback(
     ResponseError siblings that mean "this server cannot serve right now",
     fall back to PG.
 
+    The connection family (``redis.ConnectionError``/``redis.TimeoutError``,
+    the error reaching the SERVER) first gets a BOUNDED transient retry,
+    :data:`RATE_LIMIT_REDIS_TRANSIENT_RETRY_ATTEMPTS` attempts with the
+    short backoffs of :data:`RATE_LIMIT_REDIS_TRANSIENT_RETRY_BACKOFFS_S`,
+    because a sub-second connection blip (container co-tenancy, a proxy
+    restart) is weather: without the retry the same blip took the SAME
+    path as a persistent outage, straight to the fail-closed decision,
+    and a redis-only deployment denied a legitimate request the store
+    would have served a quarter-second later. THE LINE: weather gets a
+    bounded retry, lies get the sentinel.
+
     The extra siblings are pinned exactly (checked against redis-py 8.1.0's
     exception hierarchy): :class:`redis.ReadOnlyError` (a replica promoted
     mid-flight answers writes with READONLY) and
     :class:`redis.OutOfMemoryError` (a maxmemory breach) are both direct
     ``ResponseError`` subclasses and both mean the store cannot serve - the
-    same outage class as a connection failure. They must be named
+    same outage class as a connection failure, but NOT blips (a promoted
+    replica does not demote back in a second, a maxmemory breach does not
+    clear itself), so they skip the retry arm entirely. They must be named
     individually rather than catching the parent ``ResponseError``:
     :class:`redis.exceptions.NoScriptError` is also a ``ResponseError``
     sibling, and redis-py handles it client-side (``Script.__call__``
@@ -107,11 +124,15 @@ async def with_pg_fallback(
     :class:`RateLimitDependencyUnavailable` (so the acquire boundary's
     dependency-failure family recognises it when no fallback is wired)
     and is deliberately NOT a redis ``ResponseError`` sibling: it marks
-    TaskQ's verdict, not redis's.
+    TaskQ's verdict, not redis's. A lie is NEVER retried: the reply
+    arrived and is wrong, re-asking the liar buys nothing, so the
+    store-lie shapes fail closed on FIRST SIGHT while the connection
+    family weathers its bounded budget.
 
     The WARNING log is emitted **before** delegating to the PG path so that
     if the PG path also emits an INFO denial log, the WARNING precedes the
-    INFO in the captured stream.
+    INFO in the captured stream. Each transient retry logs its own
+    ``rate-limit-redis-transient-retry`` WARNING before the backoff sleep.
 
     Raises :class:`ImportError` if the ``[redis]`` extra is not installed
     and the caller somehow reaches this path (should not happen when
@@ -128,15 +149,10 @@ async def with_pg_fallback(
             "Install it with: pip install 'taskq[redis]'"
         ) from exc
 
-    try:
-        return await redis_call
-    except (
-        _redis_mod.ConnectionError,
-        _redis_mod.TimeoutError,
-        _RedisReadOnlyError,
-        _RedisOutOfMemoryError,
-        RateLimitStoreCorrupt,
-    ) as exc:
+    async def _fail_closed(exc: Exception) -> RateLimitDecision:
+        """The dependency-unavailable decision, the shape the retry and
+        the no-retry families both funnel into: fall back to PG when the
+        fallback is wired, re-raise when it is not."""
         if settings is None or not settings.rate_limit_pg_fallback_enabled:
             raise
         log_kwargs: dict[str, object] = {
@@ -149,6 +165,46 @@ async def with_pg_fallback(
             log_kwargs["style"] = style
         logger.warning("rate-limit-redis-fallback", **log_kwargs)
         return await pg_call()
+
+    # *redis_call* is a FACTORY (not an awaited coroutine) exactly so the
+    # transient-retry arm below can re-invoke it; the acquire it wraps is
+    # idempotent to re-enter (the script cache is, see ensure_redis_script).
+    transient_retries_left = RATE_LIMIT_REDIS_TRANSIENT_RETRY_ATTEMPTS - 1
+    while True:
+        try:
+            return await redis_call()
+        except (
+            _redis_mod.ConnectionError,
+            _redis_mod.TimeoutError,
+        ) as exc:
+            # The WEATHER family: the connection to the server failed. A
+            # blip is allowed one bounded weathering before the decision.
+            if transient_retries_left > 0:
+                backoff_s = RATE_LIMIT_REDIS_TRANSIENT_RETRY_BACKOFFS_S[
+                    RATE_LIMIT_REDIS_TRANSIENT_RETRY_ATTEMPTS - 1 - transient_retries_left
+                ]
+                transient_retries_left -= 1
+                logger.warning(
+                    "rate-limit-redis-transient-retry",
+                    bucket_name=bucket_name,
+                    backend="redis",
+                    error=str(exc),
+                    backoff_s=backoff_s,
+                    **({"style": style} if style is not None else {}),
+                )
+                await asyncio.sleep(backoff_s)
+                continue
+            # The budget is spent: the blip was an outage, the decision.
+            return await _fail_closed(exc)
+        except (
+            _RedisReadOnlyError,
+            _RedisOutOfMemoryError,
+            RateLimitStoreCorrupt,
+        ) as exc:
+            # The CANNOT-SERVE and LIE families: fail closed on first
+            # sight, no retry (see the docstring for why neither is a
+            # blip).
+            return await _fail_closed(exc)
 
 
 async def ensure_redis_script(

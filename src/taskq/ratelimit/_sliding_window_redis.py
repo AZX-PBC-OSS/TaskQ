@@ -276,7 +276,7 @@ async def _acquire_redis_log_wrapped(
     from taskq.ratelimit._sliding_window_pg import _acquire_pg_log
 
     return await with_pg_fallback(
-        _acquire_redis_log(self, request_id, redis_client, settings),
+        lambda: _acquire_redis_log(self, request_id, redis_client, settings),
         lambda: _acquire_pg_log(self, pg_pool, settings, request_id),
         bucket_name=self._name,
         settings=settings,
@@ -352,7 +352,7 @@ async def _acquire_redis_gcra_wrapped(
     from taskq.ratelimit._sliding_window_pg import _acquire_pg_gcra
 
     return await with_pg_fallback(
-        _acquire_redis_gcra(self, redis_client, settings),
+        lambda: _acquire_redis_gcra(self, redis_client, settings),
         lambda: _acquire_pg_gcra(self, pg_pool, settings),
         bucket_name=self._name,
         settings=settings,
