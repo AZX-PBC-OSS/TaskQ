@@ -288,6 +288,15 @@ class RateLimitRegistry:
         # wake on one release and re-probe, each denial re-arming its own
         # wait. Cross-process releases (a peer worker's) are not seen here;
         # the retry's timeout floor covers them.
+        # Reclaimed with the keyed lifecycle: evict_idle_keyed_reservations()
+        # pops the entry alongside the bucket itself (same idle criterion),
+        # so high-cardinality keyed reservations under sustained denials do
+        # not grow this dict without bound. A waiter holding a popped event
+        # object is never stranded: its wait is bounded (the retry's backoff
+        # floor) and its return - wake or timeout - falls through to the
+        # availability re-probe, which is the correctness anchor; a
+        # re-materialized bucket gets a fresh event, so no stale set()
+        # crosses the eviction boundary.
         self._reservation_release_events: dict[str, asyncio.Event] = {}
         # Names of reservations materialized from a KeyedReservationRef
         # (as opposed to a static @actor(reservations=["name"]) entry),
@@ -1678,8 +1687,11 @@ class RateLimitRegistry:
         (not leader-gated) with a 1-hour idle threshold; call directly for
         custom eviction windows.
 
-        Removes the in-memory registry entry and its acquire-recency
-        tracking, and RECORDS the bucket in the pending-reclaim set so
+        Removes the in-memory registry entry, its acquire-recency
+        tracking, and its release-wake event (the denial-retry's wake
+        signal, popped with the same idle criterion so sustained denials
+        under high key cardinality cannot grow the event dict without
+        bound), and RECORDS the bucket in the pending-reclaim set so
         its ``reservation_slots`` rows are deleted by
         :meth:`drain_pending_reservation_reclaims` on the same sweep
         cadence. The lock-expiry sweep is an ``UPDATE ... SET job_id =
@@ -1742,10 +1754,19 @@ class RateLimitRegistry:
         )
         # The heal stamps ride the registration's lifecycle: an evicted
         # bucket's window must not survive into a future re-registration
-        # of the same concrete name.
+        # of the same concrete name. The release-wake event rides the
+        # same lifecycle (see the dict's comment above): a keyed bucket
+        # that denies waiters creates an event on demand, and without
+        # this pop every distinct denied key would leave one behind
+        # forever - unbounded in the caller-controlled key space under
+        # sustained denials. A waiter holding the popped object is never
+        # stranded: its wait is bounded and falls through to the
+        # availability re-probe, and a re-materialized bucket gets a
+        # fresh event (no stale set() crosses the eviction boundary).
         for name in evicted:
             self._keyed_reservation_heal_attempted.pop(name, None)
             self._keyed_reservation_heal_failure_logged.pop(name, None)
+            self._reservation_release_events.pop(name, None)
         update_keyed_reclaim_pending(self._pending_reclaim_total())
         if vetoed:
             logger.warning(
