@@ -55,8 +55,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 import asyncpg
@@ -653,6 +654,137 @@ async def test_state2_late_registration_torn_down_by_the_shutdown_requeues(
         f"charged), got attempt {runs[job_id]}"
     )
     await _assert_balanced(deps, schema, _TAG)
+
+
+# ── State 2, the consumer side: the take-to-register SHUTDOWN SEAM ───────
+
+
+async def test_shutdown_seam_releases_the_never_started_claim_whole(
+    clean_jobs_app: JobsApp,
+    clean_redis_client: Any,
+) -> None:
+    """A dispatch parked in the take-to-register window when shutdown is
+    stamped is released by the seam, and the release is WHOLE.
+
+    The scenario: a row is claimed through the production claim CTE (the
+    take), the consumer is dispatched at it, and the deps carries the
+    orchestrator's shutdown stamp before the consumer's window walk
+    reaches the guard - the consumer is parked inside the
+    take-to-register window (registered nowhere) when the seam fires.
+    The contract: the body never runs; the row goes back to the fleet
+    exactly once (the fenced refund - status ``scheduled``, unlocked, the
+    claim's attempt increment refunded, the ``released_reason`` metadata
+    proving whose write it was); no ``job_attempts`` ledger row exists (a
+    never-started attempt is not an execution); the ``scheduled``
+    state-change reaches Redis like every other requeue (the ordinary
+    snooze path's publish); and - the leak's tooth - NO
+    ``progress_buffers`` entry is left behind: the buffer is installed
+    only after the seam declines to fire, so a seam-fired dispatch cannot
+    strand an entry the flush tick's dirty-scan would iterate forever.
+    """
+    from taskq.constants import progress_channel
+
+    deps = clean_jobs_app.deps
+    backend = clean_jobs_app.backend
+    schema = deps.settings.schema_name
+
+    job_id = await _enqueue(backend)
+    worker_id, claimed = await _claim(backend, deps, schema)
+    row = claimed[0]
+    claim_row = await _job_row(deps, schema, job_id)
+    assert claim_row["status"] == "running" and claim_row["attempt"] == 1, (
+        f"the premise: the claim charged the attempt, got {claim_row}"
+    )
+
+    # The wire the seam's publish rides: subscribed before the dispatch,
+    # so the `scheduled` state-change is captured, not joined in flight.
+    pubsub = clean_redis_client.pubsub()
+    await pubsub.subscribe(progress_channel(schema, job_id))
+    try:
+        # The shutdown stamp: the orchestrator's entry stamps
+        # shutdown_started_at in the same synchronous block that raises
+        # the phase to DRAINING - one signal, no await between them. The
+        # consumer's window walk (payload validation, the effective-surface
+        # resolution) reaches the seam guard with the stamp standing.
+        deps.redis_client = clean_redis_client
+        deps.shutdown_phase = ShutdownPhase.DRAINING
+        deps.shutdown_started_at = asyncio.get_running_loop().time()
+
+        body_ran: list[int] = []
+
+        async def actor(job: JobRow, ctx: JobContext[BaseModel]) -> dict[str, int]:
+            body_ran.append(ctx.attempt)
+            return {}
+
+        outcome = await consume_one_job(
+            backend,
+            row,
+            worker_id,
+            deps=deps,
+            run_actor=actor,
+            actor_config=StubActorConfig(
+                retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0)
+            ),
+            payload_type=_Payload,
+            clock=SystemClock(),
+            active_jobs=deps.active_jobs,
+        )
+
+        assert outcome == "scheduled", (
+            f"the seam's release returns the dispatch's scheduled outcome, got {outcome!r}"
+        )
+        assert body_ran == [], (
+            f"the body ran under a shutdown in progress (attempts {body_ran}): the "
+            "take-to-register seam must release the claim before any registration"
+        )
+
+        after = await _job_row(deps, schema, job_id)
+        assert after["status"] == "scheduled" and after["locked_by"] is None, (
+            f"the row must be back to the fleet (scheduled, unlocked), got {after}"
+        )
+        assert after["attempt"] == 0, (
+            f"the claim's attempt increment must be refunded whole (charged 1, "
+            f"refunded to 0), got attempt {after['attempt']}"
+        )
+        assert await _attempt_rows(deps, schema, job_id) == [], (
+            "no ledger row: a never-started attempt is not an execution outcome"
+        )
+
+        # THE LEAK'S TOOTH. Pre-fix, the seam returned from between the
+        # buffer install and the ``finally`` that removes it: every
+        # shutdown-raced dispatch left one entry in the map for the
+        # process's remaining life, and the flush tick's dirty-scan
+        # iterated it forever. The pin goes red under that order.
+        assert job_id not in deps.progress_buffers and not deps.progress_buffers, (
+            f"the seam-fired dispatch left a progress_buffers entry behind "
+            f"({len(deps.progress_buffers)}): the install preceded the guard, the "
+            "buffer's removal ``finally`` never ran, and the flush tick's "
+            "dirty-scan now iterates a dead entry forever"
+        )
+
+        # The observability consistency: exactly one `scheduled`
+        # state-change on the per-job channel - the same publish the
+        # ordinary snooze path applies, carrying no running transition
+        # (the body never started, so none was published).
+        events: list[dict[str, object]] = []
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 5.0
+        while loop.time() < deadline:
+            message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
+            if message is not None and message.get("type") == "message":
+                events.append(cast("dict[str, object]", json.loads(message["data"])))
+        scheduled_events = [
+            e for e in events if e.get("kind") == "state_change" and e.get("status") == "scheduled"
+        ]
+        assert len(scheduled_events) == 1, (
+            f"exactly one scheduled state-change must reach Redis (the ordinary "
+            f"snooze path's publish), got {len(scheduled_events)} of {len(events)} events"
+        )
+        assert scheduled_events[0].get("terminal") is False, (
+            "the seam's release is a requeue, never a terminal verdict"
+        )
+    finally:
+        await pubsub.aclose()
 
 
 # ── State 3: RUNNING pre-terminal ────────────────────────────────────────

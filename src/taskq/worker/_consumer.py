@@ -928,22 +928,6 @@ async def consume_one_job(
     # bare-id pop of whatever the key holds by then.
     _buf: _ProgressBuffer | None = None
 
-    if _progress_buffers is not None:
-        # attempt seeds the buffer's flush-fence epoch: a stale flush
-        # landing after a same-worker redispatch to a later attempt
-        # no-ops instead of clobbering the new epoch's progress.
-        _buf = _ProgressBuffer(job_id=job.id, base_seq=job.progress_seq, attempt=job.attempt)
-        _progress_buffers[job.id] = _buf
-        # The running transition is itself an event on the job's stream:
-        # it consumes the next seq (the seq is a strict total order over
-        # progress and state-change events alike), recorded on the buffer
-        # so the running publish below, every later ctx.progress call,
-        # the flush deltas, and the terminal helpers all stack on it and
-        # no later event can repeat the seq it carried. The consumption
-        # rides the next flush delta or the next mark_* absolute SET to
-        # the durable row, so the next attempt's buffer seeds past it.
-        _consume_state_change_seq(_buf)
-
     _parent_tags_token = _parent_tags_var.set(tuple(job.tags))
 
     # This attempt's own registration, captured for the exit path below
@@ -956,34 +940,6 @@ async def consume_one_job(
     _active_entry: _ActiveJob | None = None
 
     try:
-        live_enqueuer = (
-            enqueuer
-            if enqueuer is not None
-            else SubJobEnqueuer(
-                loop_scope_resolved=None,
-                worker_pool=None,
-                backend=backend,
-            )
-        )
-
-        ctx: JobContext[BaseModel] = JobContext(
-            job_id=job.id,
-            actor=job.actor,
-            queue=job.queue,
-            attempt=job.attempt,
-            claim_epoch=job.claim_epoch,
-            snooze_count=job.snooze_count,
-            worker_id=worker_id,
-            payload=validated_payload,
-            jobs=live_enqueuer,
-            log=job_log,
-            span=consumer_span if not isinstance(consumer_span, trace.NonRecordingSpan) else None,
-            _progress_buffers=_progress_buffers,
-            _redis_client=_effective_redis,
-            _worker_settings=_effective_settings,
-            _pending_publish_tasks=_pending_publish_tasks,
-        )
-
         # The seam's observable, read the way the release-park bound reads
         # it (the deps doubles of the consumer's unit pins are hand-built
         # duck types that model no shutdown fields; getattr's None default
@@ -1053,7 +1009,85 @@ async def consume_one_job(
                         kind="shutdown_released_before_body",
                         released_outcome=release_outcome,
                     )
+                # The observability consistency with the ordinary snooze
+                # path (_run_terminal_path): the release's `scheduled`
+                # transition reaches Redis like every other requeue - the
+                # same publish helper, skipped on a noop (a noop means no
+                # transition happened, the row moved underneath this
+                # dispatch, and announcing `scheduled` would advertise a
+                # move the row never made). No buffer exists on this path
+                # (the install below only runs when the seam does not
+                # fire), so the event carries the bufferless default seq,
+                # the same shape the running publish applies when no
+                # buffer is installed.
+                if (
+                    release_outcome != "noop"
+                    and _effective_redis is not None
+                    and _effective_settings is not None
+                ):
+                    await _publish_state_change_event(
+                        _effective_redis,
+                        _effective_settings,
+                        job.id,
+                        job.actor,
+                        _progress_buffers,
+                        status="scheduled",
+                        terminal=False,
+                    )
             return "scheduled"
+
+        # THE SEAM PRECEDES THE INSTALL. The buffer is installed only
+        # after the seam has declined to fire: the guard's return above
+        # would otherwise exit between the install and the inner ``try``
+        # whose ``finally`` is the buffer's only removal (the issue-461
+        # map hygiene - every shutdown-raced dispatch would leak one
+        # ``progress_buffers`` entry, and the flush tick's dirty-scan
+        # would iterate it forever). The guard needs nothing the install
+        # provides - its inputs are the deps' shutdown stamp and the
+        # backend release - so the order is free, and the leak is not.
+        if _progress_buffers is not None:
+            # attempt seeds the buffer's flush-fence epoch: a stale flush
+            # landing after a same-worker redispatch to a later attempt
+            # no-ops instead of clobbering the new epoch's progress.
+            _buf = _ProgressBuffer(job_id=job.id, base_seq=job.progress_seq, attempt=job.attempt)
+            _progress_buffers[job.id] = _buf
+            # The running transition is itself an event on the job's stream:
+            # it consumes the next seq (the seq is a strict total order over
+            # progress and state-change events alike), recorded on the buffer
+            # so the running publish below, every later ctx.progress call,
+            # the flush deltas, and the terminal helpers all stack on it and
+            # no later event can repeat the seq it carried. The consumption
+            # rides the next flush delta or the next mark_* absolute SET to
+            # the durable row, so the next attempt's buffer seeds past it.
+            _consume_state_change_seq(_buf)
+
+        live_enqueuer = (
+            enqueuer
+            if enqueuer is not None
+            else SubJobEnqueuer(
+                loop_scope_resolved=None,
+                worker_pool=None,
+                backend=backend,
+            )
+        )
+
+        ctx: JobContext[BaseModel] = JobContext(
+            job_id=job.id,
+            actor=job.actor,
+            queue=job.queue,
+            attempt=job.attempt,
+            claim_epoch=job.claim_epoch,
+            snooze_count=job.snooze_count,
+            worker_id=worker_id,
+            payload=validated_payload,
+            jobs=live_enqueuer,
+            log=job_log,
+            span=consumer_span if not isinstance(consumer_span, trace.NonRecordingSpan) else None,
+            _progress_buffers=_progress_buffers,
+            _redis_client=_effective_redis,
+            _worker_settings=_effective_settings,
+            _pending_publish_tasks=_pending_publish_tasks,
+        )
 
         if active_jobs is not None:
             task = asyncio.current_task()

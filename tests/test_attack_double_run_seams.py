@@ -84,7 +84,7 @@ _QUEUE = "default"
 # a verdict any pin asserts. The lock_lease rides along to satisfy the
 # settings' own cascade invariant (max(interval, timeout) +
 # (max_heartbeat_failures + 1) * (interval + timeout) <= lock_lease:
-# 0.5 + 4 * 2.5 = 10.5 <= 15) and because no pin's contract touches the
+# max(1.0, 2.0) + 4 * 3.0 = 14.0 <= 15) and because no pin's contract touches the
 # lease: the reconcile grace ages started_at an HOUR past it, the
 # ladders are driven by hand, and the claims ride _fleet.py's own
 # FLEET_LOCK_LEASE. 2s keeps every transport hang loud (pytest-timeout
