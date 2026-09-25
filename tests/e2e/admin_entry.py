@@ -58,7 +58,9 @@ def main() -> None:
         if redis_url is not None:
             import redis.asyncio as redis_async
 
-            redis_client = redis_async.from_url(redis_url, decode_responses=False)
+            redis_client = redis_async.from_url(
+                redis_url, decode_responses=False, socket_timeout=None
+            )
         try:
             bundle = create_router(
                 pool,

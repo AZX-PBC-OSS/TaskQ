@@ -1542,7 +1542,7 @@ async def test_concurrent_keyed_bucket_acquisition_atomicity(redis_url: str) -> 
     bucket = reg.get_rate_limit(name)
     assert bucket.backend == "redis"
 
-    client = redis_async.from_url(redis_url, decode_responses=False)
+    client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
     clock = SystemClock()
 
     try:

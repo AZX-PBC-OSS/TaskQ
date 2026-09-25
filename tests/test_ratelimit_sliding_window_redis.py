@@ -50,7 +50,7 @@ def _settings(redis_url: str) -> WorkerSettings:
 
 
 async def _make_client(redis_url: str) -> redis_async.Redis:
-    return redis_async.from_url(redis_url, decode_responses=False)
+    return redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
 
 
 # ── 60-in-60s window - burst allowed → denied → retry_after wait → allowed ──

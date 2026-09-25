@@ -107,7 +107,7 @@ async def test_redis_key_ttl_honours_an_explicit_ttl(redis_url: str) -> None:
     settings = WorkerSettings.load_from_dict(
         {"pg_dsn": "postgresql://u:p@h/d", "redis_url": redis_url, "schema_name": schema},
     )
-    client = redis_async.from_url(redis_url, decode_responses=False)
+    client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
     try:
         await bucket.acquire(redis_client=client, clock=SystemClock(), settings=settings)
         ttl = await client.ttl(f"taskq:{schema}:rl:tb:{{{bucket.name}}}")
@@ -131,7 +131,7 @@ async def test_redis_key_ttl_is_bounded_for_a_tiny_refill(redis_url: str) -> Non
     settings = WorkerSettings.load_from_dict(
         {"pg_dsn": "postgresql://u:p@h/d", "redis_url": redis_url, "schema_name": schema},
     )
-    client = redis_async.from_url(redis_url, decode_responses=False)
+    client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
     try:
         await bucket.acquire(redis_client=client, clock=SystemClock(), settings=settings)
         ttl = await client.ttl(f"taskq:{schema}:rl:tb:{{{bucket.name}}}")

@@ -75,7 +75,7 @@ async def test_fixed_quota_refund_repays_postgres_after_a_redis_outage(
     bucket = TokenBucket(name, capacity=2.0, refill_per_second=0.0, backend="redis")
     # A read-only view of the same bucket's Postgres state.
     pg_view = TokenBucket(name, capacity=2.0, refill_per_second=0.0, backend="postgres")
-    client = redis_async.from_url(redis_url, decode_responses=False)
+    client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
 
     try:
         healthy = await connected.acquire(
@@ -142,7 +142,7 @@ async def test_sliding_window_refund_repays_postgres_after_a_redis_outage(
     pg_view = SlidingWindow(
         name, limit=2, window=timedelta(seconds=60), backend="postgres", style=style
     )
-    client = redis_async.from_url(redis_url, decode_responses=False)
+    client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
 
     try:
         healthy = await connected.acquire(

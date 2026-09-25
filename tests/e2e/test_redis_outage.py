@@ -356,7 +356,9 @@ async def test_redis_outage_degrades_gracefully(
         import redis as redis_sync
 
         try:
-            with redis_sync.from_url(f"{chaos_df.host_url}/{chaos_schema.redis_db}") as client:
+            with redis_sync.from_url(
+                f"{chaos_df.host_url}/{chaos_schema.redis_db}", socket_timeout=None
+            ) as client:
                 return bool(client.ping())
         except Exception:
             return False

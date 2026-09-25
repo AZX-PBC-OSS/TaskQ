@@ -64,7 +64,9 @@ async def test_redis_to_pg_degradation(
         refill_per_second=1.0,
         backend="redis",
     )
-    client = redis_async.from_url(redis_url_for(killable_redis_container), decode_responses=False)
+    client = redis_async.from_url(
+        redis_url_for(killable_redis_container), decode_responses=False, socket_timeout=None
+    )
 
     try:
         r = await tb.acquire(
@@ -141,7 +143,7 @@ async def test_redis_recovery_after_restart(
     host = await asyncio.to_thread(killable_redis_container.get_container_host_ip)  # type: ignore[union-attr] # Why: fixture typed object to avoid transitive imports
     port = await asyncio.to_thread(killable_redis_container.get_exposed_port, 6379)  # type: ignore[union-attr] # Why: same as above
     original_url = f"redis://{host}:{port}/0"
-    client = redis_async.from_url(original_url, decode_responses=False)
+    client = redis_async.from_url(original_url, decode_responses=False, socket_timeout=None)
 
     try:
         r = await tb.acquire(
@@ -169,7 +171,7 @@ async def test_redis_recovery_after_restart(
             6379,
         )
         new_url = f"redis://{host}:{new_port}/0"
-        client = redis_async.from_url(new_url, decode_responses=False)
+        client = redis_async.from_url(new_url, decode_responses=False, socket_timeout=None)
 
         tb_recovery = TokenBucket(
             name=bucket_name,
@@ -390,7 +392,9 @@ async def test_a_backward_step_of_the_store_clock_neither_refills_nor_indebts(
         assert isinstance(redis_container, _RedisContainerShim)
         host = redis_container.get_container_host_ip()
         port = redis_container.get_exposed_port(6379)
-        client = redis_async.from_url(f"redis://{host}:{port}/0", decode_responses=False)
+        client = redis_async.from_url(
+            f"redis://{host}:{port}/0", decode_responses=False, socket_timeout=None
+        )
         try:
             r1 = await tb.acquire(redis_client=client, pg_pool=module_pg_pool, settings=settings)
             assert r1.allowed is True

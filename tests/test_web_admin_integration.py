@@ -803,7 +803,7 @@ async def test_realtime_badge_with_redis(pool: asyncpg.Pool, redis_url: str) -> 
     """Real-time badge present and no meta-refresh when redis_client is set."""
     import redis.asyncio as aioredis
 
-    redis_client = aioredis.from_url(redis_url)
+    redis_client = aioredis.from_url(redis_url, socket_timeout=None)
     try:
         resp = await _get(_make_app(pool, redis_client=redis_client), "/admin/queues")
     finally:

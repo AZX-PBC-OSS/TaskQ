@@ -51,7 +51,7 @@ async def test_rollback_failure_bounded_by_ttl(
     ReservationUnavailable is still raised despite rollback failure; TokenBucket
     key's TTL bounds the over-acquisition window."""
     schema = module_pg_schema.schema_name
-    redis_client = redis_async.from_url(redis_url, decode_responses=False)
+    redis_client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
     s = WorkerSettings.load_from_dict(
         {
             "pg_dsn": module_pg_schema.pg_dsn,
@@ -131,7 +131,7 @@ async def test_pg_dies_during_reservation_release(
     is isolated to this single test.
     """
     schema = module_pg_schema.schema_name
-    redis_client = redis_async.from_url(redis_url, decode_responses=False)
+    redis_client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
     s = WorkerSettings.load_from_dict(
         {
             "pg_dsn": module_pg_schema.pg_dsn,
@@ -219,7 +219,7 @@ async def test_redis_dies_post_actor(
     released via PG (unaffected). release_for_actor completes without error;
     PG slot is freed."""
     schema = module_pg_schema.schema_name
-    redis_client = redis_async.from_url(redis_url, decode_responses=False)
+    redis_client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
     s = WorkerSettings.load_from_dict(
         {
             "pg_dsn": module_pg_schema.pg_dsn,
@@ -380,7 +380,7 @@ async def test_rate_limit_denial_snooze_without_awaiting(
     awaiting key. Exhaust SlidingWindow. Dispatch actor. Consumer calls
     mark_snoozed without awaiting."""
     schema = module_pg_schema.schema_name
-    redis_client = redis_async.from_url(redis_url, decode_responses=False)
+    redis_client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
     s = WorkerSettings.load_from_dict(
         {
             "pg_dsn": module_pg_schema.pg_dsn,
@@ -448,7 +448,7 @@ async def test_reservation_denial_snooze_with_awaiting(
     awaiting key. Fill all reservation slots. Dispatch actor. Consumer calls
     mark_snoozed with metadata_update={"awaiting": "reservation:gpu_pool"}."""
     schema = module_pg_schema.schema_name
-    redis_client = redis_async.from_url(redis_url, decode_responses=False)
+    redis_client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
     s = WorkerSettings.load_from_dict(
         {
             "pg_dsn": module_pg_schema.pg_dsn,

@@ -42,7 +42,7 @@ def _redis_bucket(
 
 
 async def _make_client(redis_url: str) -> redis_async.Redis:
-    return redis_async.from_url(redis_url, decode_responses=False)
+    return redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
 
 
 def _settings(redis_url: str) -> WorkerSettings:
@@ -115,7 +115,7 @@ async def test_burst_acceptance(redis_url: str) -> None:
 async def test_evalsha_caching(redis_url: str) -> None:
     """register_script is called exactly once across two acquires."""
     tb = _redis_bucket()
-    client = redis_async.from_url(redis_url, decode_responses=False)
+    client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
     settings = _settings(redis_url)
     clock = SystemClock()
 

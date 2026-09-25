@@ -67,7 +67,7 @@ async def test_redis_fleet_double_spend_exact(redis_url: str) -> None:
     name = f"rt_fleet_{new_base62()}"
     worker_a = TokenBucket(name=name, capacity=20.0, refill_per_second=0.0, backend="redis")
     worker_b = TokenBucket(name=name, capacity=20.0, refill_per_second=0.0, backend="redis")
-    client = redis_async.from_url(redis_url, decode_responses=False)
+    client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
 
     async def one(bucket: TokenBucket) -> object:
         return await bucket.acquire(1.0, redis_client=client, settings=settings)
@@ -108,7 +108,7 @@ async def test_redis_deny_then_allow_boundary_at_the_hint(redis_url: str) -> Non
     tb = TokenBucket(
         name=f"rt_boundary_{new_base62()}", capacity=1.0, refill_per_second=1.0, backend="redis"
     )
-    client = redis_async.from_url(redis_url, decode_responses=False)
+    client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
 
     try:
         first = await tb.acquire(1.0, redis_client=client, settings=settings)
@@ -244,7 +244,7 @@ async def test_redis_last_token_of_a_fixed_quota_is_grantable(redis_url: str) ->
     tb = TokenBucket(
         name=f"rt_boundary_{new_base62()}", capacity=5.0, refill_per_second=0.0, backend="redis"
     )
-    client = redis_async.from_url(redis_url, decode_responses=False)
+    client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
 
     try:
         for _ in range(4):

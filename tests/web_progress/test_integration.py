@@ -101,7 +101,7 @@ async def pool(pg_dsn: str) -> AsyncIterator[asyncpg.Pool]:
 
 @pytest_asyncio.fixture
 async def redis_client(redis_url: str) -> AsyncIterator[aioredis.Redis]:
-    client = aioredis.from_url(redis_url)
+    client = aioredis.from_url(redis_url, socket_timeout=None)
     try:
         yield client
     finally:

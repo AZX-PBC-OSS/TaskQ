@@ -195,7 +195,9 @@ async def test_progress_fanout_pubsub(
 
     channel = progress_global_channel(e2e_schema.schema_name)
     url = f"{e2e_dragonfly.host_url}/{e2e_schema.redis_db}"
-    redis_clients = [redis_async.from_url(url, decode_responses=False) for _ in range(2)]
+    redis_clients = [
+        redis_async.from_url(url, decode_responses=False, socket_timeout=None) for _ in range(2)
+    ]
     received: list[list[ProgressEvent]] = [[], []]
     try:
         loop = asyncio.get_running_loop()

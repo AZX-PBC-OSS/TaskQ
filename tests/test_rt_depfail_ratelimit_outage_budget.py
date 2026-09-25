@@ -413,7 +413,9 @@ async def test_outage_denials_preserve_budget_job_completes_when_store_returns(
     actor_ref = _rate_limited_actor_ref(bucket)
 
     dead_client = _dead_redis_client(redis.ConnectionError("redis unreachable (store outage)"))
-    live_client = redis_async.from_url(module_redis_url, decode_responses=False)
+    live_client = redis_async.from_url(
+        module_redis_url, decode_responses=False, socket_timeout=None
+    )
     try:
         async with _ScopeStack(_di_registry_with_redis(rl_registry, dead_client)) as scopes:
             await _drive_outage_cycles(

@@ -506,7 +506,7 @@ async def test_reset_on_tb_redis(redis_url: str) -> None:
 
     name = f"tb_peek_{new_base62()}"
     tb = TokenBucket(name=name, capacity=20, refill_per_second=5, backend="redis")
-    client = redis_async.from_url(redis_url, decode_responses=False)
+    client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
 
     settings = WorkerSettings.load_from_dict(
         {
@@ -550,7 +550,7 @@ async def test_reset_on_sw_gcra_redis(redis_url: str) -> None:
     sw = SlidingWindow(
         name=name, limit=3, window=timedelta(seconds=60), backend="redis", style="gcra"
     )
-    client = redis_async.from_url(redis_url, decode_responses=False)
+    client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
 
     settings = WorkerSettings.load_from_dict(
         {
@@ -591,7 +591,7 @@ async def test_reset_on_sw_log_redis(redis_url: str) -> None:
     sw = SlidingWindow(
         name=name, limit=2, window=timedelta(seconds=60), backend="redis", style="log"
     )
-    client = redis_async.from_url(redis_url, decode_responses=False)
+    client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
 
     settings = WorkerSettings.load_from_dict(
         {
@@ -627,7 +627,7 @@ async def test_reset_idempotent_redis(redis_url: str) -> None:
 
     name = f"tb_idem_{new_base62()}"
     tb = TokenBucket(name=name, capacity=30, refill_per_second=10, backend="redis")
-    client = redis_async.from_url(redis_url, decode_responses=False)
+    client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
 
     settings = WorkerSettings.load_from_dict(
         {
@@ -659,7 +659,7 @@ async def test_reset_nonexistent_key_redis(redis_url: str) -> None:
 
     name = f"tb_nonex_{new_base62()}"
     tb = TokenBucket(name=name, capacity=10, refill_per_second=1, backend="redis")
-    client = redis_async.from_url(redis_url, decode_responses=False)
+    client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
 
     settings = WorkerSettings.load_from_dict(
         {

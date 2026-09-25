@@ -724,7 +724,9 @@ async def test_ti7_redis_progress_events_monotonic_seq(pg_dsn: str, redis_url: s
         from taskq._json import dumps_str
         from taskq.progress._events import ProgressEvent
 
-        async with redis_async.from_url(redis_url, decode_responses=False) as raw_redis:
+        async with redis_async.from_url(
+            redis_url, decode_responses=False, socket_timeout=None
+        ) as raw_redis:
             channel_name = f"taskq:{tq._schema}:progress:{job_id}"
 
             schema = tq._schema
@@ -814,7 +816,9 @@ async def test_ti8_redis_malformed_message_skipped(pg_dsn: str, redis_url: str) 
 
         import redis.asyncio as redis_async
 
-        async with redis_async.from_url(redis_url, decode_responses=False) as raw_redis:
+        async with redis_async.from_url(
+            redis_url, decode_responses=False, socket_timeout=None
+        ) as raw_redis:
             channel_name = f"taskq:{tq._schema}:progress:{job_id}"
             await raw_redis.publish(channel_name, b"this is not valid json {{{")
             await asyncio.sleep(0.05)
