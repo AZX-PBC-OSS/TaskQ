@@ -117,6 +117,13 @@ async def retention_policy_floor(
       real driver's are (a row without the ``drop_after``/``db_now`` keys
       must read as "no answer", never as a crash).
 
+    That vanilla UndefinedTable is BY DESIGN the smoke guard's one plan
+    carve-out: ``tests/test_sql_templates_smoke_pg.py`` keeps its parse
+    teeth on this probe but excuses it from the PLAN demand vanilla cannot
+    meet (``_PLAN_ON_VANILLA_BY_DESIGN``, keyed on the statement's own
+    ``timescaledb_information.hypertables`` marker) — the probe's shape,
+    not a defect.
+
     A probe or parse failure must never break a sweep: the failure is
     logged at debug and the sweep keeps today's exact behavior.  *now*
     overrides the clock the floor is anchored to (test seam); by default
