@@ -99,13 +99,25 @@ Applies to all commands: `worker`, `migrate`, `ui serve`, `health`.
 | `TASKQ_ADMIN_UI_FRAME_ANCESTORS` | `str` | `none` | Who may frame admin pages: `none` (the default, nobody) or `self` (the admin UI's own origin, for a host app that embeds the admin UI in its dashboard). Emitted as both `Content-Security-Policy: frame-ancestors ...` and the legacy `X-Frame-Options` (DENY / SAMEORIGIN). Anything else fails at settings load: a typo that silently became "no header" would take the clickjacking defence off in exactly the deployment that believed it had configured it. | ui serve |
 | `TASKQ_ADMIN_UI_SECURE_COOKIES` | `bool` | `true` | Sets the `Secure` flag on the admin UI's CSRF cookie. A configured value, not one inferred from `request.url.scheme`: behind a TLS-terminating edge (Azure Application Gateway, App Service) the app sees plain http, so an inferred flag is silently dropped on a connection the browser reached over HTTPS. Set `false` only for local http dev, where the browser rejects a Secure cookie and the admin UI stops working. | ui serve |
 | `TASKQ_SSO_BACKEND` | `str` | `none` | Selects the SSO backend for the admin UI: `none` (default, unauthenticated/BYO-auth), `oidc` (`taskq[oidc]`), or `saml` (`taskq[saml]`). See [sso.md](sso.md). | ui serve |
-| `TASKQ_HEALTH_TOKEN` | `str` | `""` (empty) | Bearer token for machine-to-machine access to health/metrics endpoints. When set, health and metrics routes require a matching `Authorization: Bearer <token>` header. Leave empty for unauthenticated cluster-internal access, but see `TASKQ_HEALTH_REQUIRE_TOKEN`, which fails closed on an empty token outside dev. | ui serve |
+| `TASKQ_HEALTH_TOKEN` | `SecretStr` | `""` (empty) | Bearer token for machine-to-machine access to health/metrics endpoints. When set, health and metrics routes require a matching `Authorization: Bearer <token>` header. Leave empty for unauthenticated cluster-internal access, but see `TASKQ_HEALTH_REQUIRE_TOKEN`, which fails closed on an empty token outside dev. Typed `SecretStr`, so the value is masked in `repr` and logs. | ui serve |
 | `TASKQ_HEALTH_REQUIRE_TOKEN` | `bool` | `true` | When `true` (the default), `taskq ui serve` raises `RuntimeError` if `TASKQ_HEALTH_TOKEN` is empty in a non-dev environment, failing closed. Set to `false` to allow unauthenticated health/metrics endpoints in non-dev (e.g. when relying on network policy instead of a bearer token). | ui serve |
 | `TASKQ_MIGRATE_ON_START` | `bool` | `false` | Apply pending migrations before the process accepts its first request. Aborts startup if migrations fail. | ui serve |
 | `TASKQ_EXAMPLE_HOST` | `str` | `0.0.0.0` | Bind address for the example trigger app. Ignored by worker and admin. | example app |
 | `TASKQ_EXAMPLE_PORT` | `int` | `8000` | Bind port for the example trigger app. Ignored by worker and admin. | example app |
 
 See [admin-ui.md](admin-ui.md) for admin-specific behaviour driven by these vars.
+
+### Lock-wait budgets
+
+Five knobs bound how long enqueue and admission statements wait on their advisory locks before giving up. The first three are `TaskQSettings` fields (the **client/enqueue path**: a producer process never loads `WorkerSettings`, so these budgets live on the base class); the last two are `WorkerSettings` fields (the **worker admission path**: the Postgres rate-limit acquires, see [rate-limiting.md](rate-limiting.md)). All five are finite floats in milliseconds, ship the same 5000 ms default, and share one `0` polarity: `0` or less waits indefinitely server-side (the `lock_timeout` GUC convention - see [The `0` convention](#the-0-convention); prefer a large finite value). Widening a budget past its default re-derives the per-query bound of every pool TaskQ builds, so the server-side refusal still fires before the pool's client-side timer; see [Derived Values](#derived-values).
+
+| Env Var | Type | Default | Effect | Used By |
+|---|---|---|---|---|
+| `TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS` | `float` (milliseconds) | `5000.0` | Bounded wait for the `max_pending` advisory lock on the single-enqueue path (the count-then-insert serialisation per capped actor). Exhaustion raises `MaxPendingLockTimeoutError` - the same typed backpressure as a cap rejection, and the denial consumes retry budget - so widen during an outage that slows lock holders rather than letting the fixed ceiling convert slow holders into refused enqueues. | client (enqueue) |
+| `TASKQ_UNIQUE_FOR_LOCK_TIMEOUT_MS` | `float` (milliseconds) | `5000.0` | Bounded wait for the `unique_for` single-flight advisory lock on the single-enqueue path (the identity preflight-then-insert serialisation). Exhaustion raises `UniqueForLockTimeoutError` with retry-yields-dedup guidance: the correct contention outcome is usually the dedup return, so a `unique_for` caller may want a longer wait than the `max_pending` budget before giving up on the answer. | client (enqueue) |
+| `TASKQ_IDEMPOTENCY_LOCK_TIMEOUT_MS` | `float` (milliseconds) | `5000.0` | Bounded wait for the idempotency token INSERT's speculative-lock conflict - another transaction's uncommitted row with the same `(idempotency_scope, idempotency_key)`; on a transactional consumer the holder is the actor's own open transaction, so this budget bounds the victim. Exhaustion raises `IdempotencyKeyLockTimeoutError`: the dedup answer could not be determined in time; retry the same enqueue, which typically dedupes against the now-visible winner. | client (enqueue) |
+| `TASKQ_TOKEN_BUCKET_LOCK_TIMEOUT_MS` | `float` (milliseconds) | `5000.0` | Bounded wait for the `rate_limit_buckets` row lock on the token-bucket Postgres acquire and refund. With the Postgres fallback enabled a Redis outage funnels every admission through this lock, so the bound is what stops one black-holed holder stalling a bucket's admission. Exhaustion is an admission **denial**, not a failure: the acquire fails closed and the denial's retry hint is one more budget. | worker (admission) |
+| `TASKQ_SLIDING_WINDOW_LOCK_TIMEOUT_MS` | `float` (milliseconds) | `5000.0` | Bounded wait for the sliding window's admission lock on Postgres: the per-bucket advisory lock on the log style, the `rate_limit_buckets` row lock on the GCRA style. Separate knob from `TASKQ_TOKEN_BUCKET_LOCK_TIMEOUT_MS` because the two limiter shapes hold their locks across different critical sections. Exhaustion fails closed as a denial whose retry hint is one more budget. | worker (admission) |
 
 ### SSO sub-settings (`TASKQ_OIDC_*` / `TASKQ_SAML_*`)
 
@@ -151,7 +163,7 @@ PgBouncer recommendation threshold), see [ops.md: Sizing](ops.md#4-sizing-worker
 | Env Var | Type | Default | Description | Constraints |
 |---|---|---|---|---|
 | `TASKQ_HEARTBEAT_INTERVAL` | `float` (seconds) | `10.0` | Period between heartbeat ticks. | Min: 0.5 |
-| `TASKQ_LOCK_LEASE` | `float` (seconds) | `60.0` | Time before an unrenewed job lock is reclaimed by the sweep. Must be >= (`TASKQ_MAX_HEARTBEAT_FAILURES` + 1) × (`TASKQ_HEARTBEAT_INTERVAL` + 2 × `TASKQ_HEARTBEAT_COMMAND_TIMEOUT`), the worst coherent failed-beat cascade (56 at the defaults), and must exceed `TASKQ_WATCHDOG_LOOP_LAG_BUDGET` + `TASKQ_HEARTBEAT_INTERVAL` (a stalled loop dies before its leases expire). The group-crash corner (a crashed TaskGroup's cancel reaching a consumer before the shutdown anchor stamps, so the release park takes the unanchored cleanup-grace bound and the lease cap does not apply) is only exposed when `lock_lease < cleanup_grace_period + heartbeat_interval + 5s` (the unanchored park plus the terminal-write budget); the cascade invariant already excludes that for heartbeat intervals above `(cleanup_grace + 5s) / 3` (~5s at the default cleanup), and the `cancellation + cleanup < lock_lease` invariant squeezes what is left further (the exposed band also needs `cancellation_grace < heartbeat_interval + 5s`), so only a tightly-graced config with a tiny heartbeat can load into the corner, and it is a startup-warning tier concern, not a validation. | Min: 1.0; see [Validation Constraints](#validation-constraints) |
+| `TASKQ_LOCK_LEASE` | `float` (seconds) | `60.0` | Time before an unrenewed job lock is reclaimed by the sweep. Must be >= max(`TASKQ_HEARTBEAT_INTERVAL`, `TASKQ_HEARTBEAT_COMMAND_TIMEOUT`) + (`TASKQ_MAX_HEARTBEAT_FAILURES` + 1) × (`TASKQ_HEARTBEAT_INTERVAL` + `TASKQ_HEARTBEAT_COMMAND_TIMEOUT`), the worst coherent failed-beat cascade (58 at the defaults), and must exceed `TASKQ_WATCHDOG_LOOP_LAG_BUDGET` + `TASKQ_HEARTBEAT_INTERVAL` (a stalled loop dies before its leases expire). The group-crash corner (a crashed TaskGroup's cancel reaching a consumer before the shutdown anchor stamps, so the release park takes the unanchored cleanup-grace bound and the lease cap does not apply) is only exposed when `lock_lease < cleanup_grace_period + heartbeat_interval + 5s` (the unanchored park plus the terminal-write budget); the cascade invariant already excludes that for heartbeat intervals above `(cleanup_grace + 5s) / 3` (~5s at the default cleanup), and the `cancellation + cleanup < lock_lease` invariant squeezes what is left further (the exposed band also needs `cancellation_grace < heartbeat_interval + 5s`), so only a tightly-graced config with a tiny heartbeat can load into the corner, and it is a startup-warning tier concern, not a validation. | Min: 1.0; see [Validation Constraints](#validation-constraints) |
 | `TASKQ_LEADER_LEASE` | `float` (seconds) | `40.0` | How long the maintenance leader's lease is trusted without a renewal; another pod takes leadership once it lapses, so this plus `TASKQ_HEARTBEAT_INTERVAL` bounds failover from a leader that went silent. Renewed every heartbeat interval, and never honoured at less than 4 of them: raising the heartbeat interval alone raises the effective lease rather than shortening the renewal margin. | Min: 1.0 |
 | `TASKQ_LEADER_WAKE_JITTER` | `float` (seconds) | `0.25` | Upper bound of the random delay a follower waits between hearing a leader's resign broadcast (the leadership wake channel) and re-running its fenced elect, so a waking fleet does not land on the lease row in the same millisecond. `0` disables the damping delay. The broadcast is a hint: a follower that never hears it elects on the next heartbeat tick, which is also the bound for a leader killed before it can broadcast. | Min: 0.0 |
 | `TASKQ_MAX_HEARTBEAT_FAILURES` | `int` | `3` | Consecutive heartbeat failures before the worker self-terminates. | Min: 1 |
@@ -172,6 +184,8 @@ The leader runs periodic sweep cycles that reclaim expired locks, expire results
 | `TASKQ_SWEEP_BREAKER_FAILURE_THRESHOLD` | `int` | `3` | Consecutive sweep-batch cancellations (within `TASKQ_SWEEP_BREAKER_WINDOW_SECS`) before the batch-size breaker latches to the reduced tier for the rest of the process lifetime. Any success between failures resets the consecutive count; a latched breaker does not unlatch. | Min: 1 |
 | `TASKQ_SWEEP_BREAKER_WINDOW_SECS` | `float` (seconds) | `600.0` | Rolling window the sweep breaker counts consecutive failures within. | Min: 1.0 |
 | `TASKQ_SWEEP_DRAIN_BATCHES` | `int` | `8` | Maximum event-writer batches the leader's sweep loop executes per sweep per tick before leaving the remainder to the next tick. Bounded so one iteration cannot monopolise the loop; every batch commits, so a stopped drain keeps its progress. | Range: 1-1000 |
+| `TASKQ_EVENT_RETENTION_PERIOD` | `timedelta` | `7d` | The age at which `job_events` rows are deleted regardless of parent-job status. The crash-reclaim outbox slice (`kind='state_change' AND detail->>'reason'='lock_expired'`) is carved out of this window so an unread reclaim event survives it, but the carve-out is bounded: the same sweep deletes it at 100× this period, so a short retention bounds how far behind a lagging `TaskQ.watch_reclaims()` consumer may run before it silently misses events. | Non-negative; `0` disables the sweep (see [The `0` convention](#the-0-convention)) |
+| `TASKQ_KEYED_ROW_RECLAIM_PERIOD` | `timedelta` | `1h` | The idle age (each row's own `last_used_at` stamp) at which fleet-reclaimable keyed rows - keyed `reservation_slots` rows and PG-state-backed keyed `rate_limit_buckets` rows - are deleted. Static buckets and redis-backend keyed rows are never deleted by this sweep. | Non-negative; `0` disables the sweep (see [The `0` convention](#the-0-convention)) |
 | `TASKQ_EVENT_RETENTION_BATCH_SIZE` | `int` | `10000` | `job_events` rows deleted per leader sweep tick, one committed batch, once `TASKQ_EVENT_RETENTION_PERIOD` has aged them out. | Min: 1 |
 | `TASKQ_KEYED_ROW_RECLAIM_BATCH_SIZE` | `int` | `256` | Rows the fleet keyed-row reclaim sweep deletes per committed batch per tick (`reservation_slots` rows and PG-state-backed keyed `rate_limit_buckets` rows, once `TASKQ_KEYED_ROW_RECLAIM_PERIOD` has aged them idle). The constant-size bound keeps one tick's DELETE independent of the dead-worker backlog it is recovering from. | Min: 1 |
 
@@ -473,16 +487,21 @@ These cross-field constraints are enforced in `post_load` at startup. Violations
 ### Lock lease vs heartbeat cadence
 
 ```
-lock_lease >= (max_heartbeat_failures + 1) ×
-              (heartbeat_interval + 2 × heartbeat_command_timeout)
+lock_lease >= max(heartbeat_interval, heartbeat_command_timeout) +
+              (max_heartbeat_failures + 1) ×
+              (heartbeat_interval + heartbeat_command_timeout)
 ```
 
 Rationale: the lease must outlive the worst coherent failed-beat cascade to
 the heartbeat's isolate decision, the `(max_heartbeat_failures + 1)`-th
-consecutive failed beat, where each failed beat's gap spans the interval
-(pool acquire) plus the tick's command sequence and its bounded teardown
-(one `heartbeat_command_timeout` each). At the defaults the
-floor is `4 × (10 + 2 × 2) = 56` against the 60 s lease. Prevents false
+consecutive failed beat: the last good beat's tail
+(`max(heartbeat_interval, heartbeat_command_timeout)`, the gap from that
+renewal point to the next tick's start) plus that many failed-beat cycles,
+where each failed beat costs at most `heartbeat_interval +
+heartbeat_command_timeout` (the pool acquire is bounded by the interval;
+the tick's command sequence and its bounded teardown share one
+`heartbeat_command_timeout` budget). At the defaults the
+floor is `max(10, 2) + 4 × (10 + 2) = 58` against the 60 s lease. Prevents false
 abandonment under transient PG connectivity issues AND under pool
 contention, which the older `lock_lease >= 4 × heartbeat_interval` rule
 ignored.
@@ -692,7 +711,7 @@ TASKQ_HEARTBEAT_INTERVAL=10
 ```
 
 These values satisfy all cross-field constraints:
-- `lock_lease (90) >= 4 × heartbeat_interval (10)`: 90 >= 40 ✓
+- `lock_lease (90) >= cascade floor (58)`: 90 >= 58 ✓
 - `cancellation_grace (60) + cleanup_grace (20) < termination_grace (120) − 5`: 80 < 115 ✓
 - `cancellation_grace (60) + cleanup_grace (20) < lock_lease (90)`: 80 < 90 ✓
 

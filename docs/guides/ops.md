@@ -180,9 +180,9 @@ rollback-or-close) shares that budget's remainder rather than burning a
 second one, and the pool acquire is bounded by the heartbeat interval, so a
 failed beat costs at most `interval + command_timeout`,
 and the floor covers `max_heartbeat_failures + 1` of them (the cascade the
-`lock_lease >= 4 × heartbeat_interval` invariant exists to bound). At the
+`lock_lease` invariant above exists to bound). At the
 default settings (60 s lease, 10 s interval, 2 s command timeout) the floor
-is 56 s, at or above what the lease has to harvest, so the renewal runs
+is 58 s, at or above what the lease has to harvest, so the renewal runs
 on **every beat exactly as before**; the rewrite savings apply from leases
 of roughly 70 s upward (2× at 70 s, 4× at 90 s, ~6× at 120 s; see
 `perf-evidence-lease-renewal.md` at the repo root for the
@@ -1061,6 +1061,7 @@ Every job emits an `enqueue` PRODUCER span, a `process` CONSUMER span (linked, w
 | `taskq.jobs.oldest_due_age_seconds` | how long the oldest due `scheduled` job has waited for promotion |
 | `taskq_maintenance_leader_sweep_last_success_seconds` (by sweep) | per-sweep stalls: a sweep that stops completing |
 | `taskq_maintenance_leader_sweep_timeouts_total` (by sweep) | batches aborted by deadlines or server-side cancels, and gauge-sampler reads that did not complete; an absent or frozen gauge beside a rising rate is a dead sampler, not a resolved alert |
+| `taskq_worker_loop_unexpected_errors_total` (by loop) | a long-lived loop's backstop (`UnexpectedLoopErrorGuard`) caught a non-transient error — the leader maintenance loops, the worker producer loop, the progress flush loop; anything above zero warrants investigation |
 | `taskq.queue.live_workers` (by queue, same tick as depth) | a queue with work and no live worker; `TaskQQueueUnserved` joins it against `taskq.queue.depth` |
 | `taskq.jobs.stranded` (by actor and `reason`) | jobs that can never dispatch: `no_actor_config` (no `actor_config` row) or `unserved_queue` (no live worker on the routing queue) |
 | `taskq.dispatch.duration` | dispatch contention (PgBouncer/pool trouble) |
@@ -1153,11 +1154,11 @@ and bounded fan-out per job (chunk sizes in the hundreds, not the tens of thousa
 
 Ship-ready alert rules for the metrics above exist in the repo and are ready to import:
 [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml)
-(20 rules: queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned
+(22 rules: queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned
 jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron,
-scheduled-backlog growth, promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock
-contention, rate-limit dependency outage, cron lock contention, unserved queue, stranded jobs,
-expired-lease zombies) and the equivalent PrometheusRule
+scheduled-backlog growth, promotion stall, sweep timeouts, sweep unexpected errors, sweep degraded
+tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, cron budget
+deferrals, unserved queue, stranded jobs, expired-lease zombies) and the equivalent PrometheusRule
 CRD at `src/taskq/contrib/kubernetes/prometheus_rule.yaml`. Importing them is not enough; make
 sure something **scrapes the workers** (`TASKQ_METRICS_PORT`, every pod; see
 [deployment.md: Prometheus scrape](deployment.md#observability-setup)): the rules read

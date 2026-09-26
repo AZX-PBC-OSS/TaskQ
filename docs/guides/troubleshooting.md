@@ -372,10 +372,18 @@ Search worker logs for `migration-checksum-drift`.
 - **Schema not migrated:** `taskq migrate up` against the correct `TASKQ_PG_DSN` and `TASKQ_SCHEMA_NAME`.
 - **Checksum mismatch:** restore the original migration file from git. Migration files are append-only; never modify an applied migration. If intentional, restore the database from backup and re-apply. Checksums are SHA-256 of the rendered SQL; a mismatch risks silent query failures at runtime.
 - **Forward-only revert:** restore from a pre-migration backup snapshot. There is no rollback.
-- **Concurrent races:** `apply_pending_locked` uses `pg_advisory_lock(1234567)` to serialize. If stuck (a worker crashed mid-migration):
+- **Concurrent races:** `apply_pending_locked` serializes appliers on a schema-qualified advisory lock, `taskq:migrate:{schema}`, acquired with `pg_advisory_lock(hashtextextended($1, 0))` (`migration_lock_name` in `migrate.py`; the old shared fixed bigint key was deliberately removed - it made every schema in a database compete on one lock). The wait is bounded, not indefinite: `DEFAULT_MIGRATION_LOCK_TIMEOUT` is 120 s, and a loser raises `SystemExit` naming the contention instead of hanging until the container platform's startup probe kills it. A timeout message means another process held the lock - a wedged holder, or a deployment racing yours. Name the holder before touching anything:
 
 ```sql
-SELECT pg_advisory_unlock(1234567);
+SELECT l.pid, l.granted, a.usename, a.query, a.state
+FROM pg_locks l LEFT JOIN pg_stat_activity a ON a.pid = l.pid
+WHERE l.locktype = 'advisory';
+```
+
+- Only force-release when the holder is confirmed gone (a dead session's locks are released with it, so an unclaimed lock usually means a live holder you have not found). The unlock takes the same qualified key:
+
+```sql
+SELECT pg_advisory_unlock(hashtextextended('taskq:migrate:<schema>', 0));
 ```
 
 ---
@@ -722,6 +730,39 @@ Re-run query 2 a minute apart: **unchanged counts mean no progress**, whatever t
 - **`max_concurrent` unexpectedly `NULL`:** the decorator literal never reached this deployment: capacity fields are seed-only. See [ActorConfig sync](workers.md#actorconfig-sync).
 - **Queue mismatch:** align `TASKQ_QUEUES` with the queues actually used, and confirm via `workers.queues`.
 - **Alert on the DB, not on logs:** page on `max(clock_timestamp() - last_seen_at)` across `{schema}.workers` and on job-completion throughput. A log-based liveness alert cannot detect this failure mode, which is what let it run unnoticed.
+
+---
+
+## 15. Worker refuses wire operations after a fork
+
+### Symptom
+
+A job body (or the process around it) forks, and in the child every TaskQ
+wire operation raises `ForkedInheritedProcessError` - a typed refusal
+naming the resource - while the worker's own logs carry a
+`fork-detected-in-worker-process` event.
+
+### Cause
+
+TaskQ's fork guard: every wire resource TaskQ builds (asyncpg pools and
+connections, Redis clients, the NOTIFY listener) records the process that
+created it, and a forked child's first touch of one raises
+`ForkedInheritedProcessError` BEFORE a byte reaches the socket. Two
+processes sharing one TCP stream corrupt both protocol state machines
+silently; the refusal trades a loud error for that corruption. The
+worker's loops also consume an at-fork stamp and emit
+`fork-detected-in-worker-process` once per fork, so the log carries one
+honest signal that a fork happened and what it put at risk. The parent
+keeps running.
+
+### Fix
+
+Do not use TaskQ from the forked child. Restructure so the child does no
+wire work (hand results back to the parent, or enqueue a follow-up job),
+and prefer `asyncio.to_thread` or a process pool seeded after
+`TaskQ.open()` over forking a live worker. What is and is not guarded —
+including application-built pools the guard cannot see - is in
+[Fork safety](workers.md#fork-safety).
 
 ---
 

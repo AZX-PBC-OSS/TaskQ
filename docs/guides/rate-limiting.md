@@ -48,7 +48,7 @@ TokenBucket(
 | `backend` | Storage backend. Default `"redis"`. **`"memory"` is per-process only; state is not shared across worker processes. Not suitable for multi-worker deployments.** |
 | `ttl` | Override the Redis key TTL. Default: `ceil(capacity / refill * 2) + 60` seconds. For `refill=0`, defaults to 86 400 s (24 h). |
 
-Raises `ValueError` if `capacity <= 0` or `refill_per_second < 0`.
+Raises `ValueError` if `capacity <= 0` or `refill_per_second < 0`. The keyword-only `keyed: bool = False` parameter is **internal**: it marks keyed-materialised instances as fleet-reclaimable and is not intended for hand-written code.
 
 ### `acquire(count=1.0, *, redis_client, pg_pool, clock, settings) -> RateLimitDecision`
 
@@ -64,7 +64,7 @@ If denied, `decision.retry_after` holds how long to wait before trying again (`N
 
 ### `refund(decision, *, count, redis_client, pg_pool, clock, settings) -> None`
 
-Returns `count` tokens to the bucket. Used on the rollback path only; do not call after the actor completes successfully. Postgres backend refund is a no-op (logs a warning). GCRA and memory log-style sliding window refunds are also no-ops.
+Returns `count` tokens to the bucket. Used on the rollback path only; do not call after the actor completes successfully. Refunds are real for every backend and style (token bucket, log-style sliding window, GCRA, memory): GCRA refunds restore the acquire's `tat` from `decision.previous_state` and log-style refunds delete the entry named by `decision.request_id`, so a decision without the matching field has nothing to refund. Refunds dispatch on `decision.backend` — the store that actually paid — not the primitive's configured backend: an acquire that fell through to the Postgres fallback during a Redis outage is refunded there, not in Redis.
 
 ### Example
 
@@ -130,9 +130,9 @@ Raises `ValueError` if `limit < 1`, `window <= timedelta(0)`, or `style` is not 
 
 ### `SlidingWindowStyle`: `"log"` vs `"gcra"`
 
-**`"log"` (timestamp log):** Stores a timestamped entry for every accepted request in a Redis sorted set (or Postgres `rate_limit_window_entries` table). On each acquire, entries older than the window boundary are evicted, and the remaining count is checked against `limit`. Exact, but memory scales with request volume. Log-style decisions carry a `request_id` that enables rollback via `refund()` (Redis only: calls `ZREM`).
+**`"log"` (timestamp log):** Stores a timestamped entry for every accepted request in a Redis sorted set (or Postgres `rate_limit_window_entries` table). On each acquire, entries older than the window boundary are evicted, and the remaining count is checked against `limit`. Exact, but memory scales with request volume. Log-style decisions carry a `request_id` that enables rollback via `refund()` (removes the entry: `ZREM` on Redis, a `DELETE` on Postgres).
 
-**`"gcra"` (Generic Cell Rate Algorithm):** Stores a single value (the theoretical arrival time, TAT) in Redis or Postgres. No per-request log. More memory-efficient for high-throughput buckets. Does not support `refund()` (no-op). The `request_id` field is `None` on GCRA decisions.
+**`"gcra"` (Generic Cell Rate Algorithm):** Stores a single value (the theoretical arrival time, TAT) in Redis or Postgres. No per-request log. More memory-efficient for high-throughput buckets. `refund()` restores the pre-acquire TAT from `decision.previous_state` (a no-op when the decision carries none). The `request_id` field is `None` on GCRA decisions.
 
 !!! note "Postgres log-style acquire: bounded lock wait, fail-closed denial"
 
@@ -216,19 +216,19 @@ ConcurrencyReservation(
 | `clock` | Pass a `Clock` (or `FakeClock`) to use the in-memory backend for testing. If `None`, a real Postgres pool must be provided at acquire time. |
 | `schema` | Postgres schema name. Default `"taskq"`. **Must match `TASKQ_SCHEMA_NAME`** when using a non-default schema. Pass `settings.schema_name` from `WorkerSettings.load()`. |
 
-Raises `ValueError` if `slots < 1` or `lease <= 0`. Raises `asyncpg.UndefinedTableError` if the `reservation_slots` table has not been created; run `taskq migrate up` first.
+Raises `ValueError` if `slots < 1` or `lease <= 0`. Raises `asyncpg.UndefinedTableError` if the `reservation_slots` table has not been created; run `taskq migrate up` first. The keyword-only `keyed: bool = False` parameter is **internal**: it marks keyed-materialised instances as fleet-reclaimable and is not intended for hand-written code.
 
-### `acquire(job_id, worker_id, pool=None) -> int`
+### `acquire(job_id, worker_id, pool=None, *, timeout=None) -> SlotLease`
 
-Acquires a slot, returning the `slot_index`. Raises `ReservationUnavailable` when all slots are held. When `pool=None`, uses the in-memory backend (requires `clock=` at construction).
+Acquires a slot, returning the `slot_index` as a `SlotLease` — an `int` subclass that also carries the fence token `release()` needs to tell this lease apart from an earlier, expired one on the same slot. Raises `ReservationUnavailable` when all slots are held. The keyword-only `timeout` bounds the pool acquire (forwarded to `asyncpg.Pool.acquire`); `None`, the default, waits unboundedly under pool starvation — callers with their own budget wrapper in hand should pass it. When `pool=None`, uses the in-memory backend (requires `clock=` at construction).
 
 ### `release(slot_index, worker_id, pool=None) -> None`
 
-Releases a slot. No-op if `worker_id` does not match the held worker (prevents accidental double-release).
+Releases a slot. No-op if `worker_id` does not match the held worker (prevents accidental double-release). The release is **fenced** when you pass back the `SlotLease` from `acquire()`: a stale lease whose fence no longer matches the slot row is a no-op, so a zombie attempt (heartbeats stalled, job reclaimed and redispatched) cannot free the slot its live successor holds. A plain `int` releases unfenced.
 
-### `sync_slots(reservations, pool, *, schema="taskq") -> SyncResult`
+### `sync_slots(reservations, pool, *, schema="taskq", timeout=None) -> SyncResult`
 
-Module-level function. Synchronises slot rows in Postgres to match the current `slots` configuration: inserts missing rows, deletes excess free rows, and skips rows held by active jobs. Returns a `SyncResult(inserted, deleted, skipped_held)`. Call this after changing slot counts on a running deployment.
+Module-level function. Synchronises slot rows in Postgres to match the current `slots` configuration: inserts missing rows, deletes excess free rows, and skips rows held by active jobs. Returns a `SyncResult(inserted, deleted, skipped_held)`. Call this after changing slot counts on a running deployment. The keyword-only `timeout` bounds the whole pass — one connection acquire plus a transaction of statements per reservation, O(reservations) round trips — and raises `TimeoutError` when it fires; a reservation whose transaction already committed stays synced, so the pass is safe to re-run. `None` (the default) keeps the unbounded shape for callers that manage their own deadline.
 
 ```python
 from taskq.ratelimit import sync_slots
@@ -389,6 +389,7 @@ class RateLimitDecision:
     bucket_name: str
     backend: RateLimitBackend
     request_id: str | None = None
+    previous_state: dict[str, object] | None = None
 ```
 
 | Field | Description |
@@ -399,6 +400,7 @@ class RateLimitDecision:
 | `bucket_name` | Name of the rate-limit primitive. |
 | `backend` | Which backend processed the request: `"redis"`, `"postgres"`, or `"memory"`. |
 | `request_id` | UUID string set on log-style sliding window decisions. Required for `refund()` on the Redis log-style path. `None` for all other primitives and styles. |
+| `previous_state` | GCRA only: theoretical-arrival-time snapshot carried for refund; `None` otherwise. |
 
 **`retry_after` vs `ReservationUnavailable.retry_after`:** `RateLimitDecision.retry_after` can be `None` (when `refill_per_second=0`). `ReservationUnavailable.retry_after` is always a non-`None` `timedelta`: the registry substitutes `DEFAULT_RESERVATION_BACKOFF = timedelta(seconds=5)` before raising, so callers of `acquire_for_actor` never receive a `None` backoff on the exception.
 

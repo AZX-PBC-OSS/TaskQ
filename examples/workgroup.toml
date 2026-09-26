@@ -4,7 +4,7 @@
 # multiple worker processes with independent queue assignments and
 # concurrency budgets. Use it with:
 #
-#   uv run taskq workgroup examples/workgroup.toml
+#   uv run taskq workgroup start examples/workgroup.toml
 #
 # The supervisor spawns one child process per [[workers]] entry, monitors
 # them for crashes, and restarts with exponential backoff.
@@ -20,7 +20,11 @@ actors = "examples.worker:CLI_ACTORS"
 worker_group = "examples"
 
 [supervisor]
-shutdown_grace = 30.0
+# 100.0 (the default) because a child's held release needs the 40s
+# graces floor and its clean exit ~82s; anything under 40 trips
+# workgroup.shutdown_grace_below_release_floor at startup, anything
+# under 82 trips workgroup.shutdown_grace_below_clean_exit_floor.
+shutdown_grace = 100.0
 backoff_initial = 0.5
 backoff_max = 30.0
 burst_limit = 10

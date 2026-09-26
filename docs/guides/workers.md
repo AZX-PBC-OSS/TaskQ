@@ -92,14 +92,26 @@ exit_code = worker_main(settings, actor_registry=registry)
 `worker_main` returns an `int` exit code (0 on clean shutdown). In a container entrypoint:
 
 ```python
+import contextlib
+import signal
 import sys
 from taskq.settings import WorkerSettings
 from taskq.worker.run import worker_main
 from myapp.actors import registry
 
 if __name__ == "__main__":
-    sys.exit(worker_main(WorkerSettings.load(), actor_registry=registry))
+    code = worker_main(WorkerSettings.load(), actor_registry=registry)
+    # Why: worker_main deliberately leaves the host's SIGTERM disposition
+    # alone (an ignored disposition leaks into every process the host forks
+    # afterwards); the entrypoint whose next act is its own death installs
+    # the ignore here, so a redundant stop-signal landing in the teardown
+    # window cannot erase the drain's exit status with -15.
+    with contextlib.suppress(ValueError):  # not the main thread -> no window to guard
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    sys.exit(code)
 ```
+
+**The entrypoint-side drain-verdict guard.** `worker_main` deliberately does not touch the host's SIGTERM disposition: an ignored disposition is process-global and inherited, so one that leaked from the worker loop would land in every process the host forks afterwards (a proven `-9`-class CI failure). The trade is that between `worker_main` returning and the entrypoint's own exit, a redundant stop-signal — from a supervisor that has not yet noticed the drain finished — is delivered by the *default* disposition and kills the process with `-15`, replacing the drain's exit code the same way a SIGKILL would. An entrypoint whose next act after `worker_main` returns is its own death should therefore install `signal.signal(signal.SIGTERM, signal.SIG_IGN)` right after the call, before exiting, as the example above and `examples/worker.py`'s `_run_worker_with_verdict_guard` do; the `contextlib.suppress(ValueError)` guard covers the not-the-main-thread case, where the window no longer exists to guard.
 
 ---
 
@@ -499,7 +511,7 @@ If `heartbeat_pool.acquire()` times out, raises a connection error, `run_in_tx` 
 
 1. Opens a fresh direct connection (bypassing `heartbeat_pool`, which may be exhausted).
 2. In a transaction, reads all `running` jobs owned by this worker.
-3. For each job: transitions retryable jobs to `pending` (scheduled 5s in the future) and non-retryable jobs to `crashed`. Writes an attempt record with `error_class=HeartbeatLost`.
+3. For each job: transitions retryable jobs to `pending` (scheduled on the row's deterministic reclaim backoff, ≈5s at defaults) and non-retryable jobs to `crashed`. Writes an attempt record with `error_class=HeartbeatLost`.
 4. Always sets `shutdown_event` so the process exits.
 
 The isolate path writes the same reclaim event the leader's sweep writes (`reason='lock_expired'`, `cause='isolate_self'`), so heartbeat-loss reclaims reach the `Backend.poll_reclaim_events()` / `TaskQ.watch_reclaims()` feed exactly like sweep reclaims.

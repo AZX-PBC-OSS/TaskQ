@@ -59,11 +59,11 @@ async def process_order(payload: OrderPayload) -> OrderResult: ...
 | `unique_for` | `timedelta \| None` | `None` | Deduplication window; see [`unique_for` deduplication](#unique_for-deduplication). |
 | `unique_states` | `tuple[JobStatus, ...]` | `("pending", "scheduled", "running", "succeeded")` | Job statuses a `unique_for` window matches. `succeeded` is included because it is the state that says the work already happened; the failure states are excluded so one failure does not suppress the identity for the rest of the window. |
 | `start_to_close` | `timedelta \| None` | `None` | Per-attempt execution timeout. Precedence (first wins): per-enqueue `start_to_close` > this actor default > `TASKQ_DEFAULT_START_TO_CLOSE`. `None` means no per-attempt timeout unless a worker-wide default is set. See [Retries: `start_to_close` vs `schedule_to_close`](retries.md#7-start_to_close-vs-schedule_to_close). |
-| `rate_limits` | `list[str] \| None` | `[]` | Named rate-limit buckets this actor consumes; see [Rate limits and reservations](#rate-limits-and-reservations). |
-| `reservations` | `list[str \| KeyedReservationRef] \| None` | `[]` | Named concurrency reservation slots this actor claims. A `KeyedReservationRef` derives per-key (session/tenant) reservation buckets from the job payload at dispatch time; see [Rate limits and reservations](#rate-limits-and-reservations). |
+| `rate_limits` | `list[str \| KeyedRateLimitRef \| TokenBucket \| SlidingWindow] \| None` | `[]` | Named rate-limit buckets this actor consumes; see [Rate limits and reservations](#rate-limits-and-reservations). |
+| `reservations` | `list[str \| KeyedReservationRef \| ConcurrencyReservation] \| None` | `[]` | Named concurrency reservation slots this actor claims. A `KeyedReservationRef` derives per-key (session/tenant) reservation buckets from the job payload at dispatch time; see [Rate limits and reservations](#rate-limits-and-reservations). |
 | `non_retryable_exceptions` | `tuple[type[BaseException], ...]` | `()` | Exception types that fail the job immediately instead of retrying. |
 | `retry_classifier` | `RetryClassifierHook \| None` | `None` | Hook for exception-instance-level retry classification. Invoked with `(exception, attempt)` for exceptions that survive `non_retryable_exceptions`/`PayloadValidationError` checks; return `RetryOverride` to refine `kind`/`delay` per occurrence or `None` to fall back to the static `RetryPolicy`. See [Retries: `retry_classifier` hook](retries.md#5-retry_classifier-hook-per-instance-retry-overrides). |
-| `on_retry_exhausted` | `OnRetryExhausted \| None` | `None` | Callback invoked when the retry budget is exhausted, before the job is marked `failed`. |
+| `on_retry_exhausted` | `OnRetryExhausted \| None` | `None` | Callback invoked when the retry budget is exhausted, after the job is marked `failed`. |
 | `on_retry_exhausted_timeout` | `float` | `3.0` | Seconds allowed for `on_retry_exhausted` to complete before it is abandoned. |
 | `on_success` | `OnSuccess \| None` | `None` | Callback invoked when the job succeeds, after the transaction commits. Receives `(job_row, result)`. Mirrors `on_retry_exhausted` with a timeout guard; see [Retries: `on_success` hook](retries.md#on_success-hook). |
 | `on_success_timeout` | `float` | `3.0` | Seconds allowed for `on_success` to complete before it is abandoned. |
@@ -187,7 +187,7 @@ async def render_pdf(payload: RenderPayload) -> RenderResult:
 Declaring the instance inline needs no separate registration step; the worker
 registers it and pre-allocates its slot rows at bootstrap. See
 [Wiring to Actors](rate-limiting.md#wiring-to-actors); use
-[`sync_slots`](rate-limiting.md#sync_slotsreservations-pool-schemataskq-syncresult)
+[`sync_slots`](rate-limiting.md#sync_slotsreservations-pool-schemataskq-timeoutnone-syncresult)
 when changing `slots` on a running deployment.
 
 Two things to get right:

@@ -1105,8 +1105,14 @@ keeps winning.
    runs every `sweep_interval` (default 30 s): `reclaim_expired_locks`
    (Sweep 1, uses `FOR UPDATE SKIP LOCKED`), `deadline_sweep` (Sweep 2), and,
    when the backend supports them, `sweep_leaked_reservation_slots` (Sweep 4),
-   `sweep_expired_results`, `cleanup_stale_workers`, and
-   `complete_stale_batches` (see [Batch Subsystem](#batch-subsystem)). Every
+   `sweep_expired_results`, `cleanup_stale_workers`,
+   `sweep_expired_events`, `sweep_idle_keyed_rows`, and
+   `complete_stale_batches` (see [Batch Subsystem](#batch-subsystem)). The
+   keyed machinery also has a second, deliberately **not** leader-gated half
+   on this same loop: every worker evicts its own registry's idle keyed
+   reservations and rate limits and drains the pending reservation-reclaim
+   set (a non-leader's registry would otherwise receive no periodic
+   eviction). Every
    event-writing sweep is a bounded batch writer: one call transitions at
    most `event_writer_batch_size` rows in one short transaction carrying a
    server-side `statement_timeout`, and a non-empty call drains up to
@@ -1122,8 +1128,12 @@ keeps winning.
    `TASKQ_PRUNE_*` settings.
 7. **Archive expiry (Sweep 6)**: runs daily (default 04:00 UTC, 1 hour after
    prune). Hard-deletes rows from `jobs_archive` once their `expire_at` has
-   passed. Cascades to `job_attempts_archive`. Controlled by
-   `TASKQ_ARCHIVE_EXPIRY_*` settings.
+   passed. Cascades to `job_attempts_archive` (vanilla Postgres only: under
+   hypertables the foreign key is dropped — no table may reference a
+   hypertable — and chunk retention replaces the cascade, both tables
+   registering policies from the same `archive_retention_period`, see
+   [timescaledb.md](guides/timescaledb.md#what-the-conversion-does)).
+   Controlled by `TASKQ_ARCHIVE_EXPIRY_*` settings.
 8. **Queue-depth sampling**: samples queue counts every 15 seconds for OTel
    gauges.
 9. **Reservation sampling**: samples reservation-slot usage every 15 seconds
@@ -2039,9 +2049,12 @@ whichever backend's collector is in the stack.
 
 These invariants must remain true across all changes.
 
-1. **`lock_lease >= 4 × heartbeat_interval`**: the lock lease must outlive
-   several heartbeat intervals so a slow heartbeat tick does not expire the lock
-   before the next renewal arrives.
+1. **`lock_lease` covers the worst coherent failed-beat cascade**:
+   `lock_lease >= max(heartbeat_interval, heartbeat_command_timeout) + (max_heartbeat_failures + 1) × (heartbeat_interval + heartbeat_command_timeout)`
+   (58 s at the defaults) - the lease must outlive the last renewal's tail plus
+   every failed beat's detect-and-reclaim cycle, or a slow heartbeat tick
+   expires the lock before the next renewal arrives (validated at startup,
+   `settings.py`'s `post_load`).
 
 2. **PG-write before task.cancel()**: in the phase-2 cancel path, the
    `CANCEL_ESCALATION_SQL` UPDATE is executed and the `job_events` row is

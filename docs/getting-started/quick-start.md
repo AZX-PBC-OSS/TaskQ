@@ -30,6 +30,12 @@ pip install "taskq-py[redis,otel,fastapi]"  # full (add prometheus for scrapes)
 | `taskq-py[otel]` | `opentelemetry-sdk`, `opentelemetry-exporter-otlp` | OTel provider setup, in-process test utilities |
 | `taskq-py[fastapi]` | `fastapi`, `jinja2`, `sse-starlette`, `uvicorn` | Admin UI, SSE progress bridge |
 | `taskq-py[prometheus]` | `opentelemetry-exporter-prometheus` | Prometheus metric scrapes |
+| `taskq-py[oidc]` | `authlib>=1.8`, `httpx2`, `itsdangerous` | OIDC/SSO auth for the admin UI; see [SSO / SAML](../guides/sso.md) |
+| `taskq-py[saml]` | `python3-saml`, `itsdangerous` | SAML/SSO auth for the admin UI; see [SSO / SAML](../guides/sso.md) |
+| `taskq-py[aad]` | `azure-identity`, `aiohttp` | Azure Entra ID managed-identity DB auth; see [Managed Identities](../guides/managed-identities.md) |
+| `taskq-py[aws]` | `boto3` | AWS IAM RDS auth for Postgres; see [Managed Identities](../guides/managed-identities.md) |
+| `taskq-py[vault]` | `hvac` | HashiCorp Vault dynamic credentials; see [Managed Identities](../guides/managed-identities.md) |
+| `taskq-py[reload]` | `watchfiles` | Autoreload of workers and the admin UI during local development |
 
 ---
 
@@ -85,7 +91,7 @@ TASKQ_REDIS_URL=redis://localhost:6379/0
 TaskQ loads configuration through `dotenvmodel` with cascading `.env` discovery:
 `.env` → `.env.local` → `.env.{env}` → `.env.{env}.local`, where `{env}` comes from the `ENV` variable (default `dev`). Real environment variables take precedence over `.env` files; see [Configuration](../guides/configuration.md) for the full resolution rules.
 
-The worker validates cross-field constraints at startup (e.g. `TASKQ_LOCK_LEASE` must be `>= 4 × TASKQ_HEARTBEAT_INTERVAL`). See [Worker](../guides/workers.md) for the full settings reference.
+The worker validates cross-field constraints at startup (e.g. `TASKQ_LOCK_LEASE` must cover the worst coherent failed-beat cascade: `max(TASKQ_HEARTBEAT_INTERVAL, TASKQ_HEARTBEAT_COMMAND_TIMEOUT) + (TASKQ_MAX_HEARTBEAT_FAILURES + 1) × (TASKQ_HEARTBEAT_INTERVAL + TASKQ_HEARTBEAT_COMMAND_TIMEOUT)`, 58 s at the defaults). See [Worker](../guides/workers.md) for the full settings reference.
 
 ---
 

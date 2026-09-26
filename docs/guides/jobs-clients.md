@@ -109,6 +109,7 @@ JobsClient(
     *,
     clock: Clock | None = None,
     settings: TaskQSettings | None = None,
+    capacity_cache_ttl: float = 5.0,
 )
 ```
 
@@ -117,6 +118,7 @@ JobsClient(
 | `backend` | `Backend` | required | The backend to delegate to. In production this is a `PostgresBackend`. In tests, use `InMemoryBackend`. |
 | `clock` | `Clock \| None` | `SystemClock()` | Retained for API compatibility; it stamps nothing on the enqueue path: "immediate" jobs pass `scheduled_at=None` and the backend's server stamps and decides it. Inject a `FakeClock` in tests for the in-memory backend's own sweep/time-travel semantics. |
 | `settings` | `TaskQSettings \| None` | `None` | Settings instance threaded through to `JobHandle` for features (e.g. Redis-backed progress fanout) that need config beyond the backend connection. |
+| `capacity_cache_ttl` | `float` | `5.0` (`DEFAULT_CAPACITY_CACHE_TTL`) | TTL in seconds of the per-actor `max_pending` capacity cache: how long a cached headroom reading is trusted before it is re-counted from the database. This is the TTL behind the "operator `max_pending` change takes effect fleet-wide within seconds" behavior. |
 
 ### `backend` property
 
@@ -390,12 +392,15 @@ against each other: a key written as `fetch:{run}:{doc}` is a different key than
 in scope `{run}`. Cut over per-actor at a quiet point, or keep the old embedding for in-flight
 runs and scope only new ones.
 
-- `idempotency_key` does **not** bypass `max_pending`. The idempotency check fires at step 5,
-  after the `max_pending` check at step 4. On the **first** call with a new key, `max_pending` is
-  evaluated normally: if the queue is full, `MaxPendingExceededError` is raised and the job is
-  not inserted. On **subsequent** calls with the same key (after the key was successfully
-  inserted), the existing `JobHandle` is returned at step 5 without re-checking `max_pending`.
-  Only `unique_for` (step 2) bypasses `max_pending` unconditionally.
+- `idempotency_key` does **not** bypass `max_pending`. The `max_pending` count check (step 4)
+  runs **before** the idempotency-key upsert (step 5). On the **first** call with a new key,
+  `max_pending` is evaluated normally: if the queue is full, `MaxPendingExceededError` is
+  raised and the job is not inserted. The same applies to a **duplicate** key: re-enqueuing
+  with a key that already exists raises `MaxPendingExceededError` when the actor is at its
+  cap - the cap check fires first, so the dedupe upsert never runs and the existing
+  `JobHandle` is not returned past a full queue. Only on a queue with headroom does a
+  duplicate key return the existing handle at the upsert. Only `unique_for` (step 2)
+  bypasses `max_pending` unconditionally.
 
 ### `unique_for` and `singleton` interaction
 
@@ -451,6 +456,8 @@ async def enqueue_batch(
     *,
     batch_id: UUID | None = None,
     connection: "asyncpg.Connection | None" = None,
+    failure_policy: BatchFailurePolicy | None = None,
+    finalizer: EnqueueItem | None = None,
 ) -> BatchHandle: ...
 ```
 
@@ -467,6 +474,8 @@ Supply `batch_id` to set it explicitly; omit it and a UUIDv7 is generated automa
 | `items` | `list[EnqueueItem]` | required | 1-1000 items to enqueue. |
 | `batch_id` | `UUID \| None` | auto-generated UUIDv7 | Shared identifier for all jobs in this batch. |
 | `connection` | `asyncpg.Connection \| None` | `None` | Specific connection to use; useful for transactional enqueues. |
+| `failure_policy` | `BatchFailurePolicy \| None` | `None` | Abort the batch after observing a run of consecutive job failures. See [Batch failure policies](#batch-failure-policies). |
+| `finalizer` | `EnqueueItem \| None` | `None` | A job enqueued alongside the batch and dispatched immediately; the in-actor `wait_for_batch` snooze pattern gates on child-job completion. See [Batch finalizer](#batch-finalizer). |
 
 ### `EnqueueItem`
 
@@ -483,6 +492,7 @@ EnqueueItem(
     idempotency_scope=None,  # str | None, ≤ 1024 UTF-8 bytes by default
     identity_key=None,
     metadata={},
+    start_to_close=None,  # timedelta | None, per-attempt execution timeout
 )
 ```
 
@@ -498,6 +508,7 @@ EnqueueItem(
 | `identity_key` | `IdentityKey \| None` | `None` | Opaque identity string; required for `unique_for` dedup to take effect. |
 | `metadata` | `dict[str, object]` | `{}` | Per-job metadata. Do **not** set `batch_id` here; the library overwrites it. |
 | `tags` | `list[str] \| None` | `None` | Per-job tags. See [Tags](#tags). |
+| `start_to_close` | `timedelta \| None` | `None` | Per-item per-attempt execution timeout, same semantics as `enqueue()`'s `start_to_close`. |
 
 ### Deadline anchoring on the batch/COPY arms
 
@@ -538,8 +549,9 @@ dispatched**. If you batch future-scheduled jobs with deadlines, size
 | Field | Type | Description |
 |---|---|---|
 | `batch_id` | `UUID` | Shared ID for all jobs in this batch. |
-| `job_handles` | `list[JobHandle[Any]]` | One handle per item in the original list. |
-| `size` | `int` | `len(job_handles)`. |
+| `job_handles` | `list[JobHandle[Any]]` | One handle per item in the original list. When a finalizer was enqueued, the finalizer's handle is appended as the **last** entry of this list (and also set as `finalizer_handle`). |
+| `size` | `int` | The number of non-finalizer items - `len(job_handles) - (1 if finalizer_handle is not None else 0)`; the finalizer's handle is the last entry of `job_handles` and is excluded from `size`. |
+| `finalizer_handle` | `JobHandle[Any] \| None` | The finalizer job's handle, or `None` when no finalizer was enqueued. |
 
 #### `BatchHandle.status()`
 
@@ -1659,11 +1671,13 @@ async def send_order_confirmation(client: JobsClient, order_id: str) -> str:
   `"actor_name:entity_id"`.
 - Maximum length: **1024 UTF-8 bytes** (`TASKQ_IDEMPOTENCY_KEY_MAX_BYTES`, raisable to 1300). The bound is the composite unique index `jobs_idempotency_scope_key_uniq`: a Postgres btree v4 entry cannot exceed 2704 bytes, counted encoded, so the cap is in bytes, not characters. Empty and whitespace-only keys raise `ValueError`.
 - A duplicate key returns a handle with `was_existing=True` pointing at the original job.
-- `idempotency_key` does not bypass `max_pending` on the **first** call for a given key. If the
-  queue is full when the key is first used, `MaxPendingExceededError` is raised and no row is
-  inserted. On subsequent calls with the same key (after the key was successfully inserted),
-  the existing handle is returned without checking `max_pending`. Only `unique_for` (evaluated at
-  step 2, before `max_pending`) bypasses the queue-depth check unconditionally.
+- `idempotency_key` does not bypass `max_pending` - the `max_pending` count check runs
+  **before** the idempotency-key upsert. If the queue is full, `MaxPendingExceededError` is
+  raised and no row is inserted, whether the key is new or a duplicate: re-enqueuing with an
+  existing key on an actor already at its cap raises the error rather than returning the
+  existing handle. On a queue with headroom, a duplicate key returns a handle with
+  `was_existing=True`. Only `unique_for` (evaluated at step 2, before `max_pending`) bypasses
+  the queue-depth check unconditionally.
 
 ---
 

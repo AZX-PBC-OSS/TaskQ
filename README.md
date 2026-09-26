@@ -83,6 +83,7 @@ Optional extras:
 | `[prometheus]` | OpenTelemetry Prometheus exporter for metric scrapes                |
 | `[oidc]`       | OIDC SSO auth for the admin UI (authlib, httpx2, itsdangerous)     |
 | `[saml]`       | SAML SSO auth for the admin UI (python3-saml, itsdangerous)        |
+| `[aad]`        | Azure Entra ID managed-identity DB auth (azure-identity, aiohttp): `taskq.aad` credential providers |
 | `[aws]`        | AWS IAM database authentication for Amazon RDS Postgres (boto3): `taskq.aws` credential providers |
 | `[vault]`      | HashiCorp Vault database secrets engine dynamic credentials (hvac): `taskq.vault` credential providers |
 | `[reload]`     | `watchfiles` for autoreload during local development                |

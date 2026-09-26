@@ -28,3 +28,11 @@ for a task-oriented walkthrough.
 ## Shutdown
 
 ::: taskq.worker.shutdown
+
+## Drain (until-idle monitor and exit-code contract)
+
+::: taskq.worker.drain
+
+## Workgroup supervisor
+
+::: taskq.worker.workgroup
