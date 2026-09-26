@@ -93,6 +93,7 @@ nav:
       - Actors: guides/actors.md
       - Jobs & Clients: guides/jobs-clients.md
       - Workers: guides/workers.md
+      - Sweeps: guides/sweeps.md
       - Rate Limiting: guides/rate-limiting.md
       - Retries: guides/retries.md
       - Cancellation: guides/cancellation.md
