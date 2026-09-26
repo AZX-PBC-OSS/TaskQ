@@ -1457,7 +1457,11 @@ modes, so treat a count anomaly there with suspicion, not as an engine cost.
   `enable_dml_decompression`-family GUC: a probe with 40 qualifying rows — 12 in young chunks,
   28 in compressed ones — deleted 12 on the first execution, then 28 on the second, then 0;
   with the qualifying set entirely inside freshly compressed chunks the first tick deletes 0
-  outright). The mechanism is TimescaleDB's DML-decompression path trailing the chunk's
+  outright; the probe is a recorded measurement in
+  `benchmarks/results/timescale-compression.json`'s `first_tick_probe` key, from
+  `benchmarks/timescale_compression.py`, which also records the bare
+  `DELETE WHERE expire_at < now` contrast — that shape deletes all 40 on the first execution).
+  The mechanism is TimescaleDB's DML-decompression path trailing the chunk's
   compression state by one execution — the next sweep tick (the same statement, executed again)
   catches up, and there is no GUC workaround: `enable_dml_decompression = off` does not
   sidestep the lag, it hard-errors the delete. So a first-tick 0 on a compressed chunk can be
@@ -1520,10 +1524,6 @@ procedure and its semantics:
    the same. One loud refusal: rows the hypertable's widened uniqueness admitted (same id,
    different partition-column value) cannot come back into the restored table's bare primary
    key; the swap names the conflicts and stops rather than choosing which row survives.
-
-Roll-forward semantics hold on both paths: the flag-off deploy issues zero statements and a
-previously converted schema keeps its chunk retention at the last-registered intervals until a
-disable run actually executes — nothing between the flip and the disable degrades a live fleet.
 
 Roll-forward semantics hold on both paths: the flag-off deploy issues zero statements and a
 previously converted schema keeps its chunk retention at the last-registered intervals until a

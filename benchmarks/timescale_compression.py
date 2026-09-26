@@ -37,6 +37,23 @@ instant):
    id = $1)`` for an id IN a compressed chunk (hit) and for an id NOT in the
    table (miss — the guard's hot case: the insert proceeds), compressed vs
    rowstore.
+7. the compressed-chunk first-tick skip (the ops.md citation's artifact): 40
+   qualifying rows — 12 in young (rowstore) chunks, 28 in compressed ones —
+   drained by the REAL ``_EXPIRY_CTE_SQL`` sweep machinery one tick at a
+   time; the per-tick deleted counts are recorded (12, then 28, then 0 on
+   the columnstore engine: the DML-decompression path trails the chunk's
+   compression state by one execution). Controls pin the shape sensitivity:
+   the rowstore engine (no compressed chunks — first tick deletes all 40),
+   an all-compressed 40-row set (first tick deletes 0 outright), and a bare
+   ``DELETE ... WHERE expire_at < now`` — NOT the CTE/LIMIT shape — which
+   deletes all 40 on the first execution. Each sub-probe stages on its own
+   disposable per-engine schema (the SAME real ``apply_pending`` +
+   ``enable_hypertables`` conversion), with the probe rows seeded BEFORE the
+   ``compress_chunk`` aging so the compressed-chunk rows are compressed INTO
+   the batches — the claim's staging (rows inserted into an already-
+   compressed chunk after the fact land in the chunk's live region and
+   delete without decompression: no skip, measured); the corpus schema never
+   holds the probe's rows.
 
 The columnstore policy is ARMED by TaskQ's own ``enable_hypertables`` (it
 adopts the columnstore on the archive tables at deploy time now — the
@@ -212,18 +229,18 @@ def stop_containers() -> None:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)  # noqa: S603, S607
 
 
-async def setup_engine(dsn: str, *, columnstore: bool) -> dict[str, Any]:
+async def setup_engine(dsn: str, *, columnstore: bool, schema: str = SCHEMA) -> dict[str, Any]:
     """Drop + rebuild; TaskQ's real conversion (which now ARMS the
     columnstore on the archive tables itself); stop the workers; age the
     columnstore side."""
     conn = await connected(dsn)
     out: dict[str, Any] = {"columnstore": columnstore}
     try:
-        await conn.execute(f'DROP SCHEMA IF EXISTS "{SCHEMA}" CASCADE')
-        await conn.execute(f'CREATE SCHEMA "{SCHEMA}"')
-        await apply_pending(conn, schema=SCHEMA)
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.execute(f'CREATE SCHEMA "{schema}"')
+        await apply_pending(conn, schema=schema)
         settings = WorkerSettings.load_from_dict({"TASKQ_TIMESCALEDB_HYPERTABLES": "true"})
-        report = await enable_hypertables(conn, schema=SCHEMA, settings=settings)
+        report = await enable_hypertables(conn, schema=schema, settings=settings)
         out["converted"] = list(report.converted)
         out["compression_policies"] = list(report.compression_policies)
         out["decompression_guc_warning"] = report.decompression_guc_warning
@@ -254,7 +271,7 @@ async def setup_engine(dsn: str, *, columnstore: bool) -> dict[str, Any]:
         armed = await conn.fetch(
             "SELECT DISTINCT hypertable_name FROM timescaledb_information.compression_settings "
             "WHERE hypertable_schema = $1",
-            SCHEMA,
+            schema,
         )
         assert {r["hypertable_name"] for r in armed} == {
             "jobs_archive",
@@ -275,7 +292,7 @@ async def setup_engine(dsn: str, *, columnstore: bool) -> dict[str, Any]:
         await conn.close()
 
 
-async def age_columnstore(dsn: str) -> int:
+async def age_columnstore(dsn: str, schema: str = SCHEMA) -> int:
     """Force the aging step AFTER seeding: compress every chunk older than
     COMPRESS_AFTER — exactly the set the armed policy would convert (the
     background workers are stopped; compress_chunk is the actuation).
@@ -285,10 +302,10 @@ async def age_columnstore(dsn: str) -> int:
         chunks = await conn.fetch(
             "SELECT compress_chunk(c, if_not_compressed => TRUE) AS chunk "
             "FROM show_chunks($1::regclass, older_than => $2::interval) c",
-            f'"{SCHEMA}".jobs_archive',
+            f'"{schema}".jobs_archive',
             COMPRESS_AFTER,
         )
-        await conn.execute(f'ANALYZE "{SCHEMA}".jobs_archive')
+        await conn.execute(f'ANALYZE "{schema}".jobs_archive')
         return len(chunks)
     finally:
         await conn.close()
@@ -716,6 +733,224 @@ async def explain_rollback(conn: asyncpg.Connection, sql: str) -> list[str]:
     return [r[0] for r in rows]
 
 
+# ── Shape 7: the compressed-chunk first-tick skip ─────────────────────────
+
+# Age windows (days before the probe's base instant). The chunk interval is
+# 30d and the aging threshold is 30d, so chunks holding rows up to ~52d old
+# stay rowstore; everything past ~60d is deep in compressed chunks. The
+# mixed probe's old window (100-127d) and the all-compressed window
+# (198-237d) are >73d apart — never the same 30d chunk.
+FIRST_TICK_YOUNG_AGES = list(range(1, 13))  # 12 rows → the young rowstore chunks
+FIRST_TICK_COMPRESSED_AGES = list(range(100, 128))  # 28 rows → compressed chunks
+FIRST_TICK_ALL_COMPRESSED_AGES = list(range(198, 238))  # 40 rows, ALL compressed-chunk
+
+# The probe's row shape mirrors the trade-off bench's archive seed (the same
+# columns, the same derived clocks); ids are md5(prefix || i) — disjoint from
+# the corpus seed's md5('a' || i) and the lookup probes' md5('miss' || i).
+# expire_at is one hour past the base instant: every row qualifies.
+_FIRST_TICK_INSERT_SQL = """\
+WITH a AS (SELECT unnest($1::int[]) AS i, unnest($2::int[]) AS age)
+INSERT INTO "{s}".jobs_archive (
+    id, actor, queue, payload, status, attempt, max_attempts, retry_kind,
+    created_at, scheduled_at, started_at, finished_at, archived_at, expire_at,
+    tags, priority)
+SELECT md5(($4::text || i)::text)::uuid,
+       'actor_0', 'queue_0', jsonb_build_object('probe', i, 'pad', repeat('p', 200)),
+       'succeeded'::{s}.job_status, 1, 3, 'transient',
+       fin - interval '6 min', fin - interval '6 min', fin - interval '5 min', fin,
+       fin + interval '1 hour', $3::timestamptz,
+       ARRAY['regular'], (i % 3)::smallint
+FROM a, LATERAL (SELECT $5::timestamptz - make_interval(days => age) AS fin) f
+"""
+
+
+async def _insert_first_tick_rows(
+    conn: asyncpg.Connection, schema: str, base: datetime, prefix: str, ages: list[int]
+) -> None:
+    """Insert the probe's qualifying rows (``expire_at`` past) at the given
+    finished_at ages — the chunk each lands in is the partition column's."""
+    await conn.execute(
+        _FIRST_TICK_INSERT_SQL.format(s=schema),  # Why: schema is a benchmark-controlled constant.
+        ages,
+        ages,
+        base - timedelta(hours=1),
+        prefix,
+        base,
+    )
+
+
+async def _first_tick_cte_ticks(conn: asyncpg.Connection, schema: str, seeded: int) -> list[int]:
+    """Execute the REAL expiry sweep batch once per tick — the
+    ``_EXPIRY_CTE_SQL`` shape via ``_run_prune_batch``, not a hand-copied
+    DELETE — recording the per-tick deleted count. The sweep stops only when
+    the seeded rows are consumed AND a later tick deleted 0 (the recorded
+    tail 0 is the confirmation tick the claim cites); the cap keeps a
+    pathological run bounded."""
+    sql = _EXPIRY_CTE_SQL.format(schema=schema)
+    ticks: list[int] = []
+    total = 0
+    for _ in range(10):
+        rows = await _run_prune_batch(
+            conn,
+            sql,
+            BATCH,
+            statement_timeout_ms=SWEEP_TIMEOUT_MS,
+            sweep_name="bench_compression_first_tick",
+            sizer=None,
+        )
+        cnt = sum(int(r["cnt"]) for r in rows)
+        ticks.append(cnt)
+        total += cnt
+        if not cnt and total >= seeded:
+            return ticks
+    raise AssertionError(f"the first-tick probe never confirmed its drain: {ticks} of {seeded}")
+
+
+async def _first_tick_stage(
+    dsn: str, *, schema: str, base: datetime, ages: list[int], aged: bool
+) -> None:
+    """One sub-probe's staging on one engine: the REAL conversion
+    (``apply_pending`` + ``enable_hypertables`` — the same arming the corpus
+    schema got) on a disposable probe schema, the probe rows seeded BEFORE
+    the compress_chunk aging so the compressed-chunk rows are compressed
+    INTO the batches (the claim's staging: rows inserted into a compressed
+    chunk AFTER compression land in the chunk's live region and delete
+    without decompression — measured: no skip), then the aging on the
+    columnstore engine only."""
+    await setup_engine(dsn, columnstore=aged, schema=schema)
+    conn = await connected(dsn)
+    try:
+        await _insert_first_tick_rows(conn, schema, base, "ftprobe", ages)
+        if aged:
+            await age_columnstore(dsn, schema=schema)
+    finally:
+        await conn.close()
+
+
+async def bench_first_tick_probe(base: datetime) -> dict[str, Any]:
+    """Shape 7: the compressed-chunk first-tick skip, as a RECORDED
+    measurement — the artifact the ops.md citation points at.
+
+    Staging per sub-probe (a fresh disposable schema per engine, so no set's
+    chunks are warmed by another set's ticks): the real conversion, the
+    probe rows seeded BEFORE the compress_chunk aging (compressed INTO the
+    batches), then the REAL expiry sweep machinery (``_EXPIRY_CTE_SQL`` via
+    ``_run_prune_batch``) executed one tick at a time.
+
+    * mixed set — 40 qualifying rows, 12 in young (rowstore) chunks, 28 in
+      compressed ones: on the columnstore engine the first execution deletes
+      only the young rows (12), the second catches up (28), the third deletes
+      0 — the DML-decompression path trailing the chunk's compression state
+      by one execution. On the rowstore engine (no compressed chunks) the
+      first tick deletes all 40.
+    * all-compressed set — 40 qualifying rows entirely inside freshly
+      compressed chunks: the first tick deletes 0 outright.
+    * bare-DELETE contrast — the same mixed staging consumed by a bare
+      ``DELETE ... WHERE expire_at < statement_timestamp()`` (NOT the
+      CTE/LIMIT shape): all 40 on the first execution. The skip is
+      statement-shape-dependent, not a chunk-state constant.
+
+    The probe runs AFTER the expiry drain, on its own schemas: the corpus
+    schema never holds the probe's rows, so the drain's asserted-empty
+    ``remaining`` and the seed-verify asserts are untouched.
+    """
+    out: dict[str, Any] = {}
+
+    # (a) The mixed set — the citation's probe.
+    mixed_ticks: dict[str, list[int]] = {}
+    for label, dsn, aged in (("row", DSN_ROW, False), ("col", DSN_COL, True)):
+        schema = f"{SCHEMA}_ft_mixed_{label}"
+        await _first_tick_stage(
+            dsn,
+            schema=schema,
+            base=base,
+            ages=FIRST_TICK_YOUNG_AGES + FIRST_TICK_COMPRESSED_AGES,
+            aged=aged,
+        )
+        conn = await connected(dsn)
+        try:
+            mixed_ticks[label] = await _first_tick_cte_ticks(conn, schema, seeded=40)
+        finally:
+            await conn.close()
+    assert mixed_ticks["col"] == [12, 28, 0], mixed_ticks
+    assert mixed_ticks["row"] == [40, 0], mixed_ticks
+    out["mixed_set"] = {
+        "qualifying_rows": 40,
+        "in_young_chunks": 12,
+        "in_compressed_chunks": 28,
+        "cte_ticks_deleted": mixed_ticks,
+    }
+
+    # (b) The all-compressed control: the first tick deletes 0 outright.
+    all_compressed_ticks: dict[str, list[int]] = {}
+    for label, dsn, aged in (("row", DSN_ROW, False), ("col", DSN_COL, True)):
+        schema = f"{SCHEMA}_ft_allold_{label}"
+        await _first_tick_stage(
+            dsn, schema=schema, base=base, ages=FIRST_TICK_ALL_COMPRESSED_AGES, aged=aged
+        )
+        conn = await connected(dsn)
+        try:
+            all_compressed_ticks[label] = await _first_tick_cte_ticks(conn, schema, seeded=40)
+        finally:
+            await conn.close()
+    assert all_compressed_ticks["col"] == [0, 40, 0], all_compressed_ticks
+    assert all_compressed_ticks["row"] == [40, 0], all_compressed_ticks
+    out["all_compressed_set"] = {
+        "qualifying_rows": 40,
+        "in_compressed_chunks": 40,
+        "cte_ticks_deleted": all_compressed_ticks,
+    }
+
+    # (c) The bare-DELETE contrast: same mixed staging, no CTE/LIMIT shape —
+    # the first execution deletes all 40 on BOTH engines.
+    bare_delete_first_tick: dict[str, str] = {}
+    for label, dsn, aged in (("row", DSN_ROW, False), ("col", DSN_COL, True)):
+        schema = f"{SCHEMA}_ft_bare_{label}"
+        await _first_tick_stage(
+            dsn,
+            schema=schema,
+            base=base,
+            ages=FIRST_TICK_YOUNG_AGES + FIRST_TICK_COMPRESSED_AGES,
+            aged=aged,
+        )
+        conn = await connected(dsn)
+        try:
+            tag = await conn.execute(
+                # Why noqa S608: schema is a benchmark-controlled constant.
+                f'DELETE FROM "{schema}".jobs_archive '  # noqa: S608
+                "WHERE expire_at < statement_timestamp()"
+            )
+        finally:
+            await conn.close()
+        assert tag == "DELETE 40", (label, tag)
+        bare_delete_first_tick[label] = tag
+    out["bare_delete_first_tick"] = bare_delete_first_tick
+    out["cte_shape"] = "_EXPIRY_CTE_SQL via _run_prune_batch (the real sweep machinery)"
+    out["staging"] = (
+        "per-engine disposable probe schema (the real apply_pending + "
+        "enable_hypertables conversion), rows seeded BEFORE the compress_chunk "
+        "aging so the compressed-chunk rows are compressed INTO the batches; one "
+        "schema per sub-probe so no set's chunks are warmed by another set's ticks"
+    )
+    return out
+
+
+def print_first_tick(r: dict[str, Any]) -> None:
+    mixed = r["mixed_set"]
+    old = r["all_compressed_set"]
+    print(
+        f"\nfirst-tick probe ({r['cte_shape']})"
+        f"\n  mixed set: {mixed['qualifying_rows']} qualifying rows "
+        f"({mixed['in_young_chunks']} young + {mixed['in_compressed_chunks']} compressed)"
+        f"\n    cte ticks[row]: {mixed['cte_ticks_deleted']['row']}"
+        f"\n    cte ticks[col]: {mixed['cte_ticks_deleted']['col']}"
+        f"\n  all-compressed set: cte ticks[row] {old['cte_ticks_deleted']['row']}"
+        f" / cte ticks[col] {old['cte_ticks_deleted']['col']}"
+        f"\n  bare DELETE first tick: row {r['bare_delete_first_tick']['row']}"
+        f", col {r['bare_delete_first_tick']['col']}"
+    )
+
+
 # ── Reporting ────────────────────────────────────────────────────────────
 
 
@@ -799,23 +1034,23 @@ async def main() -> None:
         flush=True,
     )
 
-    print("[1/8] starting containers", flush=True)
+    print("[1/9] starting containers", flush=True)
     start_containers()
     await wait_ready(DSN_ROW, "rowstore engine")
     await wait_ready(DSN_COL, "columnstore engine")
 
-    print("[2/8] schema + hypertable conversion (TaskQ's enable_hypertables)", flush=True)
+    print("[2/9] schema + hypertable conversion (TaskQ's enable_hypertables)", flush=True)
     setup_row = await setup_engine(DSN_ROW, columnstore=False)
-    print("[2/8] arming the columnstore policy on the col engine", flush=True)
+    print("[2/9] arming the columnstore policy on the col engine", flush=True)
     setup_col = await setup_engine(DSN_COL, columnstore=True)
     print(f"    col engine: {json.dumps(setup_col, default=str)}")
 
-    print("[3/8] seeding both engines from the trade-off bench's archive seed", flush=True)
+    print("[3/9] seeding both engines from the trade-off bench's archive seed", flush=True)
     seed_row = await seed_archive(DSN_ROW, base)
     seed_col = await seed_archive(DSN_COL, base)
     print(f"    row {seed_row:.0f}s  col {seed_col:.0f}s", flush=True)
 
-    print("[4/8] aging + seed correctness asserts", flush=True)
+    print("[4/9] aging + seed correctness asserts", flush=True)
     aged = await age_columnstore(DSN_COL)
     print(f"    columnstore engine: aged {aged} chunks into the columnstore", flush=True)
     storage_before = {"row": await chunk_state(DSN_ROW), "col": await chunk_state(DSN_COL)}
@@ -828,22 +1063,26 @@ async def main() -> None:
     )
     await verify_seed()
 
-    print("[5/8] archive tab page (young rowstore chunk) + cold reads", flush=True)
+    print("[5/9] archive tab page (young rowstore chunk) + cold reads", flush=True)
     page = await bench_page_young()
     print_page(page)
     cold = await bench_cold_reads(base)
     print_cold(cold)
 
-    print("[6/8] id point lookup + fold-guard probes", flush=True)
+    print("[6/9] id point lookup + fold-guard probes", flush=True)
     lookups = await bench_point_lookup(base)
     print_lookups(lookups)
 
-    print("[7/8] archive expiry drain (interleaved batch-by-batch)", flush=True)
+    print("[7/9] archive expiry drain (interleaved batch-by-batch)", flush=True)
     drain = await bench_expiry_drain(base)
     print_drain("archive expiry (expired archive rows hard-deleted)", drain)
     storage_after = {"row": await chunk_state(DSN_ROW), "col": await chunk_state(DSN_COL)}
 
-    print("[8/8] teardown + results", flush=True)
+    print("[8/9] first-tick probe (the compressed-chunk skip ops.md cites)", flush=True)
+    first_tick = await bench_first_tick_probe(base)
+    print_first_tick(first_tick)
+
+    print("[9/9] teardown + results", flush=True)
     if not _KEEP_CONTAINERS:
         stop_containers()
 
@@ -875,6 +1114,7 @@ async def main() -> None:
         "cold": cold,
         "lookups": lookups,
         "expiry_drain": drain,
+        "first_tick_probe": first_tick,
     }
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     path = RESULTS_DIR / RESULTS_NAME

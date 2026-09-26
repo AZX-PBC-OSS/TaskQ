@@ -1248,7 +1248,12 @@ async def _absorb_orphan_rows(
     The disable path's ONE drop rule: never destroy a table containing
     rows whose live twin is missing. The insert is twin-guarded, so a
     re-run converges instead of duplicating; the post-insert re-check is
-    the proof that turns the drop into a no-loss statement.
+    the proof that turns the drop into a no-loss statement. The proof is
+    serialized: an ``IN EXCLUSIVE MODE`` lock on the orphan is taken
+    BEFORE the final twin check, in the same transaction as the check and
+    the drop, so a worker commit cannot land on the orphan between the
+    count and the drop (renames do not rebind OIDs — see the inline
+    comment).
     """
     # The live table may have moved in moments ago still typing jobs_archive's
     # status with the staging schema's enum; the orphan's rows carry THIS
@@ -1265,19 +1270,40 @@ async def _absorb_orphan_rows(
         f'SELECT count(*) FROM "{schema}"."{orphan}" o '  # noqa: S608
         f'WHERE NOT EXISTS (SELECT 1 FROM "{schema}"."{table}" l WHERE {twin})'
     )
-    if await conn.fetchval(missing_sql):
+    # The count-then-drop above and below is a TOCTOU window otherwise: a
+    # worker transaction that opened the orphan BEFORE the trash rename can
+    # COMMIT a row into it at any moment (renames do not rebind OIDs — the
+    # in-flight writer's relation lock outlives the rename), and a commit
+    # landing between the final twin count and the DROP destroys the row.
+    # ``LOCK TABLE ... IN EXCLUSIVE MODE`` closes it: it conflicts with
+    # ROW EXCLUSIVE (the INSERT/UPDATE/DELETE writers) but not ACCESS SHARE
+    # (readers), and it WAITS OUT any writer already in flight — so once
+    # held, no commit can land on the orphan between the final count and
+    # the drop. Lock, re-check, and drop share one transaction: the disable
+    # runs statement-per-transaction on the deploy connection (see
+    # :func:`disable_hypertables`' caller), so an explicit one is needed for
+    # the lock to outlive the check and cover the drop; under a caller's
+    # open transaction asyncpg nests it as a savepoint and the lock simply
+    # holds to the outer commit — strictly wider, never narrower.
+    async with conn.transaction():
         await conn.execute(
-            f'INSERT INTO "{schema}"."{table}" '  # noqa: S608
-            f'SELECT o.* FROM "{schema}"."{orphan}" o '
-            f'WHERE NOT EXISTS (SELECT 1 FROM "{schema}"."{table}" l WHERE {twin})'
+            # Why noqa S608: schema is _IDENT_RE-validated; the orphan name
+            # is module-owned (_TRASH_SUFFIX / __restore), never input.
+            f'LOCK TABLE "{schema}"."{orphan}" IN EXCLUSIVE MODE'
         )
-    still_missing = await conn.fetchval(missing_sql)
-    if still_missing:
-        raise RuntimeError(
-            f'crash recovery is short: {still_missing} row(s) of "{schema}"."{orphan}" '
-            f'have no twin in "{schema}"."{table}"; refusing to drop the orphan copy'
-        )
-    await conn.execute(f'DROP TABLE "{schema}"."{orphan}"')
+        if await conn.fetchval(missing_sql):
+            await conn.execute(
+                f'INSERT INTO "{schema}"."{table}" '  # noqa: S608
+                f'SELECT o.* FROM "{schema}"."{orphan}" o '
+                f'WHERE NOT EXISTS (SELECT 1 FROM "{schema}"."{table}" l WHERE {twin})'
+            )
+        still_missing = await conn.fetchval(missing_sql)
+        if still_missing:
+            raise RuntimeError(
+                f'crash recovery is short: {still_missing} row(s) of "{schema}"."{orphan}" '
+                f'have no twin in "{schema}"."{table}"; refusing to drop the orphan copy'
+            )
+        await conn.execute(f'DROP TABLE "{schema}"."{orphan}"')
 
 
 async def _converge_crashed_swaps(
@@ -1432,6 +1458,10 @@ async def _free_vanilla_names(conn: asyncpg.Connection, schema: str, trash: str)
     )
     for row in sequences:
         await conn.execute(
+            # The rename must stay within pg_class's 63-byte name limit: the
+            # suffix is 18 chars, so a sequence name longer than 45 would
+            # truncate into collision. Today's only owned sequence is 17
+            # (job_events_id_seq).
             f'ALTER SEQUENCE "{schema}"."{row["seqname"]}" '
             f'RENAME TO "{row["seqname"]}{_TRASH_SUFFIX}"'
         )
