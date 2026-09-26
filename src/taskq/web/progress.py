@@ -192,11 +192,17 @@ def _resolve_last_event_id(
     automatically by the browser ``EventSource`` on reconnect; the query
     parameter is a curl/debugging convenience.  Header wins when both present.
 
-    Every id this stream issues is a non-negative integer sequence number,
-    so a header that is not one cannot have come from it - a hand-rolled
-    client or a proxy rewriting headers - and is rejected with a 400
-    naming the header. Reading it as "no cursor" instead would replay the
-    stream from the snapshot and silently shadow a valid query parameter.
+    Every id this stream issues is a non-negative integer sequence number
+    bounded by the int4 ``progress_seq`` cursor domain (``_MAX_PROGRESS_SEQ``),
+    so an id that is not one cannot have come from it - a hand-rolled
+    client, a proxy rewriting headers, or FastAPI parsing an arbitrary-
+    precision query integer - and is rejected with a 400 naming its source.
+    Reading it as "no cursor" instead would replay the stream from the
+    snapshot and silently shadow a valid query parameter.  And a cursor
+    accepted ABOVE the domain is worse than a rejected one: it fails the
+    generator's ``seq <= last_emitted_seq`` dedup forever, a blackhole
+    stream holding an SSE slot and a pubsub subscription for the life of
+    the connection.
     """
     header_val = request.headers.get("Last-Event-ID")
     if header_val is not None:
@@ -204,7 +210,7 @@ def _resolve_last_event_id(
             resolved = int(header_val)
         except ValueError:
             resolved = -1
-        if resolved < 0:
+        if not (0 <= resolved <= _MAX_PROGRESS_SEQ):
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -213,6 +219,18 @@ def _resolve_last_event_id(
                 ),
             )
         return resolved
+    if query_param is not None and not (0 <= query_param <= _MAX_PROGRESS_SEQ):
+        # FastAPI parses the query parameter straight to ``int`` - negatives
+        # and arbitrary-precision values included - so the same contract the
+        # header path enforces is applied here at the boundary, naming the
+        # query parameter the way the header 400 names the header.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"last_event_id must be a non-negative integer sequence number issued by "
+                f"this stream, got {str(query_param)[:64]!r}"
+            ),
+        )
     return query_param
 
 
@@ -814,51 +832,74 @@ def create_router(
             raise HTTPException(status_code=404, detail="job not found")
 
         # Extract snapshot data from PG row.
-        raw_progress_state: Any = row["progress_state"]
-        progress_seq: int = row["progress_seq"]
-        status: str = row["status"]
-        is_terminal = status in TERMINAL_STATUSES
-        progress_data = _serialize_progress_state(raw_progress_state)
-
-        # ------------------------------------------------------------------
-        # Phase 2: build and return EventSourceResponse.
         #
-        # The generator owns pubsub from here; the try/finally inside
-        # _event_generator ensures cleanup even on client disconnect
-        # (CancelledError).
-        # ------------------------------------------------------------------
+        # Why the guard: the slot and the pubsub subscription are both live
+        # in this third region - between the 503/PG-error/404 arms above and
+        # the generator's finally taking ownership below. A raise here (a
+        # host-installed custom jsonb codec surfacing through
+        # _serialize_progress_state; unreachable with stock codecs, where
+        # asyncpg hands back a str/dict the serializer never fails on)
+        # propagates to progress_stream's release_slot with the subscription
+        # still open: a leaked broker subscription per failed request. Every
+        # early exit between subscribe and the generator has to give it
+        # back, so the same cleanup runs here - suppressed and bounded, the
+        # original exception still propagates.
+        try:
+            raw_progress_state: Any = row["progress_state"]
+            progress_seq: int = row["progress_seq"]
+            status: str = row["status"]
+            is_terminal = status in TERMINAL_STATUSES
+            progress_data = _serialize_progress_state(raw_progress_state)
 
-        # Bind the request into the re-check once: the verifier reads the
-        # same cookie (or bearer token) the request arrived with, and a
-        # session revoked mid-stream -- secret rotation, expiry, an allowlist
-        # change -- fails the re-check even though those bytes are unchanged.
-        _session_verifier: Callable[[], Awaitable[bool]] | None = (
-            (lambda: session_verifier(request)) if session_verifier is not None else None
-        )
+            # ------------------------------------------------------------------
+            # Phase 2: build and return EventSourceResponse.
+            #
+            # The generator owns pubsub from here; the try/finally inside
+            # _event_generator ensures cleanup even on client disconnect
+            # (CancelledError).
+            # ------------------------------------------------------------------
 
-        return EventSourceResponse(
-            content=_event_generator(
-                pubsub=pubsub,
-                channel=channel,
-                job_id=job_id,
-                is_terminal=is_terminal,
-                progress_seq=progress_seq,
-                progress_data=progress_data,
-                resolved_last_event_id=resolved_last_event_id,
-                sse_slot_semaphore=sse_slot_semaphore,
-                heartbeat_secs=_effective_heartbeat_secs,
-                session_verifier=_session_verifier,
-            ),
-            headers=_SSE_HEADERS,
-            # We emit our own keepalive comments via the get_message timeout
-            # loop; sse-starlette's ping is only a fallback. Bounded at twice
-            # the effective (capped) heartbeat: the old 24-hour value was a
-            # no-lifetime-cap stream -- exactly the property the #316 fix
-            # removes -- while ping=0 causes a tight loop (anyio.sleep(0)
-            # returns immediately).
-            ping=_effective_heartbeat_secs * 2,
-            sep=_SSE_SEPARATOR,
-        )
+            # Bind the request into the re-check once: the verifier reads the
+            # same cookie (or bearer token) the request arrived with, and a
+            # session revoked mid-stream -- secret rotation, expiry, an
+            # allowlist change -- fails the re-check even though those bytes
+            # are unchanged.
+            _session_verifier: Callable[[], Awaitable[bool]] | None = (
+                (lambda: session_verifier(request)) if session_verifier is not None else None
+            )
+
+            return EventSourceResponse(
+                content=_event_generator(
+                    pubsub=pubsub,
+                    channel=channel,
+                    job_id=job_id,
+                    is_terminal=is_terminal,
+                    progress_seq=progress_seq,
+                    progress_data=progress_data,
+                    resolved_last_event_id=resolved_last_event_id,
+                    sse_slot_semaphore=sse_slot_semaphore,
+                    heartbeat_secs=_effective_heartbeat_secs,
+                    session_verifier=_session_verifier,
+                ),
+                headers=_SSE_HEADERS,
+                # We emit our own keepalive comments via the get_message timeout
+                # loop; sse-starlette's ping is only a fallback. Bounded at twice
+                # the effective (capped) heartbeat: the old 24-hour value was a
+                # no-lifetime-cap stream -- exactly the property the #316 fix
+                # removes -- while ping=0 causes a tight loop (anyio.sleep(0)
+                # returns immediately).
+                ping=_effective_heartbeat_secs * 2,
+                sep=_SSE_SEPARATOR,
+            )
+        except BaseException:
+            # Cleanup must not mask the original exception from the snapshot
+            # region.
+            with contextlib.suppress(Exception):
+                await pubsub.unsubscribe(channel)
+            # Why bounded: helper never raises (suppress dropped), so the
+            # original error always propagates even with a dead broker.
+            await close_redis_bounded(pubsub, "web-progress", CLOSE_TIMEOUT_SECS)
+            raise
 
     # ----------------------------------------------------------------
     # Poll-state endpoint

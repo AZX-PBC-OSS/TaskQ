@@ -421,6 +421,84 @@ async def test_query_param_used_when_no_header() -> None:
     assert "id: 7\n" in first_raw
 
 
+# ── Out-of-domain ?last_event_id= rejected at the boundary ───────
+
+
+@pytest.mark.parametrize("bad_param", [-1, 99999999999999])
+def test_out_of_domain_last_event_id_query_param_rejected_with_400(bad_param: int) -> None:
+    """Every id this stream issues is a non-negative int4 sequence number,
+    so a ?last_event_id= outside that domain cannot have come from it.
+    FastAPI parses the query parameter straight to ``int`` - negatives and
+    arbitrary-precision values included - and a huge cursor above every
+    future seq would fail the generator's ``seq <= last_emitted_seq`` dedup
+    forever: a blackhole stream holding an SSE slot and a pubsub
+    subscription for the life of the connection. The query param gets the
+    same 400 contract the Last-Event-ID header path serves."""
+    request = MagicMock()
+    request.headers.get.return_value = None  # no Last-Event-ID header
+    with pytest.raises(HTTPException) as info:
+        _resolve_last_event_id(request, bad_param)
+    assert info.value.status_code == 400
+    assert "last_event_id" in str(info.value.detail)
+
+
+@pytest.mark.parametrize("bad_param", ["-1", "99999999999999"])
+def test_out_of_domain_last_event_id_query_param_serves_400(bad_param: str) -> None:
+    """The 400 is served on the wire before any pubsub subscription or PG
+    work - a rejected cursor allocates nothing, mirroring the header path's
+    error shape."""
+    pubsub = _StubPubSub([])
+    _, client = _make_app(None, pubsub)
+
+    resp = client.get(
+        f"/jobs/api/job/{_JOB_ID}/progress/stream", params={"last_event_id": bad_param}
+    )
+
+    assert resp.status_code == 400
+    assert "last_event_id" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_in_domain_last_event_id_query_param_still_catches_up() -> None:
+    """A well-formed ?last_event_id= inside the int4 domain keeps its
+    catch-up semantics: the boundary only excludes values the stream can
+    never have issued."""
+    pg_row = _pg_row(status="succeeded", progress_seq=7, progress_state={"step": 7})
+    pubsub = _StubPubSub([_EXHAUST])
+
+    results = await _drive_generator(
+        pg_row,
+        pubsub,
+        last_event_id_header=None,
+        last_event_id_param=3,
+    )
+
+    first_raw = _encode(results[0])
+    assert "id: 7\n" in first_raw
+    assert "event: terminal\n" in first_raw
+
+
+def test_header_still_wins_over_an_out_of_domain_query_param() -> None:
+    """Real precedence: the header path validates and returns FIRST, so a
+    well-formed header beside an out-of-domain query param is served - the
+    param is never consulted, never 400s."""
+    request = MagicMock()
+    request.headers.get.return_value = "5"
+    assert _resolve_last_event_id(request, -1) == 5
+    assert _resolve_last_event_id(request, 99999999999999) == 5
+
+
+def test_malformed_header_still_beats_a_valid_query_param() -> None:
+    """And the mirror: a malformed header beside a valid query param still
+    400s on the header - the header path owns the request when present."""
+    request = MagicMock()
+    request.headers.get.return_value = "-1"
+    with pytest.raises(HTTPException) as info:
+        _resolve_last_event_id(request, 3)
+    assert info.value.status_code == 400
+    assert "Last-Event-ID" in str(info.value.detail)
+
+
 # ── No catch-up when progress_seq <= last_event_id ──────────────
 
 
@@ -1286,3 +1364,70 @@ async def test_job_not_found_bounds_hung_pubsub_close(
     assert pubsub.unsubscribed is True
     assert pubsub.aclose_calls == 1
     _assert_web_progress_timeout_event(captured)
+
+
+# ── Post-subscribe snapshot region gives the subscription back ────
+
+
+class _SpyClosePubSub(_StubPubSub):
+    """_StubPubSub spy: counts unsubscribe/aclose without hanging - drives
+    the post-subscribe snapshot region's cleanup pin."""
+
+    def __init__(self, messages: list[dict[str, Any] | object | None]) -> None:
+        super().__init__(messages)
+        self.unsubscribe_calls = 0
+        self.aclose_calls = 0
+
+    async def unsubscribe(self, channel: str | bytes) -> None:
+        self.unsubscribe_calls += 1
+        await super().unsubscribe(channel)
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+
+
+@pytest.mark.asyncio
+async def test_snapshot_serialize_error_gives_the_subscription_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Post-subscribe snapshot region (:816): a raise between the PG row and
+    the EventSourceResponse construction - a host-installed custom jsonb
+    codec raising through _serialize_progress_state, unreachable with stock
+    codecs - must give the pubsub subscription back, the same doctrine the
+    503/PG-error/404 arms obey. Without it the outer slot release strands
+    the broker subscription until GC."""
+
+    def _raising_serialize(progress_state: Any) -> str:
+        raise ValueError("custom jsonb codec boom")
+
+    monkeypatch.setattr(progress_mod, "_serialize_progress_state", _raising_serialize)
+    pubsub = _SpyClosePubSub([])
+    endpoint = _make_stream_endpoint(_StubPool(_pg_row()), pubsub)
+
+    with pytest.raises(ValueError, match="custom jsonb codec boom"):
+        await endpoint(job_id=_JOB_ID, request=_mock_request(), last_event_id=None)
+
+    assert pubsub.unsubscribe_calls == 1
+    assert pubsub.aclose_calls == 1
+
+
+def test_snapshot_serialize_error_serves_500_and_cleans_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On the wire the same raise is a 500 (raise_server_exceptions=False),
+    and the subscription is still given back - cleanup is not skipped
+    because the client sees a plain error page."""
+
+    def _raising_serialize(progress_state: Any) -> str:
+        raise ValueError("custom jsonb codec boom")
+
+    monkeypatch.setattr(progress_mod, "_serialize_progress_state", _raising_serialize)
+    pubsub = _SpyClosePubSub([])
+    _, client = _make_app(_pg_row(), pubsub)
+
+    resp = client.get(f"/jobs/api/job/{_JOB_ID}/progress/stream")
+
+    assert resp.status_code == 500
+    assert pubsub.unsubscribe_calls == 1
+    assert pubsub.aclose_calls == 1
+    client.close()
