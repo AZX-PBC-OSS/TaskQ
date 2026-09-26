@@ -1,8 +1,17 @@
 {% from "_partials/job_card.html" import status_badge, duration_fmt, timestamp_cell, attempt_budget %}
 
 {# Every jobs-list link carries the same filter state; one definition so a
-   filter added to the page cannot be dropped by five of the six links. #}
-{% macro filter_qs() %}{% for s in statuses %}&status={{ s | urlencode }}{% endfor %}{% if actor_filter %}&actor={{ actor_filter | urlencode }}{% endif %}{% if queue_filter %}&queue={{ queue_filter | urlencode }}{% endif %}{% if time_range %}&time_range={{ time_range | urlencode }}{% endif %}{% if identity_key %}&identity_key={{ identity_key | urlencode }}{% endif %}{% if fairness_key %}&fairness_key={{ fairness_key | urlencode }}{% endif %}{% if search %}&search={{ search | urlencode }}{% endif %}{% if tags_filter %}&tags={{ tags_filter | urlencode }}{% endif %}{% if live == 'off' %}&live=off{% endif %}{% endmacro %}
+   filter added to the page cannot be dropped by five of the six links.
+
+   time_from/time_to ride here too: the absolute window filters page 1,
+   and a page turn that dropped them would serve page 2 UNFILTERED - the
+   cursor keys into a result set the next request no longer describes,
+   so the operator silently reads rows outside the window they asked
+   about. The names match the query parameter exactly: these are the
+   caller's own submitted strings (jobs.py round-trips them in the
+   context for the form), so urlencode is all the transformation they
+   get, the same as every other filter here. #}
+{% macro filter_qs() %}{% for s in statuses %}&status={{ s | urlencode }}{% endfor %}{% if actor_filter %}&actor={{ actor_filter | urlencode }}{% endif %}{% if queue_filter %}&queue={{ queue_filter | urlencode }}{% endif %}{% if time_range %}&time_range={{ time_range | urlencode }}{% endif %}{% if time_from %}&time_from={{ time_from | urlencode }}{% endif %}{% if time_to %}&time_to={{ time_to | urlencode }}{% endif %}{% if identity_key %}&identity_key={{ identity_key | urlencode }}{% endif %}{% if fairness_key %}&fairness_key={{ fairness_key | urlencode }}{% endif %}{% if search %}&search={{ search | urlencode }}{% endif %}{% if tags_filter %}&tags={{ tags_filter | urlencode }}{% endif %}{% if live == 'off' %}&live=off{% endif %}{% endmacro %}
 
 {# A page link must carry the active sort as well as the cursor: the cursor
    encodes the value of the SORT column, so a Next that drops sort/order

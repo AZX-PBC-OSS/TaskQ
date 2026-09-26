@@ -405,13 +405,26 @@ def _parse_time_range(
 ) -> tuple[datetime | None, datetime | None, timedelta | None]:
     """Resolve the time filter to ``(time_from, time_to, within)``.
 
-    An explicit from/to pair (already parsed to datetimes by
-    :func:`parse_time_filter`) is passed through as absolute instants. A
-    named range ("1h", "7d", ...) resolves to a ``timedelta`` that
+    An explicit from/to bound (already parsed to datetimes by
+    :func:`parse_time_filter`) is passed through as absolute instants --
+    and either bound is valid ALONE: each is its own open-ended window
+    (from-only = "everything after X", to-only = "everything before X"),
+    the same independent-predicate shape ``_build_where`` binds them with
+    and the client surface's ``JobFilter.created_before`` exposes. A
+    partial *cursor* 400s elsewhere in this admin (history.py, queues.py)
+    because its halves encode one seam that no subset can describe; a
+    time bound is a filter, and one side of a filter still narrows.
+    Silently ignoring a lone bound would read the operator's "show me
+    everything since Tuesday" as "show me everything".
+
+    A named range ("1h", "7d", ...) resolves to a ``timedelta`` that
     :func:`_build_where` evaluates against the database clock -- see its
-    docstring for why this is not resolved to an absolute bound here.
+    docstring for why this is not resolved to an absolute bound here. An
+    explicit absolute bound (either side) wins over a named range, the
+    precedence the pair always had: the caller's explicit instants are
+    the more specific ask.
     """
-    if time_from is not None and time_to is not None:
+    if time_from is not None or time_to is not None:
         return time_from, time_to, None
     if time_range and time_range in _TIME_RANGE_MAP:
         return None, None, _TIME_RANGE_MAP[time_range]
