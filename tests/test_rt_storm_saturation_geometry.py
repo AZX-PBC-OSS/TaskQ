@@ -181,7 +181,19 @@ async def test_full_fleet_geometry_saturates_without_livelock(pg_dsn: str) -> No
     """
     schema = f"tst_{new_base62()}".lower()
     settings = make_integration_settings(
-        pg_dsn, schema_name=schema, max_concurrency=str(_MAX_CONCURRENCY)
+        pg_dsn,
+        schema_name=schema,
+        max_concurrency=str(_MAX_CONCURRENCY),
+        # The coherent pair, raised for the storm: the heartbeat tick runs
+        # CONCURRENTLY with the saturation's slot jobs and the sweep on one
+        # shared PG container, so its round trips contend; the factory's
+        # 0.1s command budget (glued to the cascade floor by the settings'
+        # own invariant) fires a protocol TimeoutError under exactly that
+        # contention - the same incoherent-pair class the reconcile pin's
+        # budget fixed. The cascade stays satisfied: 4 * (0.5 + 2.0) = 10.0
+        # <= 15.0.
+        heartbeat_command_timeout="2.0",
+        lock_lease="15.0",
     )
     admin = await asyncpg.connect(pg_dsn)
     pools: list[asyncpg.Pool] = []
