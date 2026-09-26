@@ -47,7 +47,7 @@ dependencies = [
     # operator's index; contributors testing against the local tors
     # checkout install it from the source tree instead
     # (`uv pip install ../tors`) — do NOT point this requirement at a path.
-    "tors>=0.10.1",
+    "tors>=0.15.0",
     "typer>=0.27.0,<1",
     "uuid-utils>=1.0.0,<2",
 ]

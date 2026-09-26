@@ -63,9 +63,10 @@ import sys
 import traceback
 from dataclasses import dataclass
 from types import TracebackType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from opentelemetry.trace import StatusCode
+from tors import scrub_secrets
 
 from taskq._json import sanitize_nul_str
 
@@ -367,6 +368,33 @@ _JWT_RE = re.compile(r"\b[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{1
 #: a delimiter miss deletes more, never less). It stops at whitespace,
 #: ``&`` and ``,``/``;`` like the other parameter-value classes.
 #: ``IGNORECASE``: the parameter casing is whatever the signer emitted.
+_SECRET_HEAD_TRIGGERS: Final[tuple[str, ...]] = (
+    # A NECESSARY condition for tors.scrub_secrets to match at all: every
+    # family it models is anchored on a literal head (AWS access keys,
+    # Slack/Stripe tokens, GitHub token heads, the PEM block header), so a
+    # field carrying none of these substrings cannot be changed by the
+    # pass and skips it. Mirrors the per-pattern prefilter discipline the
+    # regex passes below run on. MUST track tors's rule set: the
+    # differential pin in tests/test_tors_scrub_secrets_composition.py
+    # reds if a family's head goes missing from this list.
+    "AKIA",  # AWS access key id
+    "ASIA",  # AWS temporary/assumed-role key id
+    "xoxb",  # Slack bot token
+    "xoxa",  # Slack workspace/app token
+    "xoxp",  # Slack user token
+    "xoxs",  # Slack session token
+    "sk_live_",  # Stripe live secret key
+    "sk_test_",  # Stripe test secret key
+    "pk_live_",  # Stripe live publishable key
+    "ghp_",  # GitHub personal access token
+    "gho_",  # GitHub OAuth token
+    "ghu_",  # GitHub user-to-server token
+    "ghs_",  # GitHub server-to-server token
+    "ghr_",  # GitHub refresh token
+    "github_pat_",  # GitHub fine-grained PAT
+    "-----BEGIN",  # PEM private-key block
+)
+
 _AWS_SIG_RE = re.compile(
     r"((?:[?&]|(?<![A-Za-z0-9_]))(?:x-amz-signature|signature|sig)=)[0-9a-z_%-]+",
     re.IGNORECASE,
@@ -504,6 +532,25 @@ def _scrub_text(text: str) -> str:
         text = _PG_DETAIL_RE.sub("", text)
         text = _PG_DETAIL_ESCAPED_RE.sub("", text)
     lowered = text.lower()
+    if any(trigger in text for trigger in _SECRET_HEAD_TRIGGERS):
+        # The tors secrets pre-pass: the token families TaskQ's own masks
+        # do not model (AWS access keys, Slack/Stripe tokens, GitHub
+        # tokens, PEM private-key blocks), one GIL-released Rust pass,
+        # gated on the heads prefilter - the same necessary-condition
+        # discipline every regex pass below runs - so a clean field pays
+        # a substring scan, not the pass. The heads check runs on the
+        # ORIGINAL text, not the lowered copy: the heads are
+        # case-sensitive grammar literals (AKIA, ghp_, -----BEGIN), and a
+        # lowered check could never arm them. The output's correlation
+        # token (<head>~<12-hex-digest>) carries no secret material and
+        # contains no trigger the passes below can re-match, so the
+        # composition is order-safe. It CANNOT REPLACE the chain, and
+        # does not: the measured differential
+        # (docs/design/tors-adoption-map.md) shows tors has no rule for
+        # the DSN userinfo/password, bearer-JWT, OAuth-name, and
+        # PG-DETAIL shapes - those are why every pass below runs after
+        # it, unchanged.
+        text = scrub_secrets(text)
     if "bearer" in lowered:
         text = _BEARER_TOKEN_RE.sub(r"\1***", text)
         lowered = text.lower()
