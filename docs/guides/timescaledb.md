@@ -291,7 +291,7 @@ chunk interval later at worst, instead of row-exactly.
 | Query | plain p50 | hypertable p50 |
 |---|---:|---:|
 | Live jobs pages/counts (`jobs` is never a hypertable) | ±10% | parity |
-| Archive tab, newest-first page | 52.7 ms | **8.6 ms (6.1×)** |
+| Archive tab, newest-first page | 46.4–52.7 ms plain-side run spread; 8.6 ms hypertable in both runs | **8.6 ms (5.4–6.1×)** |
 
 Chunk pruning serves "recent history" reads from the youngest chunk - the
 dashboard's most common archive read is the hypertable's best case.

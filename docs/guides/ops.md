@@ -42,6 +42,7 @@ Mechanics live in the canonical guides (linked throughout); this page is about *
 10. [The footgun index](#10-the-footgun-index)
 11. [Adoption checklist](#11-adoption-checklist)
 12. [Scaling playbook: from signal to knob](#12-scaling-playbook-from-signal-to-knob)
+13. [TimescaleDB: plain Postgres or hypertables?](#13-timescaledb-plain-postgres-or-hypertables)
 
 ---
 
@@ -1360,6 +1361,138 @@ prevent.
 
 ---
 
+## 13. TimescaleDB: plain Postgres or hypertables?
+
+TaskQ's retention tables (`jobs_archive`, `job_attempts_archive`, `job_events`) are plain
+Postgres by default, and that is the right default for most fleets. On a server with the
+TimescaleDB extension they can convert to hypertables with Timescale-managed retention policies
+and a columnstore on the two archive tables (`TASKQ_TIMESCALEDB_HYPERTABLES=true`, opt-in at the
+`taskq migrate up` deploy step). The conversion mechanics, the DDL, and the retention-interplay
+rules are [timescaledb.md](timescaledb.md)'s subject. This section is the **decision** and the
+**day-2 operations**, built from the repo's own measured A/B runs
+(`benchmarks/timescale_tradeoffs.py` and `benchmarks/timescale_compression.py`, results in
+`benchmarks/results/timescale-*.json`; every number below is read off those artifacts).
+
+### The decision table
+
+| Your situation | Decision | The measured evidence |
+|---|---|---|
+| Archive below ~10,000 rows | **Stay plain.** | 10k is the smallest swept scale, and no measured advantage for the hypertable justifies the machinery there: the archive page is already 3.8× faster, but at that size it is single-digit milliseconds either way. Plain is the simplest machinery and keeps every row-exact deletion guarantee. |
+| Big archive + read-heavy admin surfaces | **Hypertables win clearly.** | The admin archive tab's newest-first page at the 1M-job corpus: **8.6 ms vs 46.4 ms plain (~5.4×)** in the recorded run (the trade-off doc's headline run measured 52.7 ms plain — plain-side run spread; the hypertable side held 8.6 ms). Since the retention-policy floor, the retention **drains run ~4× FASTER than plain**: event TTL 0.05 s vs 0.37 s, archive expiry 0.33 s vs 1.15 s. The columnstore shrinks archive storage **−84 % (6.2×)** on the 400k-row corpus. |
+| Very high throughput fleets | **Mind the prune→archive move — it is a flat ~8× slower on the hypertable.** | Per 100k jobs moved: **4.7 s plain vs 35.8 s hypertable** at the 1M corpus. Scale-invariant above ~100k rows: the drain-total penalty is 7.1× at 100k, 7.7× at 400k, 6.9× at 2M, and the per-batch p50 carries the same ~7.7× at both 400k and 2M. The DELETE half of the move runs on the never-converted `jobs` table in both modes, so the entire penalty is the INSERT half — chunk routing and per-chunk index maintenance — which is inherent to the feature: no setting removes it. |
+| Forensic-grade audit needs | **Read the guarantee gradient first.** | On hypertables, `expire_at` is honored **exactly inside chunk lifetime** (the expiry sweep stays row-exact there), but the aged end is **chunk-dropped silently, watermark-blind**: the policy advances no `pruned_through_id`, so a stale `watch_reclaims` cursor loses events with no gap signal — keep the cursor strictly inside `event_retention_period` (or one chunk interval, whichever is larger). The re-archive fold guard **can lose its witness**: "archived at most once" holds only while the archive chunk lives. And `job_attempts_archive`'s dropped cascade means **parentless attempt rows stay queryable up to one chunk interval** after the parent's chunk drops. Vanilla keeps all four guarantees; hypertables trade them for chunk-drop retention. |
+
+Two write-path facts that do **not** decide the trade, but bound it: enqueue parity holds
+(`enqueue_batch_fast` within ~3 % — `jobs` is plain in both modes), and the hypertable's
+`job_events` insert pays ~6 %. There is no write cliff; the penalty that matters is the
+prune→archive move in the third row.
+
+### The shape of the scale curve: read/write mix decides, not scale
+
+The scale sweep (10k / 100k / 400k / 2M archive rows, fresh identical container pair per scale)
+measured both curves:
+
+- **The read win exists from ~10k rows and decays slowly.** The archive tab's newest-first page
+  is faster on the hypertable at **every** swept scale: 3.8× at 10k, 8.2× at 100k, 7.0× at 400k,
+  3.3× at 2M. It never crosses over — it narrows.
+- **The write penalty saturates at a flat ~7-8× above 100k rows.** The prune→archive drain-total
+  penalty goes 3.8× at 10k → 7.1× → 7.7× → 6.9×, and the per-batch p50 sits at the same ~7.7×
+  at both 400k and 2M. Above ~100k rows the penalty is a constant ratio, not a growing one.
+
+So the decision above ~10k archive rows is **your read/write mix**: deployments whose admin
+surfaces read recent history heavily win on the hypertable at any size; deployments that only
+write the archive and rarely read it pay the flat insert tax for nothing. Live-table reads are
+structurally untouched either way (`jobs` is never converted; the live pages measured at parity).
+One recorded exception to re-check against your own fleet: the all-statuses count read 50.7 ms vs
+13.6 ms on the hypertable engine at 1M — a planner artifact on a table that is plain in both
+modes, so treat a count anomaly there with suspicion, not as an engine cost.
+
+### Planning the enabling deploy
+
+1. **Size the window for the constraint scans and the `migrate_data` copy together.** Both take
+   `ACCESS EXCLUSIVE`: the copy rewrites existing rows into chunks, and before it runs the
+   constraint surgery (the FK drop, the pkey drops, every `ADD CONSTRAINT ... UNIQUE`) each takes
+   `ACCESS EXCLUSIVE` and full-scans its table to validate the uniqueness it asserts. On a big
+   archive those scans are part of the deploy window, not a footnote to it.
+2. **Deploy in a maintenance window when no worker archives.** The pkey drop and the unique add
+   run one per transaction on the deploy connection's autocommit, and the migration advisory lock
+   serializes migrators only — workers keep running through the whole conversion. Between a
+   table's pkey drop and its unique add, that table holds no unique constraint on its id columns;
+   a duplicate insert landing in that window makes every subsequent deploy fail on the unique add
+   until the duplicates are removed by hand. The window is two adjacent statements — tiny and
+   bounded, but not zero.
+3. **Size the post-deploy window for the first policy run.** Every chunk older than the retention
+   interval is drop-eligible the moment the enabling deploy finishes, so the first background
+   policy run drops the whole aged tail in one sweep — potentially gigabytes of IO where vanilla
+   mode expires the same rows gradually.
+4. **Raise the decompression budget before relying on the columnstore.**
+   `timescaledb.max_tuples_decompressed_per_dml_transaction` defaults to 100000, and at that
+   default the archive-expiry sweep hard-errors on compressed chunks with
+   `ConfigurationLimitExceededError` (measured: one 10k-row expiry batch decompressed 356633
+   tuples). The deploy probes the setting and logs
+   `hypertable-decompression-budget-at-default` when it sees the default — raise it (or set `0`
+   = unlimited) server-wide, don't ignore the warning.
+5. **Bounded runs convert anyway.** `migrate up --phase pre`, `--target`, and `--max-steps` all
+   run the full hypertable work and re-register the policies when the flag is on: a run intended
+   to apply one unrelated migration does the conversion too. Don't aim a bounded run at a
+   fleet's schema casually.
+
+### What to watch after enabling
+
+- **The policy background jobs.** `timescaledb_information.jobs` carries one row per registered
+  policy (`proc_name = 'policy_retention'`, plus the archive tables' compression-policy jobs);
+  each row's `config` holds the `drop_after` / `compress_after` interval the last deploy
+  registered. A policy that stops firing shows up as **chunk counts growing without bound on the
+  aged end** — alert on chunk-count growth per hypertable
+  (`timescaledb_catalog.chunk` joined on `hypertable_id`, or the friendlier
+  `timescaledb_information.hypertables` view).
+- **The sweeps' baseline changes shape after the policy-floor fix — read it as health, not
+  breakage.** Above the floor the aged end belongs to the policy (silent, chunk-granular), so the
+  event-TTL and archive-expiry sweeps' aged-end deleted counts fall toward zero and their
+  durations collapse to the floor probe plus an empty-window index scan. "The expiry sweep
+  deletes nothing" is the floor **working** on this mode. The signals that still mean what they
+  meant are the stall families: `taskq_maintenance_leader_sweep_last_success_seconds` (a sweep
+  that stops completing) and `taskq_maintenance_leader_sweep_timeouts_total` (batches aborted by
+  deadlines). Watch those; do not alert on zero aged-end deletes.
+- **The deploy-time decompression warning.** `hypertable-decompression-budget-at-default` in the
+  deploy step's logs is the one configuration trap that fires later, at the first expiry batch on
+  a compressed chunk — fix the GUC when you see it, not after the sweep pages you.
+
+### Turning it back off
+
+The symmetric disable path is landing with this branch: `disable_hypertables` in
+`src/taskq/timescale.py` (present in the working tree; the deploy step itself wires the enable
+side, and the function is not in a tagged release yet — check the branch state before citing it
+in a runbook). The procedure and its semantics:
+
+1. **Flip `TASKQ_TIMESCALEDB_HYPERTABLES=false` first** — the mirror of enable's gate: with the
+   flag still true, a disable run is a zero-statement no-op.
+2. **Run the disable** under the same migration advisory lock context the enabling deploy used.
+   It removes every registered retention and compression policy (refusing to swap tables under a
+   live policy), then per hypertable: clones the vanilla shape from a scratch schema
+   (`{schema}__vanilla`) that the **bundled migrations themselves build** — the restored pkeys,
+   indexes, foreign keys, and defaults are the migrations' own output, never re-typed by hand —
+   stages the rows into a restore heap with count verification at every hand-off, drops the
+   hypertable, moves the migration-built table into place, restores the rows, and restores the
+   vanilla behaviors idempotently: the bare primary keys reject duplicates again, the
+   `job_attempts_archive → jobs_archive` cascade works again, and the event id sequence
+   re-anchors past the restored maximum (forward-only, never backward).
+3. **A crashed run converges on re-run.** The staging schema is dropped on success and left
+   behind by a crash; the next disable cleans it up and finishes. The one honest window is the
+   mirror of enable's: between the hypertable drop and the moved-in table, a crash leaves the
+   table missing — the re-run's restore fails loudly, and the finish-by-hand step is one
+   `ALTER TABLE "{staging}"."{table}" SET SCHEMA "{schema}";`.
+
+Roll-forward semantics hold on both paths: the flag-off deploy issues zero statements and a
+previously converted schema keeps its chunk retention at the last-registered intervals until a
+disable run actually executes — nothing between the flip and the disable degrades a live fleet.
+
+See [timescaledb.md](timescaledb.md) for the conversion DDL, the retention-interplay rules, and
+the test coverage pinning all of it; [configuration.md](configuration.md#archive-retention-and-expiry-schedule)
+for the retention settings the chunk intervals and policies derive from.
+
+---
+
 ## Related documentation
 
 - [retries.md](retries.md): retry policies, `start_to_close` vs `schedule_to_close`, classifier hooks
@@ -1371,4 +1504,5 @@ prevent.
 - [managed-identities.md](managed-identities.md): credential providers, BYO connections, token rotation
 - [deployment.md](deployment.md): production checklist, Kubernetes/systemd/Compose, scaling
 - [observability.md](observability.md): OTel setup, metrics reference, error reporting
+- [timescaledb.md](timescaledb.md): the hypertable opt-in, conversion mechanics, measured trade-offs
 - [troubleshooting.md](troubleshooting.md): symptom-indexed diagnosis for everything above going wrong
