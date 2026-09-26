@@ -119,6 +119,13 @@ _LEADER_LEASE = 4.0
 _CORPSE_SLOT_BOUND = 45.0
 _SWEEP_BOUND = _LEADER_LEASE + _SWEEP_INTERVAL + _POLL_FLOOR
 
+#: The corpse-selection hang guard: one slot turnover (the capped body's
+#: 30s sleep + the claim poll) plus the co-tenancy stretch. This bounds
+#: the WAIT for a survivor to re-acquire cap capacity - a hang guard in
+#: the dd4572ff doctrine, not a bet on the race firing; only a fleet
+#: that NEVER re-acquires (the genuine capacity-leak defect) reds here.
+_CORPSE_PREMISE_BOUND = 45.0
+
 
 # ── Fixtures and fleet plumbing ──────────────────────────────────────────
 
@@ -814,24 +821,41 @@ async def test_rolling_release_cap_churn_releases_departing_capacity_within_boun
 
         # ── the capacity-leak construct: SIGKILL a pod mid-job ────────
         # The churn re-spread the backlog after the graceful departure;
-        # wait until one of the surviving pods live-holds cap capacity
-        # again, so the kill provably strands a COUNTED slot (the leak
-        # construct's premise), not an idle pod.
-        victim2 = next(name for name in _PODS[:4] if name not in drained)
-        corpse = ids[victim2]  # captured before the churn: the drained pod's row is gone by now
-        deadline = time.monotonic() + 45.0
+        # the corpse is selected from OBSERVED slot holders - the mirror
+        # of the graceful half's own selection above: wait until ANY
+        # surviving pod live-holds cap capacity again, then make THAT
+        # pod the corpse. Pinning a victim by name made the premise a
+        # claim-race coin flip (three survivors race for the freed
+        # slots; the named one can lose every turnover of a 30s body
+        # cycle within any fixed window) and the pin red as "nothing to
+        # strand" with the product healthy. The wait's budget is a hang
+        # guard only, derived from the slot-turnover terms (the 30s
+        # body sleep + the claim poll, one turnover plus stretch): if
+        # NO survivor ever re-acquires, that is the genuine
+        # capacity-leak defect this pin exists to catch.
+        corpse_deadline = time.monotonic() + _CORPSE_PREMISE_BOUND
+        corpse = None
         held = 0
-        while time.monotonic() < deadline:
-            held = await conn.fetchval(
-                f'SELECT count(*)::int FROM "{schema}".reservation_slots '
-                "WHERE held_by_worker_id = $1::uuid AND job_id IS NOT NULL "
-                "AND lease_expires_at >= statement_timestamp()",
-                corpse,
+        while time.monotonic() < corpse_deadline:
+            holder_row = await conn.fetchrow(
+                f"SELECT locked_by_worker::text AS wid, count(*)::int AS n "
+                f'FROM "{schema}".reservation_slots r JOIN "{schema}".jobs j ON j.id = r.job_id '
+                "WHERE r.held_by_worker_id <> $1::uuid AND r.job_id IS NOT NULL "
+                "AND r.lease_expires_at >= statement_timestamp() "
+                "AND j.status = 'running' AND j.queue = 'roll_capped' "
+                "GROUP BY 1 ORDER BY 2 DESC LIMIT 1",
+                ids[victim],
             )
-            if held >= 1:
+            assert holder_row is not None
+            if holder_row["wid"] is not None:
+                corpse = holder_row["wid"]
+                held = holder_row["n"]
                 break
             await asyncio.sleep(0.2)
-        assert held >= 1, "no survivor ever re-acquired cap capacity - nothing to strand"
+        assert corpse is not None and held >= 1, (
+            "no survivor ever re-acquired cap capacity - nothing to strand"
+        )
+        victim2 = next(name for name, wid in ids.items() if wid == corpse and name not in drained)
         fleet[victim2].proc.kill()
         await asyncio.to_thread(fleet[victim2].proc.wait, 30)
         readmit_secs, swept_secs = await _wait_corpse_slots_freed(conn, schema, corpse)

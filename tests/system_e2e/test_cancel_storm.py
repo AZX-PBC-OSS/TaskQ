@@ -45,7 +45,18 @@ if TYPE_CHECKING:
 pytestmark = [pytest.mark.integration, pytest.mark.system]
 
 _TAG = "sys-s4"
-_STORM_SECS = 8.0
+# The storm soaks until the vacuousness premises are OBSERVED in the
+# ledger (a retry fired, a cancel honoured, the archiver moved a row),
+# not for a fixed clock. The deadline derives from the scenario's own
+# retry math: fail_until_attempt=2 needs one full deferral -> re-claim
+# cycle (the flaky actor's 1s deferral floor judged on the DB clock +
+# the worker's 50ms claim poll), taken twice for headroom, times a 20x
+# co-tenancy stretch (the stall band these runners produce between a
+# seed and its observation), plus the original 8s soak as the floor.
+# It bounds FAILURE only - a premise that never lands is exactly what
+# the assertions after the storm red - and the conservation invariants
+# hold for any duration the storm runs.
+_STORM_DEADLINE_SECS = 60.0
 
 
 @pytest.mark.timeout(300)
@@ -149,7 +160,47 @@ async def test_cancel_storm_racing_retries_racing_archive_prune_conserves(
 
         storm = [asyncio.create_task(canceller()), asyncio.create_task(retrier())]
         prune_task = asyncio.create_task(archiver())
-        await asyncio.sleep(_STORM_SECS)
+        # The premise poll owns ITS OWN connection: the ledger connection
+        # is the canceller task's while the storm runs (concurrent tasks
+        # must never share an asyncpg connection - the retrier's and the
+        # archiver's comments up top are this module's own rule).
+        pconn = await asyncpg.connect(pg_dsn)
+        try:
+            async with asyncio.timeout(_STORM_DEADLINE_SECS):
+                while True:
+                    # The vacuousness premises, read from the ledger the
+                    # assertions below re-read: the race is provably fired in
+                    # every direction before the storm stops.
+                    premises = await pconn.fetchrow(
+                        "SELECT ("
+                        f'SELECT max(attempt)::int FROM "{schema}".jobs '
+                        "WHERE tags @> ARRAY[$1::text]) AS max_live_attempt, ("
+                        f'SELECT max(attempt)::int FROM "{schema}".jobs_archive '
+                        "WHERE tags @> ARRAY[$1::text]) AS max_archived_attempt, ("
+                        f'SELECT count(*)::int FROM "{schema}".jobs '
+                        "WHERE tags @> ARRAY[$1::text] AND status = 'cancelled'"
+                        ") + ("
+                        f'SELECT count(*)::int FROM "{schema}".jobs_archive '
+                        "WHERE tags @> ARRAY[$1::text] AND status = 'cancelled'"
+                        ") AS cancelled, ("
+                        f'SELECT count(*)::int FROM "{schema}".jobs_archive '
+                        "WHERE tags @> ARRAY[$1::text]) AS archived",
+                        _TAG,
+                    )
+                    assert premises is not None
+                    if (
+                        max(
+                            premises["max_live_attempt"] or 0,
+                            premises["max_archived_attempt"] or 0,
+                        )
+                        >= 2
+                        and premises["cancelled"] >= 1
+                        and premises["archived"] > 0
+                    ):
+                        break
+                    await asyncio.sleep(0.25)
+        finally:
+            await pconn.close()
         stop.set()
         await prune_terminal_jobs(
             conn,
