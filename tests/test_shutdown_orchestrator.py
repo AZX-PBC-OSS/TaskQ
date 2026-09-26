@@ -696,7 +696,344 @@ async def test_releasing_failure_isolation(monkeypatch: pytest.MonkeyPatch) -> N
     assert backend.mark_abandoned.call_count == 0
 
 
-# ── Empty active_jobs ────────────────────────────────────────────
+# ── RELEASING: the noop fence routes to the abandon ladder ───────
+
+
+async def test_releasing_noop_abandons_operator_cancelled_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``mark_interrupted`` noop must ABANDON the row, never release it.
+
+    The fence declines the release for exactly one class of row: one that
+    stopped being this worker's to hand back between FORCING and RELEASING
+    - an operator cancel landed on it (the row now carries
+    ``cancel_requested_at``, the pre-rename phase-2 shape the abandon's
+    own guard decides on), or its own consumer terminalised it. The two
+    regressions this pins against:
+
+    - routing the noop through the release arm (the ``else``): an
+      operator-cancelled job is freed back to PENDING, resurrecting the
+      exact execution the operator asked to kill;
+    - propagating the noop as an error: the release loop dies mid-phase
+      and every job registered after this one is never handed back.
+
+    The observable contract: ``mark_abandoned`` is awaited ONCE with the
+    job id (the ladder's terminal write, whose phase-2/NULL-lease guard
+    is the arbiter), and the RELEASING summary reports the row as
+    ``abandoned`` (with ``noop`` and ``released``), the number an
+    operator's cancel audit reconciles against.
+    """
+    import taskq.worker.shutdown as shutdown_mod
+
+    job = _make_fake_active_job(job_id=UUID("11111111-1111-1111-1111-111111111111"))
+    registry = FakeActiveJobRegistry([job])
+    settings = _worker_settings(cancellation_grace=0.5, cleanup_grace=0.3)
+    deps = _make_deps(registry=registry, settings=settings)
+
+    backend = AsyncMock(spec=Backend)
+    backend.write_cancel_escalation = AsyncMock(return_value=False)
+    # The fence declines: the row is no longer this worker's to release.
+    backend.mark_interrupted = AsyncMock(return_value="noop")
+    backend.mark_abandoned = AsyncMock(return_value=True)
+
+    mock_drain = AsyncMock(return_value=0)
+    monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", mock_drain)
+
+    clock = FakeClock()
+    fake_loop = Mock()
+    _patch_clock(monkeypatch, clock, fake_loop)
+
+    shut_event = asyncio.Event()
+
+    with structlog.testing.capture_logs() as captured:
+        result = await orchestrate_shutdown(
+            deps,
+            deps.settings,
+            new_uuid(),
+            shut_event,
+            None,
+            backend=backend,
+        )
+
+    assert result == 0
+    # The abandon, not a release: exactly one terminal write for the job
+    # the fence declined, carrying the job id the guard decides on.
+    backend.mark_abandoned.assert_awaited_once_with(job.job_id)
+    backend.mark_interrupted.assert_awaited_once()
+    summaries = [
+        e
+        for e in captured
+        if e.get("event") == "shutdown-phase" and e.get("phase") == "RELEASING" and "abandoned" in e
+    ]
+    assert len(summaries) == 1, f"expected one RELEASING summary, got {summaries!r}"
+    assert summaries[0]["abandoned"] == 1, (
+        "the noop row must land in the abandon tally - reporting it as "
+        "released frees an operator-cancelled job back to pending"
+    )
+    assert summaries[0]["released"] == 0
+    assert summaries[0]["noop"] == 1
+
+
+async def test_releasing_noop_abandon_pg_failure_is_swallowed_and_logged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing abandon write is contained: WARN + the loop survives.
+
+    The abandon is a best-effort terminal write on a row whose fate is
+    already decided - a PG failure of it must neither crash the release
+    loop (stranding every later job's hand-back behind one dead write)
+    nor retry (the watchdog's deadline owns the budget; see the release
+    arm's no-retry doctrine). The row's recovery is the lease-expiry
+    sweep, and the `abandon-pg-write-failed` WARN is the audit trail.
+
+    The loop-survival half is pinned with a second noop job whose abandon
+    LANDS after the first job's failed: a regression that lets the
+    RuntimeError escape never reaches it, so its terminal write and the
+    summary's ``abandoned`` tally are the discriminator.
+    """
+    import taskq.worker.shutdown as shutdown_mod
+
+    job1 = _make_fake_active_job(job_id=UUID("11111111-1111-1111-1111-111111111111"))
+    job2 = _make_fake_active_job(job_id=UUID("22222222-2222-2222-2222-222222222222"))
+    registry = FakeActiveJobRegistry([job1, job2])
+    settings = _worker_settings(cancellation_grace=0.5, cleanup_grace=0.3)
+    deps = _make_deps(registry=registry, settings=settings)
+
+    backend = AsyncMock(spec=Backend)
+    backend.write_cancel_escalation = AsyncMock(return_value=False)
+
+    async def _interrupted_noop(job_id: JobId, *args: object, **kwargs: object) -> str:
+        return "noop"
+
+    backend.mark_interrupted = AsyncMock(side_effect=_interrupted_noop)
+
+    async def _abandon(job_id: JobId, *args: object, **kwargs: object) -> bool:
+        if job_id == job1.job_id:
+            raise RuntimeError("abandon write lost")
+        return True
+
+    backend.mark_abandoned = AsyncMock(side_effect=_abandon)
+
+    mock_drain = AsyncMock(return_value=0)
+    monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", mock_drain)
+
+    clock = FakeClock()
+    fake_loop = Mock()
+    _patch_clock(monkeypatch, clock, fake_loop)
+
+    shut_event = asyncio.Event()
+
+    with structlog.testing.capture_logs() as captured:
+        result = await orchestrate_shutdown(
+            deps,
+            deps.settings,
+            new_uuid(),
+            shut_event,
+            None,
+            backend=backend,
+        )
+
+    assert result == 0, "a failed abandon write must not crash the release loop"
+    assert backend.mark_abandoned.await_count == 2, (
+        "the loop must reach the SECOND job's abandon - a regression that "
+        "propagates the first job's PG failure strands every later hand-back"
+    )
+    failures = [e for e in captured if e.get("event") == "abandon-pg-write-failed"]
+    assert len(failures) == 1, f"expected one abandon-pg-write-failed WARN, got {failures!r}"
+    assert failures[0]["job_id"] == str(job1.job_id)
+    assert "abandon write lost" in failures[0]["error"]
+    summaries = [
+        e
+        for e in captured
+        if e.get("event") == "shutdown-phase" and e.get("phase") == "RELEASING" and "abandoned" in e
+    ]
+    assert summaries[0]["abandoned"] == 1, (
+        "only the landing abandon is tallied - counting the failed one "
+        "reports a hand-back that never happened"
+    )
+
+
+async def test_releasing_routes_operator_cancel_and_cancellederror_arms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The RELEASING arm map, pinned per row: abandon, noop-abandon,
+    release, and the two CancelledError swallows.
+
+    - An OPERATOR-origin entry belongs to the cancel ladder, never to a
+      release: ``mark_abandoned`` fires and ``mark_interrupted`` is never
+      called for it - a release would hand a cancel-carrying row back to
+      the fleet as PENDING (the operator asked for a terminal).
+    - An OPERATOR entry whose abandon is interrupted (a CancelledError
+      escaping the shield while the orchestrator itself is being torn
+      down) is swallowed SILENTLY: no abandon-pg-write-failed WARN - that
+      event means a PG failure, and a cancellation is not one.
+    - A SHUTDOWN-origin entry whose ``mark_interrupted`` itself raises
+      CancelledError skips straight to the next job: no abandon (the
+      fence never answered, so the row's origin is unread), no release
+      tally, and the loop must keep walking.
+    """
+    import taskq.worker.shutdown as shutdown_mod
+
+    job_operator = _make_fake_active_job(job_id=UUID("11111111-1111-1111-1111-111111111111"))
+    job_operator.cancel_origin = CancelOrigin.OPERATOR
+    job_noop = _make_fake_active_job(job_id=UUID("22222222-2222-2222-2222-222222222222"))
+    job_released = _make_fake_active_job(job_id=UUID("33333333-3333-3333-3333-333333333333"))
+    job_abandon_cancelled = _make_fake_active_job(
+        job_id=UUID("44444444-4444-4444-4444-444444444444")
+    )
+    job_abandon_cancelled.cancel_origin = CancelOrigin.OPERATOR
+    job_interrupt_cancelled = _make_fake_active_job(
+        job_id=UUID("55555555-5555-5555-5555-555555555555")
+    )
+    registry = FakeActiveJobRegistry(
+        [job_operator, job_noop, job_released, job_abandon_cancelled, job_interrupt_cancelled]
+    )
+    settings = _worker_settings(cancellation_grace=0.5, cleanup_grace=0.3)
+    deps = _make_deps(registry=registry, settings=settings)
+
+    backend = AsyncMock(spec=Backend)
+    backend.write_cancel_escalation = AsyncMock(return_value=False)
+
+    async def _interrupt(job_id: JobId, *args: object, **kwargs: object) -> str:
+        if job_id == job_noop.job_id:
+            return "noop"
+        if job_id == job_interrupt_cancelled.job_id:
+            raise asyncio.CancelledError()
+        return "scheduled"
+
+    backend.mark_interrupted = AsyncMock(side_effect=_interrupt)
+
+    async def _abandon(job_id: JobId, *args: object, **kwargs: object) -> bool:
+        if job_id == job_abandon_cancelled.job_id:
+            raise asyncio.CancelledError()
+        return True
+
+    backend.mark_abandoned = AsyncMock(side_effect=_abandon)
+
+    mock_drain = AsyncMock(return_value=0)
+    monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", mock_drain)
+
+    clock = FakeClock()
+    fake_loop = Mock()
+    _patch_clock(monkeypatch, clock, fake_loop)
+
+    shut_event = asyncio.Event()
+
+    with structlog.testing.capture_logs() as captured:
+        result = await orchestrate_shutdown(
+            deps,
+            deps.settings,
+            new_uuid(),
+            shut_event,
+            None,
+            backend=backend,
+        )
+
+    assert result == 0
+    # The operator ladder's terminal fired for BOTH operator rows (the
+    # plain one and the interrupted one); the noop row routed to it too.
+    assert backend.mark_abandoned.await_count == 3
+    # mark_interrupted ran for the noop, the released, and the
+    # CancelledError rows - NEVER for the operator row (the release
+    # would pend an operator-cancelled job).
+    assert backend.mark_interrupted.await_count == 3
+    interrupted_ids = {call.args[0] for call in backend.mark_interrupted.await_args_list}
+    assert job_operator.job_id not in interrupted_ids
+    # No PG-failure WARN anywhere: both CancelledError arms swallow
+    # silently, a cancellation is not a PG failure.
+    assert not [e for e in captured if e.get("event") == "abandon-pg-write-failed"], (
+        "the abandon CancelledError arm must stay silent - the WARN is "
+        "reserved for PG failures an operator can act on"
+    )
+    assert not [e for e in captured if e.get("event") == "release-pg-write-failed"]
+    summaries = [
+        e
+        for e in captured
+        if e.get("event") == "shutdown-phase" and e.get("phase") == "RELEASING" and "abandoned" in e
+    ]
+    assert summaries[0]["abandoned"] == 2, (
+        "only the two landing abandons tally - the interrupted abandon "
+        "must not report a hand-back that never happened"
+    )
+    assert summaries[0]["released"] == 1
+    assert summaries[0]["noop"] == 1
+
+
+async def test_forcing_escalation_probe_stamps_and_warns_by_row_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FORCING's probe is the origin arbiter: restamp a shutdown-cancelled
+    row whose escalation MATCHED, warn on an operator row it did not.
+
+    - ``escalated and origin == SHUTDOWN``: the row carried an operator
+      cancel the probe just escalated to phase 2 - the entry is the
+      cancel ladder's now, and the origin stamp must flip to OPERATOR
+      (the consumer's terminal routing keys on it, not on the exception
+      type). Missing the restamp routes a killed attempt's terminal to
+      the interruption arm instead of the operator's.
+    - ``not escalated and origin == OPERATOR``: this pod KNOWS the row is
+      operator-cancelled (the cancel poll stamped it) but the probe
+      matched nothing - the row-side cancel bookkeeping vanished between
+      the poll and the probe. Silent passage would let the RELEASING
+      operator arm fire an abandon against a row no longer carrying the
+      cancel; the WARN is the triage record for that window.
+    """
+    import taskq.worker.shutdown as shutdown_mod
+
+    job_matched = _make_fake_active_job(job_id=UUID("11111111-1111-1111-1111-111111111111"))
+    job_unmatched = _make_fake_active_job(job_id=UUID("22222222-2222-2222-2222-222222222222"))
+    job_unmatched.cancel_origin = CancelOrigin.OPERATOR
+    registry = FakeActiveJobRegistry([job_matched, job_unmatched])
+    settings = _worker_settings(cancellation_grace=0.5, cleanup_grace=0.3)
+    deps = _make_deps(registry=registry, settings=settings)
+
+    backend = AsyncMock(spec=Backend)
+    # The probe matches only the row still carrying a shutdown-origin
+    # escalation target - the operator row's bookkeeping has vanished.
+    backend.write_cancel_escalation = AsyncMock(side_effect=[True, False])
+    backend.mark_interrupted = AsyncMock(return_value="scheduled")
+    backend.mark_abandoned = AsyncMock(return_value=True)
+
+    mock_drain = AsyncMock(return_value=0)
+    monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", mock_drain)
+
+    clock = FakeClock()
+    fake_loop = Mock()
+    _patch_clock(monkeypatch, clock, fake_loop)
+
+    shut_event = asyncio.Event()
+    worker_id = new_uuid()
+
+    with structlog.testing.capture_logs() as captured:
+        await orchestrate_shutdown(
+            deps,
+            deps.settings,
+            worker_id,
+            shut_event,
+            None,
+            backend=backend,
+        )
+
+    matched_warnings = [
+        e for e in captured if e.get("event") == "force-cancel-escalation-unmatched"
+    ]
+    assert len(matched_warnings) == 1, (
+        f"expected one unmatched WARN for the operator row, got {matched_warnings!r}"
+    )
+    assert matched_warnings[0]["job_id"] == str(job_unmatched.job_id)
+    assert matched_warnings[0]["worker_id"] == str(worker_id)
+    observed = [
+        e for e in captured if e.get("event") == "force-cancel-escalation-observed-operator-cancel"
+    ]
+    assert len(observed) == 1 and observed[0]["job_id"] == str(job_matched.job_id)
+    assert job_matched.cancel_origin is CancelOrigin.OPERATOR, (
+        "a matched escalation on a shutdown-origin row must restamp the "
+        "entry OPERATOR - the consumer's terminal routing keys on the "
+        "origin, not on the CancelledError type"
+    )
+
+
+# ── Empty active jobs ────────────────────────────────────────────
 
 
 async def test_empty_active_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
