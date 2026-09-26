@@ -13,6 +13,7 @@ Test seam - _local_queue_seed injects jobs into consumer stubs.
 import asyncio
 import contextlib
 import json
+import signal
 from collections.abc import Callable, Generator
 from contextlib import AsyncExitStack, ExitStack, contextmanager
 from typing import Any, cast
@@ -1250,3 +1251,35 @@ async def test_without_until_idle_no_drain_monitor(settings: WorkerSettings) -> 
     with _use_test_harness(settings, set_shutdown=True):
         result = await _main(settings)
     assert result == 0
+
+
+def test_worker_main_leaves_the_host_signal_disposition_alone(
+    settings: WorkerSettings,
+) -> None:
+    """In-process ``worker_main`` must not mutate the host's SIGTERM
+    disposition.
+
+    Why this pin exists: ``worker_main`` used to end with
+    ``signal.signal(SIGTERM, SIG_IGN)`` - correct for the entrypoints that
+    ``sys.exit`` immediately, poison for every other caller. An ignored
+    disposition is inherited by every process the host forks from then on
+    (exec preserves "ignored", unlike handlers), and the proven failure is
+    exact: a test spawning a sleeping child after an in-process
+    ``worker_main`` saw that child ignore the helper's SIGTERM, eat the
+    full 10s escalation budget, and die to SIGKILL - ``rc == -9`` - on
+    every CI lane whose xdist worker had already run one of these
+    in-process calls. Reproduced deterministically (the child itself
+    reported ``SIG_IGN`` and the 10.0s ladder) before the fix; the drain's
+    verdict guard now lives at the entrypoints (the taskq worker command,
+    the e2e and system-e2e worker entries), where the next act is the
+    process's own death, and this pin holds the library honest.
+    """
+    disposition_before = signal.getsignal(signal.SIGTERM)
+
+    async def _fake_main(*args: object, **kwargs: object) -> int:
+        return 0
+
+    with patch("taskq.worker._bootstrap._main", side_effect=_fake_main):
+        assert worker_main(settings, cron_registry=[]) == 0
+
+    assert signal.getsignal(signal.SIGTERM) is disposition_before

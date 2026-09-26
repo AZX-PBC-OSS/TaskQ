@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import signal
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
@@ -113,6 +114,13 @@ def main() -> None:
             actor_registry=ACTORS,
             connections=build_connections(settings, provider),
         )
+        # The drain's verdict guard: the loop is closed, so a redundant
+        # stop-signal in the teardown window must not erase the exit
+        # status with -15. Lives at the entrypoint (worker_main no longer
+        # sets it - an ignored disposition leaks to every process the
+        # host forks after).
+        with contextlib.suppress(ValueError):  # Why: not the main thread -> no window to guard.
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
     elif mode == "serve":
         try:
             import importlib

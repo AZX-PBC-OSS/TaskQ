@@ -544,6 +544,22 @@ def worker(
         # itself (see exceptions.py), don't print it a second time here.
         typer.echo(str(e), err=True)
         raise typer.Exit(code=1) from None
+    # The loop is closed (asyncio restored SIG_DFL on close), but the
+    # process is not gone yet: the exit path, interpreter teardown, atexit
+    # hooks and thread joins all still run, and a loaded host stretches
+    # every one of them. A signal in that window kills the process with
+    # -15 and ERASES the drain's verdict (the observed fleet-wide-storm
+    # shape - the orchestrator's redundant stop-signal landing after one
+    # pod had already drained cleanly). The escalation contract only has
+    # meaning while the loop lives; once it is closed there is nothing
+    # left to escalate, so SIGTERM is ignored and the exit status stays
+    # the drain's. This guard lives HERE - the process is genuinely about
+    # to die - and not in ``worker_main``: an ignored disposition set in a
+    # library function is inherited by every process that host forks
+    # afterwards (the proven -9 leak), while an entrypoint's next act is
+    # its own exit.
+    with contextlib.suppress(ValueError):  # Why: not the main thread -> no window to guard.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
     raise typer.Exit(code=code)
 
 

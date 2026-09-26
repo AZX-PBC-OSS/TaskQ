@@ -19,7 +19,6 @@ import asyncio
 import contextlib
 import importlib
 import math
-import signal
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any, cast
@@ -2890,21 +2889,18 @@ def worker_main(
                 idle_max_runtime=idle_max_runtime,
             )
         )
-    # The Runner is closed, and closing the loop removed the SIGTERM handler
-    # (asyncio restores SIG_DFL on close) - but the process is not gone yet:
-    # returning the code, interpreter teardown, atexit hooks and thread joins
-    # all still run, and a loaded host stretches every one of them. A signal
-    # in that window kills the process with -15 and ERASES the drain's
-    # verdict: the pod's exit status stops saying what the drain said (the
-    # observed fleet-wide-storm shape - the orchestrator's redundant
-    # stop-signal landing after one pod had already drained cleanly). The
-    # escalation contract only has meaning while the loop lives; once it is
-    # closed there is nothing left to escalate, so SIGTERM is ignored and the
-    # exit status stays the drain's. SIGINT is left alone: its default
-    # disposition is KeyboardInterrupt, a live interactive contract, not a
-    # silent status eraser.
-    with contextlib.suppress(ValueError):  # Why: not the main thread -> no window to guard.
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    # The drain's verdict is guarded by the ENTRYPOINTS (the taskq worker
+    # command and the e2e/system-e2e worker entries), not here. This used to
+    # end with ``signal.signal(SIGTERM, SIG_IGN)`` - correct for a process
+    # about to ``sys.exit``, poison for any other caller: an ignored
+    # disposition is inherited by every process this host forks from then
+    # on (proven: a child spawned after an in-process ``worker_main``
+    # ignored SIGTERM and died to SIGKILL, rc -9). A library function
+    # returns control to its caller and must leave the host's signal state
+    # exactly as it found it; the verdict guard belongs where the process
+    # is genuinely about to die. SIGINT is left alone everywhere: its
+    # default disposition is KeyboardInterrupt, a live interactive
+    # contract, not a silent status eraser.
     return code
 
 
