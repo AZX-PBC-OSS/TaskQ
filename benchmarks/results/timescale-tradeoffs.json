@@ -1,0 +1,363 @@
+{
+  "schema": 1,
+  "recorded_at": "2026-09-26T19:39:37.580754+00:00",
+  "meta": {
+    "image": "timescale/timescaledb:2.30.1-pg18",
+    "engines": {
+      "plain": "tq-tsbench-plain:55441 (no hypertables)",
+      "ts": "tq-tsbench-ts:55442 (enable_hypertables + retention policies)"
+    },
+    "hypertable_conversion": {
+      "converted": [
+        "job_events",
+        "jobs_archive",
+        "job_attempts_archive"
+      ],
+      "retention_policies": [
+        "jobs_archive:365 days",
+        "job_attempts_archive:365 days",
+        "job_events:7 days"
+      ],
+      "compression_policies": [
+        "jobs_archive:30 days",
+        "job_attempts_archive:30 days"
+      ],
+      "decompression_guc_warning": "timescaledb.max_tuples_decompressed_per_dml_transaction is 100000 (at or under the 100000 default): the archive-expiry sweep will hard-error on compressed chunks with ConfigurationLimitExceededError once the columnstore policy ages chunks in. Raise the budget server-wide before relying on compression, e.g. ALTER SYSTEM SET timescaledb.max_tuples_decompressed_per_dml_transaction = '0' (unlimited) and reload, or set it on the workers' sessions; see docs/guides/timescaledb.md."
+    },
+    "seed": {
+      "jobs": 1000000,
+      "jobs_archive": 400000,
+      "jobs_archive_expired_cohort": 100000,
+      "job_events": 400000,
+      "job_attempts": 100000,
+      "prune_cohort": 100000,
+      "job_events_aged": 100000,
+      "retention_args": {
+        "prune_succeeded": "30 days, 0:00:00",
+        "archive": "365 days, 0:00:00",
+        "events": "7 days, 0:00:00"
+      },
+      "batch_size": 10000,
+      "sweep_statement_timeout_ms": 120000,
+      "note": "both engines byte-identical (fixed base instant); VACUUM not forced \u2014 ANALYZE only, both engines alike"
+    },
+    "seed_timings": {
+      "plain": {
+        "jobs_s": 13.785432234057225,
+        "aux_s": 10.035560113959946,
+        "analyze_s": 1.716638847021386
+      },
+      "ts": {
+        "jobs_s": 12.702749248011969,
+        "aux_s": 11.063268871977925,
+        "analyze_s": 4.915480430936441
+      }
+    },
+    "seed_assert": {
+      "counts": {
+        "plain": {
+          "jobs": 1000000,
+          "job_attempts": 100000,
+          "jobs_archive": 400000,
+          "job_events": 400000,
+          "job_attempts_archive": 0
+        },
+        "ts": {
+          "jobs": 1000000,
+          "job_attempts": 100000,
+          "jobs_archive": 400000,
+          "job_events": 400000,
+          "job_attempts_archive": 0
+        }
+      },
+      "sample_checksum": "d652e054552e7899834e68f9c2dd268f",
+      "hypertables": [
+        "job_attempts_archive",
+        "job_events",
+        "jobs_archive"
+      ],
+      "chunk_counts": {
+        "job_events": 15,
+        "jobs_archive": 14
+      }
+    },
+    "wall_s": 129.27736527996603
+  },
+  "dashboard": [
+    {
+      "name": "jobs_unfiltered_recent_p51",
+      "plain_p50_ms": 110.28872802853584,
+      "plain_p95_ms": 115.46414799522609,
+      "ts_p50_ms": 107.8132219845429,
+      "ts_p95_ms": 118.49411192815751,
+      "plain_faster_pct": -2.29610617179018,
+      "rounds": 11,
+      "rows_identical": true,
+      "first_round_rows": 51
+    },
+    {
+      "name": "jobs_status_failed_p51",
+      "plain_p50_ms": 50.468349014408886,
+      "plain_p95_ms": 53.679691976867616,
+      "ts_p50_ms": 48.29124198295176,
+      "ts_p95_ms": 50.713937962427735,
+      "plain_faster_pct": -4.508285440713473,
+      "rounds": 11,
+      "rows_identical": true,
+      "first_round_rows": 51
+    },
+    {
+      "name": "jobs_tag_priority_p51",
+      "plain_p50_ms": 110.17842206638306,
+      "plain_p95_ms": 114.01482508517802,
+      "ts_p50_ms": 109.8051629960537,
+      "ts_p95_ms": 116.5052279829979,
+      "plain_faster_pct": -0.3399285244381293,
+      "rounds": 11,
+      "rows_identical": true,
+      "first_round_rows": 51
+    },
+    {
+      "name": "jobs_search_actor3_p51",
+      "plain_p50_ms": 166.46975302137434,
+      "plain_p95_ms": 171.256767003797,
+      "ts_p50_ms": 165.7418899703771,
+      "ts_p95_ms": 166.80358804296702,
+      "plain_faster_pct": -0.4391545499615985,
+      "rounds": 11,
+      "rows_identical": true,
+      "first_round_rows": 51
+    },
+    {
+      "name": "jobs_count_all_statuses",
+      "plain_p50_ms": 14.07224906142801,
+      "plain_p95_ms": 16.424403991550207,
+      "ts_p50_ms": 51.28291295841336,
+      "ts_p95_ms": 52.46249202173203,
+      "plain_faster_pct": 72.55957540313757,
+      "rounds": 11,
+      "rows_identical": true,
+      "first_round_rows": 1
+    },
+    {
+      "name": "jobs_count_failed",
+      "plain_p50_ms": 6.047453032806516,
+      "plain_p95_ms": 7.785047055222094,
+      "ts_p50_ms": 6.208654958754778,
+      "ts_p95_ms": 7.9671579878777266,
+      "plain_faster_pct": 2.596406581121932,
+      "rounds": 11,
+      "rows_identical": true,
+      "first_round_rows": 1
+    },
+    {
+      "name": "queues_overview_depth",
+      "plain_p50_ms": 36.22848598752171,
+      "plain_p95_ms": 38.73110096901655,
+      "ts_p50_ms": 35.75779392849654,
+      "ts_p95_ms": 37.548327003605664,
+      "plain_faster_pct": -1.316334167500358,
+      "rounds": 11,
+      "rows_identical": true,
+      "first_round_rows": 4
+    },
+    {
+      "name": "archive_recent_finished_p51",
+      "plain_p50_ms": 45.02864298410714,
+      "plain_p95_ms": 49.10445399582386,
+      "ts_p50_ms": 8.585775969550014,
+      "ts_p95_ms": 17.298059072345495,
+      "plain_faster_pct": -424.4563000921991,
+      "rounds": 11,
+      "rows_identical": true,
+      "first_round_rows": 51
+    }
+  ],
+  "write": {
+    "enqueue_batch_fast": {
+      "plain_p50_ms": 47.65299696009606,
+      "plain_p95_ms": 63.656623009592295,
+      "ts_p50_ms": 49.06868806574494,
+      "ts_p95_ms": 65.42271003127098,
+      "plain_rows_per_s": 20985.039006830688,
+      "ts_rows_per_s": 20379.59520458637,
+      "rounds": 15
+    },
+    "job_events_batch_insert": {
+      "plain_p50_ms": 13.350898982025683,
+      "plain_p95_ms": 14.302371069788933,
+      "ts_p50_ms": 14.14349302649498,
+      "ts_p95_ms": 18.880321993492544,
+      "plain_rows_per_s": 74901.32322522253,
+      "ts_rows_per_s": 70703.89175620915,
+      "rounds": 15
+    }
+  },
+  "retention": {
+    "prune": {
+      "rows_target": 100000,
+      "batch_size": 10000,
+      "moved": {
+        "plain": 100000,
+        "ts": 100000
+      },
+      "per_batch_ms": {
+        "plain": {
+          "p50_ms": 429.9453099956736,
+          "p95_ms": 531.5308279823512,
+          "total_s": 4.542554007144645,
+          "batches": 11
+        },
+        "ts": {
+          "p50_ms": 3533.1205800175667,
+          "p95_ms": 3700.918952934444,
+          "total_s": 35.891542609082535,
+          "batches": 11
+        }
+      },
+      "drain_total_s": {
+        "plain": 4.542554007144645,
+        "ts": 35.891542609082535
+      }
+    },
+    "archive_expiry": {
+      "rows_target": 100000,
+      "batch_size": 10000,
+      "deleted": {
+        "plain": 100000,
+        "ts": 0
+      },
+      "per_batch_ms": {
+        "plain": {
+          "p50_ms": 110.92623299919069,
+          "p95_ms": 131.54669397044927,
+          "total_s": 1.1424579039448872,
+          "batches": 11
+        },
+        "ts": {
+          "p50_ms": 41.446998016908765,
+          "p95_ms": 66.6393080027774,
+          "total_s": 0.3194748191162944,
+          "batches": 11
+        }
+      },
+      "drain_total_s": {
+        "plain": 1.1424579039448872,
+        "ts": 0.3194748191162944
+      }
+    },
+    "event_ttl": {
+      "rows_target": 96000,
+      "batch_size": 10000,
+      "deleted": {
+        "plain": 96000,
+        "ts": 0
+      },
+      "per_batch_ms": {
+        "plain": {
+          "p50_ms": 25.761498021893203,
+          "p95_ms": 59.620997053571045,
+          "total_s": 0.3024273900082335,
+          "batches": 11
+        },
+        "ts": {
+          "p50_ms": 3.075088025070727,
+          "p95_ms": 15.550287091173232,
+          "total_s": 0.04440068802796304,
+          "batches": 11
+        }
+      },
+      "drain_total_s": {
+        "plain": 0.3024273900082335,
+        "ts": 0.04440068802796304
+      }
+    }
+  },
+  "aftermath": {
+    "plain": {
+      "pg_stat_user_tables": {
+        "jobs": {
+          "n_live_tup": 903497,
+          "n_dead_tup": 126202,
+          "last_autovacuum": "2026-09-26 19:38:03.410132+00:00"
+        },
+        "job_attempts": {
+          "n_live_tup": 0,
+          "n_dead_tup": 20000,
+          "last_autovacuum": "2026-09-26 19:39:27.086827+00:00"
+        },
+        "job_events": {
+          "n_live_tup": 304000,
+          "n_dead_tup": 111000,
+          "last_autovacuum": "2026-09-26 19:38:03.568336+00:00"
+        },
+        "jobs_archive": {
+          "n_live_tup": 400000,
+          "n_dead_tup": 100000,
+          "last_autovacuum": "2026-09-26 19:38:07.115703+00:00"
+        },
+        "job_attempts_archive": {
+          "n_live_tup": 100000,
+          "n_dead_tup": 0,
+          "last_autovacuum": "2026-09-26 19:39:27.130631+00:00"
+        }
+      },
+      "total_relation_size": {
+        "job_events": 106463232,
+        "jobs": 768655360,
+        "jobs_archive": 325836800
+      },
+      "engine": "plain"
+    },
+    "ts": {
+      "pg_stat_user_tables": {
+        "jobs": {
+          "n_live_tup": 900976,
+          "n_dead_tup": 128704,
+          "last_autovacuum": "2026-09-26 19:38:36.591693+00:00"
+        },
+        "job_attempts": {
+          "n_live_tup": 0,
+          "n_dead_tup": 20000,
+          "last_autovacuum": "2026-09-26 19:39:27.828485+00:00"
+        },
+        "job_events": {
+          "n_live_tup": 0,
+          "n_dead_tup": 0,
+          "last_autovacuum": "None"
+        },
+        "jobs_archive": {
+          "n_live_tup": 0,
+          "n_dead_tup": 0,
+          "last_autovacuum": "None"
+        },
+        "job_attempts_archive": {
+          "n_live_tup": 0,
+          "n_dead_tup": 0,
+          "last_autovacuum": "None"
+        }
+      },
+      "total_relation_size": {
+        "job_events": 57344,
+        "jobs": 768655360,
+        "jobs_archive": 57344
+      },
+      "engine": "hypertable",
+      "hypertable_size": {
+        "job_attempts_archive": 24240128,
+        "job_events": 123158528,
+        "jobs_archive": 339402752
+      },
+      "chunk_dead_tup": {
+        "job_attempts_archive": 0,
+        "job_events": 15000,
+        "jobs_archive": 0
+      },
+      "chunk_counts": {
+        "job_attempts_archive": 1,
+        "job_events": 15,
+        "jobs_archive": 14
+      }
+    }
+  }
+}

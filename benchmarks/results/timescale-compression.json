@@ -1,0 +1,917 @@
+{
+  "recorded_at": "2026-09-26T21:12:56.268692+00:00",
+  "meta": {
+    "image": "timescale/timescaledb:2.30.1-pg18",
+    "engines": {
+      "row": "tq-tscomp-row:55443 (hypertable, compression policy armed-but-dormant (workers stopped), no chunks aged into the columnstore)",
+      "col": "tq-tscomp-col:55444 (hypertable + columnstore aged in on jobs_archive: segmentby (actor, queue), orderby finished_at DESC; job_attempts_archive: segmentby (job_id), orderby started_at DESC)"
+    },
+    "archive_seed": 400000,
+    "archive_expired_cohort": 100000,
+    "compress_after": "30 days, 0:00:00",
+    "setup": {
+      "row": {
+        "columnstore": false,
+        "converted": [
+          "job_events",
+          "jobs_archive",
+          "job_attempts_archive"
+        ],
+        "compression_policies": [
+          "jobs_archive:30 days",
+          "job_attempts_archive:30 days"
+        ],
+        "decompression_guc_warning": null
+      },
+      "col": {
+        "columnstore": true,
+        "converted": [
+          "job_events",
+          "jobs_archive",
+          "job_attempts_archive"
+        ],
+        "compression_policies": [
+          "jobs_archive:30 days",
+          "job_attempts_archive:30 days"
+        ],
+        "decompression_guc_warning": null,
+        "armed_by": "enable_hypertables",
+        "policy": [
+          "policy_compression"
+        ]
+      }
+    },
+    "note": "the columnstore policy is armed by enable_hypertables itself; background workers are stopped (determinism rule); aging was forced with compress_chunk over show_chunks(older_than 30d) \u2014 the exact set the policy would convert",
+    "wall_s": 29.91977797099389
+  },
+  "storage_before": {
+    "row": {
+      "hypertable_size_bytes": 268984320,
+      "chunks": [
+        {
+          "chunk": "_hyper_2_14_chunk",
+          "is_compressed": false,
+          "range_start": "2025-08-10 00:00:00+00:00",
+          "bytes": 37879808
+        },
+        {
+          "chunk": "_hyper_2_13_chunk",
+          "is_compressed": false,
+          "range_start": "2025-09-09 00:00:00+00:00",
+          "bytes": 33456128
+        },
+        {
+          "chunk": "_hyper_2_12_chunk",
+          "is_compressed": false,
+          "range_start": "2025-10-09 00:00:00+00:00",
+          "bytes": 16809984
+        },
+        {
+          "chunk": "_hyper_2_11_chunk",
+          "is_compressed": false,
+          "range_start": "2025-11-08 00:00:00+00:00",
+          "bytes": 16818176
+        },
+        {
+          "chunk": "_hyper_2_10_chunk",
+          "is_compressed": false,
+          "range_start": "2025-12-08 00:00:00+00:00",
+          "bytes": 16760832
+        },
+        {
+          "chunk": "_hyper_2_9_chunk",
+          "is_compressed": false,
+          "range_start": "2026-01-07 00:00:00+00:00",
+          "bytes": 16875520
+        },
+        {
+          "chunk": "_hyper_2_8_chunk",
+          "is_compressed": false,
+          "range_start": "2026-02-06 00:00:00+00:00",
+          "bytes": 16883712
+        },
+        {
+          "chunk": "_hyper_2_7_chunk",
+          "is_compressed": false,
+          "range_start": "2026-03-08 00:00:00+00:00",
+          "bytes": 16785408
+        },
+        {
+          "chunk": "_hyper_2_6_chunk",
+          "is_compressed": false,
+          "range_start": "2026-04-07 00:00:00+00:00",
+          "bytes": 16850944
+        },
+        {
+          "chunk": "_hyper_2_5_chunk",
+          "is_compressed": false,
+          "range_start": "2026-05-07 00:00:00+00:00",
+          "bytes": 16785408
+        },
+        {
+          "chunk": "_hyper_2_4_chunk",
+          "is_compressed": false,
+          "range_start": "2026-06-06 00:00:00+00:00",
+          "bytes": 16801792
+        },
+        {
+          "chunk": "_hyper_2_3_chunk",
+          "is_compressed": false,
+          "range_start": "2026-07-06 00:00:00+00:00",
+          "bytes": 16891904
+        },
+        {
+          "chunk": "_hyper_2_2_chunk",
+          "is_compressed": false,
+          "range_start": "2026-08-05 00:00:00+00:00",
+          "bytes": 16801792
+        },
+        {
+          "chunk": "_hyper_2_1_chunk",
+          "is_compressed": false,
+          "range_start": "2026-09-04 00:00:00+00:00",
+          "bytes": 12525568
+        }
+      ],
+      "n_chunks": 14,
+      "n_compressed": 0
+    },
+    "col": {
+      "hypertable_size_bytes": 43376640,
+      "chunks": [
+        {
+          "chunk": "_hyper_2_14_chunk",
+          "is_compressed": true,
+          "range_start": "2025-08-10 00:00:00+00:00",
+          "bytes": 57344
+        },
+        {
+          "chunk": "_hyper_2_13_chunk",
+          "is_compressed": true,
+          "range_start": "2025-09-09 00:00:00+00:00",
+          "bytes": 57344
+        },
+        {
+          "chunk": "_hyper_2_12_chunk",
+          "is_compressed": true,
+          "range_start": "2025-10-09 00:00:00+00:00",
+          "bytes": 57344
+        },
+        {
+          "chunk": "_hyper_2_11_chunk",
+          "is_compressed": true,
+          "range_start": "2025-11-08 00:00:00+00:00",
+          "bytes": 57344
+        },
+        {
+          "chunk": "_hyper_2_10_chunk",
+          "is_compressed": true,
+          "range_start": "2025-12-08 00:00:00+00:00",
+          "bytes": 57344
+        },
+        {
+          "chunk": "_hyper_2_9_chunk",
+          "is_compressed": true,
+          "range_start": "2026-01-07 00:00:00+00:00",
+          "bytes": 57344
+        },
+        {
+          "chunk": "_hyper_2_8_chunk",
+          "is_compressed": true,
+          "range_start": "2026-02-06 00:00:00+00:00",
+          "bytes": 57344
+        },
+        {
+          "chunk": "_hyper_2_7_chunk",
+          "is_compressed": true,
+          "range_start": "2026-03-08 00:00:00+00:00",
+          "bytes": 57344
+        },
+        {
+          "chunk": "_hyper_2_6_chunk",
+          "is_compressed": true,
+          "range_start": "2026-04-07 00:00:00+00:00",
+          "bytes": 57344
+        },
+        {
+          "chunk": "_hyper_2_5_chunk",
+          "is_compressed": true,
+          "range_start": "2026-05-07 00:00:00+00:00",
+          "bytes": 57344
+        },
+        {
+          "chunk": "_hyper_2_4_chunk",
+          "is_compressed": true,
+          "range_start": "2026-06-06 00:00:00+00:00",
+          "bytes": 57344
+        },
+        {
+          "chunk": "_hyper_2_3_chunk",
+          "is_compressed": true,
+          "range_start": "2026-07-06 00:00:00+00:00",
+          "bytes": 57344
+        },
+        {
+          "chunk": "_hyper_2_2_chunk",
+          "is_compressed": false,
+          "range_start": "2026-08-05 00:00:00+00:00",
+          "bytes": 16719872
+        },
+        {
+          "chunk": "_hyper_2_1_chunk",
+          "is_compressed": false,
+          "range_start": "2026-09-04 00:00:00+00:00",
+          "bytes": 12451840
+        }
+      ],
+      "n_chunks": 14,
+      "n_compressed": 12
+    }
+  },
+  "storage_after": {
+    "row": {
+      "hypertable_size_bytes": 269066240,
+      "chunks": [
+        {
+          "chunk": "_hyper_2_14_chunk",
+          "is_compressed": false,
+          "range_start": "2025-08-10 00:00:00+00:00",
+          "bytes": 37879808
+        },
+        {
+          "chunk": "_hyper_2_13_chunk",
+          "is_compressed": false,
+          "range_start": "2025-09-09 00:00:00+00:00",
+          "bytes": 33456128
+        },
+        {
+          "chunk": "_hyper_2_12_chunk",
+          "is_compressed": false,
+          "range_start": "2025-10-09 00:00:00+00:00",
+          "bytes": 16809984
+        },
+        {
+          "chunk": "_hyper_2_11_chunk",
+          "is_compressed": false,
+          "range_start": "2025-11-08 00:00:00+00:00",
+          "bytes": 16818176
+        },
+        {
+          "chunk": "_hyper_2_10_chunk",
+          "is_compressed": false,
+          "range_start": "2025-12-08 00:00:00+00:00",
+          "bytes": 16842752
+        },
+        {
+          "chunk": "_hyper_2_9_chunk",
+          "is_compressed": false,
+          "range_start": "2026-01-07 00:00:00+00:00",
+          "bytes": 16875520
+        },
+        {
+          "chunk": "_hyper_2_8_chunk",
+          "is_compressed": false,
+          "range_start": "2026-02-06 00:00:00+00:00",
+          "bytes": 16883712
+        },
+        {
+          "chunk": "_hyper_2_7_chunk",
+          "is_compressed": false,
+          "range_start": "2026-03-08 00:00:00+00:00",
+          "bytes": 16785408
+        },
+        {
+          "chunk": "_hyper_2_6_chunk",
+          "is_compressed": false,
+          "range_start": "2026-04-07 00:00:00+00:00",
+          "bytes": 16850944
+        },
+        {
+          "chunk": "_hyper_2_5_chunk",
+          "is_compressed": false,
+          "range_start": "2026-05-07 00:00:00+00:00",
+          "bytes": 16785408
+        },
+        {
+          "chunk": "_hyper_2_4_chunk",
+          "is_compressed": false,
+          "range_start": "2026-06-06 00:00:00+00:00",
+          "bytes": 16801792
+        },
+        {
+          "chunk": "_hyper_2_3_chunk",
+          "is_compressed": false,
+          "range_start": "2026-07-06 00:00:00+00:00",
+          "bytes": 16891904
+        },
+        {
+          "chunk": "_hyper_2_2_chunk",
+          "is_compressed": false,
+          "range_start": "2026-08-05 00:00:00+00:00",
+          "bytes": 16801792
+        },
+        {
+          "chunk": "_hyper_2_1_chunk",
+          "is_compressed": false,
+          "range_start": "2026-09-04 00:00:00+00:00",
+          "bytes": 12525568
+        }
+      ],
+      "n_chunks": 14,
+      "n_compressed": 0
+    },
+    "col": {
+      "hypertable_size_bytes": 468959232,
+      "chunks": [
+        {
+          "chunk": "_hyper_2_14_chunk",
+          "is_compressed": true,
+          "range_start": "2025-08-10 00:00:00+00:00",
+          "bytes": 66650112
+        },
+        {
+          "chunk": "_hyper_2_13_chunk",
+          "is_compressed": true,
+          "range_start": "2025-09-09 00:00:00+00:00",
+          "bytes": 66437120
+        },
+        {
+          "chunk": "_hyper_2_12_chunk",
+          "is_compressed": true,
+          "range_start": "2025-10-09 00:00:00+00:00",
+          "bytes": 31440896
+        },
+        {
+          "chunk": "_hyper_2_11_chunk",
+          "is_compressed": true,
+          "range_start": "2025-11-08 00:00:00+00:00",
+          "bytes": 31662080
+        },
+        {
+          "chunk": "_hyper_2_10_chunk",
+          "is_compressed": true,
+          "range_start": "2025-12-08 00:00:00+00:00",
+          "bytes": 31416320
+        },
+        {
+          "chunk": "_hyper_2_9_chunk",
+          "is_compressed": true,
+          "range_start": "2026-01-07 00:00:00+00:00",
+          "bytes": 20381696
+        },
+        {
+          "chunk": "_hyper_2_8_chunk",
+          "is_compressed": true,
+          "range_start": "2026-02-06 00:00:00+00:00",
+          "bytes": 31547392
+        },
+        {
+          "chunk": "_hyper_2_7_chunk",
+          "is_compressed": true,
+          "range_start": "2026-03-08 00:00:00+00:00",
+          "bytes": 31547392
+        },
+        {
+          "chunk": "_hyper_2_6_chunk",
+          "is_compressed": true,
+          "range_start": "2026-04-07 00:00:00+00:00",
+          "bytes": 30564352
+        },
+        {
+          "chunk": "_hyper_2_5_chunk",
+          "is_compressed": true,
+          "range_start": "2026-05-07 00:00:00+00:00",
+          "bytes": 31490048
+        },
+        {
+          "chunk": "_hyper_2_4_chunk",
+          "is_compressed": true,
+          "range_start": "2026-06-06 00:00:00+00:00",
+          "bytes": 31563776
+        },
+        {
+          "chunk": "_hyper_2_3_chunk",
+          "is_compressed": true,
+          "range_start": "2026-07-06 00:00:00+00:00",
+          "bytes": 31621120
+        },
+        {
+          "chunk": "_hyper_2_2_chunk",
+          "is_compressed": false,
+          "range_start": "2026-08-05 00:00:00+00:00",
+          "bytes": 16801792
+        },
+        {
+          "chunk": "_hyper_2_1_chunk",
+          "is_compressed": false,
+          "range_start": "2026-09-04 00:00:00+00:00",
+          "bytes": 12525568
+        }
+      ],
+      "n_chunks": 14,
+      "n_compressed": 12
+    }
+  },
+  "page_young": {
+    "row_p50_ms": 6.542113027535379,
+    "row_p95_ms": 11.031672009266913,
+    "col_p50_ms": 6.889843964017928,
+    "col_p95_ms": 21.154911955818534,
+    "rounds": 15,
+    "rows_identical": true,
+    "page_rows": 51
+  },
+  "cold": {
+    "aggregate": {
+      "row_p50_ms": 6.397392018698156,
+      "row_p95_ms": 8.058101986534894,
+      "col_p50_ms": 1.3932200381532311,
+      "col_p95_ms": 4.753993940539658,
+      "rounds": 15,
+      "row_buffers": 2930,
+      "col_buffers": 251,
+      "row_plan": [
+        "Finalize Aggregate (actual time=6.750..6.751 rows=1.00 loops=1)",
+        "  Buffers: shared hit=2930",
+        "  ->  Append (actual time=2.625..6.749 rows=2.00 loops=1)",
+        "        Buffers: shared hit=2930",
+        "        ->  Partial Aggregate (actual time=2.625..2.625 rows=1.00 loops=1)",
+        "              Buffers: shared hit=1367",
+        "              ->  Bitmap Heap Scan on _hyper_2_4_chunk (actual time=0.374..2.592 rows=834.00 loops=1)",
+        "                    Recheck Cond: ((finished_at >= '2026-05-19 21:12:26+00'::timestamp with time zone) AND (finished_at < '2026-06-18 21:12:26+00'::timestamp with time zone))",
+        "                    Filter: (status = 'failed'::tq_tscm.job_status)",
+        "                    Rows Removed by Filter: 9174",
+        "                    Heap Blocks: exact=1354",
+        "                    Buffers: shared hit=1367",
+        "                    ->  Bitmap Index Scan on _hyper_2_4_chunk_jobs_archive_finished_at_idx (actual time=0.279..0.280 rows=10008.00 loops=1)",
+        "                          Index Cond: ((finished_at >= '2026-05-19 21:12:26+00'::timestamp with time zone) AND (finished_at < '2026-06-18 21:12:26+00'::timestamp with time zone))",
+        "                          Index Searches: 1",
+        "                          Buffers: shared hit=13",
+        "        ->  Partial Aggregate (actual time=4.122..4.123 rows=1.00 loops=1)",
+        "              Buffers: shared hit=1563",
+        "              ->  Seq Scan on _hyper_2_5_chunk (actual time=0.012..4.091 rows=834.00 loops=1)",
+        "                    Filter: ((finished_at >= '2026-05-19 21:12:26+00'::timestamp with time zone) AND (finished_at < '2026-06-18 21:12:26+00'::timestamp with time zone) AND (status = 'failed'::tq_tscm.job_status))",
+        "                    Rows Removed by Filter: 24165",
+        "                    Buffers: shared hit=1563",
+        "Planning:",
+        "  Buffers: shared hit=20",
+        "Planning Time: 0.334 ms",
+        "Execution Time: 6.801 ms"
+      ],
+      "col_plan": [
+        "Finalize Aggregate (actual time=0.732..0.733 rows=1.00 loops=1)",
+        "  Buffers: shared hit=251",
+        "  ->  Append (actual time=0.347..0.731 rows=2.00 loops=1)",
+        "        Buffers: shared hit=251",
+        "        ->  Partial Aggregate (actual time=0.347..0.347 rows=1.00 loops=1)",
+        "              Buffers: shared hit=131",
+        "              ->  Custom Scan (ColumnarScan) on _hyper_2_4_chunk (actual time=0.147..0.318 rows=834.00 loops=1)",
+        "                    Filter: (status = 'failed'::tq_tscm.job_status)",
+        "                    Rows Removed by Filter: 14186",
+        "                    Vectorized Filter: ((finished_at >= '2026-05-19 21:12:26+00'::timestamp with time zone) AND (finished_at < '2026-06-18 21:12:26+00'::timestamp with time zone))",
+        "                    Buffers: shared hit=131",
+        "                    ->  Index Scan using _hyper_2_4_chunk_compressed_actor_queue__ts_meta_v2_first_f_idx on _hyper_2_4_chunk_compressed (actual time=0.015..0.024 rows=20.00 loops=1)",
+        "                          Index Cond: ((_ts_meta_v2_first_finished_at >= '2026-05-19 21:12:26+00'::timestamp with time zone) AND (_ts_meta_v2_last_finished_at < '2026-06-18 21:12:26+00'::timestamp with time zone))",
+        "                          Index Searches: 1",
+        "                          Buffers: shared hit=11",
+        "        ->  Partial Aggregate (actual time=0.383..0.383 rows=1.00 loops=1)",
+        "              Buffers: shared hit=120",
+        "              ->  Custom Scan (ColumnarScan) on _hyper_2_5_chunk (actual time=0.036..0.356 rows=834.00 loops=1)",
+        "                    Filter: (status = 'failed'::tq_tscm.job_status)",
+        "                    Rows Removed by Filter: 17166",
+        "                    Vectorized Filter: ((finished_at >= '2026-05-19 21:12:26+00'::timestamp with time zone) AND (finished_at < '2026-06-18 21:12:26+00'::timestamp with time zone))",
+        "                    Buffers: shared hit=120",
+        "                    ->  Index Scan using _hyper_2_5_chunk_compressed_actor_queue__ts_meta_v2_first_f_idx on _hyper_2_5_chunk_compressed (actual time=0.009..0.019 rows=18.00 loops=1)",
+        "                          Index Cond: ((_ts_meta_v2_first_finished_at >= '2026-05-19 21:12:26+00'::timestamp with time zone) AND (_ts_meta_v2_last_finished_at < '2026-06-18 21:12:26+00'::timestamp with time zone))",
+        "                          Index Searches: 1",
+        "                          Buffers: shared hit=12",
+        "Planning:",
+        "  Buffers: shared hit=32",
+        "Planning Time: 0.466 ms",
+        "Execution Time: 0.788 ms"
+      ]
+    },
+    "aged_page": {
+      "row_p50_ms": 46.862789895385504,
+      "row_p95_ms": 50.17737904563546,
+      "col_p50_ms": 5.0548979779705405,
+      "col_p95_ms": 7.276358082890511,
+      "rows_identical": true
+    }
+  },
+  "lookups": {
+    "lookup_young": {
+      "row_p50_ms": 0.3001219592988491,
+      "row_p95_ms": 0.34507596865296364,
+      "col_p50_ms": 2.1389160538092256,
+      "col_p95_ms": 3.560819081030786,
+      "samples": 10
+    },
+    "lookup_compressed": {
+      "row_p50_ms": 0.30702503863722086,
+      "row_p95_ms": 0.3385239979252219,
+      "col_p50_ms": 2.234114916063845,
+      "col_p95_ms": 2.484202035702765,
+      "samples": 25
+    },
+    "exists_hit_compressed": {
+      "row_p50_ms": 0.25353499222546816,
+      "row_p95_ms": 0.7386630168184638,
+      "col_p50_ms": 0.5899349926039577,
+      "col_p95_ms": 1.8099099397659302,
+      "samples": 25
+    },
+    "exists_miss": {
+      "row_p50_ms": 0.35629700869321823,
+      "row_p95_ms": 0.37799798883497715,
+      "col_p50_ms": 2.1450669737532735,
+      "col_p95_ms": 2.271234057843685,
+      "samples": 25
+    },
+    "row_lookup_plan_compressed_chunk": [
+      "Append (actual time=0.029..0.071 rows=1.00 loops=1)",
+      "  Buffers: shared hit=31",
+      "  ->  Index Scan using \"1_jobs_archive_id_finished_at_uniq\" on _hyper_2_1_chunk (actual time=0.015..0.015 rows=0.00 loops=1)",
+      "        Index Cond: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Index Searches: 1",
+      "        Buffers: shared hit=2",
+      "  ->  Index Scan using \"2_jobs_archive_id_finished_at_uniq\" on _hyper_2_2_chunk (actual time=0.004..0.004 rows=0.00 loops=1)",
+      "        Index Cond: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Index Searches: 1",
+      "        Buffers: shared hit=2",
+      "  ->  Index Scan using \"3_jobs_archive_id_finished_at_uniq\" on _hyper_2_3_chunk (actual time=0.003..0.003 rows=0.00 loops=1)",
+      "        Index Cond: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Index Searches: 1",
+      "        Buffers: shared hit=2",
+      "  ->  Index Scan using \"4_jobs_archive_id_finished_at_uniq\" on _hyper_2_4_chunk (actual time=0.006..0.006 rows=1.00 loops=1)",
+      "        Index Cond: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Index Searches: 1",
+      "        Buffers: shared hit=3",
+      "  ->  Index Scan using \"5_jobs_archive_id_finished_at_uniq\" on _hyper_2_5_chunk (actual time=0.004..0.004 rows=0.00 loops=1)",
+      "        Index Cond: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Index Searches: 1",
+      "        Buffers: shared hit=2",
+      "  ->  Index Scan using \"6_jobs_archive_id_finished_at_uniq\" on _hyper_2_6_chunk (actual time=0.004..0.004 rows=0.00 loops=1)",
+      "        Index Cond: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Index Searches: 1",
+      "        Buffers: shared hit=2",
+      "  ->  Index Scan using \"7_jobs_archive_id_finished_at_uniq\" on _hyper_2_7_chunk (actual time=0.005..0.005 rows=0.00 loops=1)",
+      "        Index Cond: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Index Searches: 1",
+      "        Buffers: shared hit=2",
+      "  ->  Index Scan using \"8_jobs_archive_id_finished_at_uniq\" on _hyper_2_8_chunk (actual time=0.004..0.004 rows=0.00 loops=1)",
+      "        Index Cond: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Index Searches: 1",
+      "        Buffers: shared hit=2",
+      "  ->  Index Scan using \"9_jobs_archive_id_finished_at_uniq\" on _hyper_2_9_chunk (actual time=0.004..0.004 rows=0.00 loops=1)",
+      "        Index Cond: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Index Searches: 1",
+      "        Buffers: shared hit=2",
+      "  ->  Index Scan using \"10_jobs_archive_id_finished_at_uniq\" on _hyper_2_10_chunk (actual time=0.004..0.004 rows=0.00 loops=1)",
+      "        Index Cond: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Index Searches: 1",
+      "        Buffers: shared hit=2",
+      "  ->  Index Scan using \"11_jobs_archive_id_finished_at_uniq\" on _hyper_2_11_chunk (actual time=0.004..0.004 rows=0.00 loops=1)",
+      "        Index Cond: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Index Searches: 1",
+      "        Buffers: shared hit=2",
+      "  ->  Index Scan using \"12_jobs_archive_id_finished_at_uniq\" on _hyper_2_12_chunk (actual time=0.004..0.004 rows=0.00 loops=1)",
+      "        Index Cond: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Index Searches: 1",
+      "        Buffers: shared hit=2",
+      "  ->  Index Scan using \"13_jobs_archive_id_finished_at_uniq\" on _hyper_2_13_chunk (actual time=0.004..0.004 rows=0.00 loops=1)",
+      "        Index Cond: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Index Searches: 1",
+      "        Buffers: shared hit=3",
+      "  ->  Index Scan using \"14_jobs_archive_id_finished_at_uniq\" on _hyper_2_14_chunk (actual time=0.005..0.005 rows=0.00 loops=1)",
+      "        Index Cond: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Index Searches: 1",
+      "        Buffers: shared hit=3",
+      "Planning:",
+      "  Buffers: shared hit=91",
+      "Planning Time: 0.507 ms",
+      "Execution Time: 0.134 ms"
+    ],
+    "col_lookup_plan_compressed_chunk": [
+      "Append (actual time=0.954..2.665 rows=1.00 loops=1)",
+      "  Buffers: shared hit=1517",
+      "  ->  Index Scan using \"1_jobs_archive_id_finished_at_uniq\" on _hyper_2_1_chunk (actual time=0.005..0.006 rows=0.00 loops=1)",
+      "        Index Cond: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Index Searches: 1",
+      "        Buffers: shared hit=2",
+      "  ->  Index Scan using \"2_jobs_archive_id_finished_at_uniq\" on _hyper_2_2_chunk (actual time=0.005..0.005 rows=0.00 loops=1)",
+      "        Index Cond: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Index Searches: 1",
+      "        Buffers: shared hit=2",
+      "  ->  Custom Scan (ColumnarScan) on _hyper_2_3_chunk (actual time=0.772..0.772 rows=0.00 loops=1)",
+      "        Vectorized Filter: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Rows Removed by Filter: 2000",
+      "        Buffers: shared hit=116",
+      "        ->  Seq Scan on _hyper_2_3_chunk_compressed (actual time=0.062..0.154 rows=2.00 loops=1)",
+      "              Filter: _timescaledb_functions.bloom1_contains_any_hashes(_ts_meta_v2_bloomh_id, '{8546414501688844079}'::bigint[])",
+      "              Rows Removed by Filter: 28",
+      "              Buffers: shared hit=106",
+      "  ->  Custom Scan (ColumnarScan) on _hyper_2_4_chunk (actual time=0.171..0.223 rows=1.00 loops=1)",
+      "        Vectorized Filter: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Rows Removed by Filter: 999",
+      "        Buffers: shared hit=124",
+      "        ->  Seq Scan on _hyper_2_4_chunk_compressed (actual time=0.082..0.131 rows=1.00 loops=1)",
+      "              Filter: _timescaledb_functions.bloom1_contains_any_hashes(_ts_meta_v2_bloomh_id, '{8546414501688844079}'::bigint[])",
+      "              Rows Removed by Filter: 29",
+      "              Buffers: shared hit=106",
+      "  ->  Custom Scan (ColumnarScan) on _hyper_2_5_chunk (actual time=0.133..0.133 rows=0.00 loops=1)",
+      "        Vectorized Filter: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Buffers: shared hit=106",
+      "        ->  Seq Scan on _hyper_2_5_chunk_compressed (actual time=0.132..0.133 rows=0.00 loops=1)",
+      "              Filter: _timescaledb_functions.bloom1_contains_any_hashes(_ts_meta_v2_bloomh_id, '{8546414501688844079}'::bigint[])",
+      "              Rows Removed by Filter: 30",
+      "              Buffers: shared hit=106",
+      "  ->  Custom Scan (ColumnarScan) on _hyper_2_6_chunk (actual time=0.129..0.129 rows=0.00 loops=1)",
+      "        Vectorized Filter: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Buffers: shared hit=106",
+      "        ->  Seq Scan on _hyper_2_6_chunk_compressed (actual time=0.129..0.129 rows=0.00 loops=1)",
+      "              Filter: _timescaledb_functions.bloom1_contains_any_hashes(_ts_meta_v2_bloomh_id, '{8546414501688844079}'::bigint[])",
+      "              Rows Removed by Filter: 30",
+      "              Buffers: shared hit=106",
+      "  ->  Custom Scan (ColumnarScan) on _hyper_2_7_chunk (actual time=0.117..0.117 rows=0.00 loops=1)",
+      "        Vectorized Filter: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Buffers: shared hit=106",
+      "        ->  Seq Scan on _hyper_2_7_chunk_compressed (actual time=0.117..0.117 rows=0.00 loops=1)",
+      "              Filter: _timescaledb_functions.bloom1_contains_any_hashes(_ts_meta_v2_bloomh_id, '{8546414501688844079}'::bigint[])",
+      "              Rows Removed by Filter: 30",
+      "              Buffers: shared hit=106",
+      "  ->  Custom Scan (ColumnarScan) on _hyper_2_8_chunk (actual time=0.136..0.136 rows=0.00 loops=1)",
+      "        Vectorized Filter: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Rows Removed by Filter: 1000",
+      "        Buffers: shared hit=111",
+      "        ->  Seq Scan on _hyper_2_8_chunk_compressed (actual time=0.091..0.118 rows=1.00 loops=1)",
+      "              Filter: _timescaledb_functions.bloom1_contains_any_hashes(_ts_meta_v2_bloomh_id, '{8546414501688844079}'::bigint[])",
+      "              Rows Removed by Filter: 29",
+      "              Buffers: shared hit=106",
+      "  ->  Custom Scan (ColumnarScan) on _hyper_2_9_chunk (actual time=0.119..0.119 rows=0.00 loops=1)",
+      "        Vectorized Filter: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Buffers: shared hit=106",
+      "        ->  Seq Scan on _hyper_2_9_chunk_compressed (actual time=0.119..0.119 rows=0.00 loops=1)",
+      "              Filter: _timescaledb_functions.bloom1_contains_any_hashes(_ts_meta_v2_bloomh_id, '{8546414501688844079}'::bigint[])",
+      "              Rows Removed by Filter: 30",
+      "              Buffers: shared hit=106",
+      "  ->  Custom Scan (ColumnarScan) on _hyper_2_10_chunk (actual time=0.116..0.116 rows=0.00 loops=1)",
+      "        Vectorized Filter: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Buffers: shared hit=106",
+      "        ->  Seq Scan on _hyper_2_10_chunk_compressed (actual time=0.116..0.116 rows=0.00 loops=1)",
+      "              Filter: _timescaledb_functions.bloom1_contains_any_hashes(_ts_meta_v2_bloomh_id, '{8546414501688844079}'::bigint[])",
+      "              Rows Removed by Filter: 30",
+      "              Buffers: shared hit=106",
+      "  ->  Custom Scan (ColumnarScan) on _hyper_2_11_chunk (actual time=0.118..0.118 rows=0.00 loops=1)",
+      "        Vectorized Filter: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Buffers: shared hit=106",
+      "        ->  Seq Scan on _hyper_2_11_chunk_compressed (actual time=0.118..0.118 rows=0.00 loops=1)",
+      "              Filter: _timescaledb_functions.bloom1_contains_any_hashes(_ts_meta_v2_bloomh_id, '{8546414501688844079}'::bigint[])",
+      "              Rows Removed by Filter: 30",
+      "              Buffers: shared hit=106",
+      "  ->  Custom Scan (ColumnarScan) on _hyper_2_12_chunk (actual time=0.137..0.137 rows=0.00 loops=1)",
+      "        Vectorized Filter: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Rows Removed by Filter: 1000",
+      "        Buffers: shared hit=111",
+      "        ->  Seq Scan on _hyper_2_12_chunk_compressed (actual time=0.110..0.121 rows=1.00 loops=1)",
+      "              Filter: _timescaledb_functions.bloom1_contains_any_hashes(_ts_meta_v2_bloomh_id, '{8546414501688844079}'::bigint[])",
+      "              Rows Removed by Filter: 29",
+      "              Buffers: shared hit=106",
+      "  ->  Custom Scan (ColumnarScan) on _hyper_2_13_chunk (actual time=0.317..0.318 rows=0.00 loops=1)",
+      "        Vectorized Filter: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Buffers: shared hit=188",
+      "        ->  Seq Scan on _hyper_2_13_chunk_compressed (actual time=0.317..0.317 rows=0.00 loops=1)",
+      "              Filter: _timescaledb_functions.bloom1_contains_any_hashes(_ts_meta_v2_bloomh_id, '{8546414501688844079}'::bigint[])",
+      "              Rows Removed by Filter: 52",
+      "              Buffers: shared hit=188",
+      "  ->  Custom Scan (ColumnarScan) on _hyper_2_14_chunk (actual time=0.334..0.335 rows=0.00 loops=1)",
+      "        Vectorized Filter: (id = '19fa2d23-fa21-0bc2-421e-2f13688835d6'::uuid)",
+      "        Rows Removed by Filter: 3000",
+      "        Buffers: shared hit=227",
+      "        ->  Seq Scan on _hyper_2_14_chunk_compressed (actual time=0.021..0.296 rows=3.00 loops=1)",
+      "              Filter: _timescaledb_functions.bloom1_contains_any_hashes(_ts_meta_v2_bloomh_id, '{8546414501688844079}'::bigint[])",
+      "              Rows Removed by Filter: 57",
+      "              Buffers: shared hit=212",
+      "Planning:",
+      "  Buffers: shared hit=163",
+      "Planning Time: 1.138 ms",
+      "Execution Time: 2.861 ms"
+    ]
+  },
+  "expiry_drain": {
+    "default_decompression_limit_probe": {
+      "ok": false,
+      "error": "ConfigurationLimitExceededError: tuple decompression limit exceeded by operation\nDETAIL:  current limit: 100000, tuples decompressed: 356633\nHINT:  Consider increasing timescaledb.max_tuples_decompressed_per_dml_transaction or set to 0 (unlimited)."
+    },
+    "bare_delete_plan_row": [
+      "Custom Scan (ModifyHypertable) (actual time=58.710..58.717 rows=0.00 loops=1)",
+      "  Buffers: shared hit=113046",
+      "  ->  Delete on jobs_archive (actual time=58.397..58.404 rows=0.00 loops=1)",
+      "        Delete on _hyper_2_1_chunk jobs_archive_1",
+      "        Delete on _hyper_2_2_chunk jobs_archive_2",
+      "        Delete on _hyper_2_3_chunk jobs_archive_3",
+      "        Delete on _hyper_2_4_chunk jobs_archive_4",
+      "        Delete on _hyper_2_5_chunk jobs_archive_5",
+      "        Delete on _hyper_2_6_chunk jobs_archive_6",
+      "        Delete on _hyper_2_7_chunk jobs_archive_7",
+      "        Delete on _hyper_2_8_chunk jobs_archive_8",
+      "        Delete on _hyper_2_9_chunk jobs_archive_9",
+      "        Delete on _hyper_2_10_chunk jobs_archive_10",
+      "        Delete on _hyper_2_11_chunk jobs_archive_11",
+      "        Delete on _hyper_2_12_chunk jobs_archive_12",
+      "        Delete on _hyper_2_13_chunk jobs_archive_13",
+      "        Delete on _hyper_2_14_chunk jobs_archive_14",
+      "        Buffers: shared hit=112962",
+      "        ->  Custom Scan (ChunkAppend) on jobs_archive (actual time=3.383..37.489 rows=100000.00 loops=1)",
+      "              Chunks excluded during startup: 0",
+      "              Buffers: shared hit=6692",
+      "              ->  Index Scan using _hyper_2_1_chunk_jobs_archive_expire_at_idx on _hyper_2_1_chunk jobs_archive_1 (actual time=0.012..0.012 rows=0.00 loops=1)",
+      "                    Index Cond: (expire_at < statement_timestamp())",
+      "                    Index Searches: 1",
+      "                    Buffers: shared hit=2",
+      "              ->  Index Scan using _hyper_2_2_chunk_jobs_archive_expire_at_idx on _hyper_2_2_chunk jobs_archive_2 (actual time=0.010..0.010 rows=0.00 loops=1)",
+      "                    Index Cond: (expire_at < statement_timestamp())",
+      "                    Index Searches: 1",
+      "                    Buffers: shared hit=2",
+      "              ->  Index Scan using _hyper_2_3_chunk_jobs_archive_expire_at_idx on _hyper_2_3_chunk jobs_archive_3 (actual time=0.012..0.012 rows=0.00 loops=1)",
+      "                    Index Cond: (expire_at < statement_timestamp())",
+      "                    Index Searches: 1",
+      "                    Buffers: shared hit=2",
+      "              ->  Index Scan using _hyper_2_4_chunk_jobs_archive_expire_at_idx on _hyper_2_4_chunk jobs_archive_4 (actual time=0.006..0.006 rows=0.00 loops=1)",
+      "                    Index Cond: (expire_at < statement_timestamp())",
+      "                    Index Searches: 1",
+      "                    Buffers: shared hit=2",
+      "              ->  Index Scan using _hyper_2_5_chunk_jobs_archive_expire_at_idx on _hyper_2_5_chunk jobs_archive_5 (actual time=0.007..0.007 rows=0.00 loops=1)",
+      "                    Index Cond: (expire_at < statement_timestamp())",
+      "                    Index Searches: 1",
+      "                    Buffers: shared hit=2",
+      "              ->  Index Scan using _hyper_2_6_chunk_jobs_archive_expire_at_idx on _hyper_2_6_chunk jobs_archive_6 (actual time=0.007..0.007 rows=0.00 loops=1)",
+      "                    Index Cond: (expire_at < statement_timestamp())",
+      "                    Index Searches: 1",
+      "                    Buffers: shared hit=2",
+      "              ->  Index Scan using _hyper_2_7_chunk_jobs_archive_expire_at_idx on _hyper_2_7_chunk jobs_archive_7 (actual time=0.004..0.004 rows=0.00 loops=1)",
+      "                    Index Cond: (expire_at < statement_timestamp())",
+      "                    Index Searches: 1",
+      "                    Buffers: shared hit=2",
+      "              ->  Index Scan using _hyper_2_8_chunk_jobs_archive_expire_at_idx on _hyper_2_8_chunk jobs_archive_8 (actual time=0.007..0.008 rows=0.00 loops=1)",
+      "                    Index Cond: (expire_at < statement_timestamp())",
+      "                    Index Searches: 1",
+      "                    Buffers: shared hit=2",
+      "              ->  Index Scan using _hyper_2_9_chunk_jobs_archive_expire_at_idx on _hyper_2_9_chunk jobs_archive_9 (actual time=0.006..0.006 rows=0.00 loops=1)",
+      "                    Index Cond: (expire_at < statement_timestamp())",
+      "                    Index Searches: 1",
+      "                    Buffers: shared hit=2",
+      "              ->  Index Scan using _hyper_2_10_chunk_jobs_archive_expire_at_idx on _hyper_2_10_chunk jobs_archive_10 (actual time=0.006..0.006 rows=0.00 loops=1)",
+      "                    Index Cond: (expire_at < statement_timestamp())",
+      "                    Index Searches: 1",
+      "                    Buffers: shared hit=2",
+      "              ->  Index Scan using _hyper_2_11_chunk_jobs_archive_expire_at_idx on _hyper_2_11_chunk jobs_archive_11 (actual time=0.003..0.003 rows=0.00 loops=1)",
+      "                    Index Cond: (expire_at < statement_timestamp())",
+      "                    Index Searches: 1",
+      "                    Buffers: shared hit=2",
+      "              ->  Index Scan using _hyper_2_12_chunk_jobs_archive_expire_at_idx on _hyper_2_12_chunk jobs_archive_12 (actual time=0.006..0.006 rows=0.00 loops=1)",
+      "                    Index Cond: (expire_at < statement_timestamp())",
+      "                    Index Searches: 1",
+      "                    Buffers: shared hit=2",
+      "              ->  Seq Scan on _hyper_2_13_chunk jobs_archive_13 (actual time=3.296..17.910 rows=43339.00 loops=1)",
+      "                    Filter: (expire_at < statement_timestamp())",
+      "                    Rows Removed by Filter: 6664",
+      "                    Buffers: shared hit=3126",
+      "              ->  Seq Scan on _hyper_2_14_chunk jobs_archive_14 (actual time=0.021..14.879 rows=56661.00 loops=1)",
+      "                    Filter: (expire_at < statement_timestamp())",
+      "                    Buffers: shared hit=3542",
+      "Planning:",
+      "  Buffers: shared hit=2165",
+      "Planning Time: 4.250 ms",
+      "Execution Time: 59.018 ms"
+    ],
+    "bare_delete_plan_col": [
+      "Custom Scan (ModifyHypertable) (actual time=51.230..51.233 rows=0.00 loops=1)",
+      "  Batches scanned: 112",
+      "  Batches decompressed: 8",
+      "  Tuples decompressed: 8000",
+      "  Batches deleted: 104",
+      "  Buffers: shared hit=97861 read=1 dirtied=665 written=671",
+      "  ->  Delete on jobs_archive (actual time=1.843..1.846 rows=0.00 loops=1)",
+      "        Delete on _hyper_2_1_chunk jobs_archive_1",
+      "        Delete on _hyper_2_2_chunk jobs_archive_2",
+      "        Delete on _hyper_2_3_chunk jobs_archive_3",
+      "        Delete on _hyper_2_4_chunk jobs_archive_4",
+      "        Delete on _hyper_2_5_chunk jobs_archive_5",
+      "        Delete on _hyper_2_6_chunk jobs_archive_6",
+      "        Delete on _hyper_2_7_chunk jobs_archive_7",
+      "        Delete on _hyper_2_8_chunk jobs_archive_8",
+      "        Delete on _hyper_2_9_chunk jobs_archive_9",
+      "        Delete on _hyper_2_10_chunk jobs_archive_10",
+      "        Delete on _hyper_2_11_chunk jobs_archive_11",
+      "        Delete on _hyper_2_12_chunk jobs_archive_12",
+      "        Delete on _hyper_2_13_chunk jobs_archive_13",
+      "        Delete on _hyper_2_14_chunk jobs_archive_14",
+      "        Buffers: shared hit=1862",
+      "        ->  Custom Scan (ChunkAppend) on jobs_archive (actual time=0.309..1.526 rows=1336.00 loops=1)",
+      "              Chunks excluded during startup: 0",
+      "              Buffers: shared hit=514",
+      "              ->  Index Scan using _hyper_2_1_chunk_jobs_archive_expire_at_idx on _hyper_2_1_chunk jobs_archive_1 (actual time=0.015..0.015 rows=0.00 loops=1)",
+      "                    Index Cond: (expire_at < statement_timestamp())",
+      "                    Index Searches: 1",
+      "                    Buffers: shared hit=2",
+      "              ->  Index Scan using _hyper_2_2_chunk_jobs_archive_expire_at_idx on _hyper_2_2_chunk jobs_archive_2 (actual time=0.008..0.009 rows=0.00 loops=1)",
+      "                    Index Cond: (expire_at < statement_timestamp())",
+      "                    Index Searches: 1",
+      "                    Buffers: shared hit=2",
+      "              ->  Seq Scan on _hyper_2_3_chunk jobs_archive_3 (actual time=0.006..0.007 rows=0.00 loops=1)",
+      "                    Filter: (expire_at < statement_timestamp())",
+      "              ->  Seq Scan on _hyper_2_4_chunk jobs_archive_4 (actual time=0.005..0.005 rows=0.00 loops=1)",
+      "                    Filter: (expire_at < statement_timestamp())",
+      "              ->  Seq Scan on _hyper_2_5_chunk jobs_archive_5 (actual time=0.005..0.006 rows=0.00 loops=1)",
+      "                    Filter: (expire_at < statement_timestamp())",
+      "              ->  Seq Scan on _hyper_2_6_chunk jobs_archive_6 (actual time=0.005..0.005 rows=0.00 loops=1)",
+      "                    Filter: (expire_at < statement_timestamp())",
+      "              ->  Seq Scan on _hyper_2_7_chunk jobs_archive_7 (actual time=0.006..0.006 rows=0.00 loops=1)",
+      "                    Filter: (expire_at < statement_timestamp())",
+      "              ->  Seq Scan on _hyper_2_8_chunk jobs_archive_8 (actual time=0.005..0.005 rows=0.00 loops=1)",
+      "                    Filter: (expire_at < statement_timestamp())",
+      "              ->  Seq Scan on _hyper_2_9_chunk jobs_archive_9 (actual time=0.006..0.006 rows=0.00 loops=1)",
+      "                    Filter: (expire_at < statement_timestamp())",
+      "              ->  Seq Scan on _hyper_2_10_chunk jobs_archive_10 (actual time=0.005..0.005 rows=0.00 loops=1)",
+      "                    Filter: (expire_at < statement_timestamp())",
+      "              ->  Seq Scan on _hyper_2_11_chunk jobs_archive_11 (actual time=0.005..0.005 rows=0.00 loops=1)",
+      "                    Filter: (expire_at < statement_timestamp())",
+      "              ->  Seq Scan on _hyper_2_12_chunk jobs_archive_12 (actual time=0.005..0.005 rows=0.00 loops=1)",
+      "                    Filter: (expire_at < statement_timestamp())",
+      "              ->  Seq Scan on _hyper_2_13_chunk jobs_archive_13 (actual time=0.233..1.380 rows=1336.00 loops=1)",
+      "                    Filter: (expire_at < statement_timestamp())",
+      "                    Rows Removed by Filter: 6664",
+      "                    Buffers: shared hit=510",
+      "              ->  Seq Scan on _hyper_2_14_chunk jobs_archive_14 (actual time=0.006..0.006 rows=0.00 loops=1)",
+      "                    Filter: (expire_at < statement_timestamp())",
+      "Planning:",
+      "  Buffers: shared hit=2284",
+      "Planning Time: 4.565 ms",
+      "Execution Time: 51.629 ms"
+    ],
+    "rows_target": 100000,
+    "batch_size": 10000,
+    "deleted": {
+      "row": 100000,
+      "col": 100000
+    },
+    "per_batch_ms": {
+      "row": {
+        "p50_ms": 174.0342719713226,
+        "p95_ms": 182.111521018669,
+        "total_s": 1.7751060818554834,
+        "batches": 12
+      },
+      "col": {
+        "p50_ms": 169.50826602987945,
+        "p95_ms": 178.77564195077866,
+        "total_s": 3.6959396508755162,
+        "batches": 12
+      }
+    },
+    "drain_total_s": {
+      "row": 1.7751060818554834,
+      "col": 3.6959396508755162
+    }
+  },
+  "first_tick_probe": {
+    "mixed_set": {
+      "qualifying_rows": 40,
+      "in_young_chunks": 12,
+      "in_compressed_chunks": 28,
+      "cte_ticks_deleted": {
+        "row": [
+          40,
+          0
+        ],
+        "col": [
+          12,
+          28,
+          0
+        ]
+      }
+    },
+    "all_compressed_set": {
+      "qualifying_rows": 40,
+      "in_compressed_chunks": 40,
+      "cte_ticks_deleted": {
+        "row": [
+          40,
+          0
+        ],
+        "col": [
+          0,
+          40,
+          0
+        ]
+      }
+    },
+    "bare_delete_first_tick": {
+      "row": "DELETE 40",
+      "col": "DELETE 40"
+    },
+    "cte_shape": "_EXPIRY_CTE_SQL via _run_prune_batch (the real sweep machinery)",
+    "staging": "per-engine disposable probe schema (the real apply_pending + enable_hypertables conversion), rows seeded BEFORE the compress_chunk aging so the compressed-chunk rows are compressed INTO the batches; one schema per sub-probe so no set's chunks are warmed by another set's ticks"
+  }
+}

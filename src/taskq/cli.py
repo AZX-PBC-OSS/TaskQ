@@ -4,6 +4,7 @@ Usage::
 
     taskq migrate status
     taskq migrate up [--phase pre|post] [--target VERSION] [--max-steps N] [--ddl-lock-timeout SECS]
+    taskq migrate disable-hypertables
     taskq worker --actors myapp.actors:registry
     taskq job show JOB_ID
     taskq job cancel JOB_ID [--reason TEXT]
@@ -83,7 +84,7 @@ from taskq.exceptions import (
 )
 from taskq.obs import OtelExporterConfigurationError, configure_exporters, setup_logging
 from taskq.settings import TaskQSettings, WorkerSettings
-from taskq.timescale import TimescaleDBUnavailableError, enable_hypertables
+from taskq.timescale import TimescaleDBUnavailableError, disable_hypertables, enable_hypertables
 from taskq.types import BulkCancelResult
 from taskq.worker._stall_tally import remedy_for_kind
 from taskq.worker.dev import dev_watch_loop
@@ -804,6 +805,90 @@ async def _up(
     typer.echo(f"applied {len(applied)} migration(s):")
     for migration in applied:
         typer.echo(f"  {migration.filename}")
+
+
+@migrate_app.command("disable-hypertables")
+def migrate_disable_hypertables(
+    pg_credential_provider: str | None = typer.Option(
+        None,
+        "--pg-credential-provider",
+        help="Module:attr reference to a PgCredentialProvider (e.g. "
+        f"{_PROVIDER_EXAMPLE}). The connection is opened through it instead of "
+        "the DSN's static password. Overrides TASKQ_PG_CREDENTIAL_PROVIDER.",
+    ),
+) -> None:
+    """Convert the TimescaleDB hypertables back to plain vanilla tables.
+
+    The disable mirror of the ``migrate up`` deploy step's conversion: every
+    registered retention/compression policy is removed, and per hypertable the
+    rows return into a table whose shape is the bundled migrations' own output
+    (count- and twin-verified at every hand-off — see
+    ``docs/guides/timescaledb.md``). Flip ``TASKQ_TIMESCALEDB_HYPERTABLES``
+    off FIRST: with the flag still true this refuses loudly (the library-level
+    gate is a zero-statement no-op; the CLI does not let a mistyped invocation
+    look like a completed disable). A crashed run converges on the re-run.
+    """
+    settings = TaskQSettings.load()
+    if settings.timescaledb_hypertables:
+        typer.echo(
+            "TASKQ_TIMESCALEDB_HYPERTABLES is still true: disabling now would be a "
+            "zero-statement no-op. Flip the flag off (and roll the workers, so they "
+            "stop expecting the hypertable schema) before running this.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    conn_factory = _credential_conn_factory(
+        str(settings.pg_dsn),
+        _resolved_ref(pg_credential_provider, settings.pg_credential_provider),
+        option="--pg-credential-provider",
+    )
+    asyncio.run(_disable_hypertables(settings, conn_factory=conn_factory))
+
+
+async def _disable_hypertables(
+    settings: TaskQSettings,
+    *,
+    conn_factory: ConnFactory | None = None,
+) -> None:
+    """The ``migrate disable-hypertables`` body: the SAME advisory-lock and
+    settings flow as ``migrate up`` (the deploy step's conversion and this
+    disable serialize on the same migration advisory lock; WorkerSettings
+    re-reads the same cascade the workers run with), with ``migrate up``'s
+    loud-error exit discipline."""
+    conn: asyncpg.Connection | None = None
+    try:
+        conn = await _open_migrate_conn(settings, conn_factory)
+        async with migrate_mod.migration_advisory_lock(conn, schema=settings.schema_name):
+            report = await disable_hypertables(
+                conn, schema=settings.schema_name, settings=WorkerSettings.load()
+            )
+    except TimescaleDBUnavailableError as exc:
+        # A capability refusal, not a schema failure: the error already
+        # names the setting and what the server is missing.
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    except SystemExit as exc:
+        # Lock contention. Already a precise message.
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    except Exception as exc:
+        # The same self-diagnosing report migrate up prints: the schema
+        # state on the still-open connection, never a raw traceback.
+        await _report_up_failure(conn, settings.schema_name, exc)
+        raise typer.Exit(code=1) from None
+    finally:
+        if conn is not None:
+            await close_conn_bounded(conn, "migrate-disable-hypertables", CLOSE_TIMEOUT_SECS)
+    if not report.converted:
+        typer.echo("no hypertables to disable: the retention tables are already plain")
+        return
+    typer.echo(f"disabled hypertables on {len(report.converted)} table(s):")
+    for table in report.converted:
+        typer.echo(f"  restored to plain: {table}")
+    for entry in report.retention_policies:
+        typer.echo(f"  removed retention policy: {entry}")
+    for table in report.compression_policies:
+        typer.echo(f"  removed compression policy: {table}")
 
 
 def _print_actor_config_row(row: ActorConfigRow) -> None:

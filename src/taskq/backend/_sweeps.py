@@ -132,6 +132,7 @@ from taskq.obs import (
     record_deadline_exceeded_swept,
     record_reclaimed_jobs,
 )
+from taskq.timescale import retention_policy_floor
 
 __all__ = [
     "_RECLAIM_DISPOSITIONS",
@@ -1038,6 +1039,57 @@ USING to_delete
 WHERE e.id = to_delete.id
 RETURNING e.id"""
 
+# The retention-policy floor (taskq.timescale.retention_policy_floor): on a
+# policy-armed hypertable, rows older than the policy's own drop_after
+# horizon are dropped by the policy's chunk runs anyway, and re-deleting
+# them row by row here pays the chunk-fan-out tax (the scale sweep measures
+# the row-level drain running 7.8x plain's drain-total at the 100k scale,
+# benchmarks/results/timescale-tradeoffs-sweep.json) for deletions
+# that are not ours to make.  The floor is composed by anchored .replace
+# (the {name}-fragment mechanism _SWEEP_1_SQL uses, NOT str.format: the
+# rendered statement must stay byte-identical when the floor is None, and
+# tests/test_index_audit.py renders this constant with .format(schema=...)
+# alone, so an un-substituted format field here would KeyError there).
+# The bound is a parameter ($3, a timestamptz), so it is an eligible btree
+# Index Cond by the same STABLE-bound rule the $1 bound follows.
+_EVENT_TTL_FLOOR_PRED = " AND occurred_at >= $3::timestamptz"
+_EVENT_TTL_MAIN_ARM_ANCHOR = "WHERE occurred_at < statement_timestamp() - $1::interval"
+_EVENT_TTL_OUTBOX_ARM_ANCHOR = "AND occurred_at < statement_timestamp() - $1::interval * "
+
+
+def _render_event_ttl_sql(schema: str, floor: datetime | None) -> str:
+    """Render ``_SWEEP_EVENT_TTL_SQL`` with the optional policy floor.
+
+    *floor* is None on vanilla Postgres / policy-less hypertables: the
+    rendered statement is byte-identical to the pre-floor constant.  With
+    a floor, BOTH arms gain the ``occurred_at >= $3`` conjunct — the
+    outbox arm included, because the floor's ownership claim is the
+    policy's, and the policy's chunk drops defeat the carve-out below the
+    floor regardless (pinned by
+    ``tests/test_timescale_retention_interplay.py``).  The anchors are
+    exact substrings of the rendered statement, so a future edit to the
+    template that silently invalidates this composition fails here
+    instead of mis-conjuncting the executed SQL.
+    """
+    sql = _SWEEP_EVENT_TTL_SQL.format(
+        schema=schema, outbox_multiplier=RECLAIM_OUTBOX_RETENTION_MULTIPLIER
+    )
+    if floor is None:
+        return sql
+    outbox_anchor = _EVENT_TTL_OUTBOX_ARM_ANCHOR + str(RECLAIM_OUTBOX_RETENTION_MULTIPLIER)
+    for anchor in (_EVENT_TTL_MAIN_ARM_ANCHOR, outbox_anchor):
+        assert anchor in sql, f"event-TTL floor anchor drifted: {anchor!r}"
+    return sql.replace(
+        _EVENT_TTL_MAIN_ARM_ANCHOR,
+        _EVENT_TTL_MAIN_ARM_ANCHOR + _EVENT_TTL_FLOOR_PRED,
+        1,
+    ).replace(
+        outbox_anchor,
+        outbox_anchor + _EVENT_TTL_FLOOR_PRED,
+        1,
+    )
+
+
 # Per-sweep batched attempt INSERT templates (schema baked in via .format
 # at call time after _IDENT_RE validation).  Kept as constants so the SQL
 # surface stays grep-able and free of f-string S608 noise.
@@ -1929,6 +1981,28 @@ async def sweep_expired_events(
     ``taskq.constants.RECLAIM_OUTBOX_RETENTION_MULTIPLIER`` for the
     derivations.
 
+    The POLICY FLOOR (hypertable deployments only): when the connected
+    server has a ``policy_retention`` job registered against
+    ``job_events`` (:func:`taskq.timescale.retention_policy_floor`,
+    probed ONCE per call — never per batch — and failing open to None on
+    any probe error), rows older than the policy's own ``drop_after``
+    horizon gain the ``occurred_at >= $floor`` conjunct and are left to
+    the policy, which drops them whole-chunk silently.  THE BOUNDARY,
+    stated honestly: OLDER than the floor, the POLICY owns deletion
+    (silent, chunk-granular, watermark-blind — a chunk drop advances no
+    ``pruned_through_id``, see the pinned boundary in
+    ``tests/test_timescale_retention_interplay.py``); NEWER than it
+    (inside the window), this sweep owns deletion (row-exact,
+    watermark-visible, the carve-out honored).
+    The floor is the policy's OWN horizon (parsed from the registered
+    config, not re-derived), so where the settings and the registered
+    policy disagree, the policy wins the aged end and this sweep keeps
+    exactly the range nothing owns.  A row older than the floor inside a
+    young chunk is dropped when the chunk itself ages past the boundary,
+    at most one chunk interval late — chunk granularity is the trade.
+    On vanilla Postgres the probe fails open to None and this sweep runs
+    full-range, byte-identical to the no-floor behavior.
+
     *retention* must be positive: ``timedelta(0)`` is the SETTING's
     disable sentinel (``WorkerSettings.event_retention_period``), never a
     sweep argument, at the function boundary zero would read as "delete
@@ -1950,10 +2024,12 @@ async def sweep_expired_events(
             "settings-level disable sentinel, not a sweep argument"
         )
 
-    sql = _SWEEP_EVENT_TTL_SQL.format(
-        schema=schema, outbox_multiplier=RECLAIM_OUTBOX_RETENTION_MULTIPLIER
-    )
-    tag = await conn.execute(sql, retention, batch_size)
+    floor = await retention_policy_floor(conn, schema, "job_events", "occurred_at")
+    sql = _render_event_ttl_sql(schema, floor)
+    args: tuple[object, ...] = (retention, batch_size)
+    if floor is not None:
+        args = (retention, batch_size, floor)
+    tag = await conn.execute(sql, *args)
     count = parse_rowcount(tag)
     if count > 0:
         logger.debug(
