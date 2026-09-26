@@ -600,7 +600,6 @@ async def heartbeat_loop(
                             )
                             if lost_rows:
                                 lost_ids: list[UUID] = [row["id"] for row in lost_rows]
-                                deps.disowned_jobs.update(lost_ids)
                                 logger.warning(
                                     "claim-loss-reconciled",
                                     kind="claim_loss_reconciled",
@@ -635,6 +634,28 @@ async def heartbeat_loop(
                             # re-stamps, so an unconfirmed commit is
                             # benign: the next tick rewrites them).
                             await tx.commit()
+                            # The disown lands AFTER the commit, never
+                            # before: the disown is MEMORY state with no
+                            # rollback, and the reconcile's exclusion set
+                            # folds it - a disown applied before a tick
+                            # whose commit then failed (the in-tx cancel
+                            # hook's OSError above, a cut commit, a
+                            # dropped connection) would survive the
+                            # rollback while the REFUND it belongs to
+                            # un-applies, and the row would match neither
+                            # the renewal nor the reconcile ever again:
+                            # the refund is lost permanently, the lease
+                            # lapses, and Sweep 1 reclaims at the CHARGED
+                            # attempt - issue 458's "crashed, never ran"
+                            # record, resurrected by a brownout tick.
+                            # Applied post-commit there is no await
+                            # between the commit's return and this
+                            # synchronous update, so no other task can
+                            # observe the gap; a failed commit leaves the
+                            # disown unset, the row still matching, and
+                            # the next tick re-reconciles it.
+                            if lost_rows:
+                                deps.disowned_jobs.update(lost_ids)  # pyright: ignore[reportPossiblyUnboundVariable]  # Why: lost_ids is bound exactly when lost_rows is truthy - the same guard guards both; the pair is not reassigned between.
                     except BaseException:
                         # Teardown, bounded by the SAME budget's
                         # remainder, deliberately OUTSIDE the expired
