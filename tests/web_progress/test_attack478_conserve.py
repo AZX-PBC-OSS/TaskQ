@@ -143,6 +143,8 @@ async def _stream_frames(
     *,
     until: Callable[[list[dict[str, str]]], bool],
     overall_timeout: float = 15.0,
+    on_connected: Callable[[], None] | None = None,
+    on_frame: Callable[[dict[str, str]], None] | None = None,
 ) -> tuple[list[dict[str, str]], float, BaseException | None]:
     """Read one SSE stream to a stop condition, EOF, or death.
 
@@ -154,6 +156,20 @@ async def _stream_frames(
     suite's collector applies): a ``until`` break suspends the httpx
     generator chain, and CPython finalizes it one wave per generator -
     the module loop must be clean at test end.
+
+    ``on_connected`` (optional) is called the moment the streaming
+    response is established (its headers received). The product runs BOTH
+    the broker subscribe and the PG catch-up query in the handler body
+    BEFORE the response is constructed - no SSE byte is written before
+    either completes - so headers-received is the strongest "the
+    subscription is live and the catch-up has been resolved" observable,
+    including the silence case where the durable row sits BELOW the
+    cursor and no catch-up frame may ever be emitted.
+
+    ``on_frame`` (optional) is called with each appended frame - the
+    observable "this frame is delivered". A scenario's publisher arms on
+    these instead of a blind sleep that races the connect under
+    runner load.
     """
     frames: list[dict[str, str]] = []
     failure: BaseException | None = None
@@ -167,10 +183,14 @@ async def _stream_frames(
         async with httpx.AsyncClient(base_url=base_url) as client:
             try:
                 async with client.stream("GET", path, timeout=httpx.Timeout(5.0, read=8.0)) as resp:
+                    if on_connected is not None:
+                        on_connected()
                     async for line in resp.aiter_lines():
                         if line == "":
                             if current:
                                 frames.append(current)
+                                if on_frame is not None:
+                                    on_frame(current)
                                 current = {}
                                 if until(frames):
                                     return
@@ -210,8 +230,22 @@ async def test_reconnect_delivers_every_sequence_exactly_once(
     job_id = await _seed_running_job(pool, progress_seq=3, progress_state={"step": 3})
     channel = progress_channel(SCHEMA_LABEL, job_id)
 
+    subscription_live = asyncio.Event()
+
     async def _wire() -> None:
-        await asyncio.sleep(0.3)
+        # The wire arms on the OBSERVED stream establishment, not a blind
+        # sleep: the product subscribes AND resolves the catch-up in the
+        # handler body before the response is returned (headers received
+        # = subscription live), so the wire's flush + live delta + replay
+        # land on a subscribed reader. A blind sleep raced the connect
+        # under runner load and the whole wire landed before the
+        # subscriber existed - the observed red was exactly {4: 1}: the
+        # catch-up serving the already-advanced durable state, the
+        # pre-subscribe publish lost, the replay delivered above the
+        # catch-up cursor. The timeout bounds failure detection only: a
+        # connect that never completes is a real defect and the
+        # TaskGroup reds loudly.
+        await asyncio.wait_for(subscription_live.wait(), timeout=10.0)
         # The flush lands the seq-4 delta, the seq-5 delta is on the wire
         # only, and a transport replay of seq 4 arrives a second time.
         await _update_progress(pool, job_id, progress_seq=4, progress_state={"step": 4})
@@ -224,6 +258,7 @@ async def test_reconnect_delivers_every_sequence_exactly_once(
             server,
             f"/jobs/api/job/{job_id}/progress/stream?last_event_id=1",
             until=lambda fs: _delivered_seq_multiset(fs).total() >= 2,
+            on_connected=lambda: subscription_live.set(),
         )
 
     # The catch-up (3), the live delta (5); the replayed 4 is dropped.
@@ -261,14 +296,32 @@ async def test_paused_broker_drops_the_fanout_and_recovery_restores_exactly_once
     admin = aioredis.from_url(redis_url, socket_timeout=None)
     try:
         # Healthy start: the snapshot (seq 3), then one delta whose flush
-        # lands. ONE SECOND IN, the broker stops serving writes.
+        # lands. Once that delta is OBSERVED as delivered, the broker
+        # stops serving writes.
         pause_fired = asyncio.Event()
+        subscription_live = asyncio.Event()
+        delta4_seen = asyncio.Event()
+
+        def _on_frame(frame: dict[str, str]) -> None:
+            # The delivered-frame observable: the seq-4 frame proves the
+            # survivor holds the pre-pause cursor this scenario's
+            # reconnect premise is written against.
+            if frame.get("id") == "4":
+                delta4_seen.set()
 
         async def _wire() -> None:
-            await asyncio.sleep(0.3)
+            # Armed on the OBSERVED stream establishment (headers
+            # received = the subscription is live - see the harness
+            # docstring); a blind sleep raced the connect under runner
+            # load and could fire the whole wire - the publish, the
+            # flush, even the PAUSE - before the subscriber existed.
+            await asyncio.wait_for(subscription_live.wait(), timeout=10.0)
             await redis_client.publish(channel, _pub(job_id, 4, step=4))
             await _update_progress(pool, job_id, progress_seq=4, progress_state={"step": 4})
-            await asyncio.sleep(0.7)
+            # The pause fires only once the survivor has OBSERVED the
+            # seq-4 delta: the pre-pause cursor is then 4 by
+            # construction, not by a sleep's bet.
+            await asyncio.wait_for(delta4_seen.wait(), timeout=10.0)
             await admin.execute_command("CLIENT", "PAUSE", "6000", "ALL")
             pause_fired.set()
             # The fanout inside the pause: the publish cannot complete and
@@ -277,35 +330,40 @@ async def test_paused_broker_drops_the_fanout_and_recovery_restores_exactly_once
                 async with asyncio.timeout(2.0):
                     await redis_client.publish(channel, _pub(job_id, 5, step=5))
 
-        wire_task = asyncio.create_task(_wire())
-
-        # The surviving connection: delivered 3 and 4 before the pause,
-        # alive through it (keepalives); the "dropped" publish of seq 5
-        # is a DELAY, not a loss - the broker executes the queued command
-        # the moment the pause lifts - and seq 7 resumes after it.
+        # The reader task owns the subscription, so it starts first; the
+        # wire arms on its frames.
         reader = asyncio.create_task(
             _stream_frames(
                 server,
                 f"/jobs/api/job/{job_id}/progress/stream",
                 until=lambda fs: _delivered_seq_multiset(fs).total() >= 4,
                 overall_timeout=15.0,
+                on_connected=lambda: subscription_live.set(),
+                on_frame=_on_frame,
             )
         )
-        # Let the survivor connect and receive the snapshot and the seq-4
-        # delta before anything else moves.
-        await asyncio.sleep(0.8)
-        # The flushes ride PG, not the broker: seq 6 lands durably INSIDE
-        # the pause window (its wire publish never happens).
-        await _update_progress(pool, job_id, progress_seq=6, progress_state={"step": 6})
+        wire_task = asyncio.create_task(_wire())
+
         await wire_task
         assert pause_fired.is_set()
+        # The flushes ride PG, not the broker: seq 6 lands durably INSIDE
+        # the pause window - the PAUSE holds 6 s, the wire task's bounded
+        # publish consumed at most 2 s of it, so what remains is the
+        # pause's own budget, not a sleep's bet (the wire publish never
+        # happens for 6; at the reconnect the durable row is what heals).
+        await _update_progress(pool, job_id, progress_seq=6, progress_state={"step": 6})
 
-        # The pause has expired (6 s from ~1.0 s; the wire task's bounded
-        # publish ended at ~3 s); the fanout resumes. The flush that
-        # outlived the pause is at seq 7, published to the wire.
-        await asyncio.sleep(4.5)
+        # The flush that outlives the pause is at seq 7, published to the
+        # wire. The publish rides OUT the pause window: PAUSE holds
+        # commands and executes them the moment the pause lifts, so this
+        # bounded publish is both the expiry clock and the post-pause
+        # fanout - it lands after the delayed seq-5 command the broker
+        # queued, keeping the wire order 5-then-7 that the survivor's
+        # exactly-once counter pins. The bound (pause 6 s + grace) only
+        # detects a broker that never lifts.
         await _update_progress(pool, job_id, progress_seq=7, progress_state={"step": 7})
-        await redis_client.publish(channel, _pub(job_id, 7, step=7))
+        async with asyncio.timeout(8.0):
+            await redis_client.publish(channel, _pub(job_id, 7, step=7))
 
         frames, _elapsed, _failure = await reader
 
@@ -352,8 +410,17 @@ async def test_recovery_below_the_cursor_delivers_nothing_spurious_and_does_not_
     )
     channel = progress_channel(SCHEMA_LABEL, job_id)
 
+    stream_established = asyncio.Event()
+
     async def _wire() -> None:
-        await asyncio.sleep(0.3)
+        # Armed on the OBSERVED stream establishment (headers received =
+        # subscription live; the catch-up here is SILENT by design - the
+        # durable row sits below the recovery cursor - so a frame-based
+        # observable would starve), not a blind sleep that races the
+        # connect under runner load - a pre-subscribe publish would be
+        # lost to the broker, reding the exactly-once counter below with
+        # a missing frame the product never had a chance to deliver.
+        await asyncio.wait_for(stream_established.wait(), timeout=10.0)
         # A replay of what the subscriber already saw below the cursor...
         await redis_client.publish(channel, _pub(job_id, 5, step=5))
         await redis_client.publish(channel, _pub(job_id, 6, step=6))
@@ -378,6 +445,7 @@ async def test_recovery_below_the_cursor_delivers_nothing_spurious_and_does_not_
             server,
             f"/jobs/api/job/{job_id}/progress/stream?last_event_id=6",
             until=lambda _fs: False,
+            on_connected=lambda: stream_established.set(),
         )
 
     # No replay of 5/6, no rewind to the durable 4; 7 and the terminal 8
