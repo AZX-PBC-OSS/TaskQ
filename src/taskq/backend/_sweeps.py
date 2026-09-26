@@ -1042,8 +1042,9 @@ RETURNING e.id"""
 # The retention-policy floor (taskq.timescale.retention_policy_floor): on a
 # policy-armed hypertable, rows older than the policy's own drop_after
 # horizon are dropped by the policy's chunk runs anyway, and re-deleting
-# them row by row here pays the chunk-fan-out tax (measured 6.6x per batch
-# on the 96k-row corpus, benchmarks/timescale_tradeoffs.py) for deletions
+# them row by row here pays the chunk-fan-out tax (the scale sweep measures
+# the row-level drain running 7.8x plain's drain-total at the 100k scale,
+# benchmarks/results/timescale-tradeoffs-sweep.json) for deletions
 # that are not ours to make.  The floor is composed by anchored .replace
 # (the {name}-fragment mechanism _SWEEP_1_SQL uses, NOT str.format: the
 # rendered statement must stay byte-identical when the floor is None, and

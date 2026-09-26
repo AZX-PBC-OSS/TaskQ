@@ -178,10 +178,18 @@ The compression policy's `compress_after` is one chunk interval (the same
 retention/4-clamped derivation the chunk sizing uses): a chunk compresses
 once it has stopped receiving rows. The policy is remove-then-add
 registered like its retention sibling, so a changed
-`archive_retention_period` moves `compress_after` on the next deploy; a
-changed `segmentby`/`orderby` with compressed chunks already on disk
-fails loudly instead — decompress the chunks first, the policy can only
-re-shape what is still rowstore.
+`archive_retention_period` moves `compress_after` on the next deploy. A
+changed `segmentby`/`orderby` with compressed chunks already on disk is
+ACCEPTED by the server — with a NOTICE, not an error ("updated compression
+settings will only apply to future compressions; existing compressed
+chunks will not be recompressed", measured on 2.30.1): the new shape is
+the FUTURE chunks' shape, and the already-compressed ones keep their old
+segmentation until you decompress and recompress them
+(`decompress_chunk`, then `compress_chunk(chunk, recompress => true)`).
+A deploy that changes the columnstore shape therefore converges the
+policy silently and leaves the on-disk chunks mixed; the
+`timescaledb_information.compression_settings` view shows the setting,
+not what each chunk actually carries.
 
 **One server prerequisite, probed and warned about loudly:**
 `timescaledb.max_tuples_decompressed_per_dml_transaction` defaults to
@@ -238,6 +246,11 @@ fully passed its retention. Two consequences to know:
   chunk granularity is the trade. The floor is read from the registered
   policy's own `config` (`drop_after`), not re-derived from the settings, so
   the sweep and the policy can never disagree about where the boundary sits.
+  One more zero needs distinguishing on this mode: an expiry DELETE's first
+  execution after a chunk aged into the columnstore can silently skip the
+  qualifying rows that chunk holds (the decompression path catches up on
+  the next tick — ops.md's watch list has the two zeros and the query that
+  tells them apart).
   Chunk granularity, not row granularity, governs
   the policy drops: the chunk containing the newest rows is dropped only when
   its newest row ages out. The reclaim-outbox
@@ -270,15 +283,19 @@ dashboard row identity-asserted cross-engine before any timing counted):
 
 **Retention drains (the sweeps' real batch shapes):**
 
-| Drain | plain | hypertable (before the floor) | hypertable (since) | ratio since |
-|---|---:|---:|---:|---:|
-| Prune 100k jobs → archive | 4.7 s | 38.4 s → 35.8 s | 35.8 s | ~8× slower (untouched: its DELETE runs on the plain `jobs` table) |
-| Event TTL (96k rows) | 0.4 s | 2.0 s | **0.1 s** | ~4× **faster** |
-| Archive expiry (100k rows) | 1.3 s | 2.5 s | **0.3 s** | ~4× **faster** |
+| Drain | plain | hypertable (since the policy floor) | ratio since |
+|---|---:|---:|---:|
+| Prune 100k jobs → archive | 4.5 s | 35.9 s | ~7.9× slower (untouched by the floor: its DELETE runs on the plain `jobs` table) |
+| Event TTL (96k rows) | 0.30 s | **0.04 s** | ~6.8× **faster** |
+| Archive expiry (100k rows) | 1.14 s | **0.32 s** | ~3.6× **faster** |
 
-Before the retention-policy floor, every bounded batch DELETE fanned out
-over chunks and row-level retention throughput was the hypertable's cost
-(6.6× slower on the event TTL, 1.7× on archive expiry). The floor moved
+Before the retention-policy floor the hypertable ran the same row-level
+batch DELETEs plain still runs, with the chunk fan-out tax on top — the
+pre-floor runs measured ~6.6× plain's per-batch cost on the event TTL
+(those runs predate the committed artifacts; every number in this table
+is read off `benchmarks/results/timescale-tradeoffs.json`, and the same
+tax is visible today on the one drain the floor cannot touch: the
+prune's, ~7.9× above). The floor moved
 the aged end's deletion to the policy's chunk drops — the sweeps' cost on
 the hypertable collapsed to the floor probe plus the empty-window index
 scan, and the two TTL/expiry legs are now FASTER than plain, which still
@@ -291,7 +308,7 @@ chunk interval later at worst, instead of row-exactly.
 | Query | plain p50 | hypertable p50 |
 |---|---:|---:|
 | Live jobs pages/counts (`jobs` is never a hypertable) | ±10% | parity |
-| Archive tab, newest-first page | 46.4–52.7 ms plain-side run spread; 8.6 ms hypertable in both runs | **8.6 ms (5.4–6.1×)** |
+| Archive tab, newest-first page | 45.0 ms | **8.6 ms (5.2×)** |
 
 Chunk pruning serves "recent history" reads from the youngest chunk - the
 dashboard's most common archive read is the hypertable's best case.
@@ -335,25 +352,74 @@ not remove the registered policies: a previously converted schema keeps its
 chunk retention at the last-registered intervals (pinned by
 `tests/test_timescale_deploy_e2e.py::test_flag_off_after_enable_changes_nothing`).
 
-The explicit way back is `disable_hypertables` in
-`src/taskq/timescale.py` — the mirror of `enable_hypertables` (flip the
-flag off first; with the flag still true it is a zero-statement no-op).
-It removes every registered policy (retention and compression),
-idempotently, then per hypertable copies every row into a vanilla table
-whose shape is cloned from a fresh application of the bundled migrations
-themselves — never re-typed by hand, so the restored pkeys, indexes,
-foreign keys, column order, and defaults are byte-equal to a schema that
-never converted — drops the hypertable, moves the vanilla table into
-place, restores every row (count-verified at each hand-off), and restores
-the traded-away behaviors: the bare primary keys reject duplicates again,
-the `job_attempts_archive → jobs_archive` foreign key cascades again, and
-the event id sequence continues from the restored maximum. It is
-idempotent (re-runs converge), safe to run mid-life on a populated
-schema, and pinned end to end by the disable legs in
+The explicit way back is `taskq migrate disable-hypertables` — the CLI
+wiring of `disable_hypertables` in `src/taskq/timescale.py`, the mirror of
+the deploy step's enable side. Flip the flag off first: with the flag still
+true the command exits 1 with the remedy (the library-level gate is a
+zero-statement no-op; the CLI refuses to let a mistyped invocation look
+like a completed disable). The command holds the same migration advisory
+lock the enabling deploy used, and on failure prints the same
+self-diagnosing report `migrate up` prints.
+
+The mechanics per hypertable, rename-first so no order of death loses rows:
+every registered policy (retention and compression) is removed first
+(idempotently, refusing to swap tables under a live policy), then the rows
+are copied into a bare restore heap and the copy is count-verified — this
+exercises the full read path (compressed chunks decompress) BEFORE any name
+moves — then the hypertable RENAMES to `{table}__hypertable_trash`
+(metadata-only and instant: from that moment the rows exist in two places
+and the vanilla name is free), the migration-built vanilla table moves into
+the freed name — its shape is cloned from a fresh application of the bundled
+migrations themselves, never re-typed by hand, so the restored pkeys,
+indexes, foreign keys, column order, and defaults are byte-equal to a schema
+that never converted — and the rows return FROM THE TRASH, twin-verified
+against both copies, with only then the trash and the heap dropped. The
+traded-away behaviors come back: the bare primary keys reject duplicates
+again, the `job_attempts_archive → jobs_archive` foreign key cascades again,
+and the event id sequence continues from the restored maximum. It is
+idempotent (re-runs converge) and pinned end to end by the disable legs in
 `tests/test_timescaledb_hypertables.py` and
-`tests/test_timescale_deploy_e2e.py`. The in-memory twins need nothing:
-vanilla semantics are the default — there is nothing to disable but the
-schema.
+`tests/test_timescale_deploy_e2e.py` (the latter runs the real CLI
+subprocess). The in-memory twins need nothing: vanilla semantics are the
+default — there is nothing to disable but the schema.
+
+Two windows to know about, both bounded, both documented honestly:
+
+* **The copy window (the mirror of enable's pkey-drop window).** Workers
+  keep running through the whole disable: the migration advisory lock
+  serializes migrators only. A row committed between the copy's
+  count-verify and the trash rename lands in the TRASH — and comes back
+  (the rows return from the trash, the superset), so the rename-first
+  swap loses nothing there. The window that remains is the enable path's
+  documented shape: run the disabling deploy in a maintenance window when
+  no worker archives anyway. There is also one loud refusal: the
+  hypertable's widened uniqueness admits rows (same id, different
+  partition-column value) the restored vanilla table's primary key cannot
+  hold; the swap refuses to choose which row survives and names the
+  conflicts instead.
+* **The event id sequence's one honest gap.** The restored sequence is
+  re-anchored to GREATEST(its own position, the restored max(id)) —
+  forward-only. On an EMPTY restored table (a schema whose events were
+  fully reaped before the disable) the anchor re-issues the anchor value
+  itself, and the sequence's own position can sit past ids retention
+  already deleted: the next issued event id can reuse one
+  `job_events_prune_state.pruned_through_id` already claims gone. A
+  caught-up `watch_reclaims` consumer (cursor at or above the watermark)
+  will not see that one event; a lagging consumer fails visibly, as
+  designed. One id, once, at the boundary — the price of anchoring
+  forward-only against a table that cannot say which ids below the
+  sequence's position were already issued and reaped.
+
+Crash safety is structural, not procedural: a crash at ANY swap stage
+(after the verified copy, after the trash rename, after the move-in)
+leaves every row in at least two places, and the NEXT disable's first act —
+before any `DROP SCHEMA CASCADE` — finishes every crashed table's move
+under the same count/twin verification (`_converge_crashed_swaps`): a
+stranded trash renames back, stranded copies are twin-absorbed into the
+live table, and nothing holding a row whose live twin is missing is ever
+dropped. Pinned by the crash matrix in
+`tests/test_timescaledb_hypertables.py::test_disable_crash_at_every_swap_stage_converges`
+(every stage × re-run → the full vanilla shape with every row).
 
 ## Test coverage
 
@@ -392,5 +458,11 @@ by the restored FK, the sequence continuing
 (`test_disable_restores_vanilla_behaviors`), idempotence
 (`test_disable_is_idempotent`), the full
 enable→disable→enable round trip
-(`test_enable_disable_enable_round_trip`), and the deploy-path disable
-end to end (`test_disable_after_deploy_restores_vanilla`).
+(`test_enable_disable_enable_round_trip`), the deploy-path disable
+end to end (`test_disable_after_deploy_restores_vanilla`) plus the real
+`taskq migrate disable-hypertables` subprocess
+(`test_disable_hypertables_cli_subprocess_end_to_end`), the crash matrix
+(killed at every swap stage, converging on the re-run with every row —
+`test_disable_crash_at_every_swap_stage_converges`), and the loud refusal
+of rows the restored table's primary key could not hold
+(`test_disable_refuses_vanilla_key_collisions_loudly`).

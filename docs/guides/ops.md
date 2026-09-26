@@ -1377,9 +1377,9 @@ rules are [timescaledb.md](timescaledb.md)'s subject. This section is the **deci
 
 | Your situation | Decision | The measured evidence |
 |---|---|---|
-| Archive below ~10,000 rows | **Stay plain.** | 10k is the smallest swept scale, and no measured advantage for the hypertable justifies the machinery there: the archive page is already 3.8× faster, but at that size it is single-digit milliseconds either way. Plain is the simplest machinery and keeps every row-exact deletion guarantee. |
-| Big archive + read-heavy admin surfaces | **Hypertables win clearly.** | The admin archive tab's newest-first page at the 1M-job corpus: **8.6 ms vs 46.4 ms plain (~5.4×)** in the recorded run (the trade-off doc's headline run measured 52.7 ms plain — plain-side run spread; the hypertable side held 8.6 ms). Since the retention-policy floor, the retention **drains run ~4× FASTER than plain**: event TTL 0.05 s vs 0.37 s, archive expiry 0.33 s vs 1.15 s. The columnstore shrinks archive storage **−84 % (6.2×)** on the 400k-row corpus. |
-| Very high throughput fleets | **Mind the prune→archive move — it is a flat ~8× slower on the hypertable.** | Per 100k jobs moved: **4.7 s plain vs 35.8 s hypertable** at the 1M corpus. Scale-invariant above ~100k rows: the drain-total penalty is 7.1× at 100k, 7.7× at 400k, 6.9× at 2M, and the per-batch p50 carries the same ~7.7× at both 400k and 2M. The DELETE half of the move runs on the never-converted `jobs` table in both modes, so the entire penalty is the INSERT half — chunk routing and per-chunk index maintenance — which is inherent to the feature: no setting removes it. |
+| Archive below ~10,000 rows | **Stay plain.** | 10k is the smallest swept scale, and no measured advantage for the hypertable justifies the machinery there: the archive page is already 4.9× faster, but at that size it is single-digit milliseconds either way. Plain is the simplest machinery and keeps every row-exact deletion guarantee. |
+| Big archive + read-heavy admin surfaces | **Hypertables win clearly.** | The admin archive tab's newest-first page at the 1M-job corpus: **8.6 ms vs 45.0 ms plain (~5.2×)** in the committed run (`timescale-tradeoffs.json`; plain p95 49.1 ms — the plain side carries the run-to-run spread, the hypertable side held 8.6 ms across runs). Since the retention-policy floor, the retention **drains run FASTER than plain**: event TTL 0.04 s vs 0.30 s (~6.8×), archive expiry 0.32 s vs 1.14 s (~3.6×). The columnstore shrinks archive storage **−84 % (6.18×)** on the 400k-row corpus. |
+| Very high throughput fleets | **Mind the prune→archive move — it is a flat ~8× slower on the hypertable.** | Per 100k jobs moved: **4.5 s plain vs 35.9 s hypertable** at the 1M corpus. Scale-invariant above ~100k rows: the drain-total penalty is 7.8× at 100k, 8.0× at 400k, 8.1× at 2M, and the per-batch p50 carries the same ~8-9× at both 400k and 2M. The DELETE half of the move runs on the never-converted `jobs` table in both modes, so the entire penalty is the INSERT half — chunk routing and per-chunk index maintenance — which is inherent to the feature: no setting removes it. |
 | Forensic-grade audit needs | **Read the guarantee gradient first.** | On hypertables, `expire_at` is honored **exactly inside chunk lifetime** (the expiry sweep stays row-exact there), but the aged end is **chunk-dropped silently, watermark-blind**: the policy advances no `pruned_through_id`, so a stale `watch_reclaims` cursor loses events with no gap signal — keep the cursor strictly inside `event_retention_period` (or one chunk interval, whichever is larger). The re-archive fold guard **can lose its witness**: "archived at most once" holds only while the archive chunk lives. And `job_attempts_archive`'s dropped cascade means **parentless attempt rows stay queryable up to one chunk interval** after the parent's chunk drops. Vanilla keeps all four guarantees; hypertables trade them for chunk-drop retention. |
 
 Two write-path facts that do **not** decide the trade, but bound it: enqueue parity holds
@@ -1393,18 +1393,18 @@ The scale sweep (10k / 100k / 400k / 2M archive rows, fresh identical container 
 measured both curves:
 
 - **The read win exists from ~10k rows and decays slowly.** The archive tab's newest-first page
-  is faster on the hypertable at **every** swept scale: 3.8× at 10k, 8.2× at 100k, 7.0× at 400k,
-  3.3× at 2M. It never crosses over — it narrows.
-- **The write penalty saturates at a flat ~7-8× above 100k rows.** The prune→archive drain-total
-  penalty goes 3.8× at 10k → 7.1× → 7.7× → 6.9×, and the per-batch p50 sits at the same ~7.7×
+  is faster on the hypertable at **every** swept scale: 4.9× at 10k, 8.2× at 100k, 7.2× at 400k,
+  3.2× at 2M. It never crosses over — it narrows.
+- **The write penalty saturates at a flat ~8× above 100k rows.** The prune→archive drain-total
+  penalty goes 4.9× at 10k → 7.8× → 8.0× → 8.1×, and the per-batch p50 sits at the same ~8-9×
   at both 400k and 2M. Above ~100k rows the penalty is a constant ratio, not a growing one.
 
 So the decision above ~10k archive rows is **your read/write mix**: deployments whose admin
 surfaces read recent history heavily win on the hypertable at any size; deployments that only
 write the archive and rarely read it pay the flat insert tax for nothing. Live-table reads are
 structurally untouched either way (`jobs` is never converted; the live pages measured at parity).
-One recorded exception to re-check against your own fleet: the all-statuses count read 50.7 ms vs
-13.6 ms on the hypertable engine at 1M — a planner artifact on a table that is plain in both
+One recorded exception to re-check against your own fleet: the all-statuses count read 51.3 ms vs
+14.1 ms on the hypertable engine at 1M — a planner artifact on a table that is plain in both
 modes, so treat a count anomaly there with suspicion, not as an engine cost.
 
 ### Planning the enabling deploy
@@ -1450,7 +1450,31 @@ modes, so treat a count anomaly there with suspicion, not as an engine cost.
   breakage.** Above the floor the aged end belongs to the policy (silent, chunk-granular), so the
   event-TTL and archive-expiry sweeps' aged-end deleted counts fall toward zero and their
   durations collapse to the floor probe plus an empty-window index scan. "The expiry sweep
-  deletes nothing" is the floor **working** on this mode. The signals that still mean what they
+  deletes nothing" is the floor **working** on this mode — but it is not the ONLY zero, and the
+  two must be told apart. On a compressed chunk, an expiry DELETE's **first execution can
+  silently skip the qualifying rows that chunk holds** (measured on 2.30.1, deterministic,
+  independent of `max_tuples_decompressed_per_dml_transaction` and of every
+  `enable_dml_decompression`-family GUC: a probe with 40 qualifying rows — 12 in young chunks,
+  28 in compressed ones — deleted 12 on the first execution, then 28 on the second, then 0;
+  with the qualifying set entirely inside freshly compressed chunks the first tick deletes 0
+  outright). The mechanism is TimescaleDB's DML-decompression path trailing the chunk's
+  compression state by one execution — the next sweep tick (the same statement, executed again)
+  catches up, and there is no GUC workaround: `enable_dml_decompression = off` does not
+  sidestep the lag, it hard-errors the delete. So a first-tick 0 on a compressed chunk can be
+  this one-tick catch-up, while the floor's zero is the ZERO-DELETES-BECAUSE-NOTHING-QUALIFIED
+  case. Distinguish them by counting what still qualifies: rows below the
+  floor (the policy's) never appear in this count, so what it returns is the sweep's own
+  work that did not happen yet (0 = the floor working; > 0 on a compressed chunk after a first
+  0-tick = the catch-up; > 0 persisting across ticks = a stuck sweep, page):
+
+  ```sql
+  -- read drop_after from timescaledb_information.jobs.config (the policy's own horizon)
+  SELECT count(*) FROM "{schema}".jobs_archive
+  WHERE expire_at < statement_timestamp()
+    AND finished_at >= statement_timestamp() - '{drop_after}'::interval;
+  ```
+
+  The signals that still mean what they
   meant are the stall families: `taskq_maintenance_leader_sweep_last_success_seconds` (a sweep
   that stops completing) and `taskq_maintenance_leader_sweep_timeouts_total` (batches aborted by
   deadlines). Watch those; do not alert on zero aged-end deletes.
@@ -1460,28 +1484,46 @@ modes, so treat a count anomaly there with suspicion, not as an engine cost.
 
 ### Turning it back off
 
-The symmetric disable path is landing with this branch: `disable_hypertables` in
-`src/taskq/timescale.py` (present in the working tree; the deploy step itself wires the enable
-side, and the function is not in a tagged release yet — check the branch state before citing it
-in a runbook). The procedure and its semantics:
+The symmetric disable path is wired into the CLI: `taskq migrate
+disable-hypertables` (the CLI form of `disable_hypertables` in
+`src/taskq/timescale.py`, the mirror of the deploy step's enable side). The
+procedure and its semantics:
 
-1. **Flip `TASKQ_TIMESCALEDB_HYPERTABLES=false` first** — the mirror of enable's gate: with the
-   flag still true, a disable run is a zero-statement no-op.
+1. **Flip `TASKQ_TIMESCALEDB_HYPERTABLES=false` first** — the mirror of enable's gate. With the
+   flag still true the command exits 1 with the remedy (the library-level gate is a zero-statement
+   no-op; the CLI refuses to let a mistyped invocation look like a completed disable).
 2. **Run the disable** under the same migration advisory lock context the enabling deploy used.
    It removes every registered retention and compression policy (refusing to swap tables under a
-   live policy), then per hypertable: clones the vanilla shape from a scratch schema
-   (`{schema}__vanilla`) that the **bundled migrations themselves build** — the restored pkeys,
-   indexes, foreign keys, and defaults are the migrations' own output, never re-typed by hand —
-   stages the rows into a restore heap with count verification at every hand-off, drops the
-   hypertable, moves the migration-built table into place, restores the rows, and restores the
-   vanilla behaviors idempotently: the bare primary keys reject duplicates again, the
-   `job_attempts_archive → jobs_archive` cascade works again, and the event id sequence
-   re-anchors past the restored maximum (forward-only, never backward).
-3. **A crashed run converges on re-run.** The staging schema is dropped on success and left
-   behind by a crash; the next disable cleans it up and finishes. The one honest window is the
-   mirror of enable's: between the hypertable drop and the moved-in table, a crash leaves the
-   table missing — the re-run's restore fails loudly, and the finish-by-hand step is one
-   `ALTER TABLE "{staging}"."{table}" SET SCHEMA "{schema}";`.
+   live policy), then per hypertable, RENAME-FIRST: copies the rows into a restore heap and
+   count-verifies the copy (this exercises the full read path — compressed chunks decompress —
+   before any name moves), renames the hypertable to `{table}__hypertable_trash` (metadata-only:
+   from that moment the rows exist in two places and the vanilla name is free), moves the
+   migration-built vanilla table into place from the `{schema}__vanilla` scratch schema the
+   **bundled migrations themselves build** — the restored pkeys, indexes, foreign keys, and
+   defaults are the migrations' own output, never re-typed by hand — returns the rows FROM THE
+   TRASH twin-verified against both copies, and only then drops the trash and the heap. The
+   vanilla behaviors are restored idempotently: the bare primary keys reject duplicates again,
+   the `job_attempts_archive → jobs_archive` cascade works again, and the event id sequence
+   re-anchors past the restored maximum (forward-only, never backward; the re-anchor's one
+   honest gap — an EMPTY restored table can re-issue an event id the prune watermark already
+   claims — is stated in [timescaledb.md](timescaledb.md#turning-it-back-off)).
+3. **A crashed run converges on re-run, structurally.** A crash at ANY swap stage leaves every
+   row in at least two places, and the next disable's first act — before any `DROP SCHEMA
+   CASCADE` — finishes every crashed table's move under the same count/twin verification: a
+   stranded trash renames back, stranded copies are absorbed into the live table, and nothing
+   holding a row whose live twin is missing is ever dropped. There is no hand-finishing step.
+4. **Run it in a maintenance window when no worker archives anyway** — the same caveat the
+   enabling deploy carries. Workers keep running through the whole disable (the advisory lock
+   serializes migrators only); the rename-first swap returns the rows from the trash, so a row
+   committed mid-swap lands in the trash and comes back — the copy window loses nothing — but
+   the swap's locks and the widened-uniqueness edge (below) are sized for a quiet archive all
+   the same. One loud refusal: rows the hypertable's widened uniqueness admitted (same id,
+   different partition-column value) cannot come back into the restored table's bare primary
+   key; the swap names the conflicts and stops rather than choosing which row survives.
+
+Roll-forward semantics hold on both paths: the flag-off deploy issues zero statements and a
+previously converted schema keeps its chunk retention at the last-registered intervals until a
+disable run actually executes — nothing between the flip and the disable degrades a live fleet.
 
 Roll-forward semantics hold on both paths: the flag-off deploy issues zero statements and a
 previously converted schema keeps its chunk retention at the last-registered intervals until a
