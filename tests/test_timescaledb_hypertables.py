@@ -1760,3 +1760,230 @@ async def test_decompression_guc_warning_fires_at_default_and_quiets_when_raised
     finally:
         await conn.execute(f'DROP SCHEMA IF EXISTS "{ts_schema}" CASCADE')
         await conn.close()
+
+
+# ── The disable crash matrix: every swap stage, converge on re-run ────────
+
+
+class _CrashAtSwapStageConn:
+    """A forwarding proxy that dies at ONE disable-swap stage.
+
+    Every statement runs for real against the server until the stage's
+    statement arrives; the proxy raises INSTEAD of forwarding it — the
+    same observable shape as the process being SIGKILLed at that exact
+    point of the swap, deterministic and without any sleep. The stages,
+    matched on the swap's own statements:
+
+    * ``after-copy``: the trash RENAME (the copy is verified, no name has
+      moved) — dies before the rename.
+    * ``after-trash-rename``: the staging table's SET SCHEMA move-in —
+      dies after the trash rename, with the rows in two places.
+    * ``after-set-schema``: the twin-guarded rows-return INSERT — dies
+      after the move-in (and the retype and the sequence anchor), before
+      any row returned.
+    * ``after-insert``: the trash DROP — dies with the rows already live
+      in the vanilla table, both orphan copies still on disk.
+    """
+
+    _STAGES = (
+        "after-copy",
+        "after-trash-rename",
+        "after-set-schema",
+        "after-insert",
+    )
+
+    def __init__(self, inner: asyncpg.Connection, stage: str, victim_table: str) -> None:
+        assert stage in self._STAGES
+        self._inner = inner
+        self._stage = stage
+        self._victim = victim_table
+        self._fired = False
+
+    def _hits(self, sql: str) -> bool:
+        statement = sql.strip()
+        if self._stage == "after-insert":
+            # The trash drop names only the trash table; the plain victim
+            # token never appears.
+            return statement.startswith("DROP TABLE") and (
+                f'"{self._victim}__hypertable_trash"' in statement
+            )
+        # The quoted token disambiguates: '"job_events"' matches the swap
+        # statement about job_events itself, never the trash-table name
+        # '"job_events__hypertable_trash"' another table's stage runs on.
+        if f'"{self._victim}"' not in statement:
+            return False
+        if self._stage == "after-copy":
+            return statement.startswith("ALTER TABLE") and "RENAME TO" in statement
+        if self._stage == "after-trash-rename":
+            return statement.startswith("ALTER TABLE") and "SET SCHEMA" in statement
+        return statement.startswith("INSERT INTO") and "WHERE NOT EXISTS" in statement
+
+    async def execute(self, sql: str, *args: Any) -> str:
+        if not self._fired and self._hits(sql):
+            self._fired = True
+            raise RuntimeError(f"injected crash at the disable swap stage: {self._stage}")
+        return await self._inner.execute(sql, *args)
+
+    async def fetchval(self, sql: str, *args: Any) -> Any:
+        return await self._inner.fetchval(sql, *args)
+
+    async def fetch(self, sql: str, *args: Any) -> list[Any]:
+        return await self._inner.fetch(sql, *args)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+_CRASH_MATRIX_SEED = (50, 20, 30)
+
+
+async def _disable_crash_matrix_case(
+    timescale_dsn: str,
+    schema: str,
+    stage: str,
+    victim_table: str,
+) -> None:
+    """One matrix cell: crash the disable mid-swap on *victim_table* at
+    *stage*, then re-run clean and demand the full vanilla shape with
+    EVERY row — the structural convergence, never a stranded heap."""
+    fresh = "tsfresh_" + new_uuid().hex[:12]
+    conn = await asyncpg.connect(timescale_dsn)
+    try:
+        await _migrate(conn, schema)
+        await enable_hypertables(conn, schema=schema, settings=_ts_settings(timescale_dsn, schema))
+        await _schedule_policies(conn, schema, next_start=datetime.now(UTC) + timedelta(days=3650))
+        seeded = await _seed_history(conn, schema, n_events=50, n_archive=20, n_attempts=30)
+        assert set(seeded.values()) == set(_CRASH_MATRIX_SEED)
+
+        proxy = _CrashAtSwapStageConn(conn, stage, victim_table)  # pyright: ignore[reportArgumentType]  # Why: the proxy IS the contract under test.
+        with pytest.raises(RuntimeError, match="injected crash"):
+            await disable_hypertables(
+                proxy, schema=schema, settings=_vanilla_settings(timescale_dsn, schema)
+            )
+        assert proxy._fired  # Why: the crash must actually have fired at the stage under test.
+
+        # The re-run converges: the vanilla shape, every row, nothing left.
+        report = await disable_hypertables(
+            conn, schema=schema, settings=_vanilla_settings(timescale_dsn, schema)
+        )
+        assert await _hypertable_names(conn, schema) == set(), (
+            f"stage {stage}: the converging re-run must leave zero hypertables"
+        )
+        # The crashed run's completed swaps stay done (the swap order is
+        # jobs_archive, job_attempts_archive, job_events): the re-run
+        # converts exactly the victim — by crash convergence or the normal
+        # swap — and every table after it in the order.
+        order = ("jobs_archive", "job_attempts_archive", "job_events")
+        expected_converted = set(order[order.index(victim_table) :])
+        assert set(report.converted) == expected_converted, (
+            f"stage {stage}: the re-run must convert exactly the crashed "
+            f"table and the stragglers after it, got {report.converted}"
+        )
+        for table, count in seeded.items():
+            live = await conn.fetchval(f'SELECT count(*) FROM "{schema}"."{table}"')
+            assert live == count, (
+                f"stage {stage}: every {table} row must survive the crash and the "
+                f"converging re-run ({live} of {count})"
+            )
+        for orphan in (
+            "jobs_archive__restore",
+            "job_attempts_archive__restore",
+            "job_events__restore",
+            "jobs_archive__hypertable_trash",
+            "job_attempts_archive__hypertable_trash",
+            "job_events__hypertable_trash",
+        ):
+            left = await conn.fetchval(
+                "SELECT to_regclass($1) IS NOT NULL", f'"{schema}"."{orphan}"'
+            )
+            assert not left, f"stage {stage}: {orphan} must be gone after the re-run"
+        staging_left = await conn.fetchval(
+            "SELECT to_regclass($1) IS NOT NULL", f'"{schema}__vanilla".jobs'
+        )
+        assert not staging_left, f"stage {stage}: the staging schema must be gone"
+
+        # The converged shape is byte-equal to a fresh vanilla migration's.
+        await _migrate(conn, fresh)
+        for table in ("job_events", "jobs_archive", "job_attempts_archive"):
+            disabled_shape = await _shape_of(conn, schema, table)
+            fresh_shape = await _shape_of(conn, fresh, table)
+            assert disabled_shape == fresh_shape, (
+                f"stage {stage}: the converged {table} must be byte-equal to a "
+                f"fresh vanilla migration's shape:\nrestored={disabled_shape}\n"
+                f"fresh={fresh_shape}"
+            )
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{fresh}" CASCADE')
+        await conn.close()
+
+
+@pytest.mark.parametrize(
+    "stage,victim_table",
+    [
+        ("after-copy", "job_events"),
+        ("after-trash-rename", "job_events"),
+        ("after-set-schema", "job_events"),
+        ("after-insert", "job_events"),
+        ("after-trash-rename", "jobs_archive"),
+    ],
+)
+async def test_disable_crash_at_every_swap_stage_converges(
+    timescale_dsn: str, stage: str, victim_table: str
+) -> None:
+    """The crash matrix: a disable killed at EVERY swap stage converges on
+    the re-run to the full vanilla shape with EVERY row.
+
+    The swap is rename-first (the copy is count-verified, the hypertable
+    RENAMES to ``{table}__hypertable_trash``, the migration-built table
+    moves into the freed name, the rows return from the trash twin-
+    verified, and only then is the trash dropped), so after the rename the
+    rows exist in TWO places and no order of death loses them. The re-run's
+    FIRST act — before any ``DROP SCHEMA CASCADE`` — finishes every crashed
+    table's move under the same count/twin verification. Pinned here at
+    every stage, on the last table of the swap order (job_events, so the
+    earlier tables' completions ride along) and on the first (jobs_archive,
+    whose retype dependency is the one the old ordering's CASCADE could
+    destroy)."""
+    await _disable_crash_matrix_case(
+        timescale_dsn, f"tsmtx_{new_uuid().hex[:12]}", stage, victim_table
+    )
+
+
+async def test_disable_refuses_vanilla_key_collisions_loudly(timescale_dsn: str) -> None:
+    """The one unrecoverable mismatch refuses loudly BEFORE any name
+    moves: the hypertable's widened uniqueness admits rows (same id,
+    different partition-column value) the restored vanilla table's primary
+    key cannot hold. The swap refuses to choose which row survives; the
+    hypertable is untouched after the refusal."""
+    schema = "tsdup_" + new_uuid().hex[:12]
+    conn = await asyncpg.connect(timescale_dsn)
+    try:
+        await _migrate(conn, schema)
+        await enable_hypertables(conn, schema=schema, settings=_ts_settings(timescale_dsn, schema))
+        # The collision: the SAME id twice at different finished_at — the
+        # widened UNIQUE (id, finished_at) holds both, vanilla's bare
+        # PRIMARY KEY (id) cannot hold either of them twice.
+        jid = new_uuid()
+        await conn.executemany(
+            f"""INSERT INTO {schema}.jobs_archive (
+                id, actor, queue, payload, status, attempt, max_attempts,
+                retry_kind, expire_at, finished_at)
+            VALUES ($1, 'a', 'q', '{{}}'::jsonb, 'succeeded', 0, 3, 'transient',
+                clock_timestamp() + interval '365 days', clock_timestamp() + ($2 * interval '1 hour'))""",
+            [(jid, i) for i in range(2)],
+        )
+        with pytest.raises(RuntimeError, match="vanilla-key collision"):
+            await disable_hypertables(
+                conn, schema=schema, settings=_vanilla_settings(timescale_dsn, schema)
+            )
+        # Nothing was mutated: the hypertable is still armed, rows intact.
+        assert await _hypertable_names(conn, schema) == {
+            "job_events",
+            "jobs_archive",
+            "job_attempts_archive",
+        }
+        assert await conn.fetchval(f'SELECT count(*) FROM "{schema}".jobs_archive') == 2
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()

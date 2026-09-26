@@ -652,9 +652,15 @@ async def _register_compression_policies(
     function), then the compression policy is registered at one chunk
     interval — a chunk compresses once it has stopped receiving rows.
     Remove-then-add means a changed ``archive_retention_period`` moves
-    the compress_after on the next deploy; a segmentby/orderby CHANGE
-    with compressed chunks already on disk fails loudly at the settings
-    statement (decompress first).
+    the compress_after on the next deploy. A segmentby/orderby CHANGE
+    with compressed chunks already on disk is ACCEPTED by the server —
+    with a NOTICE ("updated compression settings will only apply to
+    future compressions; existing compressed chunks will not be
+    recompressed", measured on 2.30.1), not an error: the new shape is
+    the future chunks' shape and the compressed ones keep their old
+    segmentation until decompressed and recompressed by hand. The
+    deploy-side convergence is therefore silent by design; the docs (and
+    the compression_settings view) name the gap.
     """
     compress_after = _chunk_interval(settings.archive_retention_period)
     registered: list[str] = []
@@ -791,8 +797,8 @@ def _format_interval(td: timedelta) -> str:
 # is interpolated.  On vanilla Postgres the views do not exist and the
 # statement raises UndefinedTable: caught below, the fail-open.
 _RETENTION_POLICY_FLOOR_PROBE_SQL = """\
-SELECT ((j.config)::text::jsonb ->> 'drop_after')::interval AS drop_after,
-       statement_timestamp() AS db_now
+SELECT MIN(((j.config)::text::jsonb ->> 'drop_after')::interval) AS drop_after,
+       MIN(statement_timestamp()) AS db_now
 FROM timescaledb_information.hypertables h
 JOIN timescaledb_information.jobs j
   ON j.hypertable_schema = h.hypertable_schema
@@ -807,7 +813,9 @@ WHERE h.hypertable_schema = $1
         AND d.column_name = $3
         AND d.dimension_type = 'Time'
   )
-LIMIT 1"""
+-- Aggregates (MIN), not LIMIT 1 without ORDER BY: the single-row answer is
+-- deterministic no matter the catalog's physical order, and the no-policy
+-- case still returns exactly one row of NULLs (the caller's None)."""
 
 
 async def retention_policy_floor(
@@ -971,30 +979,36 @@ async def _remove_registered_policies(
         jobs = []
     # Removal is hypertable-scoped: ``if_exists`` guards a missing POLICY,
     # not a plain TABLE (a second disable run finds plain tables here and
-    # must skip them — remove_retention_policy on one errors loudly).
+    # must skip them — remove_retention_policy on one errors loudly). The
+    # trash name is checked too: a crash between the rename-first swap's
+    # trash rename and its drop leaves the retired hypertable registered
+    # under ``{table}__hypertable_trash``, and a policy that outlived the
+    # crashed run's removal must not survive into the converging re-run.
     for table in ("jobs_archive", "job_attempts_archive", "job_events"):
-        if not await _is_hypertable(conn, schema, table):
-            continue
-        await conn.execute(
-            "SELECT remove_retention_policy($1::regclass, if_exists => TRUE)",
-            f'"{schema}"."{table}"',
-        )
-    for table in ("jobs_archive", "job_attempts_archive"):
-        if not await _is_hypertable(conn, schema, table):
-            continue
-        target = f'"{schema}"."{table}"'
-        # Either removal API landing is enough: the new-style columnstore
-        # name is a procedure on some versions, the legacy name a function
-        # (probed, the house pattern).
-        for remover in (
-            "CALL remove_columnstore_policy($1::regclass, if_exists => TRUE)",
-            "SELECT remove_compression_policy($1::regclass, if_exists => TRUE)",
-        ):
-            try:
-                await conn.execute(remover, target)
-                break
-            except Exception:  # noqa: S112  # Why: probe across extension versions; a surviving policy fails the loud check below.
+        for name in (table, f"{table}{_TRASH_SUFFIX}"):
+            if not await _is_hypertable(conn, schema, name):
                 continue
+            await conn.execute(
+                "SELECT remove_retention_policy($1::regclass, if_exists => TRUE)",
+                f'"{schema}"."{name}"',
+            )
+    for table in ("jobs_archive", "job_attempts_archive"):
+        for name in (table, f"{table}{_TRASH_SUFFIX}"):
+            if not await _is_hypertable(conn, schema, name):
+                continue
+            target = f'"{schema}"."{name}"'
+            # Either removal API landing is enough: the new-style columnstore
+            # name is a procedure on some versions, the legacy name a function
+            # (probed, the house pattern).
+            for remover in (
+                "CALL remove_columnstore_policy($1::regclass, if_exists => TRUE)",
+                "SELECT remove_compression_policy($1::regclass, if_exists => TRUE)",
+            ):
+                try:
+                    await conn.execute(remover, target)
+                    break
+                except Exception:  # noqa: S112  # Why: probe across extension versions; a surviving policy fails the loud check below.
+                    continue
     remaining = await conn.fetch(
         """
         SELECT hypertable_name, proc_name FROM timescaledb_information.jobs
@@ -1032,6 +1046,58 @@ async def _remove_registered_policies(
 # retype only when the column still points at the staging schema's type,
 # the sequence re-anchor only to GREATEST(existing state, max(id)) —
 # never backward past a production sequence's own position.
+
+#: The trash name the rename-first swap gives the retired hypertable
+#: (``ALTER TABLE ... RENAME TO``): metadata-only and instant, and the
+#: moment the rows exist in TWO places. The trash survives — twin-verified
+#: — until the swap's last statement, so no crash order strands rows in a
+#: table whose only copy is about to be destroyed.
+_TRASH_SUFFIX = "__hypertable_trash"
+
+#: The per-table natural key deciding whether an orphan copy's rows are
+#: all accounted for in the live table (aliased ``o`` = orphan, ``l`` =
+#: live). A full twin match is the ONLY license the disable path has to
+#: drop a table holding rows.
+_TWIN_MATCH: dict[str, str] = {
+    "jobs_archive": "l.id = o.id",
+    "job_events": "l.id = o.id",
+    "job_attempts_archive": "l.job_id = o.job_id AND l.attempt = o.attempt",
+}
+
+#: The vanilla primary key the restored table will enforce, whose columns
+#: the twin guard keys on. The hypertable's WIDENED uniqueness admits rows
+#: vanilla cannot hold (same id, different partition-column value), so the
+#: swap refuses loudly — before any name moves — when the source carries
+#: duplicates the restored table could never accept.
+_VANILLA_KEY: dict[str, tuple[str, ...]] = {
+    "jobs_archive": ("id",),
+    "job_events": ("id",),
+    "job_attempts_archive": ("job_id", "attempt"),
+}
+
+#: The staging foreign keys that travel with a table moved out of (or into)
+#: the staging schema. They reference the staging schema by name and must
+#: drop before the staging schema itself can drop cleanly; the real ones
+#: come back against this schema's tables in the behavior restore.
+_TRAVELED_FOREIGN_KEYS: dict[str, tuple[str, ...]] = {
+    "job_events": ("job_events_job_id_fkey",),
+    "job_attempts_archive": ("job_attempts_archive_job_id_fkey",),
+}
+
+
+async def _drop_traveled_foreign_keys(conn: asyncpg.Connection, schema: str, table: str) -> None:
+    """Drop the staging foreign keys a table carried across a schema move
+    (idempotent; ``jobs_archive`` references nothing and has none)."""
+    for name in _TRAVELED_FOREIGN_KEYS.get(table, ()):
+        await conn.execute(f'ALTER TABLE "{schema}"."{table}" DROP CONSTRAINT IF EXISTS {name}')
+
+
+async def _table_exists(conn: asyncpg.Connection, schema: str, table: str) -> bool:
+    """The qualified relation resolves in the catalogs (tables only in
+    practice: every caller passes module-owned names)."""
+    return bool(await conn.fetchval("SELECT to_regclass($1) IS NOT NULL", f'"{schema}"."{table}"'))
+
+
 async def _restore_vanilla_behaviors(conn: asyncpg.Connection, schema: str) -> None:
     """The pieces the swap's moved-in table cannot carry by itself: the
     ``status`` enum re-pointed at THIS schema's ``job_status`` (the moved
@@ -1043,37 +1109,20 @@ async def _restore_vanilla_behaviors(conn: asyncpg.Connection, schema: str) -> N
     # jobs_archive.status: the moved table's type must be THIS schema's
     # enum (identical labels, created from the same migration), or the
     # staging drop would take the column's type with it.
-    udt_schema = await conn.fetchval(
-        """
-        SELECT udt_schema FROM information_schema.columns
-        WHERE table_schema = $1 AND table_name = 'jobs_archive' AND column_name = 'status'
-        """,
-        schema,
-    )
-    if udt_schema is not None and udt_schema != schema:
-        await conn.execute(
-            f'ALTER TABLE "{schema}".jobs_archive '
-            f'ALTER COLUMN status TYPE "{schema}".job_status '
-            f'USING status::text::"{schema}".job_status'
-        )
-    # job_events.id: the moved-in sequence keeps the vanilla name and
-    # default (the owned sequence moves with SET SCHEMA), but its state
-    # is the staging twin's. Re-anchor to GREATEST(own state, max(id)):
-    # forward-only, so a healthy production sequence never regresses.
-    if await conn.fetchval("SELECT to_regclass($1) IS NOT NULL", f'"{schema}".job_events_id_seq'):
-        await conn.execute(
-            # Why noqa S608: schema is _IDENT_RE-validated in disable_hypertables;
-            # the sequence and column names are module-owned constants, never input.
-            f"""SELECT setval(
-                '{schema}.job_events_id_seq',
-                GREATEST(
-                    (SELECT COALESCE(last_value, 1) FROM pg_sequences
-                     WHERE schemaname = '{schema}' AND sequencename = 'job_events_id_seq'),
-                    (SELECT COALESCE(max(id), 1) FROM "{schema}".job_events)
-                ),
-                EXISTS (SELECT 1 FROM "{schema}".job_events)
-            )"""  # noqa: S608
-        )
+    await _retype_archive_status_if_needed(conn, schema)
+    # job_events.id: re-anchor past the restored maximum — forward-only,
+    # so a healthy production sequence never regresses. One honest limit
+    # (pinned in _anchor_event_id_sequence): on an EMPTY restored table
+    # the anchor re-issues the anchor value itself, and a production
+    # sequence can sit past the restored max(id) — ids below it that
+    # retention already deleted. The next issued id can reuse one
+    # ``pruned_through_id`` already claims gone: a caught-up
+    # ``watch_reclaims`` consumer (cursor at or above the watermark) will
+    # not see that one event; a consumer below the watermark fails
+    # visibly as designed. One id, once, at the boundary — the price of
+    # anchoring forward-only against a table that cannot say which ids
+    # below the sequence's own position were already issued and reaped.
+    await _anchor_event_id_sequence(conn, schema, floor_table="job_events")
     # The two foreign keys, byte-exact vanilla names, idempotent DO
     # blocks (the constraint-name guards are scoped to this schema and
     # table — another schema's same-named constraint must not skip it).
@@ -1092,6 +1141,302 @@ async def _restore_vanilla_behaviors(conn: asyncpg.Connection, schema: str) -> N
     )
 
 
+async def _retype_archive_status_if_needed(conn: asyncpg.Connection, schema: str) -> None:
+    """``jobs_archive.status`` re-pointed at THIS schema's ``job_status`` —
+    idempotent (a no-op when the column already types it, or the table is
+    absent).
+
+    This must run BEFORE any ``DROP SCHEMA "{staging}" CASCADE`` that a
+    disable's crash convergence precedes: a crash between the moved-in
+    table's arrival and its retype leaves the live ``jobs_archive`` typing
+    its ``status`` column with the STAGING schema's enum, and the type
+    dependency lets a staging-schema CASCADE drop the live table — with
+    any rows on it — from under a healthy fleet.
+    """
+    udt_schema = await conn.fetchval(
+        """
+        SELECT udt_schema FROM information_schema.columns
+        WHERE table_schema = $1 AND table_name = 'jobs_archive' AND column_name = 'status'
+        """,
+        schema,
+    )
+    if udt_schema is not None and udt_schema != schema:
+        await conn.execute(
+            f'ALTER TABLE "{schema}".jobs_archive '
+            f'ALTER COLUMN status TYPE "{schema}".job_status '
+            f'USING status::text::"{schema}".job_status'
+        )
+
+
+async def _anchor_event_id_sequence(
+    conn: asyncpg.Connection, schema: str, *, floor_table: str
+) -> None:
+    """Re-anchor ``job_events``' id sequence past the rows in *floor_table*.
+
+    GREATEST of the sequence's own state and the floor table's ``max(id)`` —
+    forward-only, never backward past a production sequence's own position —
+    with the anchor's ``is_called`` flag derived from the floor table's
+    emptiness. The swap calls it BEFORE the rows return (the moved-in table's
+    sequence is the staging twin's — fresh, starting at 1, exactly where the
+    trash's ids start: a worker's insert in that window would collide) and
+    the behavior restore calls it again after (idempotent, forward-only).
+
+    One honest limit, pinned here and in the docs: on an EMPTY floor table
+    the re-anchor re-issues the anchor value itself (``is_called`` false),
+    and a production sequence can sit past the restored ``max(id)`` — ids
+    below it that retention already deleted. The next issued id can
+    therefore reuse one ``job_events_prune_state.pruned_through_id`` already
+    claims gone; a caught-up ``watch_reclaims`` consumer (cursor at or above
+    the watermark) will not see that one event. See
+    :func:`_restore_vanilla_behaviors` for the full statement of the trade.
+    """
+    if not await conn.fetchval(
+        "SELECT to_regclass($1) IS NOT NULL", f'"{schema}".job_events_id_seq'
+    ):
+        return
+    await conn.execute(
+        # Why noqa S608: schema is _IDENT_RE-validated in disable_hypertables;
+        # the sequence, floor-table and column names are module-owned
+        # constants, never input.
+        f"""SELECT setval(
+            '{schema}.job_events_id_seq',
+            GREATEST(
+                (SELECT COALESCE(last_value, 1) FROM pg_sequences
+                 WHERE schemaname = '{schema}' AND sequencename = 'job_events_id_seq'),
+                (SELECT COALESCE(max(id), 1) FROM "{schema}"."{floor_table}")
+            ),
+            EXISTS (SELECT 1 FROM "{schema}"."{floor_table}")
+        )"""  # noqa: S608
+    )
+
+
+async def _refuse_vanilla_key_duplicates(
+    conn: asyncpg.Connection, schema: str, table: str, relation: str
+) -> None:
+    """Loud refusal when *relation* holds rows whose vanilla key
+    (:data:`_VANILLA_KEY`) collides — rows the hypertable's widened
+    uniqueness admitted and the restored table's primary key cannot.
+
+    Runs BEFORE the trash rename (before any name moves): the widened
+    constraint is the disable's one unrecoverable mismatch — no ordering
+    fixes it, only choosing which of the colliding rows to keep, and that
+    choice is the operator's, never a silent dedupe.
+    """
+    key = ", ".join(_VANILLA_KEY[table])
+    dupes = await conn.fetchval(
+        f'SELECT count(*) FROM (SELECT {key} FROM "{schema}"."{relation}" '  # noqa: S608
+        f"GROUP BY {key} HAVING count(*) > 1) d"
+    )
+    if dupes:
+        raise RuntimeError(
+            f"{relation} holds {dupes} vanilla-key collision(s) the hypertable's "
+            f"widened uniqueness admitted (same {key}, different partition-column "
+            f"value) and the restored vanilla table's primary key cannot hold; "
+            f"resolve the duplicate {table} rows (keep the ones you want) before "
+            f"disabling — the swap refuses to choose for you"
+        )
+
+
+async def _absorb_orphan_rows(
+    conn: asyncpg.Connection, schema: str, table: str, orphan: str
+) -> None:
+    """Move every *orphan*-table row the live ``{schema}.{table}`` is
+    missing into it, verify EVERY orphan row then has a live twin (the
+    per-table natural key — :data:`_TWIN_MATCH`), and only then drop the
+    orphan.
+
+    The disable path's ONE drop rule: never destroy a table containing
+    rows whose live twin is missing. The insert is twin-guarded, so a
+    re-run converges instead of duplicating; the post-insert re-check is
+    the proof that turns the drop into a no-loss statement.
+    """
+    # The live table may have moved in moments ago still typing jobs_archive's
+    # status with the staging schema's enum; the orphan's rows carry THIS
+    # schema's type. The retype is idempotent and must precede the insert.
+    if table == "jobs_archive":
+        await _retype_archive_status_if_needed(conn, schema)
+    if not await _is_hypertable(conn, schema, table):
+        # A plain live table cannot hold what the widened uniqueness did:
+        # internal key collisions in the orphan are the operator's choice,
+        # never a silent twin-skip dedupe.
+        await _refuse_vanilla_key_duplicates(conn, schema, table, orphan)
+    twin = _TWIN_MATCH[table]
+    missing_sql = (
+        f'SELECT count(*) FROM "{schema}"."{orphan}" o '  # noqa: S608
+        f'WHERE NOT EXISTS (SELECT 1 FROM "{schema}"."{table}" l WHERE {twin})'
+    )
+    if await conn.fetchval(missing_sql):
+        await conn.execute(
+            f'INSERT INTO "{schema}"."{table}" '  # noqa: S608
+            f'SELECT o.* FROM "{schema}"."{orphan}" o '
+            f'WHERE NOT EXISTS (SELECT 1 FROM "{schema}"."{table}" l WHERE {twin})'
+        )
+    still_missing = await conn.fetchval(missing_sql)
+    if still_missing:
+        raise RuntimeError(
+            f'crash recovery is short: {still_missing} row(s) of "{schema}"."{orphan}" '
+            f'have no twin in "{schema}"."{table}"; refusing to drop the orphan copy'
+        )
+    await conn.execute(f'DROP TABLE "{schema}"."{orphan}"')
+
+
+async def _converge_crashed_swaps(
+    conn: asyncpg.Connection, schema: str, staging: str
+) -> tuple[str, ...]:
+    """Complete any earlier run's crashed per-table swap — BEFORE the
+    staging schema is dropped and rebuilt, and before any ``DROP SCHEMA
+    CASCADE`` can touch a dependency a crash left dangling.
+
+    The crash states, per table (live = ``{schema}.{table}``):
+
+    * **live is the hypertable** (crash during/after the verified copy,
+      before the trash rename): the swap below re-copies from scratch; a
+      leftover copy is absorbed twin-first.
+    * **live missing, trash present** (crash between the trash rename and
+      the move-in): the trash renames BACK — the rename is metadata-only,
+      nothing was lost — and the normal swap below redoes the move.
+    * **live present and plain, trash or restore heap present** (crash
+      between the move-in and the trash drop): the stranded rows are
+      absorbed twin-first; a live table already holding every row just
+      gets its orphan copies verified away and dropped.
+    * **live missing, no trash, restore heap present** (a crash of the
+      pre-rename-first ordering's DROP-before-SET window): the staging
+      table moves in and the heap is absorbed twin-first; with no staging
+      table left, the heap IS the recovery — it renames into place (rows
+      preserved; the shape is degraded, logged loudly).
+
+    Every branch is count/twin-verified; nothing holding a row whose live
+    twin is missing is ever dropped. Returns the tables a stranded state
+    was found (and finished) for.
+    """
+    # First, always: sever the staging enum dependency a crash between the
+    # move-in and the retype leaves on the live jobs_archive (the reason
+    # this runs before the CASCADE, not after).
+    await _retype_archive_status_if_needed(conn, schema)
+    converged: list[str] = []
+    for table in ("jobs_archive", "job_attempts_archive", "job_events"):
+        trash = f"{table}{_TRASH_SUFFIX}"
+        heap = f"{table}__restore"
+        if await _table_exists(conn, schema, table):
+            if await _is_hypertable(conn, schema, table):
+                for orphan in (trash, heap):
+                    if await _table_exists(conn, schema, orphan):
+                        await _absorb_orphan_rows(conn, schema, table, orphan)
+                continue
+            absorbed = False
+            for orphan in (trash, heap):
+                if await _table_exists(conn, schema, orphan):
+                    await _absorb_orphan_rows(conn, schema, table, orphan)
+                    absorbed = True
+            if absorbed:
+                converged.append(table)
+            continue
+        # The live table is missing: a crashed swap holds the rows.
+        if await _table_exists(conn, schema, trash):
+            # Crash between the trash rename and the move-in: the rename
+            # is metadata-only, so renaming back restores the exact
+            # pre-rename state; the normal swap below redoes the move.
+            await conn.execute(f'ALTER TABLE "{schema}"."{trash}" RENAME TO "{table}"')
+            converged.append(table)
+            continue
+        if await _table_exists(conn, schema, heap):
+            # No trash: the pre-rename-first ordering died between its DROP
+            # and its SET SCHEMA. The vanilla shape is still in the staging
+            # schema when the crash left it there — move it in, drop the
+            # staging foreign keys that traveled nowhere yet, absorb the
+            # heap. Without a staging table the heap IS the recovery: it
+            # renames into place (rows preserved, shape degraded loudly).
+            if await _table_exists(conn, schema, f"{staging}.{table}"):
+                await conn.execute(f'ALTER TABLE "{staging}"."{table}" SET SCHEMA "{schema}"')
+                await _drop_traveled_foreign_keys(conn, schema, table)
+                await _absorb_orphan_rows(conn, schema, table, heap)
+            else:
+                await conn.execute(f'ALTER TABLE "{schema}"."{heap}" RENAME TO "{table}"')
+                logger.warning(
+                    "hypertable-disable-recovery-degraded",
+                    schema=schema,
+                    table=table,
+                    detail=(
+                        "no staging table survived the crash; the restore heap moved into "
+                        "place as-is. Every row is preserved but the shape is the hypertable's "
+                        "copy, not the migrations': re-run the disable after rebuilding "
+                        "the vanilla shape by hand if byte-exact shape matters."
+                    ),
+                )
+            converged.append(table)
+    return tuple(converged)
+
+
+async def _free_vanilla_names(conn: asyncpg.Connection, schema: str, trash: str) -> None:
+    """Strip the trash's constraints and standalone indexes, and rename its
+    owned sequence aside.
+
+    The trash rename moves the hypertable's rows but leaves its pg_class
+    names in place — and indexes and sequences share one namespace per
+    schema, so the migration-built table cannot move in while the trash
+    still holds the vanilla names (constraint names do not collide: they
+    are per-relation). The trash is the retired copy — its ROWS are what
+    the swap still needs, never its shape — so its constraints and indexes
+    strip (a plain DROP, which hypertables propagate to their chunks
+    safely; RENAMING them does not: a chunk's derived constraint name
+    truncates into collision at 63 bytes), the owned sequence renames
+    aside, and the vanilla names return with the table that owns them for
+    real. Not-null constraints stay: they are per-relation, and the strip
+    has no need to touch them.
+    """
+    constraints = await conn.fetch(
+        """
+        SELECT con.conname
+        FROM pg_constraint con
+        JOIN pg_class t ON t.oid = con.conrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+        WHERE n.nspname = $1 AND t.relname = $2 AND con.contype <> 'n'
+        """,
+        schema,
+        trash,
+    )
+    for row in constraints:
+        await conn.execute(
+            # Why noqa S608: schema is _IDENT_RE-validated; the trash name is
+            # module-owned and the constraint names are read from the
+            # catalogs of the swap this module itself built, never input.
+            f'ALTER TABLE "{schema}"."{trash}" DROP CONSTRAINT IF EXISTS "{row["conname"]}"'
+        )
+    indexes = await conn.fetch(
+        """
+        SELECT i.relname AS indexname
+        FROM pg_index x
+        JOIN pg_class i ON i.oid = x.indexrelid
+        JOIN pg_class t ON t.oid = x.indrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+        WHERE n.nspname = $1 AND t.relname = $2
+          AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = i.oid)
+        """,
+        schema,
+        trash,
+    )
+    for row in indexes:
+        await conn.execute(f'DROP INDEX IF EXISTS "{schema}"."{row["indexname"]}"')
+    sequences = await conn.fetch(
+        """
+        SELECT s.relname AS seqname
+        FROM pg_class s
+        JOIN pg_depend d ON d.objid = s.oid AND d.classid = 'pg_class'::regclass
+        JOIN pg_class t ON t.oid = d.refobjid AND d.refclassid = 'pg_class'::regclass
+        JOIN pg_namespace n ON n.oid = s.relnamespace
+        WHERE d.deptype = 'a' AND s.relkind = 'S'
+          AND n.nspname = $1 AND t.relname = $2
+        """,
+        schema,
+        trash,
+    )
+    for row in sequences:
+        await conn.execute(
+            f'ALTER SEQUENCE "{schema}"."{row["seqname"]}" '
+            f'RENAME TO "{row["seqname"]}{_TRASH_SUFFIX}"'
+        )
+
+
 async def _restore_vanilla_table(
     conn: asyncpg.Connection,
     schema: str,
@@ -1101,23 +1446,40 @@ async def _restore_vanilla_table(
 ) -> bool:
     """Swap one hypertable back to its vanilla self. True when swapped.
 
-    The vanilla shape is never re-typed: the staging schema holds a
-    fresh application of the bundled migrations, and the swap moves the
-    migrations' OWN table into place (``SET SCHEMA`` carries its indexes,
-    constraints, defaults, and owned sequence across). *post_move*
-    statements run after the move, before the rows return — the enum
-    re-point for ``jobs_archive`` (the moved table arrives typing its
-    ``status`` column with the staging schema's twin enum, and the staged
-    rows carry THIS schema's type; the retype happens first or the
-    ``INSERT ... SELECT`` mismatches). The rows stage first (a bare heap,
-    no names touched) and every hand-off is count-verified before the
-    next one runs.
+    RENAME-FIRST, so no order of death loses rows. The vanilla shape is
+    never re-typed: the staging schema holds a fresh application of the
+    bundled migrations, and the swap moves the migrations' OWN table into
+    place (``SET SCHEMA`` carries its indexes, constraints, defaults, and
+    owned sequence across). The stages:
+
+    1. The rows are copied into a bare restore heap and the copy is
+       count-verified — this exercises the FULL read path (compressed
+       chunks decompress) before any name moves; a copy that cannot be
+       read back is a loud refusal while the hypertable is still intact.
+    2. The hypertable RENAMES to ``{table}__hypertable_trash`` —
+       metadata-only, instant. From this moment the rows exist in TWO
+       places (trash and heap) and the vanilla name is free; no crash
+       order can strand the table missing anymore.
+    3. The migration-built table moves into the freed name, *post_move*
+       runs, and the event id sequence re-anchors past the trash's
+       ``max(id)`` BEFORE the rows return (the moved-in sequence is the
+       staging twin's — fresh, starting at 1, exactly where the trash's
+       ids start; a worker's insert in the window would collide).
+    4. The rows return FROM THE TRASH — the superset: a row committed
+       between the count-verify and the rename landed in the trash, and
+       the twin-guarded insert catches it too — twin-verified against the
+       trash AND the heap (every row must have a live twin), and only
+       then are both copies dropped. A crash anywhere in stages 2-4
+       leaves every row in at least two places, and the next disable's
+       crash convergence (:func:`_converge_crashed_swaps`) finishes the
+       move with the same guarantees.
     """
     if not await _is_hypertable(conn, schema, table):
         return False
+    trash = f"{table}{_TRASH_SUFFIX}"
     restore_heap = f"{table}__restore"
     source_count = await conn.fetchval(
-        # Why noqa S608: schema is _IDENT_RE-validated; the table and heap
+        # Why noqa S608: schema is _IDENT_RE-validated; the table and copy
         # names are module-owned constants, never input.
         f'SELECT count(*) FROM "{schema}"."{table}"'  # noqa: S608
     )
@@ -1132,33 +1494,37 @@ async def _restore_vanilla_table(
     if staged_count != source_count:
         raise RuntimeError(
             f"the {table} row copy is short: staged {staged_count} of "
-            f"{source_count} rows; refusing to drop the hypertable"
+            f"{source_count} rows; refusing to touch the hypertable"
         )
-    # Frees every vanilla name (indexes, constraints, the owned
-    # sequence) for the migration-built table moving in. The window
-    # between this DROP and the move below is disable's honest gap, the
-    # mirror of enable's pkey-drop window: a crash inside it leaves the
-    # table missing, the vanilla table in the staging schema, and the
-    # rows in the restore heap — the next disable's FK restore fails
-    # loudly on the missing table and the operator finishes the move by
-    # hand (ALTER TABLE "{staging}"."{table}" SET SCHEMA "{schema}"; the
-    # re-run then converges the rest).
-    await conn.execute(f'DROP TABLE "{schema}"."{table}"')
+    # The widened-uniqueness pre-flight, before any name moves.
+    await _refuse_vanilla_key_duplicates(conn, schema, table, restore_heap)
+    # The trash rename: metadata-only, instant, and the point of no return
+    # that is not one — the rows now live in two places (trash + heap) and
+    # the vanilla name is free. The trash's index/sequence names are freed
+    # aside too (renames only), or the move-in below collides with them.
+    await conn.execute(f'ALTER TABLE "{schema}"."{table}" RENAME TO "{trash}"')
+    await _free_vanilla_names(conn, schema, trash)
     await conn.execute(f'ALTER TABLE "{staging}"."{table}" SET SCHEMA "{schema}"')
     for statement in post_move:
         await conn.execute(statement)
+    if table == "job_events":
+        await _anchor_event_id_sequence(conn, schema, floor_table=trash)
+    twin = _TWIN_MATCH[table]
     await conn.execute(
-        f'INSERT INTO "{schema}"."{table}" SELECT * FROM "{schema}"."{restore_heap}"'  # noqa: S608  # Why: module-owned identifiers only.
+        f'INSERT INTO "{schema}"."{table}" '  # noqa: S608  # Why: module-owned identifiers only.
+        f'SELECT o.* FROM "{schema}"."{trash}" o '
+        f'WHERE NOT EXISTS (SELECT 1 FROM "{schema}"."{table}" l WHERE {twin})'
     )
-    restored_count = await conn.fetchval(
+    live_count = await conn.fetchval(
         f'SELECT count(*) FROM "{schema}"."{table}"'  # noqa: S608
     )
-    if restored_count != source_count:
+    if live_count < source_count:
         raise RuntimeError(
-            f"the {table} row restore is short: {restored_count} of "
-            f"{source_count} rows; the vanilla table is in place but incomplete"
+            f"the {table} row restore is short: {live_count} against the "
+            f"{source_count} the swap verified; the trash keeps every row"
         )
-    await conn.execute(f'DROP TABLE "{schema}"."{restore_heap}"')
+    for orphan in (trash, restore_heap):
+        await _absorb_orphan_rows(conn, schema, table, orphan)
     return True
 
 
@@ -1186,18 +1552,29 @@ async def disable_hypertables(
     The mechanics per hypertable: the vanilla shape is cloned from a
     scratch schema (``{schema}__vanilla``) that the bundled migrations
     themselves build fresh — never re-typed by hand, so it cannot drift
-    from the migrations — the rows stage into a bare heap and are
-    count-verified, the hypertable drops, the migration-built table moves
-    into place (``SET SCHEMA``, carrying its indexes, constraints,
-    defaults, and owned sequence), the rows go back in, and the vanilla
+    from the migrations — the rows are copied out and count-verified, the
+    hypertable RENAMES to ``{table}__hypertable_trash`` (metadata-only:
+    from that moment the rows exist in two places and the vanilla name is
+    free), the migration-built table moves into place (``SET SCHEMA``,
+    carrying its indexes, constraints, defaults, and owned sequence), the
+    rows return from the trash twin-verified (a row committed mid-swap is
+    caught too), and only then are the trash and the restore heap dropped
+    — never while a row of theirs lacks a live twin. The vanilla
     behaviors (the bare primary keys, the ``job_attempts_archive``
     foreign key and its cascade, the event id sequence's position) are
     restored unconditionally and idempotently afterward. The in-memory
     twins need nothing: vanilla semantics are the default — there is
-    nothing to disable but the schema. The staging schema is dropped on
-    the success path; a crashed run leaves it behind and the re-run
-    cleans it up (see :func:`_restore_vanilla_table` for the one honest
-    window).
+    nothing to disable but the schema.
+
+    Crash safety is structural, not procedural: a crashed run leaves every
+    row in at least two places (the trash and the heap, or the trash and
+    the live table), and the NEXT disable's first act — before any ``DROP
+    SCHEMA CASCADE``, the one statement that could ever destroy a
+    dependency a crash left dangling — is
+    :func:`_converge_crashed_swaps`, which finishes every crashed table's
+    move under the same twin/count verification. The staging schema is
+    dropped on the success path; a crashed run leaves it behind and the
+    re-run cleans it up only after the convergence has finished with it.
 
     The report is the mirror reading of :class:`HypertableReport`:
     ``converted`` lists the tables returned to plain by this run,
@@ -1229,8 +1606,18 @@ async def disable_hypertables(
     retention_removed, compression_removed = await _remove_registered_policies(conn, schema)
 
     staging = _vanilla_staging_schema(schema)
-    # A crashed earlier run's leftovers go first; the migrations rebuild
-    # the staging schema from zero below.
+    # Crash convergence FIRST — before any DROP SCHEMA CASCADE (the one
+    # statement that could destroy a dependency a crash left dangling, the
+    # staging enum type a half-moved jobs_archive still types its status
+    # with) and before the migrations rebuild the staging schema: every
+    # crashed table's stranded rows are twin-verified into their live
+    # table here, or the trash renames back and the swap below redoes it.
+    converged = await _converge_crashed_swaps(conn, schema, staging)
+    # A crashed earlier run's leftovers go last; the convergence above
+    # guarantees nothing of value depends on the staging schema (its
+    # tables are the migrations' own rowless output — the rows always
+    # live in the trash/heap/live tables of THIS schema). The migrations
+    # rebuild the staging schema from zero below.
     await conn.execute(f'DROP SCHEMA IF EXISTS "{staging}" CASCADE')
     await apply_pending(conn, schema=staging)
     # The staged tables' foreign keys point at the STAGING schema's own
@@ -1264,15 +1651,16 @@ async def disable_hypertables(
     await conn.execute(f'DROP SCHEMA IF EXISTS "{staging}" CASCADE')
 
     report = HypertableReport(
-        converted=tuple(restored),
+        converted=tuple(dict.fromkeys((*restored, *converged))),
         retention_policies=retention_removed,
         compression_policies=compression_removed,
     )
-    if restored:
+    if restored or converged:
         logger.info(
             "hypertables-disabled",
             schema=schema,
             restored=list(restored),
+            crash_recovered=list(converged),
             retention_policies=list(retention_removed),
             compression_policies=list(compression_removed),
         )

@@ -96,6 +96,20 @@ def _invoke_migrate_up(
     env cascade, the exit code. Nothing of the CLI is imported into the
     test's process (its asyncio.run cannot coexist with pytest-asyncio's
     running loop, and it should not have to)."""
+    return _invoke_migrate(dsn, schema, ["migrate", "up", *(extra or [])], flag=flag)
+
+
+def _invoke_migrate_disable_hypertables(
+    dsn: str, schema: str, *, flag: bool = False
+) -> subprocess.CompletedProcess[str]:
+    """One REAL ``migrate disable-hypertables`` invocation - the same
+    subprocess discipline as ``_invoke_migrate_up``."""
+    return _invoke_migrate(dsn, schema, ["migrate", "disable-hypertables"], flag=flag)
+
+
+def _invoke_migrate(
+    dsn: str, schema: str, argv: list[str], *, flag: bool
+) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
         "TASKQ_PG_DSN": dsn,
@@ -103,7 +117,7 @@ def _invoke_migrate_up(
         "TASKQ_TIMESCALEDB_HYPERTABLES": "true" if flag else "false",
     }
     return subprocess.run(  # noqa: S603  # Why: static argv from sys.executable; no shell.
-        [sys.executable, "-m", "taskq", "migrate", "up", *(extra or [])],
+        [sys.executable, "-m", "taskq", *argv],
         env=env,
         capture_output=True,
         text=True,
@@ -513,6 +527,68 @@ async def test_disable_after_deploy_restores_vanilla(deploy_dsn: str, deploy_sch
         assert (
             await conn.fetchval(f'SELECT max(id) FROM "{schema}".job_events') == max_before + 1
         ), "the restored sequence must continue past the restored rows"
+    finally:
+        await _drop_schema(conn, schema)
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_disable_hypertables_cli_subprocess_end_to_end(deploy_dsn: str) -> None:
+    """The disable's operator path end to end: a REAL ``taskq migrate
+    disable-hypertables`` subprocess (the flag flipped off first) converts
+    the deployed-and-converted schema back to vanilla, and the flag-still-true
+    invocation refuses loudly with exit 1 — the same deploy-step discipline
+    the ``migrate up`` E2E pins on the enable side."""
+    schema = "tsdcmd_" + new_uuid().hex[:12]
+    first = _invoke_migrate_up(deploy_dsn, schema, flag=True)
+    assert first.returncode == 0, f"stderr: {first.stderr}"
+
+    conn = await asyncpg.connect(deploy_dsn)
+    try:
+        assert await _hypertables(conn, schema) == {
+            "job_events",
+            "jobs_archive",
+            "job_attempts_archive",
+        }
+        await conn.execute(
+            f'INSERT INTO "{schema}".jobs_archive '
+            f"(id, actor, queue, payload, status, attempt, max_attempts, retry_kind, "
+            f"expire_at, finished_at) VALUES ($1, 'a', 'q', '{{}}'::jsonb, 'succeeded', "
+            f"0, 3, 'transient', clock_timestamp() + interval '365 days', clock_timestamp())",
+            new_uuid(),
+        )
+        n_archive = await conn.fetchval(f'SELECT count(*) FROM "{schema}".jobs_archive')
+
+        # The mistyped invocation — the flag still true — exits 1 loudly.
+        refused = _invoke_migrate_disable_hypertables(deploy_dsn, schema, flag=True)
+        assert refused.returncode == 1
+        assert "TASKQ_TIMESCALEDB_HYPERTABLES" in refused.stderr
+        assert await _hypertables(conn, schema) == {
+            "job_events",
+            "jobs_archive",
+            "job_attempts_archive",
+        }, "the refused run must have issued zero statements"
+
+        # The real one: flag off, one subprocess, exit 0, the report on stdout.
+        result = _invoke_migrate_disable_hypertables(deploy_dsn, schema, flag=False)
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert "disabled hypertables on 3 table(s)" in result.stdout
+        assert "restored to plain: job_events" in result.stdout
+        assert await _hypertables(conn, schema) == set()
+        assert await conn.fetchval(f'SELECT count(*) FROM "{schema}".jobs_archive') == n_archive
+        assert (
+            await conn.fetchval(
+                "SELECT count(*) FROM timescaledb_information.jobs WHERE hypertable_schema = $1",
+                schema,
+            )
+            == 0
+        ), "no policy may survive the CLI disable"
+
+        # Idempotent on the operator's path too: a second run exits 0 and
+        # reports there is nothing left to do.
+        again = _invoke_migrate_disable_hypertables(deploy_dsn, schema, flag=False)
+        assert again.returncode == 0, f"stderr: {again.stderr}"
+        assert "already plain" in again.stdout
     finally:
         await _drop_schema(conn, schema)
         await conn.close()
