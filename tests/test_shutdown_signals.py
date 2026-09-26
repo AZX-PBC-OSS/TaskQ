@@ -2,11 +2,13 @@
 
 import asyncio
 import inspect
+import os
 import signal
 from collections.abc import Callable
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+import structlog.testing
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import Backend
@@ -431,3 +433,255 @@ def test_sigusr2_handler_dumps_task_stacks() -> None:
         usr2_handlers[0]()
 
     assert mock_dump.call_count == 1
+
+
+# ── The H2 guard: an in-progress orchestration owns the first signal ────
+
+
+def test_first_signal_during_orchestration_starts_nothing_and_the_next_escalates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The H2 guard (:95) and the non-reset counter, pinned together.
+
+    The drain monitor can trigger the orchestration before any signal
+    arrives: ``deps.shutdown_phase`` is past NONE while
+    ``orchestrator_holder`` is still empty. The FIRST signal must then
+    start NOTHING - no second orchestration task (double-orchestration
+    runs the phases twice against the same rows) - and must NOT arm the
+    escalate event either (nothing is mid-CANCELLING to fast-advance;
+    arming it here would break the CANCELLING grace of the running
+    orchestration). The signal counter is deliberately NOT consumed by
+    the guard's return: the NEXT signal reaches the ``== 2`` rung and
+    escalates the already-running orchestration - a regression that
+    reset the counter here would restart a fresh orchestration on the
+    next signal instead of escalating.
+    """
+    import taskq.worker.shutdown as shutdown_mod
+    from taskq.worker.shutdown import ShutdownPhase
+
+    mock_orch = AsyncMock(return_value=0)
+    monkeypatch.setattr(shutdown_mod, "orchestrate_shutdown", mock_orch)
+
+    deps = _worker_deps()
+    deps.shutdown_phase = ShutdownPhase.DRAINING  # the drain monitor got here first
+    backend = AsyncMock(spec=Backend)
+    loop, handlers = _mock_loop()
+    holder: list[asyncio.Task[int]] = []
+    esc_event = asyncio.Event()
+    shut_event = asyncio.Event()
+
+    install_signal_handlers(
+        loop,
+        deps,
+        new_uuid(),
+        shut_event,
+        esc_event,
+        backend,
+        holder,
+    )  # type: ignore[arg-type] # Why: Mock not a real AbstractEventLoop but satisfies the interface at runtime.
+
+    handler = handlers[0][1]
+    handler()
+
+    assert loop.create_task.call_count == 0, (
+        "a first signal during an in-progress orchestration scheduled a "
+        "SECOND orchestration task - the phases would run twice against "
+        "the same rows"
+    )
+    assert mock_orch.call_count == 0
+    assert not esc_event.is_set(), (
+        "the guard's return must not consume the counter as an escalation: "
+        "nothing is mid-CANCELLING to fast-advance yet"
+    )
+
+    handler()
+    assert esc_event.is_set(), (
+        "the second signal must escalate the already-running orchestration "
+        "- a counter reset inside the guard would restart a fresh one instead"
+    )
+    assert loop.create_task.call_count == 0
+    assert len(holder) == 0
+
+
+def test_signal_ladder_full_escalation_through_the_handler_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """1st SIGTERM orchestrates, 2nd escalates past a live phase stamp,
+    3rd exits - the whole ladder driven through the captured handler.
+
+    The phase stamp matters between rungs: by the second signal the first
+    signal's orchestration has typically progressed past NONE (here
+    DRAINING), so the ladder must read the RUNTIME state (both the holder
+    and ``deps.shutdown_phase``, the shared ``_orchestration_in_progress``
+    predicate) and still land the escalation on rung two. The three
+    regressions pinned: a second ``create_task`` on signal two
+    (double-orchestration), the escalate event NOT set on signal two (a
+    hung CANCELLING grace no operator can shorten), and a third signal
+    that does anything but ``sys.exit(1)`` (the operator's last resort
+    before SIGKILL must actually terminate).
+    """
+    import taskq.worker.shutdown as shutdown_mod
+    from taskq.worker.shutdown import ShutdownPhase
+
+    mock_orch = AsyncMock(return_value=0)
+    monkeypatch.setattr(shutdown_mod, "orchestrate_shutdown", mock_orch)
+
+    deps = _worker_deps()
+    backend = AsyncMock(spec=Backend)
+    loop, handlers = _mock_loop()
+    holder: list[asyncio.Task[int]] = []
+    esc_event = asyncio.Event()
+    shut_event = asyncio.Event()
+
+    install_signal_handlers(
+        loop,
+        deps,
+        new_uuid(),
+        shut_event,
+        esc_event,
+        backend,
+        holder,
+    )  # type: ignore[arg-type]
+
+    handler = handlers[0][1]
+
+    handler()
+    assert loop.create_task.call_count == 1
+    assert len(holder) == 1
+    assert not esc_event.is_set()
+
+    # The orchestration has started executing phases (the first signal's
+    # task stamped the phase): the ladder must keep its rungs.
+    deps.shutdown_phase = ShutdownPhase.DRAINING
+
+    handler()
+    assert esc_event.is_set(), "the second signal must fast-advance CANCELLING → FORCING"
+    assert loop.create_task.call_count == 1, (
+        "the second signal scheduled a second orchestration task - the "
+        "ladder escalated AND re-orchestrated"
+    )
+    assert len(holder) == 1
+
+    with pytest.raises(SystemExit) as exc_info:
+        handler()
+    assert exc_info.value.code == 1, "the third signal must exit 1, the pre-SIGKILL backstop"
+
+
+# ── Registration-failure arms: warn, never crash the installer ──────────
+
+
+def test_sigterm_registration_unavailable_warns_and_returns_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NotImplementedError on the FIRST registration → the
+    `signal-handlers-unavailable` WARN and a clean return.
+
+    On a platform without ``loop.add_signal_handler`` (Windows) the
+    installer must degrade to signal-free operation, not crash the worker
+    at boot: the warning names the platform (``os_name``) so the operator
+    knows WHY Ctrl-C-style escalation is unavailable. Pinned against two
+    regressions: the NotImplementedError escaping (the worker never
+    boots), and the installer CONTINUING past the SIGTERM failure to
+    register SIGHUP/SIGUSR2 handlers that could never deliver a shutdown
+    ladder (the early ``return`` exists because the shutdown path is
+    the handler that must exist for the others to be meaningful).
+    """
+    import taskq.worker.shutdown as shutdown_mod
+
+    mock_orch = AsyncMock(return_value=0)
+    monkeypatch.setattr(shutdown_mod, "orchestrate_shutdown", mock_orch)
+
+    deps = _worker_deps()
+    backend = AsyncMock(spec=Backend)
+    loop = Mock()
+    loop.add_signal_handler = Mock(side_effect=NotImplementedError("win"))
+    loop.create_task = Mock()
+    holder: list[asyncio.Task[int]] = []
+    esc_event = asyncio.Event()
+    shut_event = asyncio.Event()
+
+    with structlog.testing.capture_logs() as captured:
+        install_signal_handlers(
+            loop,
+            deps,
+            new_uuid(),
+            shut_event,
+            esc_event,
+            backend,
+            holder,
+        )  # type: ignore[arg-type]
+
+    warnings = [e for e in captured if e.get("event") == "signal-handlers-unavailable"]
+    assert len(warnings) == 1, f"expected one signal-handlers-unavailable WARN, got {warnings!r}"
+    assert warnings[0]["os_name"] == os.name
+    assert loop.create_task.call_count == 0
+    assert len(holder) == 0
+    assert not esc_event.is_set() and not shut_event.is_set()
+
+
+def test_per_signal_registration_failures_warn_without_losing_the_ladder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SIGHUP / SIGUSR2 registration failures degrade to their own WARN.
+
+    These arms are AFTER the shutdown ladder is registered, so their
+    failure must NOT take the early-return exit (that would discard the
+    already-registered SIGTERM/SIGINT handlers) - only the optional
+    handler's WARN fires and the rest of the registrations still land.
+    Pinned against the two mutations of the try/except shape: swallowing
+    the NotImplementedError without a WARN (the operator never learns
+    the reload/dump seam is missing), and letting it escape (a missing
+    debug utility kills the shutdown ladder's registration, which
+    already succeeded).
+    """
+    import taskq.worker.shutdown as shutdown_mod
+
+    mock_orch = AsyncMock(return_value=0)
+    monkeypatch.setattr(shutdown_mod, "orchestrate_shutdown", mock_orch)
+
+    def _install(*, fail_sig: signal.Signals):  # pyright: ignore[reportMissingTypeStubs]  # Why: the logs list is structlog's invariant list[EventDict]; the local helper's inferred types avoid re-annotating it.
+        deps = _worker_deps()
+        backend = AsyncMock(spec=Backend)
+        loop, handlers = _mock_loop()
+        captured: list[tuple[int, Callable[[], None]]] = handlers
+
+        def _side_effect(sig: signal.Signals, cb: Callable[[], None]) -> None:
+            if sig == fail_sig:
+                raise NotImplementedError(str(sig))
+            captured.append((sig, cb))
+
+        loop.add_signal_handler = Mock(side_effect=_side_effect)  # type: ignore[method-assign]
+        holder: list[asyncio.Task[int]] = []
+        with structlog.testing.capture_logs() as logs:
+            install_signal_handlers(
+                loop,
+                deps,
+                new_uuid(),
+                asyncio.Event(),
+                asyncio.Event(),
+                backend,
+                holder,
+            )  # type: ignore[arg-type]
+        assert len(holder) == 0
+        return loop, handlers, logs
+
+    # SIGHUP refused: the WARN fires, SIGUSR2 is still registered, and
+    # the SIGTERM ladder still works.
+    loop, handlers, logs = _install(fail_sig=signal.SIGHUP)
+    assert [e for e in logs if e.get("event") == "sighup-handler-unavailable"], (
+        "a refused SIGHUP registration must WARN - the hot-reload seam is silently gone otherwise"
+    )
+    assert any(sig == signal.SIGUSR2 for sig, _ in handlers), (
+        "the SIGHUP failure discarded the rest of the registrations"
+    )
+    sigterm_handler = handlers[0][1]
+    sigterm_handler()
+    assert loop.create_task.call_count == 1, (
+        "the shutdown ladder must survive the optional handlers' registration failures"
+    )
+
+    # SIGUSR2 refused: same shape, the SIGHUP handler still lands.
+    _, handlers2, logs2 = _install(fail_sig=signal.SIGUSR2)
+    assert [e for e in logs2 if e.get("event") == "sigusr2-handler-unavailable"]
+    assert any(sig == signal.SIGHUP for sig, _ in handlers2)
+    assert not [e for e in logs2 if e.get("event") == "sighup-handler-unavailable"]

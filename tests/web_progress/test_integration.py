@@ -624,14 +624,40 @@ async def test_missing_job_id_segment(pool: asyncpg.Pool, redis_client: aioredis
 
 
 @pytest.mark.asyncio
-async def test_negative_last_event_id(pool: asyncpg.Pool, redis_client: aioredis.Redis) -> None:
-    """Negative last_event_id=-1 treated as no replay; full catch-up emitted.
+async def test_negative_last_event_id_is_rejected_with_400(
+    pool: asyncpg.Pool,
+    redis_client: aioredis.Redis,
+) -> None:
+    """``?last_event_id=-1`` gets the same 400 the Last-Event-ID header gets.
+
+    Every id this stream issues is a non-negative integer sequence number,
+    so a negative cursor cannot have come from it - it is rejected at the
+    boundary (naming the query parameter) instead of being read as "no
+    cursor" or silently clamped: a cursor the stream never issued would
+    poison the generator's dedup and strand the connection as a blackhole.
+    """
+    job_id = await _seed_running_job(
+        pool, progress_seq=3, progress_state={"step": 3}, status="succeeded"
+    )
+
+    app = _make_app(pool, redis_client, sse_heartbeat_interval=timedelta(seconds=2))
+
+    resp = await _get_json(app, f"/jobs/api/job/{job_id}/progress/stream?last_event_id=-1")
+    assert resp.status_code == 400
+    assert "last_event_id" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_in_domain_last_event_id_query_param_catches_up(
+    pool: asyncpg.Pool,
+    redis_client: aioredis.Redis,
+) -> None:
+    """A well-formed query cursor still catches up on the real wire.
 
     Seeds a terminal job (progress_seq=3) so the SSE stream terminates
-    naturally after the catch-up + done events.  ``last_event_id=-1`` is
-    resolved to ``-1``; the server computes ``last_emitted_seq =
-    max(0, -1) = 0`` after the snapshot, so ``progress_seq=3 > 0``
-    triggers a catch-up event.
+    naturally after the catch-up + done events.  ``last_event_id=1`` is
+    inside the int4 domain, so ``progress_seq=3 > 1`` triggers the
+    catch-up event.
     """
     job_id = await _seed_running_job(
         pool, progress_seq=3, progress_state={"step": 3}, status="succeeded"
@@ -641,14 +667,14 @@ async def test_negative_last_event_id(pool: asyncpg.Pool, redis_client: aioredis
 
     lines = await _collect_sse_lines(
         app,
-        f"/jobs/api/job/{job_id}/progress/stream?last_event_id=-1",
+        f"/jobs/api/job/{job_id}/progress/stream?last_event_id=1",
         overall_timeout=10.0,
     )
     frames = _parse_sse_frames(lines)
 
     catch_up = [f for f in frames if f.get("id") == "3"]
     assert len(catch_up) == 1, (
-        f"Expected exactly one catch-up event id=3 (progress_seq > max(0, -1)), got {len(catch_up)}: {frames}"
+        f"Expected exactly one catch-up event id=3 (progress_seq > 1), got {len(catch_up)}: {frames}"
     )
 
 

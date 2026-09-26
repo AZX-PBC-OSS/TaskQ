@@ -1134,7 +1134,7 @@ async def test_pg_notify_not_issued_when_zero(monkeypatch: Any) -> None:  # type
 async def test_prune_loop_runs_on_schedule(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """_prune_loop fires at the scheduled time when is_leader, acquires
     advisory lock, calls prune_terminal_jobs, and releases the lock."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     prune_result_rows = [
         [
@@ -1159,7 +1159,7 @@ async def test_prune_loop_runs_on_schedule(monkeypatch: Any) -> None:  # type: i
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
 
     settings = deps.settings
     settings.prune_cron_expr = _next_minute_cron()
@@ -1793,7 +1793,7 @@ async def test_prune_terminal_jobs_actor_override_longer_retention_skipped() -> 
 
 async def test_prune_loop_date_guard_prevents_double_run(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """_prune_loop skips when last_pruned_date == today (UTC)."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     prune_result_rows = [
         [
@@ -1818,7 +1818,7 @@ async def test_prune_loop_date_guard_prevents_double_run(monkeypatch: Any) -> No
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
 
     settings = deps.settings
     settings.prune_cron_expr = "* * * * *"
@@ -1852,7 +1852,7 @@ async def test_prune_loop_date_guard_prevents_double_run(monkeypatch: Any) -> No
 
 async def test_archive_expiry_loop_date_guard_prevents_double_run(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """_archive_expiry_loop skips when last_expiry_date == today (UTC)."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     expiry_result_rows = [
         [
@@ -1875,7 +1875,7 @@ async def test_archive_expiry_loop_date_guard_prevents_double_run(monkeypatch: A
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
 
     settings = deps.settings
     settings.archive_expiry_cron_expr = "* * * * *"
@@ -2171,11 +2171,13 @@ def _lock_attempts(conn: FakeConn) -> int:
 async def test_prune_loop_retries_failed_attempt_with_backoff(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """A failed prune attempt retries within the day on the backoff ladder
     instead of sleeping to tomorrow's cron fire."""
+    import croniter as croniter_mod
+
     import taskq.worker._leader_sweeps as _leader_sweeps_mod
 
     monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_INITIAL_SECS", 0.02)
     monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_CAP_SECS", 0.2)
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _soon_then_far_croniter())
+    monkeypatch.setattr(croniter_mod, "croniter", _soon_then_far_croniter())
 
     leader_conn = _AlwaysFailsPruneConn(batch_rows=[], fetchval_result=True)
     leader, _deps, _backend, _, _, shutdown = await _make_leader(
@@ -2204,11 +2206,13 @@ async def test_prune_loop_backoff_doubles_to_cap(monkeypatch: Any) -> None:  # t
     retrying at a fixed rate: with initial=0.05 s doubling, a 1 s window
     sees ~5 attempts, where a fixed 0.05 s cadence would see ~20 and a
     no-retry loop exactly 1."""
+    import croniter as croniter_mod
+
     import taskq.worker._leader_sweeps as _leader_sweeps_mod
 
     monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_INITIAL_SECS", 0.05)
     monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_CAP_SECS", 10.0)
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _soon_then_far_croniter())
+    monkeypatch.setattr(croniter_mod, "croniter", _soon_then_far_croniter())
 
     leader_conn = _AlwaysFailsPruneConn(batch_rows=[], fetchval_result=True)
     leader, _deps, _backend, _, _, shutdown = await _make_leader(
@@ -2237,11 +2241,13 @@ async def test_prune_loop_success_stops_retry_for_the_day(monkeypatch: Any) -> N
     attempts - the once-per-SUCCESSFUL-prune-per-day guard holds through
     the retry change (a retried day never gets a second successful
     prune)."""
+    import croniter as croniter_mod
+
     import taskq.worker._leader_sweeps as _leader_sweeps_mod
 
     monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_INITIAL_SECS", 0.02)
     monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_CAP_SECS", 0.2)
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _soon_then_far_croniter())
+    monkeypatch.setattr(croniter_mod, "croniter", _soon_then_far_croniter())
 
     class _FailOnceConn(_FakeConnForPrune):
         def __init__(self) -> None:
@@ -2362,11 +2368,13 @@ async def test_archive_expiry_loop_retries_failed_attempt_with_backoff(
 ) -> None:
     """The archive-expiry loop shares the prune loop's failure-half policy:
     a failed attempt retries on the backoff ladder within the day."""
+    import croniter as croniter_mod
+
     import taskq.worker._leader_sweeps as _leader_sweeps_mod
 
     monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_INITIAL_SECS", 0.02)
     monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_CAP_SECS", 0.2)
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _soon_then_far_croniter())
+    monkeypatch.setattr(croniter_mod, "croniter", _soon_then_far_croniter())
 
     class _AlwaysFailsExpiryConn(_FakeConnForPrune):
         async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
@@ -2403,7 +2411,7 @@ async def test_prune_loop_bounds_batches_under_pool_command_timeout(
     runs on: 80% of the default 5 s dispatcher_command_timeout = 4000 ms,
     so the server's QueryCanceledError (breaker-counted, degrading)
     always arrives before the pool's opaque client TimeoutError."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     leader_conn = _FakeConnForPrune(
         batch_rows=[[_full_batch_record(5)]], fetchval_result=True, actor_config_rows=[]
@@ -2423,7 +2431,7 @@ async def test_prune_loop_bounds_batches_under_pool_command_timeout(
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
     deps.settings.prune_cron_expr = "* * * * *"
 
     task = asyncio.create_task(leader._prune_loop(shutdown))
@@ -2455,7 +2463,7 @@ async def test_prune_loop_drain_stops_on_shutdown_and_ticks_liveness(
     (so a wedged batch loop is visible to the watchdog) and forgets the
     registration when the attempt ends (so a once-a-day loop cannot read
     as a stale sibling between attempts)."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     shutdown = asyncio.Event()
     # The observation seam closes over a holder: the conn must be built
@@ -2485,7 +2493,7 @@ async def test_prune_loop_drain_stops_on_shutdown_and_ticks_liveness(
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
     deps.settings.prune_cron_expr = "* * * * *"
     # The hooked conn reports 10-row full batches, so the effective window
     # must be 10 too - the sizer's default tier comes from this setting.
@@ -2517,7 +2525,7 @@ async def test_archive_expiry_loop_drain_stops_on_shutdown(
 ) -> None:
     """The archive-expiry drain honors the same shutdown-between-batches
     contract as the prune drain."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     shutdown = asyncio.Event()
     batches_seen: list[int] = []
@@ -2542,7 +2550,7 @@ async def test_archive_expiry_loop_drain_stops_on_shutdown(
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
     deps.settings.archive_expiry_cron_expr = "* * * * *"
     # The hooked conn reports 10-row full batches, so the effective window
     # must be 10 too - the sizer's default tier comes from this setting.
@@ -2559,7 +2567,7 @@ async def test_archive_expiry_loop_drain_stops_on_shutdown(
 
 async def test_prune_loop_releases_lock_on_error(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """Prune loop releases advisory lock even when prune_terminal_jobs raises."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     # Additive event on the double: set exactly where the prune query
     # raises, so the test waits for the error path instead of sleeping
@@ -2592,7 +2600,7 @@ async def test_prune_loop_releases_lock_on_error(monkeypatch: Any) -> None:  # t
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
 
     settings = deps.settings
     settings.prune_cron_expr = _next_minute_cron()
@@ -2613,7 +2621,7 @@ async def test_prune_loop_releases_lock_on_error(monkeypatch: Any) -> None:  # t
 
 async def test_archive_expiry_loop_releases_lock_on_error(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """Archive expiry loop releases advisory lock even when sweep raises."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     # Additive event on the double: set exactly where the expiry query
     # raises, so the test waits for the error path instead of sleeping
@@ -2646,7 +2654,7 @@ async def test_archive_expiry_loop_releases_lock_on_error(monkeypatch: Any) -> N
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
 
     settings = deps.settings
     settings.archive_expiry_cron_expr = _next_minute_cron()
@@ -2718,7 +2726,7 @@ async def test_archive_expiry_loop_wakes_on_shutdown() -> None:
 async def test_prune_loop_skips_when_lock_not_acquired(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """Prune loop skips the prune run and does not call prune_terminal_jobs
     when pg_try_advisory_lock returns False."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     leader_conn = _FakeConnForPrune(batch_rows=[], fetchval_result=False)
 
@@ -2736,7 +2744,7 @@ async def test_prune_loop_skips_when_lock_not_acquired(monkeypatch: Any) -> None
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
 
     settings = deps.settings
     settings.prune_cron_expr = _next_minute_cron()
@@ -2763,7 +2771,7 @@ async def test_prune_loop_skips_when_lock_not_acquired(monkeypatch: Any) -> None
 async def test_prune_loop_survives_lock_acquisition_failure(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """Prune loop continues when pg_try_advisory_lock raises a connection error,
     instead of crashing the TaskGroup."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     lock_call_count = 0
 
@@ -2791,7 +2799,7 @@ async def test_prune_loop_survives_lock_acquisition_failure(monkeypatch: Any) ->
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
 
     settings = deps.settings
     settings.prune_cron_expr = _next_minute_cron()
@@ -2820,7 +2828,7 @@ async def test_archive_expiry_loop_survives_lock_acquisition_failure(
 ) -> None:  # type: ignore[reportUnknownParameterType]
     """Archive expiry loop continues when pg_try_advisory_lock raises a connection
     error, instead of crashing the TaskGroup."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     lock_call_count = 0
 
@@ -2848,7 +2856,7 @@ async def test_archive_expiry_loop_survives_lock_acquisition_failure(
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
 
     settings = deps.settings
     settings.archive_expiry_cron_expr = _next_minute_cron()
@@ -2877,7 +2885,7 @@ async def test_archive_expiry_loop_survives_lock_acquisition_failure(
 async def test_prune_loop_survives_unlock_failure(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """Prune loop continues when pg_advisory_unlock raises in the finally block,
     instead of crashing the TaskGroup. PG releases the lock on session death."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     # Additive event on the double: set exactly where the prune query is
     # entered, so the test waits for the prune run instead of sleeping
@@ -2913,7 +2921,7 @@ async def test_prune_loop_survives_unlock_failure(monkeypatch: Any) -> None:  # 
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
 
     settings = deps.settings
     settings.prune_cron_expr = _next_minute_cron()
@@ -2935,7 +2943,7 @@ async def test_prune_loop_survives_unlock_failure(monkeypatch: Any) -> None:  # 
 async def test_archive_expiry_loop_survives_unlock_failure(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """Archive expiry loop continues when pg_advisory_unlock raises in the finally
     block, instead of crashing the TaskGroup. PG releases the lock on session death."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     # Additive event on the double: set exactly where the expiry query is
     # entered, so the test waits for the sweep run instead of sleeping
@@ -2971,7 +2979,7 @@ async def test_archive_expiry_loop_survives_unlock_failure(monkeypatch: Any) -> 
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
 
     settings = deps.settings
     settings.archive_expiry_cron_expr = _next_minute_cron()
@@ -4596,3 +4604,360 @@ async def test_assume_leadership_survives_a_failing_takeover_recovery(
         "the takeover recovery is best-effort; a pass that cannot reach "
         "the pool is a degraded maintenance plane, never a lost election"
     )
+
+
+# ── The stop-race resign, the renew-failure ladder, and the fatal FK arm ─
+
+
+class _StopMidElectConn(FakeConn):
+    """FakeConn that lands the stop signal while the elect is in flight.
+
+    The elect statement's round trip is exactly where SIGTERM intercepts
+    a winning candidate. The double stamps ``deps.shutdown_start_event``
+    the moment the lease statement goes out, then answers with the win:
+    the stop is OBSERVED before the caller's ``_stopping()`` re-check
+    reads it, which is the deterministic interleave
+    ``_resign_won_lease`` exists for - a win whose row is on this pod's
+    name while the drain has already begun.
+    """
+
+    def __init__(self, stop_event: asyncio.Event, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]  # Why: FakeConn kwargs are keyword-only; forwarding keeps this double a drop-in.
+        self._stop_event = stop_event
+        self.elect_in_flight = asyncio.Event()
+        self.won_elected_at: datetime | None = None
+
+    async def fetchval(self, sql: str, *args: object) -> object:
+        if _is_lease_statement(sql) and not _is_server_clock_read(sql):
+            self.elect_in_flight.set()
+            self._stop_event.set()
+            result = await super().fetchval(sql, *args)
+            if isinstance(result, datetime):
+                self.won_elected_at = result
+            return result
+        return await super().fetchval(sql, *args)
+
+
+async def test_elect_won_row_after_stop_is_resigned_fenced(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """The stop race: an elect that WINS after the stop lands is handed
+    back fenced, and the assume path never starts.
+
+    Every peer's lapse predicate is re-falsified by the won row (this
+    pod's name is on it) until it is handed back - if the lease were held
+    across the drain, the fleet's maintenance plane stalls for a whole
+    leader lease while a dying pod drains. The contract, pinned per
+    assert: the resign DELETE rides the SAME conn the winning elect just
+    used (the orchestrator closes that conn only after the phases; a
+    resign on any other wire can land after the close) and is fenced on
+    ``(worker_id, elected_at)`` of the WON term (a fence on anything else
+    either deletes a successor's row or, more likely here, no-op's and
+    leaves this pod's row holding the fleet); the resign fence is cleared
+    once the DELETE lands (a stale fence re-arming a later resign could
+    delete a successor's term); and ``lead()`` never runs - no
+    ``is_leader``, no term, no monitor/cron conns, no courtesy probe - so
+    no leader-gated sweep can begin on a pod that is exiting.
+    """
+    stop_event = asyncio.Event()
+    conn = _StopMidElectConn(stop_event=stop_event, fetchval_result=True)
+    leader, deps, _backend, _leader_conn, _, shutdown = await _make_leader(
+        leader_conn=conn,
+        monkeypatch=monkeypatch,
+    )
+    # The double stamps THE event the ``_stopping()`` predicate reads -
+    # deps's own default event is a different object.
+    deps.shutdown_start_event = stop_event
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop IS the stop-race path under test.
+    try:
+        await wait_for(conn.elect_in_flight, description="the elect statement to go in flight")
+        stop_event.set()  # the SIGTERM, mid-elect
+        await wait_for_condition(
+            lambda: len(_resign_deletes([conn])) == 1,
+            description="the immediate fenced resign of the won row",
+        )
+        await wait_for_condition(
+            lambda: leader._resign_fence is None,
+            description="the resign fence to clear once the DELETE landed",
+        )
+    finally:
+        shutdown.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2.0)
+
+    _resign_sql, resign_args = _resign_deletes([conn])[0]
+    assert conn.won_elected_at is not None, "sanity: the elect must have WON"
+    assert resign_args == (leader._worker_id, conn.won_elected_at), (
+        f"the resign must be fenced on the WON term (worker_id, elected_at), got {resign_args!r}"
+    )
+    # Same-conn proof: the elect rode this conn's fetchval, the resign
+    # this conn's execute - one wire, still open, before the close.
+    assert any(
+        _is_lease_statement(sql) and not _is_server_clock_read(sql)
+        for sql, _ in conn.fetchval_calls
+    )
+    assert not deps.is_leader.is_set() and deps.leader_term is None, (
+        "the won lease was assumed - a dying pod held leadership across the drain"
+    )
+    assert leader._leader_monitor_conn is None and leader._cron_conn is None, (
+        "the assume path opened dedicated conns for a stopping worker"
+    )
+    assert not any("pg_try_advisory_lock" in sql for sql, _ in conn.fetchval_calls), (
+        "the assume path ran (the courtesy-lock probe issued)"
+    )
+    # The loop parks attempt-free after the hand-back: exactly one elect
+    # statement the whole run.
+    elect_attempts = sum(
+        1
+        for sql, _ in conn.fetchval_calls
+        if _is_lease_statement(sql) and not _is_server_clock_read(sql)
+    )
+    assert elect_attempts == 1, (
+        f"a stopping worker re-attempted the election ({elect_attempts} attempts)"
+    )
+
+
+async def test_renew_failure_ladder_steps_down_when_trust_spent(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """``_renew_failed`` with the trust window spent stands down locally.
+
+    Past ``trusted_until`` a peer may already hold the row, so the ladder's
+    terminal rung must demote WITHOUT touching the database (issuing a
+    resignation or a renewal against a row a peer holds is the
+    split-brain the trust window exists to prevent) and return False (the
+    loop re-enters as a candidate). The regressions pinned: a ladder that
+    keeps retrying past the trust horizon (a zombie pod acting on a term
+    it no longer owns), and a step-down that reports the loss without
+    clearing the flag/term (every leader-gated loop keeps sweeping on a
+    dead term).
+    """
+    leader, deps, _backend, leader_conn, _, shutdown = await _make_leader(
+        monkeypatch=monkeypatch,
+    )
+    _ = shutdown
+
+    loop = asyncio.get_running_loop()
+    term = LeaderTerm(elected_at=datetime.now(UTC), trusted_until=loop.time() - 0.01)
+    deps.lead(term)
+
+    from taskq.worker._transient import UnexpectedLoopErrorGuard
+
+    with structlog.testing.capture_logs() as captured:
+        should_sleep = await leader._renew_failed(  # pyright: ignore[reportPrivateUsage]  # Why: driving the exact ladder rung IS the test.
+            term,
+            asyncpg.PostgresConnectionError("renew write lost"),
+            guard=UnexpectedLoopErrorGuard("test"),
+            unexpected=False,
+        )
+
+    assert should_sleep is False, "a spent trust window ends the term, not the loop"
+    assert not deps.is_leader.is_set() and deps.leader_term is None, (
+        "the step-down must clear the role now, not on some later cycle - "
+        "leader-gated loops read the flag per iteration"
+    )
+    assert leader_conn.fetchval_calls == [] and leader_conn.execute_calls == [], (
+        "the trust-spent step-down must not touch the database - a peer may already hold the row"
+    )
+    assert any(e.get("kind") == "leader_lease_renew_failed" for e in captured), (
+        "the renew failure must be visible as its own event before the step-down decision"
+    )
+    assert any(
+        e.get("event") == "leadership-lost" and e.get("reason") == "renew_failed" for e in captured
+    ), (
+        "the step-down must carry the renew_failed reason - the runbook's 'PG loss vs successor' triage reads it"
+    )
+
+
+async def test_renew_failure_inside_trust_backs_off_without_demotion(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """The back-off rung: trust remaining → retry inside it, keep leading.
+
+    One transient renew failure inside the window must NOT demote - the
+    window exists precisely so a PG blip doesn't thrash leadership (the
+    step-down hands the row's availability to the next election cycle).
+    The return is still False (the caller re-enters immediately rather
+    than sleeping a full tick on top of the back-off), and the renew
+    failure is WARNed with its own event either way.
+    """
+    leader, deps, _backend, leader_conn, _, shutdown = await _make_leader(
+        monkeypatch=monkeypatch,
+    )
+    _ = shutdown
+
+    loop = asyncio.get_running_loop()
+    # 2.0 s of trust: a loop stall between constructing the term and the
+    # rung's ``remaining`` read must not outlive the window and silently
+    # turn this back-off pin into the step-down arm (the old 0.05 s could
+    # lose that race). The rung's sleep is bounded by min(1.0, remaining),
+    # so the wider window costs the test at most one second.
+    term = LeaderTerm(elected_at=datetime.now(UTC), trusted_until=loop.time() + 2.0)
+    deps.lead(term)
+
+    from taskq.worker._transient import UnexpectedLoopErrorGuard
+
+    with structlog.testing.capture_logs() as captured:
+        should_sleep = await leader._renew_failed(  # pyright: ignore[reportPrivateUsage]
+            term,
+            asyncpg.PostgresConnectionError("renew write lost"),
+            guard=UnexpectedLoopErrorGuard("test"),
+            unexpected=False,
+        )
+
+    assert should_sleep is False
+    assert deps.is_leader.is_set() and deps.leader_term is term, (
+        "a transient renew failure inside the trust window demoted the "
+        "leader - leadership thrashes on every PG blip"
+    )
+    assert leader_conn.fetchval_calls == [] and leader_conn.execute_calls == [], (
+        "the back-off rung must not write anything - the retry is the next loop iteration's renewal"
+    )
+    assert any(e.get("kind") == "leader_lease_renew_failed" for e in captured)
+    assert not any(e.get("event") == "leadership-lost" for e in captured)
+
+
+async def test_elect_fk_violation_is_fatal_not_transient(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """A ForeignKeyViolationError from the elect INSERT kills the loop
+    deliberately - it is not retried as transient.
+
+    The FK constraint means the maintenance_leader row references a
+    workers row that does not exist: this worker never registered (a
+    schema/deploy fault), and NO amount of retrying fixes it - a transient
+    classification would spin elect attempts forever, log-storming a
+    permanent fault. The contract: the error event fires once at ERROR
+    level, exactly ONE elect statement is issued, the worker-wide
+    ``shutdown`` event is set (the TaskGroup siblings unwind), and the
+    loop RETURNS (the task completes - a mutation that retries leaves it
+    running and this test red on both the attempt count and the join).
+    """
+
+    class _FkViolatingConn(FakeConn):
+        async def fetchval(self, sql: str, *args: object) -> object:
+            if _is_lease_statement(sql) and not _is_server_clock_read(sql):
+                self.fetchval_calls.append((sql, args))
+                raise asyncpg.ForeignKeyViolationError(
+                    "insert or update on table 'maintenance_leader' violates "
+                    "foreign key constraint 'maintenance_leader_worker_id_fkey'"
+                )
+            return await super().fetchval(sql, *args)
+
+    conn = _FkViolatingConn()
+    leader, deps, _backend, _leader_conn, _, shutdown = await _make_leader(
+        leader_conn=conn,
+        monkeypatch=monkeypatch,
+    )
+
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]
+    with structlog.testing.capture_logs() as captured:
+        done, _pending = await asyncio.wait({task}, timeout=5.0)
+
+    assert task in done, "the fatal arm must RETURN, not retry forever"
+
+    assert shutdown.is_set(), (
+        "the deliberate fatal must stop the worker-wide shutdown event - "
+        "the TaskGroup siblings (watchdog, sweeps) have to unwind"
+    )
+    fk_events = [e for e in captured if e.get("kind") == "leader_upsert_fk_violation"]
+    assert len(fk_events) == 1 and fk_events[0]["log_level"] == "error", (
+        f"expected exactly one ERROR-level leader_upsert_fk_violation, got {fk_events!r}"
+    )
+    elect_attempts = sum(
+        1
+        for sql, _ in conn.fetchval_calls
+        if _is_lease_statement(sql) and not _is_server_clock_read(sql)
+    )
+    assert elect_attempts == 1, (
+        f"the FK violation was retried as transient ({elect_attempts} elect "
+        "attempts) - a permanent fault log-storms forever"
+    )
+    assert not deps.is_leader.is_set()
+    assert not any(e.get("kind") == "election_attempt_failed" for e in captured), (
+        "the FK arm must not route through the transient cleanup - the "
+        "deliberate fatal is its own path"
+    )
+
+
+class _FlakyResignConn(FakeConn):
+    """FakeConn whose resign DELETE fails a fixed number of times first.
+
+    Simulates a leader conn that cannot reach the database for the first
+    few hand-back attempts (a failover in flight) and recovers - the
+    shape the failed-resign retry park exists to survive.
+    """
+
+    def __init__(self, *, resign_failures: int, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self._resign_failures_left = resign_failures
+        self.resign_attempts = 0
+
+    async def execute(self, sql: str, *args: object) -> str:
+        if sql.lstrip().upper().startswith("DELETE FROM") and "maintenance_leader" in sql:
+            self.resign_attempts += 1
+            if self._resign_failures_left > 0:
+                self._resign_failures_left -= 1
+                raise asyncpg.PostgresConnectionError("resign write lost")
+        return await super().execute(sql, *args)
+
+
+async def test_a_failed_resign_retries_fenced_until_it_lands(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """The retry park: a resign that cannot reach the database is retried
+    on the tick cadence, fenced, attempt-free, until it lands.
+
+    The park's branch condition is ``_resign_fence is None``: the fence
+    ALIVE means the row is still this pod's to hand back, so the loop
+    must keep retrying (the fleet is stalled until the DELETE lands) -
+    parking attempt-free on a failed resign would strand the lease for a
+    whole leader lease. Pinned against: a park that gives up after one
+    failure (the fence never clears, exactly one resign attempt), and a
+    retry that re-enters the election instead of staying attempt-free
+    (a stopping worker must never elect again - the shutdown-ordering
+    contract). The fence identity is the third pin: every retry fences on
+    the SAME won term, so the moment a successor takes the row the
+    retries can no longer touch it.
+    """
+    conn = _FlakyResignConn(resign_failures=2)
+    leader, deps, _backend, _leader_conn, _, shutdown = await _make_leader(
+        leader_conn=conn,
+        monkeypatch=monkeypatch,
+    )
+    loop = asyncio.get_running_loop()
+    # The pod led once and was demoted mid-run: leader_term is long gone,
+    # only the fence remembers the term the row was won under.
+    fence = LeaderTerm(elected_at=datetime.now(UTC), trusted_until=loop.time() + 60.0)
+    leader._resign_fence = fence
+    deps.shutdown_start_event.set()
+
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]
+    with structlog.testing.capture_logs() as captured:
+        await wait_for_condition(
+            lambda: leader._resign_fence is None,
+            description="the retried fenced resign to land and clear the fence",
+            timeout=5.0,
+        )
+    shutdown.set()
+    with contextlib.suppress(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert conn.resign_attempts >= 3, (
+        f"the resign landed after {conn.resign_attempts} attempt(s) - the "
+        "retry park gave up on a failing resign and stranded the lease"
+    )
+    assert conn.fetchval_calls == [], (
+        "the retry loop re-attempted the election while stopping - the "
+        "park must stay attempt-free, only the hand-back retries"
+    )
+    for _sql, args in _resign_deletes([conn]):
+        assert args[1] == fence.elected_at, (
+            f"a retry resigned against {args[1]!r}, not the won term's "
+            f"{fence.elected_at!r} - the fence drifted off the term the "
+            "row was won under"
+        )
+    assert len([e for e in captured if e.get("kind") == "leader_resign_failed"]) == 2, (
+        "each failed attempt must carry its own leader-resign-failed WARN"
+    )
+    assert not deps.is_leader.is_set()
