@@ -14,12 +14,21 @@ from typing import Any
 import pytest
 
 from taskq._ids import new_uuid
+from taskq.constants import DEFAULT_RESERVATION_BACKOFF, RESERVATION_RETRY_HINT_MARGIN
 from taskq.exceptions import ReservationUnavailable
-from taskq.ratelimit.reservation import ConcurrencyReservation, _InMemorySlotTable, sync_slots
+from taskq.ratelimit.reservation import (
+    _RELEASE_FENCED_SQL_TEMPLATE,
+    _RELEASE_SQL_TEMPLATE,
+    ConcurrencyReservation,
+    _InMemorySlotTable,
+    _SlotState,
+    sync_slots,
+)
 from taskq.testing.clock import FakeClock
 
 _START = datetime(2025, 1, 1, tzinfo=UTC)
 _LEASE = timedelta(seconds=10)
+_SCHEMA = "taskq"
 
 
 def _reservation(
@@ -763,3 +772,214 @@ async def test_slot_rows_exist_starved_pool_is_bounded() -> None:
         await asyncio.wait_for(res.slot_rows_exist(pool, timeout=0.05), timeout=5.0)  # type: ignore[arg-type]
 
     assert pool.acquire_timeouts == [0.05]
+
+
+# ── Release / denial arms: unit-level execution (hardening wave) ────────
+#
+# The release and denial arms below previously executed only inside the
+# integration tier (test_ratelimit_reservation_fencing.py runs the
+# zombie-release pins against real PG, integration-marked) or only at
+# the _InMemorySlotTable level, never through ConcurrencyReservation's
+# own dispatcher and never with the denial's retry_after contract
+# pinned.
+
+
+async def test_memory_release_roundtrip_frees_the_slot_for_the_next_job() -> None:
+    """The full in-memory roundtrip through ConcurrencyReservation (not the
+    table underneath): acquire → release → the slot is free again.
+
+    Regression caught: a release dispatcher that stopped reaching the
+    table (a renamed pool=None arm, a swallowed worker-id mismatch) would
+    hold the slot for the lease's whole life — the bucket silently
+    runs at capacity-1 until the leases expire, an incident that looks
+    like contention.
+    """
+    clock = FakeClock(_START)
+    res = _reservation(name="gpu", slots=2, clock=clock)
+    job_id, worker_id = new_uuid(), new_uuid()
+
+    lease = await res.acquire(job_id, worker_id, pool=None)
+    assert (await res.peek(pool=None))["held_count"] == 1
+
+    await res.release(lease, worker_id, pool=None)
+
+    peeked = await res.peek(pool=None)
+    assert peeked == {"free_count": 2, "total_slots": 2, "held_count": 0}
+    # The freed slot is immediately re-acquirable by another job.
+    other = await res.acquire(new_uuid(), new_uuid(), pool=None)
+    assert int(other) == int(lease)
+
+
+async def test_stale_fence_release_returns_false_and_the_slot_stays_held() -> None:
+    """A release carrying a STALE SlotLease fence (the zombie attempt: the
+    lease expired, the slot was re-acquired by the live attempt) frees
+    nothing — ``_InMemorySlotTable.release`` returns False and the live
+    attempt keeps the slot.
+
+    Regression caught: losing the fence comparison makes the zombie's
+    unwind free the slot its own LIVE successor holds; the bucket exceeds
+    ``max_concurrent`` and neither job_id nor worker_id can discriminate
+    (a retry reuses the job row, the redispatch commonly lands on the
+    same worker).
+    """
+    clock = FakeClock(_START)
+    res = _reservation(name="gpu", slots=1, clock=clock)
+    table = res.table
+    table.ensure_slots("gpu", 1)
+
+    worker_id, job_id = new_uuid(), new_uuid()
+    zombie_lease = await res.acquire(job_id, worker_id, pool=None)
+
+    clock.advance(
+        _LEASE + timedelta(microseconds=1)
+    )  # the zombie's lease expires; the slot is re-acquirable
+    live_lease = await res.acquire(job_id, worker_id, pool=None)
+    assert int(live_lease) == int(zombie_lease)
+
+    # The zombie coroutine finally unwinds with the stale fence in hand.
+    assert table.release("gpu", zombie_lease, worker_id) is False
+    assert (await res.peek(pool=None))["held_count"] == 1, (
+        "the stale-fence release freed the live attempt's slot"
+    )
+    with pytest.raises(ReservationUnavailable):
+        await res.acquire(new_uuid(), new_uuid(), pool=None)
+
+    # And the live lease's own release still lands.
+    assert table.release("gpu", live_lease, worker_id) is True
+
+
+class _CapturingReleaseConn:
+    """Connection double recording (sql, args) for the release statements."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+    async def execute(self, sql: str, *args: object) -> str:
+        self.calls.append((sql, args))
+        return "UPDATE 1"
+
+
+class _CapturingReleasePool:
+    def __init__(self) -> None:
+        self.conn = _CapturingReleaseConn()
+
+    def acquire(self) -> Any:
+        conn = self.conn
+
+        class _Ctx:
+            async def __aenter__(self) -> _CapturingReleaseConn:
+                return conn
+
+            async def __aexit__(self, *exc_info: object) -> None:
+                return None
+
+        return _Ctx()
+
+
+async def test_pg_release_without_a_fence_uses_the_plain_release_sql() -> None:
+    """A plain ``int`` slot index releases UNFENCED: the statement is the
+    plain release template and the fence argument is absent.
+
+    Regression caught: a dispatcher that sent the unfenced release to the
+    fenced statement would either need a fence it cannot supply (the
+    acquired_at the caller never saw) or silently skip the release; the
+    plain-int form is the compat contract every pre-fence caller (and
+    the registry's plain-index paths) relies on.
+    """
+    res = ConcurrencyReservation(name="gpu", slots=2, lease=_LEASE, schema=_SCHEMA)
+    pool = _CapturingReleasePool()
+    worker_id = new_uuid()
+
+    await res.release(1, worker_id, pool)  # type: ignore[arg-type]  # Why: duck-typed pool double, the release dispatcher's actual input shape.
+
+    assert pool.conn.calls == [
+        (
+            _RELEASE_SQL_TEMPLATE.format(schema=_SCHEMA),
+            ("gpu", 1, worker_id),
+        )
+    ]
+
+
+async def test_pg_release_with_a_slot_lease_uses_the_fenced_release_sql() -> None:
+    """A ``SlotLease`` release goes to the FENCED statement and carries the
+    lease's acquired_at as the fence argument — the zombie-unwind gate,
+    at the statement boundary.
+
+    Regression caught: swapping the arms (or dropping the fence argument)
+    turns every ordinary release into either a stale-fenced no-op (the
+    slot leaks until the reclaim drain finds it) or an unfenced one (the
+    zombie gate is gone, the fencing tests' corruption returns).
+    """
+    clock = FakeClock(_START)
+    res = ConcurrencyReservation(name="gpu", slots=2, lease=_LEASE, clock=clock, schema=_SCHEMA)
+    pool = _CapturingReleasePool()
+    worker_id, job_id = new_uuid(), new_uuid()
+
+    lease = await res.acquire(job_id, worker_id, pool=None)
+
+    await res.release(lease, worker_id, pool)  # type: ignore[arg-type]
+
+    assert pool.conn.calls == [
+        (
+            _RELEASE_FENCED_SQL_TEMPLATE.format(schema=_SCHEMA),
+            ("gpu", int(lease), worker_id, _START),
+        )
+    ]
+
+
+async def test_denial_when_every_slot_is_held_carries_the_earliest_live_expiry() -> None:
+    """Denying with every slot live-held: the retry hint is the earliest
+    expiry plus the margin — the capacity that can actually free — and it
+    is never negative.
+
+    Regression caught: a hint computed from a clock-skewed minimum
+    (expiry < now) or with the margin dropped would hand the caller a
+    retry_after that fires before any slot can free — a deny-then-burn
+    retry loop against a full bucket.
+    """
+    clock = FakeClock(_START)
+    res = ConcurrencyReservation(name="gpu", slots=2, lease=_LEASE, clock=clock)
+    table = res.table
+    table.ensure_slots("gpu", 2)
+    now = clock.now()
+    with table._lock:  # pyright: ignore[reportPrivateUsage]  # Why: seeding the held shape the acquire loop reads; the table has no writer API for a pre-held slot.
+        bucket = table._buckets["gpu"]  # pyright: ignore[reportPrivateUsage]
+        for i in bucket:
+            bucket[i] = _SlotState(
+                job_id=new_uuid(),
+                worker_id=new_uuid(),
+                acquired_at=now,
+                lease_expires_at=now + _LEASE,
+            )
+
+    with pytest.raises(ReservationUnavailable) as denied:
+        await res.acquire(new_uuid(), new_uuid(), pool=None)
+
+    retry_after = denied.value.retry_after
+    assert retry_after >= timedelta(0), "a negative retry_after is an invalid backoff"
+    assert retry_after == _LEASE + RESERVATION_RETRY_HINT_MARGIN
+
+
+async def test_denial_with_no_live_expiry_falls_back_to_the_default_backoff() -> None:
+    """Denying when NO slot carries a live expiry (the anomalous
+    job_id-set / lease-NULL shape the nullable schema permits): the hint
+    is ``DEFAULT_RESERVATION_BACKOFF``, not a zero or negative draw.
+
+    Regression caught: the fallback arm collapsing to the earliest-expiry
+    formula (with no live expiry to take) would raise on the min() of an
+    empty sequence or hand back timedelta(0) — a retry_after of zero
+    turns every denial into an immediate retry storm.
+    """
+    clock = FakeClock(_START)
+    res = ConcurrencyReservation(name="gpu", slots=1, lease=_LEASE, clock=clock)
+    table = res.table
+    table.ensure_slots("gpu", 1)
+    with table._lock:  # pyright: ignore[reportPrivateUsage]
+        bucket = table._buckets["gpu"]  # pyright: ignore[reportPrivateUsage]
+        bucket[0] = _SlotState(job_id=new_uuid(), worker_id=new_uuid(), lease_expires_at=None)
+
+    with pytest.raises(ReservationUnavailable) as denied:
+        await res.acquire(new_uuid(), new_uuid(), pool=None)
+
+    assert denied.value.retry_after == DEFAULT_RESERVATION_BACKOFF
+    assert denied.value.retry_after >= timedelta(0)

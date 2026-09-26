@@ -16,8 +16,9 @@ from pydantic import BaseModel
 from typer.testing import CliRunner
 
 from taskq.actor import ActorRef, actor
-from taskq.actor_config_ops import ActorConfigRow
+from taskq.actor_config_ops import ActorConfigRow, ActorQueueMoveResult
 from taskq.cli import app
+from taskq.exceptions import ActorNotFoundError
 
 runner = CliRunner()
 
@@ -295,3 +296,145 @@ def test_diff_marks_leftover_row_not_in_registry(monkeypatch: pytest.MonkeyPatch
     assert result.exit_code == 0, f"stderr: {result.stderr}"
     assert "ghost" in result.output
     assert "not in the registry" in result.output
+
+
+# ── move-queue ───────────────────────────────────────────────────────────
+
+
+def _patch_move_db(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    result: Any = None,
+    error: Exception | None = None,
+) -> dict[str, Any]:
+    """Fake asyncpg.connect + move_actor_queue; return captured call kwargs."""
+    captured: dict[str, Any] = {}
+
+    class _MoveConn:
+        closed = False
+
+        async def close(self) -> None:
+            self.closed = True
+
+    conn_holder: dict[str, Any] = {}
+
+    async def fake_connect(dsn: str) -> Any:
+        conn_holder["dsn"] = dsn
+        return _MoveConn()
+
+    async def fake_move(conn: Any, actor: str, new_queue: str, **kwargs: Any) -> Any:
+        captured["move"] = {"actor": actor, "new_queue": new_queue, **kwargs}
+        captured["conn"] = conn
+        if error is not None:
+            raise error
+        return result
+
+    monkeypatch.setattr("taskq.cli.asyncpg.connect", fake_connect)
+    monkeypatch.setattr("taskq.cli.move_actor_queue", fake_move)
+    return captured
+
+
+_MOVE_RESULT = ActorQueueMoveResult(
+    actor="diff_actor",
+    from_queue="critical",
+    to_queue="q2",
+    jobs_moved=3,
+    running_jobs_left=1,
+    queues_row_carried=True,
+    pending_jobs_on_old_queue=2,
+)
+
+
+def test_move_queue_reports_the_move_and_closes_the_conn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`actor-config move-queue ACTOR NEW_QUEUE` reaches move_actor_queue
+    with the actor, target and schema, prints the move report, and closes
+    the connection.
+
+    Regression caught: this is the one CLI command whose only prior
+    execution was by hand — a typo in the dispatcher (a swapped argument
+    pair, a dropped schema kwarg) or a conn leak on the success path had
+    no red test anywhere; the residual-on-stderr split is what drives
+    the operator's "when can the old queue's consumers stop" decision.
+    """
+    captured = _patch_move_db(monkeypatch, result=_MOVE_RESULT)
+
+    result = runner.invoke(app, ["actor-config", "move-queue", "diff_actor", "q2"])
+
+    assert result.exit_code == 0, f"stderr: {result.stderr}"
+    assert captured["move"] == {
+        "actor": "diff_actor",
+        "new_queue": "q2",
+        "schema": captured["move"]["schema"],
+    }
+    assert captured["move"]["schema"] and "taskq" in captured["move"]["schema"]
+    assert "Moved actor 'diff_actor': 'critical' -> 'q2'" in result.stdout
+    assert "jobs_moved=3" in result.stdout
+    assert "running_jobs_left=1" in result.stdout
+    assert "queues_row_carried=True" in result.stdout
+    # The residual is an operator action driver: stderr, not stdout.
+    assert "2 pending/scheduled job(s) still carry queue 'critical'" in result.stderr
+    assert captured["conn"].closed, "the move connection must be closed"
+
+
+def test_move_queue_ghost_actor_exits_three_with_a_clean_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ghost actor (no stored row) exits 3 with the error text on
+    stderr — never a traceback, and never the refusal exit 2 (the two
+    codes drive different operator responses: fix the name vs fix the
+    state)."""
+    _patch_move_db(
+        monkeypatch,
+        error=ActorNotFoundError("no actor_config row for actor 'ghost'"),
+    )
+
+    result = runner.invoke(app, ["actor-config", "move-queue", "ghost", "q2"])
+
+    assert result.exit_code == 3
+    assert "no actor_config row for actor 'ghost'" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_move_queue_transposed_arguments_are_a_usage_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The transpose defense: `actor-config move-queue` takes two bare
+    positionals, so an operator carrying `queue migrate`'s `--to` shape
+    gets a usage error BEFORE any dispatcher call — the two-arguments-
+    both-strings shape is what an operator transposes under pressure.
+
+    Regression caught: giving move-queue an `--to` option would let the
+    transposed invocation parse (silently dropping one queue name) and
+    run the move against a half-named target.
+    """
+    captured = _patch_move_db(monkeypatch, result=_MOVE_RESULT)
+
+    result = runner.invoke(app, ["actor-config", "move-queue", "diff_actor", "--to", "q2"])
+
+    assert result.exit_code != 0
+    assert "Usage: taskq actor-config move-queue" in result.stderr
+    assert captured == {}, "the transposed shape must be refused before any dispatcher call"
+
+
+def test_queue_migrate_is_the_same_move_named_by_to(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`queue migrate ACTOR --to q2` is the same one-step move with the
+    target REQUIRED as an option — the command pair shares one
+    dispatcher, so a contract change (exit codes, the report line) must
+    land on both.
+
+    Regression caught: the `--to` option is never defaulted; a refactor
+    that gave it a default (or unlinked the shared dispatcher) would
+    split the two commands' exit-code contracts apart.
+    """
+    captured = _patch_move_db(monkeypatch, result=_MOVE_RESULT)
+
+    result = runner.invoke(app, ["queue", "migrate", "diff_actor", "--to", "q2"])
+
+    assert result.exit_code == 0, f"stderr: {result.stderr}"
+    assert captured["move"]["actor"] == "diff_actor"
+    assert captured["move"]["new_queue"] == "q2"
+    assert "Moved actor 'diff_actor': 'critical' -> 'q2'" in result.stdout
