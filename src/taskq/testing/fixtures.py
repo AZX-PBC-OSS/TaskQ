@@ -946,12 +946,17 @@ def module_redis_url(
     import redis as redis_sync
 
     url = redis_url_for(redis_container, db=_next_redis_db(redis_container))
-    with redis_sync.from_url(url, decode_responses=False) as client:
+    # socket_timeout=None: the setup/teardown flushes open a FRESH
+    # connection per module, and redis-py 8's 5s default read budget loses
+    # the HELLO handshake race on a co-tenanted runner (the EEE setup-error
+    # class on the cross legs). A wedged connection is the suite-wide
+    # pytest-timeout's job, not a fixture budget.
+    with redis_sync.from_url(url, decode_responses=False, socket_timeout=None) as client:
         client.flushdb()
     yield url
 
     # Teardown: FLUSHDB the module's DB via sync client (safe in any context).
-    with redis_sync.from_url(url, decode_responses=False) as client:
+    with redis_sync.from_url(url, decode_responses=False, socket_timeout=None) as client:
         client.flushdb()
 
 
@@ -1122,7 +1127,10 @@ def clean_redis_url(module_redis_url: str) -> str:
     """
     import redis as redis_sync
 
-    client = redis_sync.from_url(module_redis_url, decode_responses=False)
+    # socket_timeout=None: same fresh-connection HELLO race as
+    # module_redis_url above; the per-test flush must not inherit the 5s
+    # read budget on a co-tenanted runner.
+    client = redis_sync.from_url(module_redis_url, decode_responses=False, socket_timeout=None)
     try:
         client.flushdb()
     finally:
@@ -1139,7 +1147,11 @@ async def clean_redis_client(clean_redis_url: str) -> AsyncIterator[object]:
     """
     from redis.asyncio import from_url as redis_from_url
 
-    client = redis_from_url(clean_redis_url, decode_responses=False)
+    # socket_timeout=None: the client handed to every test of a module
+    # rides the shared co-tenanted broker for the test's whole life; the
+    # suite-wide pytest-timeout owns wedged connections, not a 5s read
+    # budget redis-py 8 started defaulting (the pre-8 behaviour).
+    client = redis_from_url(clean_redis_url, decode_responses=False, socket_timeout=None)
     try:
         yield client
     finally:
