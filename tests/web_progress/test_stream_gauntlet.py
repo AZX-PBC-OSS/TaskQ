@@ -17,9 +17,12 @@ Two defensive families previously had no unit execution:
    defenses. The per-job channel is not exclusively owned: a lying proxy
    can deliver another job's envelope on it, a publisher drift can stop
    emitting the ``ProgressEvent`` shape, and a seq that passes the type
-   check outside the int4 cursor domain would advance ``last_emitted_seq``
-   past every future event and starve the stream into a blackhole. Every
-   malformed message must be DISCARDED with its counter bump (``taskq
+   check beyond the wire ceiling (``_MAX_PROGRESS_SEQ`` = 2^31-1 — a
+   wire-hygiene bound on the cursor domain a hostile envelope may claim,
+   not the storage domain: the durable ``progress_seq`` column is a
+   bigint) would advance ``last_emitted_seq`` past every future event
+   and starve the stream into a blackhole. Every malformed message must
+   be DISCARDED with its counter bump (``taskq
    .sse.malformed_messages``) and the stream must SURVIVE — the next
    valid envelope still forwards.
 
@@ -239,12 +242,13 @@ def _base_envelope(**overrides: object) -> dict[str, Any]:
 _MISSING = object()
 
 #: One case per validator arm — the crossed-wire/proxy-lying defenses:
-#: a seq that is not an integer, a seq outside the int4 cursor domain, a
-#: foreign job's envelope delivered on this job's channel, a terminal
-#: flag that is not a boolean, and an envelope missing a required field.
+#: a seq that is not an integer, a seq beyond the wire ceiling
+#: (``_MAX_PROGRESS_SEQ``), a foreign job's envelope delivered on this
+#: job's channel, a terminal flag that is not a boolean, and an envelope
+#: missing a required field.
 _LYING_ENVELOPES = [
     ("seq_not_an_int", _base_envelope(seq="3")),
-    ("seq_outside_int4_domain", _base_envelope(seq=2**31)),
+    ("seq_beyond_wire_ceiling", _base_envelope(seq=2**31)),
     ("foreign_job_envelope", _base_envelope(job_id=str(_FOREIGN_JOB_ID))),
     ("terminal_not_a_bool", _base_envelope(terminal=1)),
     ("missing_required_status", _base_envelope(status=_MISSING)),
@@ -263,10 +267,10 @@ async def test_lying_envelope_is_discarded_with_its_counter_and_the_stream_survi
 
     Regression caught: any validator that (a) let the lie through — the
     foreign envelope would be forwarded onto this job's stream and its
-    seq could gate this job's future events; the out-of-domain seq would
-    advance the cursor past every future event, blackholing the stream —
-    or (b) propagated the ValueError — a shared-channel writer (or a
-    lying proxy) gets a kill switch on every client's stream. The
+    seq could gate this job's future events; the beyond-the-ceiling seq
+    would advance the cursor past every future event, blackholing the
+    stream — or (b) propagated the ValueError — a shared-channel writer
+    (or a lying proxy) gets a kill switch on every client's stream. The
     forward-after assertion is the survival half: the guard discards,
     the stream does not.
     """
@@ -314,8 +318,8 @@ async def test_lying_envelopes_never_advance_the_cursor() -> None:
     """A discarded envelope must not move ``last_emitted_seq``: the valid
     event behind a lying HIGH-seq envelope still forwards.
 
-    Regression caught: the blackhole shape — an out-of-domain seq (or a
-    foreign envelope's seq) that passed validation would advance the
+    Regression caught: the blackhole shape — a beyond-the-ceiling seq (or
+    a foreign envelope's seq) that passed validation would advance the
     cursor past every future event of this job; the stream would then
     silently drop the job's remaining progress while appearing healthy.
     """

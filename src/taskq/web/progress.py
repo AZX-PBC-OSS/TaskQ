@@ -122,11 +122,17 @@ _REDIS_503_BODY: dict[str, str] = {"error": "redis_not_configured"}
 # itself, plus the same grace the health ping allows.
 _BROKER_READ_GRACE_SECS: float = 0.5
 
-# Ceiling for a wire envelope's ``seq``: the durable cursor is the jobs
-# table's ``progress_seq int`` column (migration 01.00.00_01), so the int4
-# domain bounds every seq the healthy pipeline can issue. The SSE
-# generator discards out-of-domain envelopes as malformed rather than
-# advancing its dedup cursor into a range no future event can reach.
+# Wire ceiling for a resume cursor and an envelope's ``seq``. Storage is
+# NOT the bound: the durable cursor is the jobs table's ``progress_seq``
+# column, a bigint since migration 01.00.20_03 widened it from int4 (the
+# migration's own header explains why the storage domain, not any wire
+# choice, was the overflow risk). The 2^31-1 ceiling is wire HYGIENE: it
+# bounds the domain a hostile cursor can name on the wire -- the query
+# parameter, the ``Last-Event-ID`` header, and the seq an envelope may
+# claim -- to far above anything the healthy pipeline issues and far
+# below unbounded. The SSE generator discards beyond-the-ceiling
+# envelopes as malformed rather than advancing its dedup cursor into a
+# range no future event can reach.
 _MAX_PROGRESS_SEQ: int = 2**31 - 1
 
 # Cap on the effective keepalive/re-check cadence of a live stream. The
@@ -193,16 +199,19 @@ def _resolve_last_event_id(
     parameter is a curl/debugging convenience.  Header wins when both present.
 
     Every id this stream issues is a non-negative integer sequence number
-    bounded by the int4 ``progress_seq`` cursor domain (``_MAX_PROGRESS_SEQ``),
-    so an id that is not one cannot have come from it - a hand-rolled
-    client, a proxy rewriting headers, or FastAPI parsing an arbitrary-
-    precision query integer - and is rejected with a 400 naming its source.
-    Reading it as "no cursor" instead would replay the stream from the
-    snapshot and silently shadow a valid query parameter.  And a cursor
-    accepted ABOVE the domain is worse than a rejected one: it fails the
-    generator's ``seq <= last_emitted_seq`` dedup forever, a blackhole
-    stream holding an SSE slot and a pubsub subscription for the life of
-    the connection.
+    no greater than ``_MAX_PROGRESS_SEQ``, so an id that is not one cannot
+    have come from it - a hand-rolled client, a proxy rewriting headers, or
+    FastAPI parsing an arbitrary-precision query integer - and is rejected
+    with a 400 naming its source. The ceiling is wire hygiene bounding the
+    domain a hostile cursor can name, not the storage domain: the durable
+    ``progress_seq`` column is a bigint (migration 01.00.20_03), and
+    2^31-1 sits far above anything the healthy pipeline issues and far
+    below unbounded. Reading a bad id as "no cursor" instead would replay
+    the stream from the snapshot and silently shadow a valid query
+    parameter.  And a cursor accepted ABOVE the ceiling is worse than a
+    rejected one: it fails the generator's ``seq <= last_emitted_seq``
+    dedup forever, a blackhole stream holding an SSE slot and a pubsub
+    subscription for the life of the connection.
     """
     header_val = request.headers.get("Last-Event-ID")
     if header_val is not None:
@@ -402,14 +411,16 @@ async def _event_generator(
                 if not isinstance(seq, int) or isinstance(seq, bool):
                     raise ValueError("seq must be an integer")
                 if not (0 <= seq <= _MAX_PROGRESS_SEQ):
-                    # The seq cursor is the durable row's int4
-                    # ``progress_seq`` (migration 01.00.00_01), so no
-                    # honest event can carry a value outside the int4
-                    # domain. A lie that passes the type check with a
-                    # huge value would advance ``last_emitted_seq`` past
-                    # every future event and starve this stream into a
-                    # blackhole; out-of-domain is malformed, discarded
-                    # like any other malformed message.
+                    # ``_MAX_PROGRESS_SEQ`` is a wire-hygiene ceiling, not
+                    # the storage domain: the durable ``progress_seq``
+                    # column is a bigint (migration 01.00.20_03 widened it
+                    # from int4), and 2^31-1 bounds what the wire may claim
+                    # far above anything the healthy pipeline issues. A lie
+                    # that passes the type check with a huge value would
+                    # advance ``last_emitted_seq`` past every future event
+                    # and starve this stream into a blackhole; beyond the
+                    # ceiling is malformed, discarded like any other
+                    # malformed message.
                     raise ValueError("seq outside the int4 cursor domain")
                 if envelope["job_id"] != str(job_id):
                     # The crossed-wire check: the channel is per-job, but

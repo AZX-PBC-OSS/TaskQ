@@ -363,10 +363,13 @@ def test_move_queue_reports_the_move_and_closes_the_conn(
     result = runner.invoke(app, ["actor-config", "move-queue", "diff_actor", "q2"])
 
     assert result.exit_code == 0, f"stderr: {result.stderr}"
+    # The schema literal the test drives: TaskQSettings.load()'s default
+    # (no env override in this test), asserted exactly so a dropped or
+    # renamed schema kwarg fails the compare instead of self-satisfying it.
     assert captured["move"] == {
         "actor": "diff_actor",
         "new_queue": "q2",
-        "schema": captured["move"]["schema"],
+        "schema": "taskq",
     }
     assert captured["move"]["schema"] and "taskq" in captured["move"]["schema"]
     assert "Moved actor 'diff_actor': 'critical' -> 'q2'" in result.stdout

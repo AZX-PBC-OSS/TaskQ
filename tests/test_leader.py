@@ -4779,7 +4779,12 @@ async def test_renew_failure_inside_trust_backs_off_without_demotion(
     _ = shutdown
 
     loop = asyncio.get_running_loop()
-    term = LeaderTerm(elected_at=datetime.now(UTC), trusted_until=loop.time() + 0.05)
+    # 2.0 s of trust: a loop stall between constructing the term and the
+    # rung's ``remaining`` read must not outlive the window and silently
+    # turn this back-off pin into the step-down arm (the old 0.05 s could
+    # lose that race). The rung's sleep is bounded by min(1.0, remaining),
+    # so the wider window costs the test at most one second.
+    term = LeaderTerm(elected_at=datetime.now(UTC), trusted_until=loop.time() + 2.0)
     deps.lead(term)
 
     from taskq.worker._transient import UnexpectedLoopErrorGuard

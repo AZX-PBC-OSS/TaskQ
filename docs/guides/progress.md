@@ -187,7 +187,7 @@ GET /api/job/{job_id}/progress/stream
 
 | Parameter | Type | Description |
 |---|---|---|
-| `last_event_id` | `int \| None` | Resume from this sequence number. Also read from the `Last-Event-ID` request header (WHATWG EventSource spec). |
+| `last_event_id` | `int \| None` | Resume from this sequence number. Also read from the `Last-Event-ID` request header (WHATWG EventSource spec). Both sources get the same validation (see the `400` row below). |
 
 **SSE event types:**
 
@@ -203,7 +203,7 @@ GET /api/job/{job_id}/progress/stream
 | Code | Meaning |
 |---|---|
 | `200` | Stream established. |
-| `400` | `Last-Event-ID` is not a non-negative integer sequence number. |
+| `400` | The resume cursor — the `Last-Event-ID` header or the `?last_event_id=` query parameter — is not a non-negative integer no greater than 2^31-1. The `400` names the rejected source. |
 | `404` | Job not found. |
 | `503` | Redis not configured or unavailable. `Retry-After: 2` header is set. |
 
@@ -211,9 +211,15 @@ GET /api/job/{job_id}/progress/stream
 reconnect automatically. The endpoint subscribes to Redis **before** querying Postgres so there
 is no race window: if an event arrived between the disconnect and the reconnect it is caught by
 the Redis subscription. A catch-up snapshot is emitted from Postgres when
-`progress_seq > last_event_id`. The header wins over `?last_event_id=` when both are present,
-and a header that is not a non-negative integer (every id this stream issues is one) is
-rejected with `400` rather than read as "no cursor". Because state-change events consume `seq`,
+`progress_seq > last_event_id`. The header wins over `?last_event_id=` when both are present:
+the header is validated first and, if valid, the query parameter is never read. Both sources
+get the same validation — a non-negative integer no greater than 2^31-1 — and a violation is
+rejected with `400` naming the source, rather than read as "no cursor". The ceiling is wire
+hygiene bounding the domain a hostile cursor can name, not the storage domain: the durable
+`progress_seq` column is a bigint, and every id this stream issues sits far below it. (Before
+this contract reached the query parameter, a negative `?last_event_id=` was silently clamped to
+zero and answered with a full catch-up snapshot; it now gets the header's `400`.) Because
+state-change events consume `seq`,
 a consumer that reconnects after the last progress event still finds the row's `progress_seq`
 one ahead (the terminal consumed it) and receives the terminal snapshot instead of hanging on a
 stream nothing further is published to.
