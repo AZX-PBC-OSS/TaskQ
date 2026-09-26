@@ -1018,7 +1018,7 @@ SET status = CASE
         ELSE j.error_message
     END
 WHERE j.id = $1 AND j.status = 'running' AND j.locked_by_worker = $2
-RETURNING j.attempt, j.started_at""".replace("{has_budget}", _RECLAIM_HAS_BUDGET_SQL)
+RETURNING j.attempt, j.started_at, j.status""".replace("{has_budget}", _RECLAIM_HAS_BUDGET_SQL)
     .replace("{reclaim_delay}", _RECLAIM_DELAY_SQL)
     .replace("{max_backoff_seconds}", "$3")
     .replace("{isolate_crashed_message}", _ISOLATE_CRASHED_MESSAGE)
@@ -1219,32 +1219,38 @@ async def isolate_self(
                         if updated is None:
                             lost_race += 1
                             continue
-                        # Mirrors _RECLAIM_HAS_BUDGET_SQL, which the UPDATE
-                        # above applied as its SECOND CASE arm: an
-                        # 'indefinite' job's budget is its
-                        # schedule_to_close deadline, not max_attempts.
-                        is_pending = (  # pyright: ignore[reportUnknownVariableType]  # Why: row column accessor types unknown, propagates from conn.fetch() suppression.
-                            row["retry_kind"] != "non_retryable"
-                            and (
-                                row["retry_kind"] == "indefinite"
-                                or row["attempt"] < row["max_attempts"]
-                            )
-                        )
-                        # The classification mirrors the UPDATE's CASE
-                        # ORDER exactly: operator cancel first, a
-                        # cancel-in-flight row terminalises 'cancelled'
-                        # whatever its budget, then the re-pend arm, then
-                        # crashed.
-                        new_status: str
-                        if row["cancel_phase"] != 0:
-                            cancelled += 1
-                            new_status = "cancelled"
-                        elif is_pending:
+                        # The classification reads the ARBITER's RETURNING -
+                        # the same trustworthy-read doctrine the attempt
+                        # row's fence below runs on: a refund that commits
+                        # in the SELECT->arbiter window de-charges and
+                        # un-stamps the row BEFORE the arbiter takes its
+                        # lock, and the arbiter's own CASE then re-pends it
+                        # (the budget conjunct re-evaluates on the live
+                        # row). A classification from the SELECT snapshot
+                        # would call that same row 'crashed' - its snapshot
+                        # attempt was already spent - and fabricate a
+                        # verdict the row never wrote: the ledger says
+                        # pending, the reclaim event's to_state and this
+                        # counter say crashed. retry_kind is
+                        # enqueue-immutable, so the only snapshot inputs
+                        # that can have moved between SELECT and arbiter
+                        # are exactly the ones the RETURNING carries.
+                        new_status: str = str(updated["status"])
+                        if new_status == "pending":
                             pending += 1
-                            new_status = "pending"
+                        elif new_status == "cancelled":
+                            cancelled += 1
                         else:
+                            # The arbiter's CASE has exactly one remaining
+                            # arm: crashed - the not-pending,
+                            # not-operator-cancelled outcome of the budget
+                            # CASE. Total by construction: no unmapped
+                            # status can reach here without a CASE
+                            # evolution, and the exhaustiveness pin
+                            # (tests/test_obs_reclaim_counters.py) fails CI
+                            # before that day comes - the same doctrine as
+                            # the sweep's _reclaim_disposition.
                             crashed += 1
-                            new_status = "crashed"
                         # The reclaim rides the crash-reclaim outbox
                         # channel exactly like the sweep's rows (see the
                         # module comment). reason='lock_expired' is the
