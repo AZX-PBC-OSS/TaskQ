@@ -104,13 +104,29 @@ main();
 def _drive(scenario: str) -> list[str]:
     node = shutil.which("node")
     assert node is not None
+    # No per-spawn wall-clock deadline on purpose: the harness is fully
+    # virtual (scripted fetches, virtual timers, a synchronous log), so
+    # the child's exit is the only event worth waiting for, and a fixed
+    # deadline is a delay that races child startup, not a behaviour gate.
+    # Under co-tenant load (-n 4 plus a CPU/IO stressor) a starved Node
+    # startup blew a 30s deadline and turned a behaviourally-correct pin
+    # red (the same child runs in ~60ms of CPU once scheduled). A wedged
+    # child is the suite-wide pytest-timeout budget's job (--timeout=300
+    # in addopts, every lane): it fails the hung test by name with a
+    # stack dump instead of guessing a threshold no load condition can
+    # justify.
     result = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; the harness and scenario names are this file's own constants.
         [node, "-e", _HARNESS, "--", str(REALTIME_JS), scenario],
         capture_output=True,
         text=True,
-        check=True,
-        timeout=30,
     )
+    if result.returncode != 0:
+        # Surface the child's stderr: a harness crash (a stub drift, a
+        # scenario typo) must name the JS error, not exit status 1.
+        pytest.fail(
+            f"the harness Node process exited {result.returncode} "
+            f"(its stderr follows)\n{result.stderr}"
+        )
     return json.loads(result.stdout)
 
 
