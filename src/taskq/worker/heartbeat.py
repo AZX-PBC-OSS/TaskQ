@@ -290,9 +290,11 @@ _SELECT_STILL_HELD_SQL_TEMPLATE = (
 # never started, and with it gone the ``started_at <`` bound below stops
 # matching the row whatever id re-probes it. NULL is the honest value,
 # the same "never started" the attempt-ledger arms already exclude (the
-# sweep's attempt INSERT coalesces a NULL stamp through the per-row clock
-# fallback, and the next claim stamps it fresh), so no reader learns a
-# new shape - only the fabrication goes away.
+# sweep's reclaim INSERT fences a NULL stamp OUT of the ledger entirely -
+# the standing-claim fence in _sweeps.py's _SWEEP_1_ATTEMPTS_BATCH_SQL: a
+# refunded number records no attempt row, so the next claim's re-mint of
+# the number cannot double-count - and the next claim stamps it fresh),
+# so no reader learns a new shape - only the fabrication goes away.
 #
 # The reconcile NEVER touches a phase-carrying row (``cancel_phase <> 0``).
 # The cancel ladder's poll owns those rows - mark_retry's header grants
@@ -598,7 +600,6 @@ async def heartbeat_loop(
                             )
                             if lost_rows:
                                 lost_ids: list[UUID] = [row["id"] for row in lost_rows]
-                                deps.disowned_jobs.update(lost_ids)
                                 logger.warning(
                                     "claim-loss-reconciled",
                                     kind="claim_loss_reconciled",
@@ -633,6 +634,28 @@ async def heartbeat_loop(
                             # re-stamps, so an unconfirmed commit is
                             # benign: the next tick rewrites them).
                             await tx.commit()
+                            # The disown lands AFTER the commit, never
+                            # before: the disown is MEMORY state with no
+                            # rollback, and the reconcile's exclusion set
+                            # folds it - a disown applied before a tick
+                            # whose commit then failed (the in-tx cancel
+                            # hook's OSError above, a cut commit, a
+                            # dropped connection) would survive the
+                            # rollback while the REFUND it belongs to
+                            # un-applies, and the row would match neither
+                            # the renewal nor the reconcile ever again:
+                            # the refund is lost permanently, the lease
+                            # lapses, and Sweep 1 reclaims at the CHARGED
+                            # attempt - issue 458's "crashed, never ran"
+                            # record, resurrected by a brownout tick.
+                            # Applied post-commit there is no await
+                            # between the commit's return and this
+                            # synchronous update, so no other task can
+                            # observe the gap; a failed commit leaves the
+                            # disown unset, the row still matching, and
+                            # the next tick re-reconciles it.
+                            if lost_rows:
+                                deps.disowned_jobs.update(lost_ids)  # pyright: ignore[reportPossiblyUnboundVariable]  # Why: lost_ids is bound exactly when lost_rows is truthy - the same guard guards both; the pair is not reassigned between.
                     except BaseException:
                         # Teardown, bounded by the SAME budget's
                         # remainder, deliberately OUTSIDE the expired
@@ -1015,9 +1038,8 @@ SET status = CASE
             THEN '{isolate_crashed_message}'
         ELSE j.error_message
     END
-WHERE j.id = $1 AND j.status = 'running' AND j.locked_by_worker = $2""".replace(
-        "{has_budget}", _RECLAIM_HAS_BUDGET_SQL
-    )
+WHERE j.id = $1 AND j.status = 'running' AND j.locked_by_worker = $2
+RETURNING j.attempt, j.started_at, j.status""".replace("{has_budget}", _RECLAIM_HAS_BUDGET_SQL)
     .replace("{reclaim_delay}", _RECLAIM_DELAY_SQL)
     .replace("{max_backoff_seconds}", "$3")
     .replace("{isolate_crashed_message}", _ISOLATE_CRASHED_MESSAGE)
@@ -1205,38 +1227,51 @@ async def isolate_self(
                         # WHOLE transaction and collapses the isolation of
                         # rows that are still this worker's. Only the
                         # winner of the transition writes the attempt row.
-                        tag = await conn.execute(
+                        # fetchrow, not execute+parse_rowcount: the
+                        # RETURNING row IS the standing-claim fence's
+                        # source of truth (the comment at the attempt
+                        # INSERT below) - the row's attempt and stamp as
+                        # they stand at the winning transition, which a
+                        # reconcile refund committed inside the
+                        # SELECT->UPDATE window has already un-stamped.
+                        updated = await conn.fetchrow(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  # Why: conn type suppressed above due to asyncpg-stubs limitation on connect(); asyncpg-stubs does not type fetchrow's overload for this sql shape.
                             isolate_job_sql, row["id"], worker_id, max_backoff_seconds
                         )
-                        if parse_rowcount(tag) == 0:
+                        if updated is None:
                             lost_race += 1
                             continue
-                        # Mirrors _RECLAIM_HAS_BUDGET_SQL, which the UPDATE
-                        # above applied as its SECOND CASE arm: an
-                        # 'indefinite' job's budget is its
-                        # schedule_to_close deadline, not max_attempts.
-                        is_pending = (  # pyright: ignore[reportUnknownVariableType]  # Why: row column accessor types unknown, propagates from conn.fetch() suppression.
-                            row["retry_kind"] != "non_retryable"
-                            and (
-                                row["retry_kind"] == "indefinite"
-                                or row["attempt"] < row["max_attempts"]
-                            )
-                        )
-                        # The classification mirrors the UPDATE's CASE
-                        # ORDER exactly: operator cancel first, a
-                        # cancel-in-flight row terminalises 'cancelled'
-                        # whatever its budget, then the re-pend arm, then
-                        # crashed.
-                        new_status: str
-                        if row["cancel_phase"] != 0:
-                            cancelled += 1
-                            new_status = "cancelled"
-                        elif is_pending:
+                        # The classification reads the ARBITER's RETURNING -
+                        # the same trustworthy-read doctrine the attempt
+                        # row's fence below runs on: a refund that commits
+                        # in the SELECT->arbiter window de-charges and
+                        # un-stamps the row BEFORE the arbiter takes its
+                        # lock, and the arbiter's own CASE then re-pends it
+                        # (the budget conjunct re-evaluates on the live
+                        # row). A classification from the SELECT snapshot
+                        # would call that same row 'crashed' - its snapshot
+                        # attempt was already spent - and fabricate a
+                        # verdict the row never wrote: the ledger says
+                        # pending, the reclaim event's to_state and this
+                        # counter say crashed. retry_kind is
+                        # enqueue-immutable, so the only snapshot inputs
+                        # that can have moved between SELECT and arbiter
+                        # are exactly the ones the RETURNING carries.
+                        new_status: str = str(updated["status"])
+                        if new_status == "pending":
                             pending += 1
-                            new_status = "pending"
+                        elif new_status == "cancelled":
+                            cancelled += 1
                         else:
+                            # The arbiter's CASE has exactly one remaining
+                            # arm: crashed - the not-pending,
+                            # not-operator-cancelled outcome of the budget
+                            # CASE. Total by construction: no unmapped
+                            # status can reach here without a CASE
+                            # evolution, and the exhaustiveness pin
+                            # (tests/test_obs_reclaim_counters.py) fails CI
+                            # before that day comes - the same doctrine as
+                            # the sweep's _reclaim_disposition.
                             crashed += 1
-                            new_status = "crashed"
                         # The reclaim rides the crash-reclaim outbox
                         # channel exactly like the sweep's rows (see the
                         # module comment). reason='lock_expired' is the
@@ -1260,19 +1295,58 @@ async def isolate_self(
                         }
                         event_job_ids.append(JobId(row["id"]))
                         event_details.append(jsonb_param(detail))
-                        await conn.execute(
-                            insert_attempt_sql,
-                            row["id"],
-                            row["attempt"],
-                            row["started_at"],
-                            "crashed",
-                            ERROR_CLASS_HEARTBEAT_LOST,
-                            None,
-                            None,
-                            None,
-                            worker_id,
-                            "{}",  # metadata, matches the sweep paths' literal
-                        )
+                        # THE STANDING-CLAIM FENCE, read from the ARBITER's
+                        # RETURNING - never from the SELECT snapshot above.
+                        # The gap this closes (the soak's reconciliation red,
+                        # run 36175331443, ``attempt counter 1 vs 2 attempt
+                        # rows``): the claim-loss reconcile's refund
+                        # (_RECONCILE_LOST_CLAIMS_SQL, the same worker's
+                        # heartbeat pool, or the shutdown drain's
+                        # ATTEMPT_REFUND_SQL arm) can commit in the window
+                        # between this path's SELECT and the guarded UPDATE
+                        # - the SELECT took no row lock, the refund matches
+                        # exactly the row it sees there (running, locked by
+                        # this worker, its charge de-charged and its
+                        # started_at un-stamped), and the pre-fix arbiter
+                        # (status + holder, no standing-claim conjunct) won
+                        # the transition anyway, then the INSERT below wrote
+                        # the SNAPSHOT's (attempt, started_at) - a stale
+                        # epoch the counter no longer carries, minted AFTER
+                        # the refund. The next claim re-mints that number
+                        # (the refund's whole point) and the ledger closes
+                        # the lineage with more attempt rows than the
+                        # counter. The arbiter is the trustworthy read: it
+                        # takes the row lock, so no refund can interleave
+                        # after it, and a refund before it shows up in the
+                        # RETURNING as the un-stamped, de-charged row. A
+                        # returned NULL stamp is a charge this isolate never
+                        # owned: record NO attempt row (the reclaim event
+                        # above still lands - the reclaim happened and is
+                        # audited; the execution the crashed row would
+                        # assert never did), and leave the re-pend standing,
+                        # the same fenced shape Sweep 1's reclaim leaves
+                        # (its batched INSERT carries the twin fence,
+                        # _SWEEP_1_ATTEMPTS_BATCH_SQL's ``WHERE a.started_at
+                        # IS NOT NULL``). The fence also keeps
+                        # INSERT_ATTEMPT_SQL's raw stamp from hitting
+                        # job_attempts.started_at's NOT NULL on exactly this
+                        # shape (a NotNullViolation here would abort the
+                        # whole isolation transaction and strand every
+                        # sibling row with it).
+                        if updated["started_at"] is not None:
+                            await conn.execute(
+                                insert_attempt_sql,
+                                row["id"],
+                                updated["attempt"],
+                                updated["started_at"],
+                                "crashed",
+                                ERROR_CLASS_HEARTBEAT_LOST,
+                                None,
+                                None,
+                                None,
+                                worker_id,
+                                "{}",  # metadata, matches the sweep paths' literal
+                            )
                     if event_job_ids:
                         await conn.execute(
                             INSERT_EVENTS_DETAIL_BATCH_SQL.format(schema=schema),

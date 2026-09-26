@@ -229,7 +229,7 @@ async def test_acquire_redis_backend_raises_runtime_error_without_settings() -> 
     sw = SlidingWindow(name="redis-test", limit=10, window=timedelta(seconds=60), backend="redis")
     import redis.asyncio as _ra
 
-    client = _ra.from_url("redis://localhost:0", decode_responses=False)
+    client = _ra.from_url("redis://localhost:0", decode_responses=False, socket_timeout=None)
     try:
         with pytest.raises(RuntimeError, match="settings not injected"):
             await sw.acquire(clock=FakeClock(_START), redis_client=client)

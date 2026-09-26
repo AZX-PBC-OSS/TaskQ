@@ -44,6 +44,42 @@ class FakeConn:
         pieces = sql.rsplit(" ", 1)
         return f"{pieces[0]} 1"
 
+    async def fetchrow(self, sql: str, *args: object) -> dict[str, object] | None:
+        """The guarded arbiter UPDATE rides fetchrow (its RETURNING is the
+        standing-claim fence's source of truth): the row's own attempt and
+        stamp for a job this fake still holds, None when it does not - the
+        lost-race shape the rowcount-0 path serves."""
+        self._execute_count += 1
+        if self._fail_execute_with is not None:
+            raise self._fail_execute_with
+        self.execute_calls.append((sql, args))
+        if "RETURNING j.attempt" in sql:
+            job_id = args[0]
+            for row in self._fetch_rows:
+                if row["id"] == job_id:
+                    # The RETURNING now carries j.status too - the
+                    # arbiter's CASE outcome is the classification's
+                    # source of truth (the snapshot's attempt can be
+                    # stale behind a refund that committed in the
+                    # window). The fake emulates the CASE faithfully:
+                    # operator cancel first, then the budget arms.
+                    if row["cancel_phase"] != 0:
+                        status = "cancelled"
+                    elif row["retry_kind"] != "non_retryable" and (
+                        row["retry_kind"] == "indefinite"
+                        or int(row["attempt"]) < int(row["max_attempts"])  # type: ignore[operator]  # Why: FakeConn's rows are untyped dicts (pyright: object); the values are ints by construction.
+                    ):
+                        status = "pending"
+                    else:
+                        status = "crashed"
+                    return {
+                        "attempt": row["attempt"],
+                        "started_at": row["started_at"],
+                        "status": status,
+                    }
+            return None
+        return None
+
     async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
         self.fetch_calls = getattr(self, "fetch_calls", [])
         self.fetch_calls.append((sql, args))
@@ -182,6 +218,93 @@ async def test_isolate_self_writes_reclaim_event_rows() -> None:
         apg.connect = orig_connect  # type: ignore[method-assign] # Why: patching asyncpg.connect for unit test; restored in finally.
 
 
+async def test_isolate_self_classifies_from_the_arbiter_not_the_snapshot() -> None:
+    """The classification reads the ARBITER's RETURNING, never the SELECT
+    snapshot: a refund that committed in the SELECT->arbiter window
+    de-charges and un-stamps the row before the arbiter takes its lock,
+    and the arbiter's own budget CASE then re-pends it - a classification
+    from the snapshot would call that row 'crashed' (its snapshot attempt
+    was spent) and fabricate a verdict the ledger does not carry: the
+    reclaim event's to_state would say crashed above a jobs row that says
+    pending, and watch_reclaims consumers would trust the lie. The
+    arbiter is the trustworthy read - the same doctrine the attempt
+    row's fence (the NULL-stamp -> no attempt row) runs on; here the
+    pin holds the CLASSIFICATION to it."""
+
+    snapshot_row: dict[str, object] = {
+        "id": new_uuid(),
+        # The SNAPSHOT the SELECT hands out: the attempt budget spent -
+        # the stale view the old classification crashed the row from.
+        "attempt": 2,
+        "started_at": "2025-01-01T00:00:00Z",
+        "max_attempts": 2,
+        "retry_kind": "transient",
+        "cancel_phase": 0,
+    }
+    # The ARBITER's RETURNING: the refund committed in the window (the
+    # charge de-charged: attempt 2 -> 1; the stamp un-stamped), the
+    # arbiter re-evaluated the budget on the live row and re-pended it.
+    arbiter_returning: dict[str, object] = {
+        "attempt": 1,
+        "started_at": None,
+        "status": "pending",
+    }
+
+    class RefundedUnderneathConn(FakeConn):
+        async def fetchrow(self, sql: str, *args: object) -> dict[str, object] | None:
+            if "RETURNING j.attempt" in sql:
+                return dict(arbiter_returning)
+            return await super().fetchrow(sql, *args)
+
+    conn = RefundedUnderneathConn(fetch_rows=[snapshot_row])
+
+    async def fake_connect(
+        dsn: str,
+        *,
+        timeout: float,
+        command_timeout: float | None = None,
+        connection_class: type[object] | None = None,
+    ) -> RefundedUnderneathConn:
+        return conn
+
+    import json
+
+    import asyncpg as apg
+
+    orig_connect = apg.connect
+    apg.connect = fake_connect  # type: ignore[method-assign]
+    try:
+        deps = _make_deps()
+        shutdown = asyncio.Event()
+        await isolate_self(deps, new_uuid(), shutdown)
+
+        assert shutdown.is_set()
+        # The event carries the ARBITER's verdict: to_state pending - not
+        # the snapshot's 'crashed'.
+        event_calls = [(sql, args) for sql, args in conn.execute_calls if "job_events" in sql]
+        assert len(event_calls) == 1, (
+            f"the reclaim event must land exactly once, got {len(event_calls)}"
+        )
+        _sql, args = event_calls[0]
+        details = cast("tuple[object, ...]", args[1])
+        detail = json.loads(str(details[0]))
+        assert detail["to_state"] == "pending", (
+            f"the classification must read the arbiter's RETURNING "
+            f"(status='pending' behind the refund), got to_state="
+            f"{detail['to_state']!r} - a fabricated verdict the ledger "
+            "does not carry"
+        )
+        # The fence's other half stands with it: the re-pended row's
+        # un-stamped charge writes NO attempt row (nothing was executed
+        # for the isolate to charge).
+        attempt_inserts = [(sql, args) for sql, args in conn.execute_calls if "job_attempts" in sql]
+        assert attempt_inserts == [], (
+            f"the refunded row's isolate must not mint an attempt row, got {len(attempt_inserts)}"
+        )
+    finally:
+        apg.connect = orig_connect  # type: ignore[method-assign]
+
+
 async def test_isolate_self_opens_fresh_connect() -> None:
     """isolate_self opens a fresh asyncpg.connect() - NOT the heartbeat pool."""
 
@@ -317,6 +440,21 @@ async def test_isolate_self_honours_fr12_case_shape() -> None:
             if "SET status = CASE" in sql:
                 runner = sql
             return "UPDATE 1"
+
+        async def fetchrow(self, sql: str, *args: object) -> dict[str, object] | None:
+            nonlocal runner
+            if "SET status = CASE" in sql:
+                # The arbiter rides fetchrow (its RETURNING is the
+                # standing-claim fence's source of truth): the row the
+                # stub's fetch hands out, as the winning transition's
+                # RETURNING view.
+                runner = sql
+                return {
+                    "attempt": 0,
+                    "started_at": "2025-01-01T00:00:00Z",
+                    "status": "pending",
+                }
+            return await super().fetchrow(sql, *args)
 
         async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
             return [

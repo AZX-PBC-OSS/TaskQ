@@ -440,7 +440,7 @@ def _flushdb(url: str) -> None:
     """FLUSHDB via the synchronous redis client (reliable in any context)."""
     import redis as redis_sync
 
-    with redis_sync.from_url(url, decode_responses=False) as client:
+    with redis_sync.from_url(url, decode_responses=False, socket_timeout=None) as client:
         client.flushdb()
 
 

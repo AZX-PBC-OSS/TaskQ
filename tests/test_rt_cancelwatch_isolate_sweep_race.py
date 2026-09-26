@@ -31,7 +31,7 @@ the guards serialise and isolate no longer sees the reclaimed row.
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -97,12 +97,26 @@ def _isolate_deps(dsn: str, schema: str) -> WorkerDeps:
 async def _seed_two_running_jobs(
     conn: asyncpg.Connection, schema: str, worker_id: UUID
 ) -> tuple[UUID, UUID]:
-    """X: lease long expired (sweep-eligible). Y: lease live (not eligible)."""
+    """X: lease long expired (sweep-eligible). Y: lease live (not eligible).
+
+    Both stamps are anchored on the SERVER's clock (``clock_timestamp()``),
+    not the app's: eligibility is judged by the sweep's
+    ``statement_timestamp()`` (the DB clock is the timing authority), and
+    the two clocks are independent - they can diverge or step (VM
+    pause/resume, NTP drift), and the co-tenancy stall band measured on
+    these runners runs minutes between seed and sweep. Y's margin is one
+    hour into the server's future so no measured stall can flip it
+    eligible (the 300s margin the seed once used sat inside that band and
+    the ``reclaimed == 1`` guard red as "fixture broken"); X's past margin
+    only needs to clear the cleanup grace - delay makes it MORE eligible,
+    which is the direction the pin already wants.
+    """
+    db_now: datetime = await conn.fetchval("SELECT clock_timestamp()")
     x_id = await create_running_job(
         conn,
         schema,
         worker_id,
-        lock_expires_at=datetime.now(UTC) - timedelta(seconds=600),
+        lock_expires_at=db_now - timedelta(seconds=600),
         max_attempts=3,
         retry_kind="transient",
     )
@@ -110,7 +124,7 @@ async def _seed_two_running_jobs(
         conn,
         schema,
         worker_id,
-        lock_expires_at=datetime.now(UTC) + timedelta(seconds=300),
+        lock_expires_at=db_now + timedelta(hours=1),
         max_attempts=3,
         retry_kind="transient",
     )
@@ -183,15 +197,21 @@ async def test_benign_ordering_sweep_first_then_isolate_is_serialised(
 
 
 class _GatedIsolateConn:
-    """Real connection wrapper: parks isolate between its SELECT and the
-    first per-row UPDATE, so the test can interleave Sweep 1 exactly inside
-    the race window (isolate's plain SELECT holds no row locks)."""
+    """Real connection wrapper: parks isolate on its first ARBITER update -
+    the guarded UPDATE ... RETURNING that rides ``fetchrow`` (the
+    standing-claim fence's source of truth) - so the test can interleave
+    Sweep 1 exactly inside the race window between isolate's plain SELECT
+    (no row locks) and its first per-row transition. The gate used to sit
+    on the first ``execute``, which since the fence is the attempt INSERT -
+    AFTER the arbiter has already transitioned the row: a park there
+    misses the window and the sweep has nothing left to win.
+    """
 
     def __init__(self, conn: Any, parked: asyncio.Event, release: asyncio.Event) -> None:
         self._conn = conn
         self._parked = parked
         self._release = release
-        self._execute_count = 0
+        self._fetchrow_count = 0
 
     def transaction(self, **kwargs: object) -> Any:
         return self._conn.transaction(**kwargs)
@@ -199,11 +219,14 @@ class _GatedIsolateConn:
     async def fetch(self, sql: str, *args: object) -> list[asyncpg.Record]:
         return await self._conn.fetch(sql, *args)
 
-    async def execute(self, sql: str, *args: object) -> str:
-        self._execute_count += 1
-        if self._execute_count == 1:
+    async def fetchrow(self, sql: str, *args: object) -> asyncpg.Record | None:
+        self._fetchrow_count += 1
+        if self._fetchrow_count == 1:
             self._parked.set()
             await asyncio.wait_for(self._release.wait(), timeout=_WAIT)
+        return await self._conn.fetchrow(sql, *args)
+
+    async def execute(self, sql: str, *args: object) -> str:
         return await self._conn.execute(sql, *args)
 
     async def close(self) -> None:

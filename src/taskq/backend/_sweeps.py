@@ -1076,6 +1076,27 @@ RETURNING e.id"""
 # honesty standard the event's separate cause key already carries.  The
 # lease arm's text is pinned verbatim by
 # tests/test_sweep_expired_locks_bounded.py::test_job_attempts_row_shape.
+#
+# THE STANDING-CLAIM FENCE (WHERE a.started_at IS NOT NULL): the batched
+# INSERT records a crashed attempt ONLY for a reclaimed row that still
+# carries its claim's dispatch stamp. Dispatch stamps started_at at
+# claim time (backend/_dispatch_sql.py) and the claim-loss reconcile's
+# refund un-stamps it as it refunds the increment (worker/heartbeat.py's
+# _RECONCILE_LOST_CLAIMS_SQL_TEMPLATE: ``started_at = NULL`` is the
+# durable "no claim stands on this number" marker), so a NULL stamp on a
+# running row is a PRODUCTION shape, not just a direct-SQL orphan: it is
+# the row the reconcile just de-charged, left running and locked for
+# this sweep to reclaim. Recording a crashed row at that refunded number
+# would permanentise an attempt the counter no longer carries - the
+# ledger then holds a phantom epoch the next claim re-mints, and the
+# job's lineage closes with one more attempt row than the counter
+# (measured: the soak's reconciliation red, ``attempt counter 1 vs 2
+# attempt rows`` - the refund moved the counter, the reclaim's INSERT
+# moved the ledger, and the two writers never moved together). The event
+# and the re-pend still fire: the reclaim happened and is audited; what
+# never happened is the execution a crashed attempt row would assert -
+# the exact fabrication issue 458's refund exists to keep out of the
+# ledger. A row whose attempt never started owes the ledger nothing.
 _SWEEP_1_ATTEMPTS_BATCH_SQL = """\
 WITH holder AS (
     SELECT id
@@ -1087,8 +1108,11 @@ INSERT INTO "{schema}".job_attempts
 (job_id, attempt, started_at, finished_at, outcome,
  error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
 SELECT a.job_id, a.attempt,
-       -- NULL started_at (direct-SQL-reachable only; dispatch always stamps it) falls back to the per-row clock, the in-memory twin's COALESCE-to-now contract.
-       COALESCE(a.started_at, clock_timestamp() + (a.ord - 1) * interval '1 microsecond'),
+       -- The standing-claim fence above keeps NULL started_at out of this
+       -- statement entirely (a refunded row records no attempt row, the
+       -- raw stamp can never violate the NOT NULL), so the value here is
+       -- always the claim's own dispatch stamp.
+       a.started_at,
        clock_timestamp() + (a.ord - 1) * interval '1 microsecond',
        'crashed', '{worker_crashed_class}',
        a.error_message, NULL,
@@ -1096,6 +1120,10 @@ SELECT a.job_id, a.attempt,
 FROM unnest($1::uuid[], $2::smallint[], $3::timestamptz[], $4::uuid[], $5::int[], $6::text[])
     WITH ORDINALITY AS a(job_id, attempt, started_at, worker_id, duration_ms, error_message, ord)
 LEFT JOIN holder ON holder.id = a.worker_id
+-- The standing-claim fence: a reclaimed row whose started_at the
+-- reconcile's refund un-stamped carries NO standing claim, so it
+-- records no crashed attempt row. See the comment block above.
+WHERE a.started_at IS NOT NULL
 -- Same doctrine as sweep 2's deadline insert below: an attempt number
 -- can already have its row (a claim-clamped repeat at the smallint
 -- ceiling; a spent attempt left behind by a re-pend), and the truthful
@@ -1354,25 +1382,33 @@ async def sweep_expired_locks(
 
     All branches write a ``job_attempts`` row (outcome ``'crashed'``,
     error_class ``'WorkerCrashed'``, that IS what happened to the
-    attempt, regardless of the job's terminal label, with an
-    ``error_message`` naming the deadline that fired: the lease arm's
-    rows say the lock expired, the heartbeat arm's say the heartbeat
-    timeout passed, so an auditor reconciling ``job_attempts`` against
-    ``jobs`` never reads a heartbeat reclaim asserting a lock expiry the
-    sweep's own selection disproved) and a
+    attempt, with an ``error_message`` naming the deadline that fired:
+    the lease arm's rows say the lock expired, the heartbeat arm's say
+    the heartbeat timeout passed, so an auditor reconciling
+    ``job_attempts`` against ``jobs`` never reads a heartbeat reclaim
+    asserting a lock expiry the sweep's own selection disproved) and a
     ``job_events`` row (kind ``'state_change'``, reason
     ``'lock_expired'``, the crash-reclaim outbox channel BOTH arms
     ride, so ``poll_reclaim_events`` consumers and the retention
     carve-out see heartbeat reclaims exactly like lease reclaims, with
     a ``cause`` key naming which deadline fired); both writes are
     batched into one statement each
-    over the batch's rows. A running job with NULL ``started_at``
-    (reachable only via direct SQL, dispatch always stamps it) lands
-    the per-row clock fallback for the attempt's ``started_at``,
-    matching the in-memory twin's COALESCE-to-now contract (pinned by
-    ``tests/test_rt_sweeps_started_at_fallback.py``); without it the
-    batched INSERT would violate ``job_attempts.started_at NOT NULL``
-    and abort the sweep's transaction on a non-transient error.
+    over the batch's rows.
+
+    The attempt row is fenced on the STANDING CLAIM: a reclaimed running
+    row whose ``started_at`` is NULL carries no claim - the claim-loss
+    reconcile's refund (worker/heartbeat.py) un-stamps started_at as it
+    refunds the increment, leaving the row running and locked for this
+    sweep to reclaim WITHOUT its charge - and records NO attempt row. A
+    crashed row at that refunded number would permanentise an epoch the
+    counter no longer carries; the next claim re-mints the number and
+    the ledger closes the job's lineage with one more attempt row than
+    the counter (measured: the soak's reconciliation red, ``attempt
+    counter 1 vs 2 attempt rows``). The ``job_events`` reclaim record
+    still lands either way: the reclaim happened and is audited; the
+    execution a crashed row would assert never did. The fence also keeps
+    the never-dispatched direct-SQL orphan (a running row no TaskQ path
+    writes) from fabricating a started stamp it never had.
 
     PG uses server-side ``statement_timestamp()`` for the WHERE range
     bound (STABLE, so the partial index serves it as an Index Cond ,

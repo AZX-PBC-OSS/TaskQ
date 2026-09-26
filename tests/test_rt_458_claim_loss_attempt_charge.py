@@ -199,10 +199,16 @@ def _heartbeat_deps(pg_dsn: str, schema: str, pool: asyncpg.Pool) -> WorkerDeps:
     )
 
 
-async def _one_tick(deps: WorkerDeps, worker_id: UUID) -> None:
+async def _one_tick(
+    deps: WorkerDeps,
+    worker_id: UUID,
+    cancel_controller: object | None = None,
+) -> None:
     """Run the real ``heartbeat_loop`` for exactly one tick against real
     PG, synchronised on the tick-duration hook (the idiom the disowned-jobs
-    pins use, here over a live pool)."""
+    pins use, here over a live pool). ``cancel_controller`` optionally
+    injects the tick's cancel-poll hook (the failing-hook shape drives the
+    brownout-tick paths)."""
     import taskq.worker.heartbeat as hb_mod
 
     shutdown = asyncio.Event()
@@ -215,7 +221,14 @@ async def _one_tick(deps: WorkerDeps, worker_id: UUID) -> None:
 
     hb_mod._tick_duration.record = _record_and_signal  # type: ignore[method-assign,reportPrivateUsage]  # Why: as above.
     try:
-        task = asyncio.create_task(heartbeat_loop(deps, worker_id, shutdown))
+        task = asyncio.create_task(
+            heartbeat_loop(
+                deps,
+                worker_id,
+                shutdown,
+                cancel_controller=cancel_controller,  # type: ignore[arg-type]  # Why: the test hook satisfies the structural protocol at runtime.
+            )
+        )
         await asyncio.wait_for(tick_done.wait(), timeout=10.0)
         shutdown.set()
         await task
@@ -297,17 +310,25 @@ async def test_reconcile_refunds_the_claim_time_increment_of_a_job_that_never_ra
         f"did not happen"
     )
 
-    # The record: the sweep's reclaim ledger (one job_attempts row per
-    # reclaimed row, every branch, its own pinned contract) must sit at
-    # the REFUNDED attempt, the pre-claim counter. On main the unrefunded
-    # charge leaves [(1, 'crashed', 'lock expired before worker reported
-    # terminal state')]: the charged attempt recorded as an execution that
-    # did not happen, indistinguishable from a genuine mid-execution crash.
+    # The record: the sweep's reclaim ledger must sit at the REFUNDED
+    # attempt - which, the refund having de-charged the increment, is NO
+    # attempt row at all. The reclaim's crashed-row INSERT is fenced on
+    # the STANDING CLAIM (the un-stamped started_at is the refund's void
+    # marker): a crashed row at the refunded number would permanentise an
+    # epoch the counter no longer carries, and the next claim's re-mint
+    # of the number would close the lineage with one more attempt row
+    # than the counter - the soak's reconciliation red (``attempt counter
+    # 1 vs 2 attempt rows``, run 36175331443). The reclaim is still
+    # audited - by the job_events state_change, which fires either way.
+    # On main pre-fence the unrefunded charge left [(1, 'crashed', ...)]
+    # and the pre-fence fence left the phantom [(0, 'crashed')]: both
+    # fabricated an execution that did not happen.
     attempts = await _attempt_rows(clean_pg_conn, schema, job_id)
-    assert [(a["attempt"], a["outcome"]) for a in attempts] == [(0, "crashed")], (
+    assert attempts == [], (
         f"the reclaim's attempt ledger must not claim the charged attempt "
-        f"(the claim charged attempt 1 and nothing ever executed it), got "
-        f"{attempts}"
+        f"(the claim charged attempt 1 and nothing ever executed it) NOR "
+        f"the refunded number (an epoch the counter no longer carries), "
+        f"got {attempts}"
     )
 
     # 5. The budget was not consumed: the job re-dispatches. The reclaim's
@@ -555,4 +576,74 @@ async def test_drain_concurrent_with_the_reconcile_refunds_exactly_once(
         f"the concurrent drain re-refunded the reconcile's claim after "
         f"EvalPlanQual re-evaluation, got attempt={row['attempt']} - the "
         f"exactly-once guard must hold on the re-checked row version"
+    )
+
+
+class _FailingInTxHook:
+    """The cancel controller whose IN-TX phase fails: the OSError family
+    the heartbeat loop treats as a transient tick failure (the brownout
+    tick the disown-after-commit fix is pinned against)."""
+
+    async def run_in_tx(self, conn: asyncpg.Connection) -> None:
+        raise OSError("the in-tx cancel poll failed: the brownout tick")
+
+    async def run_post_tx(self) -> None:
+        return None
+
+
+async def test_reconcile_disown_does_not_survive_a_failed_tick(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """The disown is MEMORY state; the refund is DB state. A tick that
+    matches a lost claim and then FAILS (the in-tx cancel hook's OSError,
+    a cut commit, a dropped connection) rolls the refund back - and the
+    disown, applied before the commit, would survive it: the row would
+    then match neither the renewal nor the reconcile (the exclusion set
+    folds the disowned), the refund could NEVER re-apply, the lease would
+    lapse, and Sweep 1 would reclaim at the CHARGED attempt - issue 458's
+    'crashed, never ran' record resurrected by one brownout tick.
+
+    The pin: the failed tick leaves NO disown behind, and the next
+    healthy tick re-reconciles the row and refunds it for real."""
+    schema = module_pg_schema.schema_name
+    worker_id = new_uuid()
+    await _seed_worker(clean_pg_conn, schema, worker_id)
+    job_id = await _seed_pending_job(clean_pg_conn, schema)
+
+    # The claim commits; the round dies after it; the orphan ages past
+    # one lease - the reconcile's exact prey.
+    claimed = await _claim_via_real_dispatch_cte(clean_pg_conn, schema, worker_id)
+    assert claimed["attempt"] == 1
+    await _age_started_at(clean_pg_conn, schema, job_id)
+
+    # The brownout tick: the reconcile matches (it logs the match), then
+    # the in-tx hook fails and the tick rolls back.
+    deps = _heartbeat_deps(module_pg_schema.pg_dsn, schema, module_pg_pool)
+    await _one_tick(deps, worker_id, cancel_controller=_FailingInTxHook())
+
+    # THE PIN: the disown did not survive the rollback. (On the pre-fix
+    # code this assertion fails - the disown was applied before the
+    # commit - and the row below is then unreachable by every later
+    # reconcile: the refund is lost permanently.)
+    assert job_id not in deps.disowned_jobs, (
+        "a failed tick's disown survived its rollback: the refund un-applied "
+        "but the exclusion stayed - the row can never be re-reconciled, the "
+        "refund is lost, and Sweep 1 will reclaim at the charged attempt"
+    )
+    row = await _job_row(clean_pg_conn, schema, job_id)
+    assert row["attempt"] == 1, (
+        f"the rolled-back refund must leave the charge standing for the "
+        f"next tick to re-reconcile, got attempt={row['attempt']}"
+    )
+
+    # The next healthy tick re-reconciles: the refund lands for real.
+    deps_healthy = _heartbeat_deps(module_pg_schema.pg_dsn, schema, module_pg_pool)
+    await _one_tick(deps_healthy, worker_id)
+    assert job_id in deps_healthy.disowned_jobs
+    row = await _job_row(clean_pg_conn, schema, job_id)
+    assert row["attempt"] == 0, (
+        f"the re-reconcile must refund the claim-time increment, got "
+        f"attempt={row['attempt']}: the fix must not merely delay the loss"
     )

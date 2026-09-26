@@ -663,17 +663,20 @@ WITH upd AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
     SELECT upd.id, upd.attempt,
-           -- A NULL started_at falls back to the per-row clock, the same
-           -- COALESCE-to-now contract the reclaim sweep's attempt INSERT
-           -- applies (tests/test_rt_sweeps_started_at_fallback.py): the
-           -- column is NOT NULL, and a statement that could raise on the
-           -- stamp turns a data oddity into a heartbeat-wedging crash
-           -- (the drain re-queues the abandon, the tick's failure budget
-           -- burns on it, the isolate fails the same way). Dispatch
-           -- always stamps the claim, so the fallback is for the
-           -- un-stamped shapes only (a restored backup, a direct-SQL
-           -- writer) - the duration reads the row's own stamps and is
-           -- NULL when they are.
+           -- A NULL started_at falls back to the per-row clock. Unlike
+           -- the reclaim sweep's attempt INSERT (whose standing-claim
+           -- fence leaves NULL-stamp rows out of the ledger entirely,
+           -- see _SWEEP_1_ATTEMPTS_BATCH_SQL), the abandon here IS the
+           -- record of a cancel-ladder outcome on a row the ladder owns,
+           -- so the column's NOT NULL is satisfied with the fallback
+           -- rather than the row being skipped: a statement that could
+           -- raise on the stamp turns a data oddity into a
+           -- heartbeat-wedging crash (the drain re-queues the abandon,
+           -- the tick's failure budget burns on it, the isolate fails
+           -- the same way). Dispatch always stamps the claim, so the
+           -- fallback is for the un-stamped shapes only (a restored
+           -- backup, a direct-SQL writer) - the duration reads the
+           -- row's own stamps and is NULL when they are.
            COALESCE(upd.started_at, clock_timestamp()), clock_timestamp(), 'cancelled',
            '{CANCEL_ORIGIN_ABANDONED}', NULL, NULL,
            trunc(EXTRACT(EPOCH FROM (upd.finished_at - upd.started_at)) * 1000)::int,
