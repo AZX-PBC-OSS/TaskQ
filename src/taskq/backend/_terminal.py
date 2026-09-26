@@ -107,6 +107,7 @@ from typing import TYPE_CHECKING, Final, Literal, assert_never
 from uuid import UUID
 
 import structlog
+from tors import utf8_byte_len
 
 # Why: private import, the pre-serialized result path holds bytes, not a
 # dict, so the byte-level scan is the only way to run dumps_jsonb_str's NUL
@@ -392,8 +393,17 @@ async def _mark_succeeded_on_conn(
         result_size = len(result_bytes)
     else:
         serialized_result = jsonb_param(result)
-        result_size = (
-            len(serialized_result.encode("utf-8")) if serialized_result is not None else None
+        # tors.utf8_byte_len, not str.encode: the byte cap below needs a
+        # NUMBER, and the encode pays a full copy of the serialized result
+        # to learn it - O(n) copy for an O(1) measurement on every
+        # successful job with a dict result (the measured ADOPT in
+        # docs/design/tors-adoption-map.md: ~12x p50 single-thread,
+        # ~6-9.5x contended at the real 64 KiB cap). Parity is pinned
+        # byte-exact in tests/test_tors_byte_len_parity.py: same count, and the
+        # same UnicodeEncodeError on lone surrogates - which this str can
+        # never carry: it is orjson's own decode output.
+        result_size: int | None = (
+            utf8_byte_len(serialized_result) if serialized_result is not None else None
         )
     if result_size is not None and result_size > max_result_bytes:
         raise ResultTooLarge(f"result size {result_size} bytes exceeds {max_result_bytes} byte cap")

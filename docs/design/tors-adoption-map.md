@@ -1,7 +1,8 @@
 # tors adoption map: inventory, path mapping, measured verdicts
 
-An inventory of the `tors` native text/scan/hash toolkit (v0.10.1,
-maturin/Rust, GIL-free cores) mapped against TaskQ's text- and
+An inventory of the `tors` native text/scan/hash toolkit (rev'd to
+v0.15.0 - this map was cut at v0.10.1 and re-measured on the current
+release; maturin/Rust, GIL-free cores) mapped against TaskQ's text- and
 document-heavy paths, with every adoption candidate measured on its real
 call shape. The question this spike answers: which tors primitives earn a
 place on a per-job hot path, and which are capability we have no consumer
@@ -187,8 +188,8 @@ second run.
 
 ### ADOPT — 1
 
-**`tors.utf8_byte_len` at the terminal write's result-size check
-(`backend/_terminal.py:386`).** Mapped hot path (every successful job
+**LANDED (0.15.0 rev).** **`tors.utf8_byte_len` at the terminal write's
+result-size check (`backend/_terminal.py`'s dict-result path).** Mapped hot path (every successful job
 with a dict result pays a full re-encode of its serialized result to
 learn a number tors keeps O(1)), measured win (11.8x p50 single-thread,
 ~6–9.5x contended at the real 64 KiB cap; 687 → 58 ns), and a clean
@@ -257,6 +258,50 @@ a ~100x one. Re-measure if that setting's profile ever shows up.
   cold, stdlib fine.
 
 ---
+
+## 4b. The 0.15.0 rev: new families measured
+
+0.10.1 -> 0.15.0 grows the surface 108 -> 136 names. The new families,
+each checked against TaskQ's real call shapes:
+
+- **`scrub_secrets` / `scrub_secrets_report`** - ADOPTED AS A
+  COMPOSITION PRE-PASS, and provably NOT as a replacement. The measured
+  differential: tors scrubs the token families TaskQ's chain has no
+  pattern for (AWS access keys, Slack/Stripe tokens, GitHub tokens, the
+  keyed OpenSSL PEM headers) at ~5 us/op against the chain's ~59 us on
+  the same text - but on TaskQ's OWN threat shapes it LEAKS: DSN
+  userinfo/password (`postgresql://app:PW@host` survives), bearer JWTs
+  (the token tail survives), and the PG DETAIL block (row values
+  survive) all pass through untouched. So the pre-pass runs FIRST,
+  behind a heads prefilter (`_SECRET_HEAD_TRIGGERS`, the same
+  necessary-condition discipline the regex passes run), and the
+  fail-closed chain runs after it, byte-identically on every shape it
+  owned before. Pinned in `tests/test_tors_scrub_secrets_composition.py`:
+  composition zero-leak on the combined shapes, chain outputs unchanged
+  byte-for-byte, the prefilter discipline (trigger-free text never
+  enters the pass, every registered head arms it), idempotence. Stated
+  limit: tors's PEM rule anchors the KEYED OpenSSL headers (RSA/EC) and
+  does NOT cover the generic PKCS#8 `-----BEGIN PRIVATE KEY-----`
+  header - pinned as a stated limit that flips loudly when tors covers
+  it.
+- **`chunk_to_budget` / `chunk_to_offsets`** - budget-truncation
+  siblings of the truncate family; the truncate SKIP verdict (marker
+  contract, segmentation cost) transfers; no new consumer.
+- **The LSH near-dup family** (`lsh_candidates`/`lsh_probability`/
+  `lsh_threshold`/`dedup_near_dup`, `shingle_dice`/`shingle_jaccard`) -
+  TaskQ's dedup is exact-key SQL; no fuzzy consumer exists. SKIP
+  transfers.
+- **The rank/eval family** (`rank_fuse`, `ndcg_at_k`, `mrr`,
+  `precision_at_k`, `recall_at_k`) and **grounding** (`ground_sentences`,
+  `grounding_coverage`, `highlight`) - LLM-retrieval capability with no
+  TaskQ consumer. SKIP.
+- **`extract_code_blocks` / `strip_code_fences`** - LLM-output
+  postprocessing; TaskQ does not process LLM output. SKIP.
+
+The 0.15.0 A/B re-run (`benchmarks/tors_ab_adoptables.py`) refreshed
+every verdict: the terminal-write ADOPT holds (11.38x at the 64 KiB
+shape), and every SKIP's number moved within noise (idkey 0.71x,
+base62 0.39x, uuid7-UUID 0.97x, sha256 1.03-1.04x).
 
 ## 5. Coordination note
 
