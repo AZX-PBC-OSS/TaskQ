@@ -148,8 +148,28 @@ async def _sane_client_proves_itself(redis_url: str) -> None:
     """The injection's self-check on the CLIENT config: the same knobs that
     shape the blackhole timeline must speak real redis first. A config this
     pin broke (a bad protocol knob, a broken retry seam) would otherwise
-    red the pins for the wrong reason."""
-    sane = _client(redis_url)
+    red the pins for the wrong reason.
+
+    The sanity client keeps every config knob EXCEPT the 0.5s read budget:
+    that budget is the BLACKHOLE timeline's parameter (one parked read dies
+    there by construction), not the sanity round trip's - and the sanity
+    read targets the SHARED co-tenanted broker, whose stall band under
+    ``-n 2`` runner load measurably exceeds 0.5s (the observed red was the
+    sanity ``TIME`` dying with ``Timeout reading from localhost:<port>``).
+    ``socket_timeout=None`` here: a wedged broker is the suite-wide
+    pytest-timeout's job, not the sanity check's; the 0.5s window's teeth
+    are proven by the blackhole phase itself, where the read actually dies
+    on schedule.
+    """
+    sane = redis_async.from_url(
+        redis_url,
+        decode_responses=False,
+        socket_timeout=None,
+        socket_connect_timeout=_CONNECT_TIMEOUT_S,
+        driver_info=None,
+        protocol=2,
+        retry=Retry(NoBackoff(), retries=0),
+    )
     try:
         await asyncio.wait_for(sane.time(), timeout=10.0)
     finally:
