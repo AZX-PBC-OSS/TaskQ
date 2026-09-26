@@ -177,6 +177,18 @@ async def with_pg_fallback(
             _redis_mod.ConnectionError,
             _redis_mod.TimeoutError,
         ) as exc:
+            # A CANCELLATION is never weather. redis's read wraps its wait
+            # in async_timeout, which converts a task cancellation arriving
+            # mid-read into this same TimeoutError (the CancelledError at
+            # the stream reader becomes the timeout at the context's exit);
+            # without this guard the retry loop re-arms against a task the
+            # caller already gave up on, and the cancellation surfaces
+            # later, mid-backoff, mislabelled. cancelling() is nonzero
+            # exactly when a cancellation was DELIVERED to this task; a
+            # genuine socket read timeout never sets it.
+            current_task = asyncio.current_task()
+            if current_task is None or current_task.cancelling():
+                raise
             # The WEATHER family: the connection to the server failed. A
             # blip is allowed one bounded weathering before the decision.
             if transient_retries_left > 0:
