@@ -16,7 +16,11 @@ The pinned surface:
   current behavior, pinned so it cannot drift silently);
 * the capability refusal: flag on, plain Postgres - exit 1, the setting
   NAMED, the schema and ledger left usable;
-* flag-off after enable: zero down-conversion, policies persist.
+* flag-off after enable: zero down-conversion, policies persist;
+* the disable mirror: the deployed-and-converted schema goes back to
+  vanilla with every row counted and every traded-away behavior
+  restored (the restored PK rejects duplicates, the restored FK rejects
+  orphan attempts).
 """
 
 from __future__ import annotations
@@ -32,8 +36,10 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
+from taskq.settings import WorkerSettings
 from taskq.testing._shared_containers import creator_labels
 from taskq.testing.pg import create_running_job
+from taskq.timescale import disable_hypertables
 from tests.test_timescaledb_hypertables import _TIMESCALE_IMAGE_DEFAULT
 
 _TIMESCALE_IMAGE = os.environ.get("TASKQ_TEST_TIMESCALEDB_IMAGE") or _TIMESCALE_IMAGE_DEFAULT
@@ -383,6 +389,130 @@ async def test_flag_off_after_enable_changes_nothing(deploy_dsn: str) -> None:
         } == {
             (r["job_id"], r["hypertable_name"], r["schedule_interval"]) for r in policies_before
         }, "the retention policies must persist at their last-registered intervals"
+    finally:
+        await _drop_schema(conn, schema)
+        await conn.close()
+
+
+# ── The disable mirror, end to end ───────────────────────────────────────
+
+
+def _vanilla_settings(dsn: str, schema: str) -> WorkerSettings:
+    """The disable gate's settings: the flag flipped OFF first (the mirror
+    of enable's flag-on gate)."""
+    return WorkerSettings.load_from_dict(
+        {
+            "TASKQ_PG_DSN": dsn,
+            "TASKQ_SCHEMA_NAME": schema,
+            "TASKQ_TIMESCALEDB_HYPERTABLES": "false",
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_disable_after_deploy_restores_vanilla(deploy_dsn: str, deploy_schema: str) -> None:
+    """The deployed-and-converted schema (the REAL ``migrate up`` path)
+    goes back to vanilla: zero hypertables, the deploy E2E's seed shapes
+    preserved row for row, and the behaviors the conversion traded away
+    restored - the restored bare PK rejects the duplicate the widened
+    unique accepted, the restored FK rejects the orphan attempt the
+    hypertable accepted."""
+    schema = deploy_schema
+    result = _invoke_migrate_up(deploy_dsn, schema, flag=True)
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+
+    conn = await asyncpg.connect(deploy_dsn)
+    try:
+        assert await _hypertables(conn, schema) == {
+            "job_events",
+            "jobs_archive",
+            "job_attempts_archive",
+        }
+        # The deploy E2E's seed shapes (10 live FK targets, 500 events,
+        # 200 archive rows, 300 attempts).
+        live_job_ids = [
+            await create_running_job(conn, schema, new_uuid(), new_uuid(), with_events=False)
+            for _ in range(10)
+        ]
+        for _ in range(500):
+            await conn.execute(
+                f'INSERT INTO "{schema}".job_events '
+                f"(job_id, occurred_at, kind, detail) VALUES "
+                f"($1, clock_timestamp(), 'state_change', '{{}}'::jsonb)",
+                live_job_ids[_ % len(live_job_ids)],
+            )
+        archive_ids = []
+        for i in range(200):
+            archive_ids.append(
+                await conn.fetchval(
+                    f'INSERT INTO "{schema}".jobs_archive '
+                    f"(id, actor, queue, payload, status, attempt, "
+                    f"max_attempts, retry_kind, expire_at, finished_at) "
+                    f"VALUES ($1, 'a', 'q', '{{}}'::jsonb, 'succeeded', 0, 3, "
+                    f"'transient', clock_timestamp() + interval '365 days', "
+                    f"clock_timestamp()) RETURNING id",
+                    uuid.UUID(int=i + 1),
+                )
+            )
+        for i in range(300):
+            await conn.execute(
+                f'INSERT INTO "{schema}".job_attempts_archive '
+                f"(job_id, attempt, started_at, error_class) VALUES ($1, $2, "
+                f"clock_timestamp(), NULL)",
+                archive_ids[i % 200],
+                i // 200,
+            )
+
+        report = await disable_hypertables(
+            conn, schema=schema, settings=_vanilla_settings(deploy_dsn, schema)
+        )
+        assert set(report.converted) == {
+            "job_events",
+            "jobs_archive",
+            "job_attempts_archive",
+        }
+        assert await _hypertables(conn, schema) == set(), (
+            "the disable must leave zero hypertables behind the deploy"
+        )
+        jobs = await conn.fetchval(
+            "SELECT count(*) FROM timescaledb_information.jobs WHERE hypertable_schema = $1",
+            schema,
+        )
+        assert jobs == 0, "no policy may survive the disable"
+        for table, count in (
+            ("job_events", 500),
+            ("jobs_archive", 200),
+            ("job_attempts_archive", 300),
+        ):
+            assert await conn.fetchval(f'SELECT count(*) FROM "{schema}"."{table}"') == count, (
+                f"every {table} row must survive the disable"
+            )
+
+        # The restored vanilla behaviors, the conversion pins' inverses.
+        jid = await conn.fetchval(f'SELECT id FROM "{schema}".jobs_archive LIMIT 1')
+        with pytest.raises(asyncpg.UniqueViolationError):
+            await conn.execute(
+                f'INSERT INTO "{schema}".jobs_archive SELECT * FROM "{schema}".jobs_archive '
+                "WHERE id = $1",
+                jid,
+            )
+        with pytest.raises(asyncpg.ForeignKeyViolationError):
+            await conn.execute(
+                f"""INSERT INTO "{schema}".job_attempts_archive (job_id, attempt, started_at)
+                VALUES ($1, 1, clock_timestamp())""",
+                new_uuid(),
+            )
+        # And the schema is fully operational: the event id sequence
+        # continues past the restored rows.
+        max_before = await conn.fetchval(f'SELECT max(id) FROM "{schema}".job_events')
+        await conn.execute(
+            f'INSERT INTO "{schema}".job_events (job_id, occurred_at, kind) '
+            "VALUES ($1, clock_timestamp(), 'state_change')",
+            live_job_ids[0],
+        )
+        assert (
+            await conn.fetchval(f'SELECT max(id) FROM "{schema}".job_events') == max_before + 1
+        ), "the restored sequence must continue past the restored rows"
     finally:
         await _drop_schema(conn, schema)
         await conn.close()

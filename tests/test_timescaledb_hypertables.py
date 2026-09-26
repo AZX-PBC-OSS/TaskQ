@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import uuid
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -39,6 +40,7 @@ from taskq.testing._shared_containers import creator_labels, skip_test_without_d
 from taskq.timescale import (
     HypertableReport,
     TimescaleDBUnavailableError,
+    disable_hypertables,
     enable_hypertables,
 )
 from taskq.worker.leader import archive_expiry_sweep, prune_terminal_jobs
@@ -339,19 +341,27 @@ async def test_re_enable_converges(timescale_dsn: str, ts_schema: str) -> None:
 
 
 async def _schedule_policies(
-    conn: asyncpg.Connection, schema: str, *, next_start: datetime
+    conn: asyncpg.Connection, schema: str, *, next_start: datetime, proc_name: str = "policy%"
 ) -> None:
-    """Move every retention policy's next run to *next_start*.
+    """Move every policy job's next run to *next_start*.
 
     The policies run in TimescaleDB's background workers; tests do not
     wait out a schedule interval, they move the job's next_start (the
     supported alter_job knob) and let the worker execute the registered
     policy itself, so the chunk drop under test is the real policy run.
+    Defaults to ALL policy jobs — retention AND the compression policy
+    the deploy step arms on the archive tables: a ~now-scheduled
+    compression run would age chunks into the columnstore mid-test and
+    put the sweep legs on compressed chunks (the measured
+    ``ConfigurationLimitExceededError`` surface), so the fixture defers
+    the whole family and a leg that needs compression asserts it
+    directly.
     """
     rows = await conn.fetch(
         "SELECT job_id FROM timescaledb_information.jobs "
-        "WHERE hypertable_schema = $1 AND proc_name = 'policy_retention'",
+        "WHERE hypertable_schema = $1 AND proc_name LIKE $2",
         schema,
+        proc_name,
     )
     for r in rows:
         await conn.execute(
@@ -362,14 +372,15 @@ async def _schedule_policies(
 
 
 async def _force_policies_now(conn: asyncpg.Connection, schema: str) -> None:
-    """Pull every retention policy's next run to now.
+    """Pull every RETENTION policy's next run to now.
 
-    The policies run in TimescaleDB's background workers; tests do not
-    wait out a schedule interval, they move the job's next_start (the
-    supported alter_job knob) and let the worker execute the registered
-    policy itself, so the chunk drop under test is the real policy run.
+    The compression policy stays deferred: these legs assert chunk
+    DROPS, not compression, and a mid-test compress would change the
+    sweep surface they pin.
     """
-    await _schedule_policies(conn, schema, next_start=datetime.now(UTC))
+    await _schedule_policies(
+        conn, schema, next_start=datetime.now(UTC), proc_name="policy_retention"
+    )
 
 
 async def _chunk_names(conn: asyncpg.Connection, schema: str, table: str) -> list[str]:
@@ -1275,3 +1286,477 @@ async def test_orphan_archive_attempt_accepted_and_danger_pinned(
     assert "may reference a hypertable" in (timescale_module.__doc__ or ""), (
         "the FK-drop danger must remain documented in the module contract"
     )
+
+
+# ── The mirror: disable_hypertables ───────────────────────────────────────
+
+
+def _vanilla_settings(dsn: str, schema: str) -> WorkerSettings:
+    """The disable gate's settings: the flag flipped OFF first (the
+    mirror of enable's flag-on gate — disable with the flag still true
+    is a zero-statement no-op)."""
+    return WorkerSettings.load_from_dict(
+        {
+            "TASKQ_PG_DSN": dsn,
+            "TASKQ_SCHEMA_NAME": schema,
+            "TASKQ_TIMESCALEDB_HYPERTABLES": "false",
+            "TASKQ_ARCHIVE_RETENTION_PERIOD": f"{int(_TEST_ARCHIVE_RETENTION.total_seconds())}s",
+            "TASKQ_EVENT_RETENTION_PERIOD": f"{int(_TEST_EVENT_RETENTION.total_seconds())}s",
+        }
+    )
+
+
+async def _hypertable_names(conn: asyncpg.Connection, schema: str) -> set[str]:
+    rows = await conn.fetch(
+        "SELECT hypertable_name FROM timescaledb_information.hypertables "
+        "WHERE hypertable_schema = $1",
+        schema,
+    )
+    return {r["hypertable_name"] for r in rows}
+
+
+async def _seed_history(
+    conn: asyncpg.Connection, schema: str, *, n_events: int, n_archive: int, n_attempts: int
+) -> dict[str, int]:
+    """The deploy E2E's seed shapes: live parents (job_events' FK targets),
+    events riding them, and the archive family with attempts. Returns the
+    per-table counts seeded."""
+    n_jobs = 10
+    live_ids = [new_uuid() for _ in range(n_jobs)]
+    await conn.executemany(
+        f"""INSERT INTO {schema}.jobs (id, actor, queue, payload, max_attempts,
+            retry_kind, status, scheduled_at, schedule_to_close)
+        VALUES ($1, 'test_actor', 'default', '{{}}'::jsonb, 3, 'transient',
+            'succeeded', now(), now() + interval '1 hour')""",
+        [(jid,) for jid in live_ids],
+    )
+    await conn.executemany(
+        f"INSERT INTO {schema}.job_events (job_id, occurred_at, kind, detail) "
+        "VALUES ($1, clock_timestamp(), 'state_change', '{}'::jsonb)",
+        [(live_ids[i % n_jobs],) for i in range(n_events)],
+    )
+    archive_ids = [uuid.UUID(int=i + 1) for i in range(n_archive)]
+    await conn.executemany(
+        f"""INSERT INTO {schema}.jobs_archive (
+            id, actor, queue, payload, status, attempt, max_attempts,
+            retry_kind, expire_at, finished_at)
+        VALUES ($1, 'a', 'q', '{{}}'::jsonb, 'succeeded', 0, 3, 'transient',
+            clock_timestamp() + interval '365 days', clock_timestamp())""",
+        [(jid,) for jid in archive_ids],
+    )
+    await conn.executemany(
+        f"""INSERT INTO {schema}.job_attempts_archive (job_id, attempt, started_at)
+        VALUES ($1, $2::smallint, clock_timestamp())""",
+        [(archive_ids[i % n_archive], i // n_archive) for i in range(n_attempts)],
+    )
+    return {
+        "job_events": n_events,
+        "jobs_archive": n_archive,
+        "job_attempts_archive": n_attempts,
+    }
+
+
+def _normalize_defs(rows: list[Any], schema: str, key: str) -> list[str]:
+    """Index/constraint definitions with the schema token normalized away,
+    so two schemas on the same server compare byte-equal."""
+    return sorted(
+        r[key].replace(f'"{schema}".', "SCHEMA.").replace(f"{schema}.", "SCHEMA.") for r in rows
+    )
+
+
+async def _shape_of(conn: asyncpg.Connection, schema: str, table: str) -> dict[str, list[str]]:
+    """The shape a fresh vanilla migration mints for *table*: every index
+    definition, every constraint definition (name + body), and the column
+    order with defaults."""
+    indexes = await conn.fetch(
+        "SELECT indexdef FROM pg_indexes WHERE schemaname = $1 AND tablename = $2",
+        schema,
+        table,
+    )
+    constraints = await conn.fetch(
+        "SELECT con.conname, pg_get_constraintdef(con.oid) AS def "
+        "FROM pg_constraint con "
+        "JOIN pg_class c ON c.oid = con.conrelid "
+        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = $1 AND c.relname = $2",
+        schema,
+        table,
+    )
+    columns = await conn.fetch(
+        "SELECT column_name, column_default FROM information_schema.columns "
+        "WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position",
+        schema,
+        table,
+    )
+    return {
+        "indexes": _normalize_defs(indexes, schema, "indexdef"),
+        "constraints": _normalize_defs(constraints, schema, "def"),
+        "columns": [
+            f"{r['column_name']}::{(r['column_default'] or '').replace(f'"{schema}".', 'SCHEMA.').replace(f'{schema}.', 'SCHEMA.')}"
+            for r in columns
+        ],
+    }
+
+
+async def test_disable_restores_vanilla_shape_and_every_row(timescale_dsn: str) -> None:
+    """enable -> seed (the deploy E2E's shapes) -> disable: zero
+    hypertables, the vanilla SHAPE byte-equal to a fresh migration's
+    (constraints, indexes, FK, column order and defaults — the shape is
+    cloned from the migrations' own output, never re-typed), and EVERY
+    row present, counted."""
+    schema = "tsdis_" + new_uuid().hex[:12]
+    fresh = "tsfresh_" + new_uuid().hex[:12]
+    conn = await asyncpg.connect(timescale_dsn)
+    try:
+        await _migrate(conn, schema)
+        report = await enable_hypertables(
+            conn, schema=schema, settings=_ts_settings(timescale_dsn, schema)
+        )
+        assert set(report.converted) == {
+            "job_events",
+            "jobs_archive",
+            "job_attempts_archive",
+        }
+        await _schedule_policies(conn, schema, next_start=datetime.now(UTC) + timedelta(days=3650))
+        seeded = await _seed_history(conn, schema, n_events=500, n_archive=200, n_attempts=300)
+
+        disable_report = await disable_hypertables(
+            conn, schema=schema, settings=_vanilla_settings(timescale_dsn, schema)
+        )
+        assert set(disable_report.converted) == {
+            "job_events",
+            "jobs_archive",
+            "job_attempts_archive",
+        }, "the disable must restore all three tables to plain"
+        # The mirror reading of the report: the policies REMOVED, at the
+        # intervals the registered jobs themselves carried (the config's
+        # own text — Postgres renders the singular).
+        assert set(disable_report.retention_policies) == {
+            "jobs_archive:2 days",
+            "job_attempts_archive:2 days",
+            "job_events:1 day",
+        }, disable_report.retention_policies
+        assert set(disable_report.compression_policies) == {
+            "jobs_archive",
+            "job_attempts_archive",
+        }
+
+        assert await _hypertable_names(conn, schema) == set(), (
+            "the disable must leave zero hypertables"
+        )
+        jobs = await conn.fetchval(
+            "SELECT count(*) FROM timescaledb_information.jobs WHERE hypertable_schema = $1",
+            schema,
+        )
+        assert jobs == 0, "no retention or compression policy may survive the disable"
+
+        # The shape, byte-equal to a fresh vanilla migration's.
+        await _migrate(conn, fresh)
+        for table in ("job_events", "jobs_archive", "job_attempts_archive"):
+            disabled_shape = await _shape_of(conn, schema, table)
+            fresh_shape = await _shape_of(conn, fresh, table)
+            assert disabled_shape == fresh_shape, (
+                f"the restored {table} must be byte-equal to a fresh vanilla "
+                f"migration's shape:\nrestored={disabled_shape}\nfresh={fresh_shape}"
+            )
+
+        # Every row present, counted per table.
+        for table, count in seeded.items():
+            assert await conn.fetchval(f'SELECT count(*) FROM "{schema}"."{table}"') == count, (
+                f"every {table} row must survive the disable"
+            )
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{fresh}" CASCADE')
+        await conn.close()
+
+
+async def test_disable_restores_vanilla_behaviors(timescale_dsn: str) -> None:
+    """The behaviors the conversion traded away come back with the shape —
+    the exact inverses of the conversion attack's pins: the restored bare
+    primary keys reject duplicates, the restored
+    ``job_attempts_archive -> jobs_archive`` FK rejects orphan attempts,
+    and the event id sequence continues from the restored maximum."""
+    schema = "tsbeh_" + new_uuid().hex[:12]
+    conn = await asyncpg.connect(timescale_dsn)
+    try:
+        await _migrate(conn, schema)
+        await enable_hypertables(conn, schema=schema, settings=_ts_settings(timescale_dsn, schema))
+        await _schedule_policies(conn, schema, next_start=datetime.now(UTC) + timedelta(days=3650))
+        await _seed_history(conn, schema, n_events=5, n_archive=2, n_attempts=2)
+
+        await disable_hypertables(
+            conn, schema=schema, settings=_vanilla_settings(timescale_dsn, schema)
+        )
+
+        # Duplicate insert rejected by the restored PRIMARY KEY (id) — the
+        # hypertable's widened UNIQUE (id, finished_at) accepted the same
+        # id at a different finished_at; vanilla never did.
+        jid = await conn.fetchval(f'SELECT id FROM "{schema}".jobs_archive LIMIT 1')
+        with pytest.raises(asyncpg.UniqueViolationError):
+            await conn.execute(
+                f'INSERT INTO "{schema}".jobs_archive SELECT * FROM "{schema}".jobs_archive '
+                "WHERE id = $1",
+                jid,
+            )
+        # Orphan attempts rejected by the restored FK — accepted on the
+        # hypertable (the documented danger), never on vanilla.
+        with pytest.raises(asyncpg.ForeignKeyViolationError):
+            await conn.execute(
+                f"""INSERT INTO "{schema}".job_attempts_archive (job_id, attempt, started_at)
+                VALUES ($1, 1, clock_timestamp())""",
+                new_uuid(),
+            )
+        # The event id sequence continues from the restored maximum: the
+        # next insert omits id and gets max + 1, not a collision.
+        max_before = await conn.fetchval(f'SELECT max(id) FROM "{schema}".job_events')
+        parent = await conn.fetchval(f'SELECT id FROM "{schema}".jobs LIMIT 1')
+        await conn.execute(
+            f'INSERT INTO "{schema}".job_events (job_id, occurred_at, kind) '
+            "VALUES ($1, clock_timestamp(), 'state_change')",
+            parent,
+        )
+        max_after = await conn.fetchval(f'SELECT max(id) FROM "{schema}".job_events')
+        assert max_after == max_before + 1, (
+            "the restored sequence must continue past the restored rows"
+        )
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_disable_is_idempotent(timescale_dsn: str) -> None:
+    """Running disable twice converges: the second run restores nothing,
+    reports nothing, and leaves the schema fully operational."""
+    schema = "tsdis2_" + new_uuid().hex[:12]
+    conn = await asyncpg.connect(timescale_dsn)
+    try:
+        await _migrate(conn, schema)
+        await enable_hypertables(conn, schema=schema, settings=_ts_settings(timescale_dsn, schema))
+        await _schedule_policies(conn, schema, next_start=datetime.now(UTC) + timedelta(days=3650))
+        seeded = await _seed_history(conn, schema, n_events=10, n_archive=3, n_attempts=3)
+
+        first = await disable_hypertables(
+            conn, schema=schema, settings=_vanilla_settings(timescale_dsn, schema)
+        )
+        assert set(first.converted) == {
+            "job_events",
+            "jobs_archive",
+            "job_attempts_archive",
+        }
+
+        second = await disable_hypertables(
+            conn, schema=schema, settings=_vanilla_settings(timescale_dsn, schema)
+        )
+        assert second.converted == (), "an already-plain schema must not re-restore"
+        assert second.retention_policies == ()
+        assert second.compression_policies == ()
+        assert await _hypertable_names(conn, schema) == set()
+        for table, count in seeded.items():
+            assert await conn.fetchval(f'SELECT count(*) FROM "{schema}"."{table}"') == count
+        # The schema stays fully operational after both runs.
+        parent = await conn.fetchval(f'SELECT id FROM "{schema}".jobs LIMIT 1')
+        await conn.execute(
+            f'INSERT INTO "{schema}".job_events (job_id, occurred_at, kind) '
+            "VALUES ($1, clock_timestamp(), 'state_change')",
+            parent,
+        )
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+async def test_enable_disable_enable_round_trip(timescale_dsn: str) -> None:
+    """The full round trip converges with rows preserved at every step:
+    enable -> seed -> disable -> enable. The re-enable re-converts the
+    restored vanilla tables (rows and all, ``migrate_data``) and
+    re-registers every policy."""
+    schema = "tsround_" + new_uuid().hex[:12]
+    conn = await asyncpg.connect(timescale_dsn)
+    try:
+        await _migrate(conn, schema)
+        first = await enable_hypertables(
+            conn, schema=schema, settings=_ts_settings(timescale_dsn, schema)
+        )
+        assert set(first.converted) == {
+            "job_events",
+            "jobs_archive",
+            "job_attempts_archive",
+        }
+        await _schedule_policies(conn, schema, next_start=datetime.now(UTC) + timedelta(days=3650))
+        seeded = await _seed_history(conn, schema, n_events=50, n_archive=20, n_attempts=30)
+
+        disabled = await disable_hypertables(
+            conn, schema=schema, settings=_vanilla_settings(timescale_dsn, schema)
+        )
+        assert set(disabled.converted) == {
+            "job_events",
+            "jobs_archive",
+            "job_attempts_archive",
+        }
+        assert await _hypertable_names(conn, schema) == set()
+        for table, count in seeded.items():
+            assert await conn.fetchval(f'SELECT count(*) FROM "{schema}"."{table}"') == count
+
+        again = await enable_hypertables(
+            conn, schema=schema, settings=_ts_settings(timescale_dsn, schema)
+        )
+        assert set(again.converted) == {
+            "job_events",
+            "jobs_archive",
+            "job_attempts_archive",
+        }, "the re-enable must re-convert the restored vanilla tables"
+        assert await _hypertable_names(conn, schema) == {
+            "job_events",
+            "jobs_archive",
+            "job_attempts_archive",
+        }
+        n_policies = await conn.fetchval(
+            "SELECT count(*) FROM timescaledb_information.jobs "
+            "WHERE hypertable_schema = $1 AND proc_name = 'policy_retention'",
+            schema,
+        )
+        assert n_policies == 3, "the re-enable re-registers every retention policy"
+        for table, count in seeded.items():
+            assert await conn.fetchval(f'SELECT count(*) FROM "{schema}"."{table}"') == count, (
+                f"every {table} row must survive the full round trip"
+            )
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+
+# ── The columnstore adoption ─────────────────────────────────────────────
+
+
+async def test_compression_adopted_on_archives_only(
+    ts_conn: asyncpg.Connection, ts_schema: str, timescale_dsn: str
+) -> None:
+    """After enable, the archive tables carry the measured columnstore
+    settings and a registered compression policy; ``job_events`` stays
+    rowstore (measured: nothing to gain); the hot page still reads; and
+    a re-run converges without duplicating the policy."""
+    # The per-column settings, via the information view: segmentby
+    # (actor, queue) / orderby finished_at DESC on the archive;
+    # segmentby job_id / orderby started_at DESC on the attempts. Never
+    # the per-row-unique id (the compression-ratio anti-pattern).
+    settings_rows = await ts_conn.fetch(
+        "SELECT hypertable_name, attname, segmentby_column_index, "
+        "orderby_column_index, orderby_asc, orderby_nullsfirst "
+        "FROM timescaledb_information.compression_settings "
+        "WHERE hypertable_schema = $1",
+        ts_schema,
+    )
+    by_table: dict[str, dict[str, tuple[Any, ...]]] = {}
+    for r in settings_rows:
+        by_table.setdefault(r["hypertable_name"], {})[r["attname"]] = (
+            r["segmentby_column_index"],
+            r["orderby_column_index"],
+            r["orderby_asc"],
+            r["orderby_nullsfirst"],
+        )
+    assert by_table["jobs_archive"] == {
+        "actor": (1, None, None, None),
+        "queue": (2, None, None, None),
+        "finished_at": (None, 1, False, True),
+    }, by_table.get("jobs_archive")
+    assert by_table["job_attempts_archive"] == {
+        "job_id": (1, None, None, None),
+        "started_at": (None, 1, False, True),
+    }, by_table.get("job_attempts_archive")
+    assert "job_events" not in by_table, "job_events must stay rowstore"
+
+    # The policy is registered per archive hypertable, compress_after at
+    # one chunk interval (the 2-day test retention clamps to 1-day
+    # chunks — a chunk compresses once it has stopped receiving rows).
+    policy_jobs = await ts_conn.fetch(
+        "SELECT hypertable_name, proc_name, config FROM timescaledb_information.jobs "
+        "WHERE hypertable_schema = $1 AND proc_name IN "
+        "('policy_compression', 'policy_columnstore')",
+        ts_schema,
+    )
+    by_hypertable = {r["hypertable_name"]: r for r in policy_jobs}
+    assert set(by_hypertable) == {"jobs_archive", "job_attempts_archive"}
+    assert all('"compress_after": "1 day"' in r["config"] for r in by_hypertable.values()), {
+        k: str(v["config"]) for k, v in by_hypertable.items()
+    }
+    assert (
+        await ts_conn.fetchval(
+            "SELECT count(*) FROM timescaledb_information.jobs "
+            "WHERE hypertable_schema = $1 AND hypertable_name = 'job_events' "
+            "AND proc_name IN ('policy_compression', 'policy_columnstore')",
+            ts_schema,
+        )
+        == 0
+    ), "job_events must carry no compression policy"
+
+    # The hot page read still works: the youngest chunk is rowstore and
+    # the newest-first read returns the row just seeded.
+    jid = await _seed_archive_row(ts_conn, schema=ts_schema, finished_at=datetime.now(UTC))
+    hot = await ts_conn.fetch(
+        f'SELECT id FROM "{ts_schema}".jobs_archive ORDER BY finished_at DESC LIMIT 1'
+    )
+    assert hot and hot[0]["id"] == jid, "the hot page read must still work"
+
+    # The re-run converges: same report entries, no duplicated policy.
+    await _schedule_policies(
+        ts_conn, ts_schema, next_start=datetime.now(UTC) + timedelta(days=3650)
+    )
+    again = await enable_hypertables(
+        ts_conn, schema=ts_schema, settings=_ts_settings(timescale_dsn, ts_schema)
+    )
+    assert again.converted == ()
+    assert again.compression_policies == (
+        "jobs_archive:1 days",
+        "job_attempts_archive:1 days",
+    )
+    n_jobs = await ts_conn.fetchval(
+        "SELECT count(*) FROM timescaledb_information.jobs "
+        "WHERE hypertable_schema = $1 AND proc_name IN "
+        "('policy_compression', 'policy_columnstore')",
+        ts_schema,
+    )
+    assert n_jobs == 2, "a re-run must not duplicate the compression policies"
+
+
+async def test_decompression_guc_warning_fires_at_default_and_quiets_when_raised(
+    timescale_dsn: str, ts_schema: str
+) -> None:
+    """The GUC prerequisite is loud, never a silent trap: on a server at
+    the 100000 default the report carries the warning (and the log fires
+    the same WARNING event); with the budget raised on the session, the
+    same enable run reports no warning and converges without
+    duplicating the compression policies."""
+    conn = await asyncpg.connect(timescale_dsn)
+    try:
+        await _migrate(conn, ts_schema)
+        settings = _ts_settings(timescale_dsn, ts_schema)
+        report = await enable_hypertables(conn, schema=ts_schema, settings=settings)
+        assert set(report.converted) == {
+            "job_events",
+            "jobs_archive",
+            "job_attempts_archive",
+        }
+        warning = report.decompression_guc_warning
+        assert warning is not None, "a server at the 100000 default must carry the loud warning"
+        assert "max_tuples_decompressed_per_dml_transaction" in warning
+        assert "100000" in warning
+
+        # Raise the budget to unlimited on this session (the GUC is
+        # user-settable — the same knob the benchmark's server flags
+        # pin): the identical run reports no warning.
+        await conn.execute("SET timescaledb.max_tuples_decompressed_per_dml_transaction = 0")
+        again = await enable_hypertables(conn, schema=ts_schema, settings=settings)
+        assert again.converted == ()
+        assert again.decompression_guc_warning is None, "a raised budget must not warn"
+        # And the remove-then-add convergence held across both runs.
+        n_jobs = await conn.fetchval(
+            "SELECT count(*) FROM timescaledb_information.jobs "
+            "WHERE hypertable_schema = $1 AND proc_name IN "
+            "('policy_compression', 'policy_columnstore')",
+            ts_schema,
+        )
+        assert n_jobs == 2, "no run may duplicate the compression policies"
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{ts_schema}" CASCADE')
+        await conn.close()

@@ -196,15 +196,23 @@ async def ts_conn(
 
 
 async def _schedule_policies(
-    conn: asyncpg.Connection, schema: str, *, next_start: datetime
+    conn: asyncpg.Connection, schema: str, *, next_start: datetime, proc_name: str = "policy%"
 ) -> None:
-    """Move every retention policy's next run to *next_start* (the supported
+    """Move every policy job's next run to *next_start* (the supported
     ``alter_job`` knob); the background worker executes the registered
-    policy itself, so a drop under test is always a real policy run."""
+    policy itself, so a drop under test is always a real policy run.
+
+    Defaults to ALL policy jobs — retention AND the compression policy
+    the deploy step arms on the archive tables: a ~now-scheduled
+    compression run would age chunks into the columnstore mid-test and
+    put these sweeps on compressed chunks, so the fixture defers the
+    whole family.
+    """
     rows = await conn.fetch(
         "SELECT job_id FROM timescaledb_information.jobs "
-        "WHERE hypertable_schema = $1 AND proc_name = 'policy_retention'",
+        "WHERE hypertable_schema = $1 AND proc_name LIKE $2",
         schema,
+        proc_name,
     )
     for r in rows:
         await conn.execute(
@@ -215,8 +223,15 @@ async def _schedule_policies(
 
 
 async def _force_policies_now(conn: asyncpg.Connection, schema: str) -> None:
-    """Pull every retention policy's next run to now (a real policy run)."""
-    await _schedule_policies(conn, schema, next_start=datetime.now(UTC))
+    """Pull every RETENTION policy's next run to now (a real policy run).
+
+    The compression policy stays deferred: these legs pin sweep
+    behavior, not compression, and a mid-test compress would change the
+    DML surface they assert on.
+    """
+    await _schedule_policies(
+        conn, schema, next_start=datetime.now(UTC), proc_name="policy_retention"
+    )
 
 
 async def _wait_for(

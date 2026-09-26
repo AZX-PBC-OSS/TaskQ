@@ -162,6 +162,47 @@ The details that matter:
   where vanilla mode expires the same rows gradually, row by row, in bounded
   batch deletes. Size the post-deploy window for that first policy run too.
 
+## The columnstore (compression) is adopted for the archive tables
+
+The deploy step arms the columnstore on the two archive tables when it
+converts them (and on every deploy after, converging like the retention
+policies do):
+
+| Table | `segmentby` | `orderby` | Rationale |
+|---|---|---|---|
+| `jobs_archive` | `actor, queue` | `finished_at DESC` | The admin archive tab's newest-first read; low-cardinality filter columns. Never the per-row-unique `id`: a unique segmentby key makes every compressed batch a single row and collapses the ratio (the documented anti-pattern). |
+| `job_attempts_archive` | `job_id` | `started_at DESC` | Per-job attempt history reads in job order. |
+| `job_events` | — | — | **Stays rowstore** — measured, nothing to gain (its writes dominate and its reads are windowed). |
+
+The compression policy's `compress_after` is one chunk interval (the same
+retention/4-clamped derivation the chunk sizing uses): a chunk compresses
+once it has stopped receiving rows. The policy is remove-then-add
+registered like its retention sibling, so a changed
+`archive_retention_period` moves `compress_after` on the next deploy; a
+changed `segmentby`/`orderby` with compressed chunks already on disk
+fails loudly instead — decompress the chunks first, the policy can only
+re-shape what is still rowstore.
+
+**One server prerequisite, probed and warned about loudly:**
+`timescaledb.max_tuples_decompressed_per_dml_transaction` defaults to
+100000, and at that default the archive expiry sweep hard-errors on
+compressed chunks with `ConfigurationLimitExceededError` (measured: one
+10k-row expiry batch decompressed 356633 tuples). At or under the
+default, `enable_hypertables` logs a WARNING and returns the warning in
+the report's `decompression_guc_warning`. Raise the budget server-wide
+before relying on the columnstore:
+
+```sql
+ALTER SYSTEM SET timescaledb.max_tuples_decompressed_per_dml_transaction = '0';  -- 0 = unlimited
+SELECT pg_reload_conf();
+```
+
+(or set it on the workers' sessions; it is user-settable). The measured
+trade-offs: `benchmarks/timescale_compression.py` recorded a 6.18x
+storage reduction on the 400k-row archive corpus, the cold archive reads
+4-9x faster over compressed chunks, the young chunk's hot page unchanged,
+and the id point lookup (a non-segmentby key) the documented weakness.
+
 ## Retention is owned by the policies, mostly
 
 Once the tables are hypertables, the aged end of the timeline is owned by
@@ -272,7 +313,12 @@ speed and the aged end's removal cost.
 
 * Policies and their next runs: `timescaledb_information.jobs`
   (`proc_name = 'policy_retention'`; `config` carries the `drop_after`
-  interval the deploy step last registered).
+  interval the deploy step last registered; the compression policies
+  register as `policy_compression` with `compress_after`).
+* Columnstore settings per column:
+  `timescaledb_information.compression_settings`
+  (`segmentby_column_index` / `orderby_column_index`), and
+  `compression_enabled` on `timescaledb_information.hypertables`.
 * Converted tables: `timescaledb_catalog.hypertable` (the internal catalog;
   `timescaledb_information.hypertables` is the friendlier view).
 * Chunk inventory and sizes: `timescaledb_catalog.chunk` joined on
@@ -282,12 +328,32 @@ speed and the aged end's removal cost.
 
 ## Turning it back off
 
-The conversion is forward-only, like the migrations. Setting
+The deploy step's conversion is forward-only, like the migrations. Setting
 `TASKQ_TIMESCALEDB_HYPERTABLES=false` after enabling stops the deploy step
 from issuing any hypertable SQL, but does not convert the tables back and does
 not remove the registered policies: a previously converted schema keeps its
-chunk retention at the last-registered intervals. To return to a vanilla
-schema, restore from a backup or migrate the data out by hand.
+chunk retention at the last-registered intervals (pinned by
+`tests/test_timescale_deploy_e2e.py::test_flag_off_after_enable_changes_nothing`).
+
+The explicit way back is `disable_hypertables` in
+`src/taskq/timescale.py` — the mirror of `enable_hypertables` (flip the
+flag off first; with the flag still true it is a zero-statement no-op).
+It removes every registered policy (retention and compression),
+idempotently, then per hypertable copies every row into a vanilla table
+whose shape is cloned from a fresh application of the bundled migrations
+themselves — never re-typed by hand, so the restored pkeys, indexes,
+foreign keys, column order, and defaults are byte-equal to a schema that
+never converted — drops the hypertable, moves the vanilla table into
+place, restores every row (count-verified at each hand-off), and restores
+the traded-away behaviors: the bare primary keys reject duplicates again,
+the `job_attempts_archive → jobs_archive` foreign key cascades again, and
+the event id sequence continues from the restored maximum. It is
+idempotent (re-runs converge), safe to run mid-life on a populated
+schema, and pinned end to end by the disable legs in
+`tests/test_timescaledb_hypertables.py` and
+`tests/test_timescale_deploy_e2e.py`. The in-memory twins need nothing:
+vanilla semantics are the default — there is nothing to disable but the
+schema.
 
 ## Test coverage
 
@@ -311,4 +377,20 @@ the below-floor range deleted-count going to zero (with the pre-fix
 counterfactual), the inside-window rows still deleting row-exactly and
 watermark-visibly, the floor-or-not end-state parity, the vanilla probe
 failing open to full-range sweeps, and the policy-less hypertable owning
-no aged end at all.
+no aged end at all. The columnstore adoption is pinned by
+`test_compression_adopted_on_archives_only` (the per-column settings via
+`timescaledb_information.compression_settings`, the registered
+`policy_compression` jobs, `job_events` staying rowstore, the hot page
+read, and re-run convergence) and
+`test_decompression_guc_warning_fires_at_default_and_quiets_when_raised`
+(the loud GUC warning at the 100000 default, quiet at a raised budget).
+The disable mirror is pinned by the disable legs: the vanilla shape
+byte-equal to a fresh migration's with every row counted
+(`test_disable_restores_vanilla_shape_and_every_row`), the restored
+behaviors — duplicate rejected by the bare PK, orphan attempts rejected
+by the restored FK, the sequence continuing
+(`test_disable_restores_vanilla_behaviors`), idempotence
+(`test_disable_is_idempotent`), the full
+enable→disable→enable round trip
+(`test_enable_disable_enable_round_trip`), and the deploy-path disable
+end to end (`test_disable_after_deploy_restores_vanilla`).

@@ -304,6 +304,8 @@ async def setup_engine(dsn: str, *, hypertables: bool) -> dict[str, Any]:
         return {
             "converted": list(report.converted),
             "retention_policies": list(report.retention_policies),
+            "compression_policies": list(report.compression_policies),
+            "decompression_guc_warning": report.decompression_guc_warning,
         }
     finally:
         await conn.close()

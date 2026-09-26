@@ -71,6 +71,47 @@ remains the only mechanism that honors ``expire_at`` exactly (a chunk
 drops on the newest ``finished_at`` it contains, so a row can pass its
 ``expire_at`` while its chunk is still present). No runtime code branches
 on whether hypertables are enabled.
+
+Columnstore (compression) is adopted for the archive tables only
+----------------------------------------------------------------
+
+After each archive conversion the deploy step arms the columnstore: the
+segmentby/orderby settings are set per table and a compression policy is
+registered at one chunk interval (a chunk compresses once it has stopped
+receiving rows). ``jobs_archive`` segments by ``(actor, queue)`` ordered
+by ``finished_at DESC`` — the admin archive tab's newest-first read, and
+low-cardinality filter columns, never the per-row-unique ``id`` (a
+unique segmentby key collapses every compressed batch to one row, the
+docs' documented anti-pattern); ``job_attempts_archive`` segments by
+``job_id`` ordered by ``started_at DESC``. ``job_events`` deliberately
+stays rowstore: measured (``benchmarks/results/timescale-compression.json``
+via ``benchmarks/timescale_compression.py``), the events table's writes
+dominate and its reads are windowed — there was nothing to gain.
+
+One server prerequisite is probed and WARNED about loudly:
+``timescaledb.max_tuples_decompressed_per_dml_transaction`` defaults to
+100000, and at that default the archive-expiry sweep hard-errors on
+compressed chunks with ``ConfigurationLimitExceededError`` (measured:
+a single 10k-row expiry batch decompressed 356633 tuples). Raise it
+(or set 0 = unlimited) server-wide before relying on the columnstore;
+the report and the log name the setting when the probe sees the default.
+
+Disabling: the mirror conversion
+--------------------------------
+
+:func:`disable_hypertables` is the inverse operation, for an operator
+who wants the vanilla schema back (flip the flag off first — the same
+mirror gate enable applies). It removes the registered policies, then
+per hypertable copies every row into a byte-exact vanilla table and
+swaps: the vanilla shape is never re-typed by hand, it is cloned from a
+scratch schema the bundled migrations themselves build (applied fresh
+into ``{schema}__vanilla`` and moved table-by-table into place after the
+hypertable drops), so the restored pkeys, indexes, foreign keys, and
+column defaults are the migrations' own output — byte-equal to a schema
+that never converted. The behaviors the conversion traded away come back
+with the shape: the bare primary keys reject duplicates, the
+``job_attempts_archive → jobs_archive`` foreign key cascades again, and
+the event id sequence continues from the restored maximum.
 """
 
 from __future__ import annotations
@@ -85,6 +126,7 @@ import structlog
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it.
 )
+from taskq.migrate import apply_pending
 
 if TYPE_CHECKING:
     from taskq.backend._protocol import ConnLike
@@ -94,6 +136,7 @@ __all__ = [
     "HypertableReport",
     "TimescaleCapability",
     "TimescaleDBUnavailableError",
+    "disable_hypertables",
     "enable_hypertables",
     "probe_timescale_capability",
     "retention_policy_floor",
@@ -114,6 +157,26 @@ _TIMESCALE_EXTENSION_NAME = "timescaledb"
 # does not get thousands of 6-hour chunks).
 _MIN_CHUNK_INTERVAL = timedelta(days=1)
 _MAX_CHUNK_INTERVAL = timedelta(days=30)
+
+# The decompression budget the extension ships as its default. At this
+# budget the archive-expiry sweep's first batch on compressed chunks
+# hard-errors (measured on the 2.30.1 image: one 10k-row expiry batch
+# decompressed 356633 tuples -> ConfigurationLimitExceededError), so a
+# deployment adopting the columnstore must raise the GUC — the probe
+# below turns the default into a loud warning, never a silent trap.
+_DECOMPRESSION_GUC = "timescaledb.max_tuples_decompressed_per_dml_transaction"
+_DEFAULT_DECOMPRESSION_BUDGET = 100_000
+
+# Columnstore adoption per archive table, measured by
+# benchmarks/timescale_compression.py (6.18x storage reduction on the
+# 400k-row archive corpus). segmentby is deliberately never the
+# per-row-unique id: a unique segmentby key makes every compressed batch
+# one row and collapses the ratio (the docs' documented anti-pattern).
+# orderby serves each table's real newest-first read.
+_COMPRESSION_SETTINGS: dict[str, tuple[str, str]] = {
+    "jobs_archive": ("actor, queue", "finished_at DESC"),
+    "job_attempts_archive": ("job_id", "started_at DESC"),
+}
 
 
 class TimescaleDBUnavailableError(Exception):
@@ -156,15 +219,32 @@ class TimescaleCapability:
 
 @dataclass(frozen=True, slots=True)
 class HypertableReport:
-    """What one :func:`enable_hypertables` run did, for logs and tests."""
+    """What one :func:`enable_hypertables` run did, for logs and tests.
 
-    converted: tuple[str, ...]
+    :meth:`disable_hypertables` returns the same dataclass with the
+    mirrored reading documented on it.
+    """
+
+    converted: tuple[str, ...] = ()
     """Table names converted to hypertables by this run (already-hypertable
     tables are skipped, so this is empty on a re-run)."""
 
-    retention_policies: tuple[str, ...]
+    retention_policies: tuple[str, ...] = ()
     """``table:interval`` strings for every retention policy this run
     registered (or re-registered after a setting change)."""
+
+    compression_policies: tuple[str, ...] = ()
+    """``table:interval`` strings for every compression policy this run
+    registered (or re-registered; ``compress_after`` is the interval).
+    The two archive tables only — ``job_events`` stays rowstore."""
+
+    decompression_guc_warning: str | None = None
+    """Loud warning text when the server's
+    ``timescaledb.max_tuples_decompressed_per_dml_transaction`` is at or
+    under its 100000 default: the archive-expiry sweep hard-errors on
+    compressed chunks at that budget (measured
+    ``ConfigurationLimitExceededError``). None when the budget is raised
+    (or unlimited) or the probe could not read it."""
 
 
 async def probe_timescale_capability(conn: asyncpg.Connection) -> TimescaleCapability:
@@ -244,6 +324,23 @@ async def enable_hypertables(
     re-asserted interval shapes future chunks only: existing chunks keep
     the interval they were created with.
 
+    The two archive tables also adopt the columnstore: per-table
+    segmentby/orderby settings plus a compression policy registered at
+    one chunk interval (a chunk compresses once it has stopped receiving
+    rows). ``job_events`` stays rowstore — measured, nothing to gain.
+    A compression policy is remove-then-add registered like its
+    retention sibling, so a settings change takes effect on the next
+    deploy; a segmentby/orderby CHANGE with compressed chunks already on
+    disk fails loudly (decompress first — the policy can only re-shape
+    what is still rowstore). Because compression puts chunks in the
+    expiry sweep's DML path, this function probes
+    ``timescaledb.max_tuples_decompressed_per_dml_transaction`` and —
+    when it is at or under its 100000 default — logs a loud WARNING and
+    returns it in the report's ``decompression_guc_warning``: at that
+    budget the archive-expiry sweep hard-errors on compressed chunks
+    (measured ``ConfigurationLimitExceededError``). Raise the GUC (or
+    set 0 = unlimited) server-wide before relying on the columnstore.
+
     ``settings`` is the :class:`~taskq.settings.WorkerSettings` model
     because the retention intervals the policies derive from
     (``archive_retention_period``, ``event_retention_period``) are
@@ -310,14 +407,24 @@ async def enable_hypertables(
     await _convert_archive_tables(conn, schema, settings, converted)
 
     policies = await _register_retention_policies(conn, schema, settings)
-    report = HypertableReport(converted=tuple(converted), retention_policies=policies)
+    compression = await _register_compression_policies(conn, schema, settings)
+    guc_warning = await _probe_decompression_budget(conn)
+    report = HypertableReport(
+        converted=tuple(converted),
+        retention_policies=policies,
+        compression_policies=compression,
+        decompression_guc_warning=guc_warning,
+    )
     if converted:
         logger.info(
             "hypertables-enabled",
             schema=schema,
             converted=list(converted),
             retention_policies=list(policies),
+            compression_policies=list(compression),
         )
+    if guc_warning is not None:
+        logger.warning("hypertable-decompression-budget-at-default", schema=schema)
     return report
 
 
@@ -525,6 +632,139 @@ async def _register_retention_policies(
     return tuple(registered)
 
 
+async def _register_compression_policies(
+    conn: asyncpg.Connection,
+    schema: str,
+    settings: WorkerSettings,
+) -> tuple[str, ...]:
+    """Arm the columnstore on the two archive tables; ``job_events``
+    deliberately stays rowstore (measured: nothing to gain — its writes
+    dominate and its reads are windowed; see the module docstring).
+
+    Per table, mirroring :func:`_register_retention_policies`'s
+    remove-then-add convergence: the old policy is removed first (either
+    removal API the server offers — the new-style columnstore name is a
+    procedure on some versions, the legacy compression name a function —
+    so both are probed and at least one lands), then the segmentby/
+    orderby settings are set (new-style columnstore options, legacy
+    compress aliases as the fallback — the house probe pattern; the
+    2.30.1 image accepts the new settings and errors on the new policy
+    function), then the compression policy is registered at one chunk
+    interval — a chunk compresses once it has stopped receiving rows.
+    Remove-then-add means a changed ``archive_retention_period`` moves
+    the compress_after on the next deploy; a segmentby/orderby CHANGE
+    with compressed chunks already on disk fails loudly at the settings
+    statement (decompress first).
+    """
+    compress_after = _chunk_interval(settings.archive_retention_period)
+    registered: list[str] = []
+    for table, (segmentby, orderby) in _COMPRESSION_SETTINGS.items():
+        target = f'"{schema}"."{table}"'
+        # Remove-then-add (the retention discipline): either removal API
+        # landing is enough; a failed removal surfaces loudly at the add.
+        for remover in (
+            "CALL remove_columnstore_policy($1::regclass, if_exists => TRUE)",
+            "SELECT remove_compression_policy($1::regclass, if_exists => TRUE)",
+        ):
+            try:
+                await conn.execute(remover, target)
+                break
+            except Exception:  # noqa: S112  # Why: the house probe pattern across extension versions; a real failure resurfaces at the add below.
+                continue
+        # The settings probe mirrors benchmarks/timescale_compression.py's
+        # measured setup: columnstore-style options first, legacy
+        # compress aliases as the fallback. The option VALUES are
+        # module-owned constants (never input), like every identifier here.
+        columnstore = (
+            "timescaledb.enable_columnstore = true, "
+            f"timescaledb.segmentby = '{segmentby}', "
+            f"timescaledb.orderby = '{orderby}'"
+        )
+        legacy = (
+            "timescaledb.compress, "
+            f"timescaledb.compress_segmentby = '{segmentby}', "
+            f"timescaledb.compress_orderby = '{orderby}'"
+        )
+        last_error: Exception | None = None
+        for style in (columnstore, legacy):
+            try:
+                await conn.execute(f"ALTER TABLE {target} SET ({style})")
+                last_error = None
+                break
+            except (
+                Exception
+            ) as exc:  # Why: probe across extension versions; both failing raises below.
+                last_error = exc
+        if last_error is not None:
+            raise RuntimeError(
+                f"could not set columnstore settings on {schema}.{table}: "
+                "neither the columnstore nor the legacy compression options "
+                "were accepted by this server"
+            ) from last_error
+        # The policy: try the new name first, fall back to the legacy one
+        # (the 2.30.1 image errors on the new name — measured — and the
+        # try/fallback mirrors the house probe pattern).
+        for adder in (
+            "SELECT add_columnstore_policy($1::regclass, $2::interval)",
+            "SELECT add_compression_policy($1::regclass, $2::interval)",
+        ):
+            try:
+                await conn.execute(adder, target, compress_after)
+                break
+            except (
+                Exception
+            ) as exc:  # Why: probe across extension versions; both failing raises below.
+                last_error = exc
+        else:
+            raise RuntimeError(
+                f"could not register the compression policy on "
+                f"{schema}.{table}: neither add_columnstore_policy nor "
+                "add_compression_policy was accepted by this server"
+            ) from last_error
+        registered.append(f"{table}:{_format_interval(compress_after)}")
+    return tuple(registered)
+
+
+async def _probe_decompression_budget(conn: asyncpg.Connection) -> str | None:
+    """The loud GUC-prerequisite warning, or None when the server is fine.
+
+    Reads ``timescaledb.max_tuples_decompressed_per_dml_transaction`` off
+    the connected server; at or under the 100000 default the archive-
+    expiry sweep hard-errors on compressed chunks (measured
+    ``ConfigurationLimitExceededError`` — one 10k-row batch decompressed
+    356633 tuples), so the default is never allowed to pass silently:
+    the warning names the setting, the number, and the fix, and rides
+    both the report and the log. A probe failure (the GUC missing from
+    an unexpected server, a permission gap) fails OPEN to None — the
+    sweep's own hard error, if it comes, is the loud backstop.
+    """
+    try:
+        raw = await conn.fetchval("SELECT current_setting($1, true)", _DECOMPRESSION_GUC)
+    except Exception as exc:  # Why: fail-open — the expiry sweep's own hard error is the backstop, and no probe failure may break a deploy.
+        logger.debug("decompression-budget-probe-failed", error=repr(exc))
+        return None
+    if raw is None:
+        return None
+    try:
+        budget = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if budget == 0 or budget > _DEFAULT_DECOMPRESSION_BUDGET:
+        # 0 is the unlimited setting; anything above the default clears it.
+        return None
+    warning = (
+        f"timescaledb.max_tuples_decompressed_per_dml_transaction is {raw} (at or under "
+        f"the {_DEFAULT_DECOMPRESSION_BUDGET} default): the archive-expiry sweep will "
+        "hard-error on compressed chunks with ConfigurationLimitExceededError once the "
+        "columnstore policy ages chunks in. Raise the budget server-wide before "
+        "relying on compression, e.g. ALTER SYSTEM SET "
+        "timescaledb.max_tuples_decompressed_per_dml_transaction = '0' (unlimited) and "
+        "reload, or set it on the workers' sessions; see docs/guides/timescaledb.md."
+    )
+    logger.warning("hypertable-decompression-budget-at-default", budget=raw)
+    return warning
+
+
 def _format_interval(td: timedelta) -> str:
     """Human form for the report only ('30 days', '7 days'), never SQL."""
     seconds = int(td.total_seconds())
@@ -642,3 +882,398 @@ async def retention_policy_floor(
     drop_after: timedelta = rows[0]["drop_after"]
     floor_now: datetime = now if now is not None else rows[0]["db_now"]
     return floor_now - drop_after
+
+
+def _vanilla_staging_schema(schema: str) -> str:
+    """The scratch schema the vanilla clone is built in.
+
+    Derived from the TaskQ schema's own name (never user input beyond it)
+    and guarded loudly: Postgres truncates identifiers at 63 bytes, and a
+    silently truncated staging name would not match the references built
+    from it.
+    """
+    staging = f"{schema}__vanilla"
+    if len(staging) > 63 or not _IDENT_RE.match(staging):
+        raise ValueError(
+            f"cannot derive the vanilla staging schema name from {schema!r}: "
+            f"{staging!r} is not a legal untruncated identifier"
+        )
+    return staging
+
+
+async def _is_hypertable(conn: asyncpg.Connection, schema: str, table: str) -> bool:
+    """The same catalog probe :func:`_to_hypertable` gates on."""
+    return bool(
+        await conn.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM _timescaledb_catalog.hypertable
+                WHERE schema_name = $1 AND table_name = $2
+            )
+            """,
+            schema,
+            table,
+        )
+    )
+
+
+def _add_foreign_key_sql(
+    schema: str, table: str, name: str, column: str, ref_table: str, ref_column: str
+) -> str:
+    """Idempotent ``ADD CONSTRAINT ... FOREIGN KEY ... ON DELETE CASCADE``,
+    the exact shape the initial migration gives the vanilla tables (the
+    constraint name is the ``{table}_{column}_fkey`` a fresh migration
+    mints), scoped to schema+table so another schema's same-named
+    constraint cannot make the guard skip. No transaction wrapper, like
+    :func:`_add_unique_constraint_sql`."""
+    return (
+        f"DO $$ BEGIN "  # noqa: S608
+        f"IF NOT EXISTS (SELECT 1 FROM pg_constraint c "
+        f"JOIN pg_class t ON t.oid = c.conrelid "
+        f"JOIN pg_namespace n ON n.oid = t.relnamespace "
+        f"WHERE c.conname = '{name}' AND n.nspname = '{schema}' AND t.relname = '{table}') "
+        f'THEN ALTER TABLE "{schema}"."{table}" ADD CONSTRAINT {name} '
+        f'FOREIGN KEY ({column}) REFERENCES "{schema}"."{ref_table}" ({ref_column}) '
+        f"ON DELETE CASCADE; "
+        f"END IF; END $$"
+    )
+
+
+async def _remove_registered_policies(
+    conn: asyncpg.Connection,
+    schema: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Remove every registered policy (retention on all three tables,
+    compression on the two archives), idempotently, BEFORE any table
+    surgery; a policy left behind would dangle or re-fire mid-swap.
+
+    Returns ``(retention, compression)`` report entries for the policies
+    that WERE registered, read from the jobs' own configs before removal
+    (the floor discipline: the registered interval, not a re-derivation).
+    The pre-read fails open — a report degradation, never a blocked
+    removal — but the removals and the convergence check below are loud:
+    nothing of either kind may survive this function.
+    """
+    try:
+        jobs = await conn.fetch(
+            """
+            SELECT hypertable_name, proc_name,
+                   COALESCE((config)::text::jsonb ->> 'drop_after',
+                            (config)::text::jsonb ->> 'compress_after') AS horizon
+            FROM timescaledb_information.jobs
+            WHERE hypertable_schema = $1
+              AND proc_name IN ('policy_retention', 'policy_compression', 'policy_columnstore')
+            """,
+            schema,
+        )
+    except Exception as exc:  # Why: fail-open on the REPORT read only — vanilla Postgres and permission gaps degrade the report, never block the removal.
+        logger.debug("disable_policy_read_failed", schema=schema, error=repr(exc))
+        jobs = []
+    # Removal is hypertable-scoped: ``if_exists`` guards a missing POLICY,
+    # not a plain TABLE (a second disable run finds plain tables here and
+    # must skip them — remove_retention_policy on one errors loudly).
+    for table in ("jobs_archive", "job_attempts_archive", "job_events"):
+        if not await _is_hypertable(conn, schema, table):
+            continue
+        await conn.execute(
+            "SELECT remove_retention_policy($1::regclass, if_exists => TRUE)",
+            f'"{schema}"."{table}"',
+        )
+    for table in ("jobs_archive", "job_attempts_archive"):
+        if not await _is_hypertable(conn, schema, table):
+            continue
+        target = f'"{schema}"."{table}"'
+        # Either removal API landing is enough: the new-style columnstore
+        # name is a procedure on some versions, the legacy name a function
+        # (probed, the house pattern).
+        for remover in (
+            "CALL remove_columnstore_policy($1::regclass, if_exists => TRUE)",
+            "SELECT remove_compression_policy($1::regclass, if_exists => TRUE)",
+        ):
+            try:
+                await conn.execute(remover, target)
+                break
+            except Exception:  # noqa: S112  # Why: probe across extension versions; a surviving policy fails the loud check below.
+                continue
+    remaining = await conn.fetch(
+        """
+        SELECT hypertable_name, proc_name FROM timescaledb_information.jobs
+        WHERE hypertable_schema = $1
+          AND proc_name IN ('policy_retention', 'policy_compression', 'policy_columnstore')
+        """,
+        schema,
+    )
+    if remaining:
+        raise RuntimeError(
+            f"could not remove the registered policies for schema {schema!r}: "
+            f"{[(r['proc_name'], r['hypertable_name']) for r in remaining]} survived "
+            "the removal APIs; refusing to swap tables under a live policy"
+        )
+    retention = tuple(
+        f"{r['hypertable_name']}:{r['horizon']}"
+        for r in jobs
+        if r["proc_name"] == "policy_retention"
+    )
+    compression = tuple(
+        sorted(
+            {
+                r["hypertable_name"]
+                for r in jobs
+                if r["proc_name"] in ("policy_compression", "policy_columnstore")
+            }
+        )
+    )
+    return retention, compression
+
+
+# The per-table vanilla behavior restores that run UNCONDITIONALLY and
+# idempotently after (or without) a swap, so a disable that crashed
+# mid-swap converges on the re-run. Each guards its own work: the enum
+# retype only when the column still points at the staging schema's type,
+# the sequence re-anchor only to GREATEST(existing state, max(id)) —
+# never backward past a production sequence's own position.
+async def _restore_vanilla_behaviors(conn: asyncpg.Connection, schema: str) -> None:
+    """The pieces the swap's moved-in table cannot carry by itself: the
+    ``status`` enum re-pointed at THIS schema's ``job_status`` (the moved
+    table arrives typing it with the staging schema's twin), the event id
+    sequence re-anchored past the restored maximum (the moved-in sequence
+    is the staging one — fresh, never incremented), and the two foreign
+    keys (LIKE/move machinery and the drop both leave them off; nothing
+    may reference the staging schema that is about to be dropped)."""
+    # jobs_archive.status: the moved table's type must be THIS schema's
+    # enum (identical labels, created from the same migration), or the
+    # staging drop would take the column's type with it.
+    udt_schema = await conn.fetchval(
+        """
+        SELECT udt_schema FROM information_schema.columns
+        WHERE table_schema = $1 AND table_name = 'jobs_archive' AND column_name = 'status'
+        """,
+        schema,
+    )
+    if udt_schema is not None and udt_schema != schema:
+        await conn.execute(
+            f'ALTER TABLE "{schema}".jobs_archive '
+            f'ALTER COLUMN status TYPE "{schema}".job_status '
+            f'USING status::text::"{schema}".job_status'
+        )
+    # job_events.id: the moved-in sequence keeps the vanilla name and
+    # default (the owned sequence moves with SET SCHEMA), but its state
+    # is the staging twin's. Re-anchor to GREATEST(own state, max(id)):
+    # forward-only, so a healthy production sequence never regresses.
+    if await conn.fetchval("SELECT to_regclass($1) IS NOT NULL", f'"{schema}".job_events_id_seq'):
+        await conn.execute(
+            # Why noqa S608: schema is _IDENT_RE-validated in disable_hypertables;
+            # the sequence and column names are module-owned constants, never input.
+            f"""SELECT setval(
+                '{schema}.job_events_id_seq',
+                GREATEST(
+                    (SELECT COALESCE(last_value, 1) FROM pg_sequences
+                     WHERE schemaname = '{schema}' AND sequencename = 'job_events_id_seq'),
+                    (SELECT COALESCE(max(id), 1) FROM "{schema}".job_events)
+                ),
+                EXISTS (SELECT 1 FROM "{schema}".job_events)
+            )"""  # noqa: S608
+        )
+    # The two foreign keys, byte-exact vanilla names, idempotent DO
+    # blocks (the constraint-name guards are scoped to this schema and
+    # table — another schema's same-named constraint must not skip it).
+    await conn.execute(
+        _add_foreign_key_sql(schema, "job_events", "job_events_job_id_fkey", "job_id", "jobs", "id")
+    )
+    await conn.execute(
+        _add_foreign_key_sql(
+            schema,
+            "job_attempts_archive",
+            "job_attempts_archive_job_id_fkey",
+            "job_id",
+            "jobs_archive",
+            "id",
+        )
+    )
+
+
+async def _restore_vanilla_table(
+    conn: asyncpg.Connection,
+    schema: str,
+    staging: str,
+    table: str,
+    post_move: tuple[str, ...] = (),
+) -> bool:
+    """Swap one hypertable back to its vanilla self. True when swapped.
+
+    The vanilla shape is never re-typed: the staging schema holds a
+    fresh application of the bundled migrations, and the swap moves the
+    migrations' OWN table into place (``SET SCHEMA`` carries its indexes,
+    constraints, defaults, and owned sequence across). *post_move*
+    statements run after the move, before the rows return — the enum
+    re-point for ``jobs_archive`` (the moved table arrives typing its
+    ``status`` column with the staging schema's twin enum, and the staged
+    rows carry THIS schema's type; the retype happens first or the
+    ``INSERT ... SELECT`` mismatches). The rows stage first (a bare heap,
+    no names touched) and every hand-off is count-verified before the
+    next one runs.
+    """
+    if not await _is_hypertable(conn, schema, table):
+        return False
+    restore_heap = f"{table}__restore"
+    source_count = await conn.fetchval(
+        # Why noqa S608: schema is _IDENT_RE-validated; the table and heap
+        # names are module-owned constants, never input.
+        f'SELECT count(*) FROM "{schema}"."{table}"'  # noqa: S608
+    )
+    await conn.execute(f'DROP TABLE IF EXISTS "{schema}"."{restore_heap}"')
+    await conn.execute(
+        # Why noqa S608: module-owned identifiers only, as above.
+        f'CREATE TABLE "{schema}"."{restore_heap}" AS SELECT * FROM "{schema}"."{table}"'  # noqa: S608
+    )
+    staged_count = await conn.fetchval(
+        f'SELECT count(*) FROM "{schema}"."{restore_heap}"'  # noqa: S608
+    )
+    if staged_count != source_count:
+        raise RuntimeError(
+            f"the {table} row copy is short: staged {staged_count} of "
+            f"{source_count} rows; refusing to drop the hypertable"
+        )
+    # Frees every vanilla name (indexes, constraints, the owned
+    # sequence) for the migration-built table moving in. The window
+    # between this DROP and the move below is disable's honest gap, the
+    # mirror of enable's pkey-drop window: a crash inside it leaves the
+    # table missing, the vanilla table in the staging schema, and the
+    # rows in the restore heap — the next disable's FK restore fails
+    # loudly on the missing table and the operator finishes the move by
+    # hand (ALTER TABLE "{staging}"."{table}" SET SCHEMA "{schema}"; the
+    # re-run then converges the rest).
+    await conn.execute(f'DROP TABLE "{schema}"."{table}"')
+    await conn.execute(f'ALTER TABLE "{staging}"."{table}" SET SCHEMA "{schema}"')
+    for statement in post_move:
+        await conn.execute(statement)
+    await conn.execute(
+        f'INSERT INTO "{schema}"."{table}" SELECT * FROM "{schema}"."{restore_heap}"'  # noqa: S608  # Why: module-owned identifiers only.
+    )
+    restored_count = await conn.fetchval(
+        f'SELECT count(*) FROM "{schema}"."{table}"'  # noqa: S608
+    )
+    if restored_count != source_count:
+        raise RuntimeError(
+            f"the {table} row restore is short: {restored_count} of "
+            f"{source_count} rows; the vanilla table is in place but incomplete"
+        )
+    await conn.execute(f'DROP TABLE "{schema}"."{restore_heap}"')
+    return True
+
+
+async def disable_hypertables(
+    conn: asyncpg.Connection,
+    *,
+    schema: str,
+    settings: WorkerSettings,
+) -> HypertableReport:
+    """The mirror of :func:`enable_hypertables`: every hypertable back to
+    its plain vanilla self, every row preserved, every traded-away
+    behavior restored.
+
+    Runs inside the caller's transaction/lock context exactly like
+    :func:`enable_hypertables` (the ``taskq migrate up`` deploy step owns
+    the migration advisory lock) and is idempotent: already-plain tables
+    are skipped, already-absent policies remove as no-ops, and a second
+    full run converges to the same report. The gate mirrors enable's
+    zero-SQL contract inverted: with ``settings.timescaledb_hypertables``
+    still true this returns immediately having issued ZERO statements —
+    the operator flips the flag off first, then disables; a run against
+    a server without the extension is equally a no-op (vanilla servers
+    have nothing to disable).
+
+    The mechanics per hypertable: the vanilla shape is cloned from a
+    scratch schema (``{schema}__vanilla``) that the bundled migrations
+    themselves build fresh — never re-typed by hand, so it cannot drift
+    from the migrations — the rows stage into a bare heap and are
+    count-verified, the hypertable drops, the migration-built table moves
+    into place (``SET SCHEMA``, carrying its indexes, constraints,
+    defaults, and owned sequence), the rows go back in, and the vanilla
+    behaviors (the bare primary keys, the ``job_attempts_archive``
+    foreign key and its cascade, the event id sequence's position) are
+    restored unconditionally and idempotently afterward. The in-memory
+    twins need nothing: vanilla semantics are the default — there is
+    nothing to disable but the schema. The staging schema is dropped on
+    the success path; a crashed run leaves it behind and the re-run
+    cleans it up (see :func:`_restore_vanilla_table` for the one honest
+    window).
+
+    The report is the mirror reading of :class:`HypertableReport`:
+    ``converted`` lists the tables returned to plain by this run,
+    ``retention_policies`` the ``table:interval`` strings of the
+    retention policies REMOVED (intervals read from the registered jobs'
+    own configs before removal), ``compression_policies`` the tables
+    whose compression policies were removed, and
+    ``decompression_guc_warning`` is always None (nothing was adopted).
+    """
+    if not _IDENT_RE.match(schema):
+        raise ValueError(f"invalid schema name {schema!r}")
+    if settings.timescaledb_hypertables:
+        # The flag gate, mirrored: the operator flips the flag off
+        # FIRST. A zero-statement no-op, like enable's flag-off path.
+        return HypertableReport()
+
+    capability = await probe_timescale_capability(conn)
+    if not capability.installed:
+        # A vanilla server: nothing to disable, nothing to issue.
+        return HypertableReport()
+    if not capability.preloaded:
+        raise TimescaleDBUnavailableError(
+            "disabling hypertables requires TimescaleDB to be loadable: the "
+            "extension is installed but absent from shared_preload_libraries, "
+            "so the hypertable DDL this disable must run cannot execute. "
+            "Restore the preload (and restart) before disabling."
+        )
+
+    retention_removed, compression_removed = await _remove_registered_policies(conn, schema)
+
+    staging = _vanilla_staging_schema(schema)
+    # A crashed earlier run's leftovers go first; the migrations rebuild
+    # the staging schema from zero below.
+    await conn.execute(f'DROP SCHEMA IF EXISTS "{staging}" CASCADE')
+    await apply_pending(conn, schema=staging)
+    # The staged tables' foreign keys point at the STAGING schema's own
+    # jobs / jobs_archive; dropped here so the moved-in tables carry no
+    # reference into a schema that is about to be dropped. The real ones
+    # come back against this schema's tables in the behavior restore.
+    await conn.execute(
+        f'ALTER TABLE "{staging}".job_events DROP CONSTRAINT IF EXISTS job_events_job_id_fkey'
+    )
+    await conn.execute(
+        f'ALTER TABLE "{staging}".job_attempts_archive '
+        "DROP CONSTRAINT IF EXISTS job_attempts_archive_job_id_fkey"
+    )
+    restored: list[str] = []
+    for table, post_move in (
+        (
+            "jobs_archive",
+            (
+                f'ALTER TABLE "{schema}".jobs_archive '
+                f'ALTER COLUMN status TYPE "{schema}".job_status '
+                f'USING status::text::"{schema}".job_status',
+            ),
+        ),
+        ("job_attempts_archive", ()),
+        ("job_events", ()),
+    ):
+        if await _restore_vanilla_table(conn, schema, staging, table, post_move):
+            restored.append(table)
+    # Unconditional and idempotent: converges a crashed mid-swap run too.
+    await _restore_vanilla_behaviors(conn, schema)
+    await conn.execute(f'DROP SCHEMA IF EXISTS "{staging}" CASCADE')
+
+    report = HypertableReport(
+        converted=tuple(restored),
+        retention_policies=retention_removed,
+        compression_policies=compression_removed,
+    )
+    if restored:
+        logger.info(
+            "hypertables-disabled",
+            schema=schema,
+            restored=list(restored),
+            retention_policies=list(retention_removed),
+            compression_policies=list(compression_removed),
+        )
+    return report
