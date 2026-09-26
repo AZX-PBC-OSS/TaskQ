@@ -523,13 +523,18 @@ async def _batch_cap_refusals(
     and only runs when the batch carries caps at all). Items whose
     idempotency (scope, key) pair is already stored are discounted:
     the batch INSERT's ``ON CONFLICT`` arbiter returns the existing row
-    instead of writing, so they consume no capacity, mirroring the
-    single path, where an idempotency hit returns before any cap
-    accounting. (``unique_for`` items are conservatively fully counted:
-    only a preflight HIT bypasses the cap on the single path, and the
-    batch cannot know hits without a per-item preflight that would
-    defeat bulk throughput; a batch mixing unique_for retries near the
-    cap may refuse loudly rather than admit silently.) A capacity-slot
+    instead of writing, so they consume no capacity. The discount is
+    the batch's own accounting, not a mirror of the single path: there
+    the max_pending count check runs BEFORE the idempotency upsert (the
+    preflight order is unique_for preflight, singleton preflight,
+    max_pending count, INSERT), so an idempotency hit does not bypass
+    the cap -- a duplicate key to a capped actor raises
+    MaxPendingExceededError at the count check, before the upsert could
+    return the existing row. (``unique_for`` items are conservatively
+    fully counted: only a preflight HIT bypasses the cap on the single
+    path, and the batch cannot know hits without a per-item preflight
+    that would defeat bulk throughput; a batch mixing unique_for
+    retries near the cap may refuse loudly rather than admit silently.) A capacity-slot
     index is the heavyweight version of this guarantee; the count here is
     exact for the single statement it guards. Concurrent bulk batches on separate connections can still
     race (count-then-insert without a serializing lock, the

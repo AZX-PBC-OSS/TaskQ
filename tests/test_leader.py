@@ -1134,7 +1134,7 @@ async def test_pg_notify_not_issued_when_zero(monkeypatch: Any) -> None:  # type
 async def test_prune_loop_runs_on_schedule(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """_prune_loop fires at the scheduled time when is_leader, acquires
     advisory lock, calls prune_terminal_jobs, and releases the lock."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     prune_result_rows = [
         [
@@ -1159,7 +1159,7 @@ async def test_prune_loop_runs_on_schedule(monkeypatch: Any) -> None:  # type: i
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
 
     settings = deps.settings
     settings.prune_cron_expr = _next_minute_cron()
@@ -1793,7 +1793,7 @@ async def test_prune_terminal_jobs_actor_override_longer_retention_skipped() -> 
 
 async def test_prune_loop_date_guard_prevents_double_run(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """_prune_loop skips when last_pruned_date == today (UTC)."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     prune_result_rows = [
         [
@@ -1818,7 +1818,7 @@ async def test_prune_loop_date_guard_prevents_double_run(monkeypatch: Any) -> No
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
 
     settings = deps.settings
     settings.prune_cron_expr = "* * * * *"
@@ -1852,7 +1852,7 @@ async def test_prune_loop_date_guard_prevents_double_run(monkeypatch: Any) -> No
 
 async def test_archive_expiry_loop_date_guard_prevents_double_run(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """_archive_expiry_loop skips when last_expiry_date == today (UTC)."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     expiry_result_rows = [
         [
@@ -1875,7 +1875,7 @@ async def test_archive_expiry_loop_date_guard_prevents_double_run(monkeypatch: A
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
 
     settings = deps.settings
     settings.archive_expiry_cron_expr = "* * * * *"
@@ -2171,11 +2171,13 @@ def _lock_attempts(conn: FakeConn) -> int:
 async def test_prune_loop_retries_failed_attempt_with_backoff(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """A failed prune attempt retries within the day on the backoff ladder
     instead of sleeping to tomorrow's cron fire."""
+    import croniter as croniter_mod
+
     import taskq.worker._leader_sweeps as _leader_sweeps_mod
 
     monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_INITIAL_SECS", 0.02)
     monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_CAP_SECS", 0.2)
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _soon_then_far_croniter())
+    monkeypatch.setattr(croniter_mod, "croniter", _soon_then_far_croniter())
 
     leader_conn = _AlwaysFailsPruneConn(batch_rows=[], fetchval_result=True)
     leader, _deps, _backend, _, _, shutdown = await _make_leader(
@@ -2204,11 +2206,13 @@ async def test_prune_loop_backoff_doubles_to_cap(monkeypatch: Any) -> None:  # t
     retrying at a fixed rate: with initial=0.05 s doubling, a 1 s window
     sees ~5 attempts, where a fixed 0.05 s cadence would see ~20 and a
     no-retry loop exactly 1."""
+    import croniter as croniter_mod
+
     import taskq.worker._leader_sweeps as _leader_sweeps_mod
 
     monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_INITIAL_SECS", 0.05)
     monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_CAP_SECS", 10.0)
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _soon_then_far_croniter())
+    monkeypatch.setattr(croniter_mod, "croniter", _soon_then_far_croniter())
 
     leader_conn = _AlwaysFailsPruneConn(batch_rows=[], fetchval_result=True)
     leader, _deps, _backend, _, _, shutdown = await _make_leader(
@@ -2237,11 +2241,13 @@ async def test_prune_loop_success_stops_retry_for_the_day(monkeypatch: Any) -> N
     attempts - the once-per-SUCCESSFUL-prune-per-day guard holds through
     the retry change (a retried day never gets a second successful
     prune)."""
+    import croniter as croniter_mod
+
     import taskq.worker._leader_sweeps as _leader_sweeps_mod
 
     monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_INITIAL_SECS", 0.02)
     monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_CAP_SECS", 0.2)
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _soon_then_far_croniter())
+    monkeypatch.setattr(croniter_mod, "croniter", _soon_then_far_croniter())
 
     class _FailOnceConn(_FakeConnForPrune):
         def __init__(self) -> None:
@@ -2362,11 +2368,13 @@ async def test_archive_expiry_loop_retries_failed_attempt_with_backoff(
 ) -> None:
     """The archive-expiry loop shares the prune loop's failure-half policy:
     a failed attempt retries on the backoff ladder within the day."""
+    import croniter as croniter_mod
+
     import taskq.worker._leader_sweeps as _leader_sweeps_mod
 
     monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_INITIAL_SECS", 0.02)
     monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_CAP_SECS", 0.2)
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _soon_then_far_croniter())
+    monkeypatch.setattr(croniter_mod, "croniter", _soon_then_far_croniter())
 
     class _AlwaysFailsExpiryConn(_FakeConnForPrune):
         async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
@@ -2403,7 +2411,7 @@ async def test_prune_loop_bounds_batches_under_pool_command_timeout(
     runs on: 80% of the default 5 s dispatcher_command_timeout = 4000 ms,
     so the server's QueryCanceledError (breaker-counted, degrading)
     always arrives before the pool's opaque client TimeoutError."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     leader_conn = _FakeConnForPrune(
         batch_rows=[[_full_batch_record(5)]], fetchval_result=True, actor_config_rows=[]
@@ -2423,7 +2431,7 @@ async def test_prune_loop_bounds_batches_under_pool_command_timeout(
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
     deps.settings.prune_cron_expr = "* * * * *"
 
     task = asyncio.create_task(leader._prune_loop(shutdown))
@@ -2455,7 +2463,7 @@ async def test_prune_loop_drain_stops_on_shutdown_and_ticks_liveness(
     (so a wedged batch loop is visible to the watchdog) and forgets the
     registration when the attempt ends (so a once-a-day loop cannot read
     as a stale sibling between attempts)."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     shutdown = asyncio.Event()
     # The observation seam closes over a holder: the conn must be built
@@ -2485,7 +2493,7 @@ async def test_prune_loop_drain_stops_on_shutdown_and_ticks_liveness(
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
     deps.settings.prune_cron_expr = "* * * * *"
     # The hooked conn reports 10-row full batches, so the effective window
     # must be 10 too - the sizer's default tier comes from this setting.
@@ -2517,7 +2525,7 @@ async def test_archive_expiry_loop_drain_stops_on_shutdown(
 ) -> None:
     """The archive-expiry drain honors the same shutdown-between-batches
     contract as the prune drain."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     shutdown = asyncio.Event()
     batches_seen: list[int] = []
@@ -2542,7 +2550,7 @@ async def test_archive_expiry_loop_drain_stops_on_shutdown(
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
     deps.settings.archive_expiry_cron_expr = "* * * * *"
     # The hooked conn reports 10-row full batches, so the effective window
     # must be 10 too - the sizer's default tier comes from this setting.
@@ -2559,7 +2567,7 @@ async def test_archive_expiry_loop_drain_stops_on_shutdown(
 
 async def test_prune_loop_releases_lock_on_error(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """Prune loop releases advisory lock even when prune_terminal_jobs raises."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     # Additive event on the double: set exactly where the prune query
     # raises, so the test waits for the error path instead of sleeping
@@ -2592,7 +2600,7 @@ async def test_prune_loop_releases_lock_on_error(monkeypatch: Any) -> None:  # t
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
 
     settings = deps.settings
     settings.prune_cron_expr = _next_minute_cron()
@@ -2613,7 +2621,7 @@ async def test_prune_loop_releases_lock_on_error(monkeypatch: Any) -> None:  # t
 
 async def test_archive_expiry_loop_releases_lock_on_error(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """Archive expiry loop releases advisory lock even when sweep raises."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     # Additive event on the double: set exactly where the expiry query
     # raises, so the test waits for the error path instead of sleeping
@@ -2646,7 +2654,7 @@ async def test_archive_expiry_loop_releases_lock_on_error(monkeypatch: Any) -> N
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
 
     settings = deps.settings
     settings.archive_expiry_cron_expr = _next_minute_cron()
@@ -2718,7 +2726,7 @@ async def test_archive_expiry_loop_wakes_on_shutdown() -> None:
 async def test_prune_loop_skips_when_lock_not_acquired(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """Prune loop skips the prune run and does not call prune_terminal_jobs
     when pg_try_advisory_lock returns False."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     leader_conn = _FakeConnForPrune(batch_rows=[], fetchval_result=False)
 
@@ -2736,7 +2744,7 @@ async def test_prune_loop_skips_when_lock_not_acquired(monkeypatch: Any) -> None
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
 
     settings = deps.settings
     settings.prune_cron_expr = _next_minute_cron()
@@ -2763,7 +2771,7 @@ async def test_prune_loop_skips_when_lock_not_acquired(monkeypatch: Any) -> None
 async def test_prune_loop_survives_lock_acquisition_failure(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """Prune loop continues when pg_try_advisory_lock raises a connection error,
     instead of crashing the TaskGroup."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     lock_call_count = 0
 
@@ -2791,7 +2799,7 @@ async def test_prune_loop_survives_lock_acquisition_failure(monkeypatch: Any) ->
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
 
     settings = deps.settings
     settings.prune_cron_expr = _next_minute_cron()
@@ -2820,7 +2828,7 @@ async def test_archive_expiry_loop_survives_lock_acquisition_failure(
 ) -> None:  # type: ignore[reportUnknownParameterType]
     """Archive expiry loop continues when pg_try_advisory_lock raises a connection
     error, instead of crashing the TaskGroup."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     lock_call_count = 0
 
@@ -2848,7 +2856,7 @@ async def test_archive_expiry_loop_survives_lock_acquisition_failure(
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
 
     settings = deps.settings
     settings.archive_expiry_cron_expr = _next_minute_cron()
@@ -2877,7 +2885,7 @@ async def test_archive_expiry_loop_survives_lock_acquisition_failure(
 async def test_prune_loop_survives_unlock_failure(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """Prune loop continues when pg_advisory_unlock raises in the finally block,
     instead of crashing the TaskGroup. PG releases the lock on session death."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     # Additive event on the double: set exactly where the prune query is
     # entered, so the test waits for the prune run instead of sleeping
@@ -2913,7 +2921,7 @@ async def test_prune_loop_survives_unlock_failure(monkeypatch: Any) -> None:  # 
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
 
     settings = deps.settings
     settings.prune_cron_expr = _next_minute_cron()
@@ -2935,7 +2943,7 @@ async def test_prune_loop_survives_unlock_failure(monkeypatch: Any) -> None:  # 
 async def test_archive_expiry_loop_survives_unlock_failure(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """Archive expiry loop continues when pg_advisory_unlock raises in the finally
     block, instead of crashing the TaskGroup. PG releases the lock on session death."""
-    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+    import croniter as croniter_mod
 
     # Additive event on the double: set exactly where the expiry query is
     # entered, so the test waits for the sweep run instead of sleeping
@@ -2971,7 +2979,7 @@ async def test_archive_expiry_loop_survives_unlock_failure(monkeypatch: Any) -> 
         def get_next(self, dt_type: type[datetime]) -> datetime:
             return datetime.now(UTC) + timedelta(seconds=0.05)
 
-    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    monkeypatch.setattr(croniter_mod, "croniter", _InstantCroniter)
 
     settings = deps.settings
     settings.archive_expiry_cron_expr = _next_minute_cron()
