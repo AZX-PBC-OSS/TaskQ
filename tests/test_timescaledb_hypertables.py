@@ -1950,6 +1950,79 @@ async def test_disable_crash_at_every_swap_stage_converges(
     )
 
 
+async def test_disable_converges_legacy_drop_before_set_debris(timescale_dsn: str) -> None:
+    """Hostile cell the matrix cannot reach by crashing the CURRENT swap:
+    the pre-rename-first ordering's DROP-before-SET window (the fix commit's
+    B4 state). A schema crashed under the OLD ordering holds NO live table,
+    NO trash, the restore heap stranded with the rows, and the staging
+    schema still holding the vanilla table. ``_converge_crashed_swaps``'s
+    fourth state must move the staging table in, absorb the heap twin-
+    first, and leave the vanilla shape with EVERY row — before any ``DROP
+    SCHEMA CASCADE`` can eat the staging table the recovery needs."""
+    schema = "tslegacy_" + new_uuid().hex[:12]
+    fresh = "tsfresh_" + new_uuid().hex[:12]
+    staging = schema + "__vanilla"
+    conn = await asyncpg.connect(timescale_dsn)
+    try:
+        await _migrate(conn, schema)
+        await enable_hypertables(conn, schema=schema, settings=_ts_settings(timescale_dsn, schema))
+        await _schedule_policies(conn, schema, next_start=datetime.now(UTC) + timedelta(days=3650))
+        seeded = await _seed_history(conn, schema, n_events=50, n_archive=20, n_attempts=30)
+
+        # Hand-build the old ordering's debris: the heap copy exists, the
+        # hypertable is GONE (the legacy DROP ran before its SET SCHEMA),
+        # and the staging schema still holds the vanilla table — exactly
+        # the state the rename-first swap makes unreachable but the
+        # convergence still documents and must still finish.
+        await conn.execute(
+            f'CREATE TABLE "{schema}".jobs_archive__restore '
+            f'AS SELECT * FROM "{schema}".jobs_archive'
+        )
+        await conn.execute(f'DROP TABLE "{schema}".jobs_archive')
+        await apply_pending(conn, schema=staging)
+        live_before = await conn.fetchval(
+            "SELECT to_regclass($1) IS NOT NULL", f'"{schema}".jobs_archive'
+        )
+        assert not live_before, "the hand-built debris must have no live jobs_archive"
+
+        report = await disable_hypertables(
+            conn, schema=schema, settings=_vanilla_settings(timescale_dsn, schema)
+        )
+        assert "jobs_archive" in report.converted, (
+            f"the legacy debris must converge as a converted table, got {report.converted}"
+        )
+        assert await _hypertable_names(conn, schema) == set(), (
+            "the converging run must leave zero hypertables"
+        )
+        for table, count in seeded.items():
+            live = await conn.fetchval(f'SELECT count(*) FROM "{schema}"."{table}"')
+            assert live == count, (
+                f"every {table} row must survive the legacy debris and the "
+                f"converging re-run ({live} of {count})"
+            )
+        heap_left = await conn.fetchval(
+            "SELECT to_regclass($1) IS NOT NULL", f'"{schema}".jobs_archive__restore'
+        )
+        assert not heap_left, "the absorbed heap must be gone"
+        staging_left = await conn.fetchval(
+            "SELECT to_regclass($1) IS NOT NULL", f'"{staging}".jobs'
+        )
+        assert not staging_left, "the staging schema must be gone after the convergence"
+
+        # The converged shape is byte-equal to a fresh vanilla migration's.
+        await _migrate(conn, fresh)
+        disabled_shape = await _shape_of(conn, schema, "jobs_archive")
+        fresh_shape = await _shape_of(conn, fresh, "jobs_archive")
+        assert disabled_shape == fresh_shape, (
+            f"the converged jobs_archive must be byte-equal to a fresh vanilla "
+            f"migration's shape:\nrestored={disabled_shape}\nfresh={fresh_shape}"
+        )
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{fresh}" CASCADE')
+        await conn.close()
+
+
 async def test_disable_refuses_vanilla_key_collisions_loudly(timescale_dsn: str) -> None:
     """The one unrecoverable mismatch refuses loudly BEFORE any name
     moves: the hypertable's widened uniqueness admits rows (same id,

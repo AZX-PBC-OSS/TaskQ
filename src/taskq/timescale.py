@@ -1346,7 +1346,7 @@ async def _converge_crashed_swaps(
             # staging foreign keys that traveled nowhere yet, absorb the
             # heap. Without a staging table the heap IS the recovery: it
             # renames into place (rows preserved, shape degraded loudly).
-            if await _table_exists(conn, schema, f"{staging}.{table}"):
+            if await _table_exists(conn, staging, table):
                 await conn.execute(f'ALTER TABLE "{staging}"."{table}" SET SCHEMA "{schema}"')
                 await _drop_traveled_foreign_keys(conn, schema, table)
                 await _absorb_orphan_rows(conn, schema, table, heap)
