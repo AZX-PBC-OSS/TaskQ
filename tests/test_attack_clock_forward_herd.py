@@ -779,6 +779,19 @@ async def test_deadline_herd_batches_stay_bounded_and_ledger_conserved(
 # ── 5. The retention prune herd: 100k rows pass retention at once
 
 
+# Why load_sensitive: this pin drives a 100k-row real-PG herd whose batch
+# statements cost tens of ms warm but sit at the mercy of the shared
+# runners' IO weather on the parallel legs: the re-drive absorbs the
+# deadline-family cancellations (a cancelled batch is a pause) but the
+# weather has measured LONGER than the re-drive's whole five-attempt
+# budget (the 30s statements cancelled five times = 2.5+ minutes of
+# block, run 36103478108's legs), so on the parallel legs the pin ends
+# red by its own wedged-drain design. The serial lane is the one place
+# the budget is a backstop (the #523 precedent, which this pin carried
+# before the #532 rebase resolution wrongly dropped it); the shape and
+# conservation teeth are not load-fragile and are byte-identical either
+# way.
+@pytest.mark.load_sensitive
 async def test_prune_herd_batches_stay_bounded_and_archive_conserves(
     module_pg_schema: ModulePgSchema,
     monkeypatch: pytest.MonkeyPatch,
