@@ -28,7 +28,6 @@ from taskq.testing.clock import FakeClock
 
 _START = datetime(2025, 1, 1, tzinfo=UTC)
 _LEASE = timedelta(seconds=10)
-_SCHEMA = "taskq"
 
 
 def _reservation(
@@ -886,7 +885,7 @@ async def test_pg_release_without_a_fence_uses_the_plain_release_sql() -> None:
     plain-int form is the compat contract every pre-fence caller (and
     the registry's plain-index paths) relies on.
     """
-    res = ConcurrencyReservation(name="gpu", slots=2, lease=_LEASE, schema=_SCHEMA)
+    res = ConcurrencyReservation(name="gpu", slots=2, lease=_LEASE, schema="taskq")
     pool = _CapturingReleasePool()
     worker_id = new_uuid()
 
@@ -894,7 +893,7 @@ async def test_pg_release_without_a_fence_uses_the_plain_release_sql() -> None:
 
     assert pool.conn.calls == [
         (
-            _RELEASE_SQL_TEMPLATE.format(schema=_SCHEMA),
+            _RELEASE_SQL_TEMPLATE.format(schema="taskq"),
             ("gpu", 1, worker_id),
         )
     ]
@@ -911,7 +910,7 @@ async def test_pg_release_with_a_slot_lease_uses_the_fenced_release_sql() -> Non
     zombie gate is gone, the fencing tests' corruption returns).
     """
     clock = FakeClock(_START)
-    res = ConcurrencyReservation(name="gpu", slots=2, lease=_LEASE, clock=clock, schema=_SCHEMA)
+    res = ConcurrencyReservation(name="gpu", slots=2, lease=_LEASE, clock=clock, schema="taskq")
     pool = _CapturingReleasePool()
     worker_id, job_id = new_uuid(), new_uuid()
 
@@ -921,7 +920,7 @@ async def test_pg_release_with_a_slot_lease_uses_the_fenced_release_sql() -> Non
 
     assert pool.conn.calls == [
         (
-            _RELEASE_FENCED_SQL_TEMPLATE.format(schema=_SCHEMA),
+            _RELEASE_FENCED_SQL_TEMPLATE.format(schema="taskq"),
             ("gpu", int(lease), worker_id, _START),
         )
     ]

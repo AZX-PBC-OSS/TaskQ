@@ -19,6 +19,7 @@ from taskq.actor import ActorRef, actor
 from taskq.actor_config_ops import ActorConfigRow, ActorQueueMoveResult
 from taskq.cli import app
 from taskq.exceptions import ActorNotFoundError
+from taskq.testing.assertions import plain_cli_output
 
 runner = CliRunner()
 
@@ -417,7 +418,7 @@ def test_move_queue_transposed_arguments_are_a_usage_error(
     result = runner.invoke(app, ["actor-config", "move-queue", "diff_actor", "--to", "q2"])
 
     assert result.exit_code != 0
-    assert "Usage: taskq actor-config move-queue" in result.stderr
+    assert "Usage: taskq actor-config move-queue" in plain_cli_output(result.stderr)
     assert captured == {}, "the transposed shape must be refused before any dispatcher call"
 
 

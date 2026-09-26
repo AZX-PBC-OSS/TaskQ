@@ -56,7 +56,18 @@ from taskq.constants import (
     RECLAIM_OUTBOX_RETENTION_MULTIPLIER,
 )
 
-_SCHEMA = "taskq"
+
+@pytest.fixture
+def schema_name() -> str:
+    """The schema identifier the sweeps render against — test-local.
+
+    This tier never touches real PG (the conn is an ``AsyncMock``/stub), so
+    the value is an arbitrary marker string; it lives in a per-test fixture
+    rather than a module-level constant so the byte-identical rendering pins
+    get it from one place without re-introducing the shared/stale-constant
+    anti-pattern the suite-hygiene pin bans.
+    """
+    return "taskq"
 
 
 def _mock_conn(tag: str = "UPDATE 0") -> AsyncMock:
@@ -97,7 +108,9 @@ class _TransactionlessConn:
 # ── Rendering: byte-identical pins (vanilla, no policy floor) ────────────
 
 
-async def test_sweep_expired_results_renders_the_constant_byte_identically() -> None:
+async def test_sweep_expired_results_renders_the_constant_byte_identically(
+    schema_name: str,
+) -> None:
     """The result-TTL sweep executes the module constant formatted with the
     schema and nothing else.
 
@@ -111,17 +124,17 @@ async def test_sweep_expired_results_renders_the_constant_byte_identically() -> 
 
     count = await _sweeps.sweep_expired_results(
         conn,  # pyright: ignore[reportArgumentType]  # Why: AsyncMock duck-types the ConnLike surface under test.
-        schema=_SCHEMA,
+        schema=schema_name,
     )
 
     assert count == 3
     conn.execute.assert_awaited_once_with(
-        _sweeps._SWEEP_RESULT_TTL_SQL.format(schema=_SCHEMA),  # pyright: ignore[reportPrivateUsage]
+        _sweeps._SWEEP_RESULT_TTL_SQL.format(schema=schema_name),  # pyright: ignore[reportPrivateUsage]
         DEFAULT_EVENT_WRITER_BATCH_SIZE,
     )
 
 
-async def test_sweep_expired_events_renders_the_constant_byte_identically() -> None:
+async def test_sweep_expired_events_renders_the_constant_byte_identically(schema_name: str) -> None:
     """The event-TTL sweep executes the module constant with only the
     schema and the outbox multiplier interpolated.
 
@@ -135,21 +148,21 @@ async def test_sweep_expired_events_renders_the_constant_byte_identically() -> N
 
     count = await _sweeps.sweep_expired_events(  # pyright: ignore[reportArgumentType]
         conn,
-        schema=_SCHEMA,
+        schema=schema_name,
         retention=timedelta(days=30),
     )
 
     assert count == 7
     conn.execute.assert_awaited_once_with(
         _sweeps._SWEEP_EVENT_TTL_SQL.format(  # pyright: ignore[reportPrivateUsage]
-            schema=_SCHEMA, outbox_multiplier=RECLAIM_OUTBOX_RETENTION_MULTIPLIER
+            schema=schema_name, outbox_multiplier=RECLAIM_OUTBOX_RETENTION_MULTIPLIER
         ),
         timedelta(days=30),
         DEFAULT_EVENT_RETENTION_BATCH_SIZE,
     )
 
 
-async def test_sweep_idle_keyed_rows_renders_both_arms_byte_identically() -> None:
+async def test_sweep_idle_keyed_rows_renders_both_arms_byte_identically(schema_name: str) -> None:
     """The keyed-row sweep executes BOTH table arms, each the module
     constant, each carrying (horizon, batch_size) in that order.
 
@@ -164,15 +177,15 @@ async def test_sweep_idle_keyed_rows_renders_both_arms_byte_identically() -> Non
 
     count = await _sweeps.sweep_idle_keyed_rows(
         conn,  # pyright: ignore[reportArgumentType]
-        schema=_SCHEMA,
+        schema=schema_name,
         horizon=timedelta(days=7),
     )
 
     assert count == 2  # one row per arm's tag
     executed = [call.args[0] for call in conn.execute.await_args_list]
     assert executed == [
-        _sweeps._SWEEP_IDLE_KEYED_BUCKETS_SQL.format(schema=_SCHEMA),  # pyright: ignore[reportPrivateUsage]
-        _sweeps._SWEEP_IDLE_KEYED_SLOTS_SQL.format(schema=_SCHEMA),  # pyright: ignore[reportPrivateUsage]
+        _sweeps._SWEEP_IDLE_KEYED_BUCKETS_SQL.format(schema=schema_name),  # pyright: ignore[reportPrivateUsage]
+        _sweeps._SWEEP_IDLE_KEYED_SLOTS_SQL.format(schema=schema_name),  # pyright: ignore[reportPrivateUsage]
     ]
     for call in conn.execute.await_args_list:
         assert call.args[1:] == (timedelta(days=7), DEFAULT_KEYED_ROW_RECLAIM_BATCH_SIZE)
@@ -181,7 +194,7 @@ async def test_sweep_idle_keyed_rows_renders_both_arms_byte_identically() -> Non
 # ── Rendering: the crash-reclaim outbox carve-out ────────────────────────
 
 
-async def test_event_ttl_sql_keeps_unconsumed_reclaim_outbox_rows() -> None:
+async def test_event_ttl_sql_keeps_unconsumed_reclaim_outbox_rows(schema_name: str) -> None:
     """The windowing CTE's KEEP predicate excludes the crash-reclaim
     outbox slice, and the exclusion sits INSIDE the CTE (the deletable
     set is filtered before the LIMIT).
@@ -196,7 +209,7 @@ async def test_event_ttl_sql_keeps_unconsumed_reclaim_outbox_rows() -> None:
     LIMIT rows every call yet never deletes.
     """
     sql = _sweeps._SWEEP_EVENT_TTL_SQL.format(  # pyright: ignore[reportPrivateUsage]
-        schema=_SCHEMA, outbox_multiplier=RECLAIM_OUTBOX_RETENTION_MULTIPLIER
+        schema=schema_name, outbox_multiplier=RECLAIM_OUTBOX_RETENTION_MULTIPLIER
     )
 
     keep_predicate = (
@@ -226,6 +239,7 @@ async def test_event_ttl_sql_keeps_unconsumed_reclaim_outbox_rows() -> None:
 async def test_batch_size_below_one_is_refused_before_any_sql(
     batch_size: int,
     sweep: str,
+    schema_name: str,
 ) -> None:
     """``batch_size`` < 1 is a caller wiring bug (LIMIT 0 is a silent drain
     stall, a negative LIMIT a server-side data error the transient-error
@@ -240,14 +254,14 @@ async def test_batch_size_below_one_is_refused_before_any_sql(
 
     with pytest.raises(ValueError, match="batch_size must be >= 1"):
         if sweep == "results":
-            await _sweeps.sweep_expired_results(conn, schema=_SCHEMA, batch_size=batch_size)  # pyright: ignore[reportArgumentType]
+            await _sweeps.sweep_expired_results(conn, schema=schema_name, batch_size=batch_size)  # pyright: ignore[reportArgumentType]
         elif sweep == "events":
             await _sweeps.sweep_expired_events(
-                conn, schema=_SCHEMA, retention=timedelta(days=30), batch_size=batch_size
+                conn, schema=schema_name, retention=timedelta(days=30), batch_size=batch_size
             )  # pyright: ignore[reportArgumentType]
         else:
             await _sweeps.sweep_idle_keyed_rows(
-                conn, schema=_SCHEMA, horizon=timedelta(days=7), batch_size=batch_size
+                conn, schema=schema_name, horizon=timedelta(days=7), batch_size=batch_size
             )  # pyright: ignore[reportArgumentType]
 
     assert conn.execute.await_count == 0, "the refusal must precede any SQL"
@@ -274,9 +288,9 @@ async def test_invalid_schema_identifier_is_refused_before_any_sql(sweep: str) -
     assert conn.execute.await_count == 0, "the refusal must precede any SQL"
 
 
-async def test_zero_event_retention_is_refused_the_disable_sentinel_is_not_a_sweep_argument() -> (
-    None
-):
+async def test_zero_event_retention_is_refused_the_disable_sentinel_is_not_a_sweep_argument(
+    schema_name: str,
+) -> None:
     """``timedelta(0)`` retention is the SETTINGS-level disable sentinel;
     at the sweep boundary it would read as "delete every event older than
     now".
@@ -291,14 +305,14 @@ async def test_zero_event_retention_is_refused_the_disable_sentinel_is_not_a_swe
     with pytest.raises(ValueError, match="retention must be positive"):
         await _sweeps.sweep_expired_events(
             conn,  # pyright: ignore[reportArgumentType]
-            schema=_SCHEMA,
+            schema=schema_name,
             retention=timedelta(0),
         )
 
     assert conn.execute.await_count == 0, "the refusal must precede any SQL"
 
 
-async def test_zero_keyed_reclaim_horizon_is_refused() -> None:
+async def test_zero_keyed_reclaim_horizon_is_refused(schema_name: str) -> None:
     """The keyed-row sweep enforces the same positive-horizon contract as
     the event sweep — ``timedelta(0)`` there would read as "delete every
     keyed row older than now", i.e. every fleet-reclaimable bucket and
@@ -309,14 +323,14 @@ async def test_zero_keyed_reclaim_horizon_is_refused() -> None:
     with pytest.raises(ValueError, match="horizon must be positive"):
         await _sweeps.sweep_idle_keyed_rows(
             conn,  # pyright: ignore[reportArgumentType]
-            schema=_SCHEMA,
+            schema=schema_name,
             horizon=timedelta(0),
         )
 
     assert conn.execute.await_count == 0, "the refusal must precede any SQL"
 
 
-async def test_negative_event_retention_is_refused() -> None:
+async def test_negative_event_retention_is_refused(schema_name: str) -> None:
     """Negative retention deletes rows in the future; the boundary refuses
     it with the same message contract as the zero sentinel."""
     conn = _mock_conn()
@@ -324,7 +338,7 @@ async def test_negative_event_retention_is_refused() -> None:
     with pytest.raises(ValueError, match="retention must be positive"):
         await _sweeps.sweep_expired_events(
             conn,  # pyright: ignore[reportArgumentType]
-            schema=_SCHEMA,
+            schema=schema_name,
             retention=timedelta(days=-1),
         )
 
@@ -351,7 +365,9 @@ async def test_statement_timeout_probe_with_no_row_raises_runtime_error() -> Non
         await _sweeps._apply_batch_statement_timeout(conn, 5_000)  # pyright: ignore[reportArgumentType,reportPrivateUsage]
 
 
-async def test_sweep_expired_locks_propagates_the_probe_failure_before_its_own_sql() -> None:
+async def test_sweep_expired_locks_propagates_the_probe_failure_before_its_own_sql(
+    schema_name: str,
+) -> None:
     """In situ: a lock sweep on a conn whose GUC probe answers nothing
     raises the RuntimeError before the sweep statement runs — the batch
     is never half-bound.
@@ -363,7 +379,7 @@ async def test_sweep_expired_locks_propagates_the_probe_failure_before_its_own_s
             conn,  # pyright: ignore[reportArgumentType]
             timedelta(seconds=30),
             timedelta(seconds=60),
-            schema=_SCHEMA,
+            schema=schema_name,
         )
 
     assert conn.executed == [], "the sweep statement must not run on a failed timeout probe"
