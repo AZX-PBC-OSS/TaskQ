@@ -44,6 +44,26 @@ class FakeConn:
         pieces = sql.rsplit(" ", 1)
         return f"{pieces[0]} 1"
 
+    async def fetchrow(self, sql: str, *args: object) -> dict[str, object] | None:
+        """The guarded arbiter UPDATE rides fetchrow (its RETURNING is the
+        standing-claim fence's source of truth): the row's own attempt and
+        stamp for a job this fake still holds, None when it does not - the
+        lost-race shape the rowcount-0 path serves."""
+        self._execute_count += 1
+        if self._fail_execute_with is not None:
+            raise self._fail_execute_with
+        self.execute_calls.append((sql, args))
+        if "RETURNING j.attempt" in sql:
+            job_id = args[0]
+            for row in self._fetch_rows:
+                if row["id"] == job_id:
+                    return {
+                        "attempt": row["attempt"],
+                        "started_at": row["started_at"],
+                    }
+            return None
+        return None
+
     async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
         self.fetch_calls = getattr(self, "fetch_calls", [])
         self.fetch_calls.append((sql, args))
@@ -317,6 +337,20 @@ async def test_isolate_self_honours_fr12_case_shape() -> None:
             if "SET status = CASE" in sql:
                 runner = sql
             return "UPDATE 1"
+
+        async def fetchrow(self, sql: str, *args: object) -> dict[str, object] | None:
+            nonlocal runner
+            if "SET status = CASE" in sql:
+                # The arbiter rides fetchrow (its RETURNING is the
+                # standing-claim fence's source of truth): the row the
+                # stub's fetch hands out, as the winning transition's
+                # RETURNING view.
+                runner = sql
+                return {
+                    "attempt": 0,
+                    "started_at": "2025-01-01T00:00:00Z",
+                }
+            return await super().fetchrow(sql, *args)
 
         async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
             return [
