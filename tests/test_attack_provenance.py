@@ -113,18 +113,19 @@ class _ParkedIsolateConn:
     lottery: green on a fast runner, red on a loaded one).
 
     isolate_self's per-row sequence on this one connection is a plain
-    ``fetch`` (the running-rows SELECT, no locks taken) then ``execute``
-    calls (the guarded UPDATE arbiter, the attempt INSERT, the batched
-    event INSERT). The park point picks which racing side the iteration
-    is forced to let win:
+    ``fetch`` (the running-rows SELECT, no locks taken), then the guarded
+    UPDATE arbiter riding ``fetchrow`` (its RETURNING row is the
+    standing-claim fence's source of truth), then ``execute`` calls (the
+    attempt INSERT, the batched event INSERT). The park point picks which
+    racing side the iteration is forced to let win:
 
     - ``park_after="select"``: parked between the SELECT and the guarded
       UPDATE -- the exact window the opposing writer wins from (isolate
       has read the row as running but holds no row locks).
-    - ``park_after="arbiter"``: parked after the guarded UPDATE itself,
-      before the transaction's commit -- isolate holds the jobs-row lock,
-      so the opposing writer's own UPDATE is forced to arbitrate against
-      isolate's committed outcome.
+    - ``park_after="arbiter"``: parked after the guarded UPDATE's
+      RETURNING row is in, before the transaction's commit -- isolate
+      holds the jobs-row lock, so the opposing writer's own UPDATE is
+      forced to arbitrate against isolate's committed outcome.
     """
 
     def __init__(
@@ -140,7 +141,7 @@ class _ParkedIsolateConn:
         self._parked = parked
         self._release = release
         self._fetches = 0
-        self._executes = 0
+        self._arbiter_rows = 0
 
     def transaction(self, **kwargs: object) -> Any:
         return self._conn.transaction(**kwargs)
@@ -153,13 +154,21 @@ class _ParkedIsolateConn:
             await asyncio.wait_for(self._release.wait(), timeout=_WAIT)
         return rows
 
+    async def fetchrow(self, sql: str, *args: object) -> asyncpg.Record | None:
+        row = await self._conn.fetchrow(sql, *args)
+        # The arbiter marker is the guarded UPDATE's own SQL shape (the
+        # house marker 2cfc11e1 introduced with the fence): this
+        # statement is the per-row transition, and the only fetchrow in
+        # the flow.
+        if "SET status = CASE" in sql:
+            self._arbiter_rows += 1
+            if self._park_after == "arbiter" and self._arbiter_rows == 1:
+                self._parked.set()
+                await asyncio.wait_for(self._release.wait(), timeout=_WAIT)
+        return row
+
     async def execute(self, sql: str, *args: object) -> str:
-        tag = await self._conn.execute(sql, *args)
-        self._executes += 1
-        if self._park_after == "arbiter" and self._executes == 1:
-            self._parked.set()
-            await asyncio.wait_for(self._release.wait(), timeout=_WAIT)
-        return tag
+        return await self._conn.execute(sql, *args)
 
     async def close(self) -> None:
         await self._conn.close()
