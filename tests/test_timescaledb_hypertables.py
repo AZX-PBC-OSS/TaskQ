@@ -774,3 +774,504 @@ async def test_windowed_metrics_query_runs_on_vanilla(pg_dsn: str) -> None:
     finally:
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.close()
+
+
+# ── Red-team edges: re-run convergence, mid-population conversion, failure
+#    atomicity, widened uniqueness, and the deliberately dropped FK ─────────
+
+
+async def test_re_run_converges_chunks_and_honors_changed_retention(
+    timescale_dsn: str, ts_schema: str
+) -> None:
+    """Re-run twice, then re-run with a CHANGED archive retention.
+
+    ``taskq migrate up`` re-runs the conversion on every deploy, so the
+    remove-then-add policy registration must converge under three runs:
+    same settings (no duplicate chunks, no duplicate policies), then a
+    changed ``archive_retention_period`` (the NEW interval must take
+    force, not the first-registered one, and the chunk interval must
+    re-assert from the changed setting for future chunks).
+    """
+    conn = await asyncpg.connect(timescale_dsn)
+    try:
+        await _migrate(conn, ts_schema)
+        settings = _ts_settings(timescale_dsn, ts_schema)
+        first = await enable_hypertables(conn, schema=ts_schema, settings=settings)
+        assert set(first.converted) == {"job_events", "jobs_archive", "job_attempts_archive"}
+        # Same deferral as the ts_conn fixture: keep the scheduler out of
+        # the assertions below; what runs here is the conversion path.
+        await _schedule_policies(
+            conn, ts_schema, next_start=datetime.now(UTC) + timedelta(days=3650)
+        )
+        # Real data so "no duplicate chunks" is observable: one row (one
+        # chunk) per table.
+        archive_jid = await _seed_archive_row(conn, schema=ts_schema, finished_at=datetime.now(UTC))
+        await _seed_parent_with_event(conn, schema=ts_schema, occurred_at=datetime.now(UTC))
+        await conn.execute(
+            f"""INSERT INTO {ts_schema}.job_attempts_archive (job_id, attempt,
+                started_at, finished_at, outcome, metadata)
+            VALUES ($1, 1, $2, $3, 'succeeded', '{{}}'::jsonb)""",
+            archive_jid,
+            datetime.now(UTC),
+            datetime.now(UTC) + timedelta(minutes=4),
+        )
+        chunks_before = {
+            t: await _chunk_names(conn, ts_schema, t)
+            for t in ("job_events", "jobs_archive", "job_attempts_archive")
+        }
+        assert all(len(c) == 1 for c in chunks_before.values()), chunks_before
+
+        same = await enable_hypertables(conn, schema=ts_schema, settings=settings)
+        assert same.converted == (), "an already-converted schema must not re-convert"
+        assert same.retention_policies == (
+            "jobs_archive:2 days",
+            "job_attempts_archive:2 days",
+            "job_events:1 days",
+        )
+        n_policies = await conn.fetchval(
+            "SELECT count(*) FROM timescaledb_information.jobs "
+            "WHERE hypertable_schema = $1 AND proc_name = 'policy_retention'",
+            ts_schema,
+        )
+        assert n_policies == 3, "a same-settings re-run must not duplicate policies"
+        for table, before in chunks_before.items():
+            assert await _chunk_names(conn, ts_schema, table) == before, (
+                f"a same-settings re-run must not create or drop chunks of {table}"
+            )
+
+        changed = WorkerSettings.load_from_dict(
+            {
+                "TASKQ_PG_DSN": timescale_dsn,
+                "TASKQ_SCHEMA_NAME": ts_schema,
+                "TASKQ_TIMESCALEDB_HYPERTABLES": "true",
+                "TASKQ_ARCHIVE_RETENTION_PERIOD": f"{int(timedelta(days=30).total_seconds())}s",
+                "TASKQ_EVENT_RETENTION_PERIOD": f"{int(_TEST_EVENT_RETENTION.total_seconds())}s",
+            }
+        )
+        third = await enable_hypertables(conn, schema=ts_schema, settings=changed)
+        assert third.converted == ()
+        assert third.retention_policies == (
+            "jobs_archive:30 days",
+            "job_attempts_archive:30 days",
+            "job_events:1 days",
+        ), "a changed archive retention must be re-registered, not kept stale"
+        policies = await conn.fetch(
+            "SELECT hypertable_name, config FROM timescaledb_information.jobs "
+            "WHERE hypertable_schema = $1 AND proc_name = 'policy_retention'",
+            ts_schema,
+        )
+        assert len(policies) == 3, "a changed-settings re-run must not duplicate policies"
+        drop_after = {r["hypertable_name"]: r["config"] for r in policies}
+        assert '"drop_after": "30 days"' in drop_after["jobs_archive"]
+        assert '"drop_after": "30 days"' in drop_after["job_attempts_archive"]
+        assert '"drop_after": "1 day"' in drop_after["job_events"]
+        # The chunk interval re-asserts from the changed setting for FUTURE
+        # chunks (30d/4 = 7.5d, inside the clamp); job_events' is unchanged.
+        dims = await conn.fetch(
+            "SELECT h.table_name, d.interval_length "
+            "FROM _timescaledb_catalog.hypertable h "
+            "JOIN _timescaledb_catalog.dimension d ON d.hypertable_id = h.id "
+            "WHERE h.schema_name = $1",
+            ts_schema,
+        )
+        got = {r["table_name"]: r["interval_length"] for r in dims}
+        new_archive_chunk = (timedelta(days=30) / 4).total_seconds() * 1_000_000
+        assert got["jobs_archive"] == new_archive_chunk
+        assert got["job_attempts_archive"] == new_archive_chunk
+        assert got["job_events"] == _TEST_CHUNK_INTERVAL.total_seconds() * 1_000_000
+        # And no re-run ever duplicated a chunk.
+        for table, before in chunks_before.items():
+            assert len(await _chunk_names(conn, ts_schema, table)) == len(before), table
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{ts_schema}" CASCADE')
+        await conn.close()
+
+
+async def test_mid_population_conversion_preserves_every_row_and_index(
+    timescale_dsn: str, ts_schema: str
+) -> None:
+    """Converting a POPULATED table (the ``migrate_data`` path) keeps every
+    row exactly and rebuilds usable chunk indexes.
+
+    50k job_events across multiple chunks convert inside one
+    ``enable_hypertables`` call: the row count and a content checksum over
+    (id, occurred_at, kind, detail) must be bit-identical across the
+    conversion, and a selective job_id query must plan through the carried
+    index (a Seq Scan would mean the indexes did not come back).
+    """
+    conn = await asyncpg.connect(timescale_dsn)
+    try:
+        await _migrate(conn, ts_schema)
+        # 100 parent jobs; the 50k events spread across them so a single
+        # job_id lookup is genuinely selective (~1%).
+        parent_ids = [new_uuid() for _ in range(100)]
+        await conn.executemany(
+            f"""INSERT INTO {ts_schema}.jobs (id, actor, queue, payload, max_attempts,
+                retry_kind, status, scheduled_at)
+            VALUES ($1, 'test_actor', 'default', '{{}}'::jsonb, 3, 'transient',
+                'succeeded', now())""",
+            [(pid,) for pid in parent_ids],
+        )
+        # 50k rows spread over 2000 distinct minutes (~34h => >= 2 chunks at
+        # the 1-day clamp) and over the 100 parents: real volume for
+        # migrate_data, still test-fast.
+        await conn.execute(
+            f"""WITH p AS (
+                SELECT id, row_number() OVER (ORDER BY id) - 1 AS n
+                FROM {ts_schema}.jobs
+            )
+            INSERT INTO {ts_schema}.job_events (job_id, occurred_at, kind, detail)
+            SELECT p.id, now() - ((g % 2000) || ' minutes')::interval,
+                'state_change', ('{{"g":' || g || '}}')::jsonb
+            FROM generate_series(1, 50000) g
+            JOIN p ON p.n = g % 100""",
+        )
+        # A small archive family converts in the same call.
+        archive_jid = await _seed_archive_row(conn, schema=ts_schema, finished_at=datetime.now(UTC))
+        await conn.execute(
+            f"""INSERT INTO {ts_schema}.job_attempts_archive (job_id, attempt,
+                started_at, finished_at, outcome, metadata)
+            VALUES ($1, 1, $2, $3, 'succeeded', '{{}}'::jsonb)""",
+            archive_jid,
+            datetime.now(UTC),
+            datetime.now(UTC) + timedelta(minutes=4),
+        )
+
+        checksum_sql = f"""
+            SELECT count(*) AS n,
+                   md5(string_agg(e.job_id::text || ':' || e.id::text || ':' ||
+                                  extract(epoch from e.occurred_at)::text || ':' ||
+                                  e.kind || ':' || e.detail::text, ','
+                                  ORDER BY e.id)) AS digest
+            FROM {ts_schema}.job_events e
+        """
+        before = await conn.fetchrow(checksum_sql)
+        assert before is not None
+
+        report = await enable_hypertables(
+            conn, schema=ts_schema, settings=_ts_settings(timescale_dsn, ts_schema)
+        )
+        assert set(report.converted) == {
+            "job_events",
+            "jobs_archive",
+            "job_attempts_archive",
+        }
+
+        after = await conn.fetchrow(checksum_sql)
+        assert after is not None
+        assert after["n"] == before["n"] == 50000, (
+            "the migrate_data conversion must preserve every row"
+        )
+        assert after["digest"] == before["digest"], (
+            "the migrate_data conversion must preserve row CONTENT exactly, not just counts"
+        )
+        assert await conn.fetchval(f"SELECT count(*) FROM {ts_schema}.job_attempts_archive") == 1, (
+            "the small archive family converts with its data too"
+        )
+
+        # Indexes must come back on every chunk: each chunk carries the same
+        # index set as the parent (the widened unique plus the migrated
+        # secondaries, partial predicate included).
+        parent_indexes = await conn.fetch(
+            "SELECT indexdef FROM pg_indexes WHERE schemaname = $1 AND tablename = 'job_events'",
+            ts_schema,
+        )
+        chunks = await _chunk_names(conn, ts_schema, "job_events")
+        assert len(chunks) >= 2, "the seed must span multiple chunks for this pin"
+        bare_chunks = [c.split(".")[-1] for c in chunks]
+        for chunk in bare_chunks:
+            chunk_indexes = await conn.fetch(
+                "SELECT indexdef FROM pg_indexes WHERE tablename = $1", chunk
+            )
+            assert len(chunk_indexes) == len(parent_indexes), (
+                f"{chunk} must carry one index per parent index "
+                f"({len(chunk_indexes)} vs {len(parent_indexes)})"
+            )
+        defs = "\n".join(
+            r["indexdef"]
+            for r in await conn.fetch(
+                "SELECT indexdef FROM pg_indexes WHERE tablename = ANY($1)",
+                bare_chunks,
+            )
+        )
+        assert "(job_id, occurred_at)" in defs, (
+            "the per-job event index must be carried onto chunks"
+        )
+        # The partial retention-sweep index carries its predicate onto
+        # chunks in its logically-equivalent negated form (NOT (kind = ...
+        # AND ...) becomes kind <> ... OR ... <> ...).
+        assert "kind <> 'state_change'" in defs, (
+            "the partial retention-sweep index must carry its predicate onto chunks"
+        )
+
+        # And the planner must actually USE one: a selective job_id lookup
+        # (~1% of 50k rows) must not fall back to a Seq Scan.
+        jid = parent_ids[0]
+        await conn.execute(f"ANALYZE {ts_schema}.job_events")
+        plan_rows = await conn.fetch(
+            f"EXPLAIN (FORMAT TEXT) SELECT count(*) FROM {ts_schema}.job_events WHERE job_id = $1",
+            jid,
+        )
+        plan = "\n".join(r[0] for r in plan_rows)
+        assert "Seq Scan" not in plan, f"chunk indexes must serve a job_id lookup:\n{plan}"
+        assert "job_id_idx" in plan, f"the carried job_id index must appear in the plan:\n{plan}"
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{ts_schema}" CASCADE')
+        await conn.close()
+
+
+class _FailOnceConn:
+    """A forwarding proxy that injects ONE deterministic failure.
+
+    Every statement runs for real against the server; when the statement
+    is the ``create_hypertable`` call for *victim_table* the proxy raises
+    instead of forwarding - the same observable shape as the server dying
+    (or the advisory-lock holder being killed) at that exact point, but
+    deterministic and without any sleep.
+    """
+
+    def __init__(self, inner: asyncpg.Connection, victim_table: str) -> None:
+        self._inner = inner
+        self._victim = victim_table
+
+    async def execute(self, sql: str, *args: Any) -> str:
+        if "create_hypertable" in sql and any(self._victim in str(a) for a in args):
+            raise RuntimeError(f"injected mid-conversion failure of {self._victim}")
+        return await self._inner.execute(sql, *args)
+
+    async def fetchval(self, sql: str, *args: Any) -> Any:
+        return await self._inner.fetchval(sql, *args)
+
+    async def fetch(self, sql: str, *args: Any) -> list[Any]:
+        return await self._inner.fetch(sql, *args)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+async def test_failure_mid_conversion_leaves_schema_usable_and_rerun_completes(
+    timescale_dsn: str, ts_schema: str
+) -> None:
+    """A failure BETWEEN table conversions leaves the schema usable and a
+    re-run converges.
+
+    The conversion is per-statement idempotent DDL, not one transaction,
+    so a crash mid-flight can strand a PARTIALLY converted schema. Pinned
+    here: the failure surfaces, the server keeps answering (ordinary DML
+    works), exactly the already-converted tables are hypertables, the DO
+    blocks that ran stay applied, and a clean re-run converts ONLY the
+    stragglers and converges policies to 3.
+    """
+    conn = await asyncpg.connect(timescale_dsn)
+    try:
+        await _migrate(conn, ts_schema)
+        settings = _ts_settings(timescale_dsn, ts_schema)
+        # Conversion order is job_events first, then the archive family;
+        # the injected failure hits at jobs_archive's create_hypertable.
+        with pytest.raises(RuntimeError, match="jobs_archive"):
+            await enable_hypertables(
+                _FailOnceConn(conn, "jobs_archive"),  # pyright: ignore[reportArgumentType]  # Why: the proxy IS the contract under test.
+                schema=ts_schema,
+                settings=settings,
+            )
+
+        # The server is left usable: ordinary DML and catalogs answer.
+        await _seed_parent_job(conn, ts_schema, new_uuid())
+        ht = await conn.fetch(
+            "SELECT table_name FROM _timescaledb_catalog.hypertable WHERE schema_name = $1",
+            ts_schema,
+        )
+        assert {r["table_name"] for r in ht} == {"job_events"}, (
+            "the failure must strand exactly the pre-failure conversion state, no more"
+        )
+        # The independently-runnable statements that DID run stay applied.
+        widened = await conn.fetchval(
+            "SELECT count(*) FROM pg_constraint con "
+            "JOIN pg_class c ON c.oid = con.conrelid "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = $1 AND c.relname = 'jobs_archive' "
+            "AND con.conname = 'jobs_archive_id_finished_at_uniq'",
+            ts_schema,
+        )
+        assert widened == 1, "the DO block that ran before the failure must persist"
+
+        report = await enable_hypertables(conn, schema=ts_schema, settings=settings)
+        assert set(report.converted) == {"jobs_archive", "job_attempts_archive"}, (
+            "a re-run must convert ONLY the stragglers, not re-convert job_events"
+        )
+        n_ht = await conn.fetchval(
+            "SELECT count(*) FROM _timescaledb_catalog.hypertable WHERE schema_name = $1",
+            ts_schema,
+        )
+        assert n_ht == 3
+        n_policies = await conn.fetchval(
+            "SELECT count(*) FROM timescaledb_information.jobs "
+            "WHERE hypertable_schema = $1 AND proc_name = 'policy_retention'",
+            ts_schema,
+        )
+        assert n_policies == 3, "the converging re-run must register exactly one policy per table"
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{ts_schema}" CASCADE')
+        await conn.close()
+
+
+async def test_widened_unique_constraints_still_reject_exact_duplicates(
+    ts_conn: asyncpg.Connection, ts_schema: str
+) -> None:
+    """The widened UNIQUE constraints enforce the duplicates vanilla PG's
+    primary keys rejected.
+
+    A hypertable demands the partition column inside every unique
+    constraint, so all three PKs widen. The narrowed claim - an EXACT
+    duplicate row - must still be rejected on all three tables. The
+    widening's cost (same id, different time value is now accepted) is the
+    documented trade, compensated by the archive write's NOT EXISTS guard
+    (see the differential prune test); pinned explicitly below.
+    """
+    # job_events: an exact duplicate (id, occurred_at) must be rejected.
+    await _seed_parent_with_event(ts_conn, schema=ts_schema, occurred_at=datetime.now(UTC))
+    ev = await ts_conn.fetchrow(f"SELECT id, job_id, occurred_at, kind FROM {ts_schema}.job_events")
+    assert ev is not None
+    with pytest.raises(asyncpg.UniqueViolationError):
+        await ts_conn.execute(
+            f"INSERT INTO {ts_schema}.job_events (id, job_id, occurred_at, kind) "
+            "VALUES ($1, $2, $3, $4)",
+            ev["id"],
+            ev["job_id"],
+            ev["occurred_at"],
+            ev["kind"],
+        )
+
+    # jobs_archive: an exact duplicate row must be rejected.
+    jid = await _seed_archive_row(ts_conn, schema=ts_schema, finished_at=datetime.now(UTC))
+    with pytest.raises(asyncpg.UniqueViolationError):
+        await ts_conn.execute(
+            f"INSERT INTO {ts_schema}.jobs_archive SELECT * FROM {ts_schema}.jobs_archive "
+            "WHERE id = $1",
+            jid,
+        )
+
+    # job_attempts_archive: an exact duplicate (job_id, attempt, started_at)
+    # must be rejected.
+    await ts_conn.execute(
+        f"""INSERT INTO {ts_schema}.job_attempts_archive (job_id, attempt, started_at,
+            finished_at, outcome, metadata)
+        VALUES ($1, 1, $2, $3, 'succeeded', '{{}}'::jsonb)""",
+        jid,
+        datetime.now(UTC),
+        datetime.now(UTC) + timedelta(minutes=4),
+    )
+    row = await ts_conn.fetchrow(
+        f"SELECT job_id, attempt, started_at FROM {ts_schema}.job_attempts_archive "
+        "WHERE job_id = $1",
+        jid,
+    )
+    assert row is not None
+    with pytest.raises(asyncpg.UniqueViolationError):
+        await ts_conn.execute(
+            f"""INSERT INTO {ts_schema}.job_attempts_archive (job_id, attempt, started_at,
+                finished_at, outcome, metadata)
+            VALUES ($1, $2, $3, $4, 'succeeded', '{{}}'::jsonb)""",
+            row["job_id"],
+            row["attempt"],
+            row["started_at"],
+            datetime.now(UTC),
+        )
+
+    # The documented trade, pinned: jobs_archive's widened UNIQUE (id,
+    # finished_at) accepts a second row with the same id at a different
+    # finished_at - which the vanilla PRIMARY KEY (id) would have rejected.
+    # This is safe ONLY because the archive write re-checks NOT EXISTS
+    # (taskq.worker._leader_shared), which the differential prune test pins.
+    await ts_conn.execute(
+        f"""INSERT INTO {ts_schema}.jobs_archive (id, actor, queue, payload, max_attempts,
+            retry_kind, status, scheduled_at, schedule_to_close, finished_at,
+            archived_at, expire_at)
+        VALUES ($1, 'test_actor', 'default', '{{"v":2}}'::jsonb, 3, 'transient',
+            'succeeded', $2, $3, $4, $2, $5)""",
+        jid,
+        datetime.now(UTC),
+        datetime.now(UTC) + timedelta(hours=1),
+        datetime.now(UTC) + timedelta(days=1),
+        datetime.now(UTC) + timedelta(days=365),
+    )
+    assert (
+        await ts_conn.fetchval(f"SELECT count(*) FROM {ts_schema}.jobs_archive WHERE id = $1", jid)
+        == 2
+    ), "same id at a different finished_at is the accepted widening trade"
+
+
+async def test_orphan_archive_attempt_accepted_and_danger_pinned(
+    ts_conn: asyncpg.Connection,
+    ts_schema: str,
+    pg_dsn: str,
+) -> None:
+    """The dropped FK is GENUINELY gone: an orphan attempt row is accepted.
+
+    ``job_attempts_archive``'s FK to ``jobs_archive(id) ON DELETE CASCADE``
+    drops because nothing may reference a hypertable; chunk retention on
+    the shared archive clock replaces it. Pinned in both directions: the
+    orphan insert is REJECTED on vanilla Postgres (proving the drop, not a
+    test artifact, is what changed) and ACCEPTED on the hypertable - the
+    documented DANGER. The compensation is also pinned: both archive
+    policies derive their drop_after from the SAME
+    ``archive_retention_period`` setting, so an attempt row's chunk drops
+    on the same clock its parent's chunk does.
+    """
+    orphan = new_uuid()
+    await ts_conn.execute(
+        f"""INSERT INTO {ts_schema}.job_attempts_archive (job_id, attempt, started_at,
+            finished_at, outcome, metadata)
+        VALUES ($1, 1, $2, $3, 'succeeded', '{{}}'::jsonb)""",
+        orphan,
+        datetime.now(UTC),
+        datetime.now(UTC) + timedelta(minutes=4),
+    )
+    assert (
+        await ts_conn.fetchval(
+            f"SELECT count(*) FROM {ts_schema}.job_attempts_archive WHERE job_id = $1", orphan
+        )
+        == 1
+    ), "with the FK dropped, an orphan attempt must be accepted (the documented trade)"
+
+    # Contrast on vanilla Postgres: the same insert violates the FK there,
+    # proving the acceptance above is the conversion's doing.
+    schema = "ts_orphan_vanilla"
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _migrate(conn, schema)
+        with pytest.raises(asyncpg.ForeignKeyViolationError):
+            await conn.execute(
+                f"""INSERT INTO {schema}.job_attempts_archive (job_id, attempt, started_at,
+                    finished_at, outcome, metadata)
+                VALUES ($1, 1, $2, $3, 'succeeded', '{{}}'::jsonb)""",
+                orphan,
+                datetime.now(UTC),
+                datetime.now(UTC) + timedelta(minutes=4),
+            )
+    finally:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()
+
+    # The compensation: one archive retention setting -> identical
+    # drop_after on both archive hypertables (attempts drop on the same
+    # clock as their parents, per-chunk).
+    configs = await ts_conn.fetch(
+        "SELECT hypertable_name, config FROM timescaledb_information.jobs "
+        "WHERE hypertable_schema = $1 AND proc_name = 'policy_retention' "
+        "AND hypertable_name IN ('jobs_archive', 'job_attempts_archive')",
+        ts_schema,
+    )
+    assert {r["hypertable_name"] for r in configs} == {"jobs_archive", "job_attempts_archive"}
+    drop_after = [str(r["config"]).split('"drop_after": ')[1].split(",")[0] for r in configs]
+    assert len(set(drop_after)) == 1, (
+        f"both archive policies must drop on the SAME clock, got {drop_after}"
+    )
+
+    # And the danger stays DOCUMENTED: the module contract names the FK
+    # drop as the one deliberate structural loss.
+    from taskq import timescale as timescale_module
+
+    assert "may reference a hypertable" in (timescale_module.__doc__ or ""), (
+        "the FK-drop danger must remain documented in the module contract"
+    )
