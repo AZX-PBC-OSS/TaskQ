@@ -109,8 +109,9 @@ accepts payload shapes the actor's real model would reject. Pass
 `payload_type=MyPayload` explicitly, or `payload_type=PassthroughPayload`
 to opt into the permissive behaviour deliberately and silence the warning.
 
-`register_stub` also accepts `retry`, `non_retryable_exceptions`,
-`on_retry_exhausted`, `on_retry_exhausted_timeout`, and `payload_type` to
+`register_stub` also accepts `retry`, `non_retryable_exceptions`, `retry_classifier`,
+`on_retry_exhausted`, `on_retry_exhausted_timeout`, `on_success` (+ `on_success_timeout`),
+`on_cancel` (+ `on_cancel_timeout`), `result_ttl`, and `payload_type` to
 match the actor's configured behaviour.
 
 ### Direct invocation (no queue)

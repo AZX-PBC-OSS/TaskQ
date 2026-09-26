@@ -323,6 +323,39 @@ Per actor and capacity field this prints the `@actor(...)` literal, the stored v
 
 `taskq actor-config set` requires the actor to have a stored row already (created by a worker startup that registered it). `queue` is moved by `taskq actor-config move-queue`; `metadata` is structural and only ever changes by redeploying a new `@actor(...)` registration (plus `--force-update-actor-config` if a stored row already exists).
 
+### `taskq actor-config list`
+
+Lists every stored `actor_config` row, one line per actor:
+
+```shell
+taskq actor-config list
+```
+
+```
+  checkout_charge: max_concurrent=20 max_pending=5000 queue=default result_ttl=None updated_at=2026-01-01 00:00:00+00:00
+```
+
+An empty table prints `no actor_config rows`. The list is the authoritative view of what can dispatch: rows exist only once a worker startup registered the actor, and the dispatch capacity gate reads only stored rows, so an actor whose row is missing does not appear here and does not dispatch at all. For stored-vs-code drift per field, use [`taskq actor-config diff`](#taskq-actor-config) instead.
+
+### `taskq actor-config get`
+
+Shows the stored `actor_config` row for one actor:
+
+```shell
+taskq actor-config get checkout_charge
+```
+
+The actor is named positionally, and unlike `set`, `get` does not need the actor to be in the loaded registry - it reads the row by name.
+
+**Exit codes:**
+
+| Code | Condition |
+|---|---|
+| `0` | Row printed |
+| `1` | No stored `actor_config` row for that actor |
+
+A missing row is a finding, not a cosmetic absence: the dispatch capacity gate reads only stored rows, so jobs for that actor accumulate pending with no error anywhere until a worker startup seeds the row.
+
 ### `taskq actor-config deregister`
 
 Deregister an actor: delete its `actor_config` row with safety checks.
@@ -415,12 +448,29 @@ symptom is work that quietly does not happen. `doctor` names them together:
 
 - a registered actor with **no stored row**, which never dispatches (the
   dispatch capacity gate reads only `actor_config` rows);
+- **pending/scheduled jobs whose actor has no stored `actor_config` row**
+  (a renamed or removed actor that old producers or old rows still
+  reference): they wait forever with no error anywhere, and no registry
+  walk can name them, because the registry no longer knows the name.
+  Re-register the actor and seed its row (a worker startup does this), or
+  purge the jobs if the actor was retired;
+- **pending/scheduled jobs routed to a queue no live worker serves**: the
+  routing queue is the job's own queue, or the actor's stored assignment
+  once the row is re-pended. Start a worker subscribed to the queue or
+  move the actor onto a served one (see
+  [runbooks.md: TaskQStrandedJobs](runbooks.md#taskqstrandedjobs));
 - a **stale `queues` row** whose queue no actor is assigned to; it is inert
   now, but silently applied to the next actor moved onto that name;
 - **incoherent capacity combinations**: a `max_pending` below
   `max_concurrent` (the actor may queue fewer jobs than it may run at
   once, so its cap is unreachable), and an actor cap above its queue's cap
   (the queue binds first, so raising the actor cap changes nothing).
+
+The two stranded-jobs families are the same computation the leader's
+stranded-jobs sweep runs every minute, issued here on demand: `doctor` is
+the surface an operator reaches for mid-incident, and it cannot wait on a
+leader tick. The result is per actor, bounded by the distinct-actor count,
+never by backlog depth.
 
 When a live worker's `workers` row metadata carries a non-empty event-loop
 stall tally, `doctor` reports one finding per attributed actor: which
@@ -506,7 +556,7 @@ archived: yes
 | `0` | Row found in `jobs` or `jobs_archive` |
 | `1` | Invalid job id (not a UUID), or no row with that id in either table |
 
-**No options.** Uses `TASKQ_PG_DSN` and `TASKQ_SCHEMA_NAME` from the environment.
+Uses `TASKQ_PG_DSN` and `TASKQ_SCHEMA_NAME` from the environment.
 
 **Options:**
 
@@ -625,7 +675,11 @@ A long detail is truncated with the dropped-character count named. The job must 
 
 ---
 
-## `taskq queues depth`
+## `taskq queues`
+
+Read the stored `queues` rows and tune the two settings they hold: the dispatch ordering mode and the fleet-wide leased-slot concurrency cap. Queues are implicit - enqueueing onto a name creates the work without creating a row - and a queue with no row runs on the defaults: `strict_fifo` ordering (so `fairness_key` has no effect) and no concurrency cap. See [workers.md: Queue dispatch modes](workers.md#queue-dispatch-modes) for the modes and [rate-limiting.md: Queue-level concurrency cap](rate-limiting.md#queue-level-concurrency-cap) for the cap's mechanics.
+
+### `taskq queues depth`
 
 Per-queue depth from one grouped pass over `{schema}.jobs`: pending/scheduled/running/failed counts plus the age of the oldest pending job.
 
@@ -639,13 +693,93 @@ email         4          0        2       0           3m12s
 default       0          0        1       9               -
 ```
 
-The oldest-pending age is computed server-side (`clock_timestamp()`), never by subtracting the CLI process's clock from a database timestamp. `failed` is included alongside the live statuses because the command runs once on demand; a `-` oldest-pending age means the queue has no pending rows. Queues are ordered newest activity first. Read-only, like every `queues` subcommand.
+The oldest-pending age is computed server-side (`clock_timestamp()`), never by subtracting the CLI process's clock from a database timestamp. `failed` is included alongside the live statuses because the command runs once on demand; a `-` oldest-pending age means the queue has no pending rows. Queues are ordered newest activity first. Read-only, like `queues list` and `queues get`.
 
 **Exit codes:**
 
 | Code | Condition |
 |---|---|
 | `0` | Depth table printed (or `no jobs ... nothing to report` on an empty table) |
+
+### `taskq queues list`
+
+Lists every configured `queues` row, ordered by name:
+
+```shell
+taskq queues list
+```
+
+```
+default  mode=strict_fifo  max_concurrent=unlimited
+email  mode=round_robin  max_concurrent=8
+```
+
+Queues absent from this list are not missing - queues are implicit and are created by enqueueing onto them. An absent queue runs on the defaults: `strict_fifo` ordering (so `fairness_key` has no effect) and no concurrency cap. An empty table prints `no configured queues (all queues run on defaults: mode=strict_fifo, max_concurrent=unlimited)`.
+
+### `taskq queues get`
+
+Shows one queue's stored row:
+
+```shell
+taskq queues get email
+```
+
+```
+email  mode=round_robin  max_concurrent=8
+```
+
+A queue with no stored row is not an error: the command prints the same runs-on-defaults explanation an absent list row implies - including that `fairness_key` has NO effect on a `strict_fifo` queue - and exits 0.
+
+**Exit codes:**
+
+| Code | Condition |
+|---|---|
+| `0` | Row printed, or the runs-on-defaults message for a queue with no row |
+
+### `taskq queues set-mode`
+
+Sets a queue's dispatch ordering mode, creating the row if needed:
+
+```shell
+taskq queues set-mode email round_robin
+```
+
+The mode is a positional argument, `strict_fifo` or `round_robin`. `round_robin` is what makes `fairness_key` do anything: on the default `strict_fifo` the key is accepted, stored, and ignored. The write is an UPSERT and takes effect on the next dispatch cycle - no worker restart.
+
+**Exit codes:**
+
+| Code | Condition |
+|---|---|
+| `0` | Row written and printed |
+| `1` | Mode is not one of `strict_fifo`, `round_robin` (the accepted modes are in `--help`), or the queue name is not a valid queue name |
+
+### `taskq queues set-max-concurrent`
+
+Sets or clears a queue's fleet-wide leased-slot concurrency cap:
+
+```shell
+taskq queues set-max-concurrent email --max-concurrent 8
+taskq queues set-max-concurrent email --clear
+```
+
+Exactly one of `--max-concurrent` and `--clear` is required; passing both or neither is refused with exit code 1.
+
+**Options:**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--max-concurrent` | `int` | `None` | New per-queue leased-slot cap. Must be `>= 1` (a lower value is rejected by the option parser as a usage error). |
+| `--clear` | flag | off | Remove the cap (unlimited): writes NULL. |
+
+There is no 0 state: NULL (via `--clear`) is uncapped, and an emergency drain to 0 belongs to `actor-config set --max-concurrent 0`, which is per-actor. Unlike a per-actor change via `actor-config set`, the write is not live the moment it lands: each running worker read the cap into memory at startup, so every worker keeps enforcing the old value until it restarts, and a cap change lands fleet-wide only after the workers serving the queue have been restarted. `taskq queues get` shows the database value; it cannot tell you which workers have restarted onto it. See [deployment.md: max_concurrent and max_pending](deployment.md#max_concurrent-and-max_pending) for the live-vs-restart asymmetry and a rolling-restart recipe.
+
+**Exit codes:**
+
+| Code | Condition |
+|---|---|
+| `0` | Row written and printed |
+| `1` | Both `--max-concurrent` and `--clear` given, neither given, or the queue name is not a valid queue name |
+| `2` | `--max-concurrent` below 1 (option range check, before any database access) |
 
 ---
 

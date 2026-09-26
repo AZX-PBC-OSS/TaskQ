@@ -96,7 +96,7 @@ the triage below before touching replica counts.
 
 ## TaskQPromotionStalled
 
-**What fired.** `time() - taskq_maintenance_leader_sweep_last_success_seconds{sweep_name="scheduled_to_pending"} > 120` for 2 minutes: the `scheduled_to_pending` sweep has not completed in 2 minutes. The sweep ticks every second; three missing `sweep_interval`s is a stall, not slowness. This is the same signature as the 12,732-job incident, where a second schema in one database silently held the maintenance lock and promotion stopped while everything else looked green.
+**What fired.** `time() - taskq_maintenance_leader_sweep_last_success_seconds{sweep_name="scheduled_to_pending"} > 120` for 2 minutes: the `scheduled_to_pending` sweep has not completed in 2 minutes. Three cadences are in play and they are not the same number: the promotion tick runs every second (`worker/leader.py`'s `scheduled_wake` loop), `sweep_interval` — the unit the staleness bound is expressed in — defaults to 30 s, and three missed `sweep_interval`s — the `/ready` degraded criterion — is a stall, not slowness, while this alert's own threshold is the fixed 120 s. This is the same signature as the 12,732-job incident, where a second schema in one database silently held the maintenance lock and promotion stopped while everything else looked green.
 
 **How to confirm.**
 
@@ -137,14 +137,21 @@ stamp, so the expression reads negative and stays under the 120 s
 threshold until wall time has caught up with the stale stamp: a sweep
 that stopped completing reads fresh for the whole catch-up window and
 this alert is muted for exactly that long. A forward step has the
-opposite polarity: it can fire the alert one jump early. The same
-applies to the readiness body's in-process `maintenance` view, which
-computes staleness as `time.time() - stamp` over the same wall stamps
-(`worker/health.py`), so `/ready`'s maintenance section is muted by the
-same step. If a promotion stall is suspected during or right after a
-clock correction, do not trust either staleness signal: run the due-jobs
-SQL below and watch the `last_success` stamp's own movement, which is a
-timestamp, not a difference.
+opposite polarity: it can fire the alert one jump early. This caveat is
+scoped to the Prometheus alert expression and to the
+`sweep_last_success_seconds` gauge it reads — both operands are wall
+clock. The readiness body's in-process `maintenance` view is deliberately
+NOT in that scope: `worker/health.py` computes its staleness from the
+monotonic ledger (`_sweep_success_monotonic_cache`, `time.monotonic()`),
+which cannot step backwards, so `/ready`'s maintenance section is
+trustworthy through NTP corrections and every other wall-clock event
+(the two-ledger design — a wall stamp recorded beside every monotonic
+one at the same call site — is documented at `obs/_otel.py`'s
+`record_sweep_success`). If a promotion stall is suspected during or
+right after a clock correction, do not trust the alert expression: run
+the due-jobs SQL below and watch the `last_success` stamp's own
+movement, which is a timestamp, not a difference — and trust `/ready`,
+whose maintenance view has no such exposure.
 
 **How to remediate.**
 

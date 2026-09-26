@@ -112,6 +112,7 @@ nav:
       - Troubleshooting: guides/troubleshooting.md
       - Upgrading: guides/upgrading.md
       - Production Deployment: guides/deployment.md
+      - Scaling: guides/scaling.md
       - Operations & Adoption: guides/ops.md
       - TimescaleDB Hypertables (Optional): guides/timescaledb.md
   - API Reference:

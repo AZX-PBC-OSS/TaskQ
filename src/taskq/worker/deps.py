@@ -688,22 +688,28 @@ async def open_worker_deps(
         heartbeat_dsn_factory: PoolFactory | None = None
         worker_dsn_factory: PoolFactory | None = None
         # The dispatcher pool's per-query bound is DERIVED, not read
-        # directly: the admission-path rate-limit acquires run on this pool
-        # (worker/_leader_sweeps.py) with server-side lock_timeout budgets
-        # from settings (token_bucket_lock_timeout_ms /
-        # sliding_window_lock_timeout_ms), and asyncpg enforces
-        # command_timeout as its own client-side per-statement timer, an
-        # admission budget widened past the floor would be silently
-        # truncated by the pool's own timer before the server-side refusal
-        # could ever fire. lock_budget_command_timeout_secs re-derives the
-        # bound as max(floor, widest_widened_budget / share), the same
-        # reconciliation the client pool applies to the enqueue budgets
-        # (client/_taskq.py): at the shipped defaults (5000 ms budgets,
-        # 5.0 s floor) the bound is exactly the configured value, so a
-        # deployment that sets nothing keeps byte-identical behavior. The
-        # leader/notify dedicated connections keep the CONFIGURED value:
-        # no admission acquire runs on them, and the leader-loop staleness
-        # invariant is defined against the configured timeout.
+        # directly: the dispatcher path executes the statements whose
+        # server-side lock_timeout budgets track the admission lock knobs
+        # (token_bucket_lock_timeout_ms /
+        # sliding_window_lock_timeout_ms - the re-derivation here keeps
+        # asyncpg's command_timeout from silently truncating a widened
+        # admission budget before the server-side refusal could fire).
+        # The admission acquires THEMSELVES run on the worker pool (the
+        # pooled DSN, post-claim/pre-actor: dispatch.py hands claimed
+        # jobs to the consumer with worker_pool=, and the consumer's
+        # _acquire_for_actor_with_denial_retry rides that pool), whose
+        # pool carries no command_timeout - a stalled admission acquire
+        # is bounded by the server-side budget alone, which is the
+        # fail-visible shape. lock_budget_command_timeout_secs re-derives
+        # the dispatcher bound as max(floor, widest_widened_budget /
+        # share), the same reconciliation the client pool applies to the
+        # enqueue budgets (client/_taskq.py): at the shipped defaults
+        # (5000 ms budgets, 5.0 s floor) the bound is exactly the
+        # configured value, so a deployment that sets nothing keeps
+        # byte-identical behavior. The leader/notify dedicated
+        # connections keep the CONFIGURED value: no admission acquire
+        # runs on them, and the leader-loop staleness invariant is
+        # defined against the configured timeout.
         dispatcher_pool_command_timeout = lock_budget_command_timeout_secs(
             _admission_lock_budget_pairs(settings),
             floor_secs=settings.dispatcher_command_timeout,

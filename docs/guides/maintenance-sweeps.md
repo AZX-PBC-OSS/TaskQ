@@ -12,7 +12,12 @@ Every one of these paths writes rows in bounded, individually committed
 batches. This guide is the reasoning home for that design: what failure the
 bounds prevent, how to tune them, what is isolated when two schemas share a
 database, how to upgrade across the advisory-lock rename, and what happens
-when a bounded operation fails partway through.
+when a bounded operation fails partway through. It is also the reasoning
+home for the event TTL sweep's consumer contract: the retention cut stamps a
+prune watermark, and a `watch_reclaims` consumer stranded past it ends
+loudly with `EventRetentionGapError` instead of skipping silently - the
+contract is specified in
+[upgrading.md](upgrading.md#job_events-rows-past-the-retention-period-are-deleted).
 
 For the alert-side companion (what fires, how to confirm, how to remediate),
 see [runbooks.md](runbooks.md). For the raw knob rows,
@@ -24,13 +29,16 @@ see [runbooks.md](runbooks.md). For the raw knob rows,
 
 | Sweep | What it does | Loop / cadence | Bound |
 |---|---|---|---|
-| 1: `reclaim_expired_locks` | Reclaims `running` jobs whose `lock_expires_at` passed: retryable ones → `pending`, rescheduled through the job's own retry policy (the base/cap/backoff-kind/jitter columns stamped at enqueue, capped by `max_retry_backoff`), the rest → `crashed` (or `cancelled` if a cancel was in flight). Writes one `job_attempts` and one `job_events` row per job, and records `taskq.jobs.reclaimed{actor, disposition}` (`repended` / `crashed` / `cancelled`, `unknown` for a status no branch writes) per batch, the per-actor crash split beside the sweep-name total `taskq.maintenance_leader.sweep_rows` carries. | leader sweep loop, every `TASKQ_SWEEP_INTERVAL` (default 30 s) | `event_writer_batch_size` per batch, up to `TASKQ_SWEEP_DRAIN_BATCHES` batches per tick |
+| 1: `reclaim_expired_locks` | Reclaims `running` jobs whose `lock_expires_at` passed: retryable ones → `pending`, rescheduled through the job's own retry policy (the base/cap/backoff-kind/jitter columns stamped at enqueue, capped by `max_retry_backoff`), the rest → `crashed` (or `cancelled` if a cancel was in flight). Writes one `job_attempts` and one `job_events` row per job, and records `taskq.jobs.reclaimed{actor, disposition}` (`repended` / `crashed` / `cancelled`, `unknown` for a status no branch writes) per batch, the per-actor crash split beside the sweep-name total `taskq.maintenance_leader.sweep_rows` carries. | leader sweep loop, every `TASKQ_SWEEP_INTERVAL` (default 30 s) | up to 2 × `event_writer_batch_size` rows per call - each arm (lease, heartbeat) LIMITs at batch_size; up to `TASKQ_SWEEP_DRAIN_BATCHES` batches per tick |
 | 2: `sweep_deadline_exceeded` | Fails overdue `schedule_to_close` jobs with `error_class='DeadlineExceeded'`. Writes one `job_attempts` and one `job_events` row per job. | leader sweep loop, every `sweep_interval` | same |
 | 3: `scheduled_to_pending` | Promotes due `scheduled` jobs to `pending` and fires a wake NOTIFY. Writes no `job_events` rows: promotion is scheduler bookkeeping, and a row per promotion would grow without bound under a sustained admission-denial loop (claim + promote are the cycle's two acts). | scheduled-wake loop, every **1 second** | **one batch per tick**: a larger backlog drains across ticks |
-| 4: `sweep_leaked_reservation_slots` | Clears reservation slots whose lease expired. Writes no `job_events` rows. | leader sweep loop, every `sweep_interval` | single statement, not batched (no event writes) |
+| 4: `sweep_leaked_reservation_slots` | Clears reservation slots whose lease expired. Writes no `job_events` rows. | leader sweep loop, every `sweep_interval` | `event_writer_batch_size` rows per call (single statement, no event writes), drained like sweeps 1-2 |
 | Result TTL: `sweep_expired_results` | Nulls expired stored results. Writes no `job_events` rows. | leader sweep loop, every `sweep_interval` | `event_writer_batch_size` per batch, drained |
 | `cleanup_stale_workers` | Deletes workers whose heartbeat went stale; the `ON DELETE SET NULL` fan-out into `job_attempts` is what the batch bound caps. | leader sweep loop, every `sweep_interval` | `event_writer_batch_size` per batch, drained |
 | `complete_stale_batches` | Completes `active` batches whose completion hook was lost. | leader sweep loop, every `sweep_interval` | `event_writer_batch_size` per batch |
+| Event TTL: `sweep_expired_events` | Deletes `job_events` rows older than `TASKQ_EVENT_RETENTION_PERIOD` (default 7 d) regardless of parent-job status; the crash-reclaim outbox slice is kept to 100× that age. Writes no `job_events` rows. The consumer side of the cut (the prune watermark, and `EventRetentionGapError` when a lagging `watch_reclaims` cursor is stranded) is specified in [upgrading.md](upgrading.md#job_events-rows-past-the-retention-period-are-deleted). | leader sweep loop, every `sweep_interval` (`timedelta(0)` disables it) | **one 10 000-row batch per tick, deliberately not drained** (slow-and-constant, see §3) |
+| `sweep_idle_keyed_rows` | Deletes orphaned keyed `reservation_slots` / `rate_limit_buckets` rows (keyed-marked, unused past `TASKQ_KEYED_ROW_RECLAIM_PERIOD`, the rows the worker that created them died holding). Writes no `job_events` rows. | leader sweep loop, every `sweep_interval` (`timedelta(0)` disables it) | **one 256-row committed batch per table per tick, deliberately not drained** |
+| Per-worker keyed eviction + reclaim drain | Evicts each worker's *own* registry's idle keyed reservations and rate limits, then drains the pending reservation-reclaim set (deleting the evicted buckets' `reservation_slots` rows). Explicitly **not** leader-gated: a non-leader's registry would otherwise receive no periodic eviction. | the same sweep loop, every `sweep_interval`, on **every** worker | registry entries capped by the operator's `max_keyed_reservations` / `max_keyed_rate_limits`; with nothing pending it acquires no connection |
 | 5: prune, 6: archive expiry | Move terminal jobs to `jobs_archive`, then hard-delete old archive rows. Daily; no `job_events` writes. | daily (default 03:00 / 04:00 UTC) | `TASKQ_PRUNE_BATCH_SIZE` (default 10 000); a different risk class, see §2 |
 | Cron tick | Fires due schedules. | cron loop, every **1 second** | `TASKQ_CRON_TICK_LIMIT` schedules per tick |
 | Bulk cancel / force-deregistration | On-demand (client / CLI), not leader-gated. | on call | `event_writer_batch_size` per batch, drained to completion |
@@ -103,8 +111,9 @@ The same property is what makes bulk cancel and force-deregistration safely
 re-runnable (§6).
 
 Worked example, at defaults: a 50 000-row expired-lock backlog after a
-fleet-wide crash drains through sweep 1 at ≤ 8 batches × 100 rows = 800 rows
-per 30 s tick, roughly 31 minutes to fully reclaim, with every 100-row batch
+fleet-wide crash drains through sweep 1 at ≤ 8 batches × 100 rows × 2 arms =
+up to 1 600 rows per 30 s tick, roughly 16 minutes to fully reclaim at that
+worst case, with every 100-row batch
 durable the moment it commits and the fleet dispatching reclaimed jobs
 continuously throughout. That steady, bounded recovery is the intended
 behavior, not a bug: the alternative, one 50 000-row transaction, is the
@@ -216,8 +225,9 @@ starts unlatched. `TaskQSweepDegraded`
 comparing the sweep's used batch size against the same worker's configured
 size, so no threshold drifts with your configuration.
 
-Scope note: the breaker wraps the three `job_events`-writing sweeps
-(`expired_locks`, `deadline_exceeded`, `scheduled_to_pending`). The
+Scope note: the breaker wraps the three promotion/reclaim sweeps
+(`expired_locks`, `deadline_exceeded`, `scheduled_to_pending`) - the latter
+takes the same bound although it writes no event rows. The
 result-TTL, stale-worker and stale-batch sweeps pass their batch size
 explicitly and are not breaker-wrapped.
 
