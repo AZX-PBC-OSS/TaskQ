@@ -9,10 +9,10 @@ the shared actor registry. Pure glue: deliberately NO logging setup
 configured, chatty worker would fill the 64K pipe buffer and block
 mid-write, the not-settled-at-load shape), no business logic, no
 per-test seams - the scenario injects its chaos from the outside
-(signals, kills, SQL, the broker). The post-drain SIGTERM guard
-mirrors worker_main's (see its comment): the loop close restores
-SIG_DFL, and the harness's stop signal must not erase a drained
-pod's verdict.
+(signals, kills, SQL, the broker). The post-drain SIGTERM guard is the
+entrypoint pattern every worker exit shares (the taskq worker command,
+the e2e worker entry): the loop close restores SIG_DFL, and the
+harness's stop signal must not erase a drained pod's verdict.
 """
 
 import asyncio

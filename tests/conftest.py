@@ -37,6 +37,7 @@ import asyncio
 import contextlib
 import glob
 import os
+import signal
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 
@@ -129,6 +130,12 @@ from tests.web_admin._fixtures import (
     stub_pool,
 )
 
+# The worker-start signal baseline for _host_signal_dispositions_restored
+# (below); snapshotted on the fixture's first run in each xdist worker. A
+# one-slot list, not a bare global: the fixture mutates the slot instead of
+# rebinding the name.
+_WORKER_BASELINE_SIGNALS: list[tuple[object, object] | None] = [None]
+
 # ── Health-socket isolation ──────────────────────────────────────────────
 # WorkerSettings.health_socket_path defaults to the shared production path
 # /tmp/taskq_health.sock, and _main starts a real HealthServer. Under xdist,
@@ -197,6 +204,40 @@ def _isolate_health_server_socket(  # pyright: ignore[reportUnusedFunction]  # W
         await original_start(self, deps)
 
     monkeypatch.setattr(HealthServer, "start", _start_isolated)
+
+
+@pytest.fixture(autouse=True)
+def _host_signal_dispositions_restored() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner.
+    """Restore the worker's SIGTERM/SIGINT dispositions after every test.
+
+    Defense-in-depth against the signal-leak class, of which the proven
+    member is ``worker_main``'s former trailing ``SIGTERM = SIG_IGN``: an
+    ignored disposition survives ``exec`` (unlike a handler, which resets
+    to default), so one in-process call in an xdist worker silently
+    re-armed EVERY later subprocess of that worker to ignore SIGTERM - a
+    sleeping child then ate the full 10s escalation budget of the
+    shutdown-admin helper and died ``rc == -9`` (the moving-red class of
+    2026-09-25/26). The leak itself is fixed at the entrypoints and pinned
+    by ``test_worker_main_leaves_the_host_signal_disposition_alone``; this
+    fixture is the floor that keeps ANY future in-process mutation from
+    spilling into a subsequent test's subprocesses. Snapshot is taken once
+    per worker (the dispositions a fresh pytest worker starts with are the
+    baseline) and the restore is unconditional and cheap (two
+    ``signal.signal`` calls).
+    """
+    if _WORKER_BASELINE_SIGNALS[0] is None:
+        _WORKER_BASELINE_SIGNALS[0] = (
+            signal.getsignal(signal.SIGTERM),
+            signal.getsignal(signal.SIGINT),
+        )
+    yield
+    baseline = _WORKER_BASELINE_SIGNALS[0]
+    assert baseline is not None  # Why: set above on the same call's setup pass.
+    sigterm_baseline, sigint_baseline = baseline
+    if signal.getsignal(signal.SIGTERM) is not sigterm_baseline:
+        signal.signal(signal.SIGTERM, sigterm_baseline)
+    if signal.getsignal(signal.SIGINT) is not sigint_baseline:
+        signal.signal(signal.SIGINT, sigint_baseline)
 
 
 @pytest.fixture(autouse=True)
