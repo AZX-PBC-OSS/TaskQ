@@ -174,6 +174,7 @@ async def _collect_sse_frames(
     *,
     stop: asyncio.Event,
     overall_timeout: float = 10.0,
+    connected: asyncio.Event | None = None,
 ) -> list[dict[str, str]]:
     from tests.web_progress.test_integration import _reap_stream_teardown_tasks
 
@@ -186,6 +187,14 @@ async def _collect_sse_frames(
         return {"type": "http.request", "body": b"", "more_body": False}
 
     async def _send(message: dict[str, object]) -> None:
+        if connected is not None:
+            # The first ASGI send is the observable "the handler body has
+            # completed" - the product subscribes to the broker AND
+            # resolves the catch-up query in the handler body, BEFORE
+            # EventSourceResponse is constructed and any byte is sent -
+            # so a scenario's publisher may arm here instead of a blind
+            # sleep that races the connect under runner load.
+            connected.set()
         if message["type"] == "http.response.body":
             body = message.get("body", b"")
             assert isinstance(body, bytes)
@@ -438,10 +447,17 @@ async def test_the_client_cursor_renders_the_durable_terminal_behind_the_wire_in
     app = _make_app(pool, redis_client)
     channel = progress_channel(SCHEMA_LABEL, job_id)
     captured = asyncio.Event()
+    # The wire arms on the OBSERVED stream establishment (the first ASGI
+    # send: the handler body - subscribe + catch-up query - has completed),
+    # not a blind sleep: the 0.3s bet lost the connect race under runner
+    # load and seqs 1-2 landed before the subscription existed - the wire
+    # red as ['0', '3', '4', '5'] with the middle frames lost to nothing
+    # the product ever received.
+    connected = asyncio.Event()
 
     async def _publish_attempt_one() -> None:
         # The flush-lost cut: the publishes ride out, the row stays at 0.
-        await asyncio.sleep(0.3)
+        await asyncio.wait_for(connected.wait(), timeout=10.0)
         for seq in range(1, 6):
             await redis_client.publish(
                 channel,
@@ -454,7 +470,7 @@ async def test_the_client_cursor_renders_the_durable_terminal_behind_the_wire_in
     async with asyncio.TaskGroup() as tg:
         tg.create_task(_publish_attempt_one())
         frames = await _collect_sse_frames(
-            app, f"/jobs/api/job/{job_id}/progress/stream", stop=captured
+            app, f"/jobs/api/job/{job_id}/progress/stream", stop=captured, connected=connected
         )
 
     wire_frames = [f for f in frames if f.get("event") == "progress"]
